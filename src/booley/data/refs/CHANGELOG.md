@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Booley no longer enforces any commit-message convention. `[stealth]
+  enforce_convention`, which required `type(scope): summary` subjects, is
+  retired: Booley ignores it, and you can delete it. Specialists commit with the message the
+  agent wrote, no longer rewritten into `type(scope): summary` form.
+  `BOOLEY_SKIP_COMMIT_VALIDATION=1` now skips only the `max_body_lines` cap.
+  Rerun `booley init` in each Stealth Project to install the new hook.
 - Mutation testing now generates Mutants deterministically and runs no LLM:
 - Stealth Mode now rejects a commit message that contains a banned term
   instead of rewriting it with `redacted`. The commit-msg hook never changes the
@@ -16,7 +22,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   the `git commit -v -e -F "<path>"` retry (a rejected merge commit says how to
   finish it). Comment lines and everything below the scissors line aren't
   checked. `BOOLEY_SKIP_COMMIT_VALIDATION=1` no longer skips banned terms, only
-  the convention and body-length checks. A Specialist whose commit message has a
+  the body-length check. A Specialist whose commit message has a
   banned term now fails with the validation error instead of committing under
   its default message. `cursor` and `ticket` left the default banned list; add
   them to `banned_words` to keep them. Rerun `booley init` in each Stealth
@@ -241,11 +247,6 @@ Packaged release history starts at 0.2.7. For older changes, see
   configurable LR/SC reservation-set size, a Zvt tile fix, and a batch of
   CSR and PMP fixes (`stopei`, `mstateen0`, `scountovf`, mcontrol6 triggers).
   ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
-- The command that prunes the evidence of a Simulation Record invocation is now
-  `python -m booley.flows.sim.record_retention`; it was
-  `python -m booley.flows.sim.campaign_retention`. Its options are unchanged.
-  Update any script that calls the old name
-  ([#3907](https://github.com/boldaxolotl/Booley/issues/3907)).
 
 ## 0.4.0 - 04 NOV 2026
 
@@ -541,7 +542,7 @@ can try Booley in a browser through a free GitHub Codespaces demo.
   harness files; it WARNs instead. Doctor's attached-window checks now run.
   In a Codespace it accepts `~/.ssh/authorized_keys` and a symlinked
   `BOOLEY_DIR`. Host `doctor --deep` no longer fails simulation checks on
-  Booley's own `/booley-project` alias.
+  Booley's own Booley Directory alias.
 - Deep Doctor warns when a simulation bad overlay fails to build and requires
   a behavioral failure to accept it. It no longer blocks on the expected
   upgrade-review warning.
@@ -1033,8 +1034,8 @@ adding new features.
 - `validate-ticket` prepares published Tickets with the Project's post-setup
   hook before checking Target inputs, so hook-generated inputs such as
   firmware images no longer fail validation.
-- Commands run from a Stealth Project's data directory (`/booley-project` or
-  `/work/.booley_project`) act on the owning Project checkout instead of
+- Commands run from a Stealth Project's data directory (the Sandbox's Booley Directory
+  mount or `/work/.booley_project`) act on the owning Project checkout instead of
   treating the data repository as the Project; discovery, automatic Doctor,
   and report path hints treat both paths as one directory. A Git failure
   during an ancestry check exits 2 with "cannot verify ancestry" instead of a

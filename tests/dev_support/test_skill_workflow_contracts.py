@@ -401,8 +401,8 @@ def test_agents_template_limits_doctor_during_task_work():
         "and Booley version changes",
         "do not run it for task work or handoffs",
         "in the handoff instead of fixing them",
-        "Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, "
-        "or Goal Records to silence such a finding",
+        "Never edit `booley.toml`, `.core` files, or `doctor-waivers.toml` "
+        "to silence such a finding",
         "deep verification (`/booley-heal`) is due",
     ):
         assert required in agents
@@ -731,7 +731,7 @@ def _setup_row_sections() -> dict[str, str]:
 def test_setup_plan_rows_have_plain_label_and_explanation():
     template = _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
     rows = _decision_rows(template)
-    assert set(rows) == {*(str(i) for i in range(1, 22)), "23", "10a"}
+    assert set(rows) == {*(str(i) for i in range(1, 22)), "23", "10a", "6a"}
     for row in rows.values():
         assert len(row) == 9
         assert all(row[1:4]), f"missing label, explanation, or internal key: {row}"
@@ -741,6 +741,41 @@ def test_setup_plan_rows_have_plain_label_and_explanation():
         "### Settled by your repo or existing config",
     ):
         assert heading in template
+
+
+def test_setup_recommends_verilator_wall_and_verible_style_lint():
+    template = _decision_rows(_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md"))["11"]
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+    greenfield = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    core = yaml.safe_load(_skill_text("booley-setup", "CORE_TEMPLATE.yaml"))["targets"]
+
+    assert template[3].startswith("Lint Targets: Verilator `-Wall` + Verible style")
+    assert "default both" in template[3]
+    for required in (
+        "`verilator_options: [-Wall]`",
+        "decline either",
+        "Never drop `-Wall` silently",
+        "with `lint_off -file",
+    ):
+        assert required in plan
+    assert "`verilator_options: [-Wall]`" in config
+    assert "offer, never impose" not in config
+    assert "offer, never impose" not in plan
+    assert "`--no-style-lint`" in greenfield
+    assert "`--lint-eda-tool verible`" in greenfield
+    assert core["lint_dut"]["flow_options"]["verilator_options"] == ["-Wall"]
+    assert core["lint_dut_style"]["flow_options"]["tool"] == "verible"
+
+
+def test_setup_guide_describes_default_lint_targets():
+    root = Path(__file__).resolve().parents[2]
+    guide = " ".join((root / "docs/user/SETUP.md").read_text(encoding="utf-8").split())
+    flow_lint = " ".join((root / "docs/user/FLOW-LINT.md").read_text(encoding="utf-8").split())
+
+    assert "`lint_my_ip_style`" in guide
+    assert "Verible style lint (default both)" in guide
+    assert "Verilator Target and a Verible style Target" in flow_lint
 
 
 def test_setup_plan_plain_text_terms_are_in_glossary():
@@ -830,81 +865,6 @@ def test_setup_grill_terms_are_in_glossary():
     _assert_terms_defined(_skill_text("booley-setup", "steps/0-plan.md"), terms)
 
 
-@pytest.mark.parametrize(
-    ("relative", "requirements"),
-    [
-        (
-            "SKILL.md",
-            (
-                "work_dir",
-                "goalsets_used",
-                "default_skipped=true",
-                "skip_reason",
-                "Protected Inputs",
-                "Only Booley Flow and Specialist evidence",
-                'operation="resume"',
-                "proposal_id",
-                "approval_quote",
-                "Never fabricate approval or infer it from silence",
-                "goal_status(work_dir=..., rules=true)",
-                "caller-stable UUID",
-                "revalidation_required",
-                "Abandon only on explicit human instruction",
-                "instruction_quote",
-            ),
-        ),
-        (
-            "review.md",
-            (
-                "Session Summary",
-                "Change Log",
-                "freshness",
-                "Target changes",
-                "constraint edits",
-                "Open `done` findings need no second approval",
-                "merging or publishing remains a separate human instruction",
-            ),
-        ),
-    ],
-)
-def test_goal_skill_carries_lifecycle_and_human_authority_contract(relative, requirements):
-    text = _compact_skill_text("booley-goal", relative)
-    for requirement in requirements:
-        assert requirement in text
-
-
-def test_goal_skill_routes_machinery_failures_to_private_manual_feedback():
-    text = _compact_skill_text("booley-goal")
-    assert "/booley-feedback" in text
-    assert "private reproducer handling" in text
-    assert "redacted export only on explicit human request" in text
-    assert "leaves submission to the human" in text
-    assert "Do not weaken a Goal to hide an infrastructure failure" in text
-
-
-def test_goal_skill_links_packaged_review_and_names_only_public_goal_tools():
-    from booley.mcp.goal_tools import goal_tool_defs
-
-    text = _skill_text("booley-goal")
-    assert "[review.md](review.md)" in text
-    assert (skills_dir() / "booley-goal" / "review.md").is_file()
-    mentioned = set(re.findall(r"`(goal_[a-z_]+)(?:`|\()", text))
-    assert mentioned == {tool["name"] for tool in goal_tool_defs()}
-    assert "booley dashboard" in text
-    metadata = _skill_text("booley-goal", "agents/openai.yaml")
-    assert "$booley-goal" in metadata
-
-
-def test_goal_review_ends_with_openable_review_package_paths():
-    # The human never sees tool output, so the paths must be in the reply itself,
-    # absolute (the editor terminal links them) and highlighted.
-    text = " ".join(_skill_text("booley-goal", "review.md").split())
-    assert "**Review Package summary:** `<summary>`" in text
-    assert "**Review Package data:** `<package>`" in text
-    assert "the absolute path as inline code" in text
-    assert "the human does not see tool output" in text
-
-
 def test_heal_requires_user_decision_for_ticket_leftovers():
     skill = " ".join(_skill_text("booley-heal").split())
     assert "Treat every `tickets.leftover-*` finding as a user decision" in skill
@@ -921,12 +881,7 @@ def test_setup_open_footprint_preserves_history_before_changing_exclusions():
     assert section.index("Before changing exclusions") < drop
     assert section.index("the outer exclusion when present") < drop
     assert "human's chosen history migration" in section
-    final_gate = section.index("zero failures and active warnings")
-    assert section.index("For an actual `goals.history-ignored") < section.index("copy that exact")
-    assert section.index("Commit the waiver") < final_gate
-    assert section.index("unexcluded authenticated Paired Checkout") < final_gate
-    assert section.index("standalone current checkout") < final_gate
-    assert section.index("remove its now-unmatched waiver") < final_gate
+    assert "zero failures and active warnings" in section
     assert "leave an already absent" in section
     assert section.index("regular-file entries") < section.index("before committing")
     assert "missing-exclusion waiver" in section
@@ -1023,3 +978,74 @@ def test_setup_templates_use_axis_subject_target_names():
     keys = {key.rpartition("#")[2] for key in sections if key != "test_lists"}
     assert keys
     assert not axes & keys
+
+
+_POINTER = "booley cheat --metrics"
+
+
+def _metrics_bullet() -> str:
+    template = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+    rendered = template.split("```markdown\n", 1)[1].split("```", 1)[0]
+    bullets = [line for line in rendered.splitlines() if line.startswith("- Metric-Driven")]
+    assert len(bullets) == 1
+    return bullets[0]
+
+
+def test_setup_asks_metrics_question_and_later_keeps_defaults():
+    rows = _decision_rows(_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md"))
+    assert rows["6a"][1] == "Enable metrics now or later?"
+    row = _setup_row_sections()["6a"]
+    for required in (
+        "**defaults block** row",
+        "default `later`",
+        "`later` changes nothing beyond the defaults `booley init` wrote",
+        "`now` adds exactly one `[<target>.sim]` table for every Target row 6 gives at least one Test",
+        "no other table",
+        "Unattended: `later`",
+        "no review star",
+        "row 6a resolves `pre-set`",
+        "`evidence-forced: later`",
+    ):
+        assert required in row, required
+    step2 = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+    section = step2.split("### 2d. metrics.toml (row 6a)", 1)[1].split("### Presenting", 1)[0]
+    for required in (
+        "booley cheat --metrics",
+        "spelled exactly as listed",
+        "Never derive a header from the `tests.toml` key",
+        "booley measure --validate",
+    ):
+        assert required in section, required
+    greenfield = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    assert "enable metrics now or later? (row 6a; recommend later)" in greenfield
+
+
+def test_setup_agents_template_points_at_metrics_cheatsheet_once():
+    template = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+    rendered = template.split("```markdown\n", 1)[1].split("```", 1)[0]
+    assert rendered.count(_POINTER) == 1
+    bullet = _metrics_bullet()
+    assert _POINTER in bullet
+    assert rendered.split("## Booley-Specific Instructions", 1)[1].count(bullet) == 1
+    step3 = _compact_skill_text("booley-setup", "steps/3-agents-md.md")
+    for required in (
+        "add the bullet only when the file does not contain that text",
+        "never adds it twice",
+        "leave; under leave, the pointer is the one line this step adds",
+        "The hybrid tracked root copy gets the same bytes",
+    ):
+        assert required in step3, required
+
+
+def test_heal_adds_metrics_pointer_only_when_missing():
+    heal = _skill_text("booley-heal")
+    assert heal.count(_metrics_bullet()) == 1
+    compact = " ".join(heal.split())
+    for required in (
+        f"does not contain `{_POINTER}`",
+        "Never add the bullet when the text is present",
+        "never create `AGENTS.md` for it",
+        "apply the same edit to the tracked root copy",
+        "not a reason to add `metrics.toml` tables",
+    ):
+        assert required in compact, required

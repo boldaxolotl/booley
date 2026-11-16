@@ -1084,6 +1084,44 @@ class TestDetail:
         assert payload["resolved_error"] == expected
         assert "resolved" not in payload
 
+    def test_resolution_error_names_unprovided_dependency(self, tmp_path: Path):
+        (tmp_path / "top.core").write_bytes(
+            b"CAPI=2:\nname: acme:lib:top:0\nfilesets:\n  rtl:\n    depend: ['>=::vlog_tb_utils:1.1']\n"
+            b"targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+            b"    filesets: [rtl]\n"
+        )
+
+        def failing(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        payload = detail_payload(tmp_path, "sim", runner=failing)
+
+        assert payload["resolved_error"] == (
+            "fusesoc run --setup --target sim acme:lib:top:0 failed (exit 1): "
+            "no Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC libraries "
+            "and cannot fetch them; copy it into the repository as a .core, or drop the depend: "
+            "(check first whether the testbench guards its use with an `ifdef` or defines the module "
+            "itself)"
+        )
+
+    def test_resolution_error_survives_a_core_edited_during_failure(self, tmp_path: Path):
+        core = tmp_path / "top.core"
+        core.write_bytes(
+            b"CAPI=2:\nname: acme:lib:top:0\nfilesets:\n  rtl:\n    depend: ['::missing:0']\n"
+            b"targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+            b"    filesets: [rtl]\n"
+        )
+
+        def failing(cmd, **kwargs):
+            core.write_bytes(core.read_bytes() + b"# edited\n")
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        payload = detail_payload(tmp_path, "sim", runner=failing)
+
+        assert payload["resolved_error"] == (
+            "fusesoc run --setup --target sim acme:lib:top:0 failed (exit 1):"
+        )
+
     def test_cheap_half(self, project: Path):
         payload = detail_payload(project, "sim", resolve=False)
         assert payload["selector"] == "sim"

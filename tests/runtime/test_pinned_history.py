@@ -281,9 +281,7 @@ def test_exact_object_recipe_refuses_substitution_before_any_git_write(repo, pub
 
 
 def test_publication_ignores_inherited_foreign_selection(repo, publication, tmp_path, monkeypatch):
-    from tests.goals.conftest import git
-    from tests.goals.test_attribute_projection import hostile
-    from tests.goals.test_committed_export import repository
+    from tests.git_support import git, hostile, repository
 
     foreign = repository(tmp_path / "foreign")
     (foreign / "README").write_bytes(b"foreign\n")

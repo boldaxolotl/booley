@@ -135,6 +135,57 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
     assert colors.red("1 unmet, 1 error, 1 not evaluated of 4 enforced") in terminal
 
 
+def agent_summary(view: dict[str, Any]) -> str:
+    from booley.measurement.report import agent_summary as summarize
+
+    return summarize(view)
+
+
+def test_agent_summary_is_bounded_and_keeps_verdict_and_paths(tmp_path: Path) -> None:
+    repo, store, stored, head, _ = failing_world(tmp_path)
+    view = view_of(repo, store, stored, head)
+    paths = view["view"]["paths"]
+
+    short = agent_summary(view).splitlines()
+
+    assert short[0] == "1 unmet, 1 error, 1 not evaluated of 4 enforced"
+    assert short[1].startswith("Run ") and short[1].endswith(": failing")
+    assert short[2:4] == [
+        "core synth area_um2_max: 9 vs ≤ 5, unmet",
+        "core synth area_kge_max: — vs ≤ 5, error",
+    ]
+    assert short[4:] == [f"Markdown: {paths['markdown']}", f"JSON: {paths['json']}"]
+
+    view["view"]["excerpts"] = (view["view"]["excerpts"] * 13)[:25]  # 25 failing rows
+    long = agent_summary(view).splitlines()
+
+    assert long[0] == short[0]
+    assert len(long) == 2 + 20 + 1 + 2  # verdict, header, 20 rows, the remainder, paths
+    assert long[22] == "... and 5 more failing rows in the Markdown report"
+    assert long[-2:] == short[-2:]
+    assert "too big" not in "\n".join(long)  # no excerpt, no suggested command
+    assert "booley measure" not in "\n".join(long)
+
+
+def test_agent_summary_shows_an_all_met_but_amber_header(tmp_path: Path) -> None:
+    repo, _ = in_tree_repository(tmp_path / "repo")
+    write(repo / ".booley" / "metrics.toml", SYNTH + "area_kge_max = 60\n")
+    commit_all(repo, "rules")
+    git(repo, "checkout", "-q", "-b", "feature")
+    write(
+        repo / ".booley" / "metrics.toml",
+        SYNTH + 'area_kge_max = 80\nnotes = { area_kge_max = "after DSP sharing" }\n',
+    )
+    head = commit_all(repo, "loosen")
+    store = MeasurementStore(repo / ".booley")
+    table = Table("synth", (Entry("area_kge_max", "area_kge", 70, bound=80),), target="synth_core")
+    stored = store.write(build_run(key_of(repo, head), "r1", (table,)), [])
+
+    lines = agent_summary(view_of(repo, store, stored, head)).splitlines()
+
+    assert lines[:2] == ["1 of 1 enforced met", "Run r1: rules loosened"]
+
+
 def test_identical_tree_commit_reports_measured_as_and_its_own_base(tmp_path: Path) -> None:
     repo, _ = in_tree_repository(tmp_path / "repo")
     write(repo / ".booley" / "metrics.toml", SYNTH + AREA)

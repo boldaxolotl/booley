@@ -1,4 +1,4 @@
-"""Read canonical Campaign identity and verify optional source snapshots."""
+"""Read canonical Coverage Record identity and verify optional source snapshots."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 
 class CoverageAnalysisError(ValueError):
-    """Campaign evidence cannot support advisory Coverage Analysis."""
+    """Coverage Record evidence cannot support advisory Coverage Analysis."""
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ def read_coverage_record(path: Path) -> LoadedCoverageRecord:
         invocation = path.parent.parent.parent
         if invocation.parent.name != "sim" or not invocation.name.isdecimal():
             raise CoverageAnalysisError(
-                "Campaign must belong to one numbered Simulation invocation"
+                "Coverage Record must belong to one numbered Simulation invocation"
             )
         schema = require_dict(json.loads(path.read_text(encoding="utf-8"))).get("$schema")
         try:
@@ -81,7 +81,7 @@ def read_coverage_record(path: Path) -> LoadedCoverageRecord:
         ) != invocation.name or path.parent != target_report_directory(
             invocation, coverage_record.target.selector
         ):
-            raise CoverageAnalysisError("Campaign identity disagrees with its exact path")
+            raise CoverageAnalysisError("Coverage Record identity disagrees with its exact path")
         projection = _projection(
             path.parent / "simulation.json",
             coverage_record,
@@ -95,7 +95,7 @@ def read_coverage_record(path: Path) -> LoadedCoverageRecord:
         raise CoverageAnalysisError(str(exc)) from exc
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
-            f"Cannot analyze Campaign at {path}: {exc}. Use an exact retained, completed Target Campaign; fully pruned invocations cannot be analyzed."
+            f"Cannot analyze Coverage Record at {path}: {exc}. Use an exact retained, completed Coverage Record; fully pruned invocations cannot be analyzed."
         ) from exc
 
 
@@ -106,7 +106,7 @@ def _safe_path(path: Path) -> None:
         or report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
     ):
         raise CoverageAnalysisError(
-            "Campaign and source paths must not contain links or traversal"
+            "Coverage Record and source paths must not contain links or traversal"
         )
     if not path.is_file():
         raise CoverageAnalysisError(f"Expected a retained regular file: {path}")
@@ -133,7 +133,9 @@ def _projection(
     if projection.document.get("complete") is not True or any(
         projection.document.get(key) != value for key, value in expected.items()
     ):
-        raise CoverageAnalysisError("Campaign lacks a matching completed Simulation projection")
+        raise CoverageAnalysisError(
+            "Coverage Record lacks a matching completed Simulation projection"
+        )
     return projection
 
 
@@ -249,7 +251,7 @@ def coverage_sources(
 def verified_source_snapshot(
     coverage_record: CoverageRecord, sources: CoverageSourceClosure | None
 ) -> CoverageSourceClosure | None:
-    """Return a source snapshot only when every Campaign-bound digest agrees."""
+    """Return a source snapshot only when every Coverage Record-bound digest agrees."""
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
 

@@ -38,12 +38,13 @@
 | 4 | Are your testbenches SystemVerilog, cocotb (Python), or both? | Choose how tests run and how their results are read; this controls the build and test layout. | Testbench flavor (sv/cocotb/mixed) |  |  |  |  |  |
 | 5 | Which log lines mean pass, fail, timeout, or bad input? | Recognize test outcomes without false passes; failure wins ties, and cocotb uses its result file. | Pass/fail/timeout/input-error sentinels (fail wins ties) |  |  |  |  |  |
 | 6 | Which tests exist, and which quick one proves the setup works? | Register the test list and a provisional smoke test, then measure the fastest useful check. | Test list + smoke test (provisional until timed) |  |  |  |  |  |
+| 6a | Enable metrics now or later? | Now adds one simulation metrics table per Target with Tests so the default bound (no failing Test) applies; later leaves `metrics.toml` with only the defaults `booley init` wrote. | Target Metrics: `now` or `later` (recommended) |  |  |  |  |  |
 | 7 | Which container image holds your EDA tools? | Select the Sandbox image containing the EDA tools and dependencies needed to build and run the design. | Sandbox image |  |  |  |  |  |
 | 8 | Which data files or prebuilt artifacts do tests need? | Make vectors and firmware available reproducibly so missing inputs cannot masquerade as a design failure. | Data files / built artifacts |  |  |  |  |  |
 | 9 | Which third-party code should Booley leave untouched? | Use vendored-core quarantine to keep upstream cores read-only while integrating your own design. | Vendored-core quarantine |  |  |  |  |  |
 | 10 | Where do your timing constraints (SDC/XDC) come from? | Reuse an upstream or user-supplied constraint file; a missing file blocks the affected build. | Constraints (SDC/XDC): upstream path or user-supplied file; never authored by a Developer Agent (a missing file blocks the Target) |  |  |  |  |  |
 | 10a | How should memories be handled in synthesis? | Classify every reachable memory and its implementation, replacement seam, timing behavior, and evidence before synthesis. | Memory implementation: every synthesis-reachable candidate, evidence, disposition, replacement seam, timing shape, and confidence |  |  |  |  |  |
-| 11 | Do you also want a code-style lint? | Reuse the repo’s own style rules when available; otherwise keep optional style checking off. | Style lint opt-in |  |  |  |  |  |
+| 11 | Which lint checks should run? | Verilator with all warnings (`-Wall`) finds unused, undriven, and width bugs; Verible checks coding style. Both run by default; decline either. | Lint Targets: Verilator `-Wall` + Verible style (default both; record each declined Target) |  |  |  |  |  |
 | 12 | Should a quick build-without-running check (Elaboration Check) run? | Choose whether to sweep standalone modules as well as compiling the normal simulation build. | Elaboration Check / standalone need |  |  |  |  |  |
 | 13 | How long can jobs run, and how much memory does the heaviest synthesis need? | Set time limits and plan measurements over the synthesis matrix so large jobs have enough memory. | Timeouts, heaviest synth calibration Target, & sandbox memory |  |  |  |  |  |
 | 14 | Which licensed commercial EDA tools may Booley use, and with whose license approval? | Record the approved installation, License Profile, and Project Grant so licensed EDA use has explicit authority. | Commercial EDA provisioning and grant |  |  |  |  |  |
@@ -175,8 +176,6 @@
 - **Step 7 status:** pending
 - **Final disposition:** <unset>
 
-### Goalset policy
+### Dashboard
 
-- **Project rules for seeded Goalsets:** <rules and applicable Targets>
-- **Create `goalsets/default.md`:** <human decision; applies to every entry>
 - **Dashboard attachment task:** <default on, or requested opt-out>

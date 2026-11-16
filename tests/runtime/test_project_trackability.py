@@ -13,7 +13,6 @@ from tests.subprocess_budget import run_bounded_child
 from booley.runtime import project_trackability as pt
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import reset_cache
-from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 
 
 def git(root: Path, *args: str) -> str:
@@ -99,7 +98,6 @@ def test_ignored_ancestor_grouping_and_bounded_preview(project):
     assert len(group.paths) == 14
     assert f".booley/cores/input 0{separator}name.core" in group.paths
     assert "+9 more" in group.message
-    assert any(g.history for g in result.ignored)
 
 
 def test_audited_inputs_and_transient_pruning(project, monkeypatch):
@@ -120,7 +118,6 @@ def test_audited_inputs_and_transient_pruning(project, monkeypatch):
         "cores/a.core",
         "docker/requirements.txt",
         "hooks/check.py",
-        "goalsets/g.toml",
         "generators/gen.py",
         "mcp_tools/check.py",
         "selftest/check.py",
@@ -130,7 +127,6 @@ def test_audited_inputs_and_transient_pruning(project, monkeypatch):
         "doctor-waivers.toml",
         "AGENTS.md",
         "SETUP-PLAN.md",
-        "goals/history/g.md",
         "tickets/history/t.md",
     ):
         path = selected / name
@@ -155,7 +151,7 @@ def test_audited_inputs_and_transient_pruning(project, monkeypatch):
 
 
 @pytest.mark.parametrize("linked", [False, True])
-def test_independent_owner_inputs_histories_and_attributes(project, linked):
+def test_independent_owner_inputs_and_histories(project, linked):
     root, selected = project
     selected.rename(root.parent / "seed")
     owner = root.parent / "data" if linked else selected
@@ -170,16 +166,14 @@ def test_independent_owner_inputs_histories_and_attributes(project, linked):
         git(owner, "worktree", "add", "-q", "--detach", str(selected))
     (root / ".gitignore").write_text(".booley/\n")
     assert not pt.inspect_project_trackability(root, selected).ignored
-    (selected / "goals/history").mkdir(parents=True)
-    (selected / "goals/history/a.md").write_text("summary")
-    (selected / ".gitattributes").write_text("* text=auto eol=lf\n")
-    (selected / ".gitignore").write_text("booley.toml\ngoals/history/\n.gitattributes\n")
+    (selected / "cores").mkdir(parents=True)
+    (selected / "cores/a.core").write_text("input")
+    (selected / ".gitignore").write_text("booley.toml\ncores/\n")
     result = pt.inspect_project_trackability(root, selected)
     assert not result.errors
     assert {p for g in result.ignored for p in g.paths} == {
         "booley.toml",
-        "goals/history/a.md",
-        ".gitattributes",
+        "cores/a.core",
     }
     assert all(not g.history and g.owner == selected for g in result.ignored)
 
@@ -309,11 +303,11 @@ def test_registered_submodule_is_inspected_in_its_own_repository(project):
     }
 
 
-def test_managed_root_attributes_are_candidates(project):
+def test_root_attributes_are_not_input_candidates(project):
     root, selected = project
-    (root / ".gitattributes").write_bytes(GITATTRIBUTES_RULE.encode() + b"\n")
+    (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
     (root / ".gitignore").write_text(".gitattributes\n")
-    assert pt.inspect_project_trackability(root, selected).ignored[0].paths == (".gitattributes",)
+    assert pt.inspect_project_trackability(root, selected) == pt.TrackabilityInspection((), ())
 
 
 def test_unavailable_indexed_input_owner_does_not_hide_other_inputs(project):
@@ -349,28 +343,26 @@ def test_doctor_inspects_symlinked_booley_dir_in_target_owner(project, tmp_path,
     root, selected = project
     if layout == "embedded":
         target = root / "control"
-        (root / ".gitignore").write_text("control/goals/history/\n")
+        (root / ".gitignore").write_text("control/cores/\n")
     else:
         target = tmp_path / "booley-repo"
     selected.rename(target)
     selected.symlink_to(target, target_is_directory=True)
     if layout == "separate":
         git(target, "init", "-q", "-b", "main")
-        (target / ".gitignore").write_text("goals/history/\n")
-    (target / "goals/history").mkdir(parents=True)
-    (target / "goals/history/old.md").write_text("summary")
+        (target / ".gitignore").write_text("cores/\n")
+    (target / "cores").mkdir(parents=True)
+    (target / "cores/old.core").write_text("input")
     reset_cache()
 
     reporter = doctor._Reporter.create()
-    doctor._check_goal_history_ignored(root, selected, reporter.pass_, reporter.warn_)
     doctor._check_project_trackability(root, selected, reporter.warn_)
     findings = reporter.findings or []
     ids = [finding.check_id for finding in findings]
 
     if layout == "embedded":
-        # The outer policy check is the one owner of the Goal-history probe.
-        assert ids == ["goals.history-ignored"]
-        assert "control/goals/history/doctor-probe.md" in findings[0].message
+        assert ids == ["project.inputs-ignored"]
+        assert "control/cores/old.core" in findings[0].message
     elif layout == "separate":
         assert ids == ["project.inputs-ignored"]
         assert "Booley repository" in findings[0].message
@@ -400,7 +392,7 @@ def test_doctor_names_unrecorded_stealth_choice_for_hidden_booley_dir(project, c
     assert all("/.booley" in f.message for f in unset)
 
 
-def test_embedded_ticket_history_is_not_deduplicated_with_goal_probe(project):
+def test_embedded_ticket_history_is_reported(project):
     from booley.harness import doctor
 
     root, selected = project
@@ -409,7 +401,6 @@ def test_embedded_ticket_history_is_not_deduplicated_with_goal_probe(project):
     history.write_text("summary")
     (root / ".gitignore").write_text("*.md\n")
     reporter = doctor._Reporter.create()
-    doctor._check_goal_history_ignored(root, selected, reporter.pass_, reporter.warn_)
     doctor._check_project_trackability(root, selected, reporter.warn_)
     assert any("tickets/history/old.md" in finding.message for finding in reporter.findings)
 
@@ -465,23 +456,6 @@ def test_broken_input_tree_owner_does_not_hide_other_trees(project):
         ".booley/booley.toml",
         ".booley/hooks/check.py",
     }
-
-
-def test_relocated_history_probe_uses_configured_directory(project):
-    root, _selected = project
-    (root / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
-    relocated = root / "tools" / "booley"
-    relocated.mkdir(parents=True)
-    (relocated / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
-    (root / ".git/info/exclude").write_bytes(b"/tools/booley/goals/history/\n")
-    reset_cache()
-
-    assert pt.history_probe(root) == "tools/booley/goals/history/doctor-probe.md"
-
-    inspection = pt.inspect_project_trackability(root, relocated)
-    history = [group for group in inspection.ignored if group.history]
-    assert [group.paths for group in history] == [("tools/booley/goals/history/doctor-probe.md",)]
-    reset_cache()
 
 
 @pytest.mark.parametrize(

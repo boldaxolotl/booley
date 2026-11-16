@@ -292,6 +292,8 @@ def test_entry_lists_files_rules_and_checkboxes(
 
     assert _main(gh, monkeypatch, classifier=classifier) == 0
     body = gh.created_issue()["body"]
+    assert "## Maintainer steps" in body
+    assert "Never delete or unlabel a digest" in body
     entry = body[body.index("### #9") :]
     assert entry == (
         "### #9 Explain &lt;!-- the --> thing\n"

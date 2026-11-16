@@ -305,10 +305,10 @@ def test_measure_job_record_carries_flow_progress(
         _prepared: object,
         tables: Sequence[TableRules],
         *,
-        progress: Callable[[int, int], None],
+        progress: Callable[[int, int, tuple[str, ...]], None],
         **_options: object,
     ) -> ChildrenOutcome:
-        progress(1, len(tables))
+        progress(1, len(tables), ("sim_two.lint",))
         seen.append(job_record(project).progress)  # the record on disk while the Job runs
         return outcome_of(tables, [0, 0])
 
@@ -993,3 +993,32 @@ def test_a_target_on_a_measured_commit_shows_the_stored_run(
     assert "is already Measured by run" in capsys.readouterr().err
     assert steps == ["prepare", "run"]
     assert stored_runs(project) == [first]
+
+
+def test_validate_init_defaults_bound_listed_sim_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Setup "now" recipe: listed `.sim` headers of Targets with Tests join the defaults."""
+    from booley.harness.init_cmd import METRICS_TOML_SKELETON
+    from booley.measurement.metrics_listing import render_metrics_listing
+
+    write_metrics_project(tmp_path)
+    (tmp_path / ".booley" / "tests.toml").write_bytes(
+        b'[sim_core]\ntests = ["smoke"]\n[sim_two]\ntests = ["a", "b"]\n[shared]\ntests = ["t"]\n'
+    )
+    headers: list[str] = []
+    for block in render_metrics_listing(tmp_path).split("\n\n"):
+        header = block.splitlines()[0]
+        # A Target with registered Tests lists a per-test bound line.
+        if header.endswith(".sim]") and '.cycle_count_max" =' in block:
+            headers.append(header)
+    assert len(headers) == 4
+    assert any(header.startswith('["') for header in headers)  # quoted identities
+    (tmp_path / ".booley" / "metrics.toml").write_bytes(
+        (METRICS_TOML_SKELETON + "\n" + "\n\n".join(headers) + "\n").encode()
+    )
+    capsys.readouterr()
+    assert _measure(monkeypatch, tmp_path, "--validate") == 0
+    out = capsys.readouterr().out
+    assert "4 tables" in out
+    assert out.count("1 bounds") == 4

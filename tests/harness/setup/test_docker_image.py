@@ -1178,8 +1178,8 @@ class TestWheelFailureReport:
         assert "stderr side of the story" in capsys.readouterr().out
 
     def test_ensurepip_failure_names_its_fix(self, capsys):
-        """The exact trap docs/user/TROUBLESHOOTING.md documents, and the one that killed the
-        fpu port's first init: Debian splits venv out of the interpreter."""
+        """The trap that killed the fpu port's first init: Debian splits venv out of the
+        interpreter."""
         ctx = InitContext(project_root=Path("/tmp/x"))
         _wheel_failure(
             ctx,

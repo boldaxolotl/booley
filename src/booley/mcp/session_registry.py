@@ -1,4 +1,4 @@
-"""Advisory session presence and the attribution facts routing shares; no reader selects Goal work."""
+"""Advisory session presence and the attribution facts routing shares; no reader selects work."""
 
 from __future__ import annotations
 
@@ -17,7 +17,13 @@ from booley.core.boundary import require_dict, require_str, require_str_value, r
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.filesystem_utils import read_file_bytes
-from booley.runtime.handles import HandleStore, fallback_predecessors, session_writer
+from booley.runtime.handles import (
+    HandleStore,
+    fallback_predecessors,
+    path_key_spellings,
+    session_writer,
+)
+from booley.runtime.mount_history import MountHistoryError, translate_stored_path
 from booley.runtime.pid import (
     DEAD_PROCESS_STATES,
     ProcessIdentity,
@@ -152,6 +158,26 @@ def _parse_row(raw: bytes) -> SessionRow:
     return SessionRow(attribution, started, latest, history)
 
 
+def _current_spelling(row: SessionRow, record: str) -> SessionRow:
+    """*row* with the paths a former Sandbox mount spelled read under the current mount."""
+
+    def path(value: str) -> str:
+        return translate_stored_path(value, record=record)
+
+    def keyed(value: str, prefix: str) -> str:
+        return prefix + path(value.removeprefix(prefix)) if value.startswith(prefix) else value
+
+    facts = row.attribution
+    moved = replace(
+        facts,
+        key=keyed(facts.key, "worktree:path:"),
+        work_dir=path(facts.work_dir),
+        worktree_key=keyed(facts.worktree_key, "path:"),
+        default_work_dir=path(facts.default_work_dir),
+    )
+    return replace(row, attribution=moved)
+
+
 def _parse_call(value: object) -> RecentCall:
     data = require_dict(value, field="recent call")
     at = require_str(data, "at")
@@ -282,7 +308,7 @@ class SessionRegistry:
         row = _parse_row(read_file_bytes(path))
         if path != self.path(row.attribution.key):
             raise ValueError("session filename does not match its key")
-        return row
+        return _current_spelling(row, f"session row {path.name}")
 
     def snapshot(self) -> RegistrySnapshot:
         """Read retained presence with no pruning or persistent side effects."""
@@ -300,7 +326,7 @@ class SessionRegistry:
                 try:
                     row = self._read(path)
                     rows.append(replace(row, attribution=canonical_attribution(row.attribution)))
-                except (OSError, ValueError, UnicodeError) as exc:
+                except (OSError, ValueError, UnicodeError, MountHistoryError) as exc:
                     diagnostics.append(f"{path.name}: {exc}")
         except OSError as exc:
             diagnostics.append(f"session registry unavailable: {exc}")
@@ -370,13 +396,18 @@ class SessionRegistry:
     def _predecessors(
         self, facts: Attribution, keys: tuple[str, ...] = ()
     ) -> list[tuple[Path, SessionRow]]:
-        candidates = [self.path(key) for key in (facts.key, *keys)]
+        names = [facts.key, *keys]
         if (
             facts.kind == "worktree"
             and facts.work_dir
             and not facts.worktree_key.startswith("path:")
         ):
-            candidates.append(self.path("worktree:path:" + facts.work_dir))
+            names.append("worktree:path:" + facts.work_dir)
+        candidates = [
+            self.path(spelling)
+            for name in names
+            for spelling in path_key_spellings(name, record="session registry")
+        ]
         return [(path, self._read(path)) for path in dict.fromkeys(candidates) if path.exists()]
 
     def upsert(
@@ -545,7 +576,7 @@ def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
 
 
 def canonical_attribution(facts: Attribution) -> Attribution:
-    """Match pre-Goal path rows to the same repository/admin identity used by Goal Records.
+    """Match path rows to one repository/admin identity.
 
     A row without a work_dir reports the live checkout root and branch of its
     default_work_dir instead, so presentation shows where its calls run.

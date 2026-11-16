@@ -3,7 +3,8 @@
 On POSIX with the bwave binary, a literal relative ``.vcd`` entry inside the run
 directory becomes a named pipe before the simulator starts. A ``bwave build``
 process reads it while the test runs, so the raw VCD never lands on disk. Any
-entry that cannot stream keeps the post-run conversion path untouched.
+entry that cannot stream keeps the post-run conversion path untouched. Every
+launch first removes a pipe a killed run left behind at such an entry.
 """
 
 from __future__ import annotations
@@ -23,6 +24,10 @@ from booley.flows.sim.trace_session import TraceSession
 
 _GLOB_MAGIC = "*?["
 _STREAM_DIR = "trace_streams"
+_TESTBENCH_FIX_HINT = (
+    " (if the testbench seeks in, reads back, or reopens this dump, make it write the dump "
+    "once, front to back, or dump FST instead)"
+)
 
 
 @dataclass(frozen=True)
@@ -147,8 +152,9 @@ class DeclaredTraceStreams:
             if result.success:
                 self.stores[stream.pattern] = stream.conversion.store_path
             else:
+                hint = "" if result.failure_kind == "timed_out" else _TESTBENCH_FIX_HINT
                 self.failures[stream.pattern] = (
-                    f"streaming {stream.pattern} failed: {last_line[0]}"
+                    f"streaming {stream.pattern} failed: {last_line[0]}{hint}"
                 )
             return_code = result.attempts[-1].return_code
             session.record_attempt(
@@ -172,3 +178,12 @@ def _clear_stale_pipe(path: Path) -> bool:
     path.unlink()
     _sidecar_path(path).unlink(missing_ok=True)
     return True
+
+
+def clear_stale_pipes(patterns: tuple[str, ...], run_dir: Path) -> None:
+    """Remove every pipe a killed run provably left at an eligible declared path."""
+    run_root = run_dir.resolve()
+    for pattern in patterns:
+        path = _eligible_path(pattern, run_root)
+        if path is not None:
+            _clear_stale_pipe(path)

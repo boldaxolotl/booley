@@ -1018,7 +1018,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
         "Run FIFO pipeline smoke test",
         "Run native FST/Verilator cross-validation",
         "Run Verilator compiler and native coverage acceptance",
-        "Run Coverage Campaign release matrix and production collector",
+        "Run Coverage Record release matrix and production collector",
         "Run simulator ground-truth tests",
         "Run cocotb Icarus/Verilator production-image flows",
     }
@@ -1264,63 +1264,6 @@ def test_other_unraisable_exceptions_still_fail_the_suite() -> None:
                 ),
                 stacklevel=1,
             )
-
-
-def test_goal_mode_unit_tests_run_only_when_named(
-    pytestconfig: pytest.Config, tmp_path: Path
-) -> None:
-    """A bare ``pytest tests/`` skips the Goal Mode unit tests; naming them still runs them (#3329)."""
-    goal_tests = REPOSITORY_ROOT / "tests" / "goals"
-    assert pytestconfig.hook.pytest_ignore_collect(collection_path=goal_tests, config=pytestconfig)
-    other_tests = REPOSITORY_ROOT / "tests" / "harness"
-    assert not pytestconfig.hook.pytest_ignore_collect(
-        collection_path=other_tests, config=pytestconfig
-    )
-
-    # Collect-only on one runtime-picked module: no Goal test body runs in CI.
-    module = sorted(goal_tests.glob("test_*.py"))[0]
-    environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not name.startswith(("PYTEST_XDIST_", "BOOLEY_PYTEST_"))
-        and name not in {"PYTEST_ADDOPTS", "BOOLEY_DIR"}
-    }
-    result = run_bounded_child(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-p",
-            "no:xdist",
-            "-p",
-            "no:cacheprovider",
-            f"--basetemp={tmp_path / 'child'}",
-            "--collect-only",
-            "-q",
-            str(module),
-        ],
-        cwd=REPOSITORY_ROOT,
-        env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "tests/goals/" in result.stdout.replace("\\", "/")
-
-
-def test_goal_mode_source_is_omitted_from_coverage() -> None:
-    """Goal Mode source is not measured while its tests are not collected (#3329)."""
-    from coverage import Coverage
-    from coverage.files import GlobMatcher
-
-    omit = Coverage(config_file=str(REPOSITORY_ROOT / "pyproject.toml")).get_option("run:omit")
-    assert isinstance(omit, list)
-    omitted = GlobMatcher(omit)
-
-    assert omitted.match(str(REPOSITORY_ROOT / "src/booley/goals/store.py"))
-    # Subprocess data from a temporary checkout carries a different root.
-    assert omitted.match("/checkout/src/booley/goals/store.py")
-    assert not omitted.match(str(REPOSITORY_ROOT / "src/booley/harness/__init__.py"))
 
 
 def test_booley_never_uses_sqlite() -> None:

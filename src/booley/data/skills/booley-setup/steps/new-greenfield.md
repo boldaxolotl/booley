@@ -44,8 +44,11 @@ The grill covers:
   Yosys + OpenROAD with constrained timing and SDC) or `logical` (Yosys mapped
   area only, no SDC). Ask this dependent choice after ASIC enablement is settled;
 - simulator (Verilator / Icarus) and testbench style (SystemVerilog / cocotb);
-- lint EDA tool (Verilator / Verible);
+- lint Targets: Verilator with `-Wall` plus Verible style lint (recommend both);
+  declining style lint passes `--no-style-lint`, declining the Verilator Target
+  passes `--lint-eda-tool verible`;
 - whether they want `AGENTS.md`;
+- enable metrics now or later? (row 6a; recommend later);
 - one merged git-history question (rows 16 + 20), asked exactly:
   **"Keep Booley out of your git history?"** Recommend No/open for a repo born
   with Booley: commit `.booley/`, use native cores, row 20 =
@@ -69,7 +72,8 @@ only):
 - **Repo not yet scaffolded** (no `.core`, no RTL): run
   `booley init --scaffold <name>` on the host, passing **every** answer as a flag
   (`booley init --scaffold` asks nothing and defaults a missing flag):
-  `--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
+  `--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`,
+  `--no-style-lint` (only when declined), `--asic`/`--no-asic`,
   `--synth-mode logical|physical` (only with ASIC), `--fpga-part <part>` (only
   when FPGA is on), plus `--stealth` when the user
   confirmed Yes/hidden in the grill (it writes `enabled = true` and puts the
@@ -100,6 +104,9 @@ only):
   removes tracked files).
 - **Repo has existing RTL/`.core` but isn't scaffolded**: it's a port — run
   the normal plan phase instead of guessing.
+
+With row 6a `now`, apply Step 2 §2d to the scaffold's simulation Target before
+the Step 4 gate.
 
 Then, in the container, run **Step 3 (optional — offer it) and Step 4
 (the doctor gate)**. Use plain `booley doctor` while fixing the scaffold, then

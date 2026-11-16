@@ -19,6 +19,7 @@ from booley.harness import booley as tlr
 from booley.harness import bootstrap_cli
 from booley.runtime import health
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
@@ -139,6 +140,14 @@ def test_init_scaffold_stealth_flag():
 
     assert parser.parse_args(["init", "--scaffold", "demo", "--stealth"]).stealth is True
     assert parser.parse_args(["init", "--scaffold", "demo"]).stealth is False
+
+
+def test_init_parser_reads_style_lint_flags():
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["init", "--scaffold", "demo"]).style_lint is None
+    assert parser.parse_args(["init", "--scaffold", "demo", "--no-style-lint"]).style_lint is False
+    assert parser.parse_args(["init", "--scaffold", "demo", "--style-lint"]).style_lint is True
 
 
 def test_init_parser_accepts_skip_credentials():
@@ -996,9 +1005,7 @@ def _host_venue(monkeypatch):
 
 
 class TestEnforceVenue:
-    @pytest.mark.parametrize(
-        "command", ["goal", "chat", "dashboard", "worktree", "flow", "specialist"]
-    )
+    @pytest.mark.parametrize("command", ["chat", "dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
         monkeypatch.setattr(sys, "argv", ["booley", command])
@@ -1010,9 +1017,7 @@ class TestEnforceVenue:
         assert "Sandbox" in err
         assert "Reopen in Container" in err  # names the fix, not just the rule
 
-    @pytest.mark.parametrize(
-        "command", ["goal", "chat", "dashboard", "worktree", "flow", "specialist"]
-    )
+    @pytest.mark.parametrize("command", ["chat", "dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_allowed_in_container(self, command, monkeypatch):
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # must not raise
@@ -1063,7 +1068,7 @@ class TestEffectiveCommand:
         return tlr._build_parser().parse_args(argv)
 
     def test_subcommand_passthrough(self):
-        assert tlr._effective_command(self._parse(["goal", "status"])) == "goal"
+        assert tlr._effective_command(self._parse(["worktree", "list"])) == "worktree"
         assert tlr._effective_command(self._parse(["init"])) == "init"
 
     def test_unnormalized_no_command_has_no_effective_command(self):
@@ -1571,7 +1576,7 @@ def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv
     assert tlr._dispatch_main() == 0
 
 
-@pytest.mark.parametrize("argv", [["goal", "status"], ["dashboard"], ["chat"]])
+@pytest.mark.parametrize("argv", [["dashboard"], ["chat"], ["worktree", "list"]])
 def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (tmp_path / ".git").mkdir()
@@ -1586,8 +1591,10 @@ def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
 
 
 @pytest.mark.parametrize("source", [True, False])
-@pytest.mark.parametrize("view", ["--all", "--criteria"])
-def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, source, view):
+@pytest.mark.parametrize(("view", "renders"), [("--all", 2), ("--flows", 2), ("--specialists", 2)])
+def test_source_project_binding_cheat_selected_imports(
+    tmp_path, monkeypatch, source, view, renders
+):
     from booley.dev_support import flow_specialist_reference as reference
 
     project = tmp_path / "project"
@@ -1605,14 +1612,6 @@ def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, so
     monkeypatch.setattr(sys, "argv", ["booley", "cheat", view])
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
     calls = []
-    criteria_calls = []
-    original_catalog = tlr._live_criterion_endpoint_catalog
-
-    def catalog(root):
-        criteria_calls.append(root)
-        return original_catalog(root)
-
-    monkeypatch.setattr(tlr, "_live_criterion_endpoint_catalog", catalog)
 
     def render(**kwargs):
         calls.append(kwargs["project_mcp_tools_dir"])
@@ -1622,11 +1621,10 @@ def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, so
     monkeypatch.setattr(reference, "render_specialists_reference", render)
     monkeypatch.setattr(reference, "splice_generated", lambda text, *_args, **_kwargs: text)
     assert tlr._dispatch_main() == 0
-    assert calls == ([] if source else [project / ".booley" / "mcp_tools"] * 2)
-    assert criteria_calls == ([] if source else [project])
+    assert calls == ([] if source else [project / ".booley" / "mcp_tools"] * renders)
 
 
-@pytest.mark.parametrize("command", ["doctor", "goal", "session", "cleanup"])
+@pytest.mark.parametrize("command", ["doctor", "session", "cleanup"])
 @pytest.mark.parametrize("selected_source", [True, False])
 def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, selected_source):
     source = tmp_path / "source"
@@ -1637,9 +1635,7 @@ def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, se
     (project / ".booley").mkdir()
     selected, cwd = (source, project) if selected_source else (project, source)
     monkeypatch.chdir(cwd)
-    suffix = {"doctor": [], "goal": ["status"], "session": ["down"], "cleanup": ["prepare"]}[
-        command
-    ]
+    suffix = {"doctor": [], "session": ["down"], "cleanup": ["prepare"]}[command]
     argv = ["booley", "--project", str(selected), command, *suffix]
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
@@ -1697,7 +1693,6 @@ def test_project_binding_cheat_uninitialized_directory(
     monkeypatch.setattr(tlr, "cheatsheet_path", lambda: committed)
     calls = []
     monkeypatch.setattr(reference, "render_flow_reference", lambda **kwargs: calls.append(kwargs))
-    monkeypatch.setattr(tlr, "_live_criterion_endpoint_catalog", calls.append)
     if unreadable_project:
 
         def discover():
@@ -1952,7 +1947,7 @@ def test_auth_token_stdin_outside_project_stores_and_explains_pickup(
     assert result == 0, "auth incorrectly requires a Project"
     assert auth_token.token_path().read_text().strip() == "sk-ant-oat01-synthetic-cli"
     output = capsys.readouterr().out
-    assert "session up" in output and "init --seed" in output
+    assert " ".join(output.split()).count(UNKNOWN_SANDBOX_STEPS) == 1
     init.assert_not_called()
 
 

@@ -22,7 +22,6 @@ from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.harness.dashboard.specialist_form import ReviewerForm
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_request_path
 from booley.runtime import auth_token, job_records
-from tests.goals import conftest as goals_conftest
 from tests.harness import test_dashboard as dashboard_tests
 from tests.harness import test_dashboard_run as run_tests
 from tests.harness.test_dashboard_run import (
@@ -45,11 +44,9 @@ from tests.harness.test_dashboard_run import (
 )
 from tests.harness.test_dashboard_targets import settle
 
-# Fixtures of the Run and Goal tests, shared by assignment so a test finds them by name.
+# Fixtures of the Run tests, shared by assignment so a test finds them by name.
 checkout = run_tests.checkout
 spawned = run_tests.spawned
-layout = goals_conftest.layout
-enter_goals = goals_conftest.enter_goals
 
 
 @pytest.fixture(autouse=True)
@@ -98,7 +95,7 @@ class ReviewerLauncher(FakeLauncher):
     def form(self, kind, name, worktree):
         from booley.harness.dashboard.specialist_form import ReviewerForm
 
-        return ReviewerForm("") if kind == "specialist" else super().form(kind, name, worktree)
+        return ReviewerForm() if kind == "specialist" else super().form(kind, name, worktree)
 
     def check(self, worktree, kind, name, argv):
         self.checks.append((kind, name, argv))
@@ -139,25 +136,6 @@ async def to_reviewer(app, pilot, name="reviewer"):
             break
         await pilot.press("down")
     assert options.highlighted == target
-    await pilot.press("enter")
-    await settle_form(app, pilot)
-    return wizard
-
-
-def goal_worktree_app(layout):
-    """An app over the Goal Mode layout; the launcher reads its Goal store."""
-    return make_app(layout.main, real_launcher(layout.control))
-
-
-async def to_goal_reviewer(app, pilot, layout):
-    """The reviewer's form for the layout's linked worktree."""
-    wizard = await start_run(app, pilot)
-    index = next(i for i, choice in enumerate(wizard._choices) if choice.path == layout.worktree)
-    wizard.query_one("#run-worktrees", OptionList).highlighted = index
-    await pilot.press("enter")
-    await settle(app, pilot)
-    options = wizard.query_one("#run-flows", OptionList)
-    options.highlighted = reviewer_row(wizard)
     await pilot.press("enter")
     await settle_form(app, pilot)
     return wizard
@@ -411,38 +389,24 @@ async def test_a_specialists_read_of_a_replaced_worktree_is_dropped(checkout, tm
 
 # --- AC3 and AC4 -------------------------------------------------------------
 
-SPEC_GOAL = {
-    "family": "REVIEW",
-    "review": "rtl_spec",
-    "verdict": "clean",
-    "paths": ["rtl.v"],
-    "spec": "docs/spec.md",
-}
-
 
 @pytest.mark.asyncio
-async def test_wizard_follows_the_category_and_prefills_the_spec_path(layout, spawned):
-    enter_goals(layout, [SPEC_GOAL])
-    app = goal_worktree_app(layout)
+async def test_wizard_follows_the_category_and_the_spec_path_starts_empty(checkout):
+    app = make_app(checkout, ReviewerLauncher())
     async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await to_goal_reviewer(app, pilot, layout)
+        wizard = await to_reviewer(app, pilot)
         assert row_value(wizard, "Category") == "rtl"
         assert row_value(wizard, "Focus") == ""
         assert "Spec path" not in " ".join(form_rows(wizard))
         await set_choice(pilot, wizard, "Focus", "spec")
-        assert row_value(wizard, "Spec path") == "docs/spec.md"
+        assert row_value(wizard, "Spec path") == ""
         await set_choice(pilot, wizard, "Category", "tb")
         assert row_value(wizard, "Focus") == "quality"
         assert "Spec path" not in " ".join(form_rows(wizard))
         await set_choice(pilot, wizard, "Category", "rtl")
         assert row_value(wizard, "Focus") == ""
         await set_choice(pilot, wizard, "Focus", "spec")
-        assert row_value(wizard, "Spec path") == "docs/spec.md"
-        await goto_row(pilot, wizard, "Spec path")
-        await pilot.press(
-            "enter", *["backspace"] * len("docs/spec.md")
-        )  # the editor keeps the prefill
-        await pilot.press(*"docs/other.md", "enter")
+        await set_text(pilot, wizard, "Spec path", "docs/other.md")
         assert row_value(wizard, "Spec path") == "docs/other.md"
         await goto_row(pilot, wizard, "More")
         await pilot.press("enter")
@@ -451,23 +415,12 @@ async def test_wizard_follows_the_category_and_prefills_the_spec_path(layout, sp
         assert "Max turns" not in " ".join(form_rows(wizard))
 
 
-@pytest.mark.asyncio
-async def test_spec_path_is_prefilled_from_the_active_spec_review_goal(layout):
-    launcher = real_launcher(layout.control)
-
-    def prefill(worktree: Path = layout.worktree) -> str:
-        form = launcher.form("specialist", "reviewer", worktree)
-        assert isinstance(form, ReviewerForm)
-        return form.initial()["spec"]
-
-    assert prefill() == ""  # no Goal Mode
-    other = {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done", "paths": ["rtl.v"]}
-    enter_goals(layout, [other, {**SPEC_GOAL, "verdict": "done"}])
-    assert prefill() == "docs/spec.md"
-    assert prefill(layout.main) == ""
-    (record_file,) = layout.control.rglob("record.json")
-    record_file.write_bytes(b"{ not json")
-    assert prefill() == ""  # a corrupt Goal record only loses the prefill
+def test_reviewer_form_spec_field_starts_empty_and_keeps_a_typed_path():
+    form = ReviewerForm()
+    assert form.initial() == {"category": "rtl", "spec": ""}
+    typed = {**form.initial(), "focus": "spec", "spec": "docs/spec.md"}
+    assert form.refusal({**typed, "scope": "a.v"}) == ""
+    assert form.argv({**typed, "scope": "a.v"})[-4:-2] == ("--spec", "docs/spec.md")
 
 
 # --- AC6 ---------------------------------------------------------------------
@@ -520,7 +473,7 @@ COVERAGE_RECORD_ENDED = "2024-03-01T10:00:00Z"
 
 
 def write_coverage_record(root: Path, number: int, target: str = "sim_fifo") -> Path:
-    """A finished coverage campaign of Simulation run *number* under *root*'s Booley Directory."""
+    """A finished Coverage Record of Simulation run *number* under *root*'s Booley Directory."""
     directory = root / ".booley" / "flow-reports" / "sim" / str(number) / "targets" / target
     directory.mkdir(parents=True)
     (directory / "coverage.json").write_text("{}\n", encoding="utf-8")
@@ -654,7 +607,7 @@ async def test_reopening_the_picker_keeps_an_older_coverage_record_chosen(
         await goto_row(pilot, wizard, "Coverage Record")
         await pilot.press("enter")
         await settle(app, pilot)
-        await pilot.press("down", "enter")  # the older campaign
+        await pilot.press("down", "enter")  # the older Coverage Record
         chosen = row_value(wizard, "Coverage Record")
         assert chosen.endswith("sim/1/targets/sim_fifo/coverage.json")
         await goto_row(pilot, wizard, "Coverage Record")
@@ -703,7 +656,7 @@ async def test_coverage_picker_says_when_the_jobs_are_unread_or_the_read_crashes
         assert shown(wizard, "#run-hint") == wizard_module.JOBS_NOT_READ
         assert pick_rows(wizard) == ["Type a coverage.json path…"]
         await pilot.press("escape")
-        # A read that crashes lists no campaign instead of waiting forever.
+        # A read that crashes lists no Coverage Record instead of waiting forever.
         wizard._sim_runs = lambda _worktree: (SimRun(checkout, COVERAGE_RECORD_ENDED),)
         monkeypatch.setattr(wizard_module, "finished_coverage_records", lambda *_args: 1 / 0)
         await pilot.press("enter")

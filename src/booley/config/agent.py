@@ -17,7 +17,6 @@ from booley.config.gateway import (
     GatewayModelPin,
     gateway_model_pin_from_env,
 )
-from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.booley_dir import own_booley_dir, resolve_checkout_booley_dir
 from booley.core.config_paths import resolve_toml
@@ -200,7 +199,6 @@ class AgentSettings:
     # strict single pin and never falls back.
     specialist_models: Mapping[str, str | tuple[str, ...]] = field(default_factory=dict)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
-    jobs: SlotCaps = field(default_factory=SlotCaps)
     # Gateway-only pins (BOOLEY_GATEWAY_MODEL / _EFFORT) for gateway-routed Codex.
     model_pin: str | None = None
     effort_pin: str | None = None
@@ -517,7 +515,7 @@ def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> Backen
         elif cli not in clis:
             clis.append(cli)
     if "heavy" in models or "light" in models:
-        notes.append("heavy and light overrides have no equivalent and are dropped")
+        notes.append("heavy and light have no equivalent; delete them")
     agent = f'[agent]\nclis = {clis!r}\ndefault = "{default_cli}"\n'.replace("'", '"')
     return BackendConfigError(
         "booley.toml [models] tier keys and [models.roles] are retired: each Specialist now "
@@ -723,14 +721,6 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
     )
 
 
-def _parse_jobs_config(data: dict) -> SlotCaps:
-    """Parse [jobs] concurrency caps (ADR 0028 Decision 5).
-
-    Thin compatibility alias for the Config-owned parser.
-    """
-    return parse_caps(data)
-
-
 def _resolve_booley_toml(project_data: Path) -> Path:
     """Resolve booley.toml in *project_data*, warning on legacy pipeline.toml."""
     path = resolve_toml(project_data)
@@ -757,7 +747,7 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
             sandbox = replace(
                 _parse_sandbox_config(data), image=project_sandbox_image(project_root)
             )
-            settings = replace(settings, sandbox=sandbox, jobs=_parse_jobs_config(data))
+            settings = replace(settings, sandbox=sandbox)
         except (OSError, KeyError, TypeError, ValueError) as e:
             logger.warning("Failed to parse booley.toml: %s (using defaults)", e)
     _agent_settings = settings

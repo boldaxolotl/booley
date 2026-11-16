@@ -33,7 +33,6 @@ from booley.flows.endpoint_report_criteria import ReportCriteria
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
-    AcceptanceRecordingError,
     EvidenceDiscarded,
     FlowExecutionAdapter,
     StandaloneFlowExecution,
@@ -420,9 +419,7 @@ class EndpointState(ABC):
 
         Only a Flow Job holding its own Memory Reservation: not a dry run, not a
         child under its parent's claim, not a Specialist or a tool. A companion
-        claim is never requeued. A Job bound to a Goal is never requeued either,
-        so its Goal evidence and Simulation Record registrations come from its
-        only attempt; the exclusion ends when Goal Mode is deleted (#3511).
+        claim is never requeued.
         """
         if self.endpoint_kind != "flow" or not isinstance(
             admission, endpoint_admission.AdmissionContext
@@ -431,14 +428,8 @@ class EndpointState(ABC):
         token = admission.outer_token
         if not isinstance(token, job_slots.SlotToken) or token.job_class != job_slots.CLASS_MEMORY:
             return False
-        if token.memory is not None and token.memory.companion:
-            return (
-                False  # a coordinator that came back run-alone would never run beside Specialists
-            )
-        try:
-            return not self._acceptance_recorder.acceptance_identity()
-        except AcceptanceRecordingError:
-            return False  # the identity cannot be read: treat the Job as bound to a Goal
+        # a companion coordinator that came back run-alone would never run beside Specialists
+        return token.memory is None or not token.memory.companion
 
     def begin_requeued_attempt(self) -> None:
         """Mark the stdout the killed attempt wrote and start the next attempt's report afresh.
@@ -545,9 +536,6 @@ class EndpointState(ABC):
         Specialists and the Mutation Flow override it with a companion claim.
         """
         return measure_memory_claim(project, requests)
-
-    def _acquire_job_slot(self) -> tuple[job_slots.SlotStore | None, object | None]:
-        return endpoint_admission._acquire_job_slot(self)
 
     def _resolve_display_config(self) -> str | None:
         return endpoint_reporting._resolve_display_config(self)

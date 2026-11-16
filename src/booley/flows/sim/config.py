@@ -34,7 +34,7 @@ def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
     """Return the configured Simulation Flow section, or an empty mapping."""
     from booley.runtime.shared_infra import _load_rtl_config
 
-    config = _load_rtl_config(work_dir)
+    config = _load_rtl_config(None if work_dir is None else Path(work_dir))
     if not config:
         return {}
     flows = config.get("flows", {})
@@ -153,7 +153,17 @@ def resolve_pre_sim_commands(work_dir: Path | str | None = None) -> list[str]:
 
 
 def resolve_pre_sim_build_access(work_dir: Path | str | None = None) -> str:
-    """Return the workload-identifying Pre-Sim build-access contract."""
+    """Return the workload-identifying Pre-Sim build-access contract.
+
+    ``immutable`` (default) runs Pre-Sim Commands after the build and checks they
+    did not change build inputs; a hook that cannot start or does change them is
+    an integrity error (exit 2). ``legacy-per-test`` runs them before a private
+    per-test build; native coverage refuses it. A hook that fails or times out
+    becomes that test's ``elab_error`` and can never produce a pass.
+    ``TargetHandle.project_root`` stays authoritative: registry fields and
+    ``[flows.sim]`` load from each run's own checkout, so a baseline checkout is
+    judged by its own configuration.
+    """
     value = _sim_config(work_dir).get("pre_sim_build_access", "immutable")
     if value not in {"immutable", "legacy-per-test"}:
         raise ValueError(

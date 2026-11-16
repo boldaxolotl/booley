@@ -1,334 +1,119 @@
 # Generate Mutants deterministically in a Mutation Flow
 
-Status: accepted (2026-11-07 triage of
-[#2856](https://github.com/boldaxolotl/booley/issues/2856))
+Status: accepted
 
-For mutation testing only, supersedes the `mutation_tester` key of the
-`[models]` table in
-[ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md)
-and the `mutation_tester` Specialist form with its **Start fresh** option in
-[ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md).
+For mutation testing only, this replaces the `mutation_tester` model setting of
+[ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md).
 
 ## Context
 
-Today the Mutation Tester is an LLM Specialist. A model proposes each mutation
-as an exact text replacement; Booley applies it, builds, simulates, classifies
-the result, and stores it in a mutation lock keyed on the scope files' hashes.
-Booley gives the model only a prose guide to mutation categories
-(`src/booley/data/refs/rtl-mutation-testing.md`); it ships no executable mutation operators.
-Two runs on the same RTL can pick different mutations, so scores are not
-reproducible or comparable across runs, and every run costs model tokens. The
-roadmap called this design temporary. #2856 surveyed existing tools and
-proposed a deterministic generator; its triage settled the decisions below.
+Mutation testing used to be an LLM Specialist: a model proposed each mutation as
+a text replacement, and a lock stored the result. Two runs on the same RTL could
+pick different mutations, so scores were not reproducible or comparable, and
+every run cost model tokens. Booley now owns a rule-based generator and runs
+mutation testing as a Booley Flow, `booley flow mutation`, with no model and no
+agent CLI. The `mutation_score_<target>` criterion keeps its name.
 
 ## Decision
 
-- **Rule-based generator.** A Booley-owned, rule-based Mutant generator
-  replaces the LLM creator. Applying, building, simulating, and classifying
-  Mutants stay as they are.
-- **Parser.** pyslang parses Verilog and SystemVerilog, inside the Sandbox
-  only. VHDL is out of scope.
-- **Fixed v1 Mutation Operator table**, not configurable by Projects:
-  1. relational and equality operator swap;
-  2. arithmetic, bitwise, and logical operator swap;
-  3. condition negation or forcing;
-  4. constant and reset-value change;
-  5. bit-select or slice off by one;
-  6. deletion of an assignment or a `case` item.
+### Generation
+
+- **Rule-based, parser-backed.** pyslang parses Verilog and SystemVerilog
+  inside the Sandbox. VHDL is out of scope. Regex injection is rejected: text
+  matching cannot tell an operator from a comment or a string, nor give the
+  source span a stable ID needs.
+- **A fixed Mutation Operator table, not configurable by Projects**, so scores
+  stay comparable across Projects and runs. The operators are: relational and
+  equality swap; arithmetic, bitwise, and logical swap; condition negation or
+  forcing; constant and reset-value change; bit-select or slice off by one;
+  deletion of an assignment or a `case` item. The blocking/nonblocking swap is
+  not an operator: its Mutants are mostly equivalent or racy.
+- **Sites a Mutant must not reach.** No change may keep a loop from ending: the
+  swap operators skip a loop's stop condition and writes to variables it reads,
+  and nothing else mutates inside an unbounded loop or a `case` label. Forcing
+  a loop condition to false stays allowed. Bit-select moves and deletions never
+  apply in a module or interface port connection.
+- **Facts come from the Target's own elaboration.** The generator elaborates all
+  of the Target's HDL files as one compilation unit, with the Target's tops,
+  parameter overrides, defines, simulator macros and include directories, so
+  literal widths, enum members, signed shifts and equal-result swaps are judged
+  as the build sees them. Testbench files are context and are never mutated.
+  When the Target cannot be elaborated as a whole, each scope file is
+  elaborated alone, and the run records and reports why. A unit the Target does
+  not instantiate is elaborated alone with default parameters, and any swap
+  whose result depends on a width stays, because another file might elaborate
+  the unit differently.
+- **Equivalent Mutants are dropped where they can be proven so cheaply.** The
+  generator yields no `+`/`-` swap whose two results are equal at the
+  expression's width. After a build on a Verilator Target, a Mutant whose
+  generated C++ equals the baseline's (apart from where its private source copy
+  lives) is dropped as equivalent. The check may miss an equivalent Mutant and
+  never drops another one. There is no SAT equivalence filter and there are no
+  waivers: the pass threshold absorbs the rest.
+- **A Mutant that does not build is replaced**, on every Target, like an
+  equivalent one. Replacement walks the candidates in selection order, so kept
+  Mutants stay numbered 1 to the count without gaps. The run stops replacing
+  once as many candidates have failed to build as `--count`, so a Target that
+  builds no Mutant cannot walk the whole list. Shortfalls are reported with one
+  text, and a run that keeps no Mutant ends with an error. The report never
+  lists equivalent drops; it counts build failures; the result detail lists
+  the IDs of both.
+
+### Identity and selection
+
 - **Stable Mutant IDs.** A Mutant's ID is a content hash of its operator, file,
-  source span, and original text, so IDs do not depend on other Mutants or on
-  edits to other files. How the span is expressed, so that edits elsewhere in
-  the same file move it as little as possible, is left to
-  [#2933](https://github.com/boldaxolotl/booley/issues/2933).
-- **Selection.** Candidates are ranked by a hash of (seed, Mutant ID) and taken
-  round-robin across operators until the count is reached. `--count N|auto`
-  keeps today's default (10) and auto formula,
-  `clamp(round(sqrt(source lines)), 3, 25)`. Today `auto` is also capped at
-  `max(3, Specialist timeout // 150)`; a Flow has no Specialist timeout, so
-  [#2935](https://github.com/boldaxolotl/booley/issues/2935) decides that cap's
-  basis. The default seed is 0; `--seed` overrides it.
-- **Default scope.** The Target's own RTL, excluding testbench, vendored, and
+  position inside its enclosing design unit, original text and replacement, so
+  it depends neither on other Mutants nor on edits elsewhere in the file.
+- **Selection is hash ranking, round-robin across operators.** Candidates are
+  ranked by a hash of (seed, Mutant ID) and taken one operator at a time until
+  the count is reached. Sorting by position and sampling with a seeded RNG was
+  rejected: adding or removing any candidate shifts every later pick, while
+  hash ranking leaves the other Mutants' ranks unchanged. The default seed is
+  0.
+- **Count.** `--count N|auto`, default 10. `auto` is
+  `clamp(round(sqrt(source lines)), 3, 25)`, capped at `max(3, Flow timeout //
+  150 s)` so the run fits the Flow's time budget.
+- **Default scope** is the Target's own RTL, excluding testbench, vendored, and
   generated files.
-- **Pass threshold.** By default `ceil(0.8 × count)` Mutants must be detected
-  (today's default is all of them), to absorb equivalent Mutants. An explicit
-  `min_detected` integer overrides it. There are no waivers and no SAT
-  equivalence filter; the report notes that some surviving Mutants may be
-  equivalent.
-- **Timeout.** Per test, `max(10 × baseline duration, 30 s)`, capped at 300 s.
-  A timeout counts as detected and is reported separately as "detected
-  (timeout)".
-- **Reproducibility identity.** Every result and its criterion detail record
-  the scope files' hashes, the generator version, the pyslang version, the
-  seed, and the count. The Result Cache may key Mutation Flow results on this
-  identity plus the tests' fingerprint; that needs its own triage
-  ([#2937](https://github.com/boldaxolotl/booley/issues/2937)). The scope of
-  [ADR 0076](0076-reuse-results-at-committed-states-through-a-project-result-cache.md)
-  (proposed; graded `sim`, `synth`, and `fpga` passes) does not cover Mutation
-  Flow results until #2937 amends it.
-- **Removed with no deprecation release.** The LLM creator with its prompt and
-  category guide, its steering (`--steer`), the `detectability_argument`, the
-  `mutation_tester` model setting, and the mutation lock with `--regen-lock`
-  and warm reuse. Generation is a pure function of its inputs, so there is
-  nothing to lock.
-- **A Booley Flow, not a Specialist.** The Mutation Tester becomes the Booley
-  Flow `booley flow mutation`. The `mutation_score_<target>` criterion keeps
-  its name. As a Flow it takes no Specialist-only inputs (`--instruction`, a
-  model, a transcript).
+- **Reproducibility identity.** Every result records the scope files' hashes,
+  the generator version, the pyslang version, the seed and the count, and on
+  Verilator Targets the Verilator version, because it changes which Mutants are
+  dropped. The generator version changes whenever the operator table, site
+  rules, ID recipe or selection rule changes: the same inputs give the same
+  Mutants only for the same version. Target build options stay outside the
+  identity, as the scope hashes leave them out.
+
+### Verdicts
+
+- **Pass threshold.** By default `ceil(0.8 x Mutants scored)` must be detected,
+  which equals 80 % of `--count` whenever `--count` Mutants were kept. The 80 %
+  absorbs equivalent Mutants that the filters above miss. An explicit
+  `--min-detected` is never changed, and the report notes that surviving
+  Mutants may be equivalent.
+- **Timeout.** Per test, `max(10 x baseline duration, 30 s)`, capped at 300 s,
+  because the flow has no simulation-cycle limit to count. A timeout counts as
+  detected and is reported separately as "detected (timeout)". An inconclusive
+  verdict ends the run with an infrastructure error instead of scoring.
 
 ## Rejected alternatives
 
-- **YosysHQ MCY / Yosys `mutate`.** It mutates the synthesized netlist, so
-  tests run on a netlist (slower, with different X and initialization
-  behavior) and Mutants map poorly to source lines. Its Mutant list reshuffles
-  after any RTL edit or Yosys upgrade, even with the same seed. Its runner and
-  database duplicate Booley's.
-- **AVL `avl-mutation-testing`.** Its position-based IDs renumber on any edit.
-  It owns a cocotb + Verilator + `make` flow, while Booley also supports Icarus
-  and classic Targets. It is very young. Its operator list is kept as a
-  reference; vendoring its code was also rejected.
-- **Regex-based injectors.** Text matching has no syntax awareness: it cannot
-  tell an operator from a comment or a string, nor give the source span a
-  stable ID rests on. The surveyed ones were hobby projects.
-- **Other tools surveyed in #2856** (rtl-buddy-xeno, GateTruth, Verismith, IBM
-  Chiffre) were judged there immature, research-only, or fault injection
-  rather than mutation scoring. #2856 found Synopsys Certitude to be the only
-  commercial testbench mutation tool; it serves only as a feature benchmark.
-- **Blocking/nonblocking assignment swap operator.** Its Mutants are mostly
-  equivalent or racy.
-- **Project-configurable operators.** A fixed table keeps scores comparable
-  across Projects and runs.
-- **Sorting candidates by (file, offset, operator) and sampling with a seeded
-  `random.Random`** (the #2856 proposal). Adding or removing any candidate
-  shifts every later pick; ranking by hash(seed, ID) leaves the other Mutants'
-  ranks unchanged.
-- **SAT equivalence filter (bounded Yosys miter) and per-Mutant waivers.** The
-  80 % default threshold absorbs equivalent Mutants without new machinery or a
-  waiver workflow.
-- **Timeouts counted in simulation cycles.** The flow has no cycle limit
-  available; today's timeout is a fixed 300 s wall clock.
-- **Keeping the LLM creator behind a flag for one release.** Two generators to
-  maintain, and the LLM's results are not reproducible.
+- **YosysHQ MCY / Yosys `mutate`.** It mutates the synthesized netlist, so tests
+  run on a netlist (slower, with different X and initialization behavior) and
+  Mutants map poorly to source lines. Its Mutant list reshuffles after any RTL
+  edit or Yosys upgrade, even with the same seed, and its runner duplicates
+  Booley's.
+- **AVL `avl-mutation-testing`.** Its position-based IDs renumber on any edit,
+  and it owns a cocotb + Verilator flow while Booley also supports Icarus and
+  classic Targets. Its operator list stays a reference; vendoring it was
+  rejected.
+- **Keeping the LLM creator behind a flag.** Two generators to maintain, and the
+  LLM's results are not reproducible. Its steering, mutation lock and model
+  setting were removed without a deprecation release; generation is a pure
+  function of its inputs, so there is nothing to lock.
+- **Per-Mutant waivers and a bounded SAT equivalence filter.** The 80 %
+  threshold needs no new machinery or waiver workflow.
 
 ## Consequences
 
-- Mutation scores are reproducible and cost no model tokens.
-- Existing mutation locks are discarded.
-- Specialist Source Isolation no longer concerns mutation testing: no LLM reads
-  the sources.
-- A Project that still sets `[models] mutation_tester` must remove that key;
-  #2935 decides how loading reports it.
-- The default pass threshold loosens from all Mutants to 80 %. Goal Mode's
-  `mutation` Goal family (`scope`, `min_detected`, `total`, `auto`) is
-  affected too: a Goal without `min_detected` moves from all to 80 %, and how
-  its fields map onto the Flow's count and seed, and whether Flow evidence
-  satisfies it, is decided with the switch-over (#2935).
-- QA mission areas that check the mutation lock are rewritten
-  ([#2938](https://github.com/boldaxolotl/booley/issues/2938)).
-- Delivery order:
-  [#2933](https://github.com/boldaxolotl/booley/issues/2933) (generator core,
-  operators 1-3, pyslang),
-  [#2934](https://github.com/boldaxolotl/booley/issues/2934) (operators 4-6),
-  #2935 (switch-over),
-  [#2936](https://github.com/boldaxolotl/booley/issues/2936) (rename to
-  `booley flow mutation`), #2937 (Result Cache), #2938 (QA mission). User docs
-  change as each piece ships.
-
-## Amendments (2026-11-13)
-
-Recorded while implementing
-[#3626](https://github.com/boldaxolotl/booley/issues/3626).
-
-The operator names, their order, the selection rule, and the Mutant ID recipe
-are unchanged; every Mutant of generator version 2 keeps its ID and text. The
-generator version is 3. What each operator now includes:
-
-1. relational and equality operator swap (unchanged);
-2. arithmetic, bitwise, and logical operator swap, plus removal of unary `~`,
-   `-`, and `!` (`!x` becomes `x != 0`, one bit wide); a reduction swap;
-   dropping one operand of `&&`, `||`, `&`, and `|` by putting the operator's
-   neutral value there, never for an operand that calls a function or changes
-   a variable; `>>` and `>>>` exchanged where the shifted operand is signed;
-   `$signed` and `signed'()` turned unsigned;
-3. condition negation or forcing (unchanged);
-4. constant and reset-value change, plus an enum member replaced by the
-   previous or next member of an enum declared in the same file, and numeric
-   literals in the initializers of module-level variables (including those in generate blocks);
-5. bit-select or slice off by one, plus the swap of two neighbouring
-   concatenation operands;
-6. deletion of an assignment or a `case` item (unchanged).
-
-Two kinds of site become reachable by every mutation above and by the swaps,
-conditions, and constants: the arguments of `$signed` and `$unsigned`, and the
-expressions in the port connections of module and interface instances.
-Bit-select moves and deletions never apply in a connection. A connection that
-is a bare name, and a parameter override, a gate primitive, a `bind` directive,
-a checker instance, or a program instance, yield no site. No new mutation applies inside a `while`,
-`do`-`while`, `forever`, procedural `for`, or a `case` label.
-
-## Amendments (2026-11-13, #3635)
-
-Recorded while implementing
-[#3635](https://github.com/boldaxolotl/booley/issues/3635). "There are no
-waivers and no SAT equivalence filter" still holds. Two checks now keep
-provably equivalent Mutants from counting against the threshold.
-
-**Build-identity check, on Targets simulated with Verilator only.** After a
-Mutant builds, the C++ Verilator generated for it is compared with the C++
-generated for the baseline. Only the generated `.cpp` and `.h` files are
-compared, by relative path and content, never object code, dependency or
-makefile output, or simulation output. The one difference that is ignored is
-where the Mutant's private source copy lives: every spelling of that directory
-(absolute, resolved, and relative to the Project Root) is replaced by one
-token before the comparison. This matters because a design that calls `$error`
-or `$stop` carries the absolute path of its sources into the C++. Any other
-difference keeps the Mutant, so the check may miss an equivalent Mutant and
-never drops another one. A build whose layout is not Verilator's (no
-`*__ver.d` in its root) is not compared.
-
-- A Mutant that matches is not tested or scored, and its build directory is
-  removed. Candidates are taken in the selection order, so the next one takes
-  its number and build directory; the kept Mutants are numbered 1 to the count
-  without gaps. When the candidates run out, the run scores the Mutants it has
-  and reports the shortfall with the same text as a generator shortfall (the
-  report must not mention what was dropped; for build failures it states their count, per the 2026-11-14 amendment); an unset `--min-detected` follows
-  the number scored.
-- A Mutant that does not build stays `invalid` and is not replaced (superseded by the 2026-11-14 amendment, #4031).
-- The report and `mutation-results.md` never list a dropped Mutant. The
-  Record's detail lists their IDs, in drop order, under `equivalent_dropped`
-  (an empty list when none were dropped or the Target is not simulated with
-  Verilator).
-- On a Target that is not simulated with Verilator, such as Icarus, no
-  comparison runs and every selected Mutant is simulated.
-
-**Reproducibility identity.** The identity gains the Verilator version (the
-first line of `verilator --version`, read in the baseline build's own
-environment, `unknown` if it cannot be read), on Verilator Targets only, so
-two runs that differ only in that version do not have the same identity. The
-Result Cache keys Mutation Flow results on this identity once #2937 builds
-that; nothing caches Mutation Flow results today. Target build options (the
-`.core`'s defines, tool options and flags) stay outside the identity, as the
-scope hashes already leave them out; a change to them can change which
-Mutants are dropped, so the same Mutants are guaranteed only for the same
-Verilator version and the same build settings.
-
-**Generator filter.** The `+`/`-` swap of the `arithmetic-logical` operator
-yields no Mutant where both results are equal at the width the parser reports
-for the expression: the width is 1, or the right operand is a known constant
-`c` with `2c` a multiple of `2` to the power of the width. An expression whose
-width the parser does not report keeps its Mutant. The file is elaborated
-alone, so a module that another file instantiates with a parameter override,
-or reaches through an interface port, is elaborated here with defaults and
-another width elsewhere: the swap is kept in any top-level unit that declares
-a parameter (any form but `localparam`, with or without the keyword in a port
-list) or a type parameter, or has an interface port or a port of a named type
-(a bare interface name is one). A width set by a
-macro defined only in another file that is not included is the known blind
-spot, the same single-file limit the select-range facts have; it can drop a
-Mutant that is not equivalent in the full design. Every other Mutant keeps its
-ID. The generator version is 4: the same inputs give the same Mutants only for
-the same version.
-
-## Amendments (2026-11-13, #3925)
-
-Recorded while implementing
-[#3925](https://github.com/boldaxolotl/booley/issues/3925).
-
-The `relational` and `arithmetic-logical` operator swaps skip a loop's
-condition (a `for` stop expression, a `while` or `do`-`while` condition) and any
-assignment inside the loop to a variable that condition reads, because a
-swapped stop condition or loop counter can keep the loop from ending. The rule
-is syntactic: a write through a temporary is not traced. The `condition`
-operator still forces a loop condition to `1'b0`. Eleven Mutant IDs recorded at
-generator version 2 are no longer produced (the swaps of five `for` stop
-expressions, two `while` conditions, one `do`-`while` condition, and three
-loop-variable updates in the fixtures); every other Mutant keeps its ID. The
-generator version is 5.
-
-## Amendments (2026-11-14, #3934)
-
-**Unsized plus one.** The `constant` operator gave an unsized literal only values
-that fit the literal's own bit length, so `1`, `3` and `7` never got their plus-one
-Mutant. It now also allows values that fit the narrowest width the literal's value
-is used at, as the file's elaboration reports it. An unsized literal elaborates as a
-32-bit `int` and widens its whole context, so the expression's own width is no
-guide.
-
-The width is the minimum of:
-
-- the literal's own width;
-- the width of every narrowing conversion above it, implicit or an explicit cast,
-  for the operands the context sizes (not a shift amount, a selector, a comparison
-  or logical operand, or a function argument);
-- for the operands of a context-determined binary operator, the width of the other
-  operand.
-
-So `flag <= 1` on a 1-bit `flag` stays `1 -> 0`, and `a == 255` on an 8-bit `a`
-gains no `256`. A literal in a connection to a module defined in another file is not
-elaborated and keeps the bit-length rule. Only plus-one Mutants are added: every
-Mutant of version 5 keeps its ID and text.
-
-Unlike the `+`/`-` swap filter, a unit that another file may elaborate with other
-parameters is trusted here with its default elaboration. An override that narrows
-the width can give a Mutant that repeats another variant there, or one that fails to
-build and is replaced by the next candidate (#4031). The generator version is 6.
-
-## Amendments (2026-11-14, #4031)
-
-**Build failures are replaced.** A candidate whose build fails is dropped like an
-equivalent one, on every Target: the next candidate takes its number and build
-directory, so the kept Mutants stay numbered 1..N. Both drop kinds share one pick
-order, and the run walks the candidates until `--count` Mutants are kept or none are
-left. The `invalid` status is gone: a Mutant that is scored always built.
-
-**Cap.** The run stops replacing once `--count` candidates have failed to build,
-so a Target that builds no Mutant cannot walk the whole candidate list. Equivalent
-drops do not count toward the cap. The kept Mutants are then scored and the report
-states the shortfall with the usual text. When none is kept the run ends with the
-no-scorable-Mutants `ERROR`.
-
-**Threshold base.** An unset `--min-detected` is 80 % of the Mutants scored,
-rounded up, which equals 80 % of `--count` whenever the run kept `--count` Mutants.
-An explicit `--min-detected` is never changed.
-
-**Result.** The result detail lists the IDs of the dropped build failures, in drop
-order, in `invalid_dropped`, beside `equivalent_dropped`; it has no `invalid` count.
-`total_valid` equals `total_scored`. The report states how many candidates did not
-build and were replaced, only when that count is not zero. A Mutant whose verdict is
-inconclusive still ends the run with an infrastructure `ERROR`; its `classified`
-status is `inconclusive`.
-
-**Generator version.** Not bumped, so it stays 6. The version names the generator's
-candidate output, which this change leaves as it was; which candidates are scored
-already depended on build results once equivalent Mutants were dropped (#3635).
-
-## Amendments (2026-11-14, #4009)
-
-**Facts from the Target's elaboration.** The generator elaborated each scope file
-alone, so a module's parameters were its defaults and another file's modules, types and
-enums were unknown. It now elaborates the whole Target as one compilation unit: every
-HDL file in Target order (the testbench's too, as context that is never mutated), with
-the Target's top modules and `vlogparam` overrides, its defines, the macros its simulator
-defines itself (`VERILATOR`, `__ICARUS__`) and its include directories in Target order, so
-a macro one file defines reaches the next and each `ifdef` and `include` resolves as in the
-build. The per-file rules keep their own include order. The facts it reads (literal select bounds, signed right
-shifts, enum members, equal `+`/`-` swaps, unsized literal widths) come from that
-elaboration. Aggregation over several instances is unchanged: a swap is dropped only
-when it is equal in every instance, and a plus-one must fit the narrowest instance.
-
-**The parameter and interface guard.** `_overridable` keeps a `+`/`-` swap in a unit
-with a parameter, an interface port or a named-type port because another file might
-elaborate it differently. A unit the Target instantiates now trusts the Target's facts.
-A unit the Target never instantiates (slang does not bind its body) is elaborated
-alone as a top with default parameters, and keeps the guard. This supersedes "The file
-is elaborated alone, so ..." in the generator filter and "Unlike the `+`/`-` swap
-filter, a unit that another file may elaborate ..." in the #3934 amendment.
-
-**Fallback.** A context file that cannot be read, a parser error, any error diagnostic
-of the compilation, or a Target that cannot be inspected makes the Target not
-elaborable as a whole. Each scope file then goes through the per-file rules, and the
-run says why: the identity records `elaboration` as `target`, or `per-file` with
-`elaboration_fallback`, and the report, `mutation-results.md` and the progress line
-name the first error.
-
-The Mutant ID recipe is unchanged, so a candidate both rules find keeps its ID. The
-candidate set changes, so the generator version is 7.
+- Mutation scores are reproducible and cost no model tokens. Specialist Source
+  Isolation does not concern mutation testing: no LLM reads the sources.

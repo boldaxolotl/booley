@@ -117,9 +117,7 @@ def test_unbound_job_handle_registers_in_main(worktree, monkeypatch):
     monkeypatch.setattr(
         job_lifecycle, "register_job", lambda project, *_args, **_kw: registered.append(project)
     )
-    context = SimpleNamespace(
-        work_dir=None, binding=None, explicit_work_dir=None, session_key="pid:k"
-    )
+    context = SimpleNamespace(work_dir=None, explicit_work_dir=None, session_key="pid:k")
     record = job_records.JobRecord("run-1", "sim", rfc3339_from_epoch(1_800_000_000.0), 60)
     job_lifecycle.JobLifecycle._stamp_context(record, context)
     assert registered == [main]
@@ -157,49 +155,17 @@ def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
     assert reserved == [main]
 
 
-def test_admission_caps_come_from_the_slot_store_project(worktree, monkeypatch):
-    from booley.flows import endpoint_admission
-    from booley.runtime import job_slots
-
-    main, tree = worktree
-    (main / "booley.toml").write_text("[jobs]\nmax_light = 3\n", encoding="utf-8")
-    (tree / ".booley/booley.toml").write_text("[jobs]\nmax_light = 7\n", encoding="utf-8")
-    claimed: list[tuple[Path, int]] = []
-
-    class SpyStore:
-        def __init__(self, root: Path, caps: job_slots.SlotCaps) -> None:
-            claimed.append((root, caps.max_light))
-
-        def acquire(self, *_args, **_kwargs) -> str:
-            return "token"
-
-    monkeypatch.setattr(job_slots, "SlotStore", SpyStore)
-    endpoint = SimpleNamespace(name="sim", _resolve_job_class=lambda: "light")
-    monkeypatch.delenv(job_slots.INHERITED_SLOT_ENV, raising=False)
-    endpoint_admission._acquire_job_slot(endpoint)
-    assert claimed == [(main / "runtime" / "jobs" / "slots", 3)]
-
-
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
     from booley.harness import doctor
-    from booley.harness.dashboard import doctor as dashboard_doctor
 
     main, tree = worktree
-    presence: list[Path] = []
     handle_maps: list[Path] = []
     monkeypatch.setattr(
-        dashboard_doctor,
-        "inspect_presence",
-        lambda _root, directory, **_kw: (
-            presence.append(directory) or SimpleNamespace(unavailable="", warnings=[])
-        ),
+        doctor, "_check_handle_map_size", lambda d, _root, _warn: handle_maps.append(d)
     )
-    monkeypatch.setattr(doctor, "_check_handle_map_size", lambda d, _warn: handle_maps.append(d))
-    doctor._check_goal_presence(tree, tree / ".booley", doctor._Reporter.create())
     for name in (
         "_check_ticket_leftovers",
         "_check_project_gitignore",
-        "_check_goal_history_ignored",
         "_check_project_trackability",
         "_check_git_state",
         "_check_repo_footprint",
@@ -213,7 +179,6 @@ def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
     reporter = doctor._Reporter.create()
     reporter.agent_check_enabled = lambda _name: False
     doctor._run_project_checks(project, reporter)
-    assert presence == [main]
     assert handle_maps == [main]
 
 

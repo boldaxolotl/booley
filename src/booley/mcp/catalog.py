@@ -6,7 +6,6 @@ import logging
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +18,7 @@ POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
     "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation / "
-    "coverage_analyst) that were started in the background. When such an endpoint takes "
+    "coverage_analyst / measure) that were started in the background. When such an endpoint takes "
     "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
     "several Jobs running, call with no run_id: it returns the full result of the first of "
     "your Jobs to finish (or one that finished but whose result you have not read), lists "
@@ -201,7 +200,7 @@ def _report_mcp_tool_def() -> dict[str, Any]:
             "properties": {
                 "work_dir": {
                     "type": "string",
-                    "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
+                    "description": "Worktree whose reports to fetch. Omit to use the session workspace.",
                 },
                 "endpoint": {
                     "type": "string",
@@ -328,7 +327,7 @@ def _coverage_evidence_tool_def() -> dict[str, Any]:
     return {
         "name": _COVERAGE_EVIDENCE_TOOL_NAME,
         "description": (
-            "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
+            "Query bounded, read-only evidence from the validated Coverage Record bound to this "
             "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' to page "
             "through RTL sources with no native records, and view='points' for filtered exact "
             "Coverage Points and view='source' for verified excerpts associated with previously "
@@ -441,6 +440,19 @@ def status_visible(exposure: Exposure) -> bool:
     return _interactive_utility_visible(_STATUS_MCP_TOOL_NAME, exposure)
 
 
+def measure_visible(exposure: Exposure) -> bool:
+    """The Developer Agent's interactive server, or one naming ``booley_measure``."""
+    from booley.mcp.measure_tool import MEASURE_TOOL_NAME
+
+    return _interactive_utility_visible(MEASURE_TOOL_NAME, exposure)
+
+
+def _measure_mcp_tool_def() -> dict[str, Any]:
+    from booley.mcp.measure_tool import measure_tool_def
+
+    return measure_tool_def()
+
+
 def report_visible(exposure: Exposure) -> bool:
     return _interactive_utility_visible(_REPORT_MCP_TOOL_NAME, exposure)
 
@@ -453,10 +465,6 @@ def _interactive_utility_visible(name: str, exposure: Exposure) -> bool:
 
 def utilities_visible(exposure: Exposure) -> bool:
     return not exposure.coverage_record
-
-
-def goals_visible(exposure: Exposure) -> bool:
-    return exposure.interactive and exposure.nested is None
 
 
 def coverage_visible(exposure: Exposure) -> bool:
@@ -490,8 +498,6 @@ def visible_definitions(
     exposure: Exposure, endpoint_definitions: Sequence[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Assemble supplemental tools with already-filtered endpoints, preserving objects."""
-    from booley.mcp.goal_tools import goal_tool_defs
-
     definitions = [
         *endpoint_definitions,
         *(tool for tool in _BWAVE_MCP_TOOLS if tool_visible(tool["name"], exposure)),
@@ -499,6 +505,7 @@ def visible_definitions(
     for visible, builder in (
         (status_visible(exposure), _status_mcp_tool_def),
         (report_visible(exposure), _report_mcp_tool_def),
+        (measure_visible(exposure), _measure_mcp_tool_def),
         (utilities_visible(exposure), _poll_mcp_tool_def),
         (utilities_visible(exposure), _cancel_mcp_tool_def),
         (utilities_visible(exposure), _targets_mcp_tool_def),
@@ -507,42 +514,4 @@ def visible_definitions(
     ):
         if visible:
             definitions.append(builder())
-    if goals_visible(exposure):
-        definitions.extend(goal_tool_defs())
     return sorted(definitions, key=lambda item: item["name"])
-
-
-def _default_interactive_definitions() -> list[dict[str, Any]]:
-    from booley.mcp.goal_tools import GOAL_TOOL_NAMES
-    from booley.mcp.registry import discover_mcp_tools
-
-    endpoints, errors = discover_builtin_definitions(discover_mcp_tools(), Exposure())
-    if errors:
-        raise RuntimeError("Interactive builtin discovery incomplete: " + "; ".join(errors))
-    return [
-        {**tool, "is_goal": True} if tool["name"] in GOAL_TOOL_NAMES else tool
-        for tool in visible_definitions(Exposure(), endpoints)
-    ]
-
-
-def partition_work_dir(
-    definitions: Sequence[dict[str, Any]],
-) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """Classify actual schemas, rejecting configurable endpoints that break the category rule."""
-    accepting, nonaccepting = [], []
-    for definition in sorted(definitions, key=lambda item: item["name"]):
-        accepts = "work_dir" in definition["schema"].get("properties", {})
-        if definition.get("module") and not accepts:
-            raise ValueError(
-                f"Configurable endpoint {definition['name']} lacks work_dir in its schema"
-            )
-        (accepting if accepts else nonaccepting).append(definition)
-    return tuple(accepting), tuple(nonaccepting)
-
-
-@cache
-def work_dir_guidance() -> str:
-    """Compose Goal routing text from the installed default Interactive schemas."""
-    from booley.goals.rules import work_dir_guidance as render_guidance
-
-    return render_guidance(partition_work_dir(_default_interactive_definitions()))

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.sim.config import parse_run_cwd_template
-from booley.flows.sim.record.bundle import authenticate_bundle_artifacts
+from booley.flows.sim.record.bundle import verify_bundle_in_place
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
     canonical_json_bytes,
@@ -20,10 +20,9 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
 from booley.flows.sim.record.inspection import (
-    inspect_retained_simulation_record,
     read_durable_results,
-    recover_retained_simulation_record_resources,
 )
+from booley.flows.sim.record.model import BundleBuildResult
 from booley.flows.sim.record.planning import manifest_digest
 from tests.flows.sim.simulation_record_test_support import (
     _completed,
@@ -107,7 +106,7 @@ def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path:
     bundle = decode_simulator_bundle(canonical_json_bytes(document))
 
     with pytest.raises(SimulationRecordIntegrityError, match="contained"):
-        authenticate_bundle_artifacts(bundle, bundle_root)
+        verify_bundle_in_place(bundle, BundleBuildResult({}), bundle_root)
 
 
 @pytest.mark.parametrize(
@@ -117,7 +116,6 @@ def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path:
         "shared_failure_text",
         "shared_failure_detail",
         "ordinal",
-        "run_directory",
         "ready_bundle",
         "bundle_path",
         "build_state",
@@ -154,17 +152,6 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
         _write(attempt_path, _read(attempt_path) | {"attempt_ordinal": "1"})
         with pytest.raises(SimulationRecordIntegrityError):
             store.scan()
-    elif case == "run_directory":
-        attempt_path = completed.attempt_dir / "attempt.json"
-        _write(attempt_path, _read(attempt_path) | {"run_directory": "x"})
-        result_path = store.work_item_directory(completed.item_id) / "result.json"
-        result_path.chmod(0o600)
-        result_path.unlink()
-        status = inspect_retained_simulation_record(store.manifest_path)
-        assert status.interrupted == (completed.item_id,)
-        for project_data in (None, tmp_path / "project"):
-            with pytest.raises(SimulationRecordIntegrityError):
-                recover_retained_simulation_record_resources(status, project_data)
     else:
         if case == "ready_bundle":
             build_result["bundle"] = None
@@ -220,22 +207,14 @@ def _refuse_malformed_result(root: Path, case: str) -> None:
         del result["observations"][0]["execution"]
     elif case == "observation_enum":
         result["observations"][0]["assertions"] = "unknown"
-    elif case == "evidence_path":
-        escape = {"path": "/abs/escape", "bytes": 1, "sha256": "sha256:" + "0" * 64}
-        result["evidence"] = [escape | {"kind": "log", "owner": result["attempt_id"]}]
-    else:
-        result["build_result"]["sharing"] = "shared_variant"
-        result["build_result"]["path"] = "../../escape"
     _write(result_path, result)
     manifest = store.load_manifest()
     digest = manifest_digest(manifest)
     with pytest.raises(SimulationRecordIntegrityError):
         if case == "grade":
             store.regenerate_summary(manifest, digest)
-        elif case.startswith("observation"):
-            read_durable_results(store.manifest_path, digest)
         else:
-            inspect_retained_simulation_record(store.manifest_path)
+            read_durable_results(store.manifest_path, digest)
 
 
 def test_a_malformed_published_result_is_corrupt_storage(tmp_path: Path) -> None:
@@ -244,8 +223,6 @@ def test_a_malformed_published_result_is_corrupt_storage(tmp_path: Path) -> None
         "grade",
         "observation_missing",
         "observation_enum",
-        "evidence_path",
-        "build_path",
     ):
         _refuse_malformed_result(tmp_path / case, case)
 

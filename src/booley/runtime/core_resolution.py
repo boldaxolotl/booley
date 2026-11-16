@@ -35,7 +35,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.fusesoc.fusesoc_registry import FuseSocError
+from booley.fusesoc.fusesoc_registry import FuseSocError, unprovided_dependency_hint
 from booley.runtime import session_runtime
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -45,6 +45,8 @@ __all__ = ["CoreResolutionRequest", "CoreResolutionResult", "inspect_core_resolu
 # Budget for the one Sandbox command that resolves every selected Target.
 _CORE_RESOLVE_TIMEOUT_S = 600
 _VERDICT_MARKER = "[[CORE_RESOLVE_JSON]]"
+# A selector the catalog cannot select has no Target and so no .core to name.
+_GENERIC_HINT = "fix the .core / depends graph"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,26 +84,41 @@ def inspect_core_resolution(request: CoreResolutionRequest) -> CoreResolutionRes
         try:
             refs[selector] = catalog.select(selector)
         except FuseSocError as exc:
-            _report_target(findings, selector, False, str(exc))
+            _report_target(findings, selector, False, str(exc), _GENERIC_HINT)
     if not refs:
         return CoreResolutionResult(findings.report(), ())
-    completed = _execute(request, refs, findings)
+    completed = _execute(request, refs, findings, catalog)
     return CoreResolutionResult(findings.report(), completed)
 
 
-def _report_target(findings: Findings, name: str, ok: bool, err: str) -> None:
-    """Grade one Doctor-selected Target resolution."""
+def _resolution_hint(catalog: TargetCatalog, handle: TargetHandle) -> str:
+    """The fix for a failed Target: name an unprovided ``depend:``, else its ``.core``."""
+    try:
+        missing = catalog.unprovided_dependencies(handle)
+    except FuseSocError:  # a .core changed during the Sandbox run: the generic hint stays true
+        missing = ()
+    if missing:
+        return unprovided_dependency_hint(missing)
+    return f"fix {handle.core_file.name} (declares Target '{handle.name}') or its depends graph"
+
+
+def _report_target(findings: Findings, name: str, ok: bool, err: str, hint: str = "") -> None:
+    """Grade one Doctor-selected Target resolution; *hint* is the FAIL's fix."""
     if ok:
         findings.pass_(f".core Target '{name}' resolves")
         return
-    findings.fail(f".core Target '{name}' fails to resolve", "fix the .core / depends graph")
-    # A failure's excerpt is the evidence the reader needs: shown always.
-    for line in output_excerpt_lines(err):
+    findings.fail(f".core Target '{name}' fails to resolve", hint)
+    # A failure's excerpt is the evidence the reader needs: shown always. The
+    # Sandbox resolver's message already ends with the hint the FAIL shows.
+    for line in output_excerpt_lines(err.removesuffix(f"\n{hint}")):
         findings.detail(line, verbose_only=False)
 
 
 def _execute(
-    request: CoreResolutionRequest, refs: Mapping[str, TargetHandle], findings: Findings
+    request: CoreResolutionRequest,
+    refs: Mapping[str, TargetHandle],
+    findings: Findings,
+    catalog: TargetCatalog,
 ) -> tuple[str, ...]:
     """Run the resolver once in the Sandbox and grade what it printed."""
     payload = json.dumps(_payload(refs), separators=(",", ":"))
@@ -120,11 +137,14 @@ def _execute(
             f".core resolvability could not complete in the Sandbox: {exc}", "check the Sandbox"
         )
         return ()
-    return _grade(proc, refs, findings)
+    return _grade(proc, refs, findings, catalog)
 
 
 def _grade(
-    proc: subprocess.CompletedProcess[str], refs: Mapping[str, TargetHandle], findings: Findings
+    proc: subprocess.CompletedProcess[str],
+    refs: Mapping[str, TargetHandle],
+    findings: Findings,
+    catalog: TargetCatalog,
 ) -> tuple[str, ...]:
     """Require exactly one bounded verdict for every selected Target."""
     line = next(
@@ -147,7 +167,8 @@ def _grade(
             if selector not in refs or selector in seen:
                 raise BoundaryError("invalid Target resolution verdict")
             seen.add(selector)
-            _report_target(findings, selector, ok, str(entry.get("err", "")))
+            hint = "" if ok else _resolution_hint(catalog, refs[selector])
+            _report_target(findings, selector, ok, str(entry.get("err", "")), hint)
         return tuple(sorted(seen))
     except (ValueError, BoundaryError):
         findings.fail(

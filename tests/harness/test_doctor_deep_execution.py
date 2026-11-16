@@ -43,7 +43,7 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
     shutil.copytree(flow_project / ".booley", data)
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, data, target_is_directory=True)
     config = data / "booley.toml"
     config.write_text(
@@ -222,7 +222,7 @@ def _project(root):
     )
 
 
-def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path, monkeypatch):
+def test_disabled_flows_do_not_require_deep_checks(tmp_path, monkeypatch):
     project = _project(tmp_path)
     monkeypatch.setattr(doctor, "_flow_enabled", lambda *_args: False)
     tracker = deep.DeepCheckTracker()
@@ -243,6 +243,7 @@ def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path
 
 def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, monkeypatch):
     project = _project(tmp_path)
+    project.booley_toml = {"flows": {"fpga": {}}}
     monkeypatch.setattr(doctor, "_doctor_targets", lambda *_args: [])
     tracker = deep.DeepCheckTracker()
     reporter = doctor._Reporter.create()
@@ -257,19 +258,22 @@ def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, mo
         completeness=tracker,
     )
     assert "sim.doctor-targets" in tracker.missing
+    assert "fpga.doctor-targets" in tracker.missing
     assert "sim.selftest.good" in tracker.missing
     assert "lint.selftest.bad" in tracker.missing
 
 
-def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monkeypatch):
+@pytest.mark.parametrize("waived", [False, True])
+def test_missing_selftest_fixture_stays_incomplete_waived_or_not(tmp_path, monkeypatch, waived):
     project = _project(tmp_path)
     from booley.audit.doctor_waivers import load_doctor_waivers
 
-    path = project.booley_dir / "doctor-waivers.toml"
-    path.write_text(
-        'version=1\n[[waiver]]\ncheck="flow.fail-path-unvalidated"\n'
-        'reason="Reviewed exclusion"\npermanent=true\n'
-    )
+    if waived:
+        path = project.booley_dir / "doctor-waivers.toml"
+        path.write_text(
+            'version=1\n[[waiver]]\ncheck="flow.fail-path-unvalidated"\n'
+            'reason="Reviewed exclusion"\npermanent=true\n'
+        )
     reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
     tracker = deep.DeepCheckTracker()
     monkeypatch.setattr(doctor, "_flow_enabled", lambda _project, flow: flow == "sim")
@@ -282,9 +286,11 @@ def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monke
         reporter.fail_,
         completeness=tracker,
     )
-    assert reporter.result(0).clean
-    assert reporter.counts["waived"] == 1
+    assert reporter.result(0).clean is waived
+    assert reporter.counts["waived"] == int(waived)
+    assert reporter.counts["warn"] == int(not waived)
     assert tracker.missing == ("sim.selftest.bad", "sim.selftest.good")
+    assert deep.DeepAttemptSummary(tracker.missing, (), IMAGE).complete is False
 
 
 @pytest.mark.parametrize("skip_agents", [False, True])

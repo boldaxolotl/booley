@@ -87,12 +87,12 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_interactive_git",
             "inspect_viewer_bridge",
             "_run_agent_credential_checks",
+            "_check_sandbox_mcp_server",
             "inspect_mcp_server",
         }
     ),
     "_run_project_checks": frozenset(
         {
-            "_check_goal_history_ignored",
             "_check_agent_backend_health",
             "_check_custom_endpoints_and_criteria",
             "_check_disabled_endpoints",
@@ -106,7 +106,6 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_deep_checks": frozenset(
         {
-            "_run_fpga_impl_deep_notice",
             "_run_selftest_checks",
             "_run_flow_check",
         }
@@ -140,7 +139,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_project_data_destination_branch",
             "_check_upgrade_review",
             "_check_legacy_source_stashes",
-            "_check_goal_presence",
+            "_check_goal_leftovers",
             "_check_worktree_booley_pairing",
             "_check_common_state_in_worktrees",
             "_check_worktree_core_shadow_guard",

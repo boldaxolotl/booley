@@ -36,14 +36,14 @@ def test_typed_request_rejects_explicit_empty_test_selection(
 
 def test_tests_file_ignores_comments_and_blanks(tmp_path) -> None:
     selected = tmp_path / "selected.txt"
-    selected.write_text("# campaign\nsmoke\n\nedge\n", encoding="utf-8")
+    selected.write_text("# record\nsmoke\n\nedge\n", encoding="utf-8")
     request = parse_request(SimulateFlow(), ["--target", "sim", "--tests-file", str(selected)])
     assert request.test == ("smoke", "edge")
 
 
 def test_typed_tests_file_uses_the_same_exact_selection(tmp_path) -> None:
     selected = tmp_path / "selected.txt"
-    selected.write_text("# campaign\ntail\n\nquick\n", encoding="utf-8")
+    selected.write_text("# record\ntail\n\nquick\n", encoding="utf-8")
 
     request = SimRequest(target="sim", tests_file=selected)
 

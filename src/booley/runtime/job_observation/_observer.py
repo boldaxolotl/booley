@@ -43,10 +43,15 @@ class JobObserver:
         self._validate_record = validate_record
         self._artifacts = JobArtifactCache(booley_dir)
 
-    def read(self, roots: Sequence[Path]) -> ObservationSnapshot:
-        """Never poll, reconcile status, adopt, repair or invoke a reaper."""
+    def read(
+        self, roots: Sequence[Path], *, artifact_roots: Sequence[Path] = ()
+    ) -> ObservationSnapshot:
+        """Never poll, reconcile status, adopt, repair or invoke a reaper.
+
+        Reports are read under the Booley Directory and under *artifact_roots*.
+        """
         cache = self._artifacts
-        cache.begin()
+        cache.begin(artifact_roots)
         tokens, memory = self._observe_slots()
         records, diagnostics = _snapshot_records(roots, self._validate_record)
         rows = [
@@ -69,11 +74,9 @@ class JobObserver:
         memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]] = ([], [])
         if self._slots_root is not None:
             store = job_slots.SlotStore(self._slots_root)
-            for kind in job_slots.JOB_CLASSES:
-                holders, waiters = store.observe(kind)
-                tokens.extend((*holders, *waiters))
-                if kind == job_slots.CLASS_MEMORY:
-                    memory = (holders, waiters)
+            holders, waiters = store.observe(job_slots.CLASS_MEMORY)
+            tokens.extend((*holders, *waiters))
+            memory = (holders, waiters)
         return tokens, memory
 
 
@@ -244,6 +247,7 @@ def _project_job(
         report or {},
         (reports_parent or root.parent, Path(rec.work_dir) if rec.work_dir else root),
     )
+    wait = _queue_wait(rec, state, memory)
     return JobObservation(
         root,
         rec,
@@ -252,25 +256,25 @@ def _project_job(
         report_path,
         stage,
         artifacts=artifacts,
-        queue=_queue_detail(rec, state, memory),
+        queue="" if wait is None else f"position {wait.position}: {wait.describe()}",
+        queue_position=None if wait is None else wait.position,
     )
 
 
-def _queue_detail(
+def _queue_wait(
     rec: job_records.JobRecord,
     state: str,
     memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]],
-) -> str:
-    """What the Job's queued memory claim waits for; empty unless it is such a waiter."""
+) -> job_slots.MemoryWait | None:
+    """What the Job's queued memory claim waits for; ``None`` unless it is such a waiter."""
     if state != "queued":
-        return ""
+        return None
     identity = ProcessIdentity.from_payload(rec.process_identity)
     holders, waiters = memory
     for waiter in waiters:
         if waiter.owner_identity == identity:
-            wait = job_slots.memory_wait(waiter, holders, waiters, time.time())
-            return "" if wait is None else f"position {wait.position}: {wait.describe()}"
-    return ""
+            return job_slots.memory_wait(waiter, holders, waiters, time.time())
+    return None
 
 
 def _reported_stage(progress: dict[str, Any] | None) -> str:

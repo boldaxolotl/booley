@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.record.capacity import (
@@ -54,13 +53,13 @@ from booley.runtime.execution_records import (
     read_json,
 )
 from booley.runtime.job_slots import (
-    CLASS_LIGHT,
     CLASS_MEMORY,
     HOLDING,
     INHERITED_SLOT_ENV,
     QUEUED,
     ROLE_INTERACTIVE,
     ClaimAbortedError,
+    MemoryClaim,
     SlotStore,
 )
 from booley.runtime.supervised_execution import (
@@ -336,13 +335,15 @@ def test_managed_capacity_releases_and_reacquires_exact_child_tokens(
 def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
     tmp_path: Path,
 ) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_light=1))
-    holder = store.acquire(CLASS_LIGHT, pid=os.getpid())
-    first_ticket = store.submit(CLASS_LIGHT, pid=os.getpid(), role="background")
-    second_ticket = store.submit(CLASS_LIGHT, pid=os.getpid(), role="background")
-    interactive = store.submit(CLASS_LIGHT, pid=os.getpid(), role=ROLE_INTERACTIVE)
+    # Run-alone claims never hold together: one holder, the rest queue.
+    alone = MemoryClaim(budget_mb=1024, run_alone=True)
+    store = SlotStore(tmp_path / "slots")
+    holder = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=alone)
+    first_ticket = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=alone, role="background")
+    second_ticket = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=alone, role="background")
+    interactive = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=alone, role=ROLE_INTERACTIVE)
     try:
-        holders, waiters = store.snapshot(CLASS_LIGHT)
+        holders, waiters = store.snapshot(CLASS_MEMORY)
         assert [token.lease_id for token in holders] == [holder.lease_id]
         assert [token.lease_id for token in waiters] == [
             interactive.lease_id,
@@ -358,7 +359,7 @@ def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
     finally:
         for token in (holder, interactive, first_ticket, second_ticket):
             store.release(token)
-    assert store.snapshot(CLASS_LIGHT) == ([], [])
+    assert store.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> None:

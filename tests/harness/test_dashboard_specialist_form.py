@@ -34,7 +34,7 @@ FULLEST = {
 }
 
 COVERAGE_FULLEST = {
-    "campaign": ".booley/flow-reports/sim/3/targets/sim_fifo/coverage.json",
+    "coverage_record": ".booley/flow-reports/sim/3/targets/sim_fifo/coverage.json",
     "instruction": "focus the FIFO",
     "more": "on",
     "max_turns": "9",
@@ -50,7 +50,7 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--work-dir": "the worktree chooses the Project",
         "--timeout-ms": "hidden alias of --timeout, which the form writes",
         "--report-dir": "the Job writes to its default report directory",
-        "--diagnostic": "a Standalone Job never records Goal evidence",
+        "--diagnostic": "a Standalone Job never records Criterion evidence",
         "--transcript-dir": "the Job worker sets it beside job.log",
         "--verify": "continues the Developer Agent's own review loop, not a first review",
         "--waive": "continues the Developer Agent's own review loop, not a first review",
@@ -66,7 +66,7 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--work-dir": "the worktree chooses the Project",
         "--timeout-ms": "hidden alias of --timeout, which the form writes",
         "--report-dir": "the Job writes to its default report directory",
-        "--diagnostic": "a Standalone Job never records Goal evidence",
+        "--diagnostic": "a Standalone Job never records Criterion evidence",
         "--transcript-dir": "the Job worker sets it beside job.log",
     },
 }
@@ -78,7 +78,7 @@ def reviewer_form():
     """The reviewer's form. Imported here so a Dashboard without it fails the test body, not collection."""
     from booley.harness.dashboard.specialist_form import ReviewerForm
 
-    return ReviewerForm("docs/spec.md")
+    return ReviewerForm()
 
 
 def coverage_form():
@@ -235,12 +235,12 @@ def test_coverage_form_writes_the_record_and_the_optional_words():
     assert [field.label for field in form.fields({})] == ["Coverage Record", "Instruction", "More"]
     assert [field.label for field in form.fields({"more": "on"})][-2:] == ["Max turns", "Timeout"]
     assert form.refusal({}) == "Choose a Coverage Record"
-    assert form.refusal({"campaign": "  "}) == "Choose a Coverage Record"
+    assert form.refusal({"coverage_record": "  "}) == "Choose a Coverage Record"
     assert form.refusal(COVERAGE_FULLEST) == ""
-    assert form.argv({"campaign": "a/coverage.json"}) == ("--record", "a/coverage.json")
+    assert form.argv({"coverage_record": "a/coverage.json"}) == ("--record", "a/coverage.json")
     assert form.argv(COVERAGE_FULLEST) == (
         "--record",
-        COVERAGE_FULLEST["campaign"],
+        COVERAGE_FULLEST["coverage_record"],
         "--instruction",
         "focus the FIFO",
         "--max-turns",
@@ -252,7 +252,7 @@ def test_coverage_form_writes_the_record_and_the_optional_words():
 
 
 def write_coverage_record(invocation: Path, target: str, *, complete: bool | str = True) -> Path:
-    """One Target's campaign under *invocation*; ``complete="bad"`` writes a malformed projection."""
+    """One Target's Coverage Record under *invocation*; ``complete="bad"`` writes a malformed projection."""
     directory = invocation / "targets" / target
     directory.mkdir(parents=True)
     path = directory / "coverage.json"
@@ -280,7 +280,9 @@ def test_finished_coverage_records_are_listed_newest_first_with_target_and_date(
     write_coverage_record(reports / "10", "sim_wide")
     write_coverage_record(reports / "11", "sim_fifo", complete=False)
     write_coverage_record(reports / "11", "sim_wide", complete="bad")
-    (reports / "11" / "targets" / "sim_bare").mkdir()  # a Target directory without a campaign
+    (
+        reports / "11" / "targets" / "sim_bare"
+    ).mkdir()  # a Target directory without a Coverage Record
     (reports / "13").mkdir()  # an invocation without a targets directory
     outside = tmp_path / "runtime" / "sim" / "12"
     outside_path = write_coverage_record(outside, "sim_fifo")

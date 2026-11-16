@@ -1,6 +1,6 @@
 """Inspect whether Git inside a Sandbox commits with the ``[agent.git]`` identity.
 
-Interactive Mode and Goal Mode supply the identity as command-scope Git
+Interactive Mode supplies the identity as command-scope Git
 settings (``GIT_CONFIG_COUNT`` and friends). A hand-written devcontainer spec,
 such as one for GitHub Codespaces, can omit them, leaving Git to fall back to a
 copied host gitconfig or no identity at all. Rather than re-deriving Git's
@@ -22,6 +22,7 @@ from booley.runtime.incontainer_git_identity import (
     GitIdentityError,
     load_git_identity,
 )
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 OVERRIDE_CHECK = "sandbox.git-identity-override"
 GITCONFIG_CHECK = "sandbox.gitconfig-identity"
@@ -30,8 +31,8 @@ _GIT_TIMEOUT_S = 10
 _COMMAND_SCOPE = "command"
 _FILE_SCOPES = ("system", "global")
 _OVERRIDE_FIX = (
-    "in a Booley-issued Sandbox, refresh and recreate the Sandbox so it picks up the "
-    "current [agent.git]; in a hand-written devcontainer spec (for example GitHub "
+    "in a Booley-issued Sandbox, recreate the Sandbox so it picks up the "
+    f"current [agent.git] ({UNKNOWN_SANDBOX_STEPS}); in a hand-written devcontainer spec (for example GitHub "
     "Codespaces), set GIT_CONFIG_COUNT=2, GIT_CONFIG_KEY_0=user.name, "
     "GIT_CONFIG_VALUE_0=<name>, GIT_CONFIG_KEY_1=user.email, GIT_CONFIG_VALUE_1=<email> "
     "in both containerEnv and remoteEnv, then rebuild"

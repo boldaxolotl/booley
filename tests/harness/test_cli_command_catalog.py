@@ -83,7 +83,7 @@ def test_help_groups_public_commands_by_location(plain) -> None:
     assert len(columns) == 1, "descriptions start at one shared column"
     assert "{" not in help_text and "positional arguments" not in help_text
     assert max(map(len, help_text.splitlines())) <= 100, "a pipe wraps at the cap"
-    for hidden in ("feedback", "cleanup", "upgrade", "session", "goal", "shell"):
+    for hidden in ("feedback", "cleanup", "upgrade", "session", "shell"):
         assert not re.search(rf"^  {hidden}\s", help_text, re.M)
 
 
@@ -143,7 +143,7 @@ def test_cli_reference_has_the_same_public_inventory() -> None:
     ]
 
 
-@pytest.mark.parametrize("command", ["feedback", "cleanup", "upgrade", "session", "goal", "shell"])
+@pytest.mark.parametrize("command", ["feedback", "cleanup", "upgrade", "session", "shell"])
 def test_skill_commands_are_hidden_but_remain_registered(command: str) -> None:
     parser = cli._build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
@@ -159,7 +159,6 @@ COMMAND_LOCATION_TABLE = [
     ("specialist", "Sandbox"),
     ("measure", "Sandbox"),
     ("worktree", "Sandbox"),
-    ("goal", "Sandbox"),
     ("cheat", "either"),
     ("coverage", "either"),
     ("doctor", "either"),
@@ -201,14 +200,16 @@ def test_command_locations_enforce_the_audited_boundary(
 
 def test_sandbox_init_is_documented_for_hand_written_specs() -> None:
     """Spec authors are told to run `booley init` from `onCreateCommand`."""
-    guide = (Path(__file__).parents[2] / "docs/user/SANDBOX.md").read_text(encoding="utf-8")
-    heading = "### Project setup in a hand-written spec (`booley init`)"
+    guide = (Path(__file__).parents[2] / "docs/internals/HAND-WRITTEN-SPECS.md").read_text(
+        encoding="utf-8"
+    )
+    heading = "## Project setup in a hand-written spec (`booley init`)"
     assert heading in guide
     start = guide.index(heading)
     section = guide[start : guide.find("\n#", start + len(heading))]
     assert "`booley init`" in section
     assert "onCreateCommand" in section
-    assert "## Hand-written devcontainer specs" in guide[:start]
+    assert "# Hand-written devcontainer specs" in guide[:start]
 
 
 def test_init_help_says_it_runs_in_a_hand_written_sandbox() -> None:

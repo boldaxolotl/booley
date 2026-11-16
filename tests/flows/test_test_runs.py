@@ -299,7 +299,7 @@ def test_build_test_run_refusals(kwargs: dict, reason: str) -> None:
 
 def test_fingerprint_is_stable_and_matches_the_simulation_record_hash() -> None:
     fingerprint = declared_inputs_fingerprint(("+iters=1000",), {"FAULT_MODE": "1"})
-    # Pinned literal: a silent change of the encoding would orphan frozen Goals.
+    # Pinned literal: a silent change of the encoding would orphan recorded Test Runs.
     assert fingerprint == (
         "sha256:8b3ad4350562ee7758fdfd17286ec271131b4915bbd2d076291e34c0181e6e63"
     )

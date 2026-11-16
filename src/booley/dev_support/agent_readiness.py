@@ -743,6 +743,38 @@ def _native_test_check(root: Path) -> Check:
     )
 
 
+def _source_check_commands(python: Path, root: Path) -> tuple[Command, ...]:
+    return (
+        # Fails in seconds when the packaged CHANGELOG mirror is stale (the user-doc
+        # copies are Git-ignored build output, not checked). The launcher imports this
+        # checkout's src/, which the shared environment never installs; -B keeps
+        # bytecode out of the checkout.
+        Command(
+            "packaged-copies.check",
+            (str(python), "-B", str(root / ".github/scripts/sync_packaged_copies.py"), "--check"),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
+        # The same launcher is CI's required "Check Markdown line length" step in docs-check.
+        Command(
+            "markdown.line-length",
+            (str(python), "-B", str(root / ".github/scripts/markdown_line_length.py")),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
+        # CI's lint-job function length step, against the newest merge base.
+        Command(
+            "function-length.check",
+            (str(python), "-B", str(root / ".github/scripts/check_function_length.py")),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
+    )
+
+
 def _verification_commands(
     python: Path,
     root: Path,
@@ -777,17 +809,7 @@ def _verification_commands(
             "typecheck",
             "handoff",
         ),
-        # Fails in seconds when the packaged CHANGELOG mirror is stale (the user-doc
-        # copies are Git-ignored build output, not checked). The launcher imports this
-        # checkout's src/, which the shared environment never installs; -B keeps
-        # bytecode out of the checkout.
-        Command(
-            "packaged-copies.check",
-            (str(python), "-B", str(root / ".github/scripts/sync_packaged_copies.py"), "--check"),
-            str(root),
-            "lint",
-            "before-commit",
-        ),
+        *_source_check_commands(python, root),
     )
     if not native_ready:
         return lint

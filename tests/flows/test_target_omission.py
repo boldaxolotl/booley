@@ -13,6 +13,7 @@ from jsonschema import Draft202012Validator
 
 from booley.flows.builtin_cli import build_cli_parser, execute_cli
 from booley.flows.cli_selection import CliInvocation
+from booley.flows.endpoint_admission import _Claim
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow
 from booley.flows.plan import FlowPlan
@@ -69,22 +70,6 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(server, "_run_subprocess", _transport_child)
     return tmp_path
-
-
-@pytest.fixture
-def goal_mode(tmp_path, monkeypatch):
-    # Import these helpers during execution: importing another directory's
-    # conftest at collection time bypasses pytest's conftest registration.
-    from types import SimpleNamespace
-
-    from tests.goals.conftest import enter_goals, layout
-
-    lifetime = layout.__wrapped__(tmp_path, monkeypatch)
-    project = next(lifetime)
-    try:
-        yield SimpleNamespace(**vars(project), record=enter_goals(project))
-    finally:
-        lifetime.close()
 
 
 # The expensive preparation/EDA leaves use deterministic spies. Public _run,
@@ -217,15 +202,15 @@ def test_omitted_target_selects_and_announces_only_eligible(entry, name, project
     ids=[f"{entry}-{name}-{label}" for entry, name in CASES for label in ("zero", "many")],
 )
 def test_omitted_target_rejects_cardinality(entry, name, count, project, executed, monkeypatch):
-    from booley.flows.endpoint_state import EndpointState
-
     admitted, started = [], []
 
-    def acquire_slot(self):
+    def acquire_slot(*_args, **_kwargs):
         admitted.append(True)
-        return None, None
+        return _Claim(None, None)
 
-    monkeypatch.setattr(EndpointState, "_acquire_job_slot", acquire_slot)
+    monkeypatch.setattr(
+        "booley.flows.endpoint_admission._acquire_memory_reservation", acquire_slot
+    )
     monkeypatch.setattr(
         "booley.flows.endpoint_session._write_display_event", lambda *args: started.append(args)
     )
@@ -400,7 +385,8 @@ def test_selection_notice_survives_preparation_failure(
             lambda self: EndpointOutcome(exit_code=2, report_text="coverage refused"),
         )
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted refusal")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted refusal"),
     )
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()
@@ -489,42 +475,6 @@ def test_automatic_candidate_selection_is_not_repeated_in_baseline(
     assert result == {} and sha == "old"
     assert seen == [handles[0].identity]
     assert flow.args.work_dir == project
-
-
-def test_auto_selected_target_still_requires_goal_binding(goal_mode, monkeypatch, executed):
-    from booley.goals.flow_execution import GoalFlowExecution
-    from booley.runtime import runtime_context
-    from tests.goals.conftest import bind
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    project = goal_mode.worktree
-    monkeypatch.chdir(project)
-    write_targets(project, "lint")
-    flow = LintFlow()
-    unbound = flow.execute(
-        flow.request_type(target="", work_dir=project),
-        adapter=GoalFlowExecution(bind(goal_mode, "unbound")),
-    )
-    assert unbound.exit_code == 2 and executed == []
-    assert unbound.outcome.detail["acceptance_effect"] == "rejected_unbound"
-    assert unbound.outcome.detail["unbound_targets"] == ["chosen"]
-    core = project / "demo.core"
-    core.write_text(
-        core.read_text().replace("acme:lib:demo:1", "::top:0").replace("chosen", "top")
-    )
-    accepted = LintFlow().execute(
-        LintFlow.request_type(target="", work_dir=project),
-        adapter=GoalFlowExecution(bind(goal_mode, "bound")),
-    )
-    assert accepted.exit_code == 0
-    assert executed == ["::top:0#top"]
-    executed.clear()
-    core.write_text(core.read_text().replace("top:", "chosen:"))
-    diagnostic = LintFlow().execute(
-        LintFlow.request_type(target="", work_dir=project, diagnostic=True),
-        adapter=GoalFlowExecution(bind(goal_mode, "diagnostic")),
-    )
-    assert diagnostic.exit_code == 0 and executed
 
 
 @pytest.mark.parametrize("count", (0, 1, 2))

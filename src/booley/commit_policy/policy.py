@@ -329,7 +329,6 @@ class StealthPolicy:
     enabled: bool
     banned_phrases: tuple[str, ...]
     max_body_lines: int | None
-    enforce_convention: bool
     allowed_authors: tuple[str, ...]
 
     banned_substrings: tuple[str, ...] = ()
@@ -363,7 +362,7 @@ def stealth_policy(
 ) -> StealthPolicy:
     """Load one Project's Stealth policy; source checkouts are always disabled."""
     if source_checkout_policy_owner(project_root):
-        return StealthPolicy(False, (), None, False, ())
+        return StealthPolicy(False, (), None, ())
 
     section, enabled_default = _stealth_choice(project_root, booley_dir)
     words, substrings = parse_stealth_vocabulary(section)
@@ -396,7 +395,6 @@ def stealth_policy(
         enabled=_boolean_setting(section, "enabled", enabled_default),
         banned_phrases=words,
         max_body_lines=cap,
-        enforce_convention=_boolean_setting(section, "enforce_convention", False),
         allowed_authors=authors,
         banned_substrings=substrings,
     )
@@ -447,25 +445,6 @@ def max_body_lines(project_root: Path | None = None) -> int | None:
     go stale for a long-lived process that edits the config.
     """
     return stealth_policy(project_root).max_body_lines
-
-
-def enforce_convention(project_root: Path | None = None) -> bool:
-    """``[stealth] enforce_convention``: enforce the ``type(scope): summary``
-    subject convention. **Opt-in** — off unless a project turns it on.
-
-    Off by default because a design repo carries human- and upstream-style
-    commits on code the team doesn't own, and forcing every one of those
-    through Booley's subject format is noise, not hygiene (SETUP-10). A team
-    that wants the convention across its own history opts in with
-    ``[stealth] enforce_convention = true``; then the per-commit
-    ``BOOLEY_SKIP_COMMIT_VALIDATION`` env var is the escape hatch for the odd
-    upstream commit.
-
-    Independent of this knob: the banned-term check always runs when stealth is
-    enabled, regardless of this knob. Read per call for the same reason as
-    :func:`max_body_lines` — the config may change under a long-lived process.
-    """
-    return stealth_policy(project_root).enforce_convention
 
 
 def allowed_authors(project_root: Path | None = None) -> list[str]:

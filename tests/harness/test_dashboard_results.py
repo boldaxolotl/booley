@@ -2,26 +2,19 @@
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 from rich.console import Console
 from rich.style import Style
 
-import booley.harness.dashboard.app as module
-from booley.criteria.presentation import CriterionPresentation
 from booley.harness.dashboard.app import (
     SEMANTIC_STYLE,
     DashboardApp,
-    Navigation,
-    _evidence_detail,
     job_detail,
     job_paths,
 )
 from booley.harness.dashboard.jobs import JobView
 from booley.harness.dashboard.links import linked_text
-from booley.harness.dashboard.model import GoalDetail
 from booley.presentation.report_results import present_report, project_facts
-from booley.review.goal_package import proposal_facts
 from booley.runtime.job_records import JobRecord
 
 STAMP = "2026-10-08T10:00:00Z"
@@ -79,38 +72,7 @@ def implementation(grade="pass"):
     }
 
 
-def proposal_app(monkeypatch, facts):
-
-    view = SimpleNamespace(
-        proposal=SimpleNamespace(id="p"), state="pending", closed_by_abandonment=False
-    )
-    goal = SimpleNamespace(status=SimpleNamespace(proposals=[view]))
-    app = DashboardApp(lambda: None)
-    app.navigation = Navigation("proposal", selected="p")
-    monkeypatch.setattr(app, "_session", lambda: ("", goal))
-    monkeypatch.setattr(module, "proposal_presentation", lambda _: facts)
-    return app, goal
-
-
-def test_details_never_dump_structures(monkeypatch):
-    goal = GoalDetail(
-        "key",
-        "passing",
-        CriterionPresentation("Human Goal", "", "", "", ""),
-        {"recorded_at": STAMP, "detail": {"warnings": 2, "unknown": {"arbitrary": "secret"}}},
-        ({"producer": "sim", "detail": {"passed": True}},),
-    )
-    app, selected = proposal_app(
-        monkeypatch,
-        {
-            "kind": "retarget",
-            "state": "pending",
-            "before": "Old",
-            "after": "New",
-            "rationale": "scope",
-            "unknown": {"secret": 1},
-        },
-    )
+def test_details_never_dump_structures():
     texts = [
         job_detail(
             job(
@@ -120,17 +82,12 @@ def test_details_never_dump_structures(monkeypatch):
                 }
             )
         ),
-        _evidence_detail(goal),
-        app._selected_proposal_detail(),
-        app._session_activity(selected, app._session_row()[0])[0][1],
     ]
     for text in texts:
         assert "{'" not in text and '{"' not in text and "json.dumps" not in text, (
             "structured data must become readable facts"
         )
         assert "\x1b" not in text
-    assert "Extra data in report" in _evidence_detail(goal)
-
     assert (
         present_report({"flow": "unknown", "report_text": '{"secret": 1}'}).result_rows[0].value
         == "Summary unavailable"
@@ -495,68 +452,6 @@ def test_configuration_and_artifact_links():
     assert len(links.spans) == 4
 
 
-def test_goal_proposal_facts_preserved(monkeypatch):
-    facts = {
-        "kind": "retarget",
-        "state": "pending",
-        "before": "Old Goal",
-        "after": "New Goal",
-        "rationale": "new scope",
-        "review_retarget_effect": "Discards prior evidence",
-        "waiver": {
-            "candidate_id": "w1",
-            "candidate": {"scope": "line", "reason": "unreachable"},
-            "policy": {"enabled": True, "config": {"anchor": "project", "directory": "waivers"}},
-            "approval_root": "hidden",
-        },
-        "decision": {
-            "decision": "approve",
-            "reason": "accepted scope",
-            "source": "chat",
-            "payload_digest": "hidden",
-        },
-    }
-    app, selected = proposal_app(monkeypatch, facts)
-    text = app._selected_proposal_detail()
-    assert "Before: Old Goal" in text, "proposal approval facts need labeled human text"
-    for part in (
-        "New Goal",
-        "new scope",
-        "Discards",
-        "unreachable",
-        "enabled",
-        "waivers",
-        "accepted scope",
-        "Approval remains in chat",
-    ):
-        assert part in text
-    assert "hidden" not in text
-    inline = app._session_activity(selected, app._session_row()[0])[0][1]
-    assert (
-        "Old Goal" in inline
-        and "New Goal" in inline
-        and "pending" in inline
-        and "\n" not in inline
-    )
-    goal = GoalDetail(
-        "key",
-        "passing",
-        CriterionPresentation("Human Goal", "", "", "", ""),
-        {"recorded_at": STAMP, "detail": {"passed": True, "warnings": 2}},
-        ({"producer": "sim", "recorded_at": STAMP, "detail": {"passed": False}},),
-        artifacts=("/a/evidence",),
-        test_runs=("Test Run frozen -> rerun exact",),
-    )
-    text = _evidence_detail(goal)
-    assert text.startswith("Test Run frozen -> rerun exact\n")
-    assert (
-        "Immutable derivation provenance" in text
-        and "sim" in text
-        and STAMP in text
-        and "/a/evidence" in text
-    )
-
-
 def test_simulation_record_producer_failure_axes_are_visible():
 
     for execution, functional, assertions in [
@@ -682,22 +577,3 @@ def test_multiline_proposal_facts_preserve_human_text():
         )
         assert "\t" not in text
     assert "danger" not in str(project_facts({"rationale": "\x1b[31mdanger"}))
-
-
-def test_retarget_warning_preserves_required_followup():
-
-    facts = proposal_facts(
-        {
-            "id": "p",
-            "kind": "retarget",
-            "before": None,
-            "after": {"family": "review"},
-            "rationale": "scope",
-        },
-        lambda _: "Review",
-    )
-    rows = project_facts(facts)
-    warning = next(row.value for row in rows if row.label == "Review retarget effect")
-    assert warning.endswith("A new discovery review is required after approval."), (
-        "retarget safety warning must remain complete"
-    )

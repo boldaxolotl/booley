@@ -83,16 +83,9 @@ logger = logging.getLogger(__name__)
 # NOTE: ``spec`` was removed when spec_arbiter took over spec-compliance
 # arbitration (ADR-0014), then re-introduced (ADR 0038) after the arbiter
 # itself was pruned — without it nothing checked RTL against the spec.
-RTL_FOCUS_CATEGORIES = frozenset(
-    {
-        "spec",
-        "bugs",
-        "protocol",
-        "security",
-        "optimization",
-        "code_style",
-    }
-)
+# Ordered so the Dashboard wizard lists the focuses in this order.
+RTL_FOCUSES = ("spec", "bugs", "protocol", "security", "optimization", "code_style")
+RTL_FOCUS_CATEGORIES = frozenset(RTL_FOCUSES)
 
 # Valid review focus categories for TB mode (spec stays RTL-only — ADR 0038).
 # ``quality`` is TB-only: the RTL side splits the same ground into ``bugs``
@@ -1235,7 +1228,13 @@ class ReviewerSpecialist(Specialist):
         return None
 
     def _workspace_isolation_category(self) -> str | None:
-        """Hide opposite-category sources only inside the private snapshot."""
+        """Hide opposite-category sources only inside the private snapshot.
+
+        Source isolation is not configurable: a Reviewer never sees the sources
+        its ``.core`` filesets declare for the opposite category, nor HDL files
+        no fileset declares. The Coverage Analyst has no category and reads both,
+        because its task is to cross-check RTL against the testbench.
+        """
         if self._args is None:
             return None
         return self.args.category
@@ -1477,7 +1476,7 @@ match the strength of the evidence.
         style_focus = (category == "rtl" and focus == "code_style") or (
             category == "tb" and focus == "quality"
         )
-        if style_focus:
+        if style_focus and (not guides or any(g.kind == "checklist" for g in guides)):
             self._append_style_guides(sections, category, gp)
         sections.append(self._output_instructions(focus, category, diff_scoped=self._diff_scoped))
         return "\n".join(sections)
@@ -1513,7 +1512,12 @@ match the strength of the evidence.
             "cocotb": contract.has_cocotb,
             "cpp": contract.has_cpp,
         }
-        return tuple(g for g in guides if g.language is None or in_scope[g.language])
+        # A language-less guide needs at least one testbench source language in scope.
+        return tuple(
+            g
+            for g in guides
+            if (any(in_scope.values()) if g.language is None else in_scope[g.language])
+        )
 
     def _append_style_guides(
         self,
@@ -1877,6 +1881,8 @@ object, even after calling the capability.
             **detail.get("artifacts", {}),
             "reviewer_evidence": str(path),
         }
+        # Written atomically before any passing Criterion is recorded, so no
+        # Criterion can point at evidence that does not exist.
         atomic_write_json(path, {"exit_code": exit_code, "detail": detail})
         self._review_evidence_written = True
         return path
@@ -3066,7 +3072,14 @@ Schema enforcement (applied upstream by the harness):
         issues: list[ReviewIssue],
         output_lines: list[str],
     ) -> list[ReviewIssue]:
-        """Enforce explicit source membership and honor agent dispositions."""
+        """Enforce explicit source membership and honor agent dispositions.
+
+        A finding outside the source scope, including one in a firmware or other
+        readable context file, moves to the audit as filtered (reason
+        ``source_scope``); Booley never filters findings by their wording.
+        Changing what this filters requires bumping
+        ``booley.evidence.review_receipt.FILTERING_SEMANTICS_REVISION``.
+        """
         kept: list[ReviewIssue] = []
         dropped = 0
         for ordinal, issue in enumerate(issues, 1):

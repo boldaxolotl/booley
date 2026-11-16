@@ -177,11 +177,10 @@ def test_configuration_files_are_not_digested(case: str, tmp_path: Path) -> None
         before = change("pipeline.toml", "a = 1\n")
         assert change("pipeline.toml", "a = 2\n") != before
         return
-    for name in ("booley.toml", "tests.toml", "criteria.toml", "goalsets/feature.md"):
+    for name in ("booley.toml", "tests.toml", "criteria.toml"):
         assert change(name, "[edited]\n") == before
-    for name in ("cores/x.core", "goalsets/data.hex"):
-        assert change(name, "edited\n") != before
-        before = digest(layout.project)
+    assert change("cores/x.core", "edited\n") != before
+    before = digest(layout.project)
     # Anchored to the Booley Directory: the same names elsewhere are digested.
     stray = "src/tests.toml" if case == "tracked" else "criteria.toml"
     before = change(stray, "a\n", True)

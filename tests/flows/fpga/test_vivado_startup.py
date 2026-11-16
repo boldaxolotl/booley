@@ -19,8 +19,10 @@ from typing import Any
 import pytest
 
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
-from booley.runtime import session_runtime
+from booley.runtime import runtime_context, session_runtime
+from booley.runtime.sandbox_apply import Attachment
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
 from tests.subprocess_budget import run_bounded_child
 
 _LABEL = "fpga: Vivado batch startup"
@@ -160,7 +162,9 @@ def test_unavailable_runtime_skips(tmp_path, monkeypatch):
 
 def test_probe_error_fails(tmp_path, monkeypatch):
     """A Sandbox start failure or an OS error is a probe-error FAIL, cut to 500 characters."""
-    fix = "run 'booley init --seed' and retry"
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
+    fix = VSCODE_INIT + ", then retry"
     start_failure = session_runtime.SessionError("sandbox did not start")
 
     def failing_builder(_argv):

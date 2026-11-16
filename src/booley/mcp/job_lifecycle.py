@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from booley.flows.progress_lifecycle import repair_progress_after_reap
-from booley.goals.paths import record_paths
 from booley.mcp.call_context import CallContext
 from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
     _endpoint_subprocess_env,
     _run_subprocess,
+    cancel_grace_seconds,
+    stop_grace_seconds,
     write_synthetic_endpoint_end,
 )
 from booley.mcp.job_ownership import Caller, owns
@@ -33,7 +34,6 @@ from booley.mcp.job_results import (
     _KNOWN_JOB_ROOTS,
     JobRepository,
     LocatedJob,
-    job_binding,
     read_record_or_none,
 )
 from booley.runtime import job_records as jobrec
@@ -143,10 +143,7 @@ class JobLifecycle:
         return None if located is None else located.root
 
     def _write_root(self, rec: jobrec.JobRecord) -> Path | None:
-        """Use the admitted binding for every Goal write, including completion."""
-        binding = job_binding(rec)
-        if binding is not None:
-            return record_paths(binding.booley_dir, binding.record_id).jobs_dir
+        """Root for every write of *rec*, completion included."""
         return self._record_root(rec.run_id)
 
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
@@ -178,19 +175,12 @@ class JobLifecycle:
 
     @staticmethod
     def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
-        rec.work_dir = (
-            str(context.work_dir)
-            if context.binding
-            else (str(context.explicit_work_dir) if context.explicit_work_dir else None)
-        )
+        rec.work_dir = str(context.explicit_work_dir) if context.explicit_work_dir else None
         rec.session_key = context.session_key
-        rec.binding = None if context.binding is None else context.binding.to_json()
         from booley.runtime.booley_dir import resolve_common_booley_dir
 
         try:
-            project = (
-                context.binding.booley_dir if context.binding else resolve_common_booley_dir()
-            )
+            project = resolve_common_booley_dir()
             register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
@@ -236,7 +226,7 @@ class JobLifecycle:
             self._repository.report_dirs(located),
             rec.endpoint,
             rec.run_id,
-            booley_dir=self._repository.report_booley_dir(located),
+            booley_dir=self._repository.report_booley_dir(),
         )
 
     def _record_terminal(
@@ -293,7 +283,7 @@ class JobLifecycle:
         claim, not this server's decision. The record lives under the call
         context's jobs root and names *owner*, the agent that started it.
         """
-        run_id = context.binding.invocation_id if context.binding else self._next_run_id(name)
+        run_id = self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
         rec.owner = owner
         self._submitted[run_id] = rec
@@ -318,12 +308,7 @@ class JobLifecycle:
         context: CallContext,
     ) -> tuple[int, str, str, bool]:
         """Run an inline endpoint while publishing bounded status state."""
-        rec = self._new_record(
-            context.binding.invocation_id if context.binding else uuid.uuid4().hex,
-            name,
-            cmd,
-            timeout,
-        )
+        rec = self._new_record(uuid.uuid4().hex, name, cmd, timeout)
         self._stamp_context(rec, context)
         self._job_roots[rec.run_id] = context.jobs_root
         _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
@@ -358,6 +343,8 @@ class JobLifecycle:
         overrides = {"BOOLEY_RUN_ID": rec.run_id, "BOOLEY_SLOT_TIMEOUT_S": str(rec.timeout_s)}
         if publish_display_identity:
             overrides["BOOLEY_DISPLAY_INVOCATION_ID"] = rec.run_id
+        stop_grace = stop_grace_seconds(rec.endpoint)
+        stop = {} if stop_grace is None else {"stop_grace": stop_grace}
         return await self._run_process(
             rec.argv,
             timeout=rec.timeout_s,
@@ -367,6 +354,7 @@ class JobLifecycle:
             is_requeued=lambda: self._child_requeued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
             log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
+            **stop,
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
@@ -463,7 +451,7 @@ class JobLifecycle:
                 self._record_terminal(fresh, 2, timed_out=False)
             return
         if rec.pid is not None:
-            await self._cancel_process(rec.pid)
+            await self._cancel_process(rec.pid, cancel_grace_seconds(rec.endpoint))
             # A SIGTERMed owner records its own failure; that is still the user's
             # cancellation. Only a completion that won the race is kept as is.
             fresh = self._read_run(rec.run_id)
@@ -485,11 +473,17 @@ class JobLifecycle:
         if rec is None:
             return None
 
-        if jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
+        task = self._tasks.get(run_id)
+        supervised = task is not None and not task.done()
+        if not supervised and jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
             return "already_finished"
 
+        if supervised:
+            # A Job cancelled before its process published a PID is still running:
+            # let the supervising task start so its cancellation is recorded.
+            await asyncio.sleep(0)
+            rec = self._read_run(run_id) or rec
         was_queued = self._cancel_waiter(rec)
-        task = self._tasks.get(run_id)
         if task is not None:
             await self._cancel_tracked_task(run_id, task)
         else:
@@ -570,9 +564,13 @@ class JobLifecycle:
         context: CallContext,
         wait_seconds: float,
         owner: str | None = None,
+        attach: bool = True,
     ) -> JobSubmission:
-        """Join identical live work or submit once, then wait within the inline budget."""
-        attached = self._repository.find_attachable(name, cmd, context=context)
+        """Join identical live work or submit once, then wait within the inline budget.
+
+        *attach* False always submits: the caller's argv does not pin what the work measures.
+        """
+        attached = self._repository.find_attachable(name, cmd) if attach else None
         run_id = (
             attached
             if attached is not None

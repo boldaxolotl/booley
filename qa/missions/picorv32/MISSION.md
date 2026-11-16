@@ -64,7 +64,8 @@ Optional bait with known answers. Use any of it, or none:
 - `fixtures/virtual-signals.md`: B-Wave virtual-signal values you can check by hand.
 - `fixtures/lint/`: Verilator and Verible waiver fixtures.
 - `fixtures/riscv/`: a bare-metal Spike probe.
-- `fixtures/simulation-campaign/RUNBOOK.md`: an ordered, resumable Icarus campaign.
+- `fixtures/simulation-record/RUNBOOK.md`: an ordered, resumable Icarus
+  Simulation Record.
 
 Look for: wrong results reported as success, stale evidence or reports, docs that don't
 match behavior, and recovery steps that don't recover.
@@ -109,7 +110,8 @@ Grants, installations, images and Sessions untouched. Record the final pin state
   the built-in `[SIM_RESULT]` markers, so a clean `$finish` alone grades INCONCLUSIVE.
 - Stealth cores resolve fileset paths from the repository root, so a fixture core copied into
   `.booley/cores/<dir>/` must name its files as `.booley/cores/<dir>/<file>`.
-- Icarus has no `$system`, and SystemVerilog fixtures need `-g2012`. The campaign's `slow` test
+- Icarus has no `$system`, and SystemVerilog fixtures need `-g2012`. The
+  fixture's `slow` test
   spins about 20 s; if it finishes too fast to interrupt, pass `+slow_steps=<n>`.
 - Bare-metal Spike needs `tohost`/`fromhost` symbols to exit. A Linux `ecall` exit works only
   under `pk`.

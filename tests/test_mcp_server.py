@@ -1213,14 +1213,11 @@ class TestBooleyStatus:
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_measure",
             "booley_poll",
             "booley_report",
             "booley_status",
             "booley_targets",
-            "goal_enter",
-            "goal_finish",
-            "goal_propose_change",
-            "goal_status",
             "sim",
         ]
 
@@ -1362,15 +1359,12 @@ class TestBooleySleep:
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_measure",
             "booley_poll",
             "booley_report",
             "booley_sleep",
             "booley_status",
             "booley_targets",
-            "goal_enter",
-            "goal_finish",
-            "goal_propose_change",
-            "goal_status",
             "sim",
         ]
 
@@ -2163,7 +2157,7 @@ def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatc
     from booley.runtime.timefmt import utc_now_rfc3339
     from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 
-    run_id = "gated-campaign-sim"
+    run_id = "gated-record-sim"
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
     entered, release = Event(), Event()
 

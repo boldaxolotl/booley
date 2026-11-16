@@ -41,10 +41,19 @@ file is high leverage: do not auto-write, pad, or invent facts.
   mode bullet verbatim so Developer Agents treat `.booley/` as a separate Git
   repository and do not expose its changes in the main repository.
   Remove that conditional bullet when stealth mode is disabled.
+- Keep the template's Metric-Driven Development bullet verbatim. The pointer is
+  present when the file already contains `booley cheat --metrics`; add the
+  bullet only when the file does not contain that text, so a merge or a re-run
+  never adds it twice and a reworded pointer is not duplicated. This applies to
+  every row 15 fate that leaves a canonical file (create, merge, overwrite, and
+  leave; under leave, the pointer is the one line this step adds). With no
+  canonical `AGENTS.md` (row 15 = not wanted), add nothing. The hybrid tracked
+  root copy gets the same bytes, as for every Step 3 write.
 - Do not read RTL, testbench, or test contents by default. Stable docs and
   config are enough for this task.
 - Bad content — omit all of it: repo maps and large directory listings;
-  `booley init` or setup instructions; raw simulator command guesses; Goal lifecycle
+  `booley init` or setup instructions; raw simulator command guesses; Developer
+  Agent lifecycle
   operating instructions; instructions that tell the assistant to choose
   execution mode; generic verification commands sections; generic coding
   advice not grounded in this Project; duplicated README material; detailed

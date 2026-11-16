@@ -1,7 +1,7 @@
 ---
 title: Documentation
 document: User guide
-description: The Booley user guide - setup, day-to-day use, Goal Mode, Flows, configuration, the Sandbox, supported EDA tools, Doctor, and troubleshooting.
+description: The Booley user guide - setup, day-to-day use, Flows, configuration, the Sandbox, supported EDA tools, Doctor, and troubleshooting.
 ---
 
 # Documentation
@@ -12,11 +12,12 @@ The Booley user guide. The first time, read **Get started** in order.
 <table>
 <thead><tr><th>Section</th><th>Page</th><th>What it covers</th></tr></thead>
 <tbody>
-<tr><th scope="rowgroup" rowspan="6">Get started</th><td><a href="features/">Features</a></td><td>Everything Booley does, and why.</td></tr>
+<tr><th scope="rowgroup" rowspan="5">Get started</th>
+<td><a href="features/">Features</a></td>
+<td>Everything Booley does, and why.</td></tr>
 <tr><td><a href="install/">Install</a></td><td>Install Booley and prepare your machine.</td></tr>
 <tr><td><a href="setup/">Setup</a></td><td>Connect an installed Booley to your RTL project.</td></tr>
 <tr><td><a href="usage/">Usage</a></td><td>Day-to-day work with the Developer Agent and waveforms.</td></tr>
-<tr><td><a href="goal-mode/">Goal Mode</a></td><td>Evidence-backed Goals, Goalsets, and review.</td></tr>
 <tr><td><a href="metrics/">Metrics</a></td><td>Declare Target Metrics and measure a commit against them.</td></tr>
 <tr><th scope="rowgroup" rowspan="9">Flows &amp; Specialists</th><td><a href="flow-reference/">Running Flows</a></td><td>What every Flow shares: Targets, options, and results.</td></tr>
 <tr><td><a href="flow-sim/">Simulation</a></td><td>Run a Target's tests and report which ones passed.</td></tr>
@@ -35,9 +36,8 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="worktrees/">Worktrees</a></td><td>Create, list, and remove the checkouts parallel sessions work in.</td></tr>
 <tr><td><a href="cli-reference/">CLI reference</a></td><td>Every command and where it runs.</td></tr>
 <tr><td><a href="supported-eda-tools/">Supported EDA tools</a></td><td>Which tools each Flow drives, and where they come from.</td></tr>
-<tr><th scope="rowgroup" rowspan="3">Help</th><td><a href="doctor/">Doctor</a></td><td>Check that Booley's setup and tools work.</td></tr>
+<tr><th scope="rowgroup" rowspan="2">Help</th><td><a href="doctor/">Doctor</a></td><td>Check that Booley's setup and tools work.</td></tr>
 <tr><td><a href="troubleshooting/">Troubleshooting</a></td><td>Symptoms, causes, and fixes.</td></tr>
-<tr><td><a href="windows/">Windows</a></td><td>Windows-only first-run traps.</td></tr>
 <tr><th scope="rowgroup" rowspan="1">Internals</th><td><a href="architecture/">Architecture</a></td><td>How Booley's parts fit together.</td></tr>
 </tbody>
 </table>

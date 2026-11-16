@@ -11,15 +11,10 @@ Ordinary calls use the explicit ``work_dir`` or the server's cwd, the
 container-wide jobs root, and the server process's own ``BOOLEY_*`` variables.
 An omitted ``work_dir`` may already have been filled at the SDK boundary from
 the calling agent's linked worktree. ``subprocess_env_overrides`` is empty.
-An explicit worktree selects its active Goal Record and
-freezes one Run Binding. All evidence paths and subprocess overrides follow that
-record; an omitted worktree is refused while any occupying record exists.
-The Run Binding feeds :func:`~booley.mcp.flow_execution_selection.select_flow_execution`.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,16 +23,8 @@ from types import MappingProxyType
 from typing import Any
 
 from booley.core.checkout_role import SourceCheckoutProjectError
-from booley.goals.binding import GoalBindingError, GoalRunBinding, bind_run
-from booley.goals.paths import record_paths
-from booley.goals.protected_inputs import ProtectedInputRoots
-from booley.goals.session_key import session_key
-from booley.goals.store import GoalRecordCorruptError, GoalStore, WorktreeIdentityError
-from booley.mcp.catalog import work_dir_guidance
 from booley.runtime.booley_dir import resolve_booley_dir
-from booley.runtime.job_records import make_run_id
 from booley.runtime.session_paths import session_jobs_dir
-from booley.runtime.timefmt import compact_utc_now
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +46,6 @@ class CallContext:
     logs_dir: Path | None
     runtime_dir: Path | None
     subprocess_env_overrides: Mapping[str, str]
-    binding: GoalRunBinding | None = None
     session_key: str | None = None
 
     @property
@@ -106,12 +92,8 @@ def _env_path(name: str) -> Path | None:
 
 def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
     """Resolve the facts one tool call with *arguments* runs under."""
-    explicit = _explicit_work_dir(arguments)
-    goal = _goal_call_context(arguments, explicit)
-    if goal is not None:
-        return goal
     return CallContext(
-        explicit_work_dir=explicit,
+        explicit_work_dir=_explicit_work_dir(arguments),
         jobs_root=container_jobs_root(),
         state_path=_env_path("BOOLEY_STATE_FILE"),
         logs_dir=_env_path("BOOLEY_LOGS_DIR"),
@@ -120,84 +102,9 @@ def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
     )
 
 
-def require_goal_work_dir(arguments: Mapping[str, Any], store: GoalStore) -> None:
-    """Refuse default routing while an occupying or unreadable record exists."""
-    if _explicit_work_dir(arguments) is not None:
-        return
-    scan = store.list_active()
-    if scan.corrupt:
-        raise GoalRecordCorruptError(scan.corrupt)
-    if scan.records:
-        paths = ", ".join(record.worktree_path for record in scan.records)
-        raise GoalBindingError(f"{work_dir_guidance().replace('`', '')} Goal worktrees: {paths}")
-
-
-def project_goal_store() -> GoalStore | None:
-    """Resolve the session's Goal store, preserving ordinary calls without a Project."""
+def project_booley_dir() -> Path | None:
+    """Resolve the session's Booley Directory, or ``None`` for calls without a Project."""
     try:
-        return GoalStore(resolve_booley_dir())
+        return resolve_booley_dir()
     except (FileNotFoundError, SourceCheckoutProjectError):
         return None
-
-
-def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> CallContext | None:
-    store = project_goal_store()
-    if store is None:
-        return None
-    require_goal_work_dir(arguments, store)
-    if explicit is None:
-        return None
-    try:
-        record = store.active_for_worktree(explicit)
-    except WorktreeIdentityError:
-        scan = store.list_active()
-        if scan.corrupt:
-            raise GoalRecordCorruptError(scan.corrupt) from None
-        if any(
-            explicit.resolve().is_relative_to(Path(item.worktree_path).resolve())
-            for item in scan.records
-        ):
-            raise
-        return None
-    if record is None:
-        return None
-    invocation = make_run_id("goal", compact_utc_now(), 0)
-    binding = bind_run(store, explicit, invocation)
-    from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
-
-    schedule_goal_baselines(store.booley_dir, store.load(binding.record_id))
-    paths = record_paths(store.booley_dir, binding.record_id)
-    overrides = {
-        "BOOLEY_GOAL_FILE": str(paths.record_file),
-        "BOOLEY_GOAL_RUN_BINDING": json.dumps(binding.to_json()),
-        "BOOLEY_STATE_FILE": str(paths.state_file),
-        "BOOLEY_LOGS_DIR": str(paths.logs_dir),
-        "BOOLEY_RUNTIME_DIR": str(paths.runtime_dir),
-        "BOOLEY_CONTROL_PROJECT_ROOT": os.environ.get("BOOLEY_CONTROL_PROJECT_ROOT")
-        or str(
-            ProtectedInputRoots(binding.worktree_root, store.booley_dir).main_checkout()
-            or binding.worktree_root
-        ),
-        "BOOLEY_SLUG": binding.record_id,
-    }
-    return CallContext(
-        explicit,
-        paths.jobs_dir,
-        paths.state_file,
-        paths.logs_dir,
-        paths.runtime_dir,
-        MappingProxyType(overrides),
-        binding,
-        session_key(store, explicit),
-    )
-
-
-def binding_from_environment() -> GoalRunBinding | None:
-    """Deserialize admission facts in an endpoint; never bind again at execution."""
-    raw = os.environ.get("BOOLEY_GOAL_RUN_BINDING")
-    if not raw:
-        return None
-    try:
-        return GoalRunBinding.from_json(json.loads(raw))
-    except ValueError as exc:
-        raise GoalBindingError(f"invalid Goal run binding environment: {exc}") from exc

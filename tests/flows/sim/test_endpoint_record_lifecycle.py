@@ -104,14 +104,14 @@ def _hook_project(tmp_path, commands, live_commands):
     return project
 
 
-def _hook_executor(build, disclosures, mutate_snapshot, checkpoint):
+def _hook_executor(build, disclosures, mutate_bundle, checkpoint):
     from tests.flows.sim.simulation_record_test_support import _executor
 
     return _executor(
         build,
         {"compile": 0, "durable_reuse": 0, "launch": 0},
         disclosures=disclosures,
-        mutate_snapshot=mutate_snapshot,
+        mutate_bundle=mutate_bundle,
         checkpoint=checkpoint,
     )
 
@@ -122,7 +122,7 @@ def _successful_pre_sim_record(
     access: str,
     *,
     commands: tuple[str, ...] = ("echo hook-out", "echo hook-err >&2"),
-    mutate_snapshot: bool = False,
+    mutate_bundle: str = "",
     live_commands: tuple[str, ...] | None = None,
     transform=None,
     invocation_directory: Path | None = None,
@@ -150,7 +150,7 @@ def _successful_pre_sim_record(
     invocation = invocation_directory or tmp_path / "reports/1"
     invocation.mkdir(parents=True, exist_ok=True)
     simulation_record = SimulationRecord(
-        _hook_executor(build, disclosures, mutate_snapshot, checkpoint)
+        _hook_executor(build, disclosures, mutate_bundle, checkpoint)
     ).run(_observed_simulation_record_request(plan, project, invocation, observer))
     return invocation, simulation_record
 
@@ -270,7 +270,7 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
             tmp_path,
             monkeypatch,
             "immutable",
-            mutate_snapshot=True,
+            mutate_bundle="changed_artifact",
             observer=flow._record_pre_sim_firing,
         )
     flow._reserved_invocation_dir = tmp_path / "reports/1"
@@ -1351,10 +1351,10 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
-    # The finished first Target keeps its public Coverage Campaign on the stopped card.
+    # The finished first Target keeps its public Coverage Record on the stopped card.
     coverage_record_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
     assert coverage_record_file.is_file()
-    assert result.report_text.splitlines()[-1] == f"  coverage campaign: {coverage_record_file}"
+    assert result.report_text.splitlines()[-1] == f"  Coverage Record: {coverage_record_file}"
     assert flow._simulation_record_outcomes == ()
     assert all(item["cycle_count"] is None for item in outcome.observations)
     _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)
@@ -1680,13 +1680,14 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
     )
     from tests.flows.sim.simulation_record_test_support import _Group
 
-    original = _Group.launch_snapshot
+    original = _Group.launch_bundle
 
-    def two_results(group, snapshot, run_cwd):
-        outcome = original(group, snapshot, run_cwd)
+    def two_results(group, bundle, evidence_root, run_cwd):
+        outcome = original(group, bundle, evidence_root, run_cwd)
         import json
 
-        transport = snapshot / "cocotb-results.json"
+        evidence_root.mkdir(parents=True, exist_ok=True)
+        transport = evidence_root / "cocotb-results.json"
         transport.write_text(
             json.dumps(
                 {
@@ -1708,7 +1709,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
             ),
         )
 
-    monkeypatch.setattr(_Group, "launch_snapshot", two_results)
+    monkeypatch.setattr(_Group, "launch_bundle", two_results)
     invocation, outcome = _successful_pre_sim_record(
         tmp_path, monkeypatch, "immutable", transform=_cocotb_hook_plan
     )
@@ -1813,7 +1814,7 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
             raise OSError("required terminal write unavailable")
 
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *_args: None)
     monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", run_resumed)
     monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", endpoint)
     monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
@@ -1933,7 +1934,7 @@ def _faulty_simulation_record(flow, tmp_path, monkeypatch, kind, fault):
         return SimpleNamespace(recovery=recovery)
 
     monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
-    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *_args: None)
     monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", resumed)
     monkeypatch.setattr(
         "booley.flows.sim.flow_resume._fresh_simulation_record_recovery_detail",

@@ -56,6 +56,7 @@ from booley.flows.eda_failures import (
 )
 from booley.flows.flow_config import expected_count
 from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
+from booley.flows.memory_admission import job_thread_count
 from booley.flows.metric_declarations import (
     Better,
     CostTier,
@@ -83,6 +84,7 @@ from booley.flows.result_table import (
     tty_text,
 )
 from booley.flows.synth import openroad_reuse
+from booley.flows.synth.backends.pipeline import openroad_thread_assignment
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
@@ -119,7 +121,6 @@ from ..baseline_worktree import (
     baseline_worktree,
     git_full_sha,
     git_short_sha,
-    resolve_ticket_baseline,
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
@@ -261,7 +262,7 @@ def _timing_report_paths(work_dir: Path) -> int | None:
 
     ``None`` when unset, so the backend default applies and the configure argv
     stays unchanged. The count is a report-size policy, not a recipe input: it
-    must not enter the recipe fingerprint (Goal Criteria pin it), which is why
+    must not enter the recipe fingerprint (Criteria pin it), which is why
     it lives here and not in a Target's ``advanced_settings_openroad``.
 
     Raises ``BoundaryError`` on anything but an integer of at least 1.
@@ -282,7 +283,7 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # ---------------------------------------------------------------------------
 
 
-# Metrics the synthesis Flow declares; names are the ones Goal thresholds are built from.
+# Metrics the synthesis Flow declares; names are the ones Criterion thresholds are built from.
 # area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
 _SYNTH_COST_TIER = CostTier.HIGH
 SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
@@ -1190,7 +1191,7 @@ def _work_path(path: Path, work_dir: Path) -> Path:
 
     Target files come back resolved (physical), and the tools run in the
     physical *work_dir*. Both sides must match, or a checkout reached through
-    a link (a Codespace Goal worktree under the symlinked ``.booley`` entry)
+    a link (a Codespace worktree under the symlinked ``.booley`` entry)
     yields a relative path that climbs out of the checkout. A file behind the
     checkout's own linked ``.booley`` entry stays named through the entry,
     which is what ``/work`` shows in the Sandbox.
@@ -1496,9 +1497,18 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         return syn_make.configure_synthesis(spec, self._synth_build_dir(target))
 
     def _synth_boundary_cmd(self, plan: Any, stage: str | None = None) -> list[str]:
-        """Return the Sandbox command for a configured plan, or for one Makefile *stage*."""
+        """Return the Sandbox command for a configured plan, or for one Makefile *stage*.
+
+        The ``openroad`` stage also carries the Job's thread share, when it has one.
+        """
         cmd = ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
-        return [*cmd, stage] if stage else cmd
+        if not stage:
+            return cmd
+        cmd.append(stage)
+        threads = job_thread_count()
+        if stage == "openroad" and threads is not None:
+            cmd.append(openroad_thread_assignment(threads))
+        return cmd
 
     # -- Single-target run ----------------------------------------------------
 
@@ -2305,20 +2315,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             return f"synth: {exc}"
         return None
 
-    def _apply_ticket_baseline(self, targets: Sequence[TargetHandle]) -> str | None:
-        """Default relative ticket criteria to their immutable baseline SHA."""
-        baseline, full_sha, error = resolve_ticket_baseline(
-            self.state.criteria,
-            "synthesis_ok_",
-            targets,
-            self.args.baseline,
-            Path(self.args.work_dir),
-            "synth",
-        )
-        self.args.baseline = baseline
-        self._baseline_full_sha = full_sha
-        return error
-
     def _synth_work_unit(
         self,
         target: str,
@@ -2617,7 +2613,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             return progress.publication_failure(exc)
 
     def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> EndpointOutcome | None:
-        baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
             self._target_pairs = target_pair_plans_for_handles(
@@ -2630,11 +2625,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
         except ImplementationComparisonError as exc:
             comparison_error = f"synth: {exc}"
-        if baseline_error is not None or comparison_error is not None:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=baseline_error or comparison_error or "synth comparison error",
-            )
+        if comparison_error is not None:
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=comparison_error)
         # Resolve enablement once per run, then reuse it in each config and the
         # dry-run report.
         config_error = self._resolve_run_policy(self._flow_enabled())

@@ -451,7 +451,6 @@ class TestFullInitRerun:
         user_owned = [
             pdir / "booley.toml",
             pdir / "tests.toml",
-            pdir / "goalsets" / "feature.md",
             pdir / "FUSESOC_IGNORE",
         ]
         for f in user_owned:
@@ -651,37 +650,6 @@ class TestProjectGitignoreBackfill:
         assert ignored("tickets/state/alpha.json")
         assert ignored("tickets/waiver-candidates/alpha.json")
         assert not ignored("tickets/history/alpha.md")
-
-    def test_goal_records_are_ignored_and_goal_history_is_tracked(self, tmp_path: Path):
-        # ADR 0067: Goal Record directories and Goal locks are local working
-        # state; the committed Goal summaries under goals/history/ are not.
-        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-
-        def ignored(path: str) -> bool:
-            result = run_bounded_child(
-                ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
-                cwd=tmp_path,
-            )
-            return result.returncode == 0
-
-        assert ignored("goals/fix-uart-20261006T101500Z/record.json")
-        assert ignored("goals/fix-uart-20261006T101500Z/.runtime/jobs/x.json")
-        assert ignored("goals/locks/worktree-abc.lock")
-        assert not ignored("goals/history/fix-uart-20261006T101500Z.md")
-
-    def test_backfill_puts_goal_history_reinclude_after_its_override(self, tmp_path: Path):
-        # A re-include written before the pattern it overrides does nothing, so
-        # an old file holding only the re-include gets both lines appended.
-        gitignore = tmp_path / ".gitignore"
-        gitignore.write_text("!goals/history/\n", encoding="utf-8")
-
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-
-        lines = gitignore.read_text(encoding="utf-8").splitlines()
-        last_override = max(i for i, line in enumerate(lines) if line == "goals/*/")
-        last_reinclude = max(i for i, line in enumerate(lines) if line == "!goals/history/")
-        assert last_reinclude > last_override
 
     def test_anchored_spelling_is_not_duplicated(self, tmp_path: Path):
         gitignore = tmp_path / ".gitignore"
@@ -914,8 +882,8 @@ class TestWindowsProjectDataLineEndings:
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
 
 
-@pytest.mark.parametrize("stale_sessions", [[], ["booley-session-old"]])
-def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys, stale_sessions):
+@pytest.mark.parametrize("stale", ["none", "headless", "vscode"])
+def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys, stale):
     image = pi.project_image_name(repo)
     changed = LifecycleResult(
         selected_reference=image,
@@ -923,17 +891,29 @@ def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys,
         status=ImageLifecycleStatus.CHANGED,
         changed_images=(image,),
     )
+    name = {
+        "none": None,
+        "headless": sr.session_container_name(repo),
+        "vscode": "vsc-editor",
+    }[stale]
+    stale_sessions = [name] if name else []
     monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: changed)
     monkeypatch.setattr(sr, "sessions_on_stale_image", lambda root, selected: stale_sessions)
 
     assert init_cmd._step_image_lifecycle(InitContext(project_root=repo)) is changed
 
-    output = capsys.readouterr().out
-    if stale_sessions:
-        assert "booley-session-old" in output
-        assert "booley session down && booley session up" in output
+    output = " ".join(capsys.readouterr().out.split())
+    assert "session down" not in output
+    if stale == "headless":
+        assert f"'{name}'" in output
+        assert "To restart it on the image just built, run `booley session refresh`" in output
+    elif stale == "vscode":
+        assert (
+            "To restart it on the image just built, use Dev Containers: Rebuild Container."
+            in output
+        )
     else:
-        assert "booley session down" not in output
+        assert "keeps serving it" not in output
 
 
 def test_init_does_not_scaffold_board_or_ticket_guidance(repo):
@@ -942,12 +922,6 @@ def test_init_does_not_scaffold_board_or_ticket_guidance(repo):
     assert not (project / "tickets").exists()
     assert not (project / "ticket_creation.md").exists()
     assert not (project / "ticket_defaults.md").exists()
-    assert {p.name for p in (project / "goalsets").iterdir()} == {
-        "feature.md",
-        "bugfix.md",
-        "refactor.md",
-        "verification.md",
-    }
 
 
 @pytest.mark.parametrize("stale", [False, True])
@@ -1002,7 +976,7 @@ def _stale_project(root: Path) -> Path:
 
 
 def _assert_backfill_report(output: str, missing: list[str]) -> None:
-    assert "would add 2 config skeleton file(s)" in output
+    assert "would add 3 config skeleton file(s)" in output
     assert (
         f"would add {len(missing)} missing ignore pattern(s) to .gitignore: {', '.join(missing)}"
         in output
@@ -1016,6 +990,7 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
     assert (target / "booley.toml").read_bytes() == init_cmd.BOOLEY_TOML_SKELETON.encode()
     assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
+    assert (target / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
     assert (target / "FUSESOC_IGNORE").read_bytes() == init_cmd.FUSESOC_IGNORE_BODY.encode()
     ignore = (target / ".gitignore").read_text()
     assert ignore.startswith("# custom ignore\ntmp/\n")
@@ -1028,8 +1003,47 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
         ".gitignore",
         "booley.toml",
         "tests.toml",
+        "metrics.toml",
         "FUSESOC_IGNORE",
     }
+
+
+def test_fresh_booley_dir_writes_metrics_defaults_that_validate(
+    repo, monkeypatch, capsys: pytest.CaptureFixture[str]
+):
+    from tests.harness.test_measure_cli import _measure
+
+    init_cmd._step_booley_dir(InitContext(project_root=repo))
+    metrics = repo / ".booley" / "metrics.toml"
+    assert metrics.read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
+    assert tomllib.loads(metrics.read_text(encoding="utf-8")) == {
+        "defaults": {"sim": {"tests_failed_max": 0}, "coverage": {"tests_failed_max": 0}}
+    }
+    capsys.readouterr()
+    assert _measure(monkeypatch, repo, "--validate") == 0
+    assert "declares no `[<target>.<flow>]` table" in capsys.readouterr().out
+
+
+def test_booley_dir_backfills_metrics_toml_only_when_absent(repo, capsys):
+    absent = _stale_project(repo)
+    kept_root = repo / "other"
+    kept_root.mkdir()
+    kept = _stale_project(kept_root)
+    user_text = b"[sim_core.sim]\ntests_failed_max = 3\n"
+    for target in (absent, kept):
+        (target / "booley.toml").write_bytes(b"# mine\n")
+        (target / "tests.toml").write_bytes(b"# mine\n")
+    (kept / "metrics.toml").write_bytes(user_text)
+
+    for target, root in ((absent, repo), (kept, kept_root)):
+        init_cmd._step_booley_dir(InitContext(project_root=root, check_only=True))
+        output = capsys.readouterr().out
+        assert ("would add 1 config skeleton file(s)" in output) is (target is absent)
+        init_cmd._step_booley_dir(InitContext(project_root=root))
+        capsys.readouterr()
+
+    assert (absent / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
+    assert (kept / "metrics.toml").read_bytes() == user_text
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
@@ -1048,6 +1062,7 @@ def test_booley_dir_check_reports_all_backfills_and_converges(repo, capsys):
     assert all(r.name == "booley_dir" and r.status == "warn" for r in ctx.results)
     assert any(r.detail == "permissions need 0700" for r in ctx.results)
     assert any("tests.toml" in r.detail for r in ctx.results)
+    assert any("metrics.toml" in r.detail for r in ctx.results)
     assert _complete_snapshot(repo) == before
     init_cmd._step_booley_dir(InitContext(project_root=repo))
     _assert_applied_backfills(repo, target, missing)
@@ -1758,13 +1773,21 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     reset_cache()
 
 
+@pytest.mark.timeout(120)
+def test_fresh_init_creates_no_goalsets(repo, capsys):
+    """Init seeds no Goalsets: Goal Mode is removed."""
+    assert _run_full_init(repo) == 0
+    out = capsys.readouterr().out
+    assert not list(repo.rglob("goalsets"))
+    assert "Goalsets" not in out
+
+
 EXPECTED_FRESH_INIT = (
     [
         "Host Bootstrap",
         "Booley Directory",
         "agent provider and authentication policy",
         "stealth core projections",
-        "Goalsets",
         "Sandbox Image lifecycle",
         "project Git-hook bundle",
         "worktree prune guard",
@@ -1779,7 +1802,6 @@ EXPECTED_FRESH_INIT = (
         ("booley_dir", "current"),
         ("agent_config", "ok"),
         ("core_projections", "ok"),
-        ("goalsets", "ok"),
         ("auth", "skip"),
         ("docker_image", "current"),
         ("git_hooks", "skip"),
@@ -1800,7 +1822,6 @@ EXPECTED_RERUN_INIT = (
         "Booley Directory",
         "agent provider and authentication policy",
         "stealth core projections",
-        "Goalsets",
         "Sandbox Image lifecycle",
         "project Git-hook bundle",
         "worktree prune guard",
@@ -1815,7 +1836,6 @@ EXPECTED_RERUN_INIT = (
         ("booley_dir", "current"),
         ("agent_config", "skip"),
         ("core_projections", "ok"),
-        ("goalsets", "current"),
         ("auth", "skip"),
         ("docker_image", "current"),
         ("git_hooks", "skip"),

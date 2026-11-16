@@ -18,7 +18,11 @@ from markdown_it import MarkdownIt
 from tests.docs.test_links import _text_anchors
 from tests.shipped_docs_support import rendered_shipped_docs
 
-from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
+from booley.harness.init_cmd import (
+    BOOLEY_TOML_SKELETON,
+    METRICS_TOML_SKELETON,
+    TESTS_TOML_SKELETON,
+)
 from booley.harness.setup.scaffold import ScaffoldChoices, _booley_toml
 from booley.runtime import docs_links, packaged_docs
 
@@ -176,6 +180,7 @@ def _scanned_texts() -> list[tuple[str, str, bool]]:
         [
             ("BOOLEY_TOML_SKELETON", BOOLEY_TOML_SKELETON, False),
             ("TESTS_TOML_SKELETON", TESTS_TOML_SKELETON, False),
+            ("METRICS_TOML_SKELETON", METRICS_TOML_SKELETON, False),
             ("scaffold booley.toml", scaffold, False),
         ]
     )
@@ -252,6 +257,5 @@ def test_setup_step0_and_booley_toml_cite_the_fixed_path() -> None:
     assert fixed("FLOW-SIM.md") in BOOLEY_TOML_SKELETON
     scaffold = _booley_toml(ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None))
     assert f"# Knob reference: {fixed('CONFIG.md')}" in scaffold
-    for skill in ("booley-heal", "booley-goal"):
-        text = (SKILLS / skill / "SKILL.md").read_text(encoding="utf-8")
-        assert fixed("TROUBLESHOOTING.md") in text, skill
+    heal = (SKILLS / "booley-heal/SKILL.md").read_text(encoding="utf-8")
+    assert fixed("TROUBLESHOOTING.md") in heal

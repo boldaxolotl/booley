@@ -89,6 +89,20 @@ def test_docs_check_runs_the_derived_content_tests() -> None:
     assert evidence[0]["with"]["label"] == "docs-check"
 
 
+def test_docs_check_runs_markdown_line_length_on_pull_requests() -> None:
+    """The line-length step is required: it sits in docs-check, which ci-required needs."""
+    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["docs-check"]["steps"]
+    runs = [step for step in steps if "markdown_line_length.py" in step.get("run", "")]
+
+    assert len(runs) == 1
+    assert runs[0]["run"] == 'python3 .github/scripts/markdown_line_length.py --base "${BASE_SHA}"'
+    assert runs[0]["env"] == {"BASE_SHA": "${{ needs.changes.outputs.diff_base }}"}
+    assert runs[0]["if"] == "github.event_name == 'pull_request'"
+    assert "continue-on-error" not in runs[0]
+    assert "docs-check" in workflow["jobs"]["ci-required"]["needs"]
+
+
 def test_derivation_fails_when_a_required_content_test_is_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -198,20 +212,6 @@ def test_new_content_reader_is_derived(
     assert expected in _script().derive(repo)
 
 
-def test_goal_unit_tests_are_never_derived(tmp_path: Path) -> None:
-    """CI never runs Goal Mode unit tests (#3329), even those that read documentation."""
-    reader = 'SPEC = "docs/user/X.md"\n\n\ndef test_r():\n    assert SPEC\n'
-    repo = _tracked_repo(
-        tmp_path,
-        {"tests/goals/test_reader.py": reader, "tests/other/test_reader.py": reader},
-    )
-
-    derived = set(_script().derive(repo))
-
-    assert "tests/other/test_reader.py" in derived
-    assert "tests/goals/test_reader.py" not in derived
-
-
 def test_unrelated_test_is_not_derived(tmp_path: Path) -> None:
     repo = _tracked_repo(
         tmp_path,
@@ -221,17 +221,9 @@ def test_unrelated_test_is_not_derived(tmp_path: Path) -> None:
             # though it mentions the word "docs".
             "src/booley/words.py": 'BUCKET = "docs"\n',
             "tests/test_words.py": "from booley import words\n",
-            # Synthetic fixture conftests write documentation into temporary
-            # projects; they do not read this repository's documentation.
-            "tests/goals/conftest.py": 'SPEC = "docs/user/X.md"\n',
-            "tests/goals/test_goal.py": "def test_g():\n    assert True\n",
-            # An outside importer of the synthetic conftest is no reader either.
-            "tests/harness/test_uses_goal.py": "from tests.goals import conftest\n",
         },
     )
 
     derived = set(_script().derive(repo))
     assert "tests/test_unrelated.py" not in derived
     assert "tests/test_words.py" not in derived
-    assert "tests/goals/test_goal.py" not in derived
-    assert "tests/harness/test_uses_goal.py" not in derived

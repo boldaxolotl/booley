@@ -410,7 +410,7 @@ def test_legacy_schema_loads_missing_goal_facts() -> None:
             "timeout_s": 30,
         }
     )
-    assert rec.binding is None and rec.work_dir is None and rec.session_key is None
+    assert rec.work_dir is None and rec.session_key is None
     assert rec.schema == 2
 
 
@@ -425,8 +425,6 @@ def test_run_id_has_random_eight_hex_suffix() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("binding", []),
-        ("binding", "bad"),
         ("work_dir", 17),
         ("session_key", []),
         ("schema", False),

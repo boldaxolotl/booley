@@ -1887,8 +1887,13 @@ def test_packaged_install_rejects_exact_local_parent_when_contract_is_unavailabl
         ),
     )
 
-    with pytest.raises(lifecycle.InstalledImageContractError, match="compatibility metadata"):
+    with pytest.raises(
+        lifecycle.InstalledImageContractError, match="compatibility metadata"
+    ) as caught:
         _check_project(root, docker)
+
+    assert "then run the command again" in str(caught.value)
+    assert "session refresh" not in str(caught.value)
 
 
 def _wire_distribution_pull(
@@ -3499,6 +3504,30 @@ def test_prepared_parent_losing_alias_can_validate_and_commit_without_obsolete_l
     assert lifecycle.commit(
         prepared, docker=docker
     ).selected_reference == lifecycle.project_image.project_image_name(root)
+
+
+def test_plan_rebuilds_stale_managed_image_without_booley_mount_point(
+    external_layout, monkeypatch
+):
+    """A stale managed tag built for an older Booley has no mount point; it is rebuilt."""
+    root, docker = external_layout.root, external_layout.docker
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "old-wheel")
+    original = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _install_planned_graph(docker, original.nodes)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "new-wheel")
+    _ACTUAL_ALIAS_PROBE.cache_clear()
+    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", _ACTUAL_ALIAS_PROBE)
+    monkeypatch.setattr(
+        lifecycle.project_image,
+        "run_captured_bounded",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "absent\n", ""),
+    )
+
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _ACTUAL_ALIAS_PROBE.cache_clear()
+
+    assert planned.steps[-1].action is lifecycle.PlanAction.BUILD
+    assert planned.nodes[-1].role is lifecycle.ImageRole.WHEEL_OVERLAY
 
 
 def test_cleanup_failure_after_adoption_is_diagnostic_and_abort_is_idempotent(

@@ -211,6 +211,13 @@ jobs:
           BASE_SHA: ${{ needs.changes.outputs.diff_base }}
         run: git diff --check "${BASE_SHA}" "${GITHUB_SHA}" --
 
+      # Standard library only, so it runs before setup-python and fails fast.
+      - name: Check Markdown line length
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
+        run: python3 .github/scripts/markdown_line_length.py --base "${BASE_SHA}"
+
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: setup-python
         with:
@@ -277,6 +284,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -304,6 +313,12 @@ jobs:
 
       - name: Reject suppressed test assertions
         run: python .github/scripts/check_suppressed_assertions.py
+
+      - name: Reject new or grown functions over 50 lines
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
+        run: python .github/scripts/check_function_length.py --base "${BASE_SHA}"
 
       - name: Ruff check
         run: ruff check .
@@ -1484,7 +1499,7 @@ jobs:
               booley-test python /work/tests/docker/verilator_acceptance.py
               --work-dir /validation-tmp
 
-          - name: Run Coverage Campaign release matrix and production collector
+          - name: Run Coverage Record release matrix and production collector
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/coverage-release
             run: >-
@@ -1891,7 +1906,7 @@ jobs:
           .github/scripts/verify_riscv_image_contract.sh \
             "${evidence}" booley-riscv-test booley-standard-substrate:ci \
             "${evidence}/standard-package-inventory.json"
-          touch "${evidence}/goal-readiness-started"
+          touch "${evidence}/measurement-started"
           .github/scripts/run_picorv32_ci_demo.sh \
             "${{ github.workspace }}" \
             "booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv"
@@ -1932,12 +1947,12 @@ jobs:
           if test -e ibex-demo; then
             sudo chown -R "$(id -u):$(id -g)" ibex-demo
           fi
-          readiness="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
-          if test -e "${readiness}"; then
-            sudo chown -R "$(id -u):$(id -g)" "${readiness}"
+          measurement="${RUNNER_TEMP}/riscv-image-evidence/measurement"
+          if test -e "${measurement}"; then
+            sudo chown -R "$(id -u):$(id -g)" "${measurement}"
           fi
-          if test -f "${readiness}/goal-readiness.json"; then
-            sudo chmod a+r "${readiness}/goal-readiness.json"
+          if test -f "${measurement}/measurement.json"; then
+            sudo chmod a+r "${measurement}/measurement.json"
           fi
 
       - name: Upload candidate RISC-V evidence
@@ -1949,20 +1964,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Read Goal readiness attempt marker
-        id: goal-readiness
+      - name: Read measurement attempt marker
+        id: measurement
         if: always()
         run: |
-          if test -f "${RUNNER_TEMP}/riscv-image-evidence/goal-readiness-started"; then
+          if test -f "${RUNNER_TEMP}/riscv-image-evidence/measurement-started"; then
             echo "started=true" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Upload Goal readiness evidence
-        if: always() && steps.goal-readiness.outputs.started == 'true'
+      - name: Upload measurement evidence
+        if: always() && steps.measurement.outputs.started == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
+          name: measurement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/measurement/measurement.json
           if-no-files-found: error
           retention-days: 14
 

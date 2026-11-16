@@ -2,6 +2,9 @@
 
 Receipt freshness (``booley.criteria``) may not import ``booley.specialists``, so the
 declaration lives here, where both the Reviewer and the receipt contract can read it.
+
+The shared Reviewer prompt owns the disposition and output instructions; a guide
+holds only its review checklist, so every category reports in the same shape.
 """
 
 from __future__ import annotations
@@ -42,7 +45,10 @@ REVIEW_GUIDES: dict[tuple[str, str], tuple[ReviewGuide, ...]] = {
         ReviewGuide("checklist", "rtl/protocol-cdc-checklist.md"),
         ReviewGuide("hunt", "rtl/protocol-cdc-hunt.md"),
     ),
-    ("rtl", "security"): (ReviewGuide("checklist", "rtl/security-checklist.md"),),
+    ("rtl", "security"): (
+        ReviewGuide("checklist", "rtl/security-checklist.md"),
+        ReviewGuide("hunt", "rtl/security-hunt.md"),
+    ),
     ("rtl", "optimization"): (
         ReviewGuide("checklist", "rtl/optimization-checklist.md"),
         ReviewGuide("hunt", "rtl/optimization-hunt.md"),
@@ -53,6 +59,7 @@ REVIEW_GUIDES: dict[tuple[str, str], tuple[ReviewGuide, ...]] = {
         ReviewGuide("checklist", "testbench/c-cpp-checklist.md", "cpp"),
         ReviewGuide("checklist", "testbench/hdl-checklist.md", "hdl"),
         ReviewGuide("checklist", "testbench/cocotb-checklist.md", "cocotb"),
+        ReviewGuide("hunt", "testbench/tb-hunt.md"),
     ),
 }
 

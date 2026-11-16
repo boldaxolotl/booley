@@ -21,7 +21,6 @@ from booley.flows.sim.coverage_record_store import (
 )
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import PreSimEvidence
-from booley.flows.sim.record_retention import _coverage_owned_files
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     SimulationBuildResult,
@@ -40,6 +39,8 @@ class NativeExecution:
         self.build_root = Path(tempfile.mkdtemp(prefix="booley-coverage-test-"))
         self.executable = self.build_root / "simv"
         self.executable.write_bytes(b"authenticated simulator image")
+        self.verify_bundle = None
+        self.evidence_root = None
 
     def build(self, request):
         return SimulationBuildResult(True, collector=PINNED_VERILATOR)
@@ -52,6 +53,9 @@ class NativeExecution:
         )
 
     def run(self, request):
+        if self.verify_bundle is not None:
+            # The real execution checks the bundle after Pre-Sim, before its launch.
+            self.verify_bundle()
         self.runs.append(request)
         if not self.missing:
             request.raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,8 +70,10 @@ class NativeExecution:
     def authenticated_image(self):
         return self.build_root, (self.executable,)
 
-    def bind_authenticated_attempt(self, snapshot_root, run_cwd):
-        self.executable = snapshot_root / self.executable.name
+    def bind_authenticated_attempt(self, bundle_root, evidence_root, run_cwd, verify_bundle):
+        self.executable = bundle_root / self.executable.name
+        self.evidence_root = evidence_root
+        self.verify_bundle = verify_bundle
         self.run_cwd = run_cwd
 
 
@@ -256,6 +262,9 @@ class InvalidHookExecution(NativeExecution):
         self.events = events
 
     def run(self, request):
+        if self.verify_bundle is not None:
+            # The real execution checks the bundle after Pre-Sim, before its launch.
+            self.verify_bundle()
         self.runs.append(request)
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(self.payload(self.hits), encoding="utf-8")
@@ -295,7 +304,7 @@ def _assert_invalid_hook_coverage_record(outcome, plan, events, expected_finding
     assert loaded.points
     assert loaded.rollups == ()
     target_dir = outcome.coverage_record_path.parent
-    owned = _coverage_owned_files(target_dir, persisted)
+    owned = {(target_dir / artifact.path).absolute() for artifact in loaded.artifacts}
     assert all(path.absolute() in owned for path in target_dir.glob("hooks/*.json"))
     if gated:
         assert loaded.evaluation["status"] == "blocked"
@@ -635,7 +644,7 @@ def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_p
             return SimulationCommandResult(1, stderr="merge executable unavailable")
 
     def checkpoint(boundary):
-        if boundary == "after:coverage_campaign":
+        if boundary == "after:coverage_record":
             raise OSError("injected post-merge publication failure")
 
     outcome = run_target(
@@ -712,7 +721,7 @@ def persistence_fault(boundary):
     original_replace, original_link = Path.replace, os.link
     filenames = {
         "point_store": "coverage-points.jsonl.gz",
-        "campaign": "coverage.json",
+        "coverage_record": "coverage.json",
     }
 
     def replace_file(source, destination):
@@ -835,7 +844,7 @@ def test_incomplete_collection_never_accuses_module_sources(tmp_path):
     assert not any(f.code == GAP_CODE for f in coverage_record.findings)
 
 
-@pytest.mark.parametrize("boundary", ["point_store", "campaign"])
+@pytest.mark.parametrize("boundary", ["point_store", "coverage_record"])
 def test_persistence_boundaries_abort_with_a_truthful_outcome(tmp_path, monkeypatch, boundary):
     import os
 
@@ -882,7 +891,7 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
         retained_plan = replace(plan, invocation_dir=tmp_path / "reports/sim" / str(number + 3))
 
         def checkpoint(boundary):
-            if boundary == "after:coverage_campaign":
+            if boundary == "after:coverage_record":
                 raise OSError("publication interrupted")
 
         retained = run_target(retained_plan, NativeExecution(), publication_checkpoint=checkpoint)

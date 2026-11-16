@@ -19,8 +19,8 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 
 ROOT = Path(__file__).resolve().parents[2]
-TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-campaign"
-UART = ROOT / "qa/missions/uart/fixtures/simulation-campaign"
+TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-record"
+UART = ROOT / "qa/missions/uart/fixtures/simulation-record"
 
 
 def _module(name: str, path: Path):

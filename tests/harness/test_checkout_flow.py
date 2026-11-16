@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
 from booley.runtime import booley_dir, job_records, job_slots
@@ -49,7 +48,8 @@ FLOW = "checkout_stub"
 # The stub Flow's behavior follows ``--target``: ``pass`` runs one real command,
 # ``fail`` returns a failing outcome, ``crash`` raises, ``abort`` exits at once with no
 # report, ``wait`` (or any target starting with ``wait``) waits (bounded) for the ``release``
-# marker and ``env`` records what it saw. Every run appends its target to ``order`` when it
+# marker, ``linger`` is a ``wait`` that takes 7 s to stop once interrupted, and ``env`` records
+# what it saw. Every run appends its target to ``order`` when it
 # starts, and a target starting with ``metrics`` returns a typed detail. Its control
 # directory is written into the source.
 STUB_FLOW = """
@@ -63,10 +63,7 @@ CTL = Path({ctl!r})
 class CheckoutStub(BooleyFlow):
     name = "checkout_stub"
     description = "Checkout Flow runner fixture"
-    JOB_CLASS = "light"
-
-    def _memory_admitted(self):
-        return False  # counted light slot: the test queues behind a plain slot holder
+    JOB_CLASS = "memory"  # admitted by Memory Reservation, so a run-alone holder blocks it
     target_required = False
 
     def _add_args(self, parser):
@@ -117,10 +114,17 @@ class CheckoutStub(BooleyFlow):
                 encoding="utf-8",
             )
             return EndpointOutcome()
+        if target == "linger":
+            def stop(*_):  # a stop takes 7 s, longer than the MCP default cancel grace of 5 s
+                (CTL / "stopping").write_text("1", encoding="utf-8")
+                time.sleep(7)
+                os._exit(130)
+            signal.signal(signal.SIGINT, stop)
+            (CTL / "lingering").write_text("1", encoding="utf-8")  # the handler is installed
         if target == "stubborn":
             signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
             (CTL / "ignoring").write_text("1", encoding="utf-8")
-        if target.startswith("wait") or target == "stubborn":
+        if target.startswith("wait") or target in ("stubborn", "linger"):
             deadline = time.monotonic() + 45
             while not (CTL / "release").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
@@ -656,12 +660,16 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
     monkeypatch.setenv("BOOLEY_INHERITED_SLOT", "caller-slot")
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(world.live / "elsewhere"))
     slots_root = world.main / "runtime" / "jobs" / "slots"
-    store = job_slots.SlotStore(slots_root, SlotCaps())
-    # Flows of the session's own checkout hold all of Main's light slots (the stub Flow is light-class).
+    store = job_slots.SlotStore(slots_root)
+    # A Flow of the session's own checkout runs alone in Main's memory class.
     argv = _proc_cmdline(os.getpid()) or []
     holders = [
-        store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=argv)
-        for _ in range(SlotCaps().max_light)
+        store.acquire(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            argv=argv,
+            memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+        )
     ]
     reader = JobReader(world.main, slots_root=slots_root)
     released = False
@@ -670,7 +678,7 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
             run = pool.submit(run_checkout_flow, world.request("pass"))
 
             def queued() -> bool:
-                snapshot = reader.read([])
+                snapshot = reader.read()
                 return [view.state for view in snapshot.jobs] == ["queued"]
 
             poll(queued, "the checkout Flow to queue")

@@ -77,5 +77,9 @@ still shows its stored run unless you add `--again`.
 | `2` | A Flow errored (also when a bound is unmet too), `metrics.toml` declares no table, `--target` names a Target with no table ("nothing to measure"), or the measurement could not run. |
 | `130` | Ctrl-C cancelled the measurement. A run with a finished Flow is stored as cancelled, never as measured. |
 
+The Developer Agent can run the same measurement for you. It reports the verdict
+line, the failing rows and the paths of the reports, and cancelling it stops the
+measurement's Flows.
+
 The Dashboard shows each session's measurement; see
 [The dashboard](USAGE.md#the-dashboard).

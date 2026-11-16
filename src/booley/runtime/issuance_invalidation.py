@@ -11,7 +11,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning.licensing import flexnet_docker
 from booley.runtime import interactive_docker
 from booley.runtime.filesystem_utils import unlink_file
-from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.private_store import session_store_repair
 
 
 class InvalidationError(RuntimeError):
@@ -108,4 +108,18 @@ def journal_store() -> ProjectStore:
         "issuance invalidation",
         InvalidationError,
     )
-    return ProjectStore(private, SESSION_STORE_REPAIR)
+    return ProjectStore(private, _journal_repair)
+
+
+def _journal_repair(path: Path, root: str) -> str:
+    """Repair for a misnamed journal: the file is the only record of cleanup still owed."""
+    selector = flexnet_docker.project_resource_filter(root)
+    return (
+        f"it is the only record that this Project's Sandbox and FlexNet License Relay "
+        f"containers and networks must still be removed: on the host run "
+        f"`docker container rm -f $(docker container ls -aq --filter {selector})`, then "
+        f"`docker network rm $(docker network ls -q --filter {selector})` "
+        "(when a command's only error is that it needs at least 1 argument, nothing of that "
+        "kind is left; on any other error keep the file and retry), then "
+        + session_store_repair(path, root)
+    )

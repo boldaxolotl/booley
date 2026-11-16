@@ -7,13 +7,13 @@ PICORV32_INPUT_FILES = frozenset(
         ".github/ci/constraints.txt",
         ".github/contracts/picorv32-demo.toml",
         ".github/scripts/export_demo_contract.py",
-        ".github/scripts/goal_mode_driver.py",
         ".github/scripts/picorv32_ci_inputs.py",
         ".github/scripts/picorv32_demo_contract.py",
         ".github/scripts/riscv_candidate.sh",
         ".github/scripts/verify_picorv32_demo.sh",
         ".github/scripts/run_picorv32_ci_demo.sh",
-        ".github/scripts/release_validation/goal_readiness.py",
+        ".github/scripts/release_validation/measure_round_trip.py",
+        ".github/scripts/release_validation/measurement_evidence.py",
         ".github/workflows/picorv32-demo.yml",
         "pyproject.toml",
     }
@@ -22,10 +22,8 @@ PICORV32_INPUT_FILES = frozenset(
 RISCV_IMAGE_PREFIXES = (
     ".github/actions/prepare-picorv32-demo/",
     "demo/",
-    "src/booley/goals/",
     "src/booley/review/",
     "src/booley/evidence/",
-    "tests/fixtures/goal_mode_smoke/",
 )
 RISCV_IMAGE_FILES = frozenset(
     {

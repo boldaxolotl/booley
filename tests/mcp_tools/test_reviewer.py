@@ -1534,7 +1534,7 @@ class TestPromptConstruction:
         cases = [
             ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
             ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist", "protocol-cdc-hunt"]),
-            ("rtl", "security", "rtl/a.sv", ["security-checklist"]),
+            ("rtl", "security", "rtl/a.sv", ["security-checklist", "security-hunt"]),
             (
                 "rtl",
                 "optimization",
@@ -1543,13 +1543,13 @@ class TestPromptConstruction:
             ),
             ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
             ("rtl", "spec", "rtl/a.sv", ["spec-hunt"]),
-            ("tb", "quality", "tb/t.sv", ["hdl-checklist"]),
-            ("tb", "quality", "tb/test.py", ["cocotb-checklist"]),
+            ("tb", "quality", "tb/t.sv", ["hdl-checklist", "tb-hunt"]),
+            ("tb", "quality", "tb/test.py", ["cocotb-checklist", "tb-hunt"]),
             (
                 "tb",
                 "quality",
                 "tb/main.cpp,tb/test.py,tb/tb.sv",
-                ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
+                ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist", "tb-hunt"],
             ),
         ]
         for index, (category, focus, scope, expected) in enumerate(cases):
@@ -1574,6 +1574,41 @@ class TestPromptConstruction:
             if focus == "spec":
                 assert "## Trace targets" in system
                 assert "## Checklist" not in system
+
+    def test_security_hunt_prompt_names_scenario_categories_and_scope_boundaries(
+        self, tmp_path: Path
+    ):
+        """A guide edit or packaging change must not drop what the hunt call receives."""
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--scope",
+                "rtl/a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "security",
+            ]
+        )
+        hunt = tuple(g for g in endpoint._review_guides("security", "rtl") if g.kind == "hunt")
+        system = endpoint._build_system_prompt("security", hunt)
+        assert "(security-hunt)" in system
+        assert "(security-checklist)" not in system
+        boundaries = system.split("## Scope Boundaries", 1)[1].split("\n## ", 1)[0]
+        assert "`bugs`" in boundaries
+        assert "`protocol`" in boundaries
+        assert '{"issues": []}' in boundaries
+        for category in (
+            "Attacker-controlled inputs",
+            "Debug, test, and scan access",
+            "Reset and power",
+            "Error, alert, and escalation paths",
+            "Fault injection",
+            "Secret flow",
+        ):
+            assert f"**{category}**" in system, category
 
     def test_optimization_hunt_guide_names_scenario_categories_and_scope_boundaries(
         self, tmp_path: Path
@@ -2230,7 +2265,7 @@ class TestFullRtlReview:
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
-        """Single focus runs one agent call, criterion key reflects focus."""
+        """Single focus runs one agent call per guide kind, criterion key reflects focus."""
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2247,7 +2282,7 @@ class TestFullRtlReview:
         result = endpoint._run()
         assert result.exit_code == 0
         assert result.criterion_key == "review_rtl_security_done"
-        assert mock_agent.call_count == 1
+        assert mock_agent.call_count == 2  # security declares a checklist and a hunt guide
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_criterion_set_rtl_spec(self, mock_agent, state_file: Path):
@@ -2360,7 +2395,7 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
             "--category",
             "rtl",
             "--focus",
-            "security",
+            "code_style",
             "--work-dir",
             str(tmp_path),
             "--report-dir",
@@ -3857,7 +3892,8 @@ def test_cpp_guidance_preview_and_project_overlay(tmp_path):
         assert "Project C lifecycle rule" in prompt
         assert ("Canonical style guide for SystemVerilog" in prompt) == ("tb/tb.sv" in scope)
         assert endpoint._dry_run_preview().detail["guides"] == [
-            {"kind": "checklist", "name": name} for name in labels
+            *({"kind": "checklist", "name": name} for name in labels),
+            {"kind": "hunt", "name": "tb-hunt"},
         ]
 
 
@@ -3911,6 +3947,13 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
             ],
         ),
         (
+            "security",
+            [
+                {"kind": "checklist", "name": "security-checklist"},
+                {"kind": "hunt", "name": "security-hunt"},
+            ],
+        ),
+        (
             "optimization",
             [
                 {"kind": "checklist", "name": "optimization-checklist"},
@@ -3919,8 +3962,21 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
         ),
         ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),
     ]
-    for focus, expected in cases:
-        work_dir = tmp_path / focus
+    tb_cases = [
+        ("tb/t.sv", "hdl-checklist"),
+        ("tb/test.py", "cocotb-checklist"),
+    ]
+    cases = [("rtl", "rtl/a.sv", focus, expected) for focus, expected in cases] + [
+        (
+            "tb",
+            scope,
+            "quality",
+            [{"kind": "checklist", "name": name}, {"kind": "hunt", "name": "tb-hunt"}],
+        )
+        for scope, name in tb_cases
+    ]
+    for index, (category, scope, focus, expected) in enumerate(cases):
+        work_dir = tmp_path / f"case{index}"
         work_dir.mkdir()
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -3928,9 +3984,9 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
                 "--work-dir",
                 str(work_dir),
                 "--scope",
-                "rtl/a.sv",
+                scope,
                 "--category",
-                "rtl",
+                category,
                 "--focus",
                 focus,
             ]

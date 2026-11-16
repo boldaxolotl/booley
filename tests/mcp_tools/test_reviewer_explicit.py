@@ -1,4 +1,4 @@
-"""Explicit discovery/verification and Goal-owned review contracts (issue #1507)."""
+"""Explicit discovery/verification review contracts (issue #1507)."""
 
 from __future__ import annotations
 
@@ -11,16 +11,9 @@ import pytest
 
 from booley.criteria.freshness import evaluate_verification_freshness
 from booley.criteria.state import DevelopmentState
-from booley.flows.review_scope import resolve_review_files
 from booley.flows.source_fingerprint import compute_source_fingerprint
-from booley.goals.entry import check_goal_targets
-from booley.goals.freshness import evaluate_goal_freshness, stamp_goal_detail
-from booley.goals.model import GoalArgError, GoalFamily, GoalSpec, parse_goal_arg
-from booley.goals.target_surface import review_target_surface
-from booley.goals.translate import translate_goals
 from booley.mcp import server
 from booley.mcp.base import McpToolResult
-from booley.mcp.call_context import CallContext
 from booley.mcp.schema_extractor import extract_schema
 from booley.mcp.server import _params_to_argv
 from booley.runtime.file_lock import nonblocking_file_lock
@@ -79,30 +72,6 @@ def discovery(
         **kwargs,
     )
     return reviewer._run(), reviewer, invoke
-
-
-@pytest.mark.parametrize("scope", [{}, {"target": "top", "paths": ["rtl/dut.sv"]}, {"paths": []}])
-def test_review_goal_requires_exactly_one_nonempty_scope(scope: dict[str, Any]) -> None:
-    with pytest.raises(GoalArgError, match=r"exactly one|must not be empty"):
-        parse_goal_arg({"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", **scope})
-
-
-@pytest.mark.parametrize("path", ["../dut.sv", "/dut.sv", "C:\\dut.sv", "a\\..\\dut.sv"])
-def test_review_paths_cannot_escape(path: str) -> None:
-    with pytest.raises(GoalArgError, match="relative"):
-        parse_goal_arg(
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "paths": [path]}
-        )
-
-
-def test_review_paths_match_category_and_stay_inside_worktree(project: Path) -> None:
-    with pytest.raises(ValueError, match="category"):
-        resolve_review_files(project, "rtl", {"paths": ["tb/test.py"]})
-    outside = project.parent / "outside.sv"
-    outside.write_text("module outside; endmodule")
-    (project / "rtl/link.sv").symlink_to(outside)
-    with pytest.raises(ValueError, match="escapes"):
-        resolve_review_files(project, "rtl", {"paths": ["rtl/link.sv"]})
 
 
 @pytest.mark.parametrize(
@@ -184,7 +153,7 @@ def test_interactive_discovery_replaces_findings_and_latest_call_controls_verify
         project, monkeypatch, [*args[:-1], "security"], payload={"issues": []}
     )
     assert reviewer._run().exit_code == 0
-    assert invoke.call_count == 1
+    assert invoke.call_count == 2  # security declares a checklist and a hunt guide
     verifier, invoke = endpoint(project, monkeypatch, ["--verify"])
     assert "no open findings" in verifier._run().report_text
     invoke.assert_not_called()
@@ -232,46 +201,6 @@ def test_mcp_waiver_pairs_roundtrip() -> None:
     )
     parsed = reviewer.parse_args(args)
     assert parsed.waive == [["id1", "first reason"], ["id2", "second reason"]]
-
-
-def test_target_scope_uses_dependency_closure_and_category(project: Path) -> None:
-    (project / "top.core").write_text("""CAPI=2:
-name: ::top:0
-filesets:
-  rtl: {files: [rtl/dut.sv], file_type: systemVerilogSource, depend: ["::dep:0"]}
-  tb: {files: [tb/test.py], file_type: user, tags: [tb]}
-targets:
-  top: {filesets: [rtl, tb], toplevel: dut}
-  other: {filesets: [tb], toplevel: dut}
-""")
-    (project / "dep.core").write_text("""CAPI=2:
-name: ::dep:0
-filesets:
-  rtl: {files: [rtl/dep.sv], file_type: systemVerilogSource}
-targets:
-  default: {filesets: [rtl]}
-""")
-    (project / "rtl/dep.sv").write_text("module dep; endmodule")
-    (project / "tb").mkdir()
-    (project / "tb/test.py").write_text("async def test(): pass")
-    assert resolve_review_files(project, "rtl", {"target": "top"}) == ["rtl/dep.sv", "rtl/dut.sv"]
-    assert resolve_review_files(project, "tb", {"target": "top"}) == ["tb/test.py"]
-
-
-def test_goal_freshness_ignores_unreviewed_files(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    initial, reviewer, _ = discovery(project, monkeypatch, payload={"issues": []})
-    assert initial.criterion_met
-    goal = GoalSpec(KEY, GoalFamily.REVIEW, None, {"paths": ["rtl/dut.sv"]}, ("ad-hoc",))
-    entry = reviewer.state.criteria[KEY]
-    entry.detail = stamp_goal_detail(
-        KEY, entry.detail, work_dir=project, goal=goal, target_surface={"digest": "surface"}
-    )
-    (project / "rtl/unrelated.sv").write_text("module unrelated; endmodule")
-    assert not evaluate_goal_freshness(
-        KEY, reviewer.state.criteria[KEY], goal=goal, work_dir=project
-    ).stale
 
 
 def test_verify_does_not_certify_a_changed_spec(
@@ -395,8 +324,8 @@ def test_done_findings_need_no_verify_and_do_not_block_discovery(
         payload={"issues": []},
     )
     assert reviewer._run().exit_code == 0
-    # rtl/bugs declares two guides (checklist + hunt), one agent call each; security has one.
-    assert invoke.call_count == (2 if next_focus == "bugs" else 1)
+    # rtl/bugs and rtl/security each declare a checklist and a hunt guide: one agent call each.
+    assert invoke.call_count == 2
 
 
 def test_review_history_is_scoped_to_checkout_under_shared_booley_dir(
@@ -434,46 +363,9 @@ def test_review_calls_refuse_overlap_and_reload_history_loaded_before_other_call
     assert first._run().exit_code == 0
     result = second._run()
     assert result.exit_code == 0
-    assert second_invoke.call_count == 1
+    assert second_invoke.call_count == 2  # security: checklist and hunt
     assert result.detail["review_call_order"] == 2
     assert "review_rtl_bugs_done" in DevelopmentState.load(project / "state.json").criteria
-
-
-def test_review_scope_can_be_authored_before_files_are_created(project: Path) -> None:
-    goal = parse_goal_arg(
-        {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "paths": ["rtl/future.sv"]}
-    )
-    spec = translate_goals([goal]).goals[0]
-    warnings = check_goal_targets(project, [spec])
-    assert any("stays unmet" in warning for warning in warnings)
-    (project / "rtl/future.sv").write_text("module future; endmodule")
-    assert check_goal_targets(project, [spec]) == []
-    assert resolve_review_files(project, "rtl", spec.params) == ["rtl/future.sv"]
-
-
-def test_goal_scope_preserves_comma_in_filename(project: Path) -> None:
-    path = "rtl/dut,variant.sv"
-    (project / path).write_text("module dut; endmodule")
-    goal = parse_goal_arg(
-        {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "paths": [path]}
-    )
-    assert resolve_review_files(project, "rtl", translate_goals([goal]).goals[0].params) == [path]
-
-
-def test_target_declaration_stamp_ignores_other_category_bytes_and_test_registry(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    test_target_scope_uses_dependency_closure_and_category(project)
-    control = project / ".booley"
-    control.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(control))
-    before = review_target_surface(project, "top")
-    (project / "tb/test.py").write_text("async def changed(): pass")
-    (control / "tests.toml").write_text("# unrelated test registry")
-    assert review_target_surface(project, "top") == before
-    core = project / "top.core"
-    core.write_text(core.read_text() + "\n# Target declaration changed\n")
-    assert review_target_surface(project, "top") != before
 
 
 def test_mcp_pair_forwarding_is_generic() -> None:
@@ -496,7 +388,6 @@ def test_review_arguments_do_not_accept_abbreviations(flag: str) -> None:
 def test_mcp_endpoint_command_forwards_verify_waivers(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    context = CallContext(project, None, None, None, None, {})
     monkeypatch.setattr(
         server, "_resolve_transcript_dir", lambda *args, **kwargs: project / "transcripts"
     )
@@ -509,7 +400,6 @@ def test_mcp_endpoint_command_forwards_verify_waivers(
             "is_specialist": True,
         },
         {},
-        context,
     )
     assert command[:3] == ["python", "-m", "booley.specialists.reviewer"]
     args = ReviewerSpecialist().parse_args(command[3:])

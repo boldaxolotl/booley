@@ -662,8 +662,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
         runs ``fusesoc run --setup``, which itself runs Edalize ``configure()``
         and leaves a ready-to-``make`` build dir — superseding the Booley-built
         EDAM of 0019. Booley contributes nothing to the design here: sources,
-        ``--lint-only``/``-Wall`` (the lint flow + the Target's
-        ``flow_options.verilator_options``), the top module, and every define
+        ``--lint-only`` (from Edalize's lint flow), any warning switch such
+        as ``-Wall`` (only from the Target's ``flow_options.verilator_options``;
+        this Flow adds none), the top module, and every define
         (now a declared ``vlogdefine``, decision 8 — ``-d/--define`` is gone)
         all come from the ``.core`` lint Target. Verilator's ``%Warning-``
         output is still parsed downstream by Booley (interpretation stays
@@ -1136,7 +1137,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    "lint: --target is required outside Goal-bound MCP calls. "
+                    "lint: --target is required. "
                     "Pass --target <name>; available Targets are the .core "
                     "lint Targets in .booley/."
                 ),

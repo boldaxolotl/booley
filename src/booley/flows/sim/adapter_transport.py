@@ -1,4 +1,13 @@
-"""Authenticated result transport shared by Simulation adapters."""
+"""Authenticated result transport shared by Simulation adapters.
+
+The parent trusts only this typed, atomically written, attempt-token-bound
+result. ``[SIM_SUMMARY]``, ``[SIM_RESULT]``, ``[COCOTB_RESULTS]``, ``result.json``,
+and ``results.xml`` feed an adapter's normalization and the human-readable logs
+but are never the grading channel: an output line or exit code alone can be
+stale or forged by the testbench. Only a ``completed`` termination allows a
+verdict from sentinels and return codes; a guard termination wins even when the
+child exited 0.
+"""
 
 from __future__ import annotations
 
@@ -242,7 +251,7 @@ def _validated_result_fields(
     identity: AdapterTransportIdentity,
     passed: bool,
     inconclusive: bool,
-) -> tuple[tuple[str, ...], RunTerminationKind, str, str, str]:
+) -> tuple[tuple[str, ...], RunTerminationKind, str, AdapterFailureKind, str]:
     """Decode fields whose constraints depend on the invocation or verdict."""
     tests = _string_tuple(payload, "tests")
     if identity.selected_tests and tests != identity.selected_tests:
@@ -285,7 +294,7 @@ def _validated_termination(value: Any) -> RunTerminationKind:
 
 
 def _validated_failure_kind(value: Any) -> AdapterFailureKind:
-    if not isinstance(value, str) or value not in {
+    if not isinstance(value, str) or value not in (
         "",
         "design",
         "infrastructure",
@@ -293,7 +302,7 @@ def _validated_failure_kind(value: Any) -> AdapterFailureKind:
         "inconclusive",
         "artifact",
         "missing_input",
-    }:
+    ):
         raise AdapterTransportError("adapter result failure_kind is invalid")
     return value
 

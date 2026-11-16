@@ -284,7 +284,8 @@ def test_unbound_typed_request_never_acquires_a_job(flow_type, runtime, monkeypa
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = flow_type()
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted unbound request"),
     )
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
     assert flow.generic_binding_gate_applies() is True
@@ -320,7 +321,8 @@ def test_simulation_coverage_run_is_not_binding_gated(runtime, monkeypatch):
     sentinel = EndpointOutcome(exit_code=2, report_text="coverage preparation refusal")
     prepare_as(monkeypatch, flow, sentinel)
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted before preparation")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted before preparation"),
     )
 
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime, coverage=True))
@@ -352,7 +354,8 @@ group = "verification"
     flow = LintFlow()
     flow.satisfies = ["project_check"]
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted unbound request"),
     )
 
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
@@ -1411,7 +1414,7 @@ def external_acceptance_owner(monkeypatch):
     """Retain projection coverage with the existing external ledger composition.
 
     Unbound execution has separate absence tests. This owner supplies the real
-    legacy identity/recording contract, independently of Goal Mode.
+    legacy identity/recording contract.
     """
     from booley.flows.endpoint_state import EndpointState
     from booley.mcp import flow_execution_selection
@@ -1428,7 +1431,7 @@ def external_acceptance_owner(monkeypatch):
     monkeypatch.setattr(
         flow_execution_selection,
         "_STANDALONE_SELECTION",
-        flow_execution_selection.FlowExecutionSelection(None, lambda: recorder),
+        flow_execution_selection.FlowExecutionSelection(lambda: recorder),
     )
 
 

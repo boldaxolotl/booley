@@ -80,7 +80,7 @@ def _load_session(
     )
     sources = verified_source_snapshot(loaded.coverage_record, sources)
     if sources is None:
-        raise CoverageEvidenceError("Verified source snapshot disagrees with Campaign")
+        raise CoverageEvidenceError("Verified source snapshot disagrees with Coverage Record")
     return CoverageEvidenceSession(loaded.coverage_record, sources)
 
 

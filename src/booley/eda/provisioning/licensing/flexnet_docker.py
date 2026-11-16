@@ -510,6 +510,11 @@ def validate_relay(
     )
 
 
+def project_resource_filter(project_root: str) -> str:
+    """The Docker label filter that selects every resource of a persisted Project identity."""
+    return f"label=booley.project-id={project_label_id(project_root)}"
+
+
 def cleanup_project_resources(project_root: Path, *, runner: Runner) -> tuple[str, ...]:
     """Remove exact Project-labeled containers before networks and report residue."""
     return cleanup_project_resources_for_identity(str(project_root.resolve()), runner=runner)
@@ -519,12 +524,11 @@ def cleanup_project_resources_for_identity(
     project_root: str, *, runner: Runner
 ) -> tuple[str, ...]:
     """Remove resources for an already-canonical persisted Project identity."""
-    project_id = project_label_id(project_root)
-    label = f"booley.project-id={project_id}"
+    label = project_resource_filter(project_root)
     residual: list[str] = []
     for kind, list_args in (
-        ("container", ["container", "ls", "-aq", "--filter", f"label={label}"]),
-        ("network", ["network", "ls", "-q", "--filter", f"label={label}"]),
+        ("container", ["container", "ls", "-aq", "--filter", label]),
+        ("network", ["network", "ls", "-q", "--filter", label]),
     ):
         try:
             listed = runner(list_args, DOCKER_TIMEOUT)

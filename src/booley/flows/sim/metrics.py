@@ -1,7 +1,7 @@
 """Typed metrics of the simulation and coverage Flows (issue #3497).
 
 A Simulation Record outcome carries one observation per Test Run, and a coverage
-run also a Coverage Campaign. :func:`simulation_flow_metrics` turns an outcome into
+run also a Coverage Record. :func:`simulation_flow_metrics` turns an outcome into
 the typed values the ``sim`` and ``coverage`` declarations below name. Flow-neutral
 types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
 """
@@ -33,7 +33,7 @@ from booley.flows.sim.coverage_reference import (
 from booley.flows.sim.record.coordinator import SimulationRecordOutcome
 from booley.flows.sim.record.test_run_report import observation_grade
 
-# Coverage Campaign metric key (``coverage_policy``) -> declared metric name.
+# Coverage Record metric key (``coverage_policy``) -> declared metric name.
 COVERAGE_METRIC_NAMES = {
     "line": "line_coverage",
     "branch": "branch_coverage",
@@ -90,9 +90,7 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
             coverage_record_path(outcome)
         ).loaded.coverage_record
     except CoverageRecordReferenceError as error:
-        raise MetricsUnavailableError(
-            f"the Coverage Campaign could not be read: {error}"
-        ) from error
+        raise MetricsUnavailableError(f"the Coverage Record could not be read: {error}") from error
     if coverage_record.collection["status"] != "complete":
         return {}
     return {
@@ -127,7 +125,7 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     """Return the typed metrics of one Target's simulation or coverage run.
 
     ``tests_failed`` counts every Test Run that did not pass (failed, timed out,
-    crashed, not run or inconclusive), as Goal Mode's failed-test count does.
+    crashed, not run or inconclusive).
     ``cycle_count`` is keyed by Test Run name and only for a Test Run that passed with
     a count. A coverage run adds the five coverage percentages, omitted when the
     coverage collection did not complete (a failing test is still a value).

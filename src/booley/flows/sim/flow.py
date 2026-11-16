@@ -1,6 +1,6 @@
 # pyright: reportIncompatibleMethodOverride=true, reportIncompatibleVariableOverride=true
 # The directive makes a mismatch between SimulateFlow and the host declarations in
-# elab_only.py, standalone.py and test_selection.py a type error; keep it.
+# elab_only.py, flow_resume.py, standalone.py and test_selection.py a type error; keep it.
 """SimulateFlow — BooleyFlow for running RTL simulation.
 
 Runs RTL simulation for one or more configs via the Edalize sim flow + a
@@ -32,8 +32,6 @@ from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.execution_persistence import (
     EvidenceDiscarded,
     FlowExecutionAdapter,
-    register_simulation_record_for,
-    wants_simulation_records,
 )
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.prepared_invocation import PreparedInvocation
@@ -61,9 +59,9 @@ from booley.flows.sim.live_progress import (
 )
 from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
-from booley.flows.sim.record_reports import target_report_directory
+from booley.flows.sim.record_reports import invocation_booley_dir, target_report_directory
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.verilator_coverage import SimulationExecutionPort
+from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_suite import (
     resolve_target_test_suite,
@@ -121,7 +119,6 @@ from .record import (
     SimulationRecordPolicy,
     ValidatedResumeManifest,
     encode_simulation_record_manifest,
-    started_simulation_record,
     validate_resume_manifest,
 )
 from .record.coverage_execution import (
@@ -285,7 +282,7 @@ class SimulateFlow(
         *,
         coverage_execution: Callable[
             [TargetHandle, SimulationOptions, tuple[str, ...], str],
-            SimulationExecutionPort,
+            AuthenticatedSimulationExecutionPort,
         ]
         | None = None,
         simulation_record_publication_checkpoint: Callable[[str], None] | None = None,
@@ -308,7 +305,7 @@ class SimulateFlow(
         """Start this invocation's Test Run decisions afresh.
 
         Resolved Test Runs (drawn seeds included), baseline
-        runs and the Goals' frozen Test Runs belong to one request. A reused Flow
+        runs belong to one request. A reused Flow
         object must resolve the next request itself, never reuse these. The
         Flow's other per-request state restarts here too, so no invocation reads
         what an earlier one prepared.
@@ -366,7 +363,6 @@ class SimulateFlow(
     def _next_invocation_dir(self, report_dir: Path) -> Path:
         """Acquire the Simulation producer lock before publishing its directory."""
         from .record_reports import simulation_record_invocation_lock
-        from .record_retention import invocation_booley_dir
 
         endpoint_dir = report_dir / self.name
         endpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -671,12 +667,9 @@ class SimulateFlow(
             )
         )
         if prepared.resume is not None:
-            result = self._with_diagnostic_test_run_note(result)
             return self._attach_published_pre_sim(result, prepared.resume.path)
         result.detail["mode"] = self._mode.value
-        return self._attach_published_pre_sim(
-            self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
-        )
+        return self._attach_published_pre_sim(self._with_baseline_refusal_note(result))
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
         """Record only authenticated firings durably published by this execution."""
@@ -687,7 +680,6 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Simulation Record outcome exists."""
         from .record import collect_pre_sim_firings
-        from .record_retention import invocation_booley_dir
 
         invocation = self._reserved_invocation_dir
         if invocation is None:
@@ -721,7 +713,6 @@ class SimulateFlow(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
         from .record import collect_pre_sim_firings
-        from .record_retention import invocation_booley_dir
 
         firings = tuple(
             firing
@@ -1155,7 +1146,7 @@ class SimulateFlow(
             else self._validate_mode_args() or self._run_elab_only()
         )
         result.detail["mode"] = self._mode.value
-        return self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
+        return self._with_baseline_refusal_note(result)
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         return super()._pre_state_gate()
@@ -1385,7 +1376,7 @@ class SimulateFlow(
     def _with_coverage_record_lines(
         result: EndpointOutcome, outcomes: Sequence[SimulationRecordOutcome]
     ) -> EndpointOutcome:
-        """Append the finished Targets' ``coverage campaign:`` lines to a stopped run's card."""
+        """Append the finished Targets' ``Coverage Record:`` lines to a stopped run's card."""
         lines = _coverage_record_lines(outcomes)
         if lines:
             result.report_text = "\n".join([result.report_text, *lines])
@@ -1447,7 +1438,7 @@ class SimulateFlow(
         options: SimulationOptions,
         pre_sim_commands: tuple[str, ...],
         pre_sim_build_access: str,
-    ) -> SimulationExecutionPort:
+    ) -> AuthenticatedSimulationExecutionPort:
         from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 
         return (
@@ -1581,12 +1572,6 @@ class SimulateFlow(
             if path in published:
                 return
             published.append(path)
-            adapter = self.execution_adapter
-            diagnostic = getattr(self._args, "diagnostic", False)
-            if wants_simulation_records(adapter) and diagnostic is not True:
-                # Before any of its work runs: a record that never returns an
-                # outcome still leaves results its Goals must account for.
-                register_simulation_record_for(adapter, started_simulation_record(path))
             if self._console_publication_requested:
                 with suppress(OSError, ValueError):
                     print(

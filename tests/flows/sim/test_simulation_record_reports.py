@@ -18,10 +18,11 @@ from booley.flows.sim.record_presentation import (
     _simulation_record_report_lines,
     _simulation_record_structured_details,
 )
-from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
+from booley.flows.sim.record_reports import simulation_record_invocation_lock
 from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import build_test_run
 from booley.mcp.job_results import _read_report_json
+from booley.runtime.file_lock import LockContentionError
 from tests.conftest import symlink_or_skip
 from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
@@ -43,7 +44,7 @@ def test_project_alias_simulation_executes_simulation_record(
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
     data.mkdir()
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, data, target_is_directory=True)
     monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", str(alias))
     from tests.runtime.test_sandbox_layout import configure_project_alias
@@ -55,7 +56,7 @@ def test_project_alias_simulation_executes_simulation_record(
         SimRequest(
             target="sim",
             work_dir=flow_project,
-            report_dir=Path("booley-project/reports") if relative else alias / "reports",
+            report_dir=Path("booley/reports") if relative else alias / "reports",
             test=("first",),
             timeout_ms=30_000,
         )
@@ -296,7 +297,6 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     from booley.flows.endpoint_reporting import write_report
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record_presentation import _simulation_record_observation_preview
-    from booley.flows.sim.record_retention import _read_object
     from booley.flows.sim.request import SimRequest
     from booley.mcp.server import _structured_from_report
     from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
@@ -320,7 +320,11 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     with flow.publication_resources:
         path = write_report(flow, result)
     report = _read_report_json(path)
-    assert _read_object(path) == report == json.loads((tmp_path / "large/sim.json").read_bytes())
+    assert (
+        json.loads(path.read_bytes())
+        == report
+        == json.loads((tmp_path / "large/sim.json").read_bytes())
+    )
     assert sum(map(len, report["cycle_counts"].values())) == 4000
     assert report["cycle_counts"]["one"][0] == {"test": None, "cycle_count": 0}
     assert len(json.dumps(_structured_from_report(report)).encode()) < 65536
@@ -398,10 +402,6 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     assert result.detail["pre_sim_current"] == expected_runs
     assert result.detail["pre_sim_total"] == 1 + expected_runs
     assert result.detail["pre_sim_historical"] == 1
-    from booley.flows.sim.record import inspect_retained_simulation_record
-
-    retained = inspect_retained_simulation_record(original.manifest_path)
-    assert all(firing.path in retained.retention_files for firing in resumed.pre_sim_firings)
 
 
 def test_hook_reference_resolves_from_numbered_report_and_requires_external_context(
@@ -470,8 +470,8 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     )
     monkeypatch.setattr(flow, "_simulation_record_policy", SimulationRecordPolicy)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
-    # Destination admission/dependency publication is outside this typed execution test.
-    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *args: None)
+    # Destination admission and origin locking are outside this typed execution test.
+    monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *args: None)
     monkeypatch.setattr(
         flow,
         "_resume_simulation_record_plan",
@@ -948,17 +948,13 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     directory = firing.path.parent.parent
     copy = tmp_path / "copied-attempt"
     sidecar_bytes = firing.path.read_bytes()
-    snapshots = list(directory.rglob("simv"))
-    assert len(snapshots) == 1, (
-        "successful Simulation Record must retain one real executable snapshot"
-    )
-    snapshot = snapshots[0]
-    snapshot_relative = snapshot.relative_to(directory)
-    snapshot_bytes, snapshot_mode = snapshot.read_bytes(), snapshot.stat().st_mode
+    # An attempt directory holds no executable: the record keeps one, read-only,
+    # in its shared bundle.
+    assert not list(directory.rglob("simv"))
+    executables = list(directory.parents[3].rglob("simv"))
+    assert len(executables) == 1, "successful Simulation Record must retain one real executable"
+    assert not executables[0].stat().st_mode & 0o222
     directory.rename(copy)
-    assert (copy / snapshot_relative).read_bytes() == snapshot_bytes
-    assert (copy / snapshot_relative).stat().st_mode == snapshot_mode
-    assert not snapshot_mode & 0o222
     assert (copy / "pre-sim/0001.json").read_bytes() == sidecar_bytes
     symlink_or_skip(directory, copy, target_is_directory=True)
     assert firing.path.read_bytes() == sidecar_bytes
@@ -1035,7 +1031,6 @@ def test_alias_normalization_precedes_simulation_preparation(
 def test_projection_rejects_corrupt_record(tmp_path, error):
     from booley.flows.sim.acceptance import _OutcomeEvidence, _simulation_record_projection
     from booley.flows.sim.record import decode_simulation_projection
-    from booley.flows.sim.record_retention import _read_object
     from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
 
     document = json.loads(
@@ -1048,14 +1043,14 @@ def test_projection_rejects_corrupt_record(tmp_path, error):
     )
     path = tmp_path / "simulation.json"
     path.write_text(json.dumps(document))
-    decode_simulation_projection(_read_object(path), coverage_expected=False)
+    decode_simulation_projection(json.loads(path.read_bytes()), coverage_expected=False)
     if error == "schema":
         document["$schema"] = "unknown"
     elif error == "missing":
         del document["complete"]
     path.write_text("{" if error == "truncated" else json.dumps(document))
     with pytest.raises(ValueError):
-        decode_simulation_projection(_read_object(path), coverage_expected=False)
+        decode_simulation_projection(json.loads(path.read_bytes()), coverage_expected=False)
 
 
 def _two_firing_store(tmp_path):
@@ -1191,7 +1186,7 @@ def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
     tmp_path: Path,
 ) -> None:
     """#2191: probing a custom report root's parent never raises a layout error."""
-    from booley.flows.sim.record_retention import invocation_booley_dir
+    from booley.flows.sim.record_reports import invocation_booley_dir
 
     project = tmp_path / "project"
     (project / "out" / "flow-reports" / "sim" / "1").mkdir(parents=True)
@@ -1391,8 +1386,11 @@ def test_simulation_reservation_locks_before_directory_publication(
     def inspect_before_publish(path: Path, *args: object, **kwargs: object) -> None:
         nonlocal observed
         if path == reports / "sim/1":
-            with pytest.raises(SimulationRecordRetentionError, match="still being produced"):
-                prune_invocation(reports, 1)
+            with (
+                pytest.raises(LockContentionError),
+                simulation_record_invocation_lock(reports / "sim/1"),
+            ):
+                raise AssertionError("the producer lock must be held")
             observed = True
         mkdir(path, *args, **kwargs)
 
@@ -1406,8 +1404,6 @@ def test_simulation_reservation_locks_before_directory_publication(
 def test_simulation_reservation_skips_contended_and_raced_numbers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.flows.sim.record_reports import simulation_record_invocation_lock
-
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
     flow = SimulateFlow()
@@ -1432,8 +1428,6 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A non-race mkdir failure (EACCES, ENOSPC) must not leave the number busy."""
-    from booley.flows.sim.record_reports import simulation_record_invocation_lock
-
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
     flow = SimulateFlow()
@@ -1493,7 +1487,7 @@ def _coverage_card(
     *,
     status: str = "complete",
 ) -> list[str]:
-    """Render one coverage Target's card block from a stub Coverage Campaign."""
+    """Render one coverage Target's card block from a stub Coverage Record."""
     coverage_record = SimpleNamespace(
         collection={"status": status, "diagnostics": ()},
         evaluation={
@@ -1529,7 +1523,7 @@ def test_coverage_card_lists_every_collected_metric(tmp_path: Path) -> None:
 
     assert lines[-2:] == [
         "  coverage: line 92.3% · branch 81.0% · toggle 64.2%",
-        f"  coverage campaign: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}",
+        f"  Coverage Record: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}",
     ]
 
 
@@ -1580,10 +1574,17 @@ def test_coverage_card_prints_na_without_eligible_points(tmp_path: Path) -> None
 def test_coverage_card_omits_metrics_unless_collection_complete(tmp_path: Path) -> None:
     lines = _coverage_card(tmp_path, [_rollup("line", 1, 2)], status="collector_error")
     assert not any(line.startswith("  coverage: ") for line in lines)
-    assert (
-        f"  coverage campaign: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}" in lines
-    )
+    assert f"  Coverage Record: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}" in lines
 
     # A complete collection with no points at all has nothing to list either.
     lines = _coverage_card(tmp_path, [])
     assert not any(line.startswith("  coverage: ") for line in lines)
+
+
+def test_new_invocation_number_is_above_every_pruned_marker(tmp_path):
+    sim = tmp_path / "reports/sim"
+    for name in ("1", ".pruned-2", ".pruned-7"):
+        (sim / name).mkdir(parents=True)
+    flow = SimulateFlow()
+    with flow.publication_resources:
+        assert flow._next_invocation_dir(tmp_path / "reports") == sim / "8"

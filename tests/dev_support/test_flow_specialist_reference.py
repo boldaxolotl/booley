@@ -24,7 +24,6 @@ from booley.dev_support.flow_specialist_reference import (
     render_specialists_reference,
     splice_generated,
 )
-from booley.goals.capabilities import evidence_goal_name
 from booley.mcp.registry import discover_mcp_tools
 from booley.runtime.paths import cheatsheet_path
 
@@ -80,10 +79,10 @@ def test_every_endpoint_is_rendered_or_explicitly_excluded() -> None:
             )
 
 
-def test_flow_table_has_three_columns() -> None:
-    """`booley cheat` emits a fixed-width table; a 4th column overruns it (A3)."""
+def test_flow_table_has_two_columns() -> None:
+    """`booley cheat` emits a fixed-width table; a 3rd column overruns it (A3)."""
     rendered = render_flow_reference()
-    assert "| Booley Flow | Purpose | Sets |" in rendered
+    assert "| Booley Flow | Purpose |" in rendered
     assert "Execution" not in rendered
 
 
@@ -130,8 +129,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     assert set(reviewer.satisfies) == set(_REVIEW_FOCUS_DESCRIPTIONS)
 
     rendered = render_specialists_reference()
-    for criterion, args in (reviewer.satisfies_args or {}).items():
-        assert evidence_goal_name(criterion) in rendered
+    for args in (reviewer.satisfies_args or {}).values():
         assert args.split("--focus ", maxsplit=1)[1] in rendered
     # Mutation testing is a Flow now: no Specialist table, no Specialist section.
     assert "mutation_tester" not in rendered
@@ -141,7 +139,6 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
 def test_mutation_flow_page_documents_simulation_record_controls() -> None:
     """The Mutation Flow page owns the campaign, seed, threshold, and timeout rules."""
     page = " ".join((REPO_ROOT / "docs" / "user" / "FLOW-MUTATION.md").read_text("utf-8").split())
-    assert "`total: N`, `min_detected: K`, or `auto: true`" in page
     assert "`--count <N\\|auto>`" in page
     assert "`--min-detected <N>`" in page
     assert "`--seed <N>`" in page and "(default `0`)" in page
@@ -158,8 +155,7 @@ def test_mutation_flow_page_documents_simulation_record_controls() -> None:
 def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
     rendered = render_specialists_reference()
     assert "booley specialist <name> [args...]" in rendered
-    assert "CLI Flow and Specialist runs never record Goal evidence" in rendered
-    assert "Goal-bound MCP calls with `work_dir`" in rendered
+    assert "Goal" not in rendered
     assert "CLI-only controls" in rendered
     for name in ("coverage_analyst", "reviewer"):
         assert f"Ask your Developer Agent to call the `{name}` Specialist" in rendered

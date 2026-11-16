@@ -94,15 +94,6 @@ class TestBannedTermRejection:
         assert "banned_words" in err and "banned_substrings" in err
         assert "-v -e -F" in err
 
-    def test_docs_quote_the_real_rejection_output(self, tmp_path: Path):
-        """The user docs show the lines a user pastes into a search; keep them current."""
-        _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")
-        docs = Path(__file__).resolve().parents[2] / "docs" / "user"
-        for name in ("STEALTH.md", "TROUBLESHOOTING.md"):
-            text = (docs / name).read_text(encoding="utf-8")
-            for line in (err.splitlines()[0], err.splitlines()[2]):
-                assert line in text, f"{name} no longer quotes: {line}"
-
     def test_one_entry_per_term_per_line(self, tmp_path: Path):
         _, err, _ = _run_hook(tmp_path, "fix(core): llm llm LLM\n")
         assert err.count("'llm'") == 1
@@ -190,11 +181,11 @@ class TestBannedTermRejection:
         _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")
         assert "merge commit" not in err
 
-    def test_convention_errors_listed_with_banned_terms(self, tmp_path: Path, project: Path):
-        _write_config(project, "[stealth]\nenabled = true\nenforce_convention = true\n")
-        _, err, _ = _run_hook(tmp_path, "not conventional llm\n")
+    def test_body_cap_errors_listed_with_banned_terms(self, tmp_path: Path, project: Path):
+        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
+        _, err, _ = _run_hook(tmp_path, "Update llm\n\nA body line.\n")
         assert "'llm' in the subject" in err
-        assert "Subject doesn't match" in err
+        assert "max_body_lines = 0" in err
 
 
 class TestAttributionRejection:
@@ -319,13 +310,8 @@ class TestSkipVariable:
         assert after == raw.encode()
         assert "-v -e -F" in err
 
-    def test_skip_skips_convention_and_body_checks(
-        self, tmp_path: Path, project: Path, monkeypatch
-    ):
-        _write_config(
-            project,
-            "[stealth]\nenabled = true\nenforce_convention = true\nmax_body_lines = 0\n",
-        )
+    def test_skip_skips_body_cap(self, tmp_path: Path, project: Path, monkeypatch):
+        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
         raw = "Upstream style summary\n\nA body line.\n"
         rc, err, _ = _run_hook(tmp_path, raw)
         assert rc == 1
@@ -336,14 +322,14 @@ class TestSkipVariable:
         assert rc == 0, err
         assert after == raw.encode()
 
-    def test_skip_omits_convention_errors_from_banned_rejection(
+    def test_skip_omits_body_cap_errors_from_banned_rejection(
         self, tmp_path: Path, project: Path, monkeypatch
     ):
-        _write_config(project, "[stealth]\nenabled = true\nenforce_convention = true\n")
+        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
         monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
-        _, err, _ = _run_hook(tmp_path, "not conventional llm\n")
+        _, err, _ = _run_hook(tmp_path, "Update llm\n\nA body line.\n")
         assert "'llm' in the subject" in err
-        assert "Subject doesn't match" not in err
+        assert "max_body_lines" not in err
 
 
 class TestMain:
@@ -359,11 +345,18 @@ class TestMain:
             assert main() == 1
 
     def test_validation_failure(self, tmp_path: Path, project: Path):
-        """main() returns 1 when the convention check reports errors."""
-        _write_config(project, "[stealth]\nenabled = true\nenforce_convention = true\n")
-        rc, err, _ = _run_hook(tmp_path, "bad message\n")
+        """main() returns 1 when the body-length check reports errors."""
+        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
+        rc, err, _ = _run_hook(tmp_path, "Update ALU\n\nA body line.\n")
         assert rc == 1
-        assert "Subject doesn't match" in err
+        assert "max_body_lines = 0" in err
+
+    @pytest.mark.parametrize("raw", ["Update ALU\n", "just a random message\n", "x" * 200 + "\n"])
+    def test_any_subject_format_is_accepted(self, tmp_path: Path, raw: str):
+        """Booley enforces no ``type(scope): summary`` convention or subject length."""
+        rc, err, after = _run_hook(tmp_path, raw)
+        assert rc == 0, err
+        assert after == raw.encode()
 
     def test_stealth_disabled_leaves_message_unchanged(self, tmp_path: Path, project: Path):
         _write_config(

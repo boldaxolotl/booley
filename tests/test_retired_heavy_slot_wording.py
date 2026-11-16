@@ -27,6 +27,7 @@ _WHOLE_FILES = frozenset(
     {
         "src/booley/config/jobs.py",
         "tests/config/test_jobs.py",
+        "tests/config/test_retired_key_refusals.py",
         "tests/harness/test_cli_retired_jobs_keys.py",
         "tests/harness/test_doctor.py",
         "tests/harness/test_doctor_retired_jobs_main_copy.py",
@@ -47,7 +48,6 @@ _WHOLE_PREFIXES = ("docs/adr/",)
 # Docs where only a paragraph that says the keys were retired or replaced may name them.
 _RETIRED_PARAGRAPH_FILES = frozenset(
     {
-        "docs/user/TROUBLESHOOTING.md",
         "docs/GLOSSARY.md",
         "src/booley/data/skills/booley-setup/steps/2-project-config.md",
     }
@@ -107,7 +107,7 @@ def test_job_glossary_entries_speak_of_the_memory_budget() -> None:
     for name in ("Job", "Standalone Job", "Job admission"):
         entry = _glossary_entry(name)
         assert "Memory Budget" in entry, f"**{name}** does not name the Memory Budget"
-        assert "slot" not in entry.replace("light slot", ""), f"**{name}** speaks of slots"
+        assert "slot" not in entry, f"**{name}** speaks of slots"
 
 
 _QUEUE_BOUND = re.compile(r"QueueFullError|queue_max|queue is full|full queue|queue_full")
@@ -122,6 +122,9 @@ _QUEUE_WHOLE_FILES = frozenset(
         "src/booley/data/refs/CHANGELOG.md",
         "changelog.d/3247.md",
         "changelog.d/4066.md",
+        # The scheduler QA mission checks that the retired keys are refused.
+        "qa/missions/scheduler/MISSION.md",
+        "qa/missions/scheduler/RUNBOOK.md",
     }
 )
 _EXPLAINS_QUEUE_RETIREMENT = re.compile(r"retire|delete", re.IGNORECASE)
@@ -154,6 +157,9 @@ _BUDGET_WHOLE_FILES = frozenset(
         "tests/config/test_jobs.py",
         "tests/harness/test_doctor.py",
         "tests/test_retired_heavy_slot_wording.py",
+        # The scheduler QA mission checks that the retired keys are refused.
+        "qa/missions/scheduler/MISSION.md",
+        "qa/missions/scheduler/RUNBOOK.md",
     }
 )
 

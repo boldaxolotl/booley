@@ -104,10 +104,10 @@ def test_quiet_expiry_and_foreign_namespace(registry, kind):
 def test_pruning_touches_registry_only(registry, tmp_path):
     sentinel = tmp_path / "goals" / "still-running"
     sentinel.parent.mkdir()
-    sentinel.write_bytes(b"Goal/Job/slot bytes")
+    sentinel.write_bytes(b"Job/slot bytes")
     registry.upsert(facts(), "tool", "completed", now=100)
     assert registry.prune(now=100, namespace=SCOPE, worktree_exists=lambda _: False) == 1
-    assert sentinel.read_bytes() == b"Goal/Job/slot bytes"
+    assert sentinel.read_bytes() == b"Job/slot bytes"
 
 
 def test_corrupt_future_schema_and_symlink_are_diagnosed_not_pruned(registry, tmp_path):
@@ -239,7 +239,7 @@ async def test_observer_broken_registry_cannot_change_attribution_or_dispatch(
         ),
     )
     # Recording is advisory: an unwritable registry must not fail the tool call.
-    await observer.record(facts(), "goal_finish", "completed")
+    await observer.record(facts(), "sim_finish", "completed")
 
 
 @pytest.mark.asyncio
@@ -454,13 +454,13 @@ async def test_first_call_without_workdir_never_associates_server_cwd(registry, 
     assert registry.snapshot().rows[0].attribution.worktree_key == ""
 
 
-def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
+def test_path_rows_follow_repository_identity_after_repository_identity_is_written(tmp_path):
     from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     work = tmp_path / "work"
     git = work / ".git"
     git.mkdir(parents=True)
-    (git / "HEAD").write_text("ref: refs/heads/goal/fixture\n")
+    (git / "HEAD").write_text("ref: refs/heads/feature/fixture\n")
     registry = SessionRegistry(tmp_path / "data")
     before = session_registry.resolve_attribution(work, metadata={}, client_name="")
     registry.upsert(before, "sim", "completed", now=100)
@@ -472,7 +472,7 @@ def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
     assert after.worktree_key == "00000000-0000-4000-8000-000000000001/main"
     assert row.attribution.worktree_key == after.worktree_key
     assert row.attribution.key == after.key
-    assert after.branch == "goal/fixture"
+    assert after.branch == "feature/fixture"
 
 
 def test_nested_checkout_name_keeps_path_key(tmp_path, monkeypatch):
@@ -499,7 +499,7 @@ async def test_busy_fallback_uses_same_worktree_key_and_namespace(tmp_path, monk
     git = tmp_path / ".git"
     (git / REPOSITORY_ID_FILE).parent.mkdir(parents=True)
     (git / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
-    (git / "HEAD").write_text("ref: refs/heads/goal/fixture\n")
+    (git / "HEAD").write_text("ref: refs/heads/feature/fixture\n")
     observer = SessionObserver()
     blocked = asyncio.get_running_loop().create_future()
     observer._pending = blocked
@@ -706,27 +706,6 @@ async def test_presence_queue_keeps_each_call_and_diagnoses_overflow(
         ("call1", "completed"),
     ]
     assert "queue capacity exceeded" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_shared_warning_reads_presence_while_attribution_writer_is_busy(
-    registry, monkeypatch
-):
-    from booley.mcp import session_observer
-
-    monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
-    registry.upsert(facts("codex:one"), "sim", "completed", now=100)
-    registry.upsert(facts("codex:two"), "lint", "completed", now=100)
-    observer = SessionObserver(now=lambda: 100, budget=1)
-    blocked = asyncio.get_running_loop().create_future()
-    observer._pending = blocked
-    monkeypatch.setattr(observer, "_registry", lambda: registry)
-    try:
-        keys, warning = await observer.shared(facts("codex:one"))
-    finally:
-        blocked.set_result(None)
-    assert set(keys) == {"codex:one", "codex:two"}
-    assert warning == "WARNING: another session shares this Goal worktree"
 
 
 def test_live_process_without_worktree_association_survives_maintenance(registry, monkeypatch):

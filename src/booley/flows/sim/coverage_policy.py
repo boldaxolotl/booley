@@ -1,11 +1,11 @@
-"""Pure deterministic policy evaluation for Coverage Campaigns."""
+"""Pure deterministic policy evaluation for Coverage Records."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 from booley.flows.sim.coverage_json import (
     CRITERION_FINGERPRINT_JSON,
@@ -170,7 +170,8 @@ def coverage_metrics(coverage_record: CoverageRecord) -> dict[str, dict[str, obj
     ``met``. Reads only the score's rows: a thresholded metric with no row has an
     empty denominator and cannot meet its floor.
     """
-    stored = coverage_record.evaluation["thresholds"]
+    # The Coverage Record validator admits only an object of finite numbers here.
+    stored = cast(Mapping[str, int | float], coverage_record.evaluation["thresholds"])
     thresholds = tuple(
         coverage_threshold(rollup.metric, stored[rollup.metric])
         for rollup in coverage_record.rollups
@@ -241,7 +242,7 @@ def _target_suite_diagnostics(
             _diagnostic(
                 "COV_EVAL_TARGET_MISMATCH",
                 "/target/identity",
-                "Campaign and Coverage Criterion belong to different Targets.",
+                "Coverage Record and Coverage Criterion belong to different Targets.",
             )
         )
     if sorted(required_tests) != sorted(coverage_record.selected_tests):
@@ -249,7 +250,7 @@ def _target_suite_diagnostics(
             _diagnostic(
                 "COV_EVAL_SUITE_MISMATCH",
                 "/tests/selected",
-                "Campaign selection does not match the Coverage Criterion suite.",
+                "Coverage Record selection does not match the Coverage Criterion suite.",
             )
         )
     return diagnostics
@@ -296,7 +297,7 @@ def _evidence_diagnostics(
 def _ungated_coverage_record(
     coverage_record: CoverageRecord, diagnostics: list[dict[str, str]]
 ) -> EvaluatedCoverageRecord:
-    """Report a Campaign with no Criterion.
+    """Report a Coverage Record with no Criterion.
 
     Approved waivers have already been applied by the caller: they need no
     Criterion, only thresholds do. Waiver match findings block evaluation.
@@ -358,7 +359,7 @@ def evaluate_coverage_record(
     criterion: CoverageCriterion | None,
     approved_waivers: ApprovedWaiverSet,
 ) -> EvaluatedCoverageRecord:
-    """Return a new immutable Campaign with deterministic policy evidence."""
+    """Return a new immutable Coverage Record with deterministic policy evidence."""
     waiver_match = approved_waivers.match(coverage_record)
     coverage_record = apply_point_dispositions(coverage_record, _waived_dispositions(waiver_match))
     diagnostics = [
@@ -395,7 +396,7 @@ def evaluate_coverage_record(
 
 
 def _without_approved_waivers(coverage_record: CoverageRecord) -> CoverageRecord:
-    """The Campaign before any Approved Waiver was applied to its points."""
+    """The Coverage Record before any Approved Waiver was applied to its points."""
     return apply_point_dispositions(
         coverage_record,
         {
@@ -409,7 +410,7 @@ def _without_approved_waivers(coverage_record: CoverageRecord) -> CoverageRecord
 def strict_reevaluation(
     coverage_record: CoverageRecord, waivers: ApprovedWaiverSet, *, criterion: CoverageCriterion
 ) -> EvaluatedCoverageRecord:
-    """Evaluate a persisted Campaign strictly against a new Approved Waiver Set."""
+    """Evaluate a persisted Coverage Record strictly against a new Approved Waiver Set."""
     return evaluate_coverage_record(_without_approved_waivers(coverage_record), criterion, waivers)
 
 

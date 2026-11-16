@@ -213,6 +213,40 @@ def test_synth_make_records_yosys_and_openroad_phases(flow, tmp_path):
         assert records[phase]["wall_s"] >= 0.25 and records[phase]["cpu_user_s"] is not None
 
 
+@linux_only
+def test_synth_history_threads_equal_the_openroad_thread_count(tmp_path, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.memory_admission import fixed_job_threads
+
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    synth = AsicSynthesizeFlow()
+    with patch.dict(os.environ, _env_with_state(state_file)):
+        synth.parse_args(["--target", "core", "--work-dir", str(tmp_path)])
+    synth._execution_role = "baseline"  # no reuse slot
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_log = tmp_path / "make.argv"
+    fake_make = bin_dir / "make"
+    fake_make.write_bytes(f'#!/bin/sh\necho "$@" >> {argv_log}\n'.encode())
+    fake_make.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    plan = SimpleNamespace(
+        build_dir=tmp_path / "build",
+        spec=SimpleNamespace(timing=SimpleNamespace(mode="physical")),
+    )
+    job_resources.label_commands("core", "synth")
+
+    with fixed_job_threads(3):
+        synth._run_synth_make("core", plan, None)
+
+    commands = argv_log.read_text(encoding="utf-8").splitlines()
+    assert commands[-1].endswith(" openroad BOOLEY_OPENROAD_THREAD_OPTION=-threads 3")
+    records = _history(tmp_path)
+    assert records
+    assert {record["threads"] for record in records} == {3}
+
+
 def test_unmeasurable_values_are_absent_not_zero(flow, tmp_path, monkeypatch):
     monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: None)
     monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
@@ -462,7 +496,12 @@ def test_other_jobs_are_holders_from_another_process(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "slots"))
     store = job_slots.SlotStore(tmp_path / "slots")
     assert job_resources._other_jobs_hold_slots() is False
-    token = store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=_proc_argv())
+    token = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=os.getpid(),
+        argv=_proc_argv(),
+        memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+    )
     assert token.is_holder
     assert job_resources._other_jobs_hold_slots() is False, "this process's own slot"
     monkeypatch.setattr(job_resources.os, "getpid", lambda: token.pid + 1)

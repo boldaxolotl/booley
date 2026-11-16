@@ -14,7 +14,8 @@ Booley ships two:
 - **[Reviewer](REVIEWER.md)** reviews RTL or testbench code for one concern at
   a time, such as bugs, protocol, or spec compliance.
 - **Coverage Analyst** explains a coverage report and suggests what to test
-  next. See [Analyzing a Campaign](COVERAGE.md#analyzing-a-campaign).
+  next. See [Analyzing a Coverage
+  Record](COVERAGE.md#analyzing-a-coverage-record).
 
 ## Running a Specialist
 
@@ -30,8 +31,6 @@ To run one yourself, in a container terminal:
 booley specialist                             # list the Specialists
 booley specialist reviewer --help             # its options
 ```
-
-Runs you start yourself never count as Goal evidence.
 
 Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
 it applies, `--target`. Two options exist only on the command line:

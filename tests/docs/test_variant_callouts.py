@@ -1,9 +1,9 @@
 """Variant callouts in docs/user/ carry a fixed label, a variant link, and block formatting.
 
-Rule 26 of docs/internals/DOCS_PRINCIPLES.md keeps text that applies to one
+Rule 26 of docs/internals/USER_DOCS_PRINCIPLES.md keeps text that applies to one
 variant (stealth mode, Windows, a cocotb testbench, host-installed licensed
-tools, one EDA tool of a Flow) out of the main flow, in a ``<details markdown>``
-callout. This guard checks the shape of every callout: the label is one of four
+tools, your own Sandbox image, the RISC-V image, one EDA tool of a Flow) out of the main flow, in a ``<details markdown>``
+callout. This guard checks the shape of every callout: the label is one of the
 fixed strings or ``With <EDA tool>``, a fixed-variant body links the variant's
 page, and the block formatting survives the site's Python-Markdown renderer. Which passages belong in a callout stays an editorial
 judgment; no test can decide that.
@@ -27,9 +27,11 @@ USER_DOC_DIR = ROOT / "docs/user"
 # Label -> (user doc the callout must link, anchor it must link or None for any).
 _VARIANTS: dict[str, tuple[str, str | None]] = {
     "In stealth mode": ("STEALTH.md", None),
-    "On Windows": ("WINDOWS.md", None),
+    "On Windows": ("FEATURES.md", "windows-support"),
     "With a cocotb testbench": ("FLOW-SIM.md", "cocotb-targets-python-testbenches"),
     "With host-installed licensed tools": ("SANDBOX.md", "commercial-eda-provisioning"),
+    "With your own image": ("SANDBOX.md", "custom-sandbox-image"),
+    "With the RISC-V image": ("SANDBOX.md", "custom-sandbox-image"),
 }
 
 # EDA tools that may label a ``With <Tool>`` callout: the tools of Flows that
@@ -191,9 +193,11 @@ def _callout(label: str, body: str, *, indent: str = "") -> str:
 
 _LINKS = {
     "In stealth mode": "[Stealth Mode](STEALTH.md)",
-    "On Windows": "[Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container)",
+    "On Windows": "[Windows support](FEATURES.md#windows-support)",
     "With a cocotb testbench": "[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches)",
     "With host-installed licensed tools": "[Commercial EDA](SANDBOX.md#commercial-eda-provisioning)",
+    "With your own image": "[Custom image](SANDBOX.md#custom-sandbox-image)",
+    "With the RISC-V image": "[RISC-V image](SANDBOX.md#custom-sandbox-image)",
 }
 
 
@@ -265,13 +269,15 @@ def test_tool_label_outside_the_multi_tool_set_fails() -> None:
 
 def test_callout_without_variant_link_fails() -> None:
     [problem] = callout_problems(_callout("On Windows", "No link here."), "X.md")
-    assert problem == "docs/user/X.md:4: 'On Windows' callout must link WINDOWS.md"
+    assert (
+        problem == "docs/user/X.md:4: 'On Windows' callout must link FEATURES.md#windows-support"
+    )
 
 
 def test_callout_linking_another_variant_fails() -> None:
-    body = "See [Stealth Mode](STEALTH.md) and [site](https://example.com/WINDOWS.md)."
+    body = "See [Stealth Mode](STEALTH.md) and [site](https://example.com/FEATURES.md#windows-support)."
     [problem] = callout_problems(_callout("On Windows", body), "X.md")
-    assert "must link WINDOWS.md" in problem
+    assert "must link FEATURES.md#windows-support" in problem
 
 
 def test_cocotb_callout_needs_the_cocotb_section_anchor() -> None:

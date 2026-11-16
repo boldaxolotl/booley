@@ -50,9 +50,8 @@ real paid-seat checkout, accounting, and return test was available. Planned:
 Cadence, Synopsys, and Siemens tools such as Xcelium
 ([#1456](https://github.com/boldaxolotl/booley/issues/1456)), VCS, Questa,
 Design Compiler, Genus, and HAL; newer Vivado releases
-([#1065](https://github.com/boldaxolotl/booley/issues/1065)); seat caps for
-licensed tools ([#3244](https://github.com/boldaxolotl/booley/issues/3244));
-and cocotb on each new simulator.
+([#1065](https://github.com/boldaxolotl/booley/issues/1065)); and cocotb on
+each new simulator. Seat Caps for licensed tools (`[jobs.seats]`) have shipped.
 
 Each new tool needs what Vivado has: a built-in installation contract,
 read-only provisioning into the Sandbox, a license relay, Doctor checks,
@@ -108,14 +107,6 @@ Still missing:
 - Waivers as plain per-file waiver files reviewed in the diff
   ([#3605](https://github.com/boldaxolotl/booley/issues/3605)).
 - Coverage-driven stimulus: use coverage holes to guide new tests.
-
-## Mutation Flow
-
-**Done.** The [Mutation Flow](../user/FLOW-MUTATION.md) (`booley flow
-mutation`) generates Mutants deterministically, without an LLM, as
-[ADR 0088](../adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)
-describes. The Mutation Tester Specialist and its `[models]` key are gone
-([#2936](https://github.com/boldaxolotl/booley/issues/2936)).
 
 ## Firmware Reviewer
 

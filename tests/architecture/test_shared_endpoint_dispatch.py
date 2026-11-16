@@ -12,7 +12,6 @@ FLOWS = Path(__file__).resolve().parents[2] / "src" / "booley" / "flows"
 DECLARED_NAMES = frozenset(
     {
         "refresh_report_detail",
-        "refresh_campaign_report_detail",
         "transcript_path",
         "_transcript_path",
         "terminal_progress",

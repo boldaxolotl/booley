@@ -1,4 +1,4 @@
-"""The Coverage Record, its reference, availability and analysis report carry Coverage Record names.
+"""The Coverage Record, its reference and analysis report carry Coverage Record names.
 
 Part 5 of ADR 0090. Booley 0.4.0's Coverage Campaign formats are read from committed bytes
 that Booley 0.4.0's own ``SimulateFlow`` wrote with ``--coverage``: the reference is
@@ -33,11 +33,6 @@ from booley.flows.sim.coverage_reference import (
     resolve_coverage_record_reference,
 )
 from booley.flows.sim.record.codec import canonical_json_bytes
-from booley.flows.sim.record_retention import (
-    SimulationRecordRetentionError,
-    prune_invocation,
-    prune_native_payload,
-)
 from booley.harness import booley as cli
 from booley.specialists.coverage_analysis import CoverageAnalysisError as AnalystError
 from booley.specialists.coverage_analysis import CoverageAnalyzer
@@ -173,17 +168,6 @@ def test_a_coverage_run_writes_coverage_record_names(
     assert "coverage_record_manifest" in kinds
     assert "coverage_campaign_manifest" not in kinds
 
-    # Native pruning leaves an availability record under the same names.
-    prune_native_payload(run.reports, 1, "sim_0")
-    availability = _json(run.storage / "availability.json")
-    assert availability["$schema"] == "booley.coverage-availability/v2"
-    assert availability["coverage_record_id"] == record["coverage_record_id"]
-    assert availability["coverage_record_sha256"] == content_digest(
-        run.coverage_record_path.read_bytes()
-    ).removeprefix("sha256:")
-    assert "campaign_id" not in availability
-    assert "campaign_sha256" not in availability
-
 
 def test_the_coverage_analysis_report_names_the_coverage_record(tmp_path: Path) -> None:
     from booley.flows.sim.coverage_record_store import publish_coverage_record
@@ -306,7 +290,7 @@ def test_a_0_4_0_coverage_record_reference_is_refused_naming_its_invocation(
     _assert_refused(str(resolved.value), _OLD_REFERENCE, reports / "sim" / "1")
 
 
-# --- AC3: analysis, `booley coverage` and retention report it as older, not corrupt ----------
+# --- AC3: analysis and `booley coverage` report it as older, not corrupt ----------
 
 
 def test_coverage_analysis_reports_a_0_4_0_reference_as_older(
@@ -349,40 +333,6 @@ def test_booley_coverage_reports_a_0_4_0_reference_as_older(
 
     assert code == 2
     _assert_refused(err, _OLD_REFERENCE, run.reports / "sim" / "1")
-
-
-def test_retention_reports_a_0_4_0_reference_as_older(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = coverage_invocation(tmp_path, monkeypatch)
-    _current_reference(run)
-    _rewrite(run.public, _0_4_0_reference())
-    invocation = run.reports / "sim" / "1"
-    before = _tree(invocation)
-
-    with pytest.raises(SimulationRecordRetentionError) as full:
-        prune_invocation(run.reports, 1)
-    _assert_refused(str(full.value), _OLD_REFERENCE, invocation)
-
-    with pytest.raises(SimulationRecordRetentionError) as native:
-        prune_native_payload(run.reports, 1, "sim_0")
-    _assert_refused(str(native.value), _OLD_REFERENCE, invocation)
-    assert _tree(invocation) == before
-
-
-def test_retention_reports_a_0_4_0_coverage_record_as_older(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = coverage_invocation(tmp_path, monkeypatch)
-    _install_0_4_0_record(run)
-    invocation = run.reports / "sim" / "1"
-    before = _tree(invocation)
-
-    with pytest.raises(SimulationRecordRetentionError) as full:
-        prune_invocation(run.reports, 1)
-
-    _assert_refused(str(full.value), _OLD_RECORD, invocation)
-    assert _tree(invocation) == before
 
 
 # --- AC4: no old key, schema, evidence kind or category is an alias ---------------------------

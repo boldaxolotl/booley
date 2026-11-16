@@ -2,18 +2,18 @@
   "coverage_analyst": {
     "additionalProperties": false,
     "properties": {
-      "record": {
-        "description": "Exact canonical coverage.json path",
-        "type": "string"
-      },
       "diagnostic": {
         "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
+        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria.",
         "type": "boolean"
       },
       "instruction": {
         "default": "",
         "description": "Freeform instruction for the Specialist (e.g. distilled plan)",
+        "type": "string"
+      },
+      "record": {
+        "description": "Exact canonical coverage.json path",
         "type": "string"
       },
       "work_dir": {
@@ -43,7 +43,7 @@
       },
       "diagnostic": {
         "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
+        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria.",
         "type": "boolean"
       },
       "dry_run": {

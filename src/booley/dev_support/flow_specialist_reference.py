@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.goals.capabilities import evidence_goal_name
 from booley.mcp.registry import discover_mcp_tools
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED: flows -->"
@@ -32,7 +31,7 @@ EXCLUDED_MCP_TOOLS = frozenset()
 
 
 # Backstop on the Purpose cell: a full multi-sentence description produced a
-# ~700-char-wide column that overflowed every terminal and truncated the Sets
+# ~700-char-wide column that overflowed every terminal and truncated the next
 # column mid-token (QA_REPORT A3). It bounds that wall rather than fitting 80
 # columns — the table is wider than a terminal either way. Keep it above the
 # longest first sentence in the registry, so the common case reads as a whole
@@ -62,9 +61,8 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "scored when fewer run); `--seed <N>` "
         "(default 0) picks another reproducible Mutant set; `--dry-run` previews the count "
         "without running a simulator. A Mutant that fails to build is dropped and the next "
-        "candidate takes its place; a timed-out Mutant counts as `detected (timeout)`. A `MUTATION:{target}` Goal "
-        "sets the same campaign with `total: N`, `min_detected: K`, or `auto: true` "
-        "(default: 10 Mutants, 8 detected)"
+        "candidate takes its place; a timed-out Mutant counts as `detected (timeout)`; "
+        "the default is 10 Mutants with 8 detected"
     ),
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
@@ -74,11 +72,12 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "`test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the "
         "seed of every selected Test Run; "
         "there is no CLI `--skip`, and configured skips apply only to unfiltered selection. "
-        "MCP passes the same suite as a `test` array. Resume one exact durable "
+        "A Developer Agent's MCP tool call passes the same suite as a `test` array. "
+        "Resume one exact durable "
         "Simulation Record with `--resume-from <exact-manifest.json>` (optionally with "
         "`--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only "
         "after its collection finished (otherwise exit 2: start a new `--coverage` run). "
-        "`--coverage` / `--cov` collects a native Coverage Campaign, "
+        "`--coverage` / `--cov` collects a native Coverage Record, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "
         "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
@@ -142,12 +141,6 @@ def _summarize(text: str) -> str:
     return cleaned.replace("|", "\\|")
 
 
-def _format_satisfies(satisfies: tuple[str, ...]) -> str:
-    """Present only supported Goal names, keeping producer metadata internal."""
-    names = dict.fromkeys(name for key in satisfies if (name := evidence_goal_name(key)))
-    return ", ".join(f"`{name}`" for name in names) or "—"
-
-
 def render_flow_reference(
     *,
     project_mcp_tools_dir: Path | None = None,
@@ -174,12 +167,10 @@ def render_flow_reference(
     lines: list[str] = []
     lines.append("Deterministic end-to-end orchestration; no LLM:")
     lines.append("")
-    lines.append("| Booley Flow | Purpose | Sets |")
-    lines.append("|--------|---------|------|")
+    lines.append("| Booley Flow | Purpose |")
+    lines.append("|--------|---------|")
     for t in flows:
-        lines.append(
-            f"| `{t.name}` | {_summarize(t.description)} | {_format_satisfies(t.satisfies)} |"
-        )
+        lines.append(f"| `{t.name}` | {_summarize(t.description)} |")
     controls = [
         f"- `{flow.name}`: {_FLOW_KEY_CONTROLS[flow.name]}"
         for flow in flows
@@ -191,8 +182,8 @@ def render_flow_reference(
                 "",
                 "Common controls: repeat `--target` or use comma-separated values; "
                 "`--target a --target b,c` preserves the order `a`, `b`, `c`, and "
-                "duplicate resolved Targets are rejected. MCP keeps one "
-                "comma-separated `target` string. "
+                "duplicate resolved Targets are rejected. A Developer Agent's MCP tool call "
+                "takes one comma-separated `target` string instead. "
                 "`--dry-run` returns a normalized plan without executing EDA; "
                 "`booley flow <name> --help` shows the full contract.",
                 "",
@@ -272,7 +263,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
 
 
 def _render_coverage_analyst_reference() -> list[str]:
-    """Render the unified coverage campaign input contract."""
+    """Render the unified Coverage Record input contract."""
     return [
         "#### `coverage_analyst`",
         "",
@@ -280,8 +271,7 @@ def _render_coverage_analyst_reference() -> list[str]:
         'and optional `instruction="<question>"`. The Analyst explains retained '
         "native evidence and proposes advisory next steps; its model only reads evidence. "
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "
-        "In Goal Mode, screened Waiver Candidates support a proposed Goal change, "
-        "which needs human approval. Finish requires every Goal met; advisory "
+        "Screened Waiver Candidates are advisory and need human approval; advisory "
         "reports do not mark strict coverage met. "
         "Verified Target sources are optional; stale sources give report-only analysis.",
     ]
@@ -312,21 +302,17 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
-        "CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's "
-        "Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in "
+        "A CLI run is a Standalone Job: it shows in "
         "the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` "
         "in the Project's common Booley Directory (the main checkout's `.booley` from a linked "
         "worktree).",
         "",
-        "| Specialist | Purpose | Sets | Modifies code |",
-        "|------------|---------|------|:-------------:|",
+        "| Specialist | Purpose | Modifies code |",
+        "|------------|---------|:-------------:|",
     ]
     for t in specialists:
         modifies = "yes" if t.code_modifying else "—"
-        lines.append(
-            f"| `{t.name}` | {_summarize(t.description)} "
-            f"| {_format_satisfies(t.satisfies)} | {modifies} |"
-        )
+        lines.append(f"| `{t.name}` | {_summarize(t.description)} | {modifies} |")
     reviewer = next((t for t in specialists if t.name == "reviewer"), None)
     coverage_analyst = next((t for t in specialists if t.name == "coverage_analyst"), None)
     if coverage_analyst is not None:

@@ -14,6 +14,7 @@ from booley.core.file_lock import acquire_file_lock, release_file_lock, wait_for
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
+from booley.runtime.mount_history import MountHistoryError, former_spellings, translate_stored_path
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.worktree_usage import session_number_taken
 
@@ -160,14 +161,54 @@ def run_id_submitted_at(run_id: str) -> float | None:
         return None
 
 
+_PATH_KEY = "worktree:path:"
+
+
+def path_key_spellings(key: str, *, record: str) -> tuple[str, ...]:
+    """*key* followed by the spellings a former mount gave it; path keys only."""
+    if not key.startswith(_PATH_KEY):
+        return (key,)
+    former = former_spellings(key.removeprefix(_PATH_KEY), record=record)
+    return (key, *(_PATH_KEY + path for path in former))
+
+
 def fallback_predecessors(key: str, work_dir: str | None) -> tuple[str, ...]:
     if not key.startswith("worktree:") or not work_dir:
         return ()
     root = Path(work_dir).resolve()
     for parent in (root, *root.parents[:127]):
         if (parent / ".git").is_dir() or (parent / ".git").is_file():
-            return tuple(dict.fromkeys((f"worktree:path:{root}", f"worktree:path:{parent}")))
-    return (f"worktree:path:{root}",)
+            found = tuple(dict.fromkeys((f"{_PATH_KEY}{root}", f"{_PATH_KEY}{parent}")))
+            break
+    else:
+        found = (f"{_PATH_KEY}{root}",)
+    return tuple(
+        dict.fromkeys(
+            spelling
+            for candidate in found
+            for spelling in path_key_spellings(candidate, record="session handle")
+        )
+    )
+
+
+def _current_spellings(handles: HandleMap) -> tuple[dict[str, str], dict[str, str]]:
+    """Labels and titles, plus those of former-mount path keys under their current spellings.
+
+    The current spellings are the lexical mount's and the resolved one's, as attribution
+    derives keys from resolved paths. A stored current-spelled key wins.
+    """
+    labels, titles = handles.labels(), handles.titles()
+    for key in tuple(labels):
+        if not key.startswith(_PATH_KEY):
+            continue
+        path = key.removeprefix(_PATH_KEY)
+        moved = translate_stored_path(path, record="session handle")
+        if moved == path:
+            continue
+        for current in dict.fromkeys((moved, str(Path(moved).resolve()))):
+            labels.setdefault(_PATH_KEY + current, labels[key])
+            titles.setdefault(_PATH_KEY + current, titles[key])
+    return labels, titles
 
 
 class HandleStore:
@@ -246,9 +287,10 @@ class HandleStore:
         """Handles, display titles and diagnostics from one map read."""
         try:
             handles = self.load()
-        except (OSError, ValueError, UnicodeError, RecursionError) as exc:
+            labels, titles = _current_spellings(handles)
+        except (OSError, ValueError, UnicodeError, RecursionError, MountHistoryError) as exc:
             return {}, {}, (f"{'Job' if self.jobs else 'Session'} handles unavailable: {exc}",)
-        return handles.labels(), handles.titles(), ()
+        return labels, titles, ()
 
     def snapshot(self) -> tuple[dict[str, str], tuple[str, ...]]:
         handles, _titles, diagnostics = self.titled_snapshot()

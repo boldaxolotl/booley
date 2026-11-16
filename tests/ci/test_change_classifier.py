@@ -16,7 +16,6 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 from ci_changes import (
     ALL_JOBS,
-    ALWAYS_JOBS,
     CATEGORIES,
     DEFAULT_WINDOWS_SHARD_COUNT,
     MAIN_REF,
@@ -939,12 +938,10 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
         ("src/booley/mcp/project_flow_loader.py", False),
         ("src/booley/runtime/agent_execution.py", False),
         ("src/booley/specialists/verification_freshness.py", False),
-        ("src/booley/flows/sim/waiver_candidates.py", False),
         ("tests/criteria/test_evidence_ledger.py", False),
         ("tests/criteria/ledger_support.py", False),
         ("tests/golden/test_golden_acceptance_ledger.py", False),
         ("tests/runtime/test_agent_execution.py", False),
-        ("tests/flows/sim/test_waiver_candidates.py", False),
         ("tests/mcp_tools/test_unbound_recording.py", False),
     ],
 )
@@ -1241,88 +1238,7 @@ def test_aggregate_accepts_intentional_skips_and_rejects_required_failure() -> N
 
 @pytest.mark.parametrize(
     "path",
-    [
-        "src/booley/goals/finish.py",
-        "src/booley/review/goal_package.py",
-    ],
-)
-def test_goal_changes_are_release_sensitive_without_git(path: str) -> None:
-    from ci_changes import classify
-
-    categories = classify([path])
-    assert {"release_sensitive", "standard_image"} <= categories
-    if path.startswith("src/booley/"):
-        assert "riscv_image" in categories
-
-
-@pytest.mark.parametrize("path", ["tests/goals/test_finish.py", "tests/goals/fixtures/x.txt"])
-def test_goal_unit_test_change_selects_only_lint(tmp_path: Path, path: str) -> None:
-    """CI never runs Goal Mode unit tests (#3329), so editing one selects only Ruff."""
-    repo, base = _repository(tmp_path)
-    _write(repo, path)
-    head = _commit(repo, "goal test")
-
-    outputs = _classify(repo, base, head)
-
-    assert _required(outputs) == set(ALWAYS_JOBS) | {"lint"}
-
-
-def test_classify_without_goal_import_facts_treats_goal_paths_as_shared() -> None:
-    """A caller that cannot compute imports keeps the test lane (fail safe)."""
-    categories = classify(["tests/goals/test_only.py"])
-
-    assert "python_tests" in categories
-    assert "goal_tests" not in categories
-
-
-def _goal_importer_repository(tmp_path: Path) -> tuple[Path, str]:
-    """Return a repo whose outside test imports two Goal test helpers, one deferred."""
-    repo, _base = _repository(tmp_path)
-    _write(repo, "tests/goals/__init__.py", "")
-    _write(repo, "tests/goals/conftest.py", "VALUE = 1\n")
-    _write(repo, "tests/goals/helper.py", "VALUE = 2\n")
-    _write(repo, "tests/goals/test_only.py", "def test_a():\n    pass\n")
-    _write(
-        repo,
-        "tests/harness/test_x.py",
-        "from tests.goals import conftest\n\n\ndef test_x():\n    from tests.goals.helper import VALUE\n",
-    )
-    return repo, _commit(repo, "goal fixtures")
-
-
-@pytest.mark.parametrize(
-    ("change", "selects_tests"),
-    [
-        ("modify-conftest", True),
-        ("delete-helper", True),
-        ("rename-helper", True),
-        ("modify-unimported", False),
-    ],
-)
-def test_goal_test_helper_imported_elsewhere_still_selects_tests(
-    tmp_path: Path, change: str, selects_tests: bool
-) -> None:
-    """A Goal test file that a test outside tests/goals/ imports stays an ordinary test change."""
-    repo, base = _goal_importer_repository(tmp_path)
-    if change == "modify-conftest":
-        _write(repo, "tests/goals/conftest.py", "VALUE = 3\n")
-    elif change == "delete-helper":
-        _git(repo, "rm", "tests/goals/helper.py")
-    elif change == "rename-helper":
-        _git(repo, "mv", "tests/goals/helper.py", "tests/goals/renamed.py")
-    else:
-        _write(repo, "tests/goals/test_only.py", "def test_a():\n    assert True\n")
-    head = _commit(repo, change)
-
-    required = _required(_classify(repo, base, head))
-
-    assert ("test" in required) is selects_tests
-    assert "lint" in required
-
-
-@pytest.mark.parametrize(
-    "path",
-    ["src/booley/evidence/acceptance.py", "tests/fixtures/goal_mode_smoke/goal_mode_smoke.core"],
+    ["src/booley/evidence/acceptance.py"],
 )
 def test_demo_evidence_and_fixture_inputs_select_riscv_validation_without_git(path):
     from ci_changes import classify

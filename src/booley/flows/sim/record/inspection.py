@@ -2,34 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from booley.core.file_lock import LockContentionError
 from booley.flows.sim.record_layout import (
-    COVERAGE_RECORD_DIRECTORY,
     RECORD_DIRECTORY,
     refuse_older_manifest_path,
 )
 from booley.flows.simulation_record_results import (
     DurableSimulationRecordResults,
     SimulationRecordBusyError,
-    StartedSimulationRecord,
 )
 
 from .codec import (
     SimulationRecordIntegrityError,
-    reads_simulation_record_documents,
-    validate_relative_path,
 )
 from .coordinator import collected_result_facts
 from .model import SimulationRecordManifest, SimulationResult
 from .planning import manifest_digest
-from .run_directory import stored_run_path
-from .store import SimulationRecordRecovery, SimulationRecordStore, collect_pre_sim_firings
+from .store import SimulationRecordStore, collect_pre_sim_firings
 from .test_run_report import observation_test_run_rows
 
 
@@ -47,27 +41,6 @@ class SimulationRecordWorkItemEvidence:
     work_item_id: str
     work_item: Mapping[str, object]
     result: SimulationResult
-
-
-@dataclass(frozen=True, slots=True)
-class RetainedSimulationRecordStatus:
-    """Authenticated recovery and summary status used by retention policy."""
-
-    manifest_path: Path
-    summary_path: Path
-    manifest_sha256: str
-    manifest: SimulationRecordManifest
-    simulation_record_id: str
-    target_selector: str
-    target_identity: str
-    completed: tuple[str, ...]
-    pending: tuple[str, ...]
-    interrupted: tuple[str, ...]
-    summary_present: bool
-    summary_complete: bool
-    summary_completed_matches: bool
-    retention_files: tuple[Path, ...]
-    coverage_directories: tuple[Path, ...]
 
 
 def authenticate_work_item(
@@ -108,185 +81,6 @@ def authenticate_work_item(
     )
 
 
-def inspect_retained_simulation_record(
-    manifest_path: Path, *, booley_dir: Path | None = None
-) -> RetainedSimulationRecordStatus:
-    """Return authenticated recovery plus existing summary consistency, without writes."""
-    store = _store_for_manifest(manifest_path, booley_dir)
-    try:
-        manifest = store.load_manifest()
-        digest = manifest_digest(manifest)
-        recovery = store.scan(manifest, digest)
-        if not store.summary_path.exists() and not store.summary_path.is_symlink():
-            summary = None
-        else:
-            summary = store.load_summary()
-    except SimulationRecordIntegrityError:
-        raise
-    except OSError as exc:
-        raise SimulationRecordIntegrityError(
-            f"cannot inspect Simulation Record storage: {exc}"
-        ) from exc
-    completed = cast(list[str], summary["completed"]) if summary is not None else []
-    target = cast(Mapping[str, str], manifest.document["target"])
-    retention_files, coverage_directories = _retention_inventory(store, recovery)
-    return RetainedSimulationRecordStatus(
-        store.manifest_path,
-        store.summary_path,
-        digest,
-        manifest,
-        cast(str, manifest.document["simulation_record_id"]),
-        target["selector"],
-        f"{target['vlnv']}#{target['name']}",
-        recovery.complete,
-        recovery.pending,
-        recovery.interrupted,
-        summary is not None,
-        summary is not None and summary["complete"] is True,
-        summary is None or tuple(completed) == recovery.complete,
-        retention_files,
-        coverage_directories,
-    )
-
-
-def _retention_inventory(
-    store: SimulationRecordStore, recovery: SimulationRecordRecovery
-) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
-    retention_files = set(store.retention_files)
-    attempts = {
-        path.parent
-        for path in retention_files
-        if path.name == "attempt.json" and path.parent.parent.name == "attempts"
-    }
-    completed_attempts = {
-        cast(str, item.result.document["attempt_id"]): item.result.document
-        for item in recovery.items
-        if item.result is not None
-    }
-    coverage_directories = []
-    for attempt in attempts:
-        attempt_id = attempt.name.split("-", 1)[1]
-        if attempt_id in completed_attempts:
-            coverage_directories.append(attempt / COVERAGE_RECORD_DIRECTORY)
-            retention_files.update(
-                _result_named_files(store.root, attempt, completed_attempts[attempt_id])
-            )
-            continue
-        for name in (
-            "private-build",
-            "snapshot",
-            "runtime-inputs",
-            "evidence",
-            "pre-sim",
-            COVERAGE_RECORD_DIRECTORY,
-        ):
-            retention_files.update(
-                path.absolute() for path in (attempt / name).rglob("*") if path.is_file()
-            )
-    return tuple(sorted(retention_files)), tuple(sorted(coverage_directories))
-
-
-@reads_simulation_record_documents
-def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object]) -> set[Path]:
-    """Files a terminal result names, plus the Booley-written build trees it used, unhashed."""
-    references = list(cast(tuple[Mapping[str, object], ...], result["evidence"]))
-    snapshot = result["executable_snapshot"]
-    if isinstance(snapshot, Mapping):
-        references.append(cast(Mapping[str, object], snapshot["manifest"]))
-    for binding in cast(tuple[Mapping[str, object], ...], result["runtime_inputs"]):
-        references.append(cast(Mapping[str, object], binding["authoritative_copy"]))
-    named = {
-        (attempt / validate_relative_path(reference["path"])).absolute()
-        for reference in references
-    }
-    trees = [attempt / "private-build", attempt / "snapshot"]
-    build = cast(Mapping[str, object], result["build_result"])
-    if build["sharing"] == "shared_variant":
-        trees.append((root / validate_relative_path(build["path"])).parent)
-    for tree in trees:
-        named.update(path.absolute() for path in tree.rglob("*") if path.is_file())
-    return named
-
-
-@contextmanager
-def retained_simulation_record_lock(
-    manifest_path: Path, *, booley_dir: Path | None = None
-) -> Iterator[None]:
-    """Exclude mutation of one existing authenticated Simulation Record without recreating it."""
-    store = _store_for_manifest(manifest_path, booley_dir)
-    with store.mutation_lock():
-        yield
-
-
-def authenticate_retained_simulation_record_inventory(
-    status: RetainedSimulationRecordStatus, *, booley_dir: Path | None = None
-) -> tuple[Path, ...]:
-    """Authenticate shared-build files owned by one retained Simulation Record."""
-    store = _store_for_manifest(status.manifest_path, booley_dir)
-    origin = cast(Mapping[str, object], status.manifest.document["origin"])
-    variants = cast(tuple[Mapping[str, object], ...], status.manifest.document["build_variants"])
-    for variant in variants:
-        store.recover_shared_build(
-            cast(str, variant["build_variant_id"]),
-            cast(int, origin["invocation_id"]),
-        )
-    return store.retention_files
-
-
-def recover_retained_simulation_record_resources(
-    status: RetainedSimulationRecordStatus,
-    project_data: Path | None,
-    *,
-    booley_dir: Path | None = None,
-) -> None:
-    """Recover interrupted lanes and interrupted owned run directories."""
-    from .child_protocol import recover_interrupted_attempts
-
-    store = _store_for_manifest(status.manifest_path, booley_dir)
-    interrupted = {
-        work_item_id: attempt.document
-        for work_item_id in status.interrupted
-        if (attempt := store.latest_attempt(work_item_id)) is not None
-    }
-    if project_data is None:
-        if any(_has_resources_to_recover(document) for document in interrupted.values()):
-            raise SimulationRecordIntegrityError(
-                "Booley Directory is required to recover retained Simulation Record resources"
-            )
-        return
-    recover_interrupted_attempts(status.manifest, interrupted, project_data, booley_dir=booley_dir)
-
-
-@reads_simulation_record_documents
-def _has_resources_to_recover(attempt: Mapping[str, object]) -> bool:
-    """Whether an interrupted attempt ran on a lane or still has an owned run directory."""
-    run = cast(Mapping[str, object], attempt["run_directory"])
-    owned_run = run["owned"] is True and stored_run_path(run).exists()
-    return attempt["child_execution_id"] is not None or owned_run
-
-
-def started_simulation_record(manifest_path: Path) -> StartedSimulationRecord:
-    """The identity of the record whose manifest was just published at *manifest_path*.
-
-    Raises :class:`SimulationRecordIntegrityError` when the manifest cannot
-    be read or is not a record manifest.
-    """
-    try:
-        manifest = _store_for_manifest(manifest_path).load_manifest()
-    except OSError as exc:
-        raise SimulationRecordIntegrityError(
-            f"cannot read Simulation Record manifest: {exc}"
-        ) from exc
-    target = cast(Mapping[str, object], manifest.document["target"])
-    return StartedSimulationRecord(
-        manifest_path,
-        str(manifest.document["simulation_record_id"]),
-        manifest_digest(manifest),
-        (str(target["selector"]), f"{target['vlnv']}#{target['name']}"),
-        target["role"] == "candidate",
-    )
-
-
 def read_durable_results(
     manifest_path: Path, manifest_sha256: str
 ) -> DurableSimulationRecordResults:
@@ -307,7 +101,7 @@ def read_durable_results(
     :class:`~booley.flows.simulation_record_results.OlderBooleyRecordError` when an older
     Booley wrote it, and :class:`SimulationRecordIntegrityError`
     when the record is gone, is not the expected one, or any of its results
-    cannot be authenticated (one whose writer was killed mid-write included).
+    cannot be authenticated.
     """
     store = _store_for_manifest(manifest_path)
     try:
@@ -361,15 +155,9 @@ def _store_for_manifest(
 
 
 __all__ = [
-    "RetainedSimulationRecordStatus",
     "SimulationRecordWorkItemError",
     "SimulationRecordWorkItemEvidence",
-    "authenticate_retained_simulation_record_inventory",
     "authenticate_work_item",
     "collect_pre_sim_firings",
-    "inspect_retained_simulation_record",
     "read_durable_results",
-    "recover_retained_simulation_record_resources",
-    "retained_simulation_record_lock",
-    "started_simulation_record",
 ]

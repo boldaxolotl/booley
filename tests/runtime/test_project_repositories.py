@@ -166,7 +166,7 @@ def test_paired_identity_filesystem_error_has_typed_repository_context(tmp_path,
 
 
 def test_repository_inspection_ignores_foreign_selectors(tmp_path, monkeypatch):
-    from tests.goals.test_attribute_projection import hostile
+    from tests.git_support import hostile
 
     from booley.runtime.project_repositories import git_directories, run_git
 

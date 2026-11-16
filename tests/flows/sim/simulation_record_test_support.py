@@ -19,7 +19,8 @@ from typing import Any, cast
 
 import pytest
 
-from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows import endpoint_admission
+from booley.flows.endpoint_admission import AdmissionContext, _Claim
 from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
@@ -80,7 +81,6 @@ from booley.runtime.execution_records import (
     ExecutionId,
 )
 from booley.runtime.job_slots import (
-    CLASS_LIGHT,
     CLASS_MEMORY,
     MemoryClaim,
     SlotStore,
@@ -162,7 +162,7 @@ def _recorded_simulation_record(
     """
     from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan
 
-    directory = Path(tempfile.mkdtemp(prefix="recorded-campaign-", dir=root))
+    directory = Path(tempfile.mkdtemp(prefix="recorded-record-", dir=root))
     manifest = _hdl_plan(directory, tuple((run,) for run in runs), required).manifest
     manifest_path = directory / "manifest.json"
     manifest_path.write_bytes(encode_simulation_record_manifest(manifest))
@@ -469,7 +469,7 @@ def _failed_shared_executor(
                 ),
             )
 
-        def launch_snapshot(self, *_args, **_kwargs):
+        def launch_bundle(self, *_args, **_kwargs):
             counters["launch"] += 1
             raise AssertionError("failed shared build must not launch")
 
@@ -540,12 +540,13 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count, bindi
             assert evidence == _build_execution()
             bindings.append(self.names)
 
-        def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
+        def launch_bundle(self, bundle_root: Path, evidence_root: Path, run_cwd: Path):
+            assert evidence_root.name == "execution-evidence"
             name = self.names[0]
             staged = run_cwd / "inputs/input.bin"
             launches.append((name, run_cwd, staged.read_bytes()))
             staged.write_bytes(name.encode())
-            assert (snapshot_root / "simv").read_bytes() == b"image"
+            assert (bundle_root / "simv").read_bytes() == b"image"
             return _shared_outcome(name, handle, run_log)
 
     class FakeExecution:
@@ -636,8 +637,11 @@ class _TestGroup:
     def bind_authenticated_bundle(self, _evidence: object) -> None:
         return None
 
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome:
-        assert (snapshot_root / "simv").is_file()
+    def launch_bundle(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path
+    ) -> SimulationTargetOutcome:
+        assert (bundle_root / "simv").is_file()
+        assert evidence_root.name == "execution-evidence"
         assert run_cwd.is_dir()
         test = SimulationTestOutcome(name=self.name, verdict="pass", passed=True)
         artifacts = tuple(
@@ -768,6 +772,16 @@ def _manifest_for(names: tuple[str, ...], *, access: str = "immutable"):
     return finalize_manifest(document)
 
 
+def mutate_bundle_directory(bundle_root: Path, how: str) -> None:
+    """Change a ready bundle the way a misbehaving attempt could."""
+    if how == "undeclared_entry":
+        (bundle_root / "stray.so").write_bytes(b"stray")
+        return
+    executable = bundle_root / "simv"
+    executable.chmod(0o700)
+    executable.write_bytes(b"mutated")
+
+
 class _Group:
     def __init__(
         self,
@@ -775,16 +789,18 @@ class _Group:
         build_root: Path,
         counters: dict[str, int],
         *,
-        mutate_snapshot: bool = False,
+        mutate_bundle: str = "",
         disclosure: object | None = None,
+        launched_bundles: list[Path] | None = None,
     ) -> None:
         self.names = names
         self.build_root = build_root
         self.compile_surface = TargetCompileSurface(build_root.parent, (), ())
         self.artifact_paths = (build_root / "simv",)
         self._counters = counters
-        self._mutate_snapshot = mutate_snapshot
+        self._mutate_bundle = mutate_bundle
         self._disclosure = disclosure or {}
+        self._launched_bundles = [] if launched_bundles is None else launched_bundles
 
     def planning_disclosure(self):
         return self._disclosure
@@ -800,12 +816,11 @@ class _Group:
         assert evidence == _build_execution()
         self._counters["durable_reuse"] += 1
 
-    def launch_snapshot(self, snapshot_root: Path, _run_cwd: Path):
+    def launch_bundle(self, bundle_root: Path, _evidence_root: Path, _run_cwd: Path):
         self._counters["launch"] += 1
-        if self._mutate_snapshot:
-            executable = snapshot_root / "simv"
-            executable.chmod(0o700)
-            executable.write_bytes(b"mutated")
+        self._launched_bundles.append(bundle_root)
+        if self._mutate_bundle:
+            mutate_bundle_directory(bundle_root, self._mutate_bundle)
         name = self.names[0]
         test = SimulationTestOutcome(name=name, verdict="pass", passed=True)
         return SimulationTargetOutcome(
@@ -826,12 +841,14 @@ class _Execution:
         build_root: Path,
         counters: dict[str, int],
         *,
-        mutate_snapshot: bool = False,
+        mutate_bundle: str = "",
         disclosures: dict[str, object] | None = None,
+        launched_bundles: list[Path] | None = None,
     ) -> None:
+        self._launched_bundles = launched_bundles
         self._build_root = build_root
         self._counters = counters
-        self._mutate_snapshot = mutate_snapshot
+        self._mutate_bundle = mutate_bundle
         self._disclosures = disclosures or {}
 
     @contextmanager
@@ -840,8 +857,9 @@ class _Execution:
             names,
             self._build_root,
             self._counters,
-            mutate_snapshot=self._mutate_snapshot,
+            mutate_bundle=self._mutate_bundle,
             disclosure=self._disclosures.get(names[0]),
+            launched_bundles=self._launched_bundles,
         )
 
 
@@ -849,9 +867,10 @@ def _executor(
     build_root: Path,
     counters: dict[str, int],
     *,
-    mutate_snapshot: bool = False,
+    mutate_bundle: str = "",
     disclosures: dict[str, object] | None = None,
     checkpoint=None,
+    launched_bundles: list[Path] | None = None,
 ) -> OrdinaryHdlSerialExecutor:
     return OrdinaryHdlSerialExecutor(
         publication_checkpoint=checkpoint,
@@ -859,8 +878,9 @@ def _executor(
         execution_factory=lambda _options: _Execution(
             build_root,
             counters,
-            mutate_snapshot=mutate_snapshot,
+            mutate_bundle=mutate_bundle,
             disclosures=disclosures,
+            launched_bundles=launched_bundles,
         ),  # type: ignore[arg-type,return-value]
     )
 
@@ -1197,8 +1217,8 @@ class _ParallelGroup:
     def bind_authenticated_bundle(self, evidence) -> None:
         assert evidence == _build_execution()
 
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
-        del snapshot_root, run_cwd
+    def launch_bundle(self, bundle_root: Path, evidence_root: Path, run_cwd: Path):
+        del bundle_root, evidence_root, run_cwd
         name = self.names[0]
         started = time.monotonic()
         self._coordinate(name)
@@ -1250,15 +1270,20 @@ class _SimulationRecordAdmissionEndpoint:
         self._runtime_execution_id = runtime_execution_id
 
     def _memory_admitted(self) -> bool:
-        return False
+        return True
 
-    def _acquire_job_slot(self):
+    def _claim_slot(self) -> _Claim:
+        """Hold one small Memory Reservation in this stub's store, carrying the run's identity."""
         execution_id = (
             ExecutionId(self._runtime_execution_id) if self._runtime_execution_id else None
         )
-        return self._slots, self._slots.acquire(
-            CLASS_LIGHT, pid=os.getpid(), execution_id=execution_id
+        token = self._slots.acquire(
+            CLASS_MEMORY,
+            pid=os.getpid(),
+            execution_id=execution_id,
+            memory=MemoryClaim(budget_mb=_BUDGET_MIB, reservation_mb=1.0),
         )
+        return _Claim(self._slots, token)
 
 
 def _validated_simulation_record(store, manifest, project, handle) -> ValidatedResumeManifest:
@@ -1286,6 +1311,12 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     invocation = tmp_path / "reports/000001"
     invocation.mkdir(parents=True)
     slots = SlotStore(tmp_path / "slots")
+    # The stub endpoint claims into the case's own store, not the project's.
+    monkeypatch.setattr(
+        endpoint_admission,
+        "_acquire_memory_reservation",
+        lambda endpoint, _prepared, requeued=False: endpoint._claim_slot(),
+    )
     _set_runtime_execution_id(monkeypatch, runtime_execution_id)
     monkeypatch.setenv("BOOLEY_RUN_ID", _SimulationRecordAdmissionEndpoint._invocation_id)
     fault_enabled, original_mark = [True], ChildExecutionRegistry.mark_terminal
@@ -1748,7 +1779,7 @@ class _NoEdaExecutor:
             "bundle_id": None,
             "finished_at": _STAMP,
             "elapsed_seconds": 0.0,
-            "executable_snapshot": None,
+            "bundle_verification": None,
             "runtime_inputs": [],
             "observations": [observation],
             "grade": "fail",
@@ -1803,8 +1834,8 @@ def _retained_invocation(
                 "passed": True,
                 "inconclusive": False,
                 "tests": [],
-                "campaign_manifest": str(store.manifest_path),
-                "campaign_summary": str(store.summary_path),
+                "record_manifest": str(store.manifest_path),
+                "record_summary": str(store.summary_path),
             }
         )
     )
@@ -1895,7 +1926,7 @@ class CoverageInvocation:
 
     @property
     def coverage_record_path(self) -> Path:
-        """The Coverage Campaign the reference selects, in its nested directory."""
+        """The Coverage Record the reference selects, in its nested directory."""
         return self.storage / "coverage.json"
 
     @property

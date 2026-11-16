@@ -18,14 +18,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
     standalone_request_path,
 )
-from booley.mcp import sim_baseline_jobs
 from booley.runtime import job_records, job_slots
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -39,10 +37,8 @@ linux_only = pytest.mark.skipif(
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
 TIMEOUT_S = 60
 
-# Seeded into the submitter: none may reach the worker.
-GOAL_AND_SESSION_ENV = {
-    "BOOLEY_GOAL_RUN_BINDING": '{"goal": "g1"}',
-    "BOOLEY_GOAL_FILE": "/nonexistent/goal.json",
+# Session identity seeded into the submitter: none may reach the worker.
+SESSION_ENV = {
     "BOOLEY_EXECUTION_ID": "session-execution",
     "BOOLEY_RUNTIME_EXECUTION_ID": "session-runtime-execution",
     "BOOLEY_RUN_ID": "outer-run",
@@ -69,10 +65,7 @@ from booley.runtime.endpoint_execution import EndpointOutcome
 class StubFlow(BooleyFlow):
     name = "stub_flow"
     description = "Detached worker fixture"
-    JOB_CLASS = "light"
-
-    def _memory_admitted(self):
-        return False  # counted light slot: the test queues behind a plain slot holder
+    JOB_CLASS = "memory"  # admitted by Memory Reservation, so a run-alone holder blocks it
     target_required = False
 
     def _add_args(self, parser):
@@ -154,8 +147,8 @@ while marker and not Path(marker).exists() and time.monotonic() < deadline:
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """A Project whose Booley Directory has one Flow, one Specialist and one light slot."""
-    for name in ("BOOLEY_DIR", "BOOLEY_SLOTS_DIR", *GOAL_AND_SESSION_ENV):
+    """A Project whose Booley Directory has one Flow, one Specialist and one memory slot."""
+    for name in ("BOOLEY_DIR", "BOOLEY_SLOTS_DIR", *SESSION_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -255,7 +248,7 @@ def dashboard_states(project: Path, run_id: str) -> list[str]:
     """What the Dashboard's Job reader shows for *run_id*."""
     snapshot = JobReader(
         booley_dir_of(project), slots_root=booley_dir_of(project) / "runtime/jobs/slots"
-    ).read([])
+    ).read()
     return [view.state for view in snapshot.jobs if view.record.run_id == run_id]
 
 
@@ -373,18 +366,16 @@ def test_specialist_job_gets_a_transcript_dir_and_keeps_its_command(
 
 
 @linux_only
-def test_worker_environment_has_no_goal_or_session_identity(project: Path, ctl: Path) -> None:
+def test_worker_environment_has_no_session_identity(project: Path, ctl: Path) -> None:
     (ctl / "release").write_text("1", encoding="utf-8")
-    run_id = submit_and_exit(
-        project, "flow", "stub_flow", ("--ctl", str(ctl)), env=GOAL_AND_SESSION_ENV
-    )
+    run_id = submit_and_exit(project, "flow", "stub_flow", ("--ctl", str(ctl)), env=SESSION_ENV)
     final = terminal_record(project, run_id)
 
     worker_env = json.loads((ctl / "env.json").read_text(encoding="utf-8"))
-    for name in GOAL_AND_SESSION_ENV.keys() - {"BOOLEY_RUN_ID"}:
+    for name in SESSION_ENV.keys() - {"BOOLEY_RUN_ID"}:
         assert name not in worker_env
     assert worker_env["BOOLEY_RUN_ID"] == run_id  # its own run, not the submitter's
-    assert final.binding is None and final.session_key is None
+    assert final.session_key is None
 
 
 START_FAILURE_REASONS = {
@@ -434,9 +425,7 @@ def test_worker_exit_before_initialization_is_failed(tmp_path: Path) -> None:
         job_records.JobRecord("stub-1", "stub", utc_now_rfc3339(), 60), jobs_root
     )
 
-    detached_job._reap_unstarted(
-        SimpleNamespace(wait=lambda: 3), log_path, jobs_root, "stub-1", None
-    )
+    detached_job._reap_unstarted(SimpleNamespace(wait=lambda: 3), log_path, jobs_root, "stub-1")
 
     record = job_records.read_record("stub-1", jobs_root)
     assert record is not None
@@ -485,49 +474,11 @@ def test_unwritable_log_still_leaves_failed_record(
     assert (record.status, record.exit_code) == ("failed", 2)
 
 
-def test_goal_baseline_launches_the_generic_worker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.runtime import detached_job
-
-    spawned: list[list[str]] = []
-
-    def popen(command: list[str], **_kwargs: object) -> object:
-        spawned.append(command)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(detached_job.subprocess, "Popen", popen)
-    monkeypatch.setattr(
-        detached_job.threading, "Thread", lambda **_kw: SimpleNamespace(start=lambda: None)
-    )
-    path = tmp_path / "request.json"
-    request = {
-        "job_id": "baseline-one",
-        "booley_dir": str(tmp_path),
-        "jobs_root": str(tmp_path / "jobs"),
-        "record": {"worktree_path": "/work", "session_key": "codex:one"},
-    }
-    sim_baseline_jobs._publish_job_record(path, request)
-    sim_baseline_jobs.launch_baseline(path, request)
-
-    expected = [
-        sys.executable,
-        "-m",
-        "booley.harness.standalone_worker",
-        "goal-baseline",
-        str(path),
-    ]
-    recorded = job_records.read_record("baseline-one", tmp_path / "jobs")
-    assert recorded is not None
-    assert spawned == [expected]
-    assert recorded.argv == expected
-
-
 def test_worker_rejects_unknown_kinds(capsys: pytest.CaptureFixture[str]) -> None:
     from booley.harness import standalone_worker as worker
 
     assert worker.main(["unknown", "x"]) == 2
-    assert worker.main(["goal-baseline"]) == 2
+    assert worker.main(["goal-baseline", "request.json"]) == 2
     assert worker.main(["standalone", "x"]) == 2
     assert "usage:" in capsys.readouterr().err
 
@@ -544,12 +495,16 @@ def test_worker_without_a_record_reports_it(
 @linux_only
 def test_worker_job_queues_in_the_shell_slot_store(project: Path, ctl: Path) -> None:
     slots_root = booley_dir_of(project) / "runtime" / "jobs" / "slots"
-    store = job_slots.SlotStore(slots_root, SlotCaps())
-    # Shell runs hold every light slot under the default cap (the stub Flow is light-class).
+    store = job_slots.SlotStore(slots_root)
+    # A Shell run holds the memory class alone.
     argv = _proc_cmdline(os.getpid()) or []
     holders = [
-        store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=argv)
-        for _ in range(SlotCaps().max_light)
+        store.acquire(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            argv=argv,
+            memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+        )
     ]
     try:
         (ctl / "release").write_text("1", encoding="utf-8")

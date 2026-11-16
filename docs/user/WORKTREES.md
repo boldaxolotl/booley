@@ -39,7 +39,7 @@ manual Git steps with the real Sandbox paths; use those, not host paths.
 
 The worktree gets its own Booley Directory (the `.booley/` folder), a
 **Snapshot**: a copy of the Booley Directory's configuration (settings,
-`cores/`, hooks, Goal and Ticket history). Build results, reports, logs, and
+`cores/`, hooks, Ticket history). Build results, reports, logs, and
 evidence stay in the main Booley Directory. A path Booley does not classify is
 not copied, and the command names it.
 
@@ -74,7 +74,6 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 | `UNCOMMITTED` | Changed and untracked entries (an untracked folder counts once), not counting untracked files in the worktree's own `.booley/`. A Paired Checkout reads `N, paired M`, `M` being the same count in its inner checkout |
 | `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
 | `SESSION` | Handles of live sessions in the worktree |
-| `GOAL` | Its active Goal, if any |
 | `LAST USED` | When the worktree was created, a Booley tool call last ran there, `booley chat` was last launched inside it, or the session of a worktree that `booley chat` created ended (a resumed session counts through its tool calls); `never` for a worktree that predates the record |
 
 A worktree whose directory is gone is not listed; a warning names it.
@@ -89,14 +88,13 @@ booley worktree rm <name> [--force]
 ```
 
 It moves the worktree's evidence aside, removes the worktree, and keeps its
-branch (`booley/<name>`, `wt/<name>` in Stealth Mode, or the Goal Branch), so commits made in the worktree
+branch (`booley/<name>`, or `wt/<name>` in Stealth Mode), so commits made in the worktree
 stay reachable. A worktree on a detached HEAD, which has no branch, is reported
 as `detached HEAD was <commit>`; save that commit on a branch if you need it.
 
 Without `--force` it refuses, listing every reason, while the worktree has:
 
-- a live Session or an active Goal Mode (an unreadable Session Registry or Goal
-  Record also refuses);
+- a live Session (an unreadable Session Registry also refuses);
 - uncommitted changes in the worktree, including untracked files in a
   Snapshot's `.booley/` that are neither evidence nor a copy of the Main
   Booley Directory's file;
@@ -164,8 +162,8 @@ keeps and about a failed run (an invalid `gc_older_than`, for instance). Run
 `booley worktree gc` to see why a worktree was kept.
 
 Each idle worktree goes through `booley worktree rm` without `--force`, so
-everything `rm` refuses is kept: a live Session, an active Goal Mode, and
-unsaved work (see [Removing a worktree](#removing-a-worktree)). A removed worktree prints the same lines as
+everything `rm` refuses is kept: a live Session and unsaved
+work (see [Removing a worktree](#removing-a-worktree)). A removed worktree prints the same lines as
 `rm`, evidence and branches included. Each worktree that stays prints `Kept
 worktree <name>:` and why, such as that it was used too recently, that the
 worktree you are in cannot be removed from inside, that it predates the

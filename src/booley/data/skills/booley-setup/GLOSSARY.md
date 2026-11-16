@@ -45,7 +45,8 @@ pass/fail results from cocotb's result file instead of log-line sentinels.
 ## Sandbox
 A Sandbox is the isolated environment where Booley runs commands, edits files,
 and invokes EDA tools for your project. It is usually a Docker container with
-your EDA tools, and contains the separate worktrees used for Goal work.
+your EDA tools, and contains the separate worktrees used for Developer Agent
+work.
 
 ## Doctor
 Doctor is Booley's health-check command for the build setup and execution
@@ -101,10 +102,14 @@ belong in your own cores rather than edits to that upstream code.
 
 ## Booley Directory
 Aliases: `.booley/`
-The Booley Directory holds Booley's configuration, Goalsets, Goal Records,
-evidence, logs, and worktrees for your Project. It sits at the Project Root
+The Booley Directory holds Booley's configuration, evidence, logs, and worktrees
+for your Project. It sits at the Project Root
 by default and is named `.booley/`; Stealth keeps it out of the RTL repository's
 tracked files, while open setup commits its durable configuration.
+
+## Target Metrics
+Aliases: metrics
+The checks a Target declares in `.booley/metrics.toml`, such as "no Test fails". Each is either enforced (a bound the result must meet) or only tracked (reported, never blocking). `booley measure` checks a commit against them. Adoption is optional: a Project with no metrics table is unaffected.
 
 ## `.core`
 Aliases: FuseSoC core
@@ -132,12 +137,3 @@ Aliases: Sandbox image
 A Sandbox image is the reusable installed filesystem from which a Sandbox is
 created, typically a Docker image containing your EDA tools. It supplies the
 programs; the Sandbox is the running environment that uses them.
-
-## Goal Mode
-Goal Mode binds one Developer Agent session to a linked worktree and Goal Branch, with
-mandatory completion conditions judged by Booley Flow and Specialist evidence.
-
-## Goalset
-A Goalset is a Project-owned Markdown bundle under `goalsets/`. The Developer Agent
-translates its prose into concrete Goals at entry. An optional `default.md`
-applies to every entry unless the human explicitly skips it with a reason.

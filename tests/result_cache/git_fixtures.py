@@ -17,8 +17,6 @@ BOOLEY_FILES = {
     "booley.toml": 'name = "x"\n',
     "tests.toml": "",
     "criteria.toml": "",
-    "goalsets/feature.md": "# feature\n",
-    "goalsets/data.hex": "00\n",
     "cores/x.core": "CAPI=2:\n",
 }
 RTL_FILES = {"src/a.v": "module a; endmodule\n", "README": "readme\n"}

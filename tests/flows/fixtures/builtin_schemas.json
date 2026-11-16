@@ -13,7 +13,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
+        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
       },
       "dry_run": {
         "type": "boolean",
@@ -22,8 +22,8 @@
       },
       "timeout_ms": {
         "type": "integer",
-        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
-        "minimum": 1
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
       },
       "scope": {
         "type": "string",
@@ -47,7 +47,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
+        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
       },
       "dry_run": {
         "type": "boolean",
@@ -62,7 +62,7 @@
       "coverage": {
         "type": "boolean",
         "default": false,
-        "description": "Collect a native Verilator Coverage Campaign for each selected Target"
+        "description": "Collect a native Verilator Coverage Record for each selected Target"
       },
       "no_waivers": {
         "type": "boolean",
@@ -149,7 +149,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
+        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
       },
       "dry_run": {
         "type": "boolean",
@@ -158,8 +158,8 @@
       },
       "timeout_ms": {
         "type": "integer",
-        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
-        "minimum": 1
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
       },
       "baseline": {
         "type": "string",
@@ -257,7 +257,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
+        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
       },
       "dry_run": {
         "type": "boolean",
@@ -266,8 +266,8 @@
       },
       "timeout_ms": {
         "type": "integer",
-        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
-        "minimum": 1
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
       },
       "baseline": {
         "type": "string",
@@ -304,7 +304,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
+        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
       },
       "dry_run": {
         "type": "boolean",

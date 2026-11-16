@@ -77,6 +77,8 @@ class BootstrapFinding:
     state: BootstrapState
     detail: str
     remedy: str | None = None
+    doctor_fix: str | None = None
+    """Doctor's FAIL hint when it differs from rerunning `booley bootstrap`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,8 +264,8 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         findings.append(BootstrapFinding("host-install", BootstrapState.ERROR, error))
         return BootstrapResult(intent, tuple(findings), policy)
 
-    if qa_opt_out:
-        findings.append(_reconcile_qa_skills(intent, opt_out=True))
+    if qa_opt_out and (qa_finding := _reconcile_qa_skills(intent, opt_out=True)):
+        findings.append(qa_finding)
 
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
@@ -417,7 +419,8 @@ def parse_git_version(line: str) -> tuple[int, int, int] | None:
     match = _GIT_VERSION_LINE.fullmatch(line.strip())
     if match is None or _GIT_PRERELEASE_SUFFIX.search(match.group("suffix")):
         return None
-    return tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
+    major, minor, patch = (int(match.group(name)) for name in ("major", "minor", "patch"))
+    return major, minor, patch
 
 
 def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:
@@ -597,9 +600,7 @@ def _skill_reconciliation_finding(
     )
     if errors:
         detail = "; ".join(errors)
-        return (
-            _qa_warning(detail) if qa else BootstrapFinding(resource, BootstrapState.ERROR, detail)
-        )
+        return _qa_warning(detail) if qa else _skill_error_finding(detail, reconciliations)
     changes = tuple(
         (item.target, sum(event.changed for event in item.report.events))
         for item in reconciliations
@@ -621,6 +622,27 @@ def _skill_reconciliation_finding(
         resource,
         state,
         f"{action} {len(reconciliations)} skill target(s): {targets}",
+    )
+
+
+def _skill_error_finding(
+    detail: str, reconciliations: tuple[HostSkillReconciliation, ...]
+) -> BootstrapFinding:
+    """Make conflict texts, which name their entry and fix, Doctor's hint.
+
+    Any other failure in the same run keeps the generic hints.
+    """
+    reports = tuple(item.report for item in reconciliations)
+    failed = [event for report in reports for event in report.events if event.failed]
+    others = any(report.diagnostics or report.fatal for report in reports)
+    if others or any(event.outcome != "conflict" for event in failed):
+        return BootstrapFinding("skills", BootstrapState.ERROR, detail)
+    return BootstrapFinding(
+        "skills",
+        BootstrapState.ERROR,
+        detail,
+        remedy="",
+        doctor_fix="; ".join(event.detail for event in failed),
     )
 
 

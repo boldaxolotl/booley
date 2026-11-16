@@ -97,7 +97,9 @@ def test_coverage_campaign_rejects_duplicate_target_ownership() -> None:
         },
     }
 
-    with pytest.raises(ValueError, match="Target 'sim_core' occurs in more than one coverage"):
+    with pytest.raises(
+        ValueError, match="Target 'sim_core' occurs in more than one coverage authoring record"
+    ):
         CriteriaTemplate.from_yaml(criteria)
 
 

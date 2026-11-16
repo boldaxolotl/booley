@@ -4,8 +4,7 @@ One :class:`TestRunInvocation` belongs to one invocation of the Simulation
 Flow. It holds the decisions that later steps of the same invocation must
 reuse rather than make again: the Test Runs resolved for each Target (a drawn
 seed is never drawn twice), the Test Runs each planned simulator process
-runs, the candidate Test Runs each Cycle Count baseline Target runs, and,
-inside Goal Mode, the Test Runs the Goals are frozen to.
+runs and the candidate Test Runs each Cycle Count baseline Target runs.
 
 Domain values only: no CLI, process or Sandbox imports.
 """
@@ -16,7 +15,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, TestVariantError, UnseededTargetError
 
@@ -184,9 +182,3 @@ class TestRunInvocation:
     #: Runs are resolved. Reports use it to tell a plain run from a seeded one.
     default_seeds: dict[str, int | None] = field(default_factory=dict)
     baseline: BaselineRuns = field(default_factory=BaselineRuns)
-    #: The Test Runs the run's Goals are frozen to (ADR 0072): empty until
-    #: read, then the one reading of the invocation (``None`` outside Goal Mode).
-    frozen: tuple[FrozenTestRuns | None, ...] = ()
-    #: ``@xN`` selectors that matched no Goal, by Target: their seeds were
-    #: drawn for this invocation and their Test Runs are diagnostic.
-    fresh_seed_selectors: dict[str, tuple[str, ...]] = field(default_factory=dict)

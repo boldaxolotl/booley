@@ -2,7 +2,7 @@
 
 No Textual here. Flow forms are generated from a parser (``run_form``); a
 Specialist's form is written by hand, because a person starts a review with a
-category, a focus and a scope, or an analysis with a campaign, rather than with
+category, a focus and a scope, or an analysis with a Coverage Record, rather than with
 every parser option. The options a form leaves out are named in the drift guard's
 test, so a Specialist that gains an option fails CI until someone places it or hides
 it with a reason.
@@ -58,15 +58,15 @@ _ANALYSIS_TIMEOUT = _text(
     "timeout", "Timeout", "--timeout", "How long the analysis may run, e.g. 30m."
 )
 _COVERAGE_RECORD = Field(
-    "campaign",
-    "campaign",
+    "coverage_record",
+    "coverage_record",
     "Coverage Record",
     "--record",
     "The Coverage Record to analyze: pick a finished one or type its coverage.json path.",
     ("--record",),
     required=True,
 )
-# The picker row that opens the text editor; no campaign path equals it.
+# The picker row that opens the text editor; no Coverage Record path equals it.
 TYPE_COVERAGE_RECORD: Final = "Type a coverage.json path…"
 NO_COVERAGE_RECORDS: Final = (
     "No finished Coverage Record in this worktree. Run a coverage Simulation on a Target "
@@ -75,47 +75,27 @@ NO_COVERAGE_RECORDS: Final = (
 
 
 def focuses(category: str) -> tuple[str, ...]:
-    """The review focuses of *category*: the review Goal kinds, so a new Goal kind appears here."""
-    # The only Goal Mode dependency of the wizard (with ``spec_prefill``); imported lazily so it
-    # is one allowlisted module that goes away with Goal Mode (#3511).
-    from booley.goals.model import REVIEW_KINDS
+    """The review focuses of *category*, in the order the wizard lists them."""
+    # Lazy: the Reviewer module is heavy and the wizard only needs these two constants.
+    from booley.specialists.reviewer import RTL_FOCUSES, TB_FOCUS_CATEGORIES
 
-    prefix = f"{category}_"
-    return tuple(kind.removeprefix(prefix) for kind in REVIEW_KINDS if kind.startswith(prefix))
-
-
-def spec_prefill(booley_dir: Path, worktree: Path) -> str:
-    """The spec of *worktree*'s active spec-review Goal, else ``""`` (also when the store is unreadable)."""
-    from booley.goals.model import REVIEW_VERDICTS, SPEC_REVIEW_KIND
-    from booley.goals.store import GoalStore, GoalStoreError
-
-    try:
-        record = GoalStore(booley_dir).active_for_worktree(worktree)
-    except (GoalStoreError, OSError):
-        return ""
-    keys = {f"review_{SPEC_REVIEW_KIND}_{verdict}" for verdict in REVIEW_VERDICTS}
-    specs = (
-        goal.spec.params.get("spec", "")
-        for goal in (record.goals if record else ())
-        if goal.spec.key in keys
-    )
-    return next((str(spec) for spec in specs if spec), "")
+    if category == "rtl":
+        return RTL_FOCUSES
+    return tuple(sorted(TB_FOCUS_CATEGORIES)) if category == "tb" else ()
 
 
 @dataclass(frozen=True)
 class ReviewerForm:
     """The reviewer's form: its rows follow the values, and the values become the command's words.
 
-    ``spec_prefill`` is the spec the worktree's active spec-review Goal names (else empty);
     ``note`` says which model and Agent CLI the run uses (or why that cannot be read).
     """
 
-    spec_prefill: str
     note: str = ""
 
     def initial(self) -> dict[str, str]:
         """The values a fresh form starts with."""
-        return {"category": "rtl", "spec": self.spec_prefill}
+        return {"category": "rtl", "spec": ""}
 
     def fields(self, values: Mapping[str, str]) -> tuple[Field, ...]:
         """The rows to show for *values*: the spec path only for the spec focus, more only when open."""
@@ -176,17 +156,17 @@ class SimRun:
 
 @dataclass(frozen=True)
 class CoverageRecordChoice:
-    """One finished coverage campaign the picker offers: the ``--record`` path and its row text."""
+    """One finished Coverage Record the picker offers: the ``--record`` path and its row text."""
 
     path: str
     label: str
 
 
 def _complete_target(directory: Path) -> str | None:
-    """The Target name of the finished campaign in *directory*, ``None`` when it is not one.
+    """The Target name of the finished Coverage Record in *directory*, ``None`` when it is not one.
 
-    ``coverage_analyst`` accepts only a campaign whose ``simulation.json`` says ``complete``; an
-    unreadable or malformed file is a campaign that is not listed, never an error.
+    ``coverage_analyst`` accepts only a Coverage Record whose ``simulation.json`` says ``complete``; an
+    unreadable or malformed file is a Coverage Record that is not listed, never an error.
     """
     try:
         projection = as_dict(
@@ -220,7 +200,7 @@ def _sort_key(ended_at: str, target: str) -> tuple[bool, float, str]:
 def finished_coverage_records(
     worktree: Path, runs: Iterable[SimRun]
 ) -> tuple[CoverageRecordChoice, ...]:
-    """The finished coverage campaigns of *runs*, newest first.
+    """The finished Coverage Records of *runs*, newest first.
 
     Reads one ``targets/`` directory per run and no deeper; whatever cannot be read is skipped.
     Runs in a worker thread.
@@ -250,7 +230,7 @@ def finished_coverage_records(
 class CoverageAnalystForm:
     """The coverage analyst's form: a Coverage Record to analyze, an instruction, and the model's limits.
 
-    ``note`` says which model and Agent CLI the run uses (or why that cannot be read). No campaign
+    ``note`` says which model and Agent CLI the run uses (or why that cannot be read). No Coverage Record
     is preselected: the picker opens on the newest one.
     """
 
@@ -273,11 +253,11 @@ class CoverageAnalystForm:
 
     def refusal(self, values: Mapping[str, str]) -> str:
         """Why the command cannot be checked yet; empty when it can."""
-        return "" if values.get("campaign", "").strip() else "Choose a Coverage Record"
+        return "" if values.get("coverage_record", "").strip() else "Choose a Coverage Record"
 
     def argv(self, values: Mapping[str, str]) -> tuple[str, ...]:
-        """The argument words: the campaign, then the optional rows that hold a value."""
-        words = text_words(_COVERAGE_RECORD.flag, values.get("campaign", ""))
+        """The argument words: the Coverage Record, then the optional rows that hold a value."""
+        words = text_words(_COVERAGE_RECORD.flag, values.get("coverage_record", ""))
         for field in (_INSTRUCTION, _MAX_TURNS, _ANALYSIS_TIMEOUT):
             words += text_words(field.flag, values.get(field.dest, ""))
         return tuple(words)

@@ -154,7 +154,7 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
             continue
 
         dest = action.dest
-        # Exact-Campaign analysis makes instruction part of its public contract.
+        # Exact Coverage Record analysis makes instruction part of its public contract.
         public_instruction = parser.prog == "coverage_analyst" and dest == "instruction"
         if (dest in _FILTERED_DESTS and not public_instruction) or (
             is_specialist and dest in SPECIALIST_CLI_ONLY_DESTS

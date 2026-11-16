@@ -125,7 +125,9 @@ class ModelUnavailableError(AgentProviderError):
                 f"No model in `{key}` could run: {tried}. "
                 f"Set `{key}` to a model the account can use."
             )
-            message += " booley.toml is a Protected Input, so change it before Goal entry."
+            message += (
+                " booley.toml is a Protected Input, so change it before the next measurement."
+            )
             super().__init__(message, provider)
             return
         if settings:

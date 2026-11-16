@@ -115,8 +115,14 @@ def _defined_names(tree: ast.AST) -> list[tuple[int, str, str]]:
 
 # Coverage Record names kept on purpose: shared QA helpers (#2911 owns QA mission assets) and the
 # persisted waiver keys (#2909 keeps the waiver candidate identity and path fields and the
-# Coverage reference kind in waivers).
+# Coverage reference kind in waivers), and the wording guard's test of the campaign grep, whose
+# name states the rule it enforces.
 _COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
+    "tests/architecture/test_coverage_record_wording.py": frozenset(
+        {
+            "test_campaign_is_said_only_for_kept_names",
+        }
+    ),
     "qa/shared/coverage/evaluator/measurements.py": frozenset(
         {
             "CAMPAIGN_SCHEMA",
@@ -132,19 +138,6 @@ _COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
         {
             "nested_campaign",
             "rebind_reference:campaign",
-        }
-    ),
-    "src/booley/flows/sim/waiver_candidates.py": frozenset(
-        {
-            "campaign_id",
-            "campaign_path",
-        }
-    ),
-    "src/booley/goals/waiver_binding.py": frozenset(
-        {
-            "campaign_id",
-            "campaign_path",
-            "campaign_reference",
         }
     ),
 }
@@ -247,7 +240,7 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
     ),
 }
 
-# Goal-side names left to #3045 (the freshness category and unsettled campaigns).
+# Campaign names left to #3045 (the source-fingerprint campaign category).
 _GOAL_NAMES: dict[str, frozenset[str]] = {
     "src/booley/flows/source_fingerprint.py": frozenset(
         {
@@ -257,11 +250,6 @@ _GOAL_NAMES: dict[str, frozenset[str]] = {
             "campaign_fingerprint",
         }
     ),
-    "src/booley/goals/simulation_record_accounting.py": frozenset(
-        {
-            "unsettled_campaigns",
-        }
-    ),
     "tests/flows/test_source_fingerprint_campaign.py": frozenset(
         {
             "campaign",
@@ -269,11 +257,6 @@ _GOAL_NAMES: dict[str, frozenset[str]] = {
             "test_campaign_fingerprint_tracks_tests_and_selected_core",
             "test_campaign_fingerprint_tracks_transitive_core_changes",
             "test_campaign_fingerprint_uses_resolved_booley_dir",
-        }
-    ),
-    "tests/goals/test_freshness.py": frozenset(
-        {
-            "test_target_less_tb_and_consumed_campaign_are_filtered",
         }
     ),
 }

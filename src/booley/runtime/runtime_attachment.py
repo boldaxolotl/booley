@@ -256,7 +256,7 @@ def _report_protocol_failure(result: ExecutionResult, project_root: Path | None 
     from booley.runtime import session_runtime
 
     remedy = (
-        session_runtime.sandbox_remedy(project_root, runtime_only=True)
+        session_runtime.sandbox_remedy(project_root)
         if project_root is not None
         else session_runtime.SANDBOX_HOST_INSPECTION_REMEDY
     )

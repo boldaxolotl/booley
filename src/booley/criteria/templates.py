@@ -1,4 +1,4 @@
-"""Criteria templates — default Criteria sets for the built-in Goalsets.
+"""Criteria templates — default Criteria sets for the built-in ticket types.
 
 Handles per-target expansion: a single logical criterion like ``lint_clean``
 with targets ``[lite, full, combo]`` expands into ``lint_clean_lite``,
@@ -157,7 +157,7 @@ class CriterionDef:
     workflow_region: str  # pre_sim | core_loop | post_sim
     per_target: bool
     category: str  # rtl | tb | none
-    group: str  # functional family for docs grouping (see criteria_reference)
+    group: str  # functional family for docs grouping (see criteria.reference)
     # True for a family whose public binding is one Target and one named test.
     per_test: bool = False
     # Omitted from the generated reference/cheatsheet, but still fully usable if a
@@ -519,7 +519,7 @@ _PER_CLOCK_METRICS: frozenset[str] = frozenset(
     {"critical_path_ps", "fmax_mhz", "wns_ns", "whs_ns", "period_ns"}
 )
 # Threshold-param flavour suffixes, longest first so the base metric splits off
-# unambiguously (mirrors criteria_reference._THRESHOLD_SUFFIXES).
+# unambiguously (mirrors reference._THRESHOLD_SUFFIXES).
 _THRESHOLD_SUFFIXES: tuple[str, ...] = (
     "_increase_at_most",
     "_reduce_at_least",
@@ -690,7 +690,7 @@ class CriteriaTemplate:
 
     @classmethod
     def for_ticket_type(cls, ticket_type: str) -> CriteriaTemplate:
-        """Load the default template for a built-in Goalset key."""
+        """Load the default template for a built-in ticket type."""
         specs = TEMPLATE_REGISTRY.get(ticket_type, _BUGFIX_CRITERIA)
         return cls(specs=list(specs))
 
@@ -732,7 +732,7 @@ class CriteriaTemplate:
                 if spec.name == "coverage":
                     if candidate in coverage_targets:
                         raise ValueError(
-                            f"Target {candidate!r} occurs in more than one coverage record"
+                            f"Target {candidate!r} occurs in more than one coverage authoring record"
                         )
                     coverage_targets.add(candidate)
                 baseline = spec.params.get(BASELINE_TARGET_PARAM, candidate)
@@ -933,10 +933,10 @@ def _parse_coverage_entries(
     specs: list[CriterionSpec] = []
     for item in items:
         try:
-            record = require_dict(item, field="coverage record")
+            record = require_dict(item, field="coverage authoring record")
         except BoundaryError:
             raise ValueError("coverage must be a list of authoring records") from None
-        targets, policy = _validate_coverage_record(record)
+        targets, policy = _validate_coverage_authoring_record(record)
         for target in targets:
             specs.append(
                 CriterionSpec(
@@ -1054,10 +1054,10 @@ def _validate_coverage_tests(value: object) -> str | list[str]:
         raise ValueError("coverage.tests must be 'all' or a non-empty list of names") from None
 
 
-def _validate_coverage_record(item: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+def _validate_coverage_authoring_record(item: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
     unknown = set(item) - {"targets", "metrics", "tests"}
     if unknown:
-        raise ValueError(f"coverage record has unknown fields: {sorted(unknown)}")
+        raise ValueError(f"coverage authoring record has unknown fields: {sorted(unknown)}")
     if "targets" not in item:
         raise ValueError("coverage.targets is required")
     if "metrics" not in item:

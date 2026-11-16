@@ -1,4 +1,4 @@
-schema = 2
+schema = 3
 upstream_repository = "YosysHQ/picorv32"
 upstream_ref = "ef203c2b0a3fb793280f5114941416c425c5b461"
 project_repository = "boldaxolotl/booley-prj-picorv32"
@@ -14,28 +14,9 @@ required_targets = [
   "synth_core",
 ]
 
-[[required_goal]]
-family = "LINT"
-target = "lint_core"
-
-[[required_goal]]
-family = "SIM"
-target = "sim_core"
-
-[[required_goal]]
-family = "SIM"
-target = "sim_wb"
-
-[[required_goal]]
-family = "SYNTH"
-target = "synth_core"
-thresholds = { cell_count_increase_at_most = "11%", critical_path_ps_increase_at_most = "3%" }
-
-[[required_goal]]
-family = "MUTATION"
-target = "sim_core"
-min_detected = 14
-total = 15
+[target_metrics.lint_core.lint]
+errors_max = 0
+track = ["warnings"]
 
 [[generated_input]]
 path = "firmware/firmware.hex"

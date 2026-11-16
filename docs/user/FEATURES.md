@@ -2,12 +2,13 @@
 
 Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in an agentic development environment (ADE): one VS Code window where you direct and supervise those agents. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [ARCHITECTURE.md](../internals/ARCHITECTURE.md).
 
-New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target, Goal Mode)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
+New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow,
+Target)? The [context map](../../GLOSSARY-MAP.md) points to each canonical
+glossary and its rejected synonyms.
 
 - [Same Flows Across Developer Agents and EDA Tools](#same-flows-across-developer-agents-and-eda-tools)
 - [An Agentic Development Environment](#an-agentic-development-environment)
 - [Open Source](#open-source)
-- [Goal Mode](#goal-mode)
 - [Named Targets and Tests](#named-targets-and-tests)
 - [Regression Runs](#regression-runs)
 - [Docker Sandboxing](#docker-sandboxing)
@@ -30,7 +31,11 @@ A Booley Flow (`sim`, `lint`, `synth`, `fpga`, `mutation`) looks the same no mat
 
 - **Claude Code or Codex.** Booley exposes its Flows as MCP tools, which both Claude Code and Codex call natively. Switch Developer Agents and the Flows, Targets, and results stay the same ([details](#llm-backend-selection)).
 - **Same call and result format, whichever EDA tool.** `sim` takes the same call and reports its verdict in the same normalized format whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The verdict itself comes from the tool the Target names, so two tools can still disagree on the same design. Open-source tools ship in the Sandbox Image, and Vivado comes from a licensed install on a Linux x86-64 host ([SANDBOX.md](SANDBOX.md#commercial-eda-provisioning)); the Developer Agent drives it the same way.
-- **Clear results instead of raw logs.** Every Flow returns a definite verdict, keeping failures, timeouts, inconclusive runs, and setup errors distinct, along with structured lint findings or synthesis metrics. Logs, waveforms, and reports land in predictable places. The Developer Agent acts on a clear result instead of guessing from noisy EDA output, and Goal Mode can trust that result as evidence.
+- **Clear results instead of raw logs.** Every Flow returns a definite verdict,
+  keeping failures, timeouts, inconclusive runs, and setup errors distinct,
+  along with structured lint findings or synthesis metrics. Logs, waveforms, and
+  reports land in predictable places. The Developer Agent acts on a clear result
+  instead of guessing from noisy EDA output.
 
 The [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md) lists which EDA tools each Flow supports.
 
@@ -41,23 +46,25 @@ An IDE is built around a person editing code. An ADE is built around a person di
 Booley is not only infrastructure for the Developer Agent. It is workflow infrastructure for the hardware engineer: Developer Agent sessions, editor, EDA tools, waveforms, run status, and review evidence share a single VS Code window.
 
 - **Hands-on.** Work through conversation: ask for an edit, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug)). You can still read and edit RTL yourself between agent turns.
-- **Unattended.** Leave Goal sessions running in container terminals alongside, each on its own branch and worktree ([Parallel Sessions](#parallel-sessions)). The Booley Dashboard shows every session, Goal, and Job; you step in when an agent needs a decision and review the Review Package when it finishes.
+- **Parallel.** Leave sessions running in container terminals alongside, each on
+  its own branch and worktree ([Parallel Sessions](#parallel-sessions)). The
+  Booley Dashboard shows every session and Job; you step in when an agent needs
+  a decision.
 
-In either mode, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
+Either way, Booley removes the manual transitions among editor, build commands,
+logs, waveform viewer, and review artifacts. Less time spent on that plumbing
+means faster iterations and more opportunities to verify, refine, and optimize
+the design.
 
-Today the shell is stock VS Code: agent sessions run in its terminals and the Booley Dashboard in its panel. Native agent-supervision UI (Goal status, evidence status, Flow dashboards, one-click review) is on the [roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term direction is Booley as a **standalone ADE**.
+Today the shell is stock VS Code: agent sessions run in its terminals and the
+Booley Dashboard in its panel. Native agent-supervision UI (evidence status,
+Flow dashboards, one-click review) is on the
+[roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term
+direction is Booley as a **standalone ADE**.
 
 ## Open Source
 
 Booley is free and open source under Apache 2.0.
-
-## Goal Mode
-
-Goal Mode is for changes where "done" has to be proven, not claimed. Before the Developer Agent starts, you agree on what finished means, for example: lint is clean, the FIFO tests pass, and area grows by no more than 10%. Each of these conditions is a Goal. The Developer Agent keeps working until Booley's own simulation, lint, and synthesis runs confirm every Goal on the final code. It can't declare itself done, and it can't quietly drop or weaken a Goal: any change to the Goals needs your approval.
-
-It is most useful for performance, frequency, and area optimization, where you want the most out of a design while it stays functionally correct, and for building new features and modules, especially work you want to leave running unattended. A Goal survives crashes and context compaction: the Developer Agent picks it up where it left off. For debugging, quick questions, and exploration, just talk to the Developer Agent.
-
-To start, type `/booley-goal` and describe the task. The Developer Agent proposes Goals from your project's reusable checklists (for features, bug fixes, refactors, and verification) plus anything specific to this task. Then clear the chat and type `/booley-goal start`: the Developer Agent works on its own branch in a separate worktree. When every Goal is met, you get a Review Package: the diff, the evidence behind each Goal, any Goal changes you approved, and the Developer Agent's summary. Merging stays your call. See [Goal Mode](GOAL-MODE.md#goal-mode).
 
 ## Named Targets and Tests
 
@@ -141,8 +148,8 @@ Booley's MCP surface is designed for extension. The built-in Booley Flows and Sp
 
 ## Parallel Sessions
 
-Run each Goal session in a separate linked worktree and Goal Branch inside the
-Sandbox. The Dashboard shows concurrent sessions, Goals, and Jobs. The Memory
+Run each session in a separate linked worktree and branch inside the
+Sandbox. The Dashboard shows concurrent sessions and Jobs. The Memory
 Budget in `[jobs]` limits resource use; excess work queues and running
 Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 
@@ -151,15 +158,23 @@ Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 Booley runs from a native Windows checkout with Docker Desktop: every EDA tool
 runs inside the Sandbox, so you don't build Verilator or Yosys on Windows or
 install Ubuntu. A WSL-hosted checkout is an optional advanced workflow, not a
-requirement. See [Windows first-run problems](WINDOWS.md) for speed and
-licensed-tool limits.
+requirement.
+
+EDA runs can be slower than on Linux, because the container reads your
+checkout through a Windows bind mount, and local image builds take longer.
+The `fpga` Flow doesn't run on Windows: it needs a Vivado installed on a Linux
+host; see
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
 
 ## Stealth Mode
 
-Stealth Mode keeps your AI-assisted workflow out of your repository and its history. Booley's configuration, and any FuseSoC cores it writes for your design, live in a `.booley/` folder that Git ignores, so your RTL repo gains no Booley files. A commit-message hook keeps AI attribution lines and words you ban out of commit messages, such as tool or internal project names, and can enforce your commit conventions. Setup asks whether you want it. See [STEALTH.md](STEALTH.md).
+Stealth Mode keeps your AI-assisted workflow out of your repository and its history. Booley's configuration, and any FuseSoC cores it writes for your design, live in a `.booley/` folder that Git ignores, so your RTL repo gains no Booley files. A commit-message hook keeps AI attribution lines and words you ban out of commit messages, such as tool or internal project names. Setup asks whether you want it. See [STEALTH.md](STEALTH.md).
 
 ## Code Coverage
 
-Add `--coverage` to a `sim` run and Booley collects code coverage (line, branch, expression, toggle, and cover properties) across all the tests of a Target, merged into one result. Only RTL counts toward the percentages; testbench code is reported but not scored. A Goal can require coverage floors, for example 90% line and 80% branch coverage over a named set of tests.
+Add `--coverage` to a `sim` run and Booley collects code coverage (line, branch,
+expression, toggle, and cover properties) across all the tests of a Target,
+merged into one result. Only RTL counts toward the percentages; testbench code
+is reported but not scored.
 
 When coverage falls short, the Coverage Analyst Specialist explains where the gaps are, suggests tests to close them, and proposes waivers for points that can't or shouldn't be covered, such as unreachable code. Only you can approve a waiver, and an approved waiver counts only after a fresh coverage run. Coverage needs Verilator; Icarus Targets aren't supported. See [COVERAGE.md](COVERAGE.md).

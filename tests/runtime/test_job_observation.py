@@ -89,17 +89,6 @@ def test_record_still_running_after_a_dead_observation_stays_orphaned(tmp_path, 
     assert [job.state for job in snapshot.jobs] == ["orphaned"]
 
 
-def test_observer_does_not_interpret_caller_owned_binding_schema(tmp_path):
-    root = tmp_path / "jobs"
-    binding = {"schema": "other-context/v1", "context": "recorded"}
-    write_job(root, "one", binding=binding)
-
-    snapshot = JobObserver(tmp_path).read((root,))
-
-    assert snapshot.jobs[0].record.binding == binding
-    assert snapshot.diagnostics == ()
-
-
 def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
     tmp_path, monkeypatch
 ):
@@ -282,7 +271,7 @@ def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypa
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/light"
+    slots = tmp_path / "slots/memory"
     slots.mkdir(parents=True)
     token = slots / job_slots._entry_name(slot, 1, 1, 99, 0)
     token.write_text(json.dumps({"owner_identity": identity.to_payload()}))
@@ -355,6 +344,7 @@ def test_observer_reports_the_memory_wait_of_a_queued_claim(tmp_path, monkeypatc
     view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
 
     assert view.state == "queued"
+    assert view.queue_position == 1
     assert view.queue == (
         "position 1: needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
         "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
@@ -366,7 +356,7 @@ def test_slot_queued_job_has_no_queue_detail(tmp_path, monkeypatch):
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/light"
+    slots = tmp_path / "slots/memory"
     slots.mkdir(parents=True)
     _memory_entry(slots, "w", 1, 99, {"owner_identity": identity.to_payload()})
     monkeypatch.setattr(
@@ -400,32 +390,27 @@ def test_child_lane_claims_under_the_jobs_pid_do_not_make_its_state_unavailable(
     assert view.state == "running"
 
 
-@pytest.mark.parametrize("own_class", ["light", "companion"])
 @pytest.mark.parametrize(
     ("item_kind", "state"), [("h", "running"), ("w", "queued")], ids=["item-holds", "item-waits"]
 )
 def test_a_held_slot_beside_work_item_memory_claims_is_the_job_not_unavailable(
-    tmp_path, monkeypatch, item_kind, state, own_class
+    tmp_path, monkeypatch, item_kind, state
 ):
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
     owner = json.dumps({"owner_identity": identity.to_payload()})
-    light = tmp_path / "slots/light"
     memory = tmp_path / "slots/memory"
-    light.mkdir(parents=True)
     memory.mkdir(parents=True)
-    if own_class == "light":
-        (light / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(owner)
-    else:  # a mutation coordinator: a memory-class companion claim reserving nothing
-        companion = {"budget_mb": 1000, "reservation_mb": 0, "companion": True}
-        coordinator = json.dumps({"owner_identity": identity.to_payload(), "memory": companion})
-        (memory / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(coordinator)
+    # A mutation coordinator: a memory-class companion claim reserving nothing.
+    companion = {"budget_mb": 1000, "reservation_mb": 0, "companion": True}
+    coordinator = json.dumps({"owner_identity": identity.to_payload(), "memory": companion})
+    (memory / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(coordinator)
     (memory / job_slots._entry_name(item_kind, 1, 2, 99, 0)).write_text(owner)
     monkeypatch.setattr(
         _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
     )
-    view = JobObserver(tmp_path, slots_root=light.parent).read((root,)).jobs[0]
+    view = JobObserver(tmp_path, slots_root=memory.parent).read((root,)).jobs[0]
     assert view.state == state
 
 

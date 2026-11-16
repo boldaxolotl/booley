@@ -47,7 +47,7 @@ def test_top_level_subcommand_metavar_matches_public_subparsers(
 ) -> None:
     sub = _get_subparsers_action(parser)
     assert _metavar_tokens(sub) == _public_commands(
-        sub, hidden={"shell", "feedback", "cleanup", "upgrade", "session", "goal"}
+        sub, hidden={"shell", "feedback", "cleanup", "upgrade", "session"}
     )
 
 

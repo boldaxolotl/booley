@@ -13,7 +13,6 @@ import pytest
 
 from booley.runtime import job_slots
 from booley.runtime.job_slots import (
-    CLASS_LIGHT,
     HOLDING,
     LOST,
     QUEUED,
@@ -89,8 +88,6 @@ def test_claims_hold_while_reservations_fit_the_budget(root, world):
     assert store.renew(first) and store.renew(second)
     third = join(store, world, 103, claim(200))
     assert store.refresh(third) == TokenState(QUEUED, position=0)
-    holders = store.describe_holders(job_slots.CLASS_MEMORY)
-    assert "pid 101" in holders and "pid 102" in holders
     store.release(first)
     assert store.refresh(third).state == HOLDING
 
@@ -203,9 +200,6 @@ def test_unreadable_holder_blocks_promotion(root, world, monkeypatch):
     [
         pytest.param(
             lambda store: store.submit(job_slots.CLASS_MEMORY, pid=1), id="memory-without-claim"
-        ),
-        pytest.param(
-            lambda store: store.submit(CLASS_LIGHT, pid=1, memory=claim(1)), id="light-with-claim"
         ),
         pytest.param(lambda _store: claim(1, run_alone=True), id="reservation-and-run-alone"),
         pytest.param(lambda _store: claim(), id="neither-reservation-nor-run-alone"),

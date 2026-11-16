@@ -1,4 +1,4 @@
-"""Exact-path Coverage Analyst wrapper with real Campaign/source files."""
+"""Exact-path Coverage Analyst wrapper with real Coverage Record/source files."""
 
 import copy
 import json
@@ -59,7 +59,7 @@ def persist_coverage_record(root: Path):
                 "target_identity": document["target"]["identity"],
                 "collection": "complete",
                 "evaluation": "not_requested",
-                "coverage_campaign": "coverage.json",
+                "coverage_record": "coverage.json",
             }
         )
     )
@@ -787,23 +787,6 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
     assert "point_ids must contain canonical Coverage Point IDs" in result.outcome.report_text
 
 
-def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import prune_invocation, prune_native_payload
-    from tests.flows.sim.simulation_record_test_support import coverage_invocation
-
-    run = coverage_invocation(tmp_path, monkeypatch)
-    analyst = CoverageAnalystSpecialist(model=Model())
-    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(run.public)])
-    before = analyst.coverage_analyst(run.public).to_dict()
-    prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    after = analyst.coverage_analyst(run.public).to_dict()
-    assert after == before
-    assert after["source_access"] == "verified"
-    prune_invocation(tmp_path / "reports", 1)
-    with pytest.raises(CoverageAnalysisError, match="fully pruned"):
-        analyst.coverage_analyst(run.public)
-
-
 def test_relative_coverage_record_resolves_against_selected_work_dir(tmp_path):
     path = persist_coverage_record(tmp_path)
     analyst = CoverageAnalystSpecialist(model=Model())
@@ -986,7 +969,7 @@ def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeyp
 
 
 def _rebind_source_digests(path: Path, root: Path) -> None:
-    """Rewrite the Campaign closure for a testbench moved under ``.booley``."""
+    """Rewrite the Coverage Record closure for a testbench moved under ``.booley``."""
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
 
