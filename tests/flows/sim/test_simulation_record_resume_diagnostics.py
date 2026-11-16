@@ -80,25 +80,6 @@ def _prime_prior_refusal(root, reports, manifest, executions):
     assert len(executions) == 1
 
 
-def _capture_resume_comparison(monkeypatch):
-    """Record each (recorded, re-planned) manifest pair a resume compares.
-
-    Kept for `test_simulation_record_test_runs.py`, which imports it.
-    """
-    pairs = []
-    # Private seam: the re-planned manifest exists only inside this method, which no public
-    # call returns; the pair is the only way to see what resume compared the record against.
-    original = SimulateFlow._resume_simulation_record_plan
-
-    def capture(flow, validated, *args, **kwargs):
-        plan = original(flow, validated, *args, **kwargs)
-        pairs.append((validated.manifest, plan.manifest))
-        return plan
-
-    monkeypatch.setattr(SimulateFlow, "_resume_simulation_record_plan", capture)
-    return pairs
-
-
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("verbose", [False, True])
 def test_public_resume_cli_summary_detail_and_dry_run_immutability(
