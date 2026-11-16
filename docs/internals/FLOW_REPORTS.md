@@ -118,6 +118,29 @@ Three cases add to this layout:
   candidate's, for the selector `<target>@baseline-<first 12 characters of the
   baseline revision>`.
 
+### Attempt files
+
+An attempt directory (`work-items/<id>/attempts/<ordinal>-<attempt id>/`) keeps
+each evidence file once:
+
+```text
+attempt.json
+execution-evidence/    the run log, the trace and the adapter result, where the run wrote them
+evidence/              files Booley derives, and copies of files written outside the attempt
+private-build/         builds made per test only
+runtime-inputs/        the attempt's runtime inputs
+pre-sim/               pre-sim command evidence
+coverage-record/       coverage runs only
+```
+
+`execution-evidence/run.log` is the file the live pointer in `progress.json`
+names, so a reader tailing it during the run finds the final log there
+afterwards. The work-item result references the log, the trace and the adapter
+result at `execution-evidence/<name>`. `evidence/` holds the Cocotb transport
+and infrastructure-failure documents Booley derives, plus a copy of any trace
+or adapter file the simulator wrote outside the attempt (for example in a
+configured run directory) whose original is removed with that directory.
+
 Record files reference each other by size and SHA-256, in two forms. Durable
 records (`summary.json`, work-item results) carry the canonical manifest
 digest: the SHA-256 of `manifest.json` without its trailing newline. Typed

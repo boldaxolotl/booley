@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows import artifacts
-from booley.flows.artifact_durability import durable_copy
+from booley.flows.artifact_durability import durable_copy, durable_in_place
 
 
 def _assert_host_readable(path: Path) -> None:
@@ -224,3 +224,32 @@ class TestMergeArtifacts:
         artifacts.merge_artifacts(detail, {"dirs": {"timing": "b"}})
 
         assert detail["artifacts"]["dirs"] == {"build": "a", "timing": "b"}
+
+
+class TestDurableInPlace:
+    def test_keeps_the_bytes_and_gives_the_copy_mode(self, tmp_path: Path):
+        path = tmp_path / "run.log"
+        path.write_bytes(b"evidence")
+        path.chmod(0o644)
+
+        durable_in_place(path)
+
+        assert path.read_bytes() == b"evidence"
+        if os.name != "nt":
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    def test_refuses_a_directory_and_a_missing_file(self, tmp_path: Path):
+        with pytest.raises(OSError):
+            durable_in_place(tmp_path)
+        with pytest.raises(OSError):
+            durable_in_place(tmp_path / "absent")
+
+    @pytest.mark.skipif(os.name == "nt", reason="needs a symlink")
+    def test_refuses_a_symlink(self, tmp_path: Path):
+        target = tmp_path / "real.log"
+        target.write_bytes(b"x")
+        link = tmp_path / "link.log"
+        link.symlink_to(target)
+
+        with pytest.raises(OSError):
+            durable_in_place(link)
