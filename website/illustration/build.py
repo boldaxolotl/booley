@@ -38,8 +38,7 @@ FIGURE_OUT = WEBSITE / "snippets" / "ide-figure.html"
 CSS_OUT = WEBSITE / "docs" / "stylesheets" / "ide.css"
 ARCHITECTURE_OUT = WEBSITE.parent / "docs" / "user" / "assets" / "architecture.svg"
 ARCHITECTURE_DARK_OUT = ARCHITECTURE_OUT.with_name("architecture-dark.svg")
-# The dark copy's colour tokens: the site's dark datasheet palette (datasheet.css), plus a
-# lighter escape-hatch red that keeps its contrast on the dark paper.
+# The dark copy's colour tokens: the site's dark datasheet palette (datasheet.css).
 ARCHITECTURE_DARK_TOKENS = {
     "paper": "#121619",
     "ink": "#e4e8eb",
@@ -48,7 +47,6 @@ ARCHITECTURE_DARK_TOKENS = {
     "fill": "#1e2429",
     "fill-2": "#181d21",
     "mask": "#4fbf93",
-    "warn": "#f08a7e",
 }
 FONTS = WEBSITE / "docs" / "assets" / "fonts"
 # (family, weight, stretch, file): the faces the architecture diagram uses.
