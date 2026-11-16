@@ -344,25 +344,23 @@ def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutEx
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
         started = time.monotonic()
         expired: subprocess.TimeoutExpired | None = None
-        status = "no status"
         try:
-            status = f"exit status {platform_paths.run_captured_bounded(argv, timeout=2, **mode).returncode}"
+            completed = platform_paths.run_captured_bounded(argv, timeout=2, **mode)
         except subprocess.TimeoutExpired as raised:
             expired = raised
-            status = "TimeoutExpired"
-        # Observe at the helper's return, before any wait below changes the picture.
+        # The elapsed time is taken at the helper's return; the tree is observed
+        # only when a check fails, up to 1 s later.
         elapsed = time.monotonic() - started
-        context = (
-            f"run_captured_bounded returned {status}"
-            f"{' without TimeoutExpired' if expired is None else ''} after {elapsed:.2f} s"
-            f" against a 2 s deadline; at that point the tree {describe_heartbeat_tree(paths)}"
-        )
+        summary = f"run_captured_bounded returned after {elapsed:.2f} s against a 2 s deadline"
         if expired is None:
-            pytest.fail(context)
+            pytest.fail(
+                f"{summary} with exit status {completed.returncode} instead of TimeoutExpired;"
+                f" shortly after, the tree {describe_heartbeat_tree(paths)}"
+            )
         # timeout + the helper's 32 s Windows margin, below the tree's 40 s self-exit
-        assert elapsed < 38, context
+        assert elapsed < 38, f"{summary}; shortly after, the tree {describe_heartbeat_tree(paths)}"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), (
-            f"the descendant was left running; {context}"
+            f"the descendant was left running; {summary}"
         )
     return expired
 
