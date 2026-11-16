@@ -118,7 +118,7 @@ also works.
 Not "the most appropriate target", but the actual rule for which target runs.
 Use the current names of commands, flags, options, modules, and functions.
 Examples follow current conventions, because readers copy them: an example
-Target is `sim_core`, never bare `sim` (see `tests/docs/test_target_naming_docs.py`).
+Target is `sim_core`, never bare `sim`.
 
 ### 12. State conditions exactly
 
@@ -135,8 +135,7 @@ warnings, and say when they apply.
 
 Remove statements that stopped being true. History goes in the changelog; an
 ADR states the decision that holds today and why. Words like "no longer",
-"legacy", "renamed from", or
-"since v0.4" fail `tests/docs/test_current_version_docs.py`. History without
+"legacy", "renamed from", or "since v0.4" describe history. History without
 those words counts too: "it sets no delay target" describes the old version
 when only the old version set one, and "re-running init replaces `auto`"
 describes upgrading from an old default. Say what the thing does now.

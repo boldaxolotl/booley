@@ -50,7 +50,6 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--work-dir": "the worktree chooses the Project",
         "--timeout-ms": "hidden alias of --timeout, which the form writes",
         "--report-dir": "the Job writes to its default report directory",
-        "--diagnostic": "a Standalone Job never records Criterion evidence",
         "--transcript-dir": "the Job worker sets it beside job.log",
         "--dry-run": "a Job is a real run; Review already checks the command",
         "--base": "not on the form yet: a later ticket can add it",
@@ -64,7 +63,6 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--work-dir": "the worktree chooses the Project",
         "--timeout-ms": "hidden alias of --timeout, which the form writes",
         "--report-dir": "the Job writes to its default report directory",
-        "--diagnostic": "a Standalone Job never records Criterion evidence",
         "--transcript-dir": "the Job worker sets it beside job.log",
     },
 }

@@ -59,6 +59,12 @@ def test_regenerating_a_stale_cheatsheet_restores_both_blocks(tmp_path: Path) ->
     assert stale.read_text(encoding="utf-8") == committed
 
 
+def test_specialist_reference_names_only_current_common_options() -> None:
+    committed = cheatsheet_path().read_text(encoding="utf-8")
+    assert "--diagnostic" not in render_specialists_reference()
+    assert "--diagnostic" not in committed
+
+
 def test_every_endpoint_is_rendered_or_explicitly_excluded() -> None:
     """No discovered endpoint may vanish from the reference unnoticed.
 

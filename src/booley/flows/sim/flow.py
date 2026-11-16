@@ -834,7 +834,6 @@ class SimulateFlow(
                     test_runs=self._coverage_test_runs(selection.handles),
                     trace=self.args.trace,
                     no_waivers=self.args.no_waivers,
-                    diagnostic=self.args.diagnostic,
                 ),
                 context,
                 selection=selection,
@@ -1544,7 +1543,6 @@ class SimulateFlow(
             timeout_seconds=self._effective_timeout_ms() / 1000,
             build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
-            diagnostic=self.args.diagnostic,
             result_verbosity=self.args.result_verbosity,
         )
 

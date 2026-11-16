@@ -39,8 +39,6 @@ class CoverageInvocationRequest:
     trace: bool = False
     # Raw coverage: evaluate with no approved waivers.
     no_waivers: bool = False
-    # The caller records no Criteria (a non-acceptance run).
-    diagnostic: bool = False
 
 
 def _keep_keys(fields, copy):
@@ -169,15 +167,6 @@ def _prepare_target(
         declared, selected, key, criterion = _suite(handle, request, context, runs)
     except ValueError as exc:
         return None, _finding("COV_SUITE_INVALID", f"{handle.selector}: {exc}")
-    if request.no_waivers and criterion is not None and not request.diagnostic:
-        return None, _finding(
-            "COV_NO_WAIVERS_CRITERION",
-            f"{handle.selector}: --no-waivers skips the approved waivers that "
-            f"Coverage Criterion {key} is evaluated with; "
-            "add --diagnostic for a "
-            "non-acceptance run with raw numbers, or drop --no-waivers",
-            "/no_waivers",
-        )
     inspection = catalog.inspect(handle)
     collection = prepare_coverage_collection(
         handle,

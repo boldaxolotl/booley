@@ -104,7 +104,6 @@ page.
 | `--timeout DURATION` | Time limit per unit of work, for example `90s`, `30m`, or `1h30m`. Time spent waiting in the queue doesn't count. |
 | `--dry-run` | Print what would run and stop. No EDA tool runs. |
 | `--report-dir <path>` | Write reports here instead of the default location. |
-| `--diagnostic` | Mark the run as diagnostic. |
 | `-q/--quiet` | Hide live progress and log paths; show only the verdict and errors. |
 
 `mutation` is the exception to the Target rules above: it requires `--target`
