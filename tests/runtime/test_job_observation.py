@@ -691,7 +691,7 @@ def test_job_state_follows_its_own_execution_owned_claim(
     assert (view.state, view.queue_position) == (state, position)
 
 
-def test_a_cli_mutation_waiting_for_an_item_claim_is_queued(tmp_path, monkeypatch):
+def test_a_cli_campaign_waiting_for_an_item_claim_is_queued(tmp_path, monkeypatch):
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
