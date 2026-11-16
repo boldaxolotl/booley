@@ -19,8 +19,8 @@ safety instead:
 - S after the example drains, a gate left by a dead or recycled owner does not
   keep a live waiter out of a free slot.
 
-``BOOLEY_HYPOTHESIS_EXPLORATORY=1`` selects the larger exploratory budget (about
-seven minutes; pass ``--timeout=600`` to pytest, as the default per-test limit is shorter).
+``BOOLEY_HYPOTHESIS_EXPLORATORY=1`` selects the larger exploratory budget (under
+ten minutes; pass ``--timeout=600`` to pytest, as the default per-test limit is shorter).
 """
 
 from __future__ import annotations
