@@ -638,7 +638,6 @@ def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExe
     from tests.target_test_support import make_target_handle
 
     handle = make_target_handle(work_dir, "a", drivable_by=("synth",))
-    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a")
     selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
     return PreparedExecution(
@@ -1086,7 +1085,6 @@ def _fpga_prepared(work_dir: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: 
 
     flow = FpgaImplFlow()
     handle = make_target_handle(work_dir, "a", drivable_by=("fpga",))
-    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a")
     monkeypatch.setattr(FpgaImplFlow, "_flow_enabled", lambda _self: enabled)
     selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
@@ -1242,7 +1240,6 @@ def _two_target_synth_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> Prep
     from tests.target_test_support import make_target_handle
 
     handles = tuple(make_target_handle(work_dir, name, drivable_by=("synth",)) for name in "ab")
-    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
     selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
     return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]

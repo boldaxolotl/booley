@@ -34,7 +34,7 @@ class CallContext:
     ``explicit_work_dir`` is the call's ``work_dir`` argument, or ``None`` when
     omitted; :attr:`work_dir` applies the cwd default only when read, so a call
     that never needs its checkout never touches the cwd. ``jobs_root``,
-    ``state_path``, ``logs_dir``, and ``runtime_dir`` are ``None`` when the
+    ``logs_dir``, and ``runtime_dir`` are ``None`` when the
     server environment leaves them unset, exactly as the reads they replaced
     returned nothing. ``runtime_dir`` is the explicit ``BOOLEY_RUNTIME_DIR``
     value, not the logs-derived fallback.
@@ -42,7 +42,6 @@ class CallContext:
 
     explicit_work_dir: Path | None
     jobs_root: Path | None
-    state_path: Path | None
     logs_dir: Path | None
     runtime_dir: Path | None
     subprocess_env_overrides: Mapping[str, str]
@@ -95,7 +94,6 @@ def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
     return CallContext(
         explicit_work_dir=_explicit_work_dir(arguments),
         jobs_root=container_jobs_root(),
-        state_path=_env_path("BOOLEY_STATE_FILE"),
         logs_dir=_env_path("BOOLEY_LOGS_DIR"),
         runtime_dir=_env_path("BOOLEY_RUNTIME_DIR"),
         subprocess_env_overrides=MappingProxyType({}),

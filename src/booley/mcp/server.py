@@ -1604,7 +1604,6 @@ def _sim_mcp_tool_timeout_seconds(
         run_s=run_s,
         build_s=build_s,
         convert_s=convert_s,
-        state_path=context.state_path,
     )
     return max(default, planned_s)
 
@@ -1618,7 +1617,6 @@ def _sim_planned_timeout_seconds(
     run_s: int,
     build_s: int,
     convert_s: int,
-    state_path: Path | None,
 ) -> int:
     """Sum child stage limits plus finalization slack for one Simulation call."""
     from booley.flows.base import DEFAULT_TIMEOUT_S
@@ -1633,12 +1631,9 @@ def _sim_planned_timeout_seconds(
         runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + TRACE_CLEANUP_MARGIN_S + trace_s)
         targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
         return runs_s + targets_s + 30
-    baseline_scale = 2 if _baseline_required("cycle_count_", state_path) else 1
-    run_units = work_units * baseline_scale
-    build_units = target_count * baseline_scale
-    planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
+    planned_s = target_count * build_s + work_units * (DEFAULT_TIMEOUT_S + run_s)
     if arguments.get("trace"):
-        planned_s += (convert_s + TRACE_CLEANUP_MARGIN_S) * run_units
+        planned_s += (convert_s + TRACE_CLEANUP_MARGIN_S) * work_units
     return planned_s + 30
 
 
@@ -1662,10 +1657,7 @@ def _implementation_budget_plan(
         context.explicit_work_dir,
         requested_timeout_ms(arguments),
     )
-    criterion_prefix = "synthesis_ok_" if name == "synth" else "fpga_impl_ok_"
-    has_baseline = bool(arguments.get("baseline")) or _baseline_required(
-        criterion_prefix, context.state_path
-    )
+    has_baseline = bool(arguments.get("baseline"))
     work_units = _target_count(arguments) * (2 if has_baseline else 1)
     return BudgetPlan(
         timeout_ms=timeout_ms,
@@ -1750,28 +1742,6 @@ def _mcp_tool_timeout_seconds(
     if name != "sim":
         return default
     return _sim_mcp_tool_timeout_seconds(arguments, default, context)
-
-
-def _baseline_required(criterion_prefix: str, state_path: Path | None) -> bool:
-    """Whether criteria persisted at *state_path* will auto-enable an implementation baseline."""
-    from booley.evidence.fields import BASELINE_REF_PARAM
-
-    if state_path is None:
-        return False
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    criteria = state.get("criteria") if isinstance(state, dict) else None
-    if not isinstance(criteria, dict):
-        return False
-    return any(
-        isinstance(entry, dict)
-        and isinstance(entry.get("params"), dict)
-        and bool(entry["params"].get(BASELINE_REF_PARAM))
-        for name, entry in criteria.items()
-        if name.startswith(criterion_prefix)
-    )
 
 
 def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
