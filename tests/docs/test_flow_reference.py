@@ -262,11 +262,11 @@ def test_sim_card_examples_name_the_run_report(tmp_path: Path) -> None:
 _CARD_ROW = re.compile(r"^    (PASS|FAIL|ERROR|INCONCLUSIVE)\s")
 _CARD_LOG = re.compile(
     r"^      log: /work/\.booley/flow-reports/sim/\d+/targets/\w+/record/work-items/"
-    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-run\.log$"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/execution-evidence/run\.log$"
 )
 _CARD_WAVEFORM = re.compile(
     r"^      waveform: /work/\.booley/flow-reports/sim/\d+/targets/\w+/record/work-items/"
-    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-[^/\s]+\.fst$"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/execution-evidence/trace\.fst$"
 )
 
 
