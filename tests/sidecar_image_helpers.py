@@ -27,25 +27,20 @@ DIND_IMAGE = (
 _DOCKER_DIR = Path(__file__).parents[1] / "src/booley/data/docker"
 
 
-def _from_reference(dockerfile: str, alias: str | None = None) -> str:
-    """Return the FROM reference of a sidecar Dockerfile (the pin's one source).
-
-    ``alias`` names a stage of a multi-stage file; without it the file must have one stage.
-    """
+def _from_reference(dockerfile: str) -> str:
+    """Return the FROM reference of a one-stage sidecar Dockerfile (the pin's one source)."""
     references = dockerfile_syntax.from_references(
         (_DOCKER_DIR / dockerfile).read_text(encoding="utf-8")
     )
-    chosen = [r for r in references if alias is None or r.alias == alias]
-    if len(chosen) != 1 or (alias is None and len(references) != 1):
-        raise ValueError(f"{dockerfile}: expected one FROM for {alias!r}, found {references}")
-    return chosen[0].image
+    if len(references) != 1:
+        raise ValueError(f"{dockerfile}: expected one FROM, found {references}")
+    return references[0].image
 
 
 # Sidecar bases derive from the Dockerfile FROM lines; the evidence script derives them
 # the same way, and tests compare the remaining in-repo copies against these.
 SIDECAR_BOOKWORM_BASE = _from_reference("Dockerfile.egress-proxy")
 SIDECAR_ALPINE_BASE = _from_reference("Dockerfile.flexnet-relay")
-SIDECAR_DOCKER_CLI = _from_reference("Dockerfile.reaper", "docker-cli")
 
 
 def sidecar_python_version(base_image: str) -> str:
