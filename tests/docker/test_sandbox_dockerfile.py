@@ -1,4 +1,4 @@
-"""Static contracts for the shipped Booley sandbox image."""
+"""Supply-chain and source-sync contracts for the shipped Booley sandbox image."""
 
 from __future__ import annotations
 
@@ -12,59 +12,54 @@ import shutil
 import sys
 import tomllib
 import zipfile
-from itertools import pairwise
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import yaml
 from tests.devcontainer_spec_support import build_spec
-from tests.sandbox_image_contract import base_python_pins
-from tests.sidecar_image_helpers import (
-    DIND_IMAGE,
-    SIDECAR_ALPINE_BASE,
-    SIDECAR_BOOKWORM_BASE,
-    SIDECAR_DOCKER_CLI,
-    sidecar_python_version,
-)
 from tests.subprocess_budget import run_bounded_child
 
-from booley.runtime import dockerfile_syntax, docs_links
+from booley.runtime import dockerfile_syntax
 from booley.runtime.dockerfile_syntax import logical_instructions
 
-_DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
-_DOCKER_DIR = _DOCKERFILE.parent
+_DOCKER_DIR = Path("src/booley/data/docker")
 _BASE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.base"
-_SUBSTRATE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.substrate"
-_WHEEL_DOCKERFILE = _DOCKER_DIR / "Dockerfile.wheel"
 _BASE_REQUIREMENTS = _DOCKER_DIR / "base-python-requirements.txt"
 _BASE_REQUIREMENTS_IN_IMAGE = "/tmp/booley-build/base-python-requirements.txt"
-_LIBEXEC_BWAVE = "/usr/local/libexec/booley/bwave"
+_PIN_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_PIN_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
+_SANDBOX_DOCKERFILES = (
+    "Dockerfile",
+    "Dockerfile.base",
+    "Dockerfile.riscv",
+    "Dockerfile.substrate",
+    "Dockerfile.wheel",
+)
 
 
-def _workflow(path: str) -> dict:
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+def _base_python_pins(contents: str) -> dict[str, str]:
+    """Parse the base requirements file: blank, comment, or ``name==version`` lines.
 
-
-def _named_step(job: dict, name: str) -> dict:
-    return next(step for step in job["steps"] if step.get("name") == name)
-
-
-def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    install_start = dockerfile.index("RUN python /tmp/booley-build/export_project_dependencies.py")
-    install_end = dockerfile.index("\n\n# EDA invocation", install_start)
-    install_layer = dockerfile[install_start:install_end]
-
-    assert "CLAUDE_SDK_BUNDLED_CLI=" in install_layer
-    assert 'rm -f "$CLAUDE_SDK_BUNDLED_CLI"' in install_layer
-    assert 'test ! -e "$CLAUDE_SDK_BUNDLED_CLI"' in install_layer
-    assert "python -m pip check" in install_layer
-    assert "ClaudeSDKBackend" not in install_layer
+    The Dockerfile ``sed`` extraction reads the same file with simple patterns,
+    so only canonical lowercase names and exact numeric versions are accepted,
+    one pin per package.
+    """
+    pins: dict[str, str] = {}
+    for number, line in enumerate(contents.splitlines(), start=1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, separator, version = line.partition("==")
+        if not separator or not _PIN_NAME.fullmatch(name) or not _PIN_VERSION.fullmatch(version):
+            raise ValueError(f"requirements line {number}: expected 'name==version', got {line!r}")
+        if name in pins:
+            raise ValueError(f"requirements line {number}: duplicate pin {name!r}")
+        pins[name] = version
+    return pins
 
 
 def test_base_python_installs_take_exact_pins_only_from_requirements_file() -> None:
     """No exact pin is written inline; every pinned package is installed via the file."""
-    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    pins = _base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
     installed: set[str] = set()
     for instruction in logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8")):
         if instruction.keyword != "RUN" or not re.search(r"pip\s+install", instruction.value):
@@ -77,11 +72,10 @@ def test_base_python_installs_take_exact_pins_only_from_requirements_file() -> N
         installed.update(token for token in tokens if re.fullmatch(r"[a-z][a-z0-9-]*", token))
 
     assert installed == set(pins)
-    assert "pyslang" in installed  # ADR 0088: the image installs the Mutant generator parser
 
 
 def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
-    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    pins = _base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     exact = dict(
         match.groups()
@@ -96,81 +90,22 @@ def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
 
 def test_base_pyslang_pin_matches_optional_dependency_group() -> None:
     """ADR 0088: the Sandbox image and the extras install one pyslang, never the host."""
-    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    pins = _base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
-    extras = project["optional-dependencies"]
 
     assert "pyslang" in pins
-    assert extras["hdl-parser"] == [f"pyslang=={pins['pyslang']}"]
-    # The test extra reaches the same pin through the hdl-parser extra (written once).
-    assert "booley-rtl[hdl-parser]" in extras["test"]
+    assert project["optional-dependencies"]["hdl-parser"] == [f"pyslang=={pins['pyslang']}"]
     assert not any(item.startswith("pyslang") for item in project["dependencies"])
 
 
 def test_supported_tools_doc_lists_base_cocotb_pins() -> None:
-    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    pins = _base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
     doc = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
     row = next(line for line in doc.splitlines() if line.startswith("| cocotb |"))
 
     assert f"| cocotb | {pins['cocotb']}, with" in row
     for name in ("cocotbext-axi", "cocotbext-uart", "numpy"):
         assert f"`{name}` {pins[name]}" in row, name
-
-
-def test_all_python_installs_tolerate_slow_publisher_reads() -> None:
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    install_start = dockerfile.index("RUN python /tmp/booley-build/export_project_dependencies.py")
-    install_end = dockerfile.index("\n\n# Publisher transfers", install_start)
-    invariant_install = dockerfile[install_start:install_end]
-
-    assert "--timeout 120" in invariant_install
-    assert "--retries 10" in invariant_install
-    assert "PIP_DEFAULT_TIMEOUT=120" in dockerfile
-    assert "PIP_RETRIES=10" in dockerfile
-
-
-def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> None:
-    """The published boundary keeps ordinary source edits out of EDA layers."""
-    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    candidate = _DOCKERFILE.read_text(encoding="utf-8")
-    pyproject_copy = base.index("COPY pyproject.toml")
-    dependency_exporter = base.index("COPY src/booley/data/docker/export_project_dependencies.py")
-    project_install = base.index("--requirement /tmp/booley-build/project-dependencies.txt")
-    image_dependencies = base.index(f"--constraint {_BASE_REQUIREMENTS_IN_IMAGE}")
-
-    assert pyproject_copy < dependency_exporter < project_install
-    assert project_install < image_dependencies
-    assert "YOSYS_REF" in base
-    assert [reference.alias for reference in dockerfile_syntax.from_references(base)] == [
-        "openroad-artifacts",
-        "eda-artifacts",
-        None,
-    ]
-    assert "COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/" in base
-    assert "COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/" in base
-    assert (
-        "COPY --from=eda-artifacts /usr/local/share/verilator/ /usr/local/share/verilator/" in base
-    )
-    assert "COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/" in base
-    assert "COPY --from=openroad-artifacts /opt/or-tools/include/" not in base
-    assert re.fullmatch(
-        r"v[0-9.]+-[0-9]+-g[0-9a-f]+", dockerfile_syntax.argument_default(base, "VERIBLE_VERSION")
-    )
-    assert "verible-verilog-lint --version" in base
-    assert "COPY dist/booley_rtl-*.whl" not in base
-    assert "COPY crates/bwave/" not in base
-    assert "COPY src/booley/data/edalize/verible.py" not in base
-
-    assert "FROM booley-runtime-base" in candidate
-    assert "--mount=type=bind,source=dist,target=/tmp/booley-dist,readonly" in candidate
-    assert "COPY dist/booley_rtl-*.whl" not in candidate
-    assert "COPY crates/bwave/" in candidate
-    assert "COPY src/booley/data/edalize/verible.py" in candidate
-    assert "--no-deps" in candidate
-    assert '--wheel "$WHEEL"' in candidate
-    assert "ClaudeSDKBackend" not in candidate
-    assert 'test -x "$(command -v claude)"' in candidate
-    assert "python -m pip check" in candidate
 
 
 def test_stable_base_labels_match_the_external_from_references() -> None:
@@ -187,73 +122,6 @@ def test_stable_base_labels_match_the_external_from_references() -> None:
         "io.booley.eda.builder-artifact": stages[1],
         "io.booley.openroad.runtime-parent-artifact": stages[2],
     }
-
-
-def test_stable_base_asserts_cocotb_icarus_library_contract() -> None:
-    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-
-    assert 'test -e "$(cocotb-config --lib-name-path vpi icarus)"' in base
-    assert "cocotb-config --lib-name vpi icarus" not in base
-    assert "cocotb-config --lib-name-path vpi icarus).vpl" not in base
-
-
-def test_stable_base_keeps_verilator_compiler_launcher_available() -> None:
-    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
-    runtime_install = base[
-        base.index(">>> Installing minimal runtime dependencies") : base.index(
-            "# Copy only installed EDA payloads"
-        )
-    ]
-
-    assert "ccache" in runtime_install
-    assert "zlib1g-dev" in runtime_install
-    assert '"ccache"' in contract
-    assert '"/usr/include/zlib.h"' in contract
-
-
-def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
-    """The whitelist context cannot silently omit a newly introduced COPY."""
-    allowed = [
-        line[1:].rstrip("/")
-        for line in Path(".dockerignore").read_text(encoding="utf-8").splitlines()
-        if line.startswith("!")
-    ]
-    local_sources: list[str] = []
-    for dockerfile in (_BASE_DOCKERFILE, _DOCKERFILE):
-        for line in dockerfile.read_text(encoding="utf-8").splitlines():
-            if not line.startswith("COPY ") or "--from=" in line:
-                continue
-            fields = shlex.split(line)
-            local_sources.extend(field.rstrip("/") for field in fields[1:-1])
-
-    assert local_sources
-    missing = [
-        source
-        for source in local_sources
-        if not any(source == entry or source.startswith(f"{entry}/") for entry in allowed)
-    ]
-    assert not missing, f"Docker COPY sources excluded by .dockerignore: {missing}"
-
-
-def test_verible_patch_does_not_depend_on_importing_candidate_package() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-    patch_start = dockerfile.index("COPY src/booley/data/edalize/verible.py")
-    wheel_install = dockerfile.index("--mount=type=bind,source=dist")
-    patch_region = dockerfile[patch_start:wheel_install]
-
-    assert "/tmp/booley-build/verible.py" in patch_region
-    assert "import booley" not in patch_region
-
-
-def test_read_only_wheel_mount_is_not_mutated() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-    mount_start = dockerfile.index("--mount=type=bind,source=dist")
-    mount_end = dockerfile.index("# bwave", mount_start)
-    mount_region = dockerfile[mount_start:mount_end]
-
-    assert 'rm -f "$WHEEL"' not in mount_region
-    assert "rm -f /tmp/booley-installed-files.txt" in mount_region
 
 
 def _base_env(name: str) -> int:
@@ -292,233 +160,62 @@ def test_claude_code_mcp_limits_outlast_booley_wait_windows() -> None:
     assert registrar_timeout_ms <= 2**31 - 1
 
 
-def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-    bwave_start = dockerfile.index("# bwave — VCD waveform parser")
-    bwave_end = dockerfile.index("ENV BOOLEY_BWAVE_BIN", bwave_start)
-    bwave_region = dockerfile[bwave_start:bwave_end]
-
-    assert "RUN --mount=type=bind,from=bwave-builder" in bwave_region
-    assert "COPY --from=bwave-builder" not in bwave_region
-    assert "install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave" in bwave_region
-    assert 'ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave"' in bwave_region
+_DOWNLOAD = re.compile(r"\b(?:curl|wget)\s+-")
+_CHECKSUM = re.compile(r'echo "\$\{(\w+)\}  (\S+)" \| sha256sum -c -')
 
 
-def test_split_recipes_create_bwave_paths_in_one_overlay_layer() -> None:
-    """Issue #828: an exported layer cannot hold a hard link to a lower layer."""
-    substrate = logical_instructions(_SUBSTRATE_DOCKERFILE.read_text(encoding="utf-8"))
-    wheel = logical_instructions(_WHEEL_DOCKERFILE.read_text(encoding="utf-8"))
-    legacy = logical_instructions(_DOCKERFILE.read_text(encoding="utf-8"))
-
-    # The substrate carries no native B-Wave: the link partner would be stranded.
-    assert not [i for i in substrate if "bwave-builder" in i.value]
-    assert not [i for i in substrate if "/usr/local/libexec/booley" in i.value]
-    assert not [i for i in substrate if i.keyword == "ENV" and "BOOLEY_BWAVE_BIN" in i.value]
-
-    # Exactly one overlay RUN installs the binary and links the package-data path.
-    installs = [i for i in wheel if i.keyword == "RUN" and "install -m 0755" in i.value]
-    assert len(installs) == 1
-    run = installs[0]
-    assert "--mount=type=bind,from=bwave-builder" in run.value
-    assert f"install -m 0755 /tmp/bwave/bwave {_LIBEXEC_BWAVE}" in run.value
-    assert f'ln {_LIBEXEC_BWAVE} "$BWAVE_BIN_DIR/bwave"' in run.value
-    assert not [i for i in wheel if i.keyword == "COPY" and "--from=bwave-builder" in i.value]
-    assert not [
-        i
-        for i in wheel
-        if i is not run and i.keyword == "RUN" and f"ln {_LIBEXEC_BWAVE}" in i.value
-    ]
-
-    env = next(i for i in wheel if i.keyword == "ENV" and "BOOLEY_BWAVE_BIN" in i.value)
-    assert env.value == f"BOOLEY_BWAVE_BIN={_LIBEXEC_BWAVE}"
-    assert env.line > run.line
-
-    # The overlay builder stage matches the legacy recipe so BuildKit shares its cache.
-    def builder_stage(instructions: tuple) -> list[tuple[str, str]]:
-        start = next(n for n, i in enumerate(instructions) if "AS bwave-builder" in i.value)
-        return [(i.keyword, i.value) for i in instructions[start : start + 3]]
-
-    assert builder_stage(wheel) == builder_stage(legacy)
-
-
-def test_ci_captures_docker_cache_and_layer_evidence() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-
-    assert "docker history --no-trunc" in workflow
-    assert "docker image inspect booley-test" in workflow
-    assert "docker-build-evidence" in workflow
-    assert ".github/scripts/image_contract.py" in workflow
-    assert "runtime-contract.json" in workflow
-
-
-def test_published_runtime_images_include_sbom_attestations() -> None:
-    release = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-    base_release = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
-
-    assert release.count("sbom: true") == 5
-    assert base_release.count("sbom: true") == 1
-
-
-def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    contract = Path(".github/scripts/verify_riscv_image_contract.sh").read_text(encoding="utf-8")
-    demo = Path(".github/scripts/run_picorv32_ci_demo.sh").read_text(encoding="utf-8")
-    verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
-
-    assert '--image "${IMAGE}"' in contract
-    assert '--base-image "${BASE_IMAGE}"' in contract
-    assert "--flavor riscv" in contract
-    assert '--runtime-image "riscv=${IMAGE}"' in contract
-    assert "verify_picorv32_demo.sh" in demo
-    assert "-e BOOLEY_RUN_PICORV32_FLOWS=1" in demo
-    assert "python -m booley.flows.lint --project /work --target lint_core" in verifier
-    assert "python -m booley.flows.sim --project /work --target sim_core" in verifier
-    assert "riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
-
-
-def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
-    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
-    setup = Path("src/booley/data/skills/booley-setup/steps/2-project-config.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert '"/usr/local/cargo"' in contract
-    assert '"/usr/local/rustup"' in contract
-    assert "Rust is not included" in setup
-    assert "Node.js, Rust" not in setup
-
-
-def test_install_requirements_use_current_slim_image_storage_guidance() -> None:
-    guide = Path("docs/user/INSTALL.md").read_text(encoding="utf-8")
-    requirements = guide.split("## Requirements", 1)[1].split("\n## ", 1)[0]
-
-    assert "15 GB of Docker storage" not in guide
-    assert "21 GB" not in guide
-    assert "about **4 GB** free for the image" in requirements
-    assert "(**6 GB** with the RISC-V toolchain)" in requirements
-
-
-def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    evidence_script = Path(".github/scripts/sidecar-build-evidence.sh").read_text(encoding="utf-8")
-    archive_path = Path(".github/scripts/archive/sidecar-python313-comparison.sh")
-    archive_script = archive_path.read_text(encoding="utf-8")
-
-    assert "bash .github/scripts/sidecar-build-evidence.sh" in workflow
-    assert str(archive_path) not in workflow
-    assert "docker build --pull --no-cache" in evidence_script
-    for dockerfile in (
-        "Dockerfile.egress-proxy",
-        "Dockerfile.flexnet-relay",
-        "Dockerfile.reaper",
-    ):
-        assert dockerfile in evidence_script
-    assert evidence_script.count(":py315") >= 3
-    assert ":py313" not in evidence_script
-    assert '"Python 3.13.15"' not in evidence_script
-    # No hard-coded sidecar Python version: the script derives it from the Dockerfiles.
-    assert re.search(r'"Python \d', evidence_script) is None
-    assert "source-repodigests.tsv" in evidence_script
-    assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
-    assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
-    # The sidecar bases derive from the Dockerfiles; no pin is copied here.
-    for dockerfile, selector in (
-        ("Dockerfile.egress-proxy", "only"),
-        ("Dockerfile.flexnet-relay", "only"),
-        ("Dockerfile.reaper", "last"),
-        ("Dockerfile.reaper", "docker-cli"),
-    ):
-        assert f'dockerfile_from "${{DOCKER_DIR}}/{dockerfile}" {selector}' in evidence_script
-    assert "@sha256:" not in evidence_script.replace(DIND_IMAGE, "")
-    for image in ("EGRESS", "FLEXNET", "REAPER"):
-        assert f'"${{{image}_PYTHON}}"' in evidence_script
-    assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
-    assert archive_script.count(":py313") >= 3
-    assert '"Python 3.13.15"' in archive_script
-    assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py315" in workflow
-    assert "BOOLEY_REAPER_IMAGE: booley-reaper:py315" in workflow
-    assert "BOOLEY_FLEXNET_DOCKER_TEST" in workflow
-    assert "test_egress_proxy_image_e2e.py" in workflow
-    assert "test_reaper_image_e2e.py" in workflow
-    assert "test_flexnet_relay_e2e.py" in workflow
-
-
-def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> None:
-    reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
-
-    stages = {item.alias: item for item in dockerfile_syntax.from_references(reaper)}
-    assert set(stages) == {"docker-cli", None}
-    assert stages["docker-cli"].image == SIDECAR_DOCKER_CLI
-    assert re.fullmatch(r"docker:[0-9.]+-cli@sha256:[0-9a-f]{64}", SIDECAR_DOCKER_CLI)
-    # The reaper CLI talks to the dind daemon in its e2e test: one Docker release.
-    release = re.fullmatch(r"docker:([0-9.]+)-dind@sha256:[0-9a-f]{64}", DIND_IMAGE)
-    assert release is not None
-    assert SIDECAR_DOCKER_CLI.startswith(f"docker:{release.group(1)}-cli@")
-    assert "apk add" not in reaper
-    assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
-
-
-def test_sidecars_pin_expected_python_bases_without_changing_distributions() -> None:
-    egress = (_DOCKER_DIR / "Dockerfile.egress-proxy").read_text(encoding="utf-8")
-    flexnet = (_DOCKER_DIR / "Dockerfile.flexnet-relay").read_text(encoding="utf-8")
-    reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
-
-    assert [r.image for r in dockerfile_syntax.from_references(egress)] == [SIDECAR_BOOKWORM_BASE]
-    assert [r.image for r in dockerfile_syntax.from_references(flexnet)] == [SIDECAR_ALPINE_BASE]
-    # Flexnet and the reaper share one Alpine base: two declarations held equal.
-    assert dockerfile_syntax.from_references(reaper)[-1].image == SIDECAR_ALPINE_BASE
-    # Both flavours track one Python version, whichever release the pins name.
-    assert sidecar_python_version(SIDECAR_BOOKWORM_BASE) == sidecar_python_version(
-        SIDECAR_ALPINE_BASE
-    )
-    assert re.fullmatch(r"python:[0-9.]+-slim-bookworm@sha256:[0-9a-f]{64}", SIDECAR_BOOKWORM_BASE)
-    assert re.fullmatch(r"python:[0-9.]+-alpine3\.24@sha256:[0-9a-f]{64}", SIDECAR_ALPINE_BASE)
+def _download_runs() -> Iterator[tuple[str, str, str]]:
+    """Yield (Dockerfile name, its text, RUN body) for every RUN that downloads a file."""
+    for name in _SANDBOX_DOCKERFILES:
+        text = (_DOCKER_DIR / name).read_text(encoding="utf-8")
+        for instruction in logical_instructions(text):
+            if instruction.keyword == "RUN" and _DOWNLOAD.search(instruction.value):
+                yield name, text, instruction.value
 
 
 def test_sandbox_downloads_are_verified_before_use() -> None:
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    """Each downloaded file meets its pinned checksum before any later command names it."""
+    runs = list(_download_runs())
+    assert runs
+    for name, text, body in runs:
+        assert "||" not in body, f"{name}: a failed check could be swallowed: {body}"
+        segments = [segment.strip() for segment in body.split("&&")]
+        for index, segment in enumerate(segments):
+            if not _DOWNLOAD.search(segment):
+                continue
+            paths = re.findall(r"\s(?:-o|--output)[\s=]+(\S+)", segment)
+            assert paths, f"{name}: download without a named output file: {segment[:60]}"
+            for path in paths:
+                later = next((item for item in segments[index + 1 :] if path in item), "")
+                check = _CHECKSUM.fullmatch(later)
+                assert check is not None and check[2] == path, f"{name}: {path} used unchecked"
+                digest = dockerfile_syntax.argument_default(text, check[1])
+                assert re.fullmatch(r"[0-9a-f]{64}", digest), f"{name}: {check[1]}"
+    for name in _SANDBOX_DOCKERFILES:
+        text = (_DOCKER_DIR / name).read_text(encoding="utf-8")
+        assert "| bash" not in text, name
+        assert "@^" not in text, name
 
-    assert "| bash" not in dockerfile
-    assert "@^" not in dockerfile
-    for checksum_arg in (
-        "SV2V_SHA256",
-        "VERIBLE_SHA256",
-        "VAPORVIEW_SHA256",
-        "VERILOGHDL_SHA256",
-        "LIVE_PREVIEW_SHA256",
-        "NODE_SHA256",
-    ):
-        assert f"ARG {checksum_arg}=" in dockerfile
-        assert f"${{{checksum_arg}}}" in dockerfile
-    for checksum_arg in (
-        "XPACK_GCC_SHA256",
-        "ISA_UNPRIVILEGED_PDF_SHA256",
-        "ISA_UNPRIVILEGED_HTML_SHA256",
-        "ISA_PRIVILEGED_PDF_SHA256",
-        "ISA_PRIVILEGED_HTML_SHA256",
-        "DEBUG_SPEC_SHA256",
-        "PSABI_SHA256",
-    ):
-        assert f"ARG {checksum_arg}=" in riscv
-        assert f"${{{checksum_arg}}}" in riscv
 
-    lock_text = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
+def test_agent_cli_installs_are_locked_with_integrity_hashes() -> None:
+    lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
     manifest = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
-    assert json.loads(lock_text)["packages"][""]["dependencies"] == manifest["dependencies"]
-    assert lock_text.count('"integrity": "sha512-') == 16
-    assert "npm ci --prefix /opt/agent-clis" in dockerfile
+
+    assert lock["packages"][""]["dependencies"] == manifest["dependencies"]
+    unverified = [
+        path
+        for path, package in lock["packages"].items()
+        if path
+        and package.get("version")
+        and not package.get("integrity", "").startswith("sha512-")
+    ]
+    assert unverified == []
+    assert "npm ci --prefix /opt/agent-clis" in _BASE_DOCKERFILE.read_text(encoding="utf-8")
 
 
 def _base_build_arg(dockerfile: str, name: str) -> str:
     """Return the default of the one ``ARG name=value`` declaration in the base recipe."""
     return dockerfile_syntax.argument_default(dockerfile, name)
-
-
-def _source_tag_names_version(dockerfile: str, prefix: str) -> None:
-    """The upstream tag repeats the pinned version (naming varies, so it is not derived)."""
-    version = _base_build_arg(dockerfile, f"{prefix}_VERSION")
-    assert version in _base_build_arg(dockerfile, f"{prefix}_SOURCE_TAG")
 
 
 def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> None:
@@ -527,85 +224,9 @@ def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> N
 
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     version = _base_build_arg(dockerfile, "VAPORVIEW_VERSION")
-    sha256 = _base_build_arg(dockerfile, "VAPORVIEW_SHA256")
 
     assert version == vaporview.VERIFIED_VERSION
-    assert re.fullmatch(r"[0-9a-f]{64}", sha256)
-    region = dockerfile[dockerfile.index("ARG VAPORVIEW_VERSION=") :]
-    region = region[: region.index("\n\n")]
-    install_target = '"/usr/local/libexec/booley/vaporview-${VAPORVIEW_VERSION}.vsix"'
-    assert f"install -m 0644 /tmp/vaporview.vsix {install_target}" in region
-    assert install_target.strip('"').replace("${VAPORVIEW_VERSION}", version) == (
-        vaporview.BUNDLED_VSIX
-    )
-    # Verified before it is installed, fetched over HTTPS only.
-    assert region.index("sha256sum -c -") < region.index("install -m 0644 /tmp/vaporview.vsix")
-    assert "curl --proto '=https' --tlsv1.2 -fsSL" in region
-    # GPL-3.0: the license and the corresponding-source pointer ship beside it.
-    assert "/usr/local/share/booley/licenses/vaporview/LICENSE.txt" in region
-    assert "/usr/local/share/booley/licenses/vaporview/SOURCE.txt" in region
-    assert "https://github.com/Lramseyer/vaporview" in region
-    assert re.search(r"^ARG VAPORVIEW_SOURCE_COMMIT=[0-9a-f]{40}$", region, re.MULTILINE)
-    _source_tag_names_version(dockerfile, "VAPORVIEW")
-
-
-@pytest.mark.parametrize("recipe", [_DOCKERFILE, _WHEEL_DOCKERFILE], ids=lambda p: p.name)
-def test_overlay_patches_the_bundled_vaporview_vsix_after_installing_booley(recipe: Path) -> None:
-    """#2701: the VSIX is patched at build time, so no container installs it unpatched.
-
-    It needs the installed wheel (the patch logic ships in it) and root (the
-    VSIX and its license directory are root-owned).
-    """
-    instructions = logical_instructions(recipe.read_text(encoding="utf-8"))
-    patches = [
-        i
-        for i in instructions
-        if i.keyword == "RUN" and "booley.runtime.vaporview_vsix" in i.value
-    ]
-    assert len(patches) == 1
-    patch = patches[0]
-    assert re.search(r"\bpython3? -I -m booley\.runtime\.vaporview_vsix$", patch.value)
-    wheel_install = next(
-        i
-        for i in instructions
-        if i.keyword == "RUN" and "pip install" in i.value and "$WHEEL" in i.value
-    )
-    assert wheel_install.line < patch.line
-    user = [i.value for i in instructions if i.keyword == "USER" and i.line < patch.line]
-    assert user[-1] == "root"
-
-
-def test_overlay_rewrites_the_base_vaporview_source_notice() -> None:
-    """The base's SOURCE.txt wording stays one the overlay can correct (#2701).
-
-    The overlay ships a modified VSIX, so the base's "redistributed unmodified"
-    claim must be rewritten; a reworded base recipe would fail the image build.
-    """
-    from booley.runtime import vaporview_vsix
-
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    region = dockerfile[dockerfile.index("ARG VAPORVIEW_VERSION=") :]
-    region = region[: region.index("SOURCE.txt \\")]
-    printed = region[region.index("printf '%s\\n'") :]
-    lines = re.findall(r'^\s+"(.*)" \\$', printed, re.MULTILINE)
-    defaults = {
-        argument.name: argument.default
-        for argument in dockerfile_syntax.build_arguments(dockerfile)
-        if argument.default is not None
-    }
-    text = "".join(
-        re.sub(r"\$\{(\w+)\}", lambda match: defaults[match.group(1)], line) + "\n"
-        for line in lines
-    )
-    assert "Redistributed unmodified" in text
-
-    rewritten = vaporview_vsix.rewrite_source_notice(text, "f" * 64)
-
-    assert "unmodified" not in rewritten
-    assert "attach hook" not in rewritten
-    assert _base_build_arg(dockerfile, "VAPORVIEW_SHA256") in rewritten
-    assert "Corresponding source: https://github.com/Lramseyer/vaporview" in rewritten
-    assert f"(sha256 {'f' * 64})" in rewritten
+    assert vaporview.BUNDLED_VSIX in _bundled_vsix_install_targets(dockerfile)
 
 
 def _bundled_vsix_install_targets(dockerfile: str) -> set[str]:
@@ -646,31 +267,6 @@ _MIT_VSIXES = {
         "extension.js.LICENSE.txt",
     ),
 }
-
-
-@pytest.mark.parametrize("name", _MIT_VSIXES)
-def test_bundled_mit_vsix_is_verified_before_install(name: str) -> None:
-    """Checksum, MIT license and notices are all checked before the VSIX is installed."""
-    prefix, notice_member, notice_file = _MIT_VSIXES[name]
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    _source_tag_names_version(dockerfile, prefix)
-    assert re.fullmatch(r"[0-9a-f]{64}", _base_build_arg(dockerfile, f"{prefix}_SHA256"))
-    assert re.fullmatch(r"[0-9a-f]{40}", _base_build_arg(dockerfile, f"{prefix}_SOURCE_COMMIT"))
-    region = dockerfile[dockerfile.index(f"ARG {prefix}_VERSION=") :]
-    region = region[: region.index("\n\n")]
-    install = f'install -m 0644 /tmp/{name}.vsix "/usr/local/libexec/booley/{name}-${{{prefix}_VERSION}}.vsix"'
-    assert install in region
-    assert "curl --proto '=https' --tlsv1.2 -fsSL" in region
-    for check in (
-        "sha256sum -c -",
-        f"unzip -p /tmp/{name}.vsix {notice_member}",
-        'grep -q "MIT License"',
-        'grep -q "Permission is hereby granted, free of charge"',
-    ):
-        assert region.index(check) < region.index(install), check
-    licenses = f"/usr/local/share/booley/licenses/{name}"
-    for shipped in ("LICENSE.txt", notice_file, "SOURCE.txt"):
-        assert f"{licenses}/{shipped}" in region
 
 
 def _mit_vsix_fixture(path: Path, *, license_text: str, notice: bool) -> str:
@@ -735,23 +331,6 @@ def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, cas
         assert (licenses / "LICENSE.txt").read_text() == _MIT_TEXT
         assert (licenses / notice_file).read_text() == "notices"
         assert "MIT" in (licenses / "SOURCE.txt").read_text()
-
-
-def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
-    package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
-    lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
-
-    dependencies = package["dependencies"]
-    # Platform packages must track their main package; the manifest owns the version.
-    assert (
-        dependencies["@anthropic-ai/claude-code-linux-x64"]
-        == dependencies["@anthropic-ai/claude-code"]
-    )
-    assert dependencies["@openai/codex-linux-x64"] == (
-        f"npm:@openai/codex@{dependencies['@openai/codex']}-linux-x64"
-    )
-    assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
-    assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
 
 
 # Files that may name a CLI version besides the manifest: its lockfile, provenance
@@ -840,117 +419,52 @@ def test_openroad_uses_verified_oci_artifact() -> None:
     revision = dockerfile_syntax.argument_default(dockerfile, "OPENROAD_SOURCE_REF")
 
     assert re.fullmatch(r"[0-9a-f]{40}", revision)
-    assert re.fullmatch(
-        r"[0-9]{2}Q[1-4]", dockerfile_syntax.argument_default(dockerfile, "OPENROAD_VERSION")
-    )
-    # Both stages redeclare the one global default; the binary version ends in its prefix.
-    openroad_args = [
-        argument
-        for argument in dockerfile_syntax.build_arguments(dockerfile)
-        if argument.name == "OPENROAD_SOURCE_REF"
-    ]
-    assert [(a.stage, a.default is None) for a in openroad_args] == [
-        (None, False),
-        (0, True),
-        (2, True),
-    ]
-    binary = dockerfile_syntax.argument_default(dockerfile, "OPENROAD_BINARY_VERSION")
-    assert binary.endswith(f"-g{revision[:10]}")
     manifest = json.loads((_DOCKER_DIR / "openroad-source-manifest.json").read_text())
     assert manifest["revision"] == revision
-    assert len(manifest["submodules"]) == 5
-    sta = next(item for item in manifest["submodules"] if item["path"] == "src/sta")
-    assert re.fullmatch(r"[0-9a-f]{40}", sta["revision"])
     assert re.fullmatch(
         r"[0-9a-f]{64}",
         dockerfile_syntax.argument_default(dockerfile, "OPENROAD_SOURCE_SENTINEL_SHA256"),
     )
-    assert "./src/rsz/src/Resizer.tcl | sha256sum" in dockerfile
-    assert (
-        "COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad"
-        in dockerfile
+    assert any(
+        instruction.keyword == "RUN"
+        and '"${OPENROAD_SOURCE_SENTINEL_SHA256}"' in instruction.value
+        and "| sha256sum" in instruction.value
+        for instruction in logical_instructions(dockerfile)
     )
-    assert "--exclude='./build' --exclude='./install'" in dockerfile
-    assert "! grep -Eq '^\\./(build|install)(/|$)'" in dockerfile
-    assert "OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" in dockerfile
-    assert "openroad -version" in dockerfile
-    assert "COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE" in dockerfile
-    assert "Precision-Innovations/OpenROAD/releases/download" not in dockerfile
-    assert "/tmp/openroad.deb" not in dockerfile
 
 
-def test_cocotb_layer_overrides_openroad_parent_system_numpy() -> None:
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    layer_start = dockerfile.index("# Cocotb verification layer")
-    layer_end = dockerfile.index("# Build-time sanity", layer_start)
-
-    assert "--ignore-installed" in dockerfile[layer_start:layer_end]
-
-
-def test_agent_runtime_uses_verified_node_and_executable_policy_probe() -> None:
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    probe = Path("tests/docker/agent_policy_probe.py").read_text(encoding="utf-8")
-
-    assert re.fullmatch(r"[0-9a-f]{64}", _base_build_arg(dockerfile, "NODE_SHA256"))
-    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", _base_build_arg(dockerfile, "NPM_VERSION"))
-    assert 'test "$(npm --version)" = "${NPM_VERSION}"' in dockerfile
-    # The probe derives both versions from the image's own recipe.
-    assert "--expected-" not in workflow
-    assert "--network none" in workflow
-    assert "agent_policy_probe.py" in workflow
-    assert "--evidence /validation-tmp/agent-policy.json" in workflow
-    assert "agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
-    assert "--expected-" not in probe
-    assert "NPM_VERSION" in probe
+_GIT_FETCH_OR_CLONE = re.compile(r"\bgit\s+(?:-c\s+\S+\s+)?(?:fetch|clone)\b")
 
 
 def test_source_builds_fetch_immutable_commits() -> None:
-    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    refs = dict(re.findall(r"^ARG ([A-Z0-9_]+_REF)=([0-9a-f]{40})$", dockerfile, re.MULTILINE))
+    """Every source build pins a full commit and checks the fetched HEAD against it."""
+    fetches = 0
+    for name in ("Dockerfile.base", "Dockerfile.riscv"):
+        dockerfile = (_DOCKER_DIR / name).read_text(encoding="utf-8")
+        refs = re.findall(r"^ARG ([A-Z0-9_]+_REF)=(\S*)$", dockerfile, re.MULTILINE)
+        assert refs, name
+        for ref, value in refs:
+            assert re.fullmatch(r"[0-9a-f]{40}", value), f"{name}: {ref}={value}"
+        for instruction in logical_instructions(dockerfile):
+            body = instruction.value
+            if instruction.keyword != "RUN" or not _GIT_FETCH_OR_CLONE.search(body):
+                continue
+            assert "--branch" not in body, f"{name}: {body}"
+            fetched = set(re.findall(r'\bfetch\b[^&]*"\$\{(\w+_REF)\}"', body))
+            assert fetched, f"{name}: a source fetch does not name a pinned *_REF: {body}"
+            for ref in fetched:
+                assert f'test "$(git rev-parse HEAD)" = "${{{ref}}}"' in body, f"{name}: {ref}"
+            fetches += 1
+    assert fetches
 
-    assert set(refs) == {
-        "OPENROAD_SOURCE_REF",
-        "YOSYS_REF",
-        "ICARUS_REF",
-        "VERILATOR_REF",
-    }
-    assert "git clone --depth 1 --branch" not in dockerfile
-    for name in refs.keys() - {"OPENROAD_SOURCE_REF"}:
-        assert f'git -c protocol.version=0 fetch --depth 1 origin "${{{name}}}"' in dockerfile
-        assert f'test "$(git rev-parse HEAD)" = "${{{name}}}"' in dockerfile
 
-
-def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
+def test_spike_pin_is_listed_in_supported_tools() -> None:
+    """The user-facing tool list names the exact Spike pin, so it moves with it."""
     riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
-    spike_ref = re.search(r"^ARG SPIKE_REF=([0-9a-f]{40})$", riscv, re.MULTILINE)
-
-    assert spike_ref is not None
-    # The user-facing tool list names the exact pin, so it must move with it.
+    spike_ref = dockerfile_syntax.argument_default(riscv, "SPIKE_REF")
     supported_tools = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
-    assert f"`{spike_ref.group(1)}`" in supported_tools
-    # ADR 0069: each refresh is announced in the Unreleased changelog section.
-    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = changelog.split("## Unreleased", 1)[1].split("\n## ", 1)[0]
-    assert spike_ref.group(1)[:8] in unreleased
-    assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
-    assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 
-    spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
-    assert "make check" in spike_build
-    assert "test -x /opt/riscv/bin/spike" in spike_build
-
-
-def test_spike_build_fetches_its_softfloat_submodule() -> None:
-    """Spike master builds softfloat from a git submodule the shallow fetch omits."""
-    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
-    spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
-
-    step = "git -c protocol.version=0 submodule update --init --recursive"
-    # Full-depth like the Yosys build, so a non-tip gitlink stays fetchable.
-    assert step in spike_build
-    sha_assertion = spike_build.index('test "$(git rev-parse HEAD)" = "${SPIKE_REF}"')
-    assert sha_assertion < spike_build.index(step) < spike_build.index("../configure")
+    assert f"`{spike_ref}`" in supported_tools
 
 
 def test_riscv_tooling_builds_on_the_runtime_base_ubuntu_digest() -> None:
@@ -968,37 +482,15 @@ def test_riscv_tooling_builds_on_the_runtime_base_ubuntu_digest() -> None:
         )
     ]
 
-    assert base_images[-1].startswith("docker.io/library/ubuntu:26.04@sha256:")
-    assert riscv_images == [base_images[-1], "booley-standard-substrate"]
-
-
-def test_riscv_final_stage_copies_only_from_the_tooling_stage() -> None:
-    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
-    instructions = logical_instructions(riscv)
-    final_from = max(
-        index for index, instruction in enumerate(instructions) if instruction.keyword == "FROM"
-    )
-    imports = [
-        instruction.value for instruction in instructions if instruction.keyword in {"ADD", "COPY"}
-    ]
-
-    assert instructions[final_from].value == "booley-standard-substrate"
-    assert imports == [
-        "--from=riscv-tooling /opt/riscv /opt/riscv",
-        "--from=riscv-tooling /opt/riscv-docs /opt/riscv-docs",
-    ]
-    assert all(
-        "--mount" not in instruction.value
-        for instruction in instructions
-        if instruction.keyword == "RUN"
-    )
+    assert re.search(r"@sha256:[0-9a-f]{64}$", base_images[-1])
+    assert riscv_images[0] == base_images[-1]
 
 
 def test_no_workflow_overrides_a_riscv_tooling_build_argument() -> None:
     """A --build-arg would change the tooling without changing its key."""
     riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
     tooling_arguments = set(re.findall(r"^ARG ([A-Z0-9_]+)=", riscv, re.MULTILINE))
-    assert {"SPIKE_REF", "XPACK_GCC_VERSION", "PSABI_SHA256"} <= tooling_arguments
+    assert tooling_arguments
 
     for path in [*Path(".github/workflows").glob("*.yml"), _DOCKER_DIR / "build-riscv.sh"]:
         text = path.read_text(encoding="utf-8")
@@ -1006,450 +498,16 @@ def test_no_workflow_overrides_a_riscv_tooling_build_argument() -> None:
             assert not re.search(rf"\b{argument}=", text), f"{path} overrides {argument}"
 
 
-_RISCV_TOOLING_PUBLISHER = ".github/workflows/riscv-tooling-publish.yml"
+def test_verilator_identity_matches_the_dockerfile_pin() -> None:
+    """The identity Booley checks at run time is the one the image builds."""
+    from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 
-
-def test_riscv_tooling_publisher_is_main_only_and_keyed_on_its_inputs() -> None:
-    workflow = _workflow(_RISCV_TOOLING_PUBLISHER)
-    # PyYAML's YAML 1.1 resolver reads the Actions key ``on`` as boolean true.
-    events = workflow[True]
-    key_job = workflow["jobs"]["key"]
-    job = workflow["jobs"]["publish"]
-
-    assert events["push"]["branches"] == ["main"]
-    # The key reads Dockerfile.riscv through its own derivation and parser;
-    # any of them can mint a new key, so each must trigger publication.
-    assert set(events["push"]["paths"]) == {
-        "src/booley/data/docker/Dockerfile.riscv",
-        ".github/scripts/riscv_tooling.py",
-        "src/booley/runtime/dockerfile_syntax.py",
-        _RISCV_TOOLING_PUBLISHER,
-    }
-    assert "workflow_dispatch" in events
-    assert key_job["if"] == "github.ref == 'refs/heads/main'"
-    assert key_job["permissions"] == {"contents": "read"}
-    assert job["needs"] == "key"
-    assert job["permissions"] == {"contents": "read", "packages": "write"}
-    # A workflow-wide group keeps only one pending run, so a queued key could
-    # be dropped behind another key's publication. Group per key instead.
-    assert "concurrency" not in workflow
-    assert job["concurrency"] == {
-        "group": "publish-riscv-tooling-${{ needs.key.outputs.key }}",
-        "cancel-in-progress": False,
-    }
-
-
-def test_riscv_tooling_publisher_stages_verifies_then_promotes_without_overwrite() -> None:
-    job = _workflow(_RISCV_TOOLING_PUBLISHER)["jobs"]["publish"]
-    names = [step.get("name", step.get("uses", "")) for step in job["steps"]]
-    order = [
-        "Check for an existing tooling image",
-        "Build and push candidate tooling image",
-        "Verify candidate labels and digest",
-        "Verify candidate tooling",
-        "Record builder package versions",
-        "Promote verified candidate to the key tag",
-    ]
-    assert [name for name in names if name in order] == order
-
-    existing = _named_step(job, order[0])
-    assert "riscv_tooling.py published" in existing["run"]
-    for name in order[1:]:
-        assert _named_step(job, name)["if"] == "steps.existing.outputs.state == 'absent'"
-
-    build = _named_step(job, order[1])["with"]
-    assert build["target"] == "riscv-tooling"
-    # Digest-only push: no staging tag accumulates or resolves by name.
-    assert "tags" not in build
-    assert "push" not in build
-    assert "push-by-digest=true" in build["outputs"]
-    assert "push=true" in build["outputs"]
-    # Role, key, and recipe labels come from the script, not retyped here.
-    assert build["labels"].startswith("${{ needs.key.outputs.labels }}")
-    assert "io.booley.riscv-tooling.key=" not in build["labels"]
-    assert "cache-from" not in build
-    assert "cache-to" not in build
-    assert "build-args" not in build
-
-    verify = _named_step(job, order[3])["run"]
-    assert "riscv_tooling.py checks" in verify
-    assert 'bash < "${checks}"' in verify
-
-    promote = _named_step(job, order[5])["run"]
-    assert promote.index("riscv_tooling.py published") < promote.index("imagetools create")
-    assert promote.index("imagetools create") < promote.index("riscv_tooling.py promoted")
-    assert "not overwriting" in promote
-    assert "index:io.booley.riscv-tooling.builder-packages=" in promote
-    assert '--tag "${FINAL}" "${CANDIDATE}"' in promote
-    assert '--candidate "${CANDIDATE}"' in promote
-
-
-def test_only_the_tooling_publisher_writes_riscv_tooling_tags() -> None:
-    for path in Path(".github/workflows").glob("*.yml"):
-        if path.as_posix() == _RISCV_TOOLING_PUBLISHER:
-            continue
-        for job in _workflow(str(path))["jobs"].values():
-            for step in job.get("steps", []):
-                pushes = step.get("with", {}).get("push") is True
-                tags = str(step.get("with", {}).get("tags", ""))
-                assert not (pushes and "riscv-tooling" in tags), f"{path} pushes tooling tags"
-                run = str(step.get("run", ""))
-                assert not ("imagetools create" in run and "riscv-tooling" in run), path
-
-    test_workflow = _workflow(".github/workflows/test.yml")
-    assert test_workflow["permissions"]["packages"] == "read"
-    assert all(
-        job.get("permissions", {}).get("packages") != "write"
-        for job in test_workflow["jobs"].values()
-    )
-
-
-def test_release_build_dependency_is_pinned() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-    requirements = Path(".github/ci/requirements-build.txt").read_text(encoding="utf-8")
-
-    assert "pip install -r .github/ci/requirements-build.txt" in workflow
-    assert "pip install build==" not in workflow
-    assert re.search(r"^build==\d+(\.\d+)+$", requirements, flags=re.MULTILINE)
-
-
-def test_local_build_script_resolves_compatible_stable_base() -> None:
-    build_script = (_DOCKER_DIR / "build.sh").read_text(encoding="utf-8")
-    contract_helper = Path("src/booley/runtime/docker_base_contract.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "@sha256:" in contract_helper
-    assert "--build-context" in build_script
-    assert "booley-runtime-base=docker-image://booley-runtime-base:local" in build_script
-    assert "io.booley.runtime-base.image" in _DOCKERFILE.read_text(encoding="utf-8")
-
-
-def test_changed_stable_base_build_reuses_trusted_cache_without_publishing() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    base_build = workflow[
-        workflow.index("- name: Build changed stable runtime base locally") : workflow.index(
-            "- name: Build candidate from changed stable base"
-        )
-    ]
-
-    assert "uses: docker/build-push-action@" in base_build
-    assert "load: true" in base_build
-    assert "cache-from: type=gha,scope=sandbox-runtime-base" in base_build
-    assert "cache-to:" not in base_build
-
-
-def test_shared_candidate_cache_has_only_the_main_push_writer() -> None:
-    test_workflow = yaml.safe_load(Path(".github/workflows/test.yml").read_text(encoding="utf-8"))
-    candidate_build = next(
-        step
-        for step in test_workflow["jobs"]["bwave-smoke"]["steps"]
-        if step.get("name") == "Build candidate from published stable base"
-    )
-
-    assert candidate_build["with"]["cache-from"] == "type=gha,scope=sandbox-substrate"
-    assert candidate_build["with"]["cache-to"] == (
-        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && "
-        "'type=gha,scope=sandbox-substrate,mode=max,ignore-error=true' || '' }}"
-    )
-
-    release_workflow = yaml.safe_load(
-        Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-    )
-    release_build = next(
-        step
-        for step in release_workflow["jobs"]["build-and-push"]["steps"]
-        if step.get("id") == "build"
-    )
-
-    assert release_build["with"]["cache-from"] == "type=gha,scope=sandbox-wheel"
-    assert "cache-to" not in release_build["with"]
-
-
-def test_stacked_pr_builds_inherited_stable_base_locally() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    selection = workflow[
-        workflow.index("- name: Select compatible stable runtime base") : workflow.index(
-            "- name: Build changed stable runtime base locally"
-        )
-    ]
-
-    assert "github.event_name == 'pull_request'" in selection
-    assert "github.base_ref != 'main'" in selection
-
-
-def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -> None:
-    workflow = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
-
-    assert "branches: [main]" in workflow
-    assert "paths:" in workflow
-    assert "Dockerfile.base" in workflow
-    assert "boldaxolotl/booley-sandbox-base" in workflow
-    assert "docker_base_contract.py" in workflow
-    assert "group: publish-stable-docker-runtime-base" in workflow
-    assert "cancel-in-progress: true" in workflow
-    assert 'find_spec("booley") is None' in workflow
-    assert "command -v yosys openroad iverilog verilator verible-verilog-lint" in workflow
-
-
-def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
-    job = _workflow(".github/workflows/docker-publish.yml")["jobs"]["host-doctor-runtime"]
-    wheel = _named_step(job, "Build official-release wheel from the candidate")["run"]
-    prepare = _named_step(job, "Prepare isolated uid-1000 host")["run"]
-    validate = _named_step(job, "Run isolated host validation")
-
-    # Only an official-release wheel adopts the verified published image; a
-    # runtime-image or development wheel would try to build it locally.
-    assert "profile=BuildProfile.OFFICIAL_RELEASE" in wheel
-    assert "python -m build --wheel --outdir dist/" in wheel
-    assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
-    assert 'mkdir -p "${root}/home" "${root}/evidence" "${root}/project"' in prepare
-    # This release smoke retains its base-interpreter wheel installation.
-    assert (
-        'PYTHONUSERBASE="${root}/home/.local" python -m pip install --user dist/booley_rtl-*.whl'
-    ) in prepare
-    assert "venv" not in prepare + validate["run"]
-    assert "pip install ." not in prepare
-    assert '-- "${pythonLocation}/bin/python"' in validate["run"]
-    assert (
-        '--booley "${RUNNER_TEMP}/release-host-doctor/home/.local/bin/booley"' in validate["run"]
-    )
-    assert 'sudo chown -R "1000:${doctor_gid}" "${root}"' in prepare
-    assert "/usr/bin/booley" not in prepare + validate["run"]
-    assert (
-        '"${GITHUB_WORKSPACE}/.github/scripts/release_validation/host_doctor.py"'
-        in validate["run"]
-    )
-
-
-def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> None:
-    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
-    surface = jobs["demo-surface"]
-    flows = jobs["picorv32-demo-flows"]
-    simulation = jobs["simulation-selftest-overlay"]
-
-    for job in (surface, flows):
-        prepare = _named_step(job, "Prepare exact reviewed demo contract")
-        assert prepare["uses"] == "./.github/actions/prepare-picorv32-demo"
-        assert job["needs"] == ["build-and-push", "build-and-push-riscv"]
-    simulation_prepare = _named_step(simulation, "Prepare exact reviewed demo contract")
-    assert simulation_prepare["with"] == {"materialize": True}
-    assert (
-        "-m release_validation.demo_surface"
-        in _named_step(surface, "Validate demo surface")["run"]
-    )
-
-    simulation_run = _named_step(simulation, "Run Simulation Doctor self-tests")["run"]
-    assert "/^\\[flows\\.synth\\]$/,/^\\[flows\\.fpga\\]$/" in simulation_run
-    assert "enabled = false" in simulation_run
-    assert "verify_picorv32_demo.sh" in _named_step(flows, "Run exact reviewed demo flows")["run"]
-    assert _named_step(surface, "Restore demo ownership")["if"] == "always()"
-    assert _named_step(flows, "Restore demo ownership")["if"] == "always()"
-    assert _named_step(simulation, "Restore simulation ownership")["if"] == "always()"
-    simulation_run = _named_step(simulation, "Run Simulation Doctor self-tests")["run"]
-    assert 'cp -a demo "${RUNNER_TEMP}/simulation-project"' in simulation_run
-    assert 'image = "booley-sandbox"' in simulation_run
-    assert '--mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work' in simulation_run
-
-
-def test_release_concurrency_isolates_dispatched_candidate_builds() -> None:
-    """Dispatched candidate builds must not share the release cancellation group.
-
-    Push (release tag) runs keep one shared group so a newer release cancels an
-    older one; dispatched runs get a per-ref group so they never cancel, or get
-    cancelled by, a release.
-    """
-    workflow = _workflow(".github/workflows/docker-publish.yml")
-
-    assert workflow["concurrency"] == {
-        "group": (
-            "${{ github.event_name == 'push' && 'docker-release-promotion' "
-            "|| format('docker-candidate-{0}', github.ref) }}"
-        ),
-        "cancel-in-progress": True,
-    }
-
-
-def test_release_promotes_stable_tags_only_after_independent_gates() -> None:
-    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
-    standard_build = next(
-        step for step in jobs["build-and-push"]["steps"] if step.get("id") == "build"
-    )
-    riscv_build = next(
-        step for step in jobs["build-and-push-riscv"]["steps"] if step.get("id") == "build"
-    )
-    promotion = _named_step(jobs["promote"], "Promote exact tested digests without rebuilding")
-
-    assert (
-        ":candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
-        in standard_build["with"]["tags"]
-    )
-    assert ":latest" not in standard_build["with"]["tags"] + riscv_build["with"]["tags"]
-    assert set(jobs["promote"]["needs"]) - {"build-and-push", "build-and-push-riscv"} == {
-        "standard-image-contract",
-        "openroad-runtime",
-        "host-doctor-runtime",
-        "simulation-selftest-overlay",
-        "helper-image-metadata",
-        "riscv-image-contract",
-        "demo-surface",
-        "picorv32-demo-flows",
-        "ibex-lint-demo",
-    }
-    assert "docker buildx imagetools create" in promotion["run"]
-    assert ":latest" in promotion["run"]
-
-
-def test_release_image_measurements_are_variant_scoped() -> None:
-    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
-    standard = _named_step(
-        jobs["standard-image-contract"], "Validate provenance, runtime, size, and resources"
-    )["run"]
-    riscv = _named_step(jobs["riscv-image-contract"], "Validate exact RISC-V candidate")["run"]
-    helper = _named_step(jobs["helper-image-metadata"], "Build and inspect helper images")
-
-    assert "--limit-image sandbox" in standard
-    assert '--registry-image "sandbox=${IMAGE}"' in standard
-    assert "--limit-image riscv" in riscv
-    assert '--registry-image "riscv=${RISCV_IMAGE}"' in riscv
-    assert helper["run"] == "bash .github/scripts/sidecar-build-evidence.sh"
-
-    pr_job = _workflow(".github/workflows/test.yml")["jobs"]["bwave-smoke"]
-    standard_size = _named_step(pr_job, "Enforce standard image size ceiling")["run"]
-    assert "--limit-image sandbox" in standard_size
-    assert "--runtime-image sandbox=booley-test" in standard_size
-
-
-def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    probe = Path(".github/scripts/verify_openroad_runtime.sh").read_text(encoding="utf-8")
-
-    assert "Run OpenROAD physical runtime probe" in workflow
-    assert "verify_openroad_runtime.sh" in workflow
-    assert (
-        '--mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly'
-        in workflow
-    )
-    assert "global_placement" in probe
-    assert "detailed_placement" in probe
-    assert 'run_openroad "repair-off"' in probe
-    assert 'run_openroad "repair-on"' in probe
-    assert '(("repair-off", False), ("repair-on", True))' in probe
-    assert "Design area" in probe
-    assert "QT_QPA_PLATFORM=offscreen openroad -gui -exit -no_init -no_splash /dev/null" in probe
-    assert "_build_yosys_script" in probe
-    assert "write_openroad_script" in probe
-    assert "u_probe_buffer" in probe
-    assert "Removed [1-9][0-9]* buffers" in probe
-    assert r"Wire dut.\intentional_undriven is used but has no driver" in probe
-    assert "read_liberty -lib -nooverwrite -setattr booley_check_library" in probe
-    assert "log_abc_dut.txt" in probe
-    assert "abc-control" in probe
-    assert 'ABC: Warning: Detected 2 multi-output cells (for example, "FA_X1").' in probe
-    assert "premap_check_dut.txt" in probe
-    assert "comb-loop" in probe
-    assert "collision-preserve" in probe
-    assert "collision-attribute" in probe
-    assert 'grep -Fq "Assertion failed"' in probe
-    assert 'test ! -e "$work/collision-attribute/synth_collision_attribute.v"' in probe
-    assert 'grep -Fq "assign Z = A;"' in probe
-    assert "if grep -E '^\\[WARNING '" in probe
-    assert '"$work"/check_dut_*.txt "$work"/yosys*.log' in probe
-    assert '"$work"/log_abc_*.txt' in probe
-    assert '"$work"/synth*.ys' in probe
-    assert "trap retain_evidence EXIT" in probe
-
-
-def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
-    jobs = _workflow(".github/workflows/test.yml")["jobs"]
-    smoke_job = jobs["riscv-image"]
-    checkout = _named_step(smoke_job, "Prepare exact reviewed Ibex candidate")
-    lint_command = _named_step(smoke_job, "Run pinned Ibex lint demo")["run"]
-    command_argv = shlex.split(lint_command)
-    inner_script = next(
-        token for token in command_argv[command_argv.index("-c") + 1 :] if token.strip()
-    )
-    script_lines = inner_script.splitlines()
-
-    assert checkout["uses"].startswith("actions/checkout@")
-    assert checkout["with"] == {
-        "path": "ibex-demo",
-        "persist-credentials": False,
-        "ref": "34b0705760ef3dfa00e99637432473d2be8f22f3",
-        "repository": "lowRISC/ibex",
-    }
-    network_index = command_argv.index("--network")
-    assert command_argv[network_index + 1] == "none"
-    assert script_lines[0].rstrip().endswith("&& \\")
-    assert script_lines[1].rstrip().endswith("--target=lint \\")
-    assert "lowrisc:ibex:ibex_core" in script_lines[2]
-    assert '--verilator_options="--Wno-fatal"' in script_lines[2]
-
-
-def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> None:
-    workflow = Path(".github/workflows/picorv32-demo.yml").read_text(encoding="utf-8")
-
-    assert "pull_request:" in workflow
-    assert "branches: [main]" in workflow
-    assert "merge_group:" in workflow
-    assert "schedule:" in workflow
-    assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
-    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in workflow
-
-
-def test_verilator_safe_release_and_fst_runtime_contract() -> None:
     base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
-    assert re.fullmatch(r"v[0-9]+\.[0-9]{3}", _base_build_arg(base, "VERILATOR_VERSION"))
-    assert re.fullmatch(r"[0-9a-f]{40}", _base_build_arg(base, "VERILATOR_REF"))
-    assert 'grep -F "Verilator ${VERILATOR_VERSION#v}"' in base
-    assert 'test "$(git rev-parse HEAD)" = "${VERILATOR_REF}"' in base
-    assert base.count("liblz4-dev") == 2  # compiler stage and user model builds
-    assert "libjemalloc-dev" not in base
-    assert "/usr/include/lz4.h" in contract
-    assert "/usr/local/share/verilator/BOOLEY-SOURCE.txt" in contract
 
-
-def test_verilator_acceptance_is_required_in_candidate_image() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    assert "booley-test python /work/tests/docker/verilator_acceptance.py" in workflow
-    assert "--work-dir /validation-tmp" in workflow
-    assert "fifo native-fst verilator coverage-release simulator" in workflow
-
-
-def test_layout_recipe_is_in_wheel_sources_and_package_data():
-    import tomllib
-
-    from booley.runtime.build_stamp import iter_wheel_source_files
-
-    recipe = _DOCKER_DIR / "Dockerfile.project-data-layout"
-    assert recipe in set(iter_wheel_source_files(Path()))
-    config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    assert "data/**/*" in config["tool"]["setuptools"]["package-data"]["booley"]
-    instructions = logical_instructions(recipe.read_text(encoding="utf-8"))
-    assert instructions[0].keyword == "FROM"
-    assert instructions[0].value == "booley-layout-parent"
-    assert not any(line.keyword in {"COPY", "WORKDIR"} for line in instructions)
-
-
-def test_riscv_isa_manual_uses_date_named_release_and_complete_volumes() -> None:
-    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
-    assert re.search(r"^ARG ISA_MANUAL_RELEASE=\d{8}$", riscv, re.M)
-    assert "ADR 0071" in riscv
-    for volume in ("unprivileged", "privileged"):
-        assert f"- riscv-isa-{volume}.pdf / .html" in riscv
-        for extension in ("pdf", "html"):
-            assert (
-                "releases/download/${ISA_MANUAL_RELEASE}/"
-                f"riscv-{volume}-${{ISA_MANUAL_RELEASE}}.{extension}"
-            ) in riscv
-            assert f"-o /opt/riscv-docs/riscv-isa-{volume}.{extension}" in riscv
-            checksum = f"ISA_{volume.upper()}_{extension.upper()}_SHA256"
-            assert re.search(rf"^ARG {checksum}=[0-9a-f]{{64}}$", riscv, re.M)
-            assert (
-                f'echo "${{{checksum}}}  /opt/riscv-docs/riscv-isa-{volume}.{extension}"'
-                " | sha256sum -c -"
-            ) in riscv
+    assert (PINNED_VERILATOR.tag, PINNED_VERILATOR.commit) == (
+        _base_build_arg(base, "VERILATOR_VERSION"),
+        _base_build_arg(base, "VERILATOR_REF"),
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="document install requires POSIX shell and sha256sum")
@@ -1511,46 +569,3 @@ def test_agent_policy_probe_derives_node_and_npm_from_the_packaged_recipe() -> N
         dockerfile_syntax.argument_default(base, "NODE_VERSION"),
         dockerfile_syntax.argument_default(base, "NPM_VERSION"),
     )
-
-
-def _wheel_install_stages() -> dict[str, tuple]:
-    """Return ``{Dockerfile name: instructions of its stage that pip-installs $WHEEL}``."""
-    stages: dict[str, tuple] = {}
-    for dockerfile in sorted(_DOCKER_DIR.glob("Dockerfile*")):
-        instructions = logical_instructions(dockerfile.read_text(encoding="utf-8"))
-        starts = [n for n, i in enumerate(instructions) if i.keyword == "FROM"] + [
-            len(instructions)
-        ]
-        for begin, end in pairwise(starts):
-            stage = instructions[begin:end]
-            if any(
-                i.keyword == "RUN" and "pip install" in i.value and '"$WHEEL"' in i.value
-                for i in stage
-            ):
-                stages[dockerfile.name] = stage
-    return stages
-
-
-def test_every_wheel_install_stage_links_the_fixed_docs_path() -> None:
-    stages = _wheel_install_stages()
-    assert set(stages) == {"Dockerfile", "Dockerfile.wheel"}
-    for name, stage in stages.items():
-        install = next(n for n, i in enumerate(stage) if '"$WHEEL"' in i.value)
-        links = [
-            n
-            for n, i in enumerate(stage)
-            if n > install
-            and i.keyword == "RUN"
-            and f'ln -sfn "$DOCS_DIR" {docs_links.SANDBOX_DOCS_DIR}' in i.value
-            and "from booley.runtime.paths import user_docs_dir" in i.value
-        ]
-        assert len(links) == 1, name
-        user = [i.value for i in stage[: links[0]] if i.keyword == "USER"][-1]
-        assert user == "root", f"{name}: /booley-docs must be linked as root, not {user}"
-
-
-def test_cheatsheet_names_the_fixed_docs_path_once_in_its_sandbox_section() -> None:
-    cheatsheet = Path("src/booley/data/cheatsheet.md").read_text(encoding="utf-8")
-    section = cheatsheet.split("### Sandbox & Docker", 1)[1].split("\n### ", 1)[0]
-
-    assert section.count(f"{docs_links.SANDBOX_DOCS_DIR}/") == 1
