@@ -238,7 +238,9 @@ The Dashboard has three windows; press `←` or `→` to switch:
   `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
   5d6e7f8: 1 unmet, 3 not evaluated` when it is not, or `measuring 2/5 · 14m 00s`
   while a `booley measure` Job runs there. `Enter` on a line that has a report
-  opens its Markdown Measurement Report in your editor.
+  opens its Markdown
+  [Measurement Report](METRIC-DRIVEN-DEVELOPMENT.md#read-the-measurement-report)
+  in your editor.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
   session.
   A `booley flow` or `booley specialist` run typed in a container terminal

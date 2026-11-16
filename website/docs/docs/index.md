@@ -1,7 +1,7 @@
 ---
 title: Documentation
 document: User guide
-description: The Booley user guide - setup, day-to-day use, Flows, configuration, the Sandbox, supported EDA tools, Doctor, and troubleshooting.
+description: The Booley user guide - setup, day-to-day use, Metric-Driven Development, Flows, configuration, the Sandbox, supported EDA tools, Doctor, and troubleshooting.
 ---
 
 # Documentation
@@ -18,7 +18,7 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="install/">Install</a></td><td>Install Booley and prepare your machine.</td></tr>
 <tr><td><a href="setup/">Setup</a></td><td>Connect an installed Booley to your RTL project.</td></tr>
 <tr><td><a href="usage/">Usage</a></td><td>Day-to-day work with the Developer Agent and waveforms.</td></tr>
-<tr><td><a href="metrics/">Metrics</a></td><td>Declare Target Metrics and measure a commit against them.</td></tr>
+<tr><td><a href="metric-driven-development/">Metric-Driven Development</a></td><td>Accept work by measuring commits against Target Metrics.</td></tr>
 <tr><th scope="rowgroup" rowspan="9">Flows &amp; Specialists</th><td><a href="flow-reference/">Running Flows</a></td><td>What every Flow shares: Targets, options, and results.</td></tr>
 <tr><td><a href="flow-sim/">Simulation</a></td><td>Run a Target's tests and report which ones passed.</td></tr>
 <tr><td><span class="docs__tree" aria-hidden="true">└</span><a href="coverage/">Coverage</a></td><td>Guide to measuring how much of the RTL your tests exercise.</td></tr>

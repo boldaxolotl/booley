@@ -316,3 +316,15 @@ def test_demo_page_keeps_the_gateway_bring_your_own_key_anchor():
     """The demo gateway's notice and errors link to booley.dev/demo#bring-your-own-key."""
     page = (WEBSITE / "docs/demo.md").read_text(encoding="utf-8")
     assert 'id="bring-your-own-key"' in page
+
+
+def test_goal_mode_url_redirects_to_the_metric_driven_development_guide():
+    """The retired /docs/goal-mode/ URL still resolves: a static page sends readers to the guide."""
+    from booley.runtime.docs_links import SITE_DOCS, docs_url
+
+    redirect = (WEBSITE / "docs/docs/goal-mode/index.html").read_text(encoding="utf-8")
+    assert '<meta http-equiv="refresh" content="0; url=../metric-driven-development/">' in redirect
+    canonical = docs_url("METRIC-DRIVEN-DEVELOPMENT.md")
+    assert f'<link rel="canonical" href="{canonical}">' in redirect
+    assert "metric-driven-development" in {doc.slug for doc in SITE_DOCS}
+    assert "goal-mode" not in {doc.slug for doc in SITE_DOCS}
