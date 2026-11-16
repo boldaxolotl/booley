@@ -95,8 +95,8 @@ def _copy_parser_state(source, target) -> None:
 
 
 def _probe_parser(
-    parser, visited: dict[int, argparse.ArgumentParser], *, inert: bool
-) -> argparse.ArgumentParser:
+    parser, visited: dict[int, _HelpProbeParser], *, inert: bool
+) -> _HelpProbeParser:
     if id(parser) in visited:
         return visited[id(parser)]
     wrapped = _HelpProbeParser(add_help=False, **parser_settings(parser))

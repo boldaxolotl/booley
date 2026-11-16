@@ -259,3 +259,9 @@ async def test_jobs_selection_and_scroll_survive_wide_window_round_trip():
         assert app.navigation.view == "jobs"
         assert app.row_keys[table.cursor_row] == selected
         assert table.scroll_y == scroll
+
+
+def test_jobs_row_with_a_non_text_cell_is_refused():
+    """The Jobs list fits only ``Text`` cells; any other cell is a programming error."""
+    with pytest.raises(TypeError, match="only Text cells"):
+        dashboard_app._text_cells([("plain string",)])

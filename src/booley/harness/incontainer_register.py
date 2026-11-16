@@ -106,13 +106,14 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
     }
     if logged_in:
         clis = tuple(logged_in)
+        default = clis[0]
         reason = "; ".join(
             f"{_LABELS[app]} credential from {credential.source}"
             for app, credential in logged_in.items()
         )
         if len(clis) > 1:
-            reason += f"; {_LABELS[clis[0]]} is the default"
-        return agent_app.AgentAppChoice(clis[0], policy, reason, clis)
+            reason += f"; {_LABELS[default]} is the default"
+        return agent_app.AgentAppChoice(default, policy, reason, clis)
     if lookup == VISITOR_AUTH:
         try:
             gateway = gateway_settings_from_env()
