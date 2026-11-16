@@ -174,6 +174,7 @@ def test_gui_mission_follows_the_shared_runbook_in_issue_order() -> None:
         "setup",
         "dashboard-default",
         "dashboard-live",
+        "run-wizard",
         "bwave-gui",
         "stop-resume",
         "terminal-output",
@@ -183,7 +184,7 @@ def test_gui_mission_follows_the_shared_runbook_in_issue_order() -> None:
         "docs-site",
         "cleanup",
     ]
-    assert sum(minutes for _, minutes in areas) <= 240  # the mission's 4-hour budget
+    assert sum(minutes for _, minutes in areas) <= 275  # the mission's 4 h 35 min budget
     assert "](../../shared/codespaces/RUNBOOK.md)" in mission.read_text(encoding="utf-8")
 
 
