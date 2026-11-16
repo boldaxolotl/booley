@@ -4,7 +4,7 @@ Booley does not run scheduled mutation testing over its own Python code.
 The weekly mutmut campaign over the harness setup package was removed
 (#3404).
 
-This does not concern Booley's own mutation Goal family or the Mutation
+This does not concern Booley's own `mutation_score` Criterion or the Mutation
 Flow, which test users' RTL.
 
 ## Why this is out of scope

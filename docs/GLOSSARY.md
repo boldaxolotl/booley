@@ -10,8 +10,9 @@ owns, such as B-Wave.
 
 Booley is an **agentic development environment (ADE)** for RTL design and
 verification: the working environment where an engineer directs and supervises
-Developer Agents doing RTL work, whether hands-on or unattended. **Interactive
-Mode** runs in an isolated **Sandbox** with Booley Flows and Specialists.
+Developer Agents doing RTL work, one session or several in parallel.
+**Interactive Mode** runs in an isolated **Sandbox** with Booley Flows and
+Specialists.
 _Avoid_ (for the product itself): IDE, agentic RTL IDE, framework, system, library, platform, toolkit, package, harness
 
 The glossary also records words to _avoid_. Booley's concepts collide with
@@ -46,7 +47,7 @@ _Avoid_: Project Initialization, onboarding, porting
 ### Execution
 
 How and where Booley work runs. The **Sandbox** is the execution environment;
-**Interactive Mode** is the execution mode; the remaining entries are the
+**Interactive Mode** is how a human works in it; the remaining entries are the
 machinery inside.
 
 **Developer Agent**:
@@ -99,7 +100,7 @@ told apart. It feeds the Dashboard and the shared-worktree warning.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
-The connection method by which a human-facing app or autonomous driver uses a
+The connection method by which a human-facing app or a script uses a
 Sandbox, such as VS Code Dev Containers or `booley session` terminal attachment.
 _Avoid_: Runtime Attachment, remote, tunnel, app bridge
 
@@ -387,13 +388,17 @@ _Avoid_: approved commit, signed-off commit, clean review; review session, revie
 You will not need these unless you are reading older work records, code, or docs; they are terms that were renamed or removed. Skim now, refer back when you hit one.
 
 - **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name
-  the evidence machinery, or Sandbox capability concerned. The `booley.harness`
+  the evidence machinery or Sandbox capability concerned. The `booley.harness`
   package still contains active CLI, Doctor, and setup code.
 - **Result Cache** and **`booley ci`** → **Measurement Run**: the Result Cache
   was never finished, and [ADR
   0092](adr/0092-measure-commits-against-target-metrics.md) measures commits
   instead.
 - **TB Coder** → **none**: the Developer Agent writes testbenches itself.
+- **Goal Mode**, **Goal**, **Goalset**, **Review Package** → **Interactive
+  Mode** with Metric-Driven Development: a human steers the Developer Agent,
+  and [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures
+  commits against Target Metrics.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.
 - **"agent"**: Name the **Developer Agent** in full at its first mention in a document or section, and in every sentence that discusses it alongside a **Specialist**. After that first mention, "the agent" is an allowed short form within the same section when no Specialist is a possible referent. Never use "agent" for a Specialist.
