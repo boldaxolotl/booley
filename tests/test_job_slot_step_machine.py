@@ -407,7 +407,7 @@ class JobSlotStepMachine(RuleBasedStateMachine):
         lease_id = payload.get("lease_id")
         if any(token.lease_id == lease_id for token in owner.tokens):
             return True
-        releasing = owner.releasing.get(lease_id)
+        releasing = owner.releasing.get(str(lease_id))
         if releasing is not None and any(
             w.root is releasing and w.state != "done" for w in self.scheduler.workers
         ):
