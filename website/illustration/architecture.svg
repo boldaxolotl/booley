@@ -2,12 +2,13 @@
   <!-- Booley architecture diagram for docs/internals/ARCHITECTURE.md. Source:
        website/illustration/architecture.svg; after editing it, run
        website/illustration/build.py, which embeds the fonts and writes
-       docs/user/assets/architecture.svg. Keep the <desc> and the alt text in
+       docs/user/assets/architecture.svg and its -dark twin. Keep the <desc> and the alt text in
        ARCHITECTURE.md in step with the drawing. -->
   <style>
     /* {{FONTS}} */
     /* Colours: the site's light datasheet tokens. Shown as an image, the diagram cannot
-       follow the site's theme switch, so it stays light on its own white background. */
+       follow the site's theme switch, so build.py also writes a dark copy with these
+       tokens swapped (ARCHITECTURE_DARK_TOKENS); keep every colour a token here. */
     .arch { --paper: #ffffff; --ink: #15191e; --ink-2: #4a525c; --rule: #8e98a3;
       --fill: #eaeef1; --fill-2: #f5f7f8; --mask: #0b5a43; --warn: #b3261e }
     .arch .bg { fill: var(--paper); }

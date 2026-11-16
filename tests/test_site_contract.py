@@ -123,6 +123,9 @@ def test_generated_illustration_is_up_to_date():
     assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
     assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
     assert build.ARCHITECTURE_OUT.read_text(encoding="utf-8") == build.architecture_svg()
+    assert build.ARCHITECTURE_DARK_OUT.read_text(encoding="utf-8") == build.architecture_svg(
+        dark=True
+    )
     assert '--8<-- "ide-figure.html"' in SITE
 
 
