@@ -16,7 +16,6 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
-from booley.criteria.state import DevelopmentState
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
@@ -71,12 +70,7 @@ def _adr0039_lenient_selection(monkeypatch):
 
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.init_criteria({"fpga_impl_ok_default": True})
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    return state_path
+    return tmp_path / "state.json"
 
 
 def _write_project_config(
@@ -281,11 +275,10 @@ def test_fpga_run_records_no_criterion(
         measure_exit_code,
     )
 
+    before = b'{"opaque": true}\n'
     if named_state:
-        before = state_file.read_bytes()
-    else:
-        monkeypatch.delenv("BOOLEY_STATE_FILE")
-        state_file.unlink()
+        state_file.write_bytes(before)
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     _write_project_config(tmp_path)
     flow = _flow(tmp_path, state_file)
     parsed = {

@@ -206,7 +206,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     # lives in display_lines, which a bare CLI run drops). Surface the RESULT:
     # summary on stdout so PASS is never indistinguishable from a no-op.
     announce_success_report: bool = True
-    satisfies: ClassVar[list[str]] = ["fpga_impl_ok"]
     conventional_families: ClassVar[frozenset[str]] = frozenset({"fpga_impl_ok"})
 
     # FPGA implementation is memory-admitted as a Sandbox job.

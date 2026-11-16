@@ -866,7 +866,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     # reserve their own memory (see ``memory_claims``).
     JOB_CLASS: ClassVar[str | None] = job_slots.CLASS_MEMORY
     default_timeout: ClassVar[int] = 1800
-    satisfies: ClassVar[list[str]] = ["mutation_score"]
 
     def _memory_admission_plan(
         self, project: Path | None, requests: Sequence[JobRequest] | None

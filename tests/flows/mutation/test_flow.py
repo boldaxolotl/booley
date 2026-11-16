@@ -24,7 +24,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
 from booley.flows.mutation.flow import (
     MutationFlow,
@@ -70,24 +69,11 @@ def test_removed_topology_options_are_rejected(removed: str) -> None:
         endpoint.parse_args(["--target", "sim", "--scope", "rtl/design.sv", removed, "legacy"])
 
 
-def _env_with_state(
-    state_file: Path,
-    logs_dir: Path,
-    slug: str = "test-ticket",
-) -> dict[str, str]:
+def _flow_env(logs_dir: Path, slug: str = "test-ticket") -> dict[str, str]:
     env = os.environ.copy()
     env["BOOLEY_SLUG"] = slug
-    env["BOOLEY_STATE_FILE"] = str(state_file)
     env["BOOLEY_LOGS_DIR"] = str(logs_dir)
     return env
-
-
-def _make_state(tmp_path: Path) -> Path:
-    """Create the state file used by mutation endpoint tests."""
-    state_file = tmp_path / "state.json"
-    state = DevelopmentState.load(state_file)
-    state.save()
-    return state_file
 
 
 def _write_dut_top(tmp_path: Path, top: str = "design_top") -> Path:
@@ -128,14 +114,16 @@ def _make_endpoint(
     extra_args: list[str] | None = None,
     state_file: bool = True,
 ) -> MutationFlow:
-    """Build a endpoint with parsed args and loaded state.
+    """Build a endpoint with parsed args.
 
-    ``state_file=False`` names no ``BOOLEY_STATE_FILE`` and creates none.
+    ``state_file=True`` names an opaque ``BOOLEY_STATE_FILE``; ``False`` names none.
 
     When *monkeypatch* is supplied, the BOOLEY_LOGS_DIR env var is set for
     the lifetime of the test so the run's scratch files land in tmp_path.
     """
-    state_path = _make_state(tmp_path) if state_file else tmp_path / "state.json"
+    state_path = tmp_path / "state.json"
+    if state_file:
+        state_path.write_bytes(b'{"opaque": true}\n')
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir(exist_ok=True)
     report_dir = tmp_path / "reports"
@@ -157,9 +145,11 @@ def _make_endpoint(
         argv.extend(["--seed", str(seed)])
     if extra_args:
         argv.extend(extra_args)
-    env = _env_with_state(state_path, logs_dir)
-    if not state_file:
-        del env["BOOLEY_STATE_FILE"]
+    env = _flow_env(logs_dir)
+    if state_file:
+        env["BOOLEY_STATE_FILE"] = str(state_path)
+    else:
+        env.pop("BOOLEY_STATE_FILE", None)
     if monkeypatch is not None:
         for k, v in env.items():
             monkeypatch.setenv(k, v)
@@ -418,9 +408,6 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
 class TestToolMetadata:
     def test_name(self):
         assert MutationFlow().name == "mutation"
-
-    def test_satisfies(self):
-        assert "mutation_score" in MutationFlow().satisfies
 
 
 # ---------------------------------------------------------------------------
@@ -1273,10 +1260,8 @@ def test_hand_run_mutation_records_no_criterion(
     """A hand run records no Criterion and writes no state file; the exit status is unchanged."""
     fakes, expected_exit = _MUTATION_RUNS[outcome]
     state_path = tmp_path / "state.json"
-    if with_state_file:
-        _make_state(tmp_path)
-        before = state_path.read_bytes()
     _, result, _ = _campaign(tmp_path, monkeypatch, count=2, state_file=with_state_file, **fakes)
+    before = b'{"opaque": true}\n'
 
     assert result.exit_code == expected_exit, result.report_text
     assert list(tmp_path.rglob("acceptance")) == []
@@ -1284,16 +1269,6 @@ def test_hand_run_mutation_records_no_criterion(
         assert state_path.read_bytes() == before
     else:
         assert list(tmp_path.rglob("state.json")) == []
-
-
-def test_mutation_run_reads_no_development_state(tmp_path: Path, monkeypatch) -> None:
-    """The Flow body never touches development state."""
-    _prepare_scope_files(tmp_path, [_SCOPE])
-    _patch_fake_simulation(monkeypatch, run=_detects_every_mutant)
-    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=2)
-    endpoint._state = None
-
-    assert endpoint._run().exit_code == EXIT_SUCCESS
 
 
 def _results_markdown(tmp_path: Path, result: EndpointOutcome) -> str:

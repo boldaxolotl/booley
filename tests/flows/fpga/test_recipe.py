@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import replace
 from pathlib import Path
 
-from booley.evidence.recipe import implementation_comparison_basis, recipe_changes
+from booley.evidence.recipe import recipe_changes
 from booley.flows.fpga.recipe import (
     fpga_recipe_snapshot,
     fpga_recipe_snapshot_fingerprint,
@@ -104,9 +104,7 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
         ),
         target="fpga_core",
     )
-    assert implementation_comparison_basis(changed) != implementation_comparison_basis(
-        snapshots[0]
-    )
+    assert changed != snapshots[0]
 
 
 def test_snapshot_fingerprint_tracks_resolved_profile_mapping(tmp_path: Path) -> None:
@@ -145,15 +143,13 @@ def test_schema_one_snapshot_is_not_silently_equivalent_to_profile_evidence(
     legacy = {key: value for key, value in current.items() if key != "ppa_profile"}
     legacy["schema"] = 1
 
-    changes = recipe_changes(
-        implementation_comparison_basis(legacy),
-        implementation_comparison_basis(current),
-    )
+    changes = recipe_changes(legacy, current)
 
     assert changes == [
         {
             "path": "ppa_profile",
             "before": None,
             "after": current["ppa_profile"],
-        }
+        },
+        {"path": "schema", "before": 1, "after": current["schema"]},
     ]

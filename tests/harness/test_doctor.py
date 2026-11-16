@@ -7001,6 +7001,36 @@ def test_doctor_renders_synthesis_target_migration(
     assert replacement in output
 
 
+def test_project_checks_run_custom_endpoint_checks_and_no_criteria_check(tmp_path, monkeypatch):
+    project = tmp_path / ".booley"
+    (project / "mcp_tools").mkdir(parents=True)
+    (project / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    (project / "criteria.toml").write_bytes(b'[lint_clean]\ndescription = "x"\n')
+    (project / "mcp_tools" / "lint.py").write_bytes(
+        b"class Lint(McpTool):\n    name = 'lint'\n    description = 'x'\n"
+    )
+    for name in (
+        "_check_ticket_leftovers",
+        "_check_handle_map_size",
+        "_check_project_gitignore",
+        "_check_project_trackability",
+        "_check_git_state",
+        "_check_repo_footprint",
+        "_check_disabled_endpoints",
+        "_check_agent_backend_health",
+    ):
+        monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+    reporter = doctor._Reporter.create()
+    doctor._run_project_checks(doctor.ProjectAudit(tmp_path, project, {}, {}, None), reporter)
+    findings = reporter.findings or []
+    assert [f for f in findings if f.severity == "fail"] == []
+    skipped = [f for f in findings if f.severity == "warn"]
+    assert [(f.check_id, f.subject) for f in skipped] == [
+        ("project.custom-endpoint-skipped", "lint.py")
+    ]
+    assert not any(re.search(r"(?i)criteri", f"{f.message} {f.fix}") for f in findings)
+
+
 def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypatch):
     _history_git(tmp_path, "init", "-q")
     project = tmp_path / ".booley"
@@ -7014,7 +7044,7 @@ def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypa
         "_check_project_gitignore",
         "_check_git_state",
         "_check_repo_footprint",
-        "_check_custom_endpoints_and_criteria",
+        "_check_custom_endpoints",
         "_check_agent_backend_health",
     ):
         monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
@@ -7701,7 +7731,7 @@ class TestDoctorCommonStateFromWorktree:
             "_check_project_trackability",
             "_check_git_state",
             "_check_repo_footprint",
-            "_check_custom_endpoints_and_criteria",
+            "_check_custom_endpoints",
         ):
             monkeypatch.setattr(doctor, name, lambda *_args, **_kwargs: None)
         reporter = doctor._Reporter.create()
