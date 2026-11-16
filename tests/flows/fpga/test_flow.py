@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import io
 import json
@@ -2525,3 +2526,42 @@ def test_summary_notes_drop_the_flow_prefix(
     printed = out.getvalue()
     assert f"{_RED}CRITICAL\x1b[0m" in printed
     assert f"{_RED}ERROR\x1b[0m" in printed
+
+
+@pytest.mark.parametrize("case", ["plain", "baseline"])
+def test_fpga_output_matches_golden(
+    case: str, tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One Target's report, progress record, RESULT line and exit code stay as pinned."""
+    from tests.flows.implementation_golden_support import render_implementation_output
+    from tests.golden.conftest import assert_matches_golden
+
+    @contextmanager
+    def fake_worktree(project_root, ref, *, paired_project):
+        del paired_project
+        wt = Path(project_root) / ".booley" / f".baseline-wt-fake-{ref}"
+        wt.mkdir(parents=True, exist_ok=True)
+        yield wt
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "golden-run")
+    flow = _flow(tmp_path, state_file, *(["--baseline", "v1.0"] if case == "baseline" else []))
+    baseline = _passing_fpga(lut_count=12000, ff_count=8000)
+    current = _passing_fpga()
+
+    def run_one(_target: str) -> FpgaMetrics:
+        return copy.deepcopy(baseline if flow._execution_role == "baseline" else current)
+
+    with (
+        patch("booley.flows.fpga.flow.baseline_worktree", fake_worktree),
+        patch("booley.flows.fpga.flow.git_short_sha", return_value="abc1234"),
+        patch("booley.flows.fpga.flow.git_full_sha", return_value="a" * 40),
+        patch.object(
+            flow, "_plan_fpga_implementation", return_value=SimpleNamespace(aggregate_errors=[])
+        ),
+        patch.object(flow, "_flow_enabled", return_value=True),
+        patch.object(flow, "_run_single_target", side_effect=run_one),
+    ):
+        outcome = flow._run()
+
+    text = render_implementation_output(flow, "fpga_default.json", outcome, tmp_path)
+    assert_matches_golden(f"implementation/fpga_{case}.txt", text)
