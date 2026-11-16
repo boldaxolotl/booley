@@ -1076,7 +1076,7 @@ def test_absent_time_fields_keep_unavailable_markers():
 
     current = snapshot(1)
     missing = replace(current.jobs.jobs[0], state="completed", report=None)
-    assert _job_cells(missing, current.observed_at, current.session_handles)[6].plain == (
+    assert _job_cells(missing, current.observed_at, current.session_handles)[5].plain == (
         "unavailable"
     ), "absent time marker changed"
     assert "unavailable" in _job_summary(missing, current.observed_at), (
@@ -1285,10 +1285,7 @@ def test_job_statuses_use_shared_semantic_styles():
 
     # Job state words that mean the same thing must share one style.
     styles = app_module.SEMANTIC_STYLE
-    for aliases in (
-        ("pass", "met"),
-        ("unknown", "not run", "unavailable", "ok"),
-    ):
+    for aliases in (("unknown", "not run", "unavailable", "ok"),):
         assert len({styles[alias] for alias in aliases}) == 1, aliases
 
 

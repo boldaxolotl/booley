@@ -40,12 +40,8 @@ class ReviewSpecialist(Specialist):
 
     def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
         if structured and structured.get("approved"):
-            return McpToolResult(
-                exit_code=EXIT_SUCCESS,
-                criterion_key="review_rtl_bugs_done",
-                criterion_met=True,
-            )
-        return McpToolResult(exit_code=EXIT_FAILURE, criterion_met=False)
+            return McpToolResult(exit_code=EXIT_SUCCESS)
+        return McpToolResult(exit_code=EXIT_FAILURE)
 
 
 class TestSpecialistArgparse:

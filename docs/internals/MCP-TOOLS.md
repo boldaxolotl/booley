@@ -190,8 +190,6 @@ the Flow's admission, timeout, and freshness handling for free.
 ```python
 McpToolResult(
     exit_code: int = 0,             # 0 = met, 1 = ran and unmet, 2 = could not reach a verdict
-    criterion_key: str = "",        # Criterion this result reports
-    criterion_met: bool | None = False,
     detail: dict = {},              # structured evidence, written into report.json
     report_text: str = "",          # human-readable output, usually a log tail
 )
@@ -202,11 +200,6 @@ it. Keep 1 and 2 apart: 1 says the design failed the check, 2 says the check
 itself could not run, and only 1 may count against the design.
 
 Call `self.set_criterion(key, met)` for each Criterion the run evaluates.
-For a Flow or Specialist, Booley derives `criterion_key` and `criterion_met`
-from those calls, so do not set them yourself. An MCP call gets an empty key and
-`None`, and its report omits both fields, so report readers must treat them as
-optional. A direct `McpTool` endpoint reports the fields it sets, with
-`criterion_met` defaulting to `False`.
 
 The `Specialist` base fills the token and cost fields, and the base class adds
 `lines_added`/`lines_removed` for code-modifying endpoints.

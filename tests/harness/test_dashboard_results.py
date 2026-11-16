@@ -94,45 +94,27 @@ def test_details_never_dump_structures():
     )
 
 
-def test_flow_and_criterion_are_independent():
-    report = {
-        "flow": "sim",
-        "exit_code": 0,
-        "criterion_key": "coverage_top",
-        "criterion_met": False,
-    }
-    text = job_detail(job(report))
-    assert "Flow result: PASSED" in text, "exit success must remain separate from Criterion"
-    assert "Criterion: coverage_top · not met" in text
-    assert text.splitlines()[0].startswith("Flow result:")
-
-    result = present_report(report)
-    assert result.flow_result.semantic == "pass" and result.criterion.semantic == "fail"
-    styled = DashboardApp(lambda: None)._job_detail(job(report))
-    assert styled.get_style_at_offset(Console(), styled.plain.index("PASSED")) == Style.parse(
-        SEMANTIC_STYLE["pass"]
-    )
-    assert styled.get_style_at_offset(Console(), styled.plain.index("not met")) == Style.parse(
-        SEMANTIC_STYLE["fail"]
-    )
-
-
-def test_criterion_hidden():
+def test_older_report_criterion_fields_show_no_criterion_row():
     for criterion in [
-        {},
+        {"criterion_key": "coverage_top", "criterion_met": False},
+        {"criterion_key": "coverage_top", "criterion_met": True},
         {"criterion_key": "", "criterion_met": False},
         {"criterion_met": True},
         {"criterion_key": "sim_top", "criterion_met": None},
         {"criterion_key": "sim_top"},
-        {"criterion_key": "", "criterion_met": True, "detail": {"targets": 2}},
     ]:
-        text = job_detail(job({"flow": "sim", **criterion}))
-        assert "Flow result: PASSED" in text, (
-            "unbound results still need an execution-derived Flow result"
-        )
-        assert "Criterion:" not in text
+        report = {"flow": "sim", "exit_code": 0, **criterion}
+        text = job_detail(job(report))
+        assert "Flow result: PASSED" in text
+        assert "Criterion" not in text and "not met" not in text
+        assert text.splitlines()[0].startswith("Flow result:")
 
-        assert present_report({"exit_code": 0, **criterion}).criterion is None
+        result = present_report(report)
+        assert not hasattr(result, "criterion")
+    styled = DashboardApp(lambda: None)._job_detail(job(report))
+    assert styled.get_style_at_offset(Console(), styled.plain.index("PASSED")) == Style.parse(
+        SEMANTIC_STYLE["pass"]
+    )
 
 
 def test_exit_taxonomy_and_soft_warnings():
@@ -380,7 +362,7 @@ def test_report_locations_and_coverage_miss():
                 report.update(criterion_key="coverage_top", criterion_met=evaluation == "pass")
             text = job_detail(job(report))
             assert "Flow result: PASSED" in text and f"evaluation {evaluation}" in text
-            assert ("Criterion:" in text) == key
+            assert "Criterion:" not in text
 
             assert present_report(report).flow_result.semantic == "pass"
 
