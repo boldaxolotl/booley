@@ -4193,8 +4193,8 @@ class TestProcessCountCritical:
 
 
 class TestDetailDict:
-    def test_cell_count_threshold_reads_reported_cell_count(self, flow_and_state, tmp_path: Path):
-        flow, state_file = flow_and_state
+    def test_cell_count_threshold_reads_reported_cell_count(self, flow_and_state):
+        flow, _state_file = flow_and_state
         flow.state.init_criteria(
             {"synthesis_ok_lite": True},
             criterion_params={"synthesis_ok_lite": {"cell_count_max": 500}},
