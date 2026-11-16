@@ -32,7 +32,7 @@ booley specialist                             # list the Specialists
 booley specialist reviewer --help             # its options
 ```
 
-Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
+Specialists accept `-C/--project`, `--report-dir`, and, where
 it applies, `--target`. Two options exist only on the command line:
 
 - `--max-turns N` caps the conversation length.

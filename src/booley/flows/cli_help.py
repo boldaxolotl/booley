@@ -148,7 +148,6 @@ def shared_help(flow_name: str, *, target_required: bool) -> tuple[HelpGroup, ..
                     "work_dir", "When omitted, discover the Project from the current directory."
                 ),
                 HelpOption("target", target),
-                HelpOption("diagnostic", "Default: off."),
                 HelpOption("dry_run", "Default: off."),
                 HelpOption(
                     "timeout_ms",

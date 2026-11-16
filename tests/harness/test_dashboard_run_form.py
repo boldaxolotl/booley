@@ -217,7 +217,7 @@ def test_command_argv_writes_fields_in_group_order_then_extra_words():
         "out dir",
         "-q",
     )
-    assert run_form.command_argv(form, {"flatten": "on", "diagnostic": ""}, "") == ("--flatten",)
+    assert run_form.command_argv(form, {"flatten": "on", "dry_run": ""}, "") == ("--flatten",)
     assert run_form.command_argv(form, {}, "") == ()
 
 

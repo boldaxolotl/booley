@@ -248,7 +248,7 @@ def test_extension_without_cli_wording_keeps_its_description() -> None:
 @pytest.mark.parametrize("command", sorted(ENDPOINTS))
 @pytest.mark.parametrize("inside", [False, True])
 @pytest.mark.parametrize("flag", ["-h", "--help"])
-@pytest.mark.parametrize("prefix", [[], ["--diagnostic"], ["--"]])
+@pytest.mark.parametrize("prefix", [[], ["--report-dir", "reports"], ["--"]])
 def test_help_from_the_booley_entry_point(
     command: str,
     inside: bool,
