@@ -19,14 +19,17 @@ import pytest
 import yaml
 from tests.subprocess_budget import run_bounded_child
 
+from booley.runtime import dockerfile_syntax
+
 _ROOT = Path(__file__).parents[2]
 _WORKFLOWS = _ROOT / ".github/workflows"
 # The only workflows that push an image or run `imagetools create`.
 _PUBLISH_WORKFLOWS = ("docker-publish.yml", "docker-base-publish.yml", "riscv-tooling-publish.yml")
 # The command that checks the built image before its tag is promoted.
+# Each entry is (verifier command, text showing the verdict is executed, not only generated).
 _VERIFIERS = {
-    "docker-base-publish.yml": "docker_base_contract.py",
-    "riscv-tooling-publish.yml": "riscv_tooling.py checks",
+    "docker-base-publish.yml": ("docker_base_contract.py", "docker_base_contract.py"),
+    "riscv-tooling-publish.yml": ("riscv_tooling.py checks", 'bash < "${checks}"'),
 }
 _OUTPUT = r"\$\{\{ (?:steps|needs)\.([\w-]+)\.outputs\.([\w-]+) \}\}"
 
@@ -46,7 +49,8 @@ def _pushes_image(step: dict[str, Any]) -> bool:
     inputs = step.get("with") or {}
     if not str(step.get("uses", "")).startswith("docker/build-push-action@"):
         return False
-    return inputs.get("push") is True or "push=true" in str(inputs.get("outputs", ""))
+    pushes = str(inputs.get("push", "false")).lower() != "false"
+    return pushes or "push=true" in str(inputs.get("outputs", ""))
 
 
 def _promotes(step: dict[str, Any]) -> bool:
@@ -103,7 +107,16 @@ def test_release_build_parents_are_pinned_by_digest() -> None:
     """A published build takes each parent image by digest, never by a movable tag."""
     seen = 0
     for name, workflow, _job, step in _pushing_builds():
-        for line in _lines(step["with"].get("build-contexts")):
+        contexts = _lines(step["with"].get("build-contexts"))
+        recipe = (_ROOT / step["with"]["file"]).read_text(encoding="utf-8")
+        refs = dockerfile_syntax.from_references(recipe)
+        target = step["with"].get("target")
+        stop = next((ref.stage for ref in refs if ref.alias == target), len(refs))
+        parents = {ref.image for ref in refs if ref.stage <= stop and "@sha256:" not in ref.image}
+        parents -= {ref.alias for ref in refs}
+        for parent in parents:
+            assert any(line.startswith(f"{parent}=") for line in contexts), f"{name}: {parent}"
+        for line in contexts:
             seen += 1
             reference = line.partition("=docker-image://")[2]
             pinned = re.search(r"@\$\{\{ [\w.-]+digest \}\}$", reference)
@@ -115,7 +128,7 @@ def test_published_builds_push_no_shared_tag() -> None:
     """Shared tags move only through promotion, never from a build."""
     for name, _wf, _job, step in _pushing_builds():
         for tag in _lines(step["with"].get("tags")):
-            assert not re.search(r":(latest|main)$", tag), f"{name}: {tag}"
+            assert not re.search(r":(latest|main)(?![\w.-])", tag), f"{name}: {tag}"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="workflow steps run under Linux bash")
@@ -179,7 +192,7 @@ def _digest_flow(steps: list[dict[str, Any]], build: int, end: int) -> tuple[lis
 def test_promotion_follows_verification_of_the_built_digest() -> None:
     """A job that builds and then promotes verifies the built digest in between."""
     checked = 0
-    for name, verifier in _VERIFIERS.items():
+    for name, (verifier, executed) in _VERIFIERS.items():
         workflow = _workflow(name)
         for job, body in workflow["jobs"].items():
             steps: list[dict[str, Any]] = body.get("steps") or []
@@ -194,6 +207,7 @@ def test_promotion_follows_verification_of_the_built_digest() -> None:
                 index
                 for index in consumers
                 if verifier in str(steps[index].get("run", ""))
+                and executed in str(steps[index].get("run", ""))
                 and steps[index].get("if") == promotion.get("if")
             ]
             where = f"{name}:{job}"
@@ -255,12 +269,18 @@ def test_pull_request_workflows_hold_no_package_write_token() -> None:
         seen += 1
         grants = [workflow.get("permissions")]
         grants += [job.get("permissions") for job in workflow["jobs"].values()]
+        # A missing block would leave the token at the repository default.
+        assert isinstance(grants[0], dict) or all(grants[1:]), f"{name}: permissions not explicit"
         for grant in grants:
             assert grant != "write-all", name
             assert not (isinstance(grant, dict) and grant.get("packages") == "write"), name
         for _job, step in _steps(workflow):
             assert not _pushes_image(step) and not _promotes(step), name
     assert seen
+    for path in sorted(_WORKFLOWS.glob("*.yml")):
+        if path.name not in _PUBLISH_WORKFLOWS:
+            for _job, step in _steps(_workflow(path.name)):
+                assert not _pushes_image(step) and not _promotes(step), path.name
 
 
 def test_shared_docker_cache_is_written_only_from_main() -> None:
@@ -271,7 +291,10 @@ def test_shared_docker_cache_is_written_only_from_main() -> None:
             if "cache-to" in (step.get("with") or {}):
                 writers += 1
                 expression = str(step["with"]["cache-to"])
-                assert "github.ref == 'refs/heads/main'" in expression, name
+                condition = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+                assert condition in expression, name
+                # The expression yields nothing on any other run.
+                assert re.search(r"\|\| ''\s*\}\}$", expression), name
     assert writers
     for _job, step in _steps(_workflow("docker-publish.yml")):
         assert "cache-to" not in (step.get("with") or {})

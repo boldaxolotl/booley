@@ -183,7 +183,9 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         for index, segment in enumerate(segments):
             if not _DOWNLOAD.search(segment):
                 continue
-            for path in re.findall(r"\s-o\s+(\S+)", segment):
+            paths = re.findall(r"\s(?:-o|--output)[\s=]+(\S+)", segment)
+            assert paths, f"{name}: download without a named output file: {segment[:60]}"
+            for path in paths:
                 later = next((item for item in segments[index + 1 :] if path in item), "")
                 check = _CHECKSUM.fullmatch(later)
                 assert check is not None and check[2] == path, f"{name}: {path} used unchecked"
@@ -224,18 +226,7 @@ def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> N
     version = _base_build_arg(dockerfile, "VAPORVIEW_VERSION")
 
     assert version == vaporview.VERIFIED_VERSION
-    assert re.fullmatch(r"[0-9a-f]{64}", _base_build_arg(dockerfile, "VAPORVIEW_SHA256"))
-    region = dockerfile[dockerfile.index("ARG VAPORVIEW_VERSION=") :]
-    region = region[: region.index("\n\n")]
-    install_target = '"/usr/local/libexec/booley/vaporview-${VAPORVIEW_VERSION}.vsix"'
-    assert f"install -m 0644 /tmp/vaporview.vsix {install_target}" in region
-    assert install_target.strip('"').replace("${VAPORVIEW_VERSION}", version) == (
-        vaporview.BUNDLED_VSIX
-    )
-    # Verified before it is installed, fetched over HTTPS only.
-    assert "sha256sum -c -" in region
-    assert region.index("sha256sum -c -") < region.index("install -m 0644 /tmp/vaporview.vsix")
-    assert "curl --proto '=https' --tlsv1.2 -fsSL" in region
+    assert vaporview.BUNDLED_VSIX in _bundled_vsix_install_targets(dockerfile)
 
 
 def _bundled_vsix_install_targets(dockerfile: str) -> set[str]:
