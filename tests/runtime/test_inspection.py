@@ -34,6 +34,7 @@ from booley.runtime import (
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
+from booley.runtime.sandbox_apply import quote_arg
 
 
 @pytest.fixture(autouse=True)
@@ -952,3 +953,69 @@ def test_lasting_spec_sharing_error_fails_issuance_check(tmp_path, monkeypatch):
         "host issuance is invalid" in item.message and "cannot access" in item.message
         for item in report.report().findings
     )
+
+
+class _RelayReport:
+    def __init__(self) -> None:
+        self.failed: list[tuple[str, str]] = []
+
+    def fail(self, message: str, fix: str) -> None:
+        self.failed.append((message, fix))
+
+    def pass_(self, _message: str) -> None:
+        pass
+
+
+_RELAY_HEADLESS = "run `booley session down`, then `booley session up --rebuild` on the host"
+_RELAY_VSCODE = (
+    f"close VS Code, then on the host run `docker stop {quote_arg('box')}` "
+    f"and `docker rm {quote_arg('box')}`, "
+    "run `booley session down` to remove the relay topology, "
+    "and reopen the folder in the container"
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "owner", "expected"),
+    [
+        ("missing", "headless", _RELAY_HEADLESS),
+        ("missing", "vscode", _RELAY_VSCODE),
+        ("missing", None, f"in VS Code, {_RELAY_VSCODE}; headless, {_RELAY_HEADLESS}"),
+        ("differs", "vscode", _RELAY_VSCODE),
+        ("differs", "docker-down", f"in VS Code, {_RELAY_VSCODE}; headless, {_RELAY_HEADLESS}"),
+    ],
+)
+def test_relay_repair_names_owner_workflow(tmp_path, monkeypatch, case, owner, expected) -> None:
+    from types import SimpleNamespace
+
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
+    from booley.runtime import session_issuance as runtime_spec
+    from booley.runtime.sandbox_apply import Attachment
+
+    profile = SimpleNamespace(
+        server_ipv4="10.0.0.1", server_hostid="h", lmgrd_port=1, vendor_port=2
+    )
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _root: profile)
+    monkeypatch.setattr(runtime_spec, "labels", lambda _issuance: {})
+    monkeypatch.setattr(session_runtime, "_relay_objects_exist", lambda _relay: case == "differs")
+
+    def differs(*_args, **_kwargs) -> None:
+        raise RelayDockerError("labels differ")
+
+    monkeypatch.setattr(inspection, "validate_relay", differs)
+
+    def attachment(_root):
+        if owner == "docker-down":
+            raise session_runtime.SessionError("docker unavailable")
+        return {"vscode": Attachment.VSCODE, "headless": Attachment.HEADLESS}.get(owner)
+
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", attachment)
+    request = SimpleNamespace(project_root=tmp_path, remedy="remedy")
+    report = _RelayReport()
+
+    inspection._check_issued_license_relay(
+        request, ["box"], SimpleNamespace(relay_image_id="sha256:relay"), report
+    )
+
+    ((_message, fix),) = report.failed
+    assert fix == expected
