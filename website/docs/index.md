@@ -53,7 +53,14 @@ document: Booley product datasheet
       <div class="feat__col">
         <div>
           <h3>Sandboxed Developer Agent</h3>
-          <p>Booley treats the agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. So the agent and every command it runs stay inside a Docker container with restricted mounts and network access, and its work goes through explicit specifications, automated checks, and human review. That lets it work unattended.</p>
+          <p>Booley treats the agent like a talented junior engineer. It can
+          write RTL and testbenches, but it is inexperienced with EDA tools,
+          prone to questionable design decisions, and too risky to give
+          unrestricted host access. So the agent and every command it runs stay
+          inside a Docker container with restricted mounts and network access,
+          and its work goes through explicit specifications, automated checks,
+          and human review. That lets you leave it running while you work on
+          something else.</p>
         </div>
         <div>
           <h3>Waveform queries</h3>
