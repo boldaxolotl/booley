@@ -2285,6 +2285,8 @@ class TestCoreAudit:
             _RTL_TB
             + "  tb_quiet: {files: [tb/quiet.sv], tags: [tb]}\n"
             + "  tb_py: {files: [tb/test_dut.py], tags: [tb]}\n"
+            # Only the last of these testbench files carries the sentinel; the first is absent.
+            + "  tb_split: {files: [tb/absent.sv, tb/quiet.sv, tb/tb.sv], tags: [tb]}\n"
         )
         cocotb = "tool: verilator, cocotb_module: test_dut"
         design = _core(
@@ -2292,6 +2294,7 @@ class TestCoreAudit:
             _target("sim_quiet", filesets="rtl, tb_quiet")
             # F-8: a Python TB that has not declared its cocotb module yet.
             + _target("sim_py", filesets="rtl, tb_py", top="dut")
+            + _target("sim_split", filesets="rtl, tb_split")
             # B2: a cocotb TB gets its verdict from results.xml, never a sentinel.
             + _target("sim_cocotb", options=cocotb, filesets="rtl, tb_py", top="dut")
             + _target("lint_dup", flow="lint", filesets="rtl", top="dut"),
@@ -2319,9 +2322,10 @@ class TestCoreAudit:
         assert "cocotb_module" in missing["sim_py"]
         assert "refs/sim_result_sentinel.sv" not in missing["sim_py"]
         assert not [m for m in _rows(result, Severity.PASS, "sim_cocotb") if "sentinel" in m]
-        assert _rows(
-            result, Severity.PASS, "sim Target 'sim_fast' TB emits a recognized pass sentinel"
-        )
+        for name in ("sim_fast", "sim_split"):
+            assert _rows(
+                result, Severity.PASS, f"sim Target '{name}' TB emits a recognized pass sentinel"
+            )
         # A Verilator lint Target has no testbench to tag, and the duplicate name is no collision.
         for text in ("lint_fast", "sim_py", "sim_cocotb", "collision"):
             assert not _rows(result, Severity.FAIL, text)
@@ -2515,6 +2519,26 @@ def test_target_metadata_warnings_name_each_offending_target(tmp_path, monkeypat
     assert _rows(
         result, Severity.PASS, "synth Target 'synth_fast' (yosys) declares flow_options.arch"
     )
+
+
+def test_trace_warning_without_any_trace_capable_target(tmp_path, monkeypatch):
+    core = _core(
+        "design",
+        _target(
+            "sim_auto",
+            options="tool: verilator, verilator_options: [--main]",
+            filesets="missing",
+            top="dut",
+        ),
+        "  missing: {files: [nowhere/dut.sv]}\n",
+    )
+    # No Target owns a main and no referenced file exists, so no trace-capable row appears.
+    _core_project(tmp_path, monkeypatch, {"unit.core": None, "design.core": core})
+
+    result = _doctor_run(tmp_path)
+
+    assert list(_warnings(result, "sim.trace-unavailable")) == ["sim_auto"]
+    assert not _rows(result, Severity.PASS, "trace-capable")
 
 
 def test_icarus_sv_language_mode_by_selection_and_flow(tmp_path, monkeypatch):
