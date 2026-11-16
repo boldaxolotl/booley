@@ -4304,10 +4304,10 @@ def _check_target_sources(
         audit.fail,
         _note=audit.note,
         selected_targets=set(_project_target_matrix(audit.project).seed_targets) or None,
-        _inputs=inputs,
+        inputs=inputs,
     )
-    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
-    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
+    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
     _check_sim_copyto_collisions(audit.root, refs, inputs, audit.warn)
 
 
@@ -4828,7 +4828,7 @@ def _check_icarus_sv_language_mode(
     *,
     _note: Check | None = None,
     selected_targets: set[str] | None = None,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Flag Icarus Targets whose SystemVerilog sources lack an SV flag."""
     icarus_targets = [
@@ -4838,7 +4838,6 @@ def _check_icarus_sv_language_mode(
     ]
     if not icarus_targets:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in icarus_targets:
         try:
             sources = inputs.sources_for(name)
@@ -4957,7 +4956,7 @@ def _check_sim_dump_declared(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when an owned C++ main's hardcoded dump is not in ``trace_files``.
 
@@ -4974,7 +4973,6 @@ def _check_sim_dump_declared(
     candidates = _owned_main_verilator_sims(refs)
     if not candidates:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     patterns = resolve_trace_files(root)
     run_cwd = resolve_run_cwd(root)
     is_template = bool(_safe_run_cwd_fields(run_cwd))
@@ -5122,10 +5120,9 @@ def _check_toplevel_interface_ports(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when a lint/synth toplevel cannot elaborate without interfaces."""
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in sorted(refs.items()):
         if ref.flow == "sim":
             continue
