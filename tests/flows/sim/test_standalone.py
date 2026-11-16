@@ -56,7 +56,6 @@ def _make_flow(
             "elab-only-standalone" if standalone else "elab-only",
         ]
         flow.parse_args(args)
-    flow.read_state()
     return flow
 
 
@@ -185,7 +184,6 @@ class TestStandaloneSweep:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.passed
-        assert flow.state.criteria == {}
         assert outcome.detail["mode"] == "elab_only_standalone"
         assert outcome.detail["modules_checked"] == 2
         assert outcome.detail["frontend"] == "iverilog"
@@ -1068,7 +1066,6 @@ def test_optional_standalone_exit_codes_for_single_simulator_project(
 
     assert exit_code == expected_exit
     assert outcome is not None
-    assert flow.state.criteria == {}
 
 
 @pytest.mark.parametrize("met", [True, False])
@@ -1079,9 +1076,7 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
     _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
     _stub_sources(monkeypatch, ["rtl/alu.sv"])
     flow = _make_flow(tmp_path)
-    flow.args.state_file = None
     flow.args.target = ""
-    flow.read_state()
     flow._record_eda_tool("sim_dut", "icarus")
     process = SubprocessResult(
         returncode=0 if met else 1,
@@ -1092,8 +1087,6 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
         outcome = flow._run_standalone_check(["sim_dut"])
     result = EndpointOutcome(exit_code=0 if outcome.passed else 1, detail=outcome.detail)
     final_report_omits_headline(flow, result)
-    assert flow.state.criteria == {}
-    assert flow.state._file_path is None
 
 
 def test_standalone_frontend_identity_is_scalar(tmp_path, monkeypatch):

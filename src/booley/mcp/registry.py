@@ -282,8 +282,10 @@ def _build_mcp_tool_info(
         kind = "specialist"
     else:
         kind = "mcp_tool"
-    satisfies = attrs["satisfies"]
-    satisfies_args = attrs["satisfies_args"]
+    # Only the shipped endpoints' declarations are Criteria catalog data (#3512); a
+    # Project endpoint's declaration is not read.
+    satisfies = attrs["satisfies"] if builtin else None
+    satisfies_args = attrs["satisfies_args"] if builtin else None
     return McpToolInfo(
         name=attrs["name"],
         path=rel_path,

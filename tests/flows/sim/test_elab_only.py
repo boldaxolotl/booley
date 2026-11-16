@@ -61,7 +61,6 @@ def _flow_with_state(tmp_path: Path, targets: list[str]) -> SimulateFlow:
                 "elab-only",
             ]
         )
-    flow.read_state()
     return flow
 
 
@@ -494,7 +493,6 @@ def test_simulation_record_continues_and_applies_error_fail_pass_precedence(
     assert f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}" in result.report_text
     assert "manifest:" not in result.report_text
     assert calls == targets
-    assert flow.state.criteria == {}
     assert result.detail["mode"] == "elab_only"
     assert [entry["failure_class"] for entry in result.detail["targets"]] == [
         None,

@@ -12,7 +12,6 @@ from booley.evidence.review_receipt import (
     ReviewInvocation,
     build_review_contract_detail,
     current_review_receipt_identity,
-    finalize_review_detail,
     review_invocation_changed,
     review_receipt_drift,
 )
@@ -59,20 +58,6 @@ def _ticket_detail(
         )
     )
     return {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}, decisions_path
-
-
-def test_receipt_id_covers_contract_and_source(tmp_path: Path, monkeypatch) -> None:
-    detail = _detail(tmp_path, monkeypatch)
-
-    first = finalize_review_detail(detail, {"categories": ["rtl"], "fingerprint": {"a": 1}})
-    second = finalize_review_detail(detail, {"categories": ["rtl"], "fingerprint": {"a": 2}})
-    changed_contract = {**detail["contract"], "steering_digest": "changed"}
-    third = finalize_review_detail(
-        {**detail, "contract": changed_contract},
-        {"categories": ["rtl"], "fingerprint": {"a": 1}},
-    )
-
-    assert len({first["receipt_id"], second["receipt_id"], third["receipt_id"]}) == 3
 
 
 def test_only_scoped_source_edits_stale_receipt(tmp_path: Path, monkeypatch) -> None:

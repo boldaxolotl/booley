@@ -27,9 +27,6 @@ from booley.config.project_config import (
 from booley.flows.cli_help import CliHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.execution_persistence import (
-    FlowExecutionAdapter,
-)
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
@@ -219,11 +216,9 @@ class SimulateFlow(
         self._coverage_execution_factory = coverage_execution
         self._simulation_record_publication_checkpoint = simulation_record_publication_checkpoint
 
-    def _start_invocation(
-        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
-    ) -> None:
+    def _start_invocation(self, request: FlowRequest | None = None) -> None:
         """Start an invocation with no Simulation Record outcomes: only this Flow keeps them."""
-        super()._start_invocation(adapter, request)
+        super()._start_invocation(request)
         self._simulation_record_outcomes: tuple[Any, ...] = ()
         # Resumed origins this invocation's `publication_resources` already lock (see flow_resume).
         self._held_resume_origins: set[Path] = set()
@@ -318,24 +313,15 @@ class SimulateFlow(
                 return invocation
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
 
-    def record_flow_owned_acceptance(self, outcome: EndpointOutcome) -> bool:
-        """Publish each Simulation Record's ``simulation.json``; no outcomes means not handled."""
+    def publish_flow_records(self, outcome: EndpointOutcome) -> None:
+        """Publish each Simulation Record's ``simulation.json``; no outcomes publish nothing."""
         outcomes = self._simulation_record_outcomes
         if not outcomes:
-            return False
+            return
         publish_simulation_record_projections(Path(self.args.work_dir), outcomes)
         # In this process, after publication. ``work_dir`` is the candidate checkout, never the
         # cwd or BOOLEY_DIR.
         register_trace_sessions(outcomes, Path(self.args.work_dir))
-        return True
-
-    def generic_binding_gate_applies(self) -> bool:
-        """A coverage run is authorized by its own preparation, not the generic gate.
-
-        Explicit native collection also supports ungated Targets (#213); in
-        simulate mode coverage preparation authorizes the complete selection.
-        """
-        return not self.args.coverage
 
     def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None:
         if self.cycle_report_json is not None:
@@ -420,9 +406,7 @@ class SimulateFlow(
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
     ) -> PreparedSimulationEndpoint | EndpointOutcome:
-        """Resolve and authorize every Target before reservation or admission."""
-        from booley.flows.endpoint_admission import authorize_targets
-
+        """Resolve every Target before reservation or admission."""
         try:
             prepared = self._prepare_simulation_record_targets()
             if isinstance(prepared, EndpointOutcome):
@@ -449,20 +433,17 @@ class SimulateFlow(
             # A malformed conversion budget must refuse before any spawn too.
             resolve_sim_trace_convert_timeout_ms(self.args.work_dir)
             # A malformed Pre-Sim Commands knob must refuse here, before any
-            # authorization, admission, build or Pre-Sim spawn.
+            # admission, build or Pre-Sim spawn.
             resolve_pre_sim_commands(self.args.work_dir)
             if resume is None and getattr(self.args, "coverage", False):
                 coverage_error = self._prepare_coverage()
                 if coverage_error is not None:
                     return coverage_error
-            rejection = authorize_targets(self, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"sim Simulation Record preflight failed: {exc}",
             )
-        if rejection is not None:
-            return rejection
         return PreparedSimulationEndpoint(targets, resume, selected_targets, test_names_map)
 
     def run_prepared_simulation(

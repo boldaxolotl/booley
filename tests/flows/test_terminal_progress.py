@@ -23,7 +23,6 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.terminal_progress import ProgressText, TerminalProgress, current_progress
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
-from tests.criteria.ledger_support import FixtureRecorder
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 BUILTINS = (AsicSynthesizeFlow, FpgaImplFlow, SimulateFlow, LintFlow)
@@ -523,7 +522,7 @@ def test_cli_flags_do_not_change_shared_schema(flow_type):
     ]
 
 
-@pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "ticket", "transport", "dry-run"])
+@pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "transport", "dry-run"])
 def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode):
     from booley.flows.base import BuiltinFlow
 
@@ -545,13 +544,7 @@ def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode
         return ExecutionResult(0, EndpointOutcome())
 
     with patch.object(BuiltinFlow, "execute_prepared", execute):
-        execute_cli(
-            LintFlow(),
-            args,
-            adapter=FixtureRecorder(identity={"generation": "d" * 32})
-            if mode == "ticket"
-            else None,
-        )
+        execute_cli(LintFlow(), args)
     assert (observed[0] is not None) == (mode == "human")
     assert current_progress() is None
     assert not (tmp_path / ".runtime" / "flow-console").exists()
@@ -978,27 +971,14 @@ def test_parallel_pipe_sources_do_not_merge_partial_lines(tmp_path):
     assert "stdout:2: second line" in sink.stream.getvalue()
 
 
-@pytest.mark.parametrize("mode", ["runtime", "ticket"])
-def test_agent_console_and_display_bytes_match_existing_transport(
-    tmp_path, monkeypatch, capsys, mode
-):
+def test_agent_console_and_display_bytes_match_existing_transport(tmp_path, monkeypatch, capsys):
     from booley.flows.base import BuiltinFlow
     from booley.flows.endpoint_events import (
         _endpoint_progress_event,
-        _serialize_display_event,
         _write_display_event,
     )
 
-    def write_event(event):
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(_serialize_display_event(event))
-
-    if mode == "runtime":
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-    else:
-        monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-        # Observe the existing transport without activating the runtime exclusion.
-        monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", write_event)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("BOOLEY_DISPLAY_INVOCATION_ID", "fixed-invocation")
     monkeypatch.setattr(
         "booley.flows.endpoint_events.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
@@ -1020,9 +1000,8 @@ def test_agent_console_and_display_bytes_match_existing_transport(
         print("verdict unchanged")
         return ExecutionResult(7, EndpointOutcome())
 
-    adapter = FixtureRecorder(identity={"generation": "d" * 32}) if mode == "ticket" else None
     with patch.object(BuiltinFlow, "execute_prepared", execute):
-        result = execute_cli(LintFlow(), ["--target", "demo"], adapter=adapter)
+        result = execute_cli(LintFlow(), ["--target", "demo"])
     captured = capsys.readouterr()
     assert captured.out == "verdict unchanged\n"
     assert captured.err == ""

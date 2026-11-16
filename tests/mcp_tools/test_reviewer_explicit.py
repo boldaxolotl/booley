@@ -45,7 +45,6 @@ def endpoint(
 ) -> tuple[ReviewerSpecialist, MagicMock]:
     reviewer = ReviewerSpecialist()
     reviewer.parse_args(["--work-dir", str(root), *args])
-    reviewer.read_state()
     invoke = MagicMock(
         return_value=MagicMock(
             output=json.dumps(payload if payload is not None else {"issues": [ISSUE]}),

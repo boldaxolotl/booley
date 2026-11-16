@@ -159,7 +159,6 @@ def _make_tool(tmp_path: Path, recipe_body: str | None = None) -> AsicSynthesize
         )
     tool = AsicSynthesizeFlow()
     tool.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-    tool.read_state()
     return tool
 
 
