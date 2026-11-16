@@ -1080,6 +1080,7 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
+        # Deferred import: session_runtime imports back into init_cmd.
         from booley.runtime import session_runtime as sr
 
         raise RuntimeError(
