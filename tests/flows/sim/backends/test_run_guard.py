@@ -481,11 +481,11 @@ def test_child_death_kwargs_kill_the_simulator_when_its_parent_dies():
         import subprocess, sys, time
         from booley.flows.sim.run_guard import child_death_kwargs
         child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
+            [sys.executable, "-c", "import time; time.sleep(600)"],
             **child_death_kwargs(),
         )
         print(child.pid, flush=True)
-        time.sleep(60)
+        time.sleep(600)
         """
     )
     sup = subprocess.Popen(

@@ -280,7 +280,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
         killer.start()
         with supervised_execution_scope(permit.scope):
             flow._execute_local(
-                [sys.executable, "-c", "import time; time.sleep(30)"], timeout=hang_guard_s()
+                [sys.executable, "-c", "import time; time.sleep(600)"], timeout=hang_guard_s()
             )
         killer.join(timeout=hang_guard_s())
     assert time.monotonic() - started < scaled(8)
@@ -715,7 +715,7 @@ def _run_lease_loss_scheduler(tmp_path, monkeypatch, slots, scope_stop):
     # Recovery never completes, so the terminal cause comes from the lane itself.
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
     capacity = _item_capacity(
-        # Keep this cause test within the production shutdown budget.
+        # Keep this cause test within the per-test limit.
         replace(_managed(store, outer), timeout_seconds=hang_guard_s()),
         manifest,
         registry.project_data,
