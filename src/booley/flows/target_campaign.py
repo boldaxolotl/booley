@@ -22,6 +22,11 @@ class CampaignUnit:
     display_name: str
     selected_tests: tuple[str, ...] = ()
 
+    @property
+    def tests(self) -> tuple[str, ...]:
+        """The tests this unit runs: the selected ones of a batched unit, else its own name."""
+        return self.selected_tests or (self.display_name,)
+
 
 @dataclass(frozen=True)
 class CampaignUnitResult(Generic[_ResultT]):

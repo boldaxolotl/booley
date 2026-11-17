@@ -68,7 +68,7 @@ class _Managed:
             [_record("sim_prepare", 100), _record("sim_build", 400), _record("sim_run", 200)],
         )
 
-    def context(self) -> AdmissionContext:
+    def context(self, job: job_slots.JobLabel | None = None) -> AdmissionContext:
         pid = os.getpid()
         # The coordinating Job: a memory-class companion claim that reserves nothing.
         coordinator = self.store.acquire(
@@ -76,6 +76,7 @@ class _Managed:
             pid=pid,
             argv=_proc_cmdline(pid) or [],
             memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=0.0, companion=True),
+            job=job,
         )
         self.held.append(coordinator)
         return AdmissionContext(
@@ -238,6 +239,42 @@ def test_unsized_build_and_simulation_run_alone(
     assert _only_the_coordinator_holds(managed)
 
 
+def test_a_job_queued_behind_a_build_or_simulation_names_the_mutation_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
+) -> None:
+    managed.record_history()
+    project = _project(tmp_path, monkeypatch)
+    said: list[str] = []
+
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=900.0)
+        waiter = managed.store.submit(job_slots.CLASS_MEMORY, pid=os.getpid(), memory=claim)
+        try:
+            wait = managed.store.memory_wait(os.getpid())
+            assert wait is not None
+            said.append(wait.describe())
+        finally:
+            managed.store.release(waiter)
+        return _fake_proc(rc=0, stdout="ok")
+
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", run)
+    job = job_slots.JobLabel("run-7", "mutation", _TARGET)
+
+    _campaign(
+        monkeypatch, project, managed.context(job), _build(tmp_path), _simulate(tmp_path, project)
+    )
+
+    assert said == [
+        "needs 900 MiB; 500 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-7 (mutation, default) 500 MiB",
+        "needs 900 MiB; 750 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-7 (mutation, default, <default>) 250 MiB",
+    ]
+
+
 def test_campaign_processes_rank_as_the_held_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -343,14 +380,14 @@ def test_a_run_outside_admission_claims_nothing(
     # No admission, an unmanaged one, and a managed one that lends no sizing size nothing.
     unsized = replace(managed.context(), memory_sizing=None)
     for claims in (CampaignClaims(), CampaignClaims(unmanaged), CampaignClaims(unsized)):
-        with claims.hold(request, build=True):
+        with claims.hold(request, build=True, target=_TARGET):
             assert _only_the_coordinator_holds(managed)
     assert asked == []
 
     # An admission-less invocation leaves the Flow's claims unmanaged after its run.
     monkeypatch.setattr(flow, "_run", lambda: EndpointOutcome(exit_code=0))
     assert flow.prepare_endpoint_invocation().run(None).exit_code == 0
-    with flow._claims.hold(request, build=True):
+    with flow._claims.hold(request, build=True, target=_TARGET):
         pass
     assert asked == []
 
