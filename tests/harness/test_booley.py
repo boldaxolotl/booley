@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sys
+import types
 from argparse import Namespace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,11 +16,15 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+import booley
+from booley import __version__
 from booley.harness import booley as tlr
 from booley.harness import bootstrap_cli
-from booley.runtime import health
+from booley.runtime import health, host_install
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
@@ -33,142 +38,78 @@ def _outside_any_job(monkeypatch):
 
 
 # ===========================================================================
-# ts()
+# Parser flags
 # ===========================================================================
 
 
-def test_doctor_parser_accepts_deep_flag():
-    parser = tlr._build_parser()
-
-    args = tlr._normalize_args(parser, parser.parse_args(["doctor", "--deep"]))
-
-    assert args.command == "doctor"
-    assert args.deep is True
-
-
-def test_doctor_parser_accepts_concise_flag():
-    parser = tlr._build_parser()
-
-    args = tlr._normalize_args(parser, parser.parse_args(["doctor", "--concise"]))
-
-    assert args.concise is True
-
-
-def test_doctor_parser_rejects_concise_with_verbose(capsys):
-    parser = tlr._build_parser()
-
-    with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["doctor", "--concise", "--verbose"])
-
-    assert exc.value.code == 2
-    error = capsys.readouterr().err
-    assert "--concise" in error
-    assert "--verbose" in error
-
-
-def test_doctor_parser_accepts_skip_agent_checks_flag():
-    parser = tlr._build_parser()
-
-    args = tlr._normalize_args(
-        parser,
-        parser.parse_args(["doctor", "--deep", "--skip-agent-checks"]),
-    )
-
-    assert args.skip_agent_checks is True
-
-
-def test_doctor_parser_requires_deep_for_skip_agent_checks(capsys):
-    parser = tlr._build_parser()
-
-    with pytest.raises(SystemExit) as exc:
-        tlr._normalize_args(parser, parser.parse_args(["doctor", "--skip-agent-checks"]))
-
-    assert exc.value.code == 2
-    assert "--skip-agent-checks requires --deep" in capsys.readouterr().err
-
-
-def test_project_command_rejects_source_but_feedback_is_allowed(tmp_path, capsys):
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.booley]\nsource_checkout = true\n",
-        encoding="utf-8",
-    )
-
-    assert tlr._reject_source_project_command("doctor", tmp_path) == 2
-    assert "cannot be initialized or used as a Project" in capsys.readouterr().err
-    assert tlr._reject_source_project_command("feedback", tmp_path) is None
-
-
-@pytest.mark.parametrize("command", ["mcp-tool", "link-guidance", "tool"])
-def test_removed_top_level_commands_are_rejected(command):
-    parser = tlr._build_parser()
-
-    with pytest.raises(SystemExit) as exc:
-        parser.parse_args([command])
-
-    assert exc.value.code == 2
+def _parse_argv(monkeypatch, *argv):
+    # Kept private: the parser's only public entry point, main(), also dispatches the command.
+    monkeypatch.setattr(sys, "argv", ["booley", *argv])
+    return tlr._parse_cli()
 
 
 @pytest.mark.parametrize(
-    ("retired", "replacement"),
-    (("--sim-tool", "--sim-eda-tool"), ("--lint-tool", "--lint-eda-tool")),
+    ("argv", "expected"),
+    [
+        (["doctor", "--deep"], {"command": "doctor", "deep": True}),
+        (["doctor", "--concise"], {"concise": True}),
+        (["doctor", "--deep", "--skip-agent-checks"], {"skip_agent_checks": True}),
+        (
+            ["init", "--provider", "codex", "--auth", "api-key"],
+            {"provider": "codex", "auth": "api_key"},
+        ),
+        (["init", "--scaffold", "demo"], {"stealth": False, "style_lint": None}),
+        (
+            ["init", "--scaffold", "demo", "--stealth", "--no-style-lint"],
+            {"stealth": True, "style_lint": False},
+        ),
+        (["init", "--scaffold", "demo", "--style-lint"], {"style_lint": True}),
+        (["init", "--skip-credentials"], {"skip_credentials": True}),
+        (
+            ["bootstrap", "--update", "--verbose"],
+            {"command": "bootstrap", "update": True, "verbose": True, "project_root": "absent"},
+        ),
+        (["bootstrap", "--upgrade"], {"update": True}),
+        (["bootstrap", "--with-qa-skills", "--force"], {"with_qa_skills": True, "force": True}),
+        (["bootstrap", "--without-qa-skills"], {"without_qa_skills": True}),
+        (["bootstrap"], {"egress": None}),
+        (["bootstrap", "--egress", "unproxied"], {"egress": "unproxied"}),
+        (["bootstrap", "--check-only", "--egress", "proxy"], {"egress": "proxy"}),
+    ],
 )
-def test_init_parser_rejects_retired_eda_tool_flags(retired, replacement, capsys):
-    parser = tlr._build_parser()
-    with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["init", "--scaffold", "demo", retired, "verilator"])
-    assert exc.value.code == 2
-    assert f"{retired} is retired; use {replacement}" in capsys.readouterr().err
+def test_parser_reads_command_flags(argv, expected, monkeypatch):
+    args = vars(_parse_argv(monkeypatch, *argv))
+    assert {key: args.get(key, "absent") for key in expected} == expected
 
 
-def test_init_parser_accepts_explicit_agent_selection():
-    args = tlr._build_parser().parse_args(["init", "--provider", "codex", "--auth", "api-key"])
-
-    assert args.provider == "codex"
-    assert args.auth == "api_key"
-
-
-def test_init_auth_flag_refuses_auto(capsys):
-    with pytest.raises(SystemExit) as exc:
-        tlr._build_parser().parse_args(["init", "--provider", "codex", "--auth", "auto"])
-
-    assert exc.value.code == 2
-    assert "choose subscription or api-key" in capsys.readouterr().err
-
-
-def test_init_scaffold_stealth_flag():
-    parser = tlr._build_parser()
-
-    assert parser.parse_args(["init", "--scaffold", "demo", "--stealth"]).stealth is True
-    assert parser.parse_args(["init", "--scaffold", "demo"]).stealth is False
-
-
-def test_init_parser_reads_style_lint_flags():
-    parser = tlr._build_parser()
-
-    assert parser.parse_args(["init", "--scaffold", "demo"]).style_lint is None
-    assert parser.parse_args(["init", "--scaffold", "demo", "--no-style-lint"]).style_lint is False
-    assert parser.parse_args(["init", "--scaffold", "demo", "--style-lint"]).style_lint is True
-
-
-def test_init_parser_accepts_skip_credentials():
-    args = tlr._build_parser().parse_args(["init", "--skip-credentials"])
-
-    assert args.skip_credentials is True
-
-
-def test_chat_parser_and_dispatch_are_registered():
-    parser = tlr._build_parser()
-
-    args = parser.parse_args(["chat"])
-
-    assert args.command == "chat"
-    help_text = parser.format_help()
-    assert "Open this Project's default (or chosen) Agent CLI" in " ".join(help_text.split())
-
-
-def _parse_argv(monkeypatch, *argv):
-    monkeypatch.setattr(sys, "argv", ["booley", *argv])
-    return tlr._parse_cli()
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (
+            ["doctor", "--concise", "--verbose"],
+            "--verbose/-v: not allowed with argument --concise",
+        ),
+        (["doctor", "--skip-agent-checks"], "--skip-agent-checks requires --deep"),
+        (["init", "--sim-tool", "verilator"], "--sim-tool is retired; use --sim-eda-tool"),
+        (["init", "--lint-tool", "verilator"], "--lint-tool is retired; use --lint-eda-tool"),
+        (["init", "--provider", "codex", "--auth", "auto"], "choose subscription or api-key"),
+        (["bootstrap", "--check-only", "--force"], "not allowed with argument"),
+        (["bootstrap", "--with-qa-skills", "--without-qa-skills"], "not allowed with argument"),
+        (["bootstrap", "--egress", "open"], "invalid choice"),
+        (["chat", "--cli", "bogus"], "invalid choice: 'bogus'"),
+        (["chat", "--name"], "--name: expected one argument"),
+        *(
+            (["chat", "--name", label], "argument --name: use 1-32 letters")
+            for label in ["", "   ", "a/b", "x" * 33, ".hidden", "café", "tab\there"]
+        ),
+        *(([removed], "invalid choice") for removed in ["mcp-tool", "link-guidance", "tool"]),
+    ],
+)
+def test_usage_errors_exit_two_naming_the_problem(argv, message, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as raised:
+        _parse_argv(monkeypatch, *argv)
+    assert raised.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 def test_chat_forwards_arguments_after_chat(monkeypatch):
@@ -176,6 +117,7 @@ def test_chat_forwards_arguments_after_chat(monkeypatch):
     assert _parse_argv(monkeypatch, "chat", "--resume", "abc").agent_args == ["--resume", "abc"]
     assert _parse_argv(monkeypatch, "chat", "--resume", "abc").cli is None
     # The first `chat` is the value of --project; only the second is the command.
+    # `_cli_selection` stays private: -C is resolved to a Project only at dispatch.
     args = _parse_argv(monkeypatch, "--project", "chat", "chat", "--resume", "x", "--", "y")
     assert args.agent_args == ["--resume", "x", "--", "y"]
     assert args._cli_selection.value == "chat"
@@ -185,19 +127,16 @@ def test_chat_forwards_arguments_after_chat(monkeypatch):
     assert args._cli_selection.value == "P"
 
 
-def test_chat_cli_option_is_booleys_only_when_leading(monkeypatch, capsys):
+def test_chat_cli_option_is_booleys_only_when_leading(monkeypatch):
     args = _parse_argv(monkeypatch, "chat", "--cli", "codex", "--resume", "x")
     assert (args.cli, args.agent_args) == ("codex", ["--resume", "x"])
     assert _parse_argv(monkeypatch, "chat", "--cli=codex").cli == "codex"
+    # `_cli_selection` stays private: -C is resolved to a Project only at dispatch.
     args = _parse_argv(monkeypatch, "chat", "-C", "P", "--cli", "codex")
     assert (args.cli, args._cli_selection.value) == ("codex", "P")
     # After the agent's own arguments, `--cli` belongs to the agent CLI.
     args = _parse_argv(monkeypatch, "chat", "--resume", "x", "--cli", "codex")
     assert (args.cli, args.agent_args) == (None, ["--resume", "x", "--cli", "codex"])
-    with pytest.raises(SystemExit) as raised:
-        _parse_argv(monkeypatch, "chat", "--cli", "bogus")
-    assert raised.value.code == 2
-    assert "invalid choice: 'bogus'" in capsys.readouterr().err
 
 
 def test_chat_name_option_is_booleys_only_when_leading(monkeypatch):
@@ -215,23 +154,6 @@ def test_chat_name_option_is_booleys_only_when_leading(monkeypatch):
     assert (args.session_name, args.agent_args) == (None, ["--name", "y"])
 
 
-def test_chat_name_rejects_invalid_labels(monkeypatch, capsys):
-    # Bug caught: an invalid label accepted, or a failure other than a usage error (exit 2)
-    # naming `--name`.
-    for label in ["", "   ", "a/b", "x" * 33, ".hidden", "caf\u00e9", "tab\there"]:
-        with pytest.raises(SystemExit) as raised:
-            _parse_argv(monkeypatch, "chat", "--name", label)
-        assert raised.value.code == 2, repr(label)
-        assert "argument --name: use 1-32 letters" in capsys.readouterr().err, repr(label)
-
-
-def test_chat_name_missing_value_is_a_usage_error(monkeypatch, capsys):
-    with pytest.raises(SystemExit) as raised:
-        _parse_argv(monkeypatch, "chat", "--name")
-    assert raised.value.code == 2
-    assert "--name: expected one argument" in capsys.readouterr().err
-
-
 def test_chat_name_is_trimmed_and_length_bounded(monkeypatch):
     assert _parse_argv(monkeypatch, "chat", "--name", "  uart fix  ").session_name == "uart fix"
     assert _parse_argv(monkeypatch, "chat", "--name", "x" * 32).session_name == "x" * 32
@@ -242,333 +164,251 @@ def test_chat_later_booley_options_are_forwarded(monkeypatch, capsys):
     for tail in (["--resume", "x", "--project", "P"], ["--resume", "x", "-C", "P"]):
         args = _parse_argv(monkeypatch, "chat", *tail)
         assert args.agent_args == tail
+        # `_cli_selection` stays private: -C is resolved to a Project only at dispatch.
         assert not hasattr(args, "_cli_selection")
     assert _parse_argv(monkeypatch, "chat", "--resume", "x", "--help").agent_args == [
         "--resume",
         "x",
         "--help",
     ]
-    assert capsys.readouterr().out == ""
-
-
-def test_chat_separator_forwards_reserved_options(monkeypatch, capsys):
     assert _parse_argv(monkeypatch, "chat", "--", "--help").agent_args == ["--help"]
     assert capsys.readouterr().out == ""
 
 
-def test_chat_help_documents_passthrough(monkeypatch, capsys):
+def test_chat_help_documents_passthrough_and_options(monkeypatch, capsys):
     with pytest.raises(SystemExit) as raised:
         _parse_argv(monkeypatch, "chat", "--help")
     assert raised.value.code == 0
     help_text = " ".join(capsys.readouterr().out.split())
-    assert "passed unchanged to the Agent CLI" in help_text
-    assert "booley chat -- --help" in help_text
+    for text in (
+        "passed unchanged to the Agent CLI",
+        "booley chat -- --help",
+        "overrides [worktree] chat for this launch",
+        "--cli {claude,codex}",
+        "must be listed in booley.toml [agent] clis",
+        "[--name NAME]",
+        "S3 · NAME",
+        "resumed in its worktree keeps its label unless --name sets a new one",
+        "--here and --name only before any other argument",
+    ):
+        assert text in help_text, text
 
 
-def test_chat_help_names_the_worktree_chat_key(monkeypatch, capsys):
-    with pytest.raises(SystemExit):
-        _parse_argv(monkeypatch, "chat", "--help")
-    help_text = " ".join(capsys.readouterr().out.split())
-    assert "overrides [worktree] chat for this launch" in help_text
-
-
-def test_chat_help_documents_cli_option(monkeypatch, capsys):
-    with pytest.raises(SystemExit):
-        _parse_argv(monkeypatch, "chat", "--help")
-    help_text = " ".join(capsys.readouterr().out.split())
-    assert "--cli {claude,codex}" in help_text
-    assert "must be listed in booley.toml [agent] clis" in help_text
-
-
-def test_chat_help_documents_name_option(monkeypatch, capsys):
-    with pytest.raises(SystemExit):
-        _parse_argv(monkeypatch, "chat", "--help")
-    help_text = " ".join(capsys.readouterr().out.split())
-    assert "[--name NAME]" in help_text
-    assert "--name NAME" in help_text
-    assert "S3 \u00b7 NAME" in help_text
-    assert "resumed in its worktree keeps its label unless --name sets a new one" in help_text
-    assert "--here and --name only before any other argument" in help_text
-
-
-def test_auth_cli_and_hidden_app_alias_parse_identically(capsys):
-    parser = tlr._build_parser()
-
-    by_cli = parser.parse_args(["auth", "--cli", "codex", "--status"])
-    by_app = parser.parse_args(["auth", "--app", "codex", "--status"])
+def test_auth_cli_and_hidden_app_alias_parse_identically(monkeypatch, capsys):
+    by_cli = _parse_argv(monkeypatch, "auth", "--cli", "codex", "--status")
+    by_app = _parse_argv(monkeypatch, "auth", "--app", "codex", "--status")
 
     assert vars(by_cli) == vars(by_app)
     assert by_cli.app == "codex"
     with pytest.raises(SystemExit):
-        parser.parse_args(["auth", "--help"])
+        _parse_argv(monkeypatch, "auth", "--help")
     auth_help = capsys.readouterr().out
     assert "--cli" in auth_help
     assert "--app" not in auth_help
 
 
-def test_bare_booley_defaults_to_chat(monkeypatch):
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
-    parser = tlr._build_parser()
-
-    args = tlr._normalize_args(parser, parser.parse_args([]))
-
-    assert args.command == "chat"
-    assert "Run bare `booley`" in parser.format_help()
+# ===========================================================================
+# Dispatch before Project discovery
+# ===========================================================================
 
 
-@pytest.mark.parametrize("update_flag", ["--update", "--upgrade"])
-def test_bootstrap_parser_exposes_only_host_reconciliation_flags(update_flag):
-    args = tlr._build_parser().parse_args(["bootstrap", update_flag, "--verbose"])
-    assert args.command == "bootstrap"
-    assert args.update is True
-    assert args.verbose is True
-    assert not hasattr(args, "project_root")
+@pytest.fixture
+def host_main(tmp_path, monkeypatch):
+    """Run `booley <argv>` through main() on the host, from a fresh Project checkout."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".booley").mkdir()
+    monkeypatch.chdir(tmp_path)
+    reset_cache()
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+    monkeypatch.setattr(host_install, "host_install_error", lambda _source: None)
+
+    def run(*argv):
+        monkeypatch.setattr(sys, "argv", ["booley", *argv])
+        return tlr.main()
+
+    return run
 
 
-@pytest.mark.parametrize(
-    "flags", [("--check-only", "--force"), ("--with-qa-skills", "--without-qa-skills")]
-)
-def test_bootstrap_parser_rejects_exclusive_flags(flags, capsys):
-    with pytest.raises(SystemExit) as raised:
-        tlr._build_parser().parse_args(["bootstrap", *flags])
-    assert raised.value.code == 2
-    assert "not allowed with argument" in capsys.readouterr().err
+def _no_project_discovery():
+    raise AssertionError("Project discovery must not run")
 
 
-@pytest.mark.parametrize(
-    ("flag", "attribute"),
-    [
-        ("--with-qa-skills", "with_qa_skills"),
-        ("--without-qa-skills", "without_qa_skills"),
-    ],
-)
-def test_bootstrap_parser_exposes_qa_selection_flags(flag, attribute):
-    args = tlr._build_parser().parse_args(["bootstrap", flag, "--force"])
-
-    assert getattr(args, attribute) is True
-    assert args.force is True
-
-
-def test_bootstrap_parser_accepts_egress_mode(capsys):
-    parser = tlr._build_parser()
-
-    assert parser.parse_args(["bootstrap", "--egress", "unproxied"]).egress == "unproxied"
-    assert parser.parse_args(["bootstrap", "--check-only", "--egress", "proxy"]).egress == "proxy"
-    assert parser.parse_args(["bootstrap"]).egress is None
-    with pytest.raises(SystemExit) as raised:
-        parser.parse_args(["bootstrap", "--egress", "open"])
-    assert raised.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err
-
-
-def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
-    # `--check-only` keeps a mis-routed dispatch (the real handler) read-only.
-    args = tlr._build_parser().parse_args(["bootstrap", "--check-only"])
-    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
-    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
-    monkeypatch.setattr(bootstrap_cli, "run_bootstrap", lambda _args: 17)
-    monkeypatch.setattr(
-        tlr,
-        "find_project_root",
-        lambda: (_ for _ in ()).throw(AssertionError("Project discovery must not run")),
-    )
-    assert tlr.main() == 17
-
-
-@pytest.mark.parametrize(
-    ("argv", "command"),
-    [
-        (["bootstrap"], "bootstrap"),
-        (["init"], "init"),
-    ],
-)
-def test_main_renders_lifecycle_timeout_once_without_traceback(
-    argv, command, tmp_path, monkeypatch, capsys
+def test_source_checkout_refuses_project_commands_but_not_feedback(
+    host_main, tmp_path, monkeypatch, capsys
 ):
-    from booley.runtime.lifecycle_lock import LifecycleLockError
+    from booley.feedback import cli as feedback_cli
 
-    args = tlr._build_parser().parse_args(argv)
-    failure = LifecycleLockError(
-        "host Docker lifecycle is busy (pid=41 operation=project init); "
-        "timed out after waiting 120s"
-    )
+    shutil.rmtree(tmp_path / ".booley")
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    roots = []
+    monkeypatch.setattr(feedback_cli, "run", lambda _args, root, **_kw: roots.append(root) or 0)
 
-    def raise_timeout(*_args, **_kwargs):
-        raise failure
-
-    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
-    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
-    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
-    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
-    monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
-    monkeypatch.setattr(tlr, "_require_command_project", lambda *_args: None)
-    monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
-    if command == "bootstrap":
-        monkeypatch.setattr(bootstrap_cli, "run_bootstrap", raise_timeout)
-    else:
-        monkeypatch.setitem(tlr._EARLY_COMMANDS, command, raise_timeout)
-
-    assert tlr.main() == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == f"ERROR: {failure}\n"
-    assert "Traceback" not in captured.err
+    assert host_main("doctor") == 2
+    assert "cannot be initialized or used as a Project" in capsys.readouterr().err
+    assert host_main("feedback", "list") == 0
+    assert roots == [tmp_path]
 
 
-def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None:
-    if command == "doctor":
-        from booley.harness import doctor
-        from booley.runtime import session_runtime
-
-        def exercise_runtime(*_args, **_kwargs):
-            runtime = doctor._DoctorFlowRuntime(Path("/project"), "docker")
-            runtime.command(["true"])
-
-        monkeypatch.setattr(doctor, "run_doctor_result", exercise_runtime)
-        monkeypatch.setattr(session_runtime, "up", MagicMock(side_effect=failure))
-    elif command == "auth":
-        from booley.harness import auth_cmd
-
-        monkeypatch.setattr(auth_cmd, "_preflight", lambda *_args: True)
-        monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
-    else:
-        # Importing the coordinator first keeps modules that bind the lock by
-        # name (session_refresh) from capturing the patched callable.
-        from booley.harness import eda_grants
-
-        monkeypatch.setattr(
-            eda_grants.lifecycle_lock,
-            "host_lifecycle_lock",
-            MagicMock(side_effect=failure),
-        )
+def test_bootstrap_dispatch_precedes_project_discovery(host_main, monkeypatch):
+    monkeypatch.setattr(bootstrap_cli, "run_bootstrap", lambda _args: 17)
+    monkeypatch.setattr(tlr, "find_project_root", _no_project_discovery)
+    assert host_main("bootstrap", "--check-only") == 17
 
 
-@pytest.mark.parametrize(
-    ("argv", "command"),
-    [
-        (["doctor"], "doctor"),
-        (["auth", "--cli", "claude"], "auth"),
-        (["eda", "grant", "revoke", "/project", "--kind", "vivado"], "eda"),
-    ],
-)
-def test_indirect_lifecycle_timeout_reaches_main(argv, command, tmp_path, monkeypatch, capsys):
-    from booley.runtime.lifecycle_lock import LifecycleLockError
-
-    failure = LifecycleLockError("host Docker lifecycle timed out after waiting 120s")
-    args = tlr._build_parser().parse_args(argv)
-    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
-    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
-    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
-    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
-    monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
-    monkeypatch.setattr(tlr, "_require_command_project", lambda *_args: None)
-    monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
-    _configure_indirect_lifecycle_timeout(command, monkeypatch, failure)
-
-    assert tlr.main() == 2
-    captured = capsys.readouterr()
-    assert captured.err.splitlines().count(f"ERROR: {failure}") == 1
-    assert "Traceback" not in captured.out + captured.err
-
-
-def test_projects_dispatch_precedes_active_project_discovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_projects_dispatch_precedes_active_project_discovery(host_main, monkeypatch):
+    from booley.harness import projects_view
     from booley.projects import cli as project_inventory_cli
+    from booley.runtime import image_keepers
 
-    args = tlr._build_parser().parse_args(["projects", "--json"])
-    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
-    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
-    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
-    from booley.runtime import image_keepers as runtime_image_keepers
+    seen = {}
+    monkeypatch.setattr(project_inventory_cli, "run", lambda _args, **kw: seen.update(kw) or 19)
+    monkeypatch.setattr(tlr, "find_project_root", _no_project_discovery)
 
-    seen: dict[str, object] = {}
-
-    def run(_args: Namespace, **kwargs: object) -> int:
-        seen.update(kwargs)
-        return 19
-
-    monkeypatch.setattr(project_inventory_cli, "run", run)
-    monkeypatch.setattr(
-        tlr,
-        "find_project_root",
-        lambda: (_ for _ in ()).throw(AssertionError("Project discovery must not run")),
-    )
-
-    assert tlr.main() == 19
-    assert seen["keeper_operations"] is runtime_image_keepers
-    view = seen.get("leftovers_view")
-    assert view is not None
-    assert (view.__module__, view.__name__) == (
-        "booley.harness.projects_view",
-        "render_leftovers",
-    )
+    assert host_main("projects", "--json") == 19
+    assert seen == {
+        "keeper_operations": image_keepers,
+        "leftovers_view": projects_view.render_leftovers,
+    }
 
 
-def test_noncanonical_host_command_stops_before_dispatch(monkeypatch, capsys):
-    args = tlr._build_parser().parse_args(["projects", "--json"])
-    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
-    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
-    monkeypatch.setattr(
-        tlr,
-        "_host_install_authority_error",
-        lambda _command: "not the canonical host installation",
-    )
+def test_noncanonical_host_installation_stops_before_dispatch(host_main, monkeypatch, capsys):
+    from booley.projects import cli as project_inventory_cli
+    from booley.runtime import paths
 
-    assert tlr.main() == 2
-    assert "not the canonical" in capsys.readouterr().err
-
-
-def test_host_authority_guard_resolves_packaged_skills(monkeypatch, capsys):
-    from booley.runtime import host_install, paths
-
-    args = tlr._build_parser().parse_args(["projects", "--json"])
-    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
-    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    sources = []
     monkeypatch.setattr(paths, "skills_dir", lambda: Path("/installed/skills"))
     monkeypatch.setattr(
         host_install,
         "host_install_error",
-        lambda _source: "not the canonical host installation",
+        lambda source: sources.append(source) or "not the canonical host installation",
     )
+    monkeypatch.setattr(project_inventory_cli, "run", lambda *_a, **_kw: pytest.fail("dispatched"))
 
-    assert tlr.main() == 2
+    assert host_main("projects", "--json") == 2
+    assert sources == [Path("/installed/skills")]
     assert "not the canonical" in capsys.readouterr().err
 
 
-def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(health, "consume_changed_snapshot", lambda *_a, **_kw: None)
-    monkeypatch.setattr(health, "due_reason", lambda _root: "stale")
-
-    tlr._report_session_health(tmp_path)
-
-    assert "Automatic Doctor is running" in capsys.readouterr().err
+def _fail_bootstrap(monkeypatch, failure):
+    monkeypatch.setattr(bootstrap_cli, "run_bootstrap", MagicMock(side_effect=failure))
 
 
-def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch):
+def _fail_init(monkeypatch, failure):
+    from booley.harness import init_cmd
+
+    monkeypatch.setattr(init_cmd, "run_init", MagicMock(side_effect=failure))
+
+
+def _fail_doctor(monkeypatch, failure):
     from booley.harness import doctor
     from booley.runtime import session_runtime
 
-    events: list[str] = []
+    def exercise_runtime(*_args, **_kwargs):
+        # Kept private: only Doctor's own flow runtime starts the Sandbox, and through Docker.
+        doctor._DoctorFlowRuntime(Path("/project"), "docker").command(["true"])
+
+    monkeypatch.setattr(doctor, "run_doctor_result", exercise_runtime)
+    monkeypatch.setattr(session_runtime, "up", MagicMock(side_effect=failure))
+
+
+def _fail_auth(monkeypatch, failure):
+    from booley.harness import auth_cmd
+
+    # Kept private: the public run_auth probes Docker first and mints through a live Agent CLI.
+    monkeypatch.setattr(auth_cmd, "_preflight", lambda *_args: True)
+    monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
+
+
+def _fail_eda(monkeypatch, failure):
+    # Importing the coordinator first keeps modules that bind the lock by
+    # name (session_refresh) from capturing the patched callable.
+    from booley.harness import eda_grants
+
     monkeypatch.setattr(
-        tlr, "_report_upgrade_before_session", lambda _root: events.append("observe")
+        eda_grants.lifecycle_lock, "host_lifecycle_lock", MagicMock(side_effect=failure)
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "fail"),
+    [
+        (["bootstrap"], _fail_bootstrap),
+        (["init"], _fail_init),
+        (["doctor"], _fail_doctor),
+        (["auth", "--cli", "claude"], _fail_auth),
+        (["eda", "grant", "revoke", "/project", "--kind", "vivado"], _fail_eda),
+    ],
+    ids=["bootstrap", "init", "doctor", "auth", "eda"],
+)
+def test_lifecycle_timeout_reaches_main_once_without_traceback(
+    argv, fail, host_main, monkeypatch, capsys
+):
+    failure = LifecycleLockError("host Docker lifecycle timed out after waiting 120s")
+    fail(monkeypatch, failure)
+
+    assert host_main(*argv) == 2
+    captured = capsys.readouterr()
+    assert captured.err == f"ERROR: {failure}\n"
+    assert str(failure) not in captured.out  # `auth` prints its own heading first
+
+
+# ===========================================================================
+# Session health and upgrade reports at `booley session up`
+# ===========================================================================
+
+
+@pytest.fixture
+def stub_session(tmp_path, monkeypatch):
+    """`session up` against a stub Sandbox; records upgrade observation and Sandbox start."""
+    from booley.harness import doctor, upgrade_review
+    from booley.runtime import session_runtime
+
+    (tmp_path / ".booley").mkdir()
+    events = []
+    current = SimpleNamespace(condition=upgrade_review.ReviewCondition.CURRENT)
+    monkeypatch.setattr(
+        upgrade_review, "observe", lambda _dir: events.append("observe") or current
     )
     monkeypatch.setattr(
         session_runtime,
         "ensure",
-        lambda *_args, **_kwargs: (
-            events.append("up") or session_runtime.EnsureResult("session", False, True)
-        ),
+        lambda *_a, **_kw: events.append("up") or session_runtime.EnsureResult("s", False, True),
     )
-    monkeypatch.setattr(health, "due_reason", lambda _root: None)
-    monkeypatch.setattr(tlr, "_report_session_health", lambda *_args, **_kwargs: None)
-    # The deep status would probe the Sandbox through Docker.
     monkeypatch.setattr(
         doctor, "observe_deep_status", lambda *_a, **_kw: MagicMock(render=lambda: "deep")
     )
+    monkeypatch.setattr(
+        health, "consume_changed_snapshot", lambda *_a, **_kw: pytest.fail("summary consumed")
+    )
+    # Kept private: main() would resolve the host Session context through Docker first.
+    return SimpleNamespace(events=events, up=lambda: tlr._session_up(Namespace(), tmp_path))
 
-    assert tlr._session_up(tlr._build_parser().parse_args(["session", "up"]), tmp_path) == 0
-    assert events == ["observe", "up"]
+
+def test_session_up_observes_upgrade_before_runtime_start(stub_session, monkeypatch):
+    monkeypatch.setattr(health, "due_reason", lambda _root: None)
+    monkeypatch.setattr(health, "consume_changed_snapshot", lambda *_a, **_kw: None)
+
+    assert stub_session.up() == 0
+    assert stub_session.events == ["observe", "up"]
+
+
+@pytest.mark.parametrize(
+    "due_reasons",
+    [("Doctor inputs changed", None), (None, "Doctor inputs changed")],
+    ids=["due-at-startup", "due-after-startup"],
+)
+def test_due_doctor_is_announced_instead_of_persisted_findings(
+    due_reasons, stub_session, monkeypatch, capsys
+):
+    reasons = iter(due_reasons)
+    monkeypatch.setattr(health, "due_reason", lambda _root: next(reasons))
+
+    assert stub_session.up() == 0
+    assert (
+        "Automatic Doctor is running in the Sandbox (Doctor inputs changed); "
+        "persisted findings from before startup will not be reported as current."
+    ) in capsys.readouterr().err
 
 
 def _health_project_views(tmp_path: Path, *, force_copy: bool) -> tuple[Path, Path, Path]:
@@ -664,17 +504,24 @@ def mounted_health_project(tmp_path, monkeypatch, request):
         reset_cache()
 
 
+@pytest.mark.parametrize(
+    "mounted_health_project", [False, True], ids=["symlinked", "copied"], indirect=True
+)
 def test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(
     mounted_health_project, capsys
 ):
     host, sandbox, directory, calls, starts, run = mounted_health_project
-    args = tlr._build_parser().parse_args(["session", "up"])
-    assert tlr._session_up(args, host) == 0
+
+    def session_up():
+        # Kept private: main() would resolve the host Session context through Docker first.
+        return tlr._session_up(Namespace(), host)
+
+    assert session_up() == 0
     capsys.readouterr()
     upgrade_before = (directory / "runtime" / "upgrade_review.json").read_bytes()
     paths = (health.report_path(directory), health.transcript_path(directory))
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
-    assert tlr._session_up(args, host) == 0
+    assert session_up() == 0
     assert "Doctor inputs changed" not in capsys.readouterr().err, (
         "unchanged second session up must not report input drift"
     )
@@ -688,227 +535,104 @@ def test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(
         (view / ".booley" / "booley.toml").write_text("[project]\nname = 'edited'\n")
     assert "booley.toml" in health.due_reason(host)
     assert "booley.toml" in health.due_reason(sandbox)
-    assert tlr._session_up(args, host) == 0
+    assert session_up() == 0
     assert "booley.toml" in capsys.readouterr().err
     assert run("config-change") is not None
     assert calls == ["probe", "probe"]
     assert health.due_reason(host) is None
 
 
-@pytest.mark.parametrize("mounted_health_project", [True], indirect=True)
-def test_session_up_with_copied_mount_view(mounted_health_project, capsys):
-    test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(mounted_health_project, capsys)
+# ===========================================================================
+# `booley --version` build identity
+# ===========================================================================
 
 
-def test_due_session_start_does_not_report_persisted_doctor_findings(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setattr(
-        health,
-        "consume_changed_snapshot",
-        lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
-    )
-
-    tlr._report_session_health(tmp_path, startup_due_reason="Doctor inputs changed")
-
-    output = capsys.readouterr().err
-    assert "Automatic Doctor is running" in output
-    assert "before startup" in output
-
-
-def test_session_health_rechecks_freshness_before_consuming_summary(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(health, "due_reason", lambda _root: "Doctor inputs changed")
-    monkeypatch.setattr(
-        health,
-        "consume_changed_snapshot",
-        lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
-    )
-
-    tlr._report_session_health(tmp_path)
-
-    output = capsys.readouterr().err
-    assert "Automatic Doctor is running" in output
-    assert "Doctor inputs changed" in output
-
-
-def test_version_flag_prints_and_exits(capsys):
-    # SETUP-1: `booley --version` should print a real version and exit 0.
-    parser = tlr._build_parser()
+def _version_line(monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", "20")
     with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["--version"])
+        _parse_argv(monkeypatch, "--version")
     assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert out.startswith("booley ")
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, "the version line is never wrapped to the terminal width"
+    return lines[0]
 
 
-class TestBakedBuildCommit:
-    """F-5: a wheel install has no .git, so `--version` reported no commit.
+def _attribute(monkeypatch, origin, **fields):
+    attribution = VersionAttribution(version="4.5.6", origin=origin, **fields)
+    monkeypatch.setattr(booley, "version_attribution", attribution)
 
-    Every freshly built image printed a bare `booley 0.1.0`, leaving the
-    prescribed freshness check — confirm the wheel matches the commit — with
-    nothing to check. build.sh now stamps the commit into the package.
+
+def _stamp(monkeypatch, **values):
+    """Install the generated build-stamp module with *values*.
+
+    Kept private: build.sh generates `booley._build_commit` only inside a wheel build.
     """
+    stamp = types.ModuleType("booley._build_commit")
+    stamp.__dict__.update(values)
+    monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
+    monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
 
-    def test_absent_stamp_module_yields_none(self, monkeypatch):
-        # No _build_commit module is generated in a checkout, so nothing is known.
-        import booley
 
-        assert not hasattr(booley, "_build_commit")
-        assert tlr._baked_identity() == ("", "")
-
-    def test_source_git_failure_does_not_borrow_baked_commit(self, tmp_path, monkeypatch):
-        """A checkout must not combine its version with another build's stamp."""
-        import booley
-        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
-
-        source_root = tmp_path / "checkout"
-        source_root.mkdir()
-        monkeypatch.setattr(
-            booley,
-            "version_attribution",
-            VersionAttribution(
-                version="4.5.6",
-                origin=VersionOrigin.SOURCE,
-                source_root=source_root,
-            ),
-        )
-        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("cafe123", ""))
-        assert tlr._code_identity()[0] == ""
-        assert "(cafe123)" not in tlr._version_string()
-
-    def test_wheel_uses_baked_commit_without_live_git(self, monkeypatch):
-        import booley
-        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
-
-        monkeypatch.setattr(
-            booley,
-            "version_attribution",
-            VersionAttribution(
-                version="4.5.6",
-                origin=VersionOrigin.DISTRIBUTION,
-                distribution_name="booley-rtl",
-            ),
-        )
-        monkeypatch.setattr(
-            VersionAttribution,
-            "source_git_metadata",
-            lambda _self: pytest.fail("wheel attribution must not inspect Git"),
-        )
-        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("cafe123", ""))
-
-        assert tlr._code_identity() == ("cafe123", "")
-
-    def test_live_checkout_wins_over_the_baked_commit(self, monkeypatch):
-        """A checkout's live state is the truthful one — it can be +dirty."""
-        from booley.runtime.version_attribution import VersionAttribution
-
-        monkeypatch.setattr(
-            VersionAttribution,
-            "source_git_metadata",
-            lambda _self: ("live999", "2026-08-30T10:39:40Z"),
-        )
-        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("stale00", ""))
-        assert tlr._code_identity() == ("live999", "2026-08-30T10:39:40Z")
-
-    def test_source_without_git_does_not_borrow_enclosing_repository(self, tmp_path, monkeypatch):
-        import booley
-        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
-
-        outer = tmp_path / "outer"
-        (outer / ".git").mkdir(parents=True)
-        source_root = outer / "unpacked-booley"
-        source_root.mkdir()
-        monkeypatch.setattr(
-            booley,
-            "version_attribution",
-            VersionAttribution(
-                version="4.5.6",
-                origin=VersionOrigin.SOURCE,
-                source_root=source_root,
-            ),
-        )
-        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("stale00", ""))
-
-        assert tlr._code_identity()[0] == ""
-
-    def test_baked_commit_reads_the_generated_module(self, monkeypatch):
-        import types
-
-        import booley
-
-        stamp = types.ModuleType("booley._build_commit")
-        stamp.COMMIT = "abcd123+dirty"
-        monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
-        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-        assert tlr._baked_identity() == ("abcd123+dirty", "")
-
-    def test_empty_stamp_is_treated_as_unknown(self, monkeypatch):
-        """build.sh writes an empty COMMIT when git is unavailable."""
-        import types
-
-        import booley
-
-        stamp = types.ModuleType("booley._build_commit")
-        stamp.COMMIT = ""
-        monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
-        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-        assert tlr._baked_identity() == ("", "")
+def test_absent_stamp_module_yields_none(monkeypatch, capsys):
+    # build.sh and build_stamp name this test: a build must not leave the stamp in the
+    # checkout, where a wheel-attributed import would read it.
+    assert not hasattr(booley, "_build_commit")
+    _attribute(monkeypatch, VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl")
+    assert _version_line(monkeypatch, capsys) == f"booley {__version__}"
 
 
 class TestVersionCommitDate:
-    """`booley --version` shows the UTC commit date next to the commit (#2235)."""
+    """`booley --version` shows the commit and its UTC commit date when known (#2235)."""
 
-    @staticmethod
-    def _attribute(monkeypatch, origin, **fields):
-        import booley
-        from booley.runtime.version_attribution import VersionAttribution
+    @pytest.mark.parametrize(
+        ("metadata", "suffix"),
+        [
+            (("abc1234", "2026-10-26T10:00:00Z"), " (abc1234, 2026-10-26)"),
+            # 23:30 at UTC-7 is already the next day in UTC.
+            (("abc1234", "2026-10-26T23:30:00-07:00"), " (abc1234, 2026-10-27)"),
+            (("abc1234", ""), " (abc1234)"),
+            (("", "2026-10-26T10:00:00Z"), ""),
+        ],
+    )
+    def test_source_version_shows_only_the_live_commit(
+        self, metadata, suffix, monkeypatch, capsys
+    ):
+        """A checkout never borrows a baked stamp, even when its own Git cannot answer (#177)."""
+        _attribute(monkeypatch, VersionOrigin.SOURCE, source_root=Path("/unused"))
+        monkeypatch.setattr(VersionAttribution, "source_git_metadata", lambda _self: metadata)
+        _stamp(monkeypatch, COMMIT="stale00", COMMIT_TIME="2026-01-01T00:00:00Z")
+        assert _version_line(monkeypatch, capsys) == f"booley {__version__}{suffix}"
 
-        monkeypatch.setattr(
-            booley,
-            "version_attribution",
-            VersionAttribution(version="4.5.6", origin=origin, **fields),
-        )
-
-    @classmethod
-    def _source(cls, monkeypatch, commit, committed_at):
-        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
-
-        cls._attribute(monkeypatch, VersionOrigin.SOURCE, source_root=Path("/unused"))
-        monkeypatch.setattr(
-            VersionAttribution,
-            "source_git_metadata",
-            lambda _self: (commit, committed_at),
-        )
-
-    @classmethod
-    def _stamped_wheel(cls, monkeypatch, **stamp_values):
-        import types
-
-        import booley
-        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
-
-        cls._attribute(monkeypatch, VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl")
+    @pytest.mark.parametrize(
+        ("stamp", "suffix"),
+        [
+            ({"COMMIT": "cafe123"}, " (cafe123)"),
+            ({"COMMIT": "cafe123", "COMMIT_TIME": ""}, " (cafe123)"),
+            (
+                {"COMMIT": "abcd123+dirty", "COMMIT_TIME": "2026-10-26T12:00:00Z"},
+                " (abcd123+dirty, 2026-10-26)",
+            ),
+            ({"COMMIT": ""}, ""),
+        ],
+    )
+    def test_wheel_version_shows_the_baked_commit_without_git(
+        self, stamp, suffix, monkeypatch, capsys
+    ):
+        _attribute(monkeypatch, VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl")
         monkeypatch.setattr(
             VersionAttribution,
             "source_git_metadata",
             lambda _self: pytest.fail("wheel attribution must not inspect Git"),
         )
-        stamp = types.ModuleType("booley._build_commit")
-        for name, value in stamp_values.items():
-            setattr(stamp, name, value)
-        monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
-        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+        _stamp(monkeypatch, **stamp)
+        assert _version_line(monkeypatch, capsys) == f"booley {__version__}{suffix}"
 
-    def test_source_checkout_shows_head_commit_date_in_utc(self, monkeypatch):
-        from booley import __version__
+    def test_fallback_version_prints_bare_version(self, monkeypatch, capsys):
+        _attribute(monkeypatch, VersionOrigin.FALLBACK)
+        _stamp(monkeypatch, COMMIT="stale00")
+        assert _version_line(monkeypatch, capsys) == f"booley {__version__}"
 
-        self._source(monkeypatch, "abc1234", "2026-10-26T10:00:00Z")
-        assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-26)"
-
-    def test_dirty_checkout_shows_dirty_commit_and_date(self, tmp_path, monkeypatch):
-        from booley import __version__
-        from booley.runtime.version_attribution import VersionOrigin
-
+    def test_dirty_checkout_shows_dirty_commit_and_date(self, tmp_path, monkeypatch, capsys):
         repo = tmp_path / "checkout"
         repo.mkdir()
 
@@ -939,58 +663,14 @@ class TestVersionCommitDate:
             GIT_AUTHOR_DATE="2026-09-01T12:00:00+00:00",
         )
         short = git("rev-parse", "--short", "HEAD")
+        _attribute(monkeypatch, VersionOrigin.SOURCE, source_root=repo)
+        assert _version_line(monkeypatch, capsys) == f"booley {__version__} ({short}, 2026-10-26)"
         (repo / "file.txt").write_text("two\n", encoding="utf-8")
-        self._attribute(monkeypatch, VersionOrigin.SOURCE, source_root=repo)
 
-        assert tlr._version_string() == f"booley {__version__} ({short}+dirty, 2026-10-26)"
-
-    def test_source_offset_date_is_converted_to_utc_day(self, monkeypatch):
-        from booley import __version__
-
-        # 23:30 at UTC-7 is already the next day in UTC.
-        self._source(monkeypatch, "abc1234", "2026-10-26T23:30:00-07:00")
-        assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-27)"
-
-    def test_missing_commit_prints_bare_version(self, monkeypatch):
-        from booley import __version__
-
-        self._source(monkeypatch, "", "2026-10-26T10:00:00Z")
-        assert tlr._version_string() == f"booley {__version__}"
-
-    def test_missing_date_prints_commit_only(self, monkeypatch):
-        from booley import __version__
-
-        self._source(monkeypatch, "abc1234", "")
-        assert tlr._version_string() == f"booley {__version__} (abc1234)"
-
-    def test_stamp_without_date_field_prints_commit_only(self, monkeypatch):
-        from booley import __version__
-
-        self._stamped_wheel(monkeypatch, COMMIT="cafe123")
-        assert tlr._version_string() == f"booley {__version__} (cafe123)"
-
-    def test_stamp_with_empty_date_prints_commit_only(self, monkeypatch):
-        from booley import __version__
-
-        self._stamped_wheel(monkeypatch, COMMIT="cafe123", COMMIT_TIME="")
-        assert tlr._version_string() == f"booley {__version__} (cafe123)"
-
-    def test_fallback_version_prints_bare_version(self, monkeypatch):
-        from booley import __version__
-        from booley.runtime.version_attribution import VersionOrigin
-
-        self._attribute(monkeypatch, VersionOrigin.FALLBACK)
-        assert tlr._version_string() == f"booley {__version__}"
-
-    def test_version_flag_stays_one_line_on_narrow_terminal(self, monkeypatch, capsys):
-        monkeypatch.setenv("COLUMNS", "20")
-        self._source(monkeypatch, "d4c94dc35+dirty", "2026-10-26T10:00:00Z")
-        with pytest.raises(SystemExit) as exc:
-            tlr._build_parser().parse_args(["--version"])
-        assert exc.value.code == 0
-        lines = capsys.readouterr().out.splitlines()
-        assert len(lines) == 1
-        assert lines[0].endswith("(d4c94dc35+dirty, 2026-10-26)")
+        assert (
+            _version_line(monkeypatch, capsys)
+            == f"booley {__version__} ({short}+dirty, 2026-10-26)"
+        )
 
 
 # ===========================================================================
