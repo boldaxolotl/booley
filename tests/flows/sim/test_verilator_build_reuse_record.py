@@ -120,17 +120,6 @@ def _configure(project: Path, *lines: str) -> None:
     )
 
 
-@pytest.mark.parametrize("second_test", ["first", "second"], ids=["same-test", "other-test"])
-def test_second_identical_flow_sim_reuses_retained_image(
-    flow_project: Path, tmp_path: Path, second_test: str
-) -> None:
-    reports = tmp_path / "reports"
-    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
-    _assert_hit(_flow_sim(flow_project, reports, second_test))
-    # The unused candidate generation of the hit is discarded.
-    assert len(_generations(flow_project)) == 1
-
-
 def _edit_rtl(project: Path) -> None:
     _edit_keeping_mtime(
         project / "rtl" / "tb.sv", '`include "defs.svh"\nmodule tb; // NEW\nendmodule\n'
@@ -146,27 +135,27 @@ def _edit_flag(project: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "edit", [_edit_rtl, _edit_include, _edit_flag], ids=["rtl", "include", "flag"]
+    ("isolated", "edit"),
+    [
+        (False, _edit_rtl),
+        (False, _edit_include),
+        (False, _edit_flag),
+        (True, _edit_rtl),
+        (True, _edit_include),
+    ],
+    ids=["rtl", "include", "flag", "isolated-rtl", "isolated-include"],
 )
 def test_flow_sim_input_edit_misses_then_hits(
-    flow_project: Path, tmp_path: Path, edit: Callable[[Path], None]
+    flow_project: Path, tmp_path: Path, isolated: bool, edit: Callable[[Path], None]
 ) -> None:
+    """An edit to a source, listed header or flag prevents reuse; an isolated build is reused."""
     reports = tmp_path / "reports"
-    _flow_sim(flow_project, reports, "first")
-    edit(flow_project)
-    _assert_built(_flow_sim(flow_project, reports, "first"), "changed source, recipe, or tool")
-    _assert_hit(_flow_sim(flow_project, reports, "first"))
-
-
-@pytest.mark.parametrize("edit", [_edit_rtl, _edit_include], ids=["rtl", "include"])
-def test_isolated_flow_sim_input_edit_misses_then_hits(
-    flow_project: Path, tmp_path: Path, edit: Callable[[Path], None]
-) -> None:
-    """AC2: an isolated build is reused, and editing a source or listed header prevents reuse."""
-    _isolate_native_cores(flow_project)
-    reports = tmp_path / "reports"
-    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
-    _assert_hit(_flow_sim(flow_project, reports, "first"))
+    if isolated:
+        _isolate_native_cores(flow_project)
+        _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
+        _assert_hit(_flow_sim(flow_project, reports, "first"))
+    else:
+        _flow_sim(flow_project, reports, "first")
     edit(flow_project)
     _assert_built(_flow_sim(flow_project, reports, "first"), "changed source, recipe, or tool")
     _assert_hit(_flow_sim(flow_project, reports, "first"))

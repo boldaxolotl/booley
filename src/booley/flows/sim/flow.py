@@ -85,7 +85,6 @@ from ..baseline_worktree import (
 )
 from ..invocation import default_timeout_ms
 from .build import (
-    SimulationBuildInfrastructureError,
     SimulationBuildPreparationError,
 )
 from .elab_only import ElabOnlyMixin
@@ -122,7 +121,6 @@ from .record.flow_planning import (
 from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import (
     _append_missing_report_lines,
-    _build_infrastructure_detail,
     _coverage_compatibility_targets,
     _coverage_failed_target,
     _coverage_failure_outcome,
@@ -1317,8 +1315,6 @@ class SimulateFlow(
         detail: dict[str, object] = (
             {"records": _simulation_record_structured_details(outcomes)} if outcomes else {}
         )
-        if isinstance(error, SimulationBuildInfrastructureError):
-            detail.update(_build_infrastructure_detail(error))
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             detail=detail,

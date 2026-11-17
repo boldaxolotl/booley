@@ -62,6 +62,8 @@ def _execute_route(
     sequence = iter(range(1, 100))
     # ``version=4`` sets the version and variant bits the codec requires.
     monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=next(sequence), version=4))
+    # Private seams: the executor's clock and hook runner are frozen so the byte-pinned
+    # records (the persisted format) do not vary; neither has a public injection point.
     monkeypatch.setattr(serial_execution, "_now", lambda: "2026-09-21T10:00:00Z")
     monkeypatch.setattr(serial_execution, "time", SimpleNamespace(monotonic=lambda: 0.0))
     monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)
@@ -128,6 +130,7 @@ def test_record_builders_decode_no_record_they_built(
         decoded.append(kwargs["value_type"].__name__)
         return real_decode(raw, **kwargs)
 
+    # Private seam: only ``codec._decode`` sees every record a builder might re-read.
     monkeypatch.setattr(codec, "_decode", spy)
 
     store, _result = _execute_route(tmp_path, monkeypatch, route)

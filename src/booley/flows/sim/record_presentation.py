@@ -34,10 +34,6 @@ from booley.runtime.endpoint_execution import (
 )
 
 from .. import output_budget
-from .build import (
-    BuildOutcome,
-    SimulationBuildInfrastructureError,
-)
 from .coverage_record_store import load_coverage_record
 from .coverage_reference import (
     MAX_REFERENCE_BYTES,
@@ -1048,31 +1044,3 @@ def _retain_coverage_record(progress: CoverageProgress, outcome: SimulationRecor
             coverage_record.evaluation,
         )
     )
-
-
-def _build_outcome_entry(outcome: BuildOutcome | None) -> dict[str, Any] | None:
-    """JSON shape for one authenticated Simulation build attempt."""
-    if outcome is None:
-        return None
-    return {
-        "ran": outcome.ran,
-        "verdict": outcome.verdict,
-        "failure_class": outcome.failure_kind,
-        "returncode": outcome.returncode,
-        "elapsed_s": round(outcome.elapsed_s, 3),
-        "timed_out": outcome.timed_out,
-        "peak_rss_mb": outcome.peak_rss_mb,
-        "oom_kill_delta": outcome.oom_kill_delta,
-        "terminal_record": outcome.terminal_record,
-        "reason": outcome.reason,
-        "cache_decision": outcome.cache_decision,
-    }
-
-
-def _build_infrastructure_detail(error: SimulationBuildInfrastructureError) -> dict[str, Any]:
-    """Structured endpoint detail for a build that ended without a design verdict."""
-    return {
-        "eda_tool_error": "build_infrastructure",
-        "target": error.target,
-        "build_stage": _build_outcome_entry(error.outcome),
-    }

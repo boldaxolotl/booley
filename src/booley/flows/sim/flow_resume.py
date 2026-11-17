@@ -38,9 +38,6 @@ from booley.targets.catalog import TargetCatalog
 from ..baseline_worktree import (
     git_full_sha,
 )
-from .build import (
-    SimulationBuildInfrastructureError,
-)
 from .execution import (
     SelectedTestRuns,
 )
@@ -72,7 +69,6 @@ from .record.planning import (
 )
 from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import (
-    _build_infrastructure_detail,
     _coverage_failed_target,
     _coverage_preflight_findings_outcome,
     _CoverageTargetError,
@@ -416,8 +412,6 @@ class SimulationRecordResumeMixin:
         if isinstance(error, SimulationRecordWorkloadMismatchError):
             detail.update(error.diagnostic.detail)
             message = error.diagnostic.report(verbose=self.args.verbose)
-        if isinstance(error, SimulationBuildInfrastructureError):
-            detail.update(_build_infrastructure_detail(error))
         if isinstance(error, (_CoverageAggregateError, _CoverageTargetError)):
             selector = str(error.detail["target"])
             detail["targets"] = {

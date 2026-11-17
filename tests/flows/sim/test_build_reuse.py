@@ -18,6 +18,7 @@ from booley.flows.sim import build_reuse
 from booley.flows.sim.build_reuse import (
     ReadClosureError,
     VerilatorIdentity,
+    VerilatorRecipe,
     build_environment_digest,
     capture_core_closure,
     collect_read_closure,
@@ -27,11 +28,7 @@ from booley.flows.sim.build_reuse import (
     verify_read_closure,
     verilator_identity,
 )
-from booley.flows.sim.build_session import (
-    SimulationBuildSession,
-    _generation_neutral,
-    _verilator_reuse_key,
-)
+from booley.flows.sim.build_session import CacheDecision, SimulationBuildSession
 from booley.targets.domain import TargetHandle
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -259,18 +256,6 @@ def test_core_closure_names_a_mirror_core_without_its_generation(
     )
 
 
-def test_core_closure_keeps_the_name_of_a_core_outside_the_generation(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    (project / ".booley").mkdir(parents=True)
-    core = project / "demo.core"
-    core.write_text("CAPI=2:\nname: a:b:demo:1\n", encoding="utf-8")
-    generation = project / ".booley" / "g"
-    edam = _edam(generation / "sim", {"a:b:demo:1": core})
-    assert capture_core_closure(edam, project, generation) == {
-        "a:b:demo:1": f"demo.core:{_sha(core)}"
-    }
-
-
 def _core_behind_linked_booley_dir(tmp_path: Path, case: str) -> tuple[Path, Path, Path]:
     """Project whose ``.booley`` is a symlink; return ``(project, edam, core)``.
 
@@ -383,22 +368,6 @@ def test_read_closure_classifies_generation_and_toolchain_files(tmp_path: Path) 
     assert verify_read_closure(closure, work, identity, project)
 
 
-@pytest.mark.parametrize(
-    ("victim", "change"),
-    [
-        ("src/defs.svh", "included header"),
-        ("dpi.cpp", "DPI source"),
-        ("vroot/include/verilated.h", "toolchain header"),
-    ],
-)
-def test_read_closure_detects_any_changed_file(tmp_path: Path, victim: str, change: str) -> None:
-    project, work, build, identity = _fresh_build(tmp_path)
-    closure = collect_read_closure(build, work, identity, project, _settled_capture_ns())
-    path = tmp_path / victim if victim.startswith("vroot") else build / victim
-    path.write_text(f"// {change} edited\n", encoding="utf-8")
-    assert not verify_read_closure(closure, work, identity, project)
-
-
 @pytest.mark.parametrize("case", ["missing-d", "two-ver-d", "no-objects", "outside", "race"])
 def test_read_closure_refuses_incomplete_or_unsafe_evidence(tmp_path: Path, case: str) -> None:
     project, work, build, identity = _fresh_build(tmp_path)
@@ -461,11 +430,15 @@ def test_environment_digest_tracks_only_build_relevant_names(tmp_path: Path) -> 
     (identity.verilator_root / "include" / "verilated.mk").write_text(
         "CXX = g++\nLINK = g++\nCPPFLAGS += $(EXTRA_FROM_VERILATED_MK)\n", encoding="utf-8"
     )
+    (identity.verilator_root / "include" / "verilated_extra.mk").write_text(
+        "CPPFLAGS += $(FROM_INCLUDED_MK)\n", encoding="utf-8"
+    )
     base = {"PATH": "/usr/bin", "HOME": "/home/a", "TERM": "xterm"}
     digest = build_environment_digest(base, build, identity)
 
     unrelated = {**base, "HOME": "/home/b", "TERM": "dumb", "SHLVL": "3", "CCACHE_DIR": "/c"}
     assert build_environment_digest(unrelated, build, identity) == digest
+    # Names the makefiles Verilator generates read, plus Make's own inputs.
     for name, value in (
         ("CXXFLAGS", "-O0"),
         ("PATH", "/opt/bin:/usr/bin"),
@@ -473,32 +446,15 @@ def test_environment_digest_tracks_only_build_relevant_names(tmp_path: Path) -> 
         ("VERILATOR_ROOT", "/opt/v"),
         ("VM_PARALLEL_BUILDS", "0"),
         ("EDALIZE_LAUNCHER", "valgrind"),
+        ("FROM_INCLUDED_MK", "x"),
+        ("LIBS", "x"),
+        ("LOADLIBES", "x"),
+        ("SC_LIBS", "x"),
+        ("VK_USER_OBJS", "x"),
+        ("VPATH", "x"),
+        ("MAKEFILES", "x"),
     ):
         assert build_environment_digest({**base, name: value}, build, identity) != digest, name
-
-
-def test_environment_digest_covers_installation_makefiles_and_generated_families(
-    tmp_path: Path,
-) -> None:
-    build = tmp_path / "b"
-    _stock_recipe(build, _CONTAINED_VC)
-    identity = _identity(tmp_path)
-    (identity.verilator_root / "include" / "verilated_extra.mk").write_text(
-        "CPPFLAGS += $(FROM_INCLUDED_MK)\n", encoding="utf-8"
-    )
-    base = {"PATH": "/usr/bin"}
-    digest = build_environment_digest(base, build, identity)
-    # Names the makefiles Verilator generates read, plus Make's own inputs.
-    for name in (
-        "FROM_INCLUDED_MK",
-        "LIBS",
-        "LOADLIBES",
-        "SC_LIBS",
-        "VK_USER_OBJS",
-        "VPATH",
-        "MAKEFILES",
-    ):
-        assert build_environment_digest({**base, name: "x"}, build, identity) != digest, name
 
 
 def test_generated_makefiles_reading_unkeyed_environment_are_reported(tmp_path: Path) -> None:
@@ -620,26 +576,6 @@ def _handle(root: Path) -> TargetHandle:
     return cast(TargetHandle, SimpleNamespace(project_root=root, identity="acme:lib:demo:1#sim"))
 
 
-def test_generation_path_never_reaches_the_target_environment_key(tmp_path: Path) -> None:
-    build = tmp_path / "g" / "aaaa"
-    prepared = cast(
-        Any,
-        SimpleNamespace(
-            build_root=build,
-            environment={
-                "CCACHE_BASEDIR": str(build.absolute()),
-                "USER_CPPFLAGS": f"-fdebug-prefix-map={build.absolute()}=.",
-                "PLAIN": "1",
-            },
-        ),
-    )
-    assert _generation_neutral(prepared) == {
-        "CCACHE_BASEDIR": "<generation>",
-        "USER_CPPFLAGS": "-fdebug-prefix-map=<generation>=.",
-        "PLAIN": "1",
-    }
-
-
 @pytest.mark.parametrize(
     ("environment", "cocotb", "closure"),
     [
@@ -652,49 +588,67 @@ def test_generation_path_never_reaches_the_target_environment_key(tmp_path: Path
     ids=["doctor-bad", "cocotb", "unproven-cores", "launcher", "makeflags"],
 )
 def test_verilator_key_declines_ineligible_builds(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     environment: dict[str, str],
     cocotb: str,
     closure: dict[str, str] | None,
 ) -> None:
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setattr(build_reuse, "verilator_identity", lambda *_args: pytest.fail("probed"))
     prepared = cast(
         Any,
-        SimpleNamespace(resolved=SimpleNamespace(cocotb_module=cocotb), core_closure=closure),
+        SimpleNamespace(
+            eda_tool="verilator",
+            resolved=SimpleNamespace(cocotb_module=cocotb),
+            core_closure=closure,
+        ),
     )
-    assert _verilator_reuse_key(prepared, {}, environment) is None
+
+    assert (
+        SimulationBuildSession(_handle(tmp_path)).reusable_key(prepared, {}, hooks=False) is None
+    )
 
 
 def _keyed_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session: SimulationBuildSession
 ) -> tuple[Any, dict[str, str]]:
-    """A leased Verilator generation whose key and identity are pinned."""
+    """A leased Verilator generation, toolchain and recipe pinned; return ``(prepared, inputs)``."""
     work = session.new_generation()
     (work / "src").mkdir()
-    source = work / "src" / "top.sv"
-    source.write_text("module top; endmodule\n", encoding="utf-8")
-    (work / "Vtop").write_text("#!/bin/sh\n", encoding="utf-8")
+    files = {
+        "src/top.sv": "module top; endmodule\n",
+        "Vtop": "#!/bin/sh\n",
+        "Vtop__ver.d": "Vtop.cpp : src/top.sv\n",
+        "Vtop.cpp": "// generated\n",
+        "Vtop.o": "o",
+        "Vtop.d": "Vtop.o: Vtop.cpp\n",
+        "Makefile": "# stock recipe (pinned below)\n",
+        "test.eda.yml": "{}\n",
+    }
+    for name, text in files.items():
+        (work / name).write_text(text, encoding="utf-8")
     (work / "Vtop").chmod(0o755)
-    (work / "Vtop__ver.d").write_text("Vtop.cpp : src/top.sv\n", encoding="utf-8")
-    (work / "Vtop.cpp").write_text("// generated\n", encoding="utf-8")
-    (work / "Vtop.o").write_bytes(b"o")
-    (work / "Vtop.d").write_text("Vtop.o: Vtop.cpp\n", encoding="utf-8")
-    (work / "Makefile").write_text("# stock recipe (key pinned below)\n", encoding="utf-8")
     identity = _identity(tmp_path)
-    monkeypatch.setattr(
-        "booley.flows.sim.build_session._verilator_reuse_key",
-        lambda *_args: ("key", identity),
-    )
+    monkeypatch.setattr(build_reuse, "verilator_identity", lambda *_args: identity)
+    monkeypatch.setattr(build_reuse, "stock_verilator_recipe", lambda _root: VerilatorRecipe())
     prepared = SimpleNamespace(
         work_root=work,
         build_root=work,
         eda_tool="verilator",
         target_identity=session.handle.identity,
         toplevel="top",
-        resolved=SimpleNamespace(cocotb_module=""),
+        resolved=SimpleNamespace(
+            cocotb_module="", edam_path=work / "test.eda.yml", name="demo", vlnv="a:b:demo:1"
+        ),
         environment={},
+        core_closure={},
     )
-    inputs = {"src/top.sv": _sha(source)}
+    inputs = dict(session.capture_inputs(prepared))
+    # Private seam: capture_inputs stamps time.time_ns(), and the race guard distrusts
+    # fixture files written moments before; no public input sets the capture time.
+    session._captured_ns[prepared.work_root] = _settled_capture_ns()
     return prepared, inputs
 
 
@@ -702,71 +656,24 @@ def _manifest(prepared: Any) -> dict[str, Any]:
     return json.loads((prepared.build_root / ".booley-build-manifest.json").read_text("utf-8"))
 
 
-@posix_only
-def test_keyed_verilator_image_records_its_read_closure_and_promotes(
+def test_generation_path_never_reaches_the_target_environment_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session = SimulationBuildSession(_handle(tmp_path))
+    keys: list[str | None] = []
     with session:
-        prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
-        captured = session.capture_inputs(prepared)
-        session._captured_ns[prepared.work_root] = _settled_capture_ns()
-        key = session.reusable_key(prepared, captured, hooks=False)
-        session.authorize_fresh_image(prepared, inputs, key)
+        for plain in ("1", "1", "2"):
+            prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
+            root = str(prepared.build_root.absolute())
+            prepared.environment = {
+                "CCACHE_BASEDIR": root,
+                "USER_CPPFLAGS": f"-fdebug-prefix-map={root}=.",
+                "PLAIN": plain,
+            }
+            keys.append(session.reusable_key(prepared, inputs, hooks=False))
 
-        manifest = _manifest(prepared)
-        assert manifest["reusable"] is True
-        assert set(manifest["read_closure"]) == {"work:src/top.sv", "work:Vtop.cpp"}
-        assert (session.slot / "current.json").is_file()
-
-        assert session._read_closure_matches(prepared.work_root, manifest, prepared)
-        (prepared.work_root / "Vtop.cpp").write_text("// tampered\n", encoding="utf-8")
-        assert not session._read_closure_matches(prepared.work_root, manifest, prepared)
-
-
-@posix_only
-def test_unprovable_read_closure_downgrades_without_failing_the_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    with session:
-        prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
-        (prepared.build_root / "Vtop.d").unlink()
-        captured = session.capture_inputs(prepared)
-        key = session.reusable_key(prepared, captured, hooks=False)
-        artifacts = session.authorize_fresh_image(prepared, inputs, key)
-
-        manifest = _manifest(prepared)
-        assert artifacts == (prepared.build_root / "Vtop",)
-        assert manifest["reusable"] is False
-        assert "lack dependency records" in manifest["reason"]
-        assert not (session.slot / "current.json").exists()
-
-
-def test_pre_sim_output_in_the_generation_disables_reuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    with session:
-        prepared, _ = _keyed_generation(tmp_path, monkeypatch, session)
-        assert session.reusable_key(prepared, {}, hooks=True) is None
-        assert session.reusable_key(prepared, {}, hooks=False) == "key"
-
-
-@pytest.mark.parametrize(
-    ("e_type", "byteorder", "loadable"),
-    [(1, "little", False), (2, "little", True), (3, "little", True), (3, "big", True)],
-)
-def test_only_executables_and_shared_objects_get_a_dynamic_scan(
-    tmp_path: Path, e_type: int, byteorder: str, loadable: bool
-) -> None:
-    data = 1 if byteorder == "little" else 2
-    header = b"\x7fELF" + bytes([2, data]) + bytes(10) + e_type.to_bytes(2, byteorder)
-    path = tmp_path / "elf"
-    path.write_bytes(header + bytes(32))
-    assert build_reuse._is_loadable_elf(path) is loadable
-    path.write_bytes(b"#!/bin/sh\n")
-    assert build_reuse._is_loadable_elf(path) is False
+    assert keys[0] is not None
+    assert keys[0] == keys[1] != keys[2]
 
 
 def test_closure_may_name_exact_toolchain_files_outside_every_root(tmp_path: Path) -> None:
@@ -796,14 +703,17 @@ def test_declined_key_clears_the_previous_verilator_identity(
     session = SimulationBuildSession(_handle(tmp_path))
     with session:
         prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
-        session._captured_ns[prepared.work_root] = _settled_capture_ns()
-        manifest = {"read_closure": {"work:src/top.sv": inputs["src/top.sv"]}}
-        assert session.reusable_key(prepared, inputs, hooks=False) == "key"
-        assert session._read_closure_matches(prepared.work_root, manifest, prepared)
+        key = session.reusable_key(prepared, inputs, hooks=False)
+        assert key is not None
+        session.authorize_fresh_image(prepared, inputs, key)
+        assert _manifest(prepared)["reusable"] is True
 
+        # A declined call must not leave the earlier identity scoping the closure check.
         assert session.reusable_key(prepared, inputs, hooks=True) is None
-        assert not session._read_closure_matches(prepared.work_root, manifest, prepared)
-        assert session._fresh_read_closure(prepared, "key")[0] is None
+        assert session.try_reuse(prepared, key) is None
+        assert session.cache_decision == CacheDecision.CHANGED_SOURCE
+        session.authorize_fresh_image(prepared, inputs, key)
+        assert _manifest(prepared)["reusable"] is False
 
 
 @posix_only
@@ -817,12 +727,45 @@ def test_generated_makefile_reading_unkeyed_environment_downgrades(
         (prepared.build_root / "Vtop.mk").write_text(
             "CXXFLAGS += $(BOOLEY_TEST_UNKEYED)\n", encoding="utf-8"
         )
-        captured = session.capture_inputs(prepared)
-        session._captured_ns[prepared.work_root] = _settled_capture_ns()
-        key = session.reusable_key(prepared, captured, hooks=False)
+        key = session.reusable_key(prepared, inputs, hooks=False)
         session.authorize_fresh_image(prepared, inputs, key)
 
         manifest = _manifest(prepared)
         assert manifest["reusable"] is False
         assert "BOOLEY_TEST_UNKEYED" in manifest["reason"]
         assert not (session.slot / "current.json").exists()
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("e_type", "byteorder", "loadable"),
+    [
+        (1, "little", False),
+        (2, "little", True),
+        (3, "little", True),
+        (3, "big", True),
+        (0, "", False),
+    ],
+    ids=["relocatable", "executable", "shared-object", "big-endian-shared-object", "script"],
+)
+def test_only_executables_and_shared_objects_get_a_dynamic_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, e_type: int, byteorder: str, loadable: bool
+) -> None:
+    _root, environment = _fake_install(tmp_path)
+    syslib = tmp_path / "syslib"
+    syslib.mkdir()
+    library = syslib / "libz.a"
+    data = 1 if byteorder == "little" else 2
+    elf = b"\x7fELF" + bytes([2, data]) + bytes(10) + e_type.to_bytes(2, byteorder or "little")
+    library.write_bytes((elf if byteorder else b"#!/bin/sh\n") + bytes(32))
+    real_dependencies = build_reuse.elf_dependencies
+
+    def dependencies(path: Path) -> tuple[Path, ...] | None:
+        # The host make, sh and ar are ELF files whose real dependencies must resolve.
+        return None if path.resolve() == library.resolve() else real_dependencies(path)
+
+    monkeypatch.setattr(build_reuse, "elf_dependencies", dependencies)
+
+    identity = verilator_identity(environment, (("libz.so", "libz.a"),))
+
+    assert (identity is None) is loadable

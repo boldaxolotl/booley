@@ -158,4 +158,5 @@ def test_worst_case_escaping_stays_under_the_record_ceiling() -> None:
     bounded = bounded_build_execution_document(_record_with("\x01" * (4 * RECORD_MAX_BYTES)))
     raw = canonical_json_bytes(bounded)
     assert len(raw) < RECORD_MAX_BYTES
+    # Private seam: readers validate it only while loading a published shared build.
     _validate_build_execution_document(json.loads(raw))
