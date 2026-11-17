@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,9 @@ from typing import Any
 import pytest
 
 from booley.flows.fpga.cli import FpgaArguments
+from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.fpga.request import FpgaRequest
+from booley.flows.implementation_comparison import ImplementationComparisonError
 from booley.flows.implementation_report import (
     ImplementationContext,
     ImplementationReport,
@@ -19,7 +22,9 @@ from booley.flows.implementation_report import (
     MetricPolicy,
     build_implementation_report,
 )
+from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from tests.flows.test_implementation_report import _pair_plan
 
 
@@ -216,3 +221,106 @@ def test_flow_hooks_must_be_overridden() -> None:
         flow._build_implementation_report(None, None, None)  # type: ignore[arg-type]
     with pytest.raises(NotImplementedError):
         flow._target_report_payload("t", None, None, None, Path("x"))  # type: ignore[arg-type]
+
+
+_FLOW_CLASSES = {"synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
+
+
+def _two_targets_one_baseline(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, list[Any], Path, list[str]]:
+    """A real Flow with Targets ``a`` and ``b`` both paired with baseline ``old``."""
+    flow = _FLOW_CLASSES[name]()
+    flow.parse_args(["--target", "a", "--work-dir", str(tmp_path), "--baseline", "v1"])
+    worktree = tmp_path / "baseline-worktree"
+    events: list[str] = []
+
+    @contextmanager
+    def fake_worktree(_root: Path, _ref: str, *, paired_project: object):
+        events.append("enter")
+        try:
+            yield worktree
+        finally:
+            events.append("exit")
+
+    def pair(candidate: str) -> Any:
+        return SimpleNamespace(
+            candidate=SimpleNamespace(selector=candidate, identity=f"{candidate}-id"),
+            baseline=SimpleNamespace(selector="old", identity="old-id"),
+        )
+
+    module = "booley.flows.implementation_flow"
+    monkeypatch.setattr(f"{module}.baseline_worktree", fake_worktree)
+    monkeypatch.setattr(f"{module}.git_short_sha", lambda *_args: "abc1234")
+    monkeypatch.setattr(f"{module}.git_full_sha", lambda *_args: "a" * 40)
+    monkeypatch.setattr(f"{module}.baseline_execution_context", lambda *_args: ({}, {}))
+    monkeypatch.setattr(flow, "_write_progress_report", lambda *_args, **_kwargs: None)
+    return flow, [pair("a"), pair("b")], worktree, events
+
+
+@pytest.mark.parametrize("name", ["synth", "fpga"])
+def test_shared_baseline_target_runs_once(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow, pairs, worktree, events = _two_targets_one_baseline(name, tmp_path, monkeypatch)
+    ran: list[tuple[str, Path]] = []
+
+    def run_target(target: str, _publish: Any) -> _ProbeMetrics:
+        ran.append((target, Path(flow.args.work_dir)))
+        return _ProbeMetrics()
+
+    monkeypatch.setattr(flow, "_run_target", run_target)
+
+    results, short_sha = flow._run_baseline_configs(pairs)
+
+    assert ran == [("old", worktree)]
+    assert short_sha == "abc1234"
+    assert set(results) == {"a", "b"}
+    assert results["a"] == results["b"]
+    assert results["a"] is not results["b"]
+    assert events == ["enter", "exit"]
+
+
+@pytest.mark.parametrize(
+    ("name", "failure"),
+    [("synth", "run"), ("synth", "context"), ("fpga", "run"), ("fpga", "context")],
+    ids=["synth-run", "synth-context", "fpga-run", "fpga-context"],
+)
+def test_baseline_failure_restores_selected_checkout(
+    name: str, failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow, pairs, _worktree, events = _two_targets_one_baseline(name, tmp_path, monkeypatch)
+    handles = {"a": object()}
+    refs = {"a": object()}
+    flow._target_handles = handles
+    flow._target_execution_refs = refs
+    flow._execution_role = "candidate"
+
+    def run_target(_target: str, _publish: Any) -> _ProbeMetrics:
+        raise RuntimeError("baseline crashed")
+
+    def refuse_context(*_args: object) -> None:
+        raise ImplementationComparisonError("baseline Target gone at ref")
+
+    if failure == "run":
+        monkeypatch.setattr(flow, "_run_target", run_target)
+    else:
+        monkeypatch.setattr(
+            "booley.flows.implementation_flow.baseline_execution_context", refuse_context
+        )
+
+    if failure == "run":
+        with pytest.raises(RuntimeError, match="baseline crashed"):
+            flow._run_baseline_configs(pairs)
+    else:
+        outcome, short_sha = flow._run_baseline_configs(pairs)
+        assert isinstance(outcome, EndpointOutcome)
+        assert outcome.exit_code == EXIT_ERROR
+        assert "baseline Target gone at ref" in outcome.report_text
+        assert short_sha is None
+
+    assert events == ["enter", "exit"]
+    assert Path(flow.args.work_dir) == tmp_path
+    assert flow._target_handles is handles
+    assert flow._target_execution_refs is refs
+    assert flow._execution_role == "candidate"
