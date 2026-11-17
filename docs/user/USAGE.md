@@ -417,9 +417,9 @@ Booley session S3 resumes conversation <id> in worktree <path>.
   (Codex options may come before `resume` and between `resume` and the id).
 - The latest conversation: Claude's `-c`/`--continue` and Codex's
   `resume --last` (also after `exec`) continue the most recent conversation
-  (by the agent CLI's own last-update time) among the main checkout and the worktrees whose
-  session is not running; a main checkout in use is skipped too. Booley then
-  resumes that conversation by its id. If
+  (by the agent CLI's own last-update time) among the main checkout and the
+  worktrees whose session is not running; a main checkout in use is skipped
+  too. Booley then resumes that conversation by its id. If
   Booley cannot tell which is newest, the agent CLI picks from the main
   checkout, as before. `resume --last --all`, and a Codex resume that chooses
   its own directory (`-C`/`--cd`, `--worktree`), are left to Codex.
