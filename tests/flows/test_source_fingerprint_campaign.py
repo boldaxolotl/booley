@@ -9,6 +9,8 @@ from tests.conftest import symlink_or_skip
 
 
 def _write_core(tmp_path, name: str, target: str, source: str) -> None:
+    (tmp_path / "rtl").mkdir(exist_ok=True)
+    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
     (tmp_path / f"{name}.core").write_text(
         "CAPI=2:\n"
         f"name: ::{name}:0\n"
@@ -19,8 +21,6 @@ def _write_core(tmp_path, name: str, target: str, source: str) -> None:
 
 
 def test_campaign_fingerprint_tracks_tests_and_selected_core(tmp_path) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
     _write_core(tmp_path, "design", "sim_unit", "rtl/dut.sv")
     _write_core(tmp_path, "unrelated", "sim_other", "rtl/dut.sv")
     booley_dir = tmp_path / ".booley"
@@ -96,8 +96,6 @@ def test_campaign_fingerprint_tracks_transitive_core_changes(tmp_path) -> None:
 def test_campaign_fingerprint_uses_resolved_booley_dir(tmp_path, monkeypatch) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    (checkout / "rtl").mkdir()
-    (checkout / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
     _write_core(checkout, "design", "sim", "rtl/dut.sv")
     booley_dir = tmp_path / "control"
     booley_dir.mkdir()
@@ -115,8 +113,6 @@ def test_campaign_fingerprint_uses_resolved_booley_dir(tmp_path, monkeypatch) ->
 
 
 def test_unknown_target_fails_instead_of_falling_back(tmp_path) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
     _write_core(tmp_path, "design", "sim", "rtl/dut.sv")
 
     with pytest.raises(UnknownTargetError):
@@ -124,8 +120,6 @@ def test_unknown_target_fails_instead_of_falling_back(tmp_path) -> None:
 
 
 def test_workload_fingerprint_tracks_pre_sim_program_not_its_arguments(tmp_path) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
     _write_core(tmp_path, "design", "sim", "rtl/dut.sv")
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
@@ -150,8 +144,7 @@ def test_workload_fingerprint_tracks_pre_sim_program_not_its_arguments(tmp_path)
 def test_workload_fingerprint_tracks_pre_sim_program_under_booley_dir(tmp_path, linked) -> None:
     """A Pre-Sim program behind a linked ``.booley`` entry stays in ``workload`` (#2250)."""
     root = tmp_path / "project"
-    (root / "rtl").mkdir(parents=True)
-    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    root.mkdir()
     _write_core(root, "design", "sim", "rtl/dut.sv")
     data = tmp_path / "booley-data" if linked else root / ".booley"
     (data / "hooks").mkdir(parents=True)
