@@ -191,6 +191,30 @@ write them:
 
   A test that mixes pins with these checks keeps only the checks.
 
+A test replaces only what lies outside Booley: a command, Docker, the network,
+the clock, the host environment. Booley's code between the entry point the
+test calls and that boundary runs for real, because replaced code is untested
+code. When a test needs something replaced:
+
+- **Do not patch Booley's own logic, public or private.** The test keeps
+  passing after production stops calling the patched function. Moving a patch
+  from `_helper` to a public function keeps the mock. Call the public entry
+  point (a module's public function, the CLI, an MCP tool) and assert its
+  result.
+- **Prefer the real collaborator**: a temporary Git repository, a real store,
+  a file under `tmp_path`.
+- **Patch a Booley name only where it is the boundary**: the one function that
+  runs the command, reads the clock (principle 16), or tells the host from the
+  Sandbox. Any other patch carries a comment that says why no public entry
+  point reaches the behavior.
+- **One shared fake per boundary.** The fake lives in a support module under
+  `tests/`, not in a `test_*.py` file, and every test of that boundary uses
+  it. A test does not patch `subprocess` or a command runner itself: copies
+  of a stand-in drift apart, and away from the tool they imitate.
+- **Cross a boundary in one place.** New code that runs a command or reads
+  the clock does it through one function (principle 9), so a test has one
+  name to replace.
+
 To check a new test, break the code it covers: flip a condition, swap `min`
 for `max`, drop a call. If the test still passes, it catches nothing.
 
