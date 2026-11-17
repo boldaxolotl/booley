@@ -2058,7 +2058,7 @@ Common filters and options (consumer subcommands accept these):
   --with-reset       Include reset phase (default: skip until deassert).
   --clock SIG        Clock for cycle grid (default: auto *clk*).
   --sample-mode MODE Sync observation: post-edge (default) or pre-edge.
-  --reset SIG        Reset for skip detection (default: auto *rst*).
+  --reset SIG        Reset for skip detection (default: auto *rst* or *reset*).
   --limit N          Record/column cap (query default 2000; list 400).
   --format text|json JSON: list/value/find/stats/signal/wave/distance/overview.
 

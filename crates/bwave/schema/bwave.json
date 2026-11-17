@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.4.0/crates/bwave/schema/bwave.json",
   "title": "B-Wave --format json envelope",
-  "description": "B-Wave JSON envelope revision 2, emitted by `--format json` on list, value, find, stats, signal, wave, distance and overview; sample, diff and stuck are text-only and exit 2 on `--format json`. Clock-grid diagnostics and stopped ranges are advisory. `bwave schema` prints the revision the installed binary emits.",
+  "description": "B-Wave JSON envelope revision 2, emitted by `--format json` on list, value, find, stats, signal, wave, distance and overview; sample, diff and stuck are text-only and exit 2 on `--format json`. Clock-grid diagnostics and stopped ranges are advisory. The `reset` object reports the reset the query used. `bwave schema` prints the revision the installed binary emits.",
   "type": "object",
   "required": [
     "$schema",
@@ -75,6 +75,10 @@
       "items": {
         "$ref": "#/$defs/stoppedRange"
       }
+    },
+    "reset": {
+      "$ref": "#/$defs/resetReport",
+      "description": "The reset the query used and the cycles it skipped. Present on sync queries and `overview`; absent on async queries and `list`."
     }
   },
   "allOf": [
@@ -208,6 +212,51 @@
     }
   ],
   "$defs": {
+    "resetReport": {
+      "type": "object",
+      "required": [
+        "signal",
+        "polarity",
+        "chosen_by",
+        "deassert_tick",
+        "deassert_time",
+        "skipped_cycles",
+        "with_reset"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "type": ["string", "null"],
+          "description": "Full name of the reset signal; null when the store has none."
+        },
+        "polarity": {
+          "enum": ["active_low", "active_high", null],
+          "description": "Polarity guessed from the signal's name; null without a reset."
+        },
+        "chosen_by": {
+          "enum": ["auto", "--reset"],
+          "description": "Whether detection or `--reset` picked the signal."
+        },
+        "deassert_tick": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Tick of the first transition to the inactive value; null when the reset never deasserts."
+        },
+        "deassert_time": {
+          "type": ["string", "null"],
+          "description": "deassert_tick in the store's timescale, such as `25ns`."
+        },
+        "skipped_cycles": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Clock cycles before the deassert that sync queries skip; 0 with --with-reset, without a clock or without a deassert."
+        },
+        "with_reset": {
+          "type": "boolean",
+          "description": "Whether --with-reset kept the reset phase."
+        }
+      }
+    },
     "listData": {
       "type": "object",
       "required": [

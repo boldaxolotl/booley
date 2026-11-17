@@ -79,31 +79,6 @@ bwave gui @dut \
 
 ## Common errors
 
-- `ERROR: no signals match pattern(s) ...` (exit 2): every pattern matched
-  nothing. Bare-name patterns use suffix-match — `dmem_addr` matches
-  `tb.dut.dmem_addr` but NOT `tb.dut.dmem_addr_next`. A glob (`*`, `?`, `[`)
-  matches the full path or the path relative to the store's common scope: the
-  `# scope:` line an unfiltered `bwave list` prints, so with `# scope: TOP.tb`
-  `dut.*` finds `TOP.tb.dut.*` at any depth. It is anchored at that scope: it
-  never reaches `TOP.tb.other.dut.x` or anything outside it. (A narrowed
-  `list -s` prints a deeper scope, which is not the anchor.) When a glob
-  matches only below some other scope, the error carries
-  `did you mean 'TOP.tb.dut.u_core.*'?` (the first such place in store
-  order); paste that form. Use `*dmem_addr*`
-  for substring, and `bwave list` to see what exists. JSON-mode `find`/`value`/
-  `stats` still print an empty envelope on stdout alongside the error.
-- `# WARNING: no signals match '<pat>' — filter dropped`: one `-s` of several
-  matched nothing, so your result is missing that row (exit stays 0 because a
-  sibling matched). **Do not read the partial table as the whole answer.**
-  Before assuming a typo, check `bwave list`: the signal may never have been
-  *dumped*. Unpacked arrays and memories (`reg [15:0] mem [0:15]`) are commonly
-  absent from the trace entirely, and an iverilog log full of
-  `VCD warning: ignoring signals in previously scanned scope` says the dumper,
-  not your pattern, is at fault. No pattern will recover a signal that was
-  never written.
-- **A bare name matches at every scope depth.** `-s o_data` returns both
-  `o_data` and `tb.dut.o_data` as separate identical rows, doubling the cost of
-  the widest signals. Anchor the pattern when you know the scope.
 - `ERROR: waveform store has no signals` (exit 2 on queries, exit 0 on `list`):
   the store is empty — a header-only trace.fst, the signature of a Verilator
   sim traced via the auto-generated `--main`. Re-run with a custom C++ `--exe`

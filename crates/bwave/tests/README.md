@@ -18,6 +18,7 @@ in the root `pyproject.toml`), nor by anything in the top-level `tests/` tree.
 | `test_vcd_corpus.py`              | Excerpt/replay correctness and determinism              | `pytest tests/test_vcd_corpus.py` |
 | `test_benchmark_vcd.py`           | Benchmark schema, metrics, and acceptance-gate behavior | `pytest tests/test_benchmark_vcd.py` |
 | `test_benchmark_vcd_fifo.py`      | FIFO producer proof, converter metrics, and gates       | `pytest tests/test_benchmark_vcd_fifo.py` |
+| `test_json_schema.py`             | `--format json` output of each command checked against `bwave schema` | `pytest tests/test_json_schema.py` |
 | `native_fst_verilator_test.py`    | Native Verilator FST vs VCD+convert differential        | `pytest tests/native_fst_verilator_test.py` |
 | `vcd_corpus.py`                   | Capture real timestamp windows and replay benchmark corpora | see below |
 | `benchmark_vcd.py`                | Run named serial corpora and write a JSON result record | see below |

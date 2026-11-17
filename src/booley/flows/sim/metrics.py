@@ -8,9 +8,9 @@ types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.core.boundary import as_dict, as_int
 from booley.flows.metric_declarations import (
@@ -81,6 +81,10 @@ def coverage_record_path(outcome: SimulationRecordOutcome) -> Path:
 def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValue]:
     """Coverage percentages by declared name; empty unless collection completed.
 
+    Raises :class:`MetricsUnavailableError` when the collector itself failed (an unreadable
+    or incompatible native database, a failed or disagreeing merge): the run measured no
+    coverage. A design-caused abort returns ``{}``, so the test counts stay values.
+
     Computed from the point counts, not the stored two-decimal ``percent``, which would
     round 20,000 of 20,001 points up to ``100.0`` where the coverage floor compares the
     exact fraction.
@@ -91,7 +95,13 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
         ).loaded.coverage_record
     except CoverageRecordReferenceError as error:
         raise MetricsUnavailableError(f"the Coverage Record could not be read: {error}") from error
-    if coverage_record.collection["status"] != "complete":
+    collection = coverage_record.collection
+    if collection["status"] != "complete":
+        for diagnostic in cast("Iterable[Mapping[str, Any]]", collection["diagnostics"]):
+            if diagnostic["code"] != "COV_SIMULATION_ABORTED":
+                raise MetricsUnavailableError(
+                    f"the coverage collection did not complete: {diagnostic['message']}"
+                )
         return {}
     return {
         COVERAGE_METRIC_NAMES[rollup.metric]: rollup.covered_points * 100 / rollup.eligible_points
@@ -129,6 +139,7 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     ``cycle_count`` is keyed by Test Run name and only for a Test Run that passed with
     a count. A coverage run adds the five coverage percentages, omitted when the
     coverage collection did not complete (a failing test is still a value).
+    A collector failure raises instead.
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
     Test Run: the Simulation Record did not finish, a Test Run ended in infrastructure error, or
