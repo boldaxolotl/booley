@@ -1332,6 +1332,9 @@ def _run_runtime_phase(
         reporter.fail_,
     )
     _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_swap(
+        project, docker_exe, sandbox_image, reporter.pass_, reporter.warn_, reporter.skip_
+    )
     _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
@@ -1731,6 +1734,83 @@ def _check_sandbox_memory(
         )
         return
     _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
+
+
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+
+def _read_host_memory(
+    docker_exe: str | None, sandbox_image: str
+) -> tuple[resource_policy.HostMemory | None, str]:
+    """The Docker host's memory and swap, or ``None`` and why it cannot be read.
+
+    Inside the Sandbox ``/proc/meminfo`` is the Docker host's already; outside, a
+    short probe container of the Sandbox Image reads it.
+    """
+    if runtime_context.inside_session_runtime():
+        try:
+            text = _PROC_MEMINFO.read_text(encoding="utf-8")
+            return resource_policy.parse_meminfo(text), ""
+        except (OSError, ValueError) as exc:
+            return None, f"cannot read /proc/meminfo: {exc}"
+    if docker_exe is None:
+        return None, "Docker is not available"
+    try:
+        return pi.probe_docker_host_memory(sandbox_image), ""
+    except pi.DockerImageError as exc:
+        return None, str(exc)
+
+
+def _check_sandbox_swap(
+    project: ProjectAudit | None,
+    docker_exe: str | None,
+    sandbox_image: str,
+    _pass: Check,
+    _warn: Warn,
+    _skip: Check,
+) -> None:
+    """ADR 0087: warn when ``[sandbox].swap`` asks for swap the Docker host cannot back.
+
+    Checks the allowance issuance writes (``memory_swap_limit``), so a current
+    Sandbox specification and this check agree; a stale one is the drift WARN.
+    """
+    _warn = _warning_sink(_warn, "sandbox.swap-unbacked")
+    if project is None:
+        _skip("sandbox swap skipped - no valid project config")
+        return
+    mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
+    memory = resource_policy.parse_memory_limit(mem_str)
+    if memory is None:
+        _skip("sandbox swap skipped - no swap limit without a parseable [sandbox].memory")
+        return
+    swap_str = resource_policy.configured_sandbox_swap(project.booley_toml)
+    if swap_str and resource_policy.parse_memory_limit(swap_str) is None:
+        _warn(
+            f"[sandbox] swap = {swap_str!r} is unparseable: the default swap limit applies",
+            'set [sandbox] swap to a size such as "4g", or "0" for no swap',
+        )
+        return
+    host, why = _read_host_memory(docker_exe, sandbox_image)
+    if host is None:
+        _skip(f"sandbox swap skipped - the Docker host's swap is unknown: {why}")
+        return
+    swap = resource_policy.sandbox_swap_bytes(mem_str, swap_str, host.swap_bytes) or 0
+    fmt = resource_policy.format_memory
+    if swap > host.swap_bytes:
+        _warn(
+            f"[sandbox].swap = {fmt(swap)} is more than the {fmt(host.swap_bytes)} of swap "
+            "the Docker host has",
+            'lower [sandbox].swap ("0" disables swap) or add host swap, '
+            "then run `booley session refresh`",
+        )
+    elif memory + swap > host.memory_bytes + host.swap_bytes:
+        _warn(
+            f"[sandbox].memory + swap = {fmt(memory + swap)} is more than the "
+            f"{fmt(host.memory_bytes + host.swap_bytes)} of memory plus swap the Docker host has",
+            "lower [sandbox].memory or [sandbox].swap, then run `booley session refresh`",
+        )
+    else:
+        _pass(f"[sandbox].swap: the Sandbox may swap up to {fmt(swap)} beyond its memory")
 
 
 def _check_runtime_location(

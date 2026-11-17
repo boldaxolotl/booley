@@ -33,6 +33,45 @@ def test_configured_sandbox_memory_accepts_current_and_legacy_shapes() -> None:
     assert resource_policy.configured_sandbox_memory({"sandbox": "invalid"}) == ""
 
 
+_MEMINFO = "MemTotal:       16384000 kB\nMemFree: 1 kB\nSwapTotal:       2097152 kB\n"
+
+
+def test_parse_meminfo_reads_memory_and_swap_in_bytes() -> None:
+    host = resource_policy.parse_meminfo(_MEMINFO)
+    assert host == resource_policy.HostMemory(16384000 * 1024, 2 * _GIB)
+    with pytest.raises(ValueError, match="SwapTotal"):
+        resource_policy.parse_meminfo("MemTotal: 1 kB\n")
+    with pytest.raises(ValueError, match="MemTotal"):
+        resource_policy.parse_meminfo("SwapTotal: 1 kB\n")
+
+
+def test_configured_sandbox_swap_reads_the_section() -> None:
+    assert resource_policy.configured_sandbox_swap({"sandbox": {"swap": " 2g "}}) == "2g"
+    assert resource_policy.configured_sandbox_swap({"sandbox": {"swap": 3}}) == ""
+    assert resource_policy.configured_sandbox_swap({"sandbox": "invalid"}) == ""
+
+
+@pytest.mark.parametrize(
+    ("memory", "swap", "host_swap", "expected"),
+    [
+        pytest.param("12g", "", 16 * _GIB, "15g", id="host-16g"),
+        pytest.param("12g", "", 1 * _GIB, "13g", id="host-1g"),
+        pytest.param("12g", "", 0, "12g", id="no-host-swap"),
+        pytest.param("12g", "lots", 16 * _GIB, "15g", id="unparseable-swap"),
+        pytest.param("12g", "0", 16 * _GIB, "12g", id="zero"),
+        pytest.param("12g", "2g", 0, "14g", id="explicit"),
+        pytest.param("1000m", "", 16 * _GIB, "1250m", id="mebibytes"),
+        pytest.param("1000k", "", 16 * _GIB, "1250k", id="kibibytes"),
+        pytest.param("1001", "", 16 * _GIB, "1251", id="bytes"),
+        pytest.param("", "2g", 16 * _GIB, "", id="no-memory"),
+        pytest.param("lots", "2g", 16 * _GIB, "", id="unparseable-memory"),
+    ],
+)
+def test_memory_swap_limit(memory: str, swap: str, host_swap: int, expected: str) -> None:
+    """The default swap is a quarter of memory, capped at the host's swap."""
+    assert resource_policy.memory_swap_limit(memory, swap, host_swap) == expected
+
+
 def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeypatch) -> None:
     invalid = tmp_path / "memory.max"
     invalid.write_text("invalid", encoding="utf-8")

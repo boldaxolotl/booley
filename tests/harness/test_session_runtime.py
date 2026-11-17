@@ -3740,6 +3740,46 @@ def test_container_resume_matches_issued_egress_topology(
     )
 
 
+@pytest.mark.parametrize(
+    "memory_swap, matches",
+    [
+        pytest.param(10 * 1024**3, True, id="issued-limit"),
+        pytest.param(16 * 1024**3, False, id="dockers-default-twice-memory"),
+        pytest.param(-1, False, id="unlimited"),
+    ],
+)
+def test_container_swap_limit_must_match_spec(tmp_path, monkeypatch, memory_swap, matches):
+    spec = build_spec(dc.APP_NONE, image="sha256:test", memory="8g", memory_swap="10g")
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+    runtime_spec.pin_image(spec)
+    environment = {**spec["remoteEnv"], **spec["containerEnv"]}
+    state = {
+        "Image": "sha256:test",
+        "Config": {
+            "Image": "sha256:test",
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+        },
+        "HostConfig": {"Memory": 8 * 1024**3, "MemorySwap": memory_swap},
+        "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+    }
+    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
+    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
+    monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        sr,
+        "_docker_stdout",
+        lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
+    )
+    assert (
+        sr.container_matches_issuance(
+            "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
+        )
+        is matches
+    )
+
+
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
     spec = build_spec(dc.APP_NONE)
     argv = sr.docker_run_argv(spec, tmp_path, "test")

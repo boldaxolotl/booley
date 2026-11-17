@@ -75,6 +75,7 @@ container:
 ```toml
 [sandbox]
 memory = "8g"                                  # container memory limit; unset = no limit
+# swap = "2g"                                  # swap beyond memory; default a quarter of memory
 # image = "booley-sandbox-riscv"               # Sandbox Image to use, see Custom sandbox image
 # pip_requirements = ["sim-requirements.txt"]  # Python packages to bake into the image
 # mount_host_skills = true                     # also load your own agent skills
@@ -84,6 +85,14 @@ memory = "8g"                                  # container memory limit; unset =
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
 admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
+
+`swap` is the swap the Sandbox may use beyond `memory`. Unset, it is a quarter
+of `memory`, but no more than the swap your Docker host has (on Windows, the
+Docker Desktop VM's): `memory = "12g"` allows 3 GiB of swap. Docker's own
+default, as much swap as memory, never applies. `swap = "0"` gives a Sandbox
+no swap, and `swap` has no effect without `memory`. `booley doctor` warns when
+the host cannot back the setting. The same limit applies to `booley shell`.
+
 Every `[sandbox]` change takes effect when you
 [apply it](#after-changing-sandbox-settings).
 

@@ -33,6 +33,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.audit.resource_policy import HostMemory, parse_meminfo
 from booley.config.sandbox import (
     SANDBOX_IMAGE,
     project_image_name,
@@ -469,6 +470,34 @@ def project_data_alias_capable(image_id: str) -> bool:
             f"cannot prove Booley Directory layout of {image_id}: {result.stderr.strip()}"
         )
     return result.stdout.strip() == "canonical-alias"
+
+
+def probe_docker_host_memory(image: str) -> HostMemory:
+    """Read the Docker host's memory and swap with a short probe container of *image*.
+
+    Reading ``/proc/meminfo`` inside the container shows the Docker host's own
+    memory, so on Windows it is the Docker Desktop VM's, not the Windows host's.
+    Raises ``DockerImageError`` naming the cause when the probe fails.
+    """
+    try:
+        result = run_captured_bounded(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--pull=never",
+                "--network=none",
+                "--entrypoint=cat",
+                image,
+                "/proc/meminfo",
+            ],
+            timeout=30,
+        )
+        if result.returncode:
+            raise DockerImageError(result.stderr.strip() or f"exit status {result.returncode}")
+        return parse_meminfo(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError, DockerImageError) as exc:
+        raise DockerImageError(f"cannot read the Docker host's swap with {image}: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)

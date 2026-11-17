@@ -1830,9 +1830,7 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect 
         return False
     if not _session_hardening_matches(config, host):
         return False
-    memory = _flag_values(spec.get("runArgs", []), "--memory")
-    expected_memory = 0 if not memory else _memory_bytes(memory[0])
-    if expected_memory is None or host.get("Memory") != expected_memory:
+    if not _memory_limits_match(spec, host):
         return False
     expected_networks = _flag_values(spec.get("runArgs", []), "--network")
     if set(networks) != set(expected_networks):
@@ -1900,6 +1898,17 @@ def _session_hardening_matches(config: dict, host: dict) -> bool:
         and security[0] in {"no-new-privileges", "no-new-privileges:true"}
         and host.get("PidsLimit") == 4096
     )
+
+
+def _memory_limits_match(spec: Mapping[str, object], host: Mapping[str, object]) -> bool:
+    """The container's memory limit, and its swap limit when the spec sets one, are the issued."""
+    run_args = spec.get("runArgs", [])
+    memory = _flag_values(run_args, "--memory")
+    expected_memory = 0 if not memory else _memory_bytes(memory[0])
+    if expected_memory is None or host.get("Memory") != expected_memory:
+        return False
+    memory_swap = _flag_values(run_args, "--memory-swap")
+    return not memory_swap or host.get("MemorySwap") == _memory_bytes(memory_swap[0])
 
 
 def _flag_values(raw: object, flag: str) -> list[str]:
