@@ -1,7 +1,8 @@
 """The Base of a measured commit: how it is chosen, what changed since, which edits are protected.
 
 Contract for the caller (``booley measure``, #3507; rendering is #3505): resolve the
-Base with :func:`resolve_base`, list what the commit changed since it with
+Base with :func:`resolve_base` (a Versioned Booley Directory's rules Base:
+:func:`resolve_rules_base`), list what the commit changed since it with
 :func:`changed_files`, then report which of those changes touch the measured tree's
 protected set (:func:`protected_edits`, built from ``protected_set``). Everything
 reads Git objects of the live RTL repository, never its working tree, and only
@@ -121,7 +122,34 @@ def resolve_base(repository: Path, commit: str, requested: str | None = None) ->
     """
     if requested is not None:
         return _requested_base(repository, commit, requested)
-    for ref, label, choice in _DEFAULT_REFERENCES:
+    return _default_base(repository, commit, _DEFAULT_REFERENCES)
+
+
+def resolve_rules_base(repository: Path, commit: str) -> Base:
+    """Choose the rules Base of *commit* in a Versioned Booley Directory *repository*.
+
+    As the default Base of :func:`resolve_base`, except that local ``main`` comes first
+    when it holds commits ``origin/HEAD`` lacks: unpushed rules are still the rules the
+    measured commit is compared with. ``--base`` never moves it.
+    """
+    local, remote = (
+        _rev(repository, "refs/heads/main"),
+        _rev(repository, "refs/remotes/origin/HEAD"),
+    )
+    if (
+        local is not None
+        and remote is not None
+        and _merge_base(repository, local, remote) != local
+    ):
+        return _default_base(repository, commit, _DEFAULT_REFERENCES[::-1])
+    return _default_base(repository, commit, _DEFAULT_REFERENCES)
+
+
+def _default_base(
+    repository: Path, commit: str, references: tuple[tuple[str, str, BaseChoice], ...]
+) -> Base:
+    """The merge-base of *commit* with the first of *references* that resolves."""
+    for ref, label, choice in references:
         reference = _rev(repository, ref)
         if reference is None:
             continue

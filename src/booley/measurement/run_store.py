@@ -213,10 +213,18 @@ class MeasurementStore:
         latest = self.history(key)[-1:]
         return latest[0] if latest and latest[0].measured else None
 
-    def base_run(self, project_tree: str) -> StoredRun | None:
-        """The latest run of the project tree, whatever its rules tree or status."""
+    def base_run(self, project_tree: str, booley_tree: str | None) -> StoredRun | None:
+        """The latest run of the project tree, preferring one under *booley_tree*, any status.
+
+        Without a run under *booley_tree* (or with ``None``: no preference) it is the
+        latest run of the project tree, whatever its rules tree.
+        """
         runs = self._runs_in(project_tree)
-        return runs[-1] if runs else None
+        under = [
+            run for run in runs if booley_tree is not None and run.key.booley_tree == booley_tree
+        ]
+        chosen = under or runs
+        return chosen[-1] if chosen else None
 
     def clock_names(self, identity: str, flow: str) -> tuple[str, ...]:
         """Clock names of the newest stored run that has per-clock values for the table."""
