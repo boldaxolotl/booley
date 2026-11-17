@@ -119,7 +119,7 @@ from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.display_identity import DisplayIdentity
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, EndpointOutcome
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
@@ -512,7 +512,7 @@ def _params_to_argv(
     return argv
 
 
-# Watchdog sampling interval while a child may be queued for its class slot.
+# Watchdog sampling interval while a child may be queued for memory admission.
 # Queue-state reads are a handful of small file stats/reads per tick; 5s keeps
 # the budget accounting within one tick of the truth without measurable IO.
 
@@ -959,15 +959,18 @@ def _format_job_attached(name: str, run_id: str) -> str:
 def _format_job_running(name: str, run_id: str) -> str:
     """Message returned when a heavy endpoint detaches past the inline wait."""
     phase = _job_phase(run_id)
-    waiting = (
-        "is waiting for its concurrency slot"
+    retry = (
+        "the retry has not started" if OOM_REQUEUE_REASON in phase else "the run has not started"
+    )
+    status = (
+        f"is queued for memory and has not started yet (run_id={run_id}). This is NOT the "
+        f"result — {retry}."
         if phase.startswith("QUEUED")
-        else "is taking longer than the inline wait"
+        else f"is taking longer than the inline wait and is now running in the background "
+        f"(run_id={run_id}). This is NOT the result — the run has not finished."
     )
     return (
-        f"{phase}: '{name}' {waiting} and is now "
-        f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. With several Jobs running, call "
+        f"{phase}: '{name}' {status} With several Jobs running, call "
         f"'{catalog.POLL_MCP_TOOL_NAME}' with no run_id to get whichever of your Jobs "
         f"finishes first; pass run_id={run_id} only to wait for this Job alone. Keep "
         f"polling until you have its EXIT_CODE. Pass/fail criteria are recorded only "
@@ -976,7 +979,7 @@ def _format_job_running(name: str, run_id: str) -> str:
 
 
 def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
-    """Message for a poll whose job is still running (or queued for a slot).
+    """Message for a poll whose job is still running (or queued for memory).
 
     *owned*: the polling agent started the Job, so an argument-free poll covers it.
     """

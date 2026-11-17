@@ -54,6 +54,10 @@
         "description": "Review focus category. RTL: bugs, code_style, optimization, protocol, security, spec. TB: quality.",
         "type": "string"
       },
+      "recheck": {
+        "description": "Re-check the open findings of the Reviewer evidence file at PATH, which an earlier review or re-check wrote, against the current sources: each becomes fixed, still open or can't tell, and no new finding is reported. Category, focus and scope come from the file.",
+        "type": "string"
+      },
       "scope": {
         "description": "Comma-separated review files",
         "type": "string"

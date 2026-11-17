@@ -89,8 +89,8 @@ step ends.
 | What | Where |
 |---|---|
 | Resource History | `booley resources` and `booley resources --json`; the file `.booley/runtime/resources/history.json` |
-| Memory claims, holders and waiters | `.booley/runtime/jobs/slots/memory/`: `h-*.json` (running) and `w-*.json` (waiting), each with a `memory` object (`budget_mb`, `reservation_mb`, `run_alone`, `seats`, `wall_s`, `companion`); only a claim requeued after an out-of-memory kill also has `queue_reason`. An ordinary waiter's reason is on the CLI `[slot]` line and in `booley_poll`. Copy them while a Job waits or runs; a small loop that copies the directory every few seconds into `evidence/` catches shrinks |
-| Queue text on the CLI | stderr of the waiting `booley flow` run: a `[slot]` line about every 30 seconds |
+| Memory claims, holders and waiters | `.booley/runtime/jobs/slots/memory/`: `h-*.json` (running) and `w-*.json` (waiting), each with a `memory` object (`budget_mb`, `reservation_mb`, `run_alone`, `seats`, `wall_s`, `companion`); only a claim requeued after an out-of-memory kill also has `queue_reason`. An ordinary waiter's reason is on the CLI `[admission]` line and in `booley_poll`. Copy them while a Job waits or runs; a small loop that copies the directory every few seconds into `evidence/` catches shrinks |
+| Queue text on the CLI | stderr of the waiting `booley flow` run: a `[admission]` line about every 30 seconds |
 | OOM priority | `cat /proc/<pid>/oom_score_adj` in the Sandbox for each tool process and its coordinator |
 | OOM kills | `/sys/fs/cgroup/memory.events` in the Sandbox (`oom_kill` counter); the Flow's `[requeue]` line and its result |
 | Verilator parallelism | The build log, or `ps` during the build: the `make` command line's `-j<N>` |

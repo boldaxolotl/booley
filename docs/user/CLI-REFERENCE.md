@@ -112,6 +112,7 @@ booley flow sim --target sim_soc --test reset
 booley flow sim --help                       # every option of one Flow
 booley specialist                            # list the Specialists
 booley specialist reviewer --help            # a Specialist's arguments
+booley specialist reviewer --recheck <evidence.json>   # re-check an earlier review's findings
 ```
 
 Targets, options, exit codes, and results are in

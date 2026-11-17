@@ -738,3 +738,16 @@ def test_managed_ignore_rewrite_preserves_unrelated_bytes_and_line_endings(tmp_p
     assert path.read_bytes() == before.replace(
         b"/" + OLD.encode() + b"/", b"/" + NEW.encode() + b"/"
     )
+
+
+def test_unobserved_admission_entry_refuses_with_job_admission_wording(tmp_path, monkeypatch):
+    from booley.harness.setup import directory_migration_jobs
+    from booley.runtime.job_slots import CLASS_MEMORY, SlotStore
+
+    entry = tmp_path / "runtime/jobs/slots" / CLASS_MEMORY / "h-unreadable"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(SlotStore, "observe", lambda _self, _name: ([], []))
+
+    with pytest.raises(BooleyLayoutError, match="cannot prove Job admission inactivity"):
+        directory_migration_jobs._slots(tmp_path)

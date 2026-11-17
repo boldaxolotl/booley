@@ -11,8 +11,7 @@ one of the commands below.
 | `build` | Parse a VCD and write an FST waveform store (`.fst`). |
 
 Run once per simulation. Every query subcommand consumes
-the resulting `.fst` store, which is plain FST and also
-opens directly in GTKWave and VaporView.
+the resulting `.fst` store.
 
 ## Query (consumers of values)
 
@@ -22,8 +21,8 @@ command's live `--help`.
 
 | Command | One-line |
 |---|---|
-| `signal` | Cycle-by-cycle trace of N signals (default query view). |
-| `wave` | Horizontal waveform table: rows are signals, columns are cycles. |
+| `signal` | Transition list of N signals: when did each one change. |
+| `wave` | Horizontal waveform table: rows are signals, columns are cycles. The usual first query. |
 | `value` | Snapshot of N signals at one time point. |
 | `find` | Cycles where PATTERN equals VALUE or an edge keyword. |
 | `sample` | Snapshot of N signals each time TRIGGER fires. |
@@ -49,6 +48,16 @@ These read the store but don't surface raw signal values.
 | `docs` | Browse this corpus. `topics`, `search`, `show`. |
 | `skill` | Print the agent skill markdown. |
 
+## Booley wrapper
+
+The `bwave` installed with Booley wraps the native binary and adds:
+
+| Command | One-line |
+|---|---|
+| `register` | Register a store or sim directory as a session. See `reference/sessions`. |
+| `markers` | Name cycles on a session. See `reference/markers`. |
+| `gui` | Show a trace to the human in VaporView. See `commands/gui`. |
+
 ## Shared global options
 
 Available on every query/introspect subcommand:
@@ -59,36 +68,23 @@ Available on every query/introspect subcommand:
 - `--reset PATTERN`: override the auto-detected reset.
 - `--with-reset`: include the reset phase in output
   (default skips it).
-- `--format text|json`: JSON for `list`, `value`, `find`, `stats`, `signal`,
-  `wave`, `distance`, and `overview`. `sample`, `diff`, and `stuck` reject
-  JSON with exit code 2.
+- `-s PATTERN`: select signals. See `reference/patterns`.
+- `--format text|json`: `bwave schema` lists the commands that emit JSON
+  and the exact grammar.
 - `--sample-mode post-edge|pre-edge`: read sync values after (default) or
   just before each clock edge. See `reference/sync-vs-async`.
 - `--limit N`: max records (rows, signal blocks, or pairs);
-  `wave` counts columns. Headers do not count. Default 2000.
+  `wave` counts columns. Headers do not count. Default 2000; the Booley
+  wrapper caps it at 10000.
 
 ## Query-specific options
 
-`--virtual` is available on `wave`, `find`, `sample`,
-`distance`, and `value` only:
-
-- `--virtual "name = expr"`: define a boolean predicate
-  over existing signals; usable like any other signal. On
-  `wave`, `value`, and `sample`, `-s` selects stored and
-  Virtual Signal rows from one combined name set. Definitions
-  that serve only as helpers are evaluated but not displayed.
-
-Clock-stop matching is `find`- and `sample`-only:
-
-- `--include-stopped`: literal triggers also match cycles inside a clock
-  stop. See `reference/sync-vs-async`.
-
-Native marker annotation is `wave`-only:
-
-- `--marker NAME TIME`: pin a named time for display in
-  `wave`. Every other native command rejects the option
-  during argument parsing. See `reference/markers` for
-  the complete matrix and the separate wrapper workflow.
+- `--virtual "name = expr"`: define a Virtual Signal. See
+  `reference/virtual-signals` for the commands that accept it.
+- `--include-stopped` (`find`, `sample`): literal triggers also match cycles
+  inside a clock stop. See `reference/sync-vs-async`.
+- `--marker NAME TIME`: label a time in `wave` output. See
+  `reference/markers`.
 
 ## File-input rule
 
@@ -100,9 +96,10 @@ with a `bwave build` hint. Only `build` reads VCD input.
 
 ## The `overview` command
 
-`bwave overview STORE_FILE` prints the selected clock, its verdict, and the
-clock-stop summary without scanning the data signals. Run it before trusting
-cycle numbers.
+`bwave overview STORE_FILE` prints the selected clock, its regularity
+verdict, and the clock-stop summary without scanning the data signals. Run it
+before trusting cycle numbers; `reference/sync-vs-async` explains the
+verdict.
 
 - Accepts `--clock`, `--reset`, and `--with-reset`; rejects `--sample-mode`.
 - `--format json` puts trace metadata in `data` and the verdict in

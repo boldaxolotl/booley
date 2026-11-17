@@ -71,6 +71,7 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
+    as_dict,
     as_int,
     require_dict,
     require_int,
@@ -1332,6 +1333,9 @@ def _run_runtime_phase(
         reporter.fail_,
     )
     _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_swap(
+        project, docker_exe, sandbox_image, reporter.pass_, reporter.warn_, reporter.skip_
+    )
     _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
@@ -1733,6 +1737,99 @@ def _check_sandbox_memory(
     _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
 
 
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+
+def _read_host_memory(
+    docker_exe: str | None, sandbox_image: str
+) -> tuple[resource_policy.HostMemory | None, str]:
+    """The Docker host's memory and swap, or ``None`` and why it cannot be read.
+
+    Inside the Sandbox ``/proc/meminfo`` is the Docker host's already; outside, a
+    short probe container of the Sandbox Image reads it.
+    """
+    if runtime_context.inside_session_runtime():
+        try:
+            text = _PROC_MEMINFO.read_text(encoding="utf-8")
+            return resource_policy.parse_meminfo(text), ""
+        except (OSError, ValueError) as exc:
+            return None, f"cannot read /proc/meminfo: {exc}"
+    if docker_exe is None:
+        return None, "Docker is not available"
+    try:
+        return pi.probe_docker_host_memory(sandbox_image), ""
+    except pi.DockerImageError as exc:
+        return None, str(exc)
+
+
+def _swap_setting_problem(booley_toml: Mapping[str, object]) -> tuple[str, str] | None:
+    """The warning and fix for a ``[sandbox].swap`` that is not a parseable size string."""
+    raw = (as_dict(booley_toml.get("sandbox"), default={}) or {}).get("swap")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return (
+            f"[sandbox] swap = {raw!r} is not a string: the default swap limit applies",
+            'set [sandbox] swap to a quoted size such as "4g", or "0" for no swap',
+        )
+    if raw.strip() and resource_policy.parse_memory_limit(raw.strip()) is None:
+        return (
+            f"[sandbox] swap = {raw.strip()!r} is unparseable: the default swap limit applies",
+            'set [sandbox] swap to a size such as "4g", or "0" for no swap',
+        )
+    return None
+
+
+def _check_sandbox_swap(
+    project: ProjectAudit | None,
+    docker_exe: str | None,
+    sandbox_image: str,
+    _pass: Check,
+    _warn: Warn,
+    _skip: Check,
+) -> None:
+    """ADR 0087: warn when ``[sandbox].swap`` asks for swap the Docker host cannot back.
+
+    Checks the allowance issuance writes (``memory_swap_limit``), so a current
+    Sandbox specification and this check agree; a stale one is the drift WARN.
+    """
+    _warn = _warning_sink(_warn, "sandbox.swap-unbacked")
+    if project is None:
+        _skip("sandbox swap skipped - no valid project config")
+        return
+    mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
+    memory = resource_policy.parse_memory_limit(mem_str)
+    if memory is None:
+        _skip("sandbox swap skipped - no swap limit without a parseable [sandbox].memory")
+        return
+    problem = _swap_setting_problem(project.booley_toml)
+    if problem is not None:
+        _warn(*problem)
+        return
+    swap_str = resource_policy.configured_sandbox_swap(project.booley_toml)
+    host, why = _read_host_memory(docker_exe, sandbox_image)
+    if host is None:
+        _skip(f"sandbox swap skipped - the Docker host's swap is unknown: {why}")
+        return
+    swap = resource_policy.sandbox_swap_bytes(mem_str, swap_str, host.swap_bytes) or 0
+    fmt = resource_policy.format_memory
+    if swap > host.swap_bytes:
+        _warn(
+            f"[sandbox].swap = {fmt(swap)} is more than the {fmt(host.swap_bytes)} of swap "
+            "the Docker host has",
+            'lower [sandbox].swap ("0" disables swap) or add host swap, '
+            "then run `booley session refresh`",
+        )
+    elif memory + swap > host.memory_bytes + host.swap_bytes:
+        _warn(
+            f"[sandbox].memory + swap = {fmt(memory + swap)} is more than the "
+            f"{fmt(host.memory_bytes + host.swap_bytes)} of memory plus swap the Docker host has",
+            "lower [sandbox].memory or [sandbox].swap, then run `booley session refresh`",
+        )
+    else:
+        _pass(f"[sandbox].swap: the Sandbox may swap up to {fmt(swap)} beyond its memory")
+
+
 def _check_runtime_location(
     docker_exe: str | None,
     sandbox_image: str,
@@ -1800,7 +1897,7 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
     root = job_slots.slots_dir()
     if root is None:
         _fail(
-            "slot store root unresolvable (no Booley Directory) — job admission cannot arbitrate",
+            "Memory Reservation store root unresolvable (no Booley Directory) — Job admission cannot arbitrate",
             "run doctor from the project workspace or set BOOLEY_DIR",
         )
         return
@@ -1811,11 +1908,11 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
         probe.unlink()
     except OSError as exc:
         _fail(
-            f"slot store root not writable: {root} ({exc})",
+            f"Memory Reservation store root not writable: {root} ({exc})",
             f"fix ownership/permissions on {root}",
         )
         return
-    _pass(f"slot store root writable: {root}")
+    _pass(f"Memory Reservation store root writable: {root}")
 
 
 def _check_image_bakes_runtime_marker(

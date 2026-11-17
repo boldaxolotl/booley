@@ -56,6 +56,7 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--steer": "not on the form yet: a later ticket can add it",
         "--spec-text": "not on the form yet: the spec path covers the form's use",
         "--fail-on": "not on the form yet: a later ticket can add it",
+        "--recheck": "a re-check reads its evidence file; the form starts a full review",
     },
     "coverage_analyst": {
         "-C": "the worktree chooses the Project",

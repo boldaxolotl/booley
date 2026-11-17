@@ -45,6 +45,7 @@ from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from tests.conftest import symlink_or_skip
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
+from tests.docker_host_support import fake_docker_host
 from tests.subprocess_budget import run_bounded_child
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
@@ -134,6 +135,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:test-image")
+    fake_docker_host(monkeypatch)
     monkeypatch.setattr(
         "booley.runtime.interactive_docker.image_id",
         lambda _image: None,

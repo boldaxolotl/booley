@@ -148,33 +148,15 @@ window or you'll hit `--limit` in milliseconds.
 
 ## Switching between modes
 
-A single store supports both modes. There is no rebuild
-required. `bwave signal sim.fst -s "*" -t 0:100` and
-`bwave signal sim.fst -s "*" -t 0t:1000t --async`
-inspect the same data.
+A single store supports both modes, with no rebuild. The store holds the
+full asynchronous transition stream, and sync mode is a view computed from
+it at query time, so the two modes always agree:
+`bwave signal sim.fst -s "*" -t 0:100` and
+`bwave signal sim.fst -s "*" -t 0t:1000t --async` inspect the same data.
 
-The store holds the full asynchronous transition stream
-— it is a plain, lossless FST file. Sync mode is a
-sampling view computed over that stream at query time:
-per-cycle post-edge values are derived from the same
-transitions async mode reports. So the two modes always
-agree, and switching between them never requires a
-rebuild.
-
-Time arguments switch meaning:
-
-| Flag       | Sync     | Async                |
-|------------|----------|----------------------|
-| `-t 100:200` | cycles 100-200 | rejected — suffix required: `-t 100t:200t`, `-t 1us:2us` |
-| `--at 100`   | cycle 100      | rejected — use `--at 100t` |
-| `<T1> <T2>`  | cycles         | ticks, suffix required (`100t`, `100ns`) |
-| `--before N` | cycle N        | tick N (bare bound)  |
-
-Bare integers mean cycles in sync mode; async mode
-rejects them outright and requires a unit suffix
-(`100t` for ticks, `100ns` for physical time, `100c` to
-convert cycles). See `reference/time-tokens` for the
-full grammar.
+Time arguments change meaning with the mode: bare integers are cycles in
+sync mode, and async mode rejects them and requires a unit suffix (`100t`,
+`100ns`, or `100c` to convert cycles). See `reference/time-tokens`.
 
 ## Quick decision guide
 
