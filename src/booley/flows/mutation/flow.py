@@ -42,7 +42,7 @@ from urllib.parse import quote
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.boundary import BoundaryError
 from booley.flows import artifacts as _artifacts
-from booley.flows.base import BuiltinFlow, SubprocessResult
+from booley.flows.base import BuiltinFlow
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
@@ -877,18 +877,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     _scope_defaulted: bool = False
     #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
     _claims: CampaignClaims = CampaignClaims()
-
-    # ------------------------------------------------------------------
-    # Command-backed Flow hooks — _run() drives the campaign directly.
-    # ------------------------------------------------------------------
-
-    def _build_command(self) -> list[str]:
-        """Not used — MutationFlow overrides _run()."""
-        return []
-
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
-        """Not used — MutationFlow overrides _run()."""
-        return EndpointOutcome()
 
     # ------------------------------------------------------------------
     # Scope / DUT helpers

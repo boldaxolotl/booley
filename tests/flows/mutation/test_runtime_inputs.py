@@ -11,21 +11,26 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 import booley
-from booley.flows.mutation.flow import Baseline, MutationFlow, MutationResult
-from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.mutation.memory_claims import CampaignClaims
+from booley.flows.sim.backends import cocotb_results as cr
 from booley.fusesoc.fusesoc_registry import ResolvedFile
+from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
 from tests.flows.mutation.test_flow import (
+    _SCOPE,
     _fake_proc,
     _make_endpoint,
-    _patch_cocotb_target,
     _patch_resolve_target,
+    _prepare_scope_files,
 )
+from tests.flows.sim.launched_work import launched_work
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="stand-in V<top> is a POSIX shell script")
 
@@ -48,204 +53,176 @@ sleep 30
 _ADAPTERS = ("verilator", "icarus", "cocotb")
 
 
-class _Project:
-    """A mutation checkout whose Target declares ``vectors.hex`` as a copyto input."""
-
-    def __init__(self, root: Path, endpoint: MutationFlow, eda_tool: str) -> None:
-        self.root = root
-        self.endpoint = endpoint
-        self.eda_tool = eda_tool
-        self.run_dir = root / "run"
-        self.build = root / "build"
-        self.binary = _PASSING_BINARY
-
-    @property
-    def staged(self) -> Path:
-        return self.run_dir / "vectors.hex"
-
-    def elab(self) -> None:
-        """Build for real (the stand-in make command succeeds) before a run is stubbed."""
-        self.build.mkdir()
-        self.endpoint._run_elab("default", self.root, self.build)
-
-    def leftovers(self) -> list[Path]:
-        """Overlay directories any run left behind under the checkout."""
-        return list(self.root.rglob(".booley-runtime-inputs"))
-
-    def plan(self) -> SimpleNamespace:
-        return SimpleNamespace(target="default", work_dir=self.root, tb_top="tb")
+_LAUNCH_MARK = "booley.flows.sim.backends."
 
 
-def _prepare_with_copyto(project_ref: list[_Project]):
-    """A ``prepare_simulation_build`` stand-in that, like FuseSoC, ``copyto``s the file."""
+def _copyto_campaign(
+    tmp_path: Path,
+    monkeypatch,
+    adapter: str = "verilator",
+    binary: str = _PASSING_BINARY,
+    *,
+    launch: Any = None,
+    staged_before: str | None = None,
+) -> tuple[EndpointOutcome, Path]:
+    """Run a whole one-Mutant campaign whose Target ``copyto``s ``vectors.hex`` (issue #2061).
 
-    def _prepare(handle, *, build_root, lane_kind, **_kwargs):
-        project = project_ref[0]
-        root = Path(build_root)
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "vectors.hex").write_text(_PAYLOAD, encoding="utf-8")
-        binary = root / "Vtb"
-        binary.write_text(project.binary, encoding="utf-8")
-        binary.chmod(0o755)
-        resolved = SimpleNamespace(
-            build_root=root,
-            toplevel="tb",
-            eda_tool="verilator",
-            files=(ResolvedFile("vectors.hex", "user"),),
-        )
-        return PreparedSimulationBuild(
-            target=handle.selector,
-            target_identity=handle.identity,
-            resolved=resolved,
-            work_root=root,
-            build_root=root,
-            eda_tool=project.eda_tool,
-            toplevel="tb",
-            make_argv=(sys.executable, "-c", ""),
-        )
-
-    return _prepare
-
-
-def _make_project(tmp_path: Path, monkeypatch, adapter: str = "verilator") -> _Project:
+    The adapter's run half is real and starts the stand-in ``Vtb`` of *binary* in the
+    configured ``run_cwd`` (``run``); *launch(cmd, original)* may replace a launch of the
+    run half.  Returns the campaign result and the ``run`` directory.
+    """
     # The real run half is a child `python -m booley...` started in the checkout.
-    source_root = str(Path(booley.__file__).resolve().parents[1])
-    monkeypatch.setenv("PYTHONPATH", source_root)
-    _patch_resolve_target(monkeypatch, eda_tool="icarus" if adapter == "icarus" else "verilator")
-    if adapter == "cocotb":
-        _patch_cocotb_target(monkeypatch, module="tb_test")
+    monkeypatch.setenv("PYTHONPATH", str(Path(booley.__file__).resolve().parents[1]))
+    tool = "icarus" if adapter == "icarus" else "verilator"
+    _patch_resolve_target(
+        monkeypatch, eda_tool=tool, cocotb_module="tb_test" if adapter == "cocotb" else None
+    )
+    fake_prepare = _flow_attr("prepare_simulation_build")
+
+    def _prepare(handle, *, build_root, **kwargs):
+        # Like FuseSoC, `copyto` places the file in the build root beside the binary.
+        prepared = fake_prepare(handle, build_root=build_root, **kwargs)
+        root = Path(build_root)
+        (root / "vectors.hex").write_text(_PAYLOAD, encoding="utf-8")
+        (root / "Vtb").write_text(binary, encoding="utf-8")
+        (root / "Vtb").chmod(0o755)
+        resolved = SimpleNamespace(
+            **{**vars(prepared.resolved), "files": (ResolvedFile("vectors.hex", "user"),)}
+        )
+        return replace(prepared, resolved=resolved, make_argv=(sys.executable, "-c", ""))
+
+    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", _prepare)
     (tmp_path / ".booley").mkdir()
     (tmp_path / ".booley" / "booley.toml").write_text(
         '[project]\nname = "demo"\n\n[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8"
     )
-    (tmp_path / "run").mkdir()
-    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
-    project = _Project(tmp_path, endpoint, "icarus" if adapter == "icarus" else "verilator")
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.prepare_simulation_build",
-        _prepare_with_copyto([project]),
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    if staged_before is not None:
+        (run_dir / "vectors.hex").write_text(staged_before, encoding="utf-8")
+    if launch is not None:
+        original = subprocess.run
+
+        def _run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and _LAUNCH_MARK in " ".join(cmd):
+                return launch(cmd)
+            return original(cmd, *args, **kwargs)
+
+        monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _run)
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, target="default", scope=_SCOPE, count=1, min_detected=0, tb_top="tb"
     )
-    return project
+    return endpoint.run_with_claims(CampaignClaims()), run_dir
 
 
-def test_verilator_baseline_sees_copyto_input(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    result = project.endpoint._run_pristine_baseline(project.plan())
+def _flow_attr(name: str) -> Any:
+    from booley.flows.mutation import flow
 
-    assert isinstance(result, Baseline), result  # the baseline's findings, not a failure
-    assert not project.staged.exists()
-    assert project.leftovers() == []
+    return getattr(flow, name)
 
 
-def test_verilator_mutant_sees_copyto_input(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    endpoint = project.endpoint
-    real_elab = endpoint._run_elab
-    # Source materialization is irrelevant here: build the pristine tree.
-    monkeypatch.setattr(
-        endpoint,
-        "_run_elab",
-        lambda target, work_dir, build_path, _mutation=None: real_elab(
-            target, work_dir, build_path
-        ),
-    )
-    spec = SimpleNamespace(index=1)
+def _overlays(root: Path) -> list[Path]:
+    """Overlay directories any run left behind under the checkout."""
+    return list(root.rglob(".booley-runtime-inputs"))
 
-    result = endpoint._run_one_variant(project.plan(), spec, object(), Baseline({}))
 
-    assert isinstance(result, MutationResult), result
-    assert not result.inconclusive_reason, result.sim_output_snippet
-    assert not result.detected, result.sim_output_snippet
-    assert not project.staged.exists()
-    assert project.leftovers() == []
+def test_a_campaign_stages_the_copyto_input_for_baseline_and_mutant(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Both the baseline and the Mutant see ``vectors.hex``; nothing is left behind."""
+    result, run_dir = _copyto_campaign(tmp_path, monkeypatch)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert [row["status"] for row in result.detail["classified"]] == ["not_detected"]
+    assert list(run_dir.iterdir()) == []
+    assert _overlays(tmp_path) == []
 
 
 @pytest.mark.parametrize("adapter", _ADAPTERS)
 def test_pinned_runs_stage_inputs_for_every_adapter(
     tmp_path: Path, monkeypatch, adapter: str
 ) -> None:
-    project = _make_project(tmp_path, monkeypatch, adapter)
-    project.elab()
-    seen: dict[str, object] = {}
-
-    def _launch(cmd, *args, **kwargs):
-        seen["cmd"] = list(cmd)
-        seen["bytes"] = (
-            project.staged.read_text(encoding="utf-8") if project.staged.is_file() else None
+    seen: list[tuple[tuple[str, ...], str | None]] = []
+    run_dir = tmp_path / "run"
+    passing_line = cr.format_results_line(
+        cr.results_payload(
+            cr.CocotbResults(state=cr.STATE_OK, tests=(cr.CocotbTest("t", "tb", cr.VERDICT_PASS),))
         )
-        return _fake_proc(rc=1, stdout="failed")
+    )
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _launch)
+    def _launch(cmd):
+        staged = run_dir / "vectors.hex"
+        text = staged.read_text(encoding="utf-8") if staged.is_file() else None
+        seen.append((launched_work(cmd).runtime_inputs, text))
+        return _fake_proc(rc=0, stdout=passing_line if adapter == "cocotb" else "passed")
 
-    project.endpoint._run_sim_pinned("default", tmp_path, project.build, "tb")
+    result, _ = _copyto_campaign(tmp_path, monkeypatch, adapter, launch=_launch)
 
-    from tests.flows.sim.launched_work import launched_work
-
-    assert launched_work(seen["cmd"]).runtime_inputs == ("vectors.hex",)  # type: ignore[arg-type]
-    assert seen["bytes"] == _PAYLOAD
-    assert list(project.run_dir.iterdir()) == []
-    assert project.leftovers() == []
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert seen == [(("vectors.hex",), _PAYLOAD)] * 2  # the baseline and the Mutant
+    assert list(run_dir.iterdir()) == []
+    assert _overlays(tmp_path) == []
 
 
 def test_staged_input_is_removed_after_timeout(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    project.elab()
     visible: list[bool] = []
+    run_dir = tmp_path / "run"
 
-    def _hang(cmd, *args, **kwargs):
-        visible.append(project.staged.is_file())
+    def _hang(cmd):
+        visible.append((run_dir / "vectors.hex").is_file())
         raise subprocess.TimeoutExpired(cmd, 1)
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _hang)
+    result, _ = _copyto_campaign(tmp_path, monkeypatch, launch=_hang)
 
-    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
-
-    assert [run.timed_out for run in runs] == [True]
+    assert result.exit_code == EXIT_ERROR
+    assert "RESULT: ERROR (baseline:" in result.report_text
     assert visible == [True]
-    assert list(project.run_dir.iterdir()) == []
+    assert list(run_dir.iterdir()) == []
 
 
 def test_declared_unstaged_readmemh_input_is_inconclusive(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    project.binary = _MISSING_READMEMH_BINARY
-    project.elab()
+    result, _ = _copyto_campaign(tmp_path, monkeypatch, binary=_MISSING_READMEMH_BINARY)
 
-    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
-
-    reason = project.endpoint._suite_inconclusive_reason(runs)
-    assert "declared runtime input 'vectors.hex' was not staged" in reason
+    assert result.exit_code == EXIT_ERROR
+    assert "declared runtime input 'vectors.hex' was not staged" in result.report_text
 
 
 def test_conflicting_destination_is_inconclusive_setup_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    project.staged.write_text("project data\n", encoding="utf-8")
-    project.elab()
     launches: list[object] = []
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
-        lambda cmd, *a, **k: launches.append(cmd) or _fake_proc(),
+    result, run_dir = _copyto_campaign(
+        tmp_path,
+        monkeypatch,
+        staged_before="project data\n",
+        launch=lambda cmd: launches.append(cmd) or _fake_proc(),
     )
 
-    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
-
+    assert result.exit_code == EXIT_ERROR
     assert (
         "Simulation runtime input setup failed: "
         "run input conflicts with an existing path: vectors.hex"
-    ) in project.endpoint._suite_inconclusive_reason(runs)
-    assert project.staged.read_text(encoding="utf-8") == "project data\n"
+    ) in result.report_text
+    assert (run_dir / "vectors.hex").read_text(encoding="utf-8") == "project data\n"
     assert launches == []
 
 
 def test_identical_existing_destination_is_left_untouched(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    project.staged.write_text(_PAYLOAD, encoding="utf-8")
-    inode = project.staged.stat().st_ino
+    run_dir = tmp_path / "run"
+    inode: list[int] = []
 
-    result = project.endpoint._run_pristine_baseline(project.plan())
+    def _stat_and_pass(_cmd):
+        inode.append((run_dir / "vectors.hex").stat().st_ino)
+        return _fake_proc(rc=0, stdout="passed")
 
-    assert isinstance(result, Baseline), result  # the baseline's findings, not a failure
-    assert project.staged.is_file() and not project.staged.is_symlink()
-    assert project.staged.read_text(encoding="utf-8") == _PAYLOAD
-    assert project.staged.stat().st_ino == inode
+    # Create the destination before the campaign; the launch sees the same file.
+    result, _ = _copyto_campaign(
+        tmp_path, monkeypatch, staged_before=_PAYLOAD, launch=_stat_and_pass
+    )
+
+    staged = run_dir / "vectors.hex"
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert staged.is_file() and not staged.is_symlink()
+    assert staged.read_text(encoding="utf-8") == _PAYLOAD
+    assert set(inode) == {staged.stat().st_ino}
