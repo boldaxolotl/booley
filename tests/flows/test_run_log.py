@@ -79,11 +79,11 @@ class TestRunLogHeader:
 
     def test_begin_erases_the_previous_runs_output_and_names_the_run(self, tmp_path):
         run_log.write_run_log(tmp_path, "TEST PASSED\nold verdict\n")
-        run_log.begin_run_log(tmp_path, flow="sim", target="sim_fifo", run="run-2")
+        run_log.begin_run_log(tmp_path, flow="lint", target="lint_top", run="run-2")
         content = (tmp_path / "run.log").read_text(encoding="utf-8")
         assert "TEST PASSED" not in content
         assert content.startswith(f"{run_log.RUN_LOG_HEADER_PREFIX} ")
-        assert "run=run-2 flow=sim target=sim_fifo started=" in content
+        assert "run=run-2 flow=lint target=lint_top started=" in content
         assert run_log.RUN_LOG_PENDING in content
         first_line = content.splitlines()[0]
         assert first_line.endswith("Z")
@@ -138,6 +138,16 @@ class TestRunLogProgress:
         run_log.write_run_log(tmp_path, "TEST SUCCEEDED\n[SIM_RESULT] PASSED\n")
         finished = (tmp_path / "run.log").read_text(encoding="utf-8")
         assert run_log.RUN_LOG_IN_PROGRESS_PREFIX not in finished
+
+    def test_progress_keeps_the_tail_when_capped(self, tmp_path):
+        run_log.begin_run_log(tmp_path, flow="sim", target="sim_float", run="run-9")
+        body = "".join(f"line {i}\n" for i in range(2000))
+        run_log.write_run_log_progress(
+            tmp_path, body, elapsed_s=1.0, line_count=2000, max_bytes=400
+        )
+        raw = (tmp_path / "run.log").read_bytes()
+        assert len(raw) <= 400 + len(run_log.RUN_LOG_HEADER_PREFIX) + 200
+        assert b"line 1999" in raw
 
 
 def test_begin_run_log_never_truncates_unrelated_file(tmp_path, monkeypatch):

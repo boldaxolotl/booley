@@ -464,6 +464,14 @@ def test_missing_pending_file_and_temporary_transcript_survives_deletion(tmp_pat
     assert "log=" + str(path) not in sink.stream.getvalue().splitlines()[-1]
 
 
+def test_observers_sharing_a_root_get_distinct_transcripts(tmp_path):
+    first, second = observer(tmp_path), observer(tmp_path)
+    with first.installed(), second.installed():
+        first.begin_command()
+        second.begin_command()
+        assert first.log_path != second.log_path
+
+
 @pytest.mark.parametrize("flow_type", BUILTINS)
 def test_cli_flags_do_not_change_shared_schema(flow_type):
     flow = flow_type()

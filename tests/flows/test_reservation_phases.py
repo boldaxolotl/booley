@@ -110,6 +110,23 @@ def _three_phase_plan(tmp_path: Path):
     return plan_memory_claim(requests, records, BUDGET_MIB, None)
 
 
+@pytest.mark.parametrize(
+    "requests",
+    [
+        (JobRequest("sim", TARGET, test_runs=("a",), flags=("coverage",)),),
+        (JobRequest("lint", TARGET),),
+        (JobRequest("sim", TARGET, test_runs=("a",)), JobRequest("lint", TARGET)),
+    ],
+    ids=["coverage", "lint", "sim-with-lint"],
+)
+def test_claims_that_cannot_shrink_have_no_phases(requests) -> None:
+    records = [
+        _record(phase, 30, "a" if phase == "sim_run" else "")
+        for phase in ("sim_prepare", "sim_build", "sim_run", "sim_postprocess", "lint")
+    ]
+    assert plan_memory_claim(requests, records, BUDGET_MIB, None).phases == ()
+
+
 def test_phase_plan_counts_repeated_keys_and_ignores_unplanned_ends() -> None:
     key = HistoryKey(TARGET, "sim_run", ("x",), "t")
     build = HistoryKey(TARGET, "sim_build", ("x",), "")
