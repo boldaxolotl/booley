@@ -211,11 +211,11 @@ fn is_signal_char(b: u8) -> bool {
 /// `'hF'd15` is one (invalid) literal, and a radix followed by whitespace and a
 /// digit run (`'h F`) is one literal too, so the parser's error names it whole.
 fn lex_literal(bytes: &[u8], start: usize, pos: &mut usize) -> Result<Token, String> {
-    *pos += 1; // skip '
+    *pos += 1;
     if *pos >= bytes.len() {
         return Err("unexpected end after '".into());
     }
-    *pos += 1; // radix char
+    *pos += 1;
     let mut digits = *pos;
     while digits < bytes.len() && bytes[digits].is_ascii_whitespace() {
         digits += 1;

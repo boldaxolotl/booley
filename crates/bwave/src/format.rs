@@ -229,20 +229,20 @@ pub fn parse_verilog_literal(s: &str) -> Result<String, String> {
     if !width_prefix.bytes().all(|b| b.is_ascii_digit()) {
         return Err(invalid("invalid width prefix".into()));
     }
-    let Some(&radix) = s.as_bytes().get(tick_pos + 1) else {
+    let mut after_tick = s[tick_pos + 1..].chars();
+    let Some(radix) = after_tick.next() else {
         return Err(invalid("missing radix character after '".into()));
     };
-    let digits = literal_digits(s, &s[tick_pos + 2..])?;
+    let digits = literal_digits(s, after_tick.as_str())?;
     match radix {
-        b'd' | b'D' => decimal_digits_to_hex(&digits).map_err(invalid),
-        b'h' | b'H' => match digits.bytes().find(|b| !is_hex_or_xz(*b)) {
+        'd' | 'D' => decimal_digits_to_hex(&digits).map_err(invalid),
+        'h' | 'H' => match digits.bytes().find(|b| !is_hex_or_xz(*b)) {
             Some(b) => Err(invalid(format!("'{}' is not a hex digit", b as char))),
             None => Ok(digits.to_uppercase()),
         },
-        b'b' | b'B' => binary_digits_to_hex(&digits).map_err(invalid),
+        'b' | 'B' => binary_digits_to_hex(&digits).map_err(invalid),
         _ => Err(invalid(format!(
-            "invalid radix '{}' (use 'd, 'h or 'b)",
-            radix as char
+            "invalid radix '{radix}' (use 'd, 'h or 'b)"
         ))),
     }
 }
@@ -1171,7 +1171,7 @@ mod tests {
         assert_eq!(parse_verilog_literal("8'd255").unwrap(), "FF");
         assert_eq!(parse_verilog_literal("'hx").unwrap(), "X");
         assert_eq!(parse_verilog_literal("'hz").unwrap(), "Z");
-        for bad in ["'h_F", "'dxx"] {
+        for bad in ["'h_F", "'dxx", "'é1"] {
             let err = parse_verilog_literal(bad).unwrap_err();
             assert!(
                 err.contains(&format!("invalid Verilog literal '{bad}'")),
