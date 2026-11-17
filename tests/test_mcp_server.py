@@ -1664,12 +1664,12 @@ class TestBwaveDispatch:
 
 
 # ---------------------------------------------------------------------------
-# _load_agent_settings_from_toml (Interactive Mode honors [agent] in booley.toml)
+# _load_agent_settings_from_toml (the Sandbox honors [agent] in booley.toml)
 # ---------------------------------------------------------------------------
 
 
 class TestLoadAgentSettingsFromToml:
-    """Interactive Mode must preload agent settings from booley.toml.
+    """The Sandbox MCP server must preload agent settings from booley.toml.
 
     Regression guard: without this, Runtime may lazily use defaults even when
     the Project selected another provider.
@@ -1913,7 +1913,7 @@ class TestMainProxySelfHeal:
 
 
 # ---------------------------------------------------------------------------
-# Interactive Mode: honest answer for a deliberately hidden MCP tool (F-38)
+# Sandbox MCP server: honest answer for a deliberately hidden MCP tool (F-38)
 # ---------------------------------------------------------------------------
 
 

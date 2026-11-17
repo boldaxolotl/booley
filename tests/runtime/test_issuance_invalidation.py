@@ -20,7 +20,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing import flexnet_docker
 from booley.harness import eda_grants, host_diagnostics
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import (
     issuance_invalidation,
     session_issuance,

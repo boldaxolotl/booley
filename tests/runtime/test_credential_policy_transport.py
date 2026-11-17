@@ -92,7 +92,7 @@ def _issued_transport_spec(root, image, app, policy, monkeypatch):
     )
     if app == "claude":
         (Path.home() / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, image
     )
     prepared = session_issuance.preview(project, sources.build)

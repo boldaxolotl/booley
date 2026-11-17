@@ -91,14 +91,6 @@ class BootstrapResult:
     base_image: LifecycleResult | None = None
 
     @property
-    def ready(self) -> bool:
-        return all(
-            finding.state
-            in {BootstrapState.CURRENT, BootstrapState.CHANGED, BootstrapState.WARNING}
-            for finding in self.findings
-        )
-
-    @property
     def exit_status(self) -> int:
         if any(finding.state is BootstrapState.ERROR for finding in self.findings):
             return 2
@@ -472,7 +464,7 @@ def _vscode_finding() -> BootstrapFinding:
     return BootstrapFinding(
         "vscode",
         BootstrapState.ERROR,
-        "VS Code or a supported compatible editor is required for Interactive Mode",
+        "VS Code or a supported compatible editor is required to open the Sandbox",
     )
 
 
@@ -575,8 +567,6 @@ def _reconcile_skills(intent: Intent) -> BootstrapFinding:
         return BootstrapFinding(
             "skills", BootstrapState.ERROR, f"packaged skills missing: {source}"
         )
-    if error := host_install_error(source):
-        return BootstrapFinding("skills", BootstrapState.ERROR, error)
     reconciliations = reconcile_host_skills(
         source,
         dry_run=intent is Intent.CHECK,

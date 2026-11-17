@@ -1,4 +1,4 @@
-"""Tests for the Interactive Mode devcontainer spec generator (ADR 0018 WS0)."""
+"""Tests for the Sandbox devcontainer spec generator (ADR 0018 WS0)."""
 
 from __future__ import annotations
 

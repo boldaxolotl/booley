@@ -867,8 +867,8 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
             "booley.runtime.session_issuance.authorized_project_data_source",
             return_value=workspace / ".booley",
         ),
-        patch.object(sr, "_strict_running_interactive_states", return_value=[]),
-        patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+        patch.object(sr, "_strict_running_sandbox_states", return_value=[]),
+        patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
         patch.object(sr, "container_matches_issuance", return_value=True),
         patch.object(sr, "_run") as run,
     ):
@@ -908,7 +908,7 @@ class TestInitReconciliation:
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
             patch.object(sr, "_remove_stopped_session_container") as remove,
             patch.object(sr, "_relay_objects_exist", return_value=False),
         ):
@@ -926,7 +926,7 @@ class TestInitReconciliation:
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
             patch.object(sr, "_remove_stopped_session_container") as remove,
             patch.object(sr, "_relay_objects_exist", return_value=False),
         ):
@@ -1016,7 +1016,7 @@ class TestInitReconciliation:
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("vscode-session", "state")],
             ),
             patch.object(sr, "_remove_stopped_session_container") as remove,
@@ -1038,7 +1038,7 @@ class TestInitReconciliation:
             patch.object(sr, "_relay_resources", return_value=relay),
             patch.object(sr, "_relay_objects_exist", return_value=True),
             patch.object(sr, "_relay_matches_issuance", return_value=False),
-            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
             patch.object(sr, "_remove_license_relay") as remove_relay,
         ):
             changed = sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
@@ -1277,7 +1277,7 @@ class TestUp:
         stale = "stale-vscode"
         with (
             patch.object(
-                sr, "_strict_all_interactive_states", return_value=[(stale, json.dumps([state]))]
+                sr, "_strict_all_sandbox_states", return_value=[(stale, json.dumps([state]))]
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr.idk, "container_running", return_value=False),
@@ -1320,7 +1320,7 @@ class TestUp:
         with (
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("current-vscode", json.dumps([state]))],
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
@@ -1350,7 +1350,7 @@ class TestUp:
         with (
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("active-vscode", json.dumps([state]))],
             ),
             pytest.raises(sr.SessionError, match=r"running Sandbox.*older host issuance"),
@@ -1448,7 +1448,7 @@ class TestUp:
         with (
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("stale-vscode", json.dumps([stale_vscode]))],
             ),
             patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),

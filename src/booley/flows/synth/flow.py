@@ -4,8 +4,7 @@ Wraps the Yosys synthesis flow (sv2v + Yosys + ABC) with structured reporting,
 critical-condition detection, and optional delta computation against a baseline
 git ref. The baseline is synthesized in a throwaway ``git worktree`` (see
 :mod:`booley.flows.baseline_worktree`) rather than by checking the ref out in place, so
-``--baseline`` never touches the caller's working tree and works in both Ticket
-and Interactive Mode.
+``--baseline`` never touches the caller's working tree.
 
 The configure half renders scripts and a Makefile into the per-target build dir
 in-process (:mod:`booley.flows.synth.backends.pipeline`), execution runs ``make -C <rel>`` in

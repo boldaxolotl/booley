@@ -280,7 +280,7 @@ DIRECTION_RULES = (
     #   `test_source_dependency_contract.py`: add it there first and watch it fail. The tests
     #   import a new owner through a helper (`importlib.import_module`) so the file collects
     #   before the owner exists. Single-fact helpers (`audit.host_environment`,
-    #   `runtime.interactive_docker`, `audit.output_excerpt`) and the value module
+    #   `runtime.host_docker`, `audit.output_excerpt`) and the value module
     #   `audit.diagnostic_results` stay outside D26.
     # - Doctor builds the request, calls the owner, and renders each report with
     #   `_Reporter.diagnostics` at the check's position. A moved check keeps its message, fix

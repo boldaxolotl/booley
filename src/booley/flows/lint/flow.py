@@ -1100,10 +1100,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return (EXIT_FAILURE if warnings_as_errors else EXIT_SUCCESS), summary
         return EXIT_SUCCESS, "RESULT: PASS"
 
-    def _validate_interactive_args(self) -> EndpointOutcome | None:
-        """Interactive-Mode argument validation.
+    def _validate_call_args(self) -> EndpointOutcome | None:
+        """Developer Agent session argument validation.
 
-        In Interactive Mode there is no project_config import path priming
+        In a Developer Agent session there is no project_config import path priming
         the discovery list, so silently falling back to the hardcoded
         ``["lite", "full", "combo"]`` defaults runs lint against configs that
         don't exist.  Refuse explicitly instead.
@@ -1200,7 +1200,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     def _run(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear aggregate orchestration
         """Run lint across configured build Targets."""
-        err = self._validate_interactive_args()
+        err = self._validate_call_args()
         if err is not None:
             return err
         targets = self._get_targets()

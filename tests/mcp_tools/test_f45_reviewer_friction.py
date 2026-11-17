@@ -99,7 +99,7 @@ def test_corrective_findings_do_not_complete_terminal_done_review(
 
 
 def test_interactive_discovery_replaces_done_findings(project: Path, agent: ScriptedAgent) -> None:
-    """Interactive Mode explicitly replaces findings on each discovery call."""
+    """A Sandbox MCP server explicitly replaces findings on each discovery call."""
     summary = "Reset behavior violates the Ticket contract"
     agent.answer([{"issues": [finding("code_style", "rtl/uart.sv", summary)]}, {"issues": []}])
 

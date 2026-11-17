@@ -1,4 +1,4 @@
-"""Desired-state reconciliation for global Interactive Mode Docker resources."""
+"""Desired-state reconciliation for global Sandbox Docker resources."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.core.egress_modes import EGRESS_MODES
-from booley.runtime import interactive_docker as legacy
+from booley.runtime import host_docker as legacy
 from booley.runtime.devcontainer import PROXY_PORT
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
@@ -983,7 +983,7 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
 def _project_root_from_inspection(
     document: dict[str, Any], labels: dict[str, str], name: str
 ) -> str | None:
-    """Return the host Project mounted by an Interactive Mode container."""
+    """Return the host Project mounted by a Sandbox container."""
     if folder := labels.get(_DEVCONTAINER_FOLDER_LABEL):
         return folder
     mounts = require_list(document.get("Mounts"), field=f"container {name}.Mounts")

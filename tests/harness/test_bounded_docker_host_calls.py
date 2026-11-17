@@ -37,7 +37,7 @@ from booley.flows.fpga import vivado_startup
 from booley.harness import bootstrap, doctor, sandbox, sandbox_stop_warning
 from booley.harness.setup import docker_image, readiness
 from booley.mcp import server_inspection
-from booley.runtime import interactive_docker, session_runtime
+from booley.runtime import host_docker, session_runtime
 from booley.runtime.session_admission import Sandbox
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 
@@ -522,7 +522,7 @@ def _sites() -> list[_Site]:
         ),
         _Site(
             "flexnet relay container rm",
-            interactive_docker,
+            host_docker,
             ["docker", "container", "rm"],
             30,
             lambda _root: _remove_relay_for_site(relay),

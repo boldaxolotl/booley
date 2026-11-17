@@ -800,7 +800,7 @@ def _add_init_subparser(sub) -> None:
     init_p.add_argument(
         "--seed",
         action="store_true",
-        help="Seed only the Interactive Mode devcontainer for this folder/worktree "
+        help="Seed only the Sandbox devcontainer for this folder/worktree "
         "(no project scaffolding); run once per worktree",
     )
     init_p.add_argument(
