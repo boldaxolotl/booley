@@ -439,6 +439,44 @@ def test_items_after_the_shared_build_hold_their_own_reservations(
         assert "memory_admission_warning" not in result.detail
 
 
+def test_a_job_queued_behind_an_item_names_its_run_flow_target_and_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The holders list names the item's run, Flow, own Target and test, not a pid (#4487).
+
+    The Job names two Targets, the Simulation Record one: the item shows its own. The Flow
+    holds nothing by then, so it is not listed.
+    """
+    monkeypatch.setenv("BOOLEY_RUN_ID", "run-4487")
+    requests = (*FLOW_REQUESTS, JobRequest("sim", "other", test_runs=NAMES))
+    said: list[str] = []
+    with _scenario(
+        tmp_path, monkeypatch, history=_history("sim", "other"), flow_requests=requests
+    ) as scenario:
+
+        def queue_behind_beta() -> None:
+            waiter = scenario.store.submit(
+                CLASS_MEMORY,
+                pid=os.getpid(),
+                memory=MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=900.0),
+            )
+            try:
+                wait = scenario.store.memory_wait(os.getpid())
+                assert wait is not None
+                said.append(wait.describe())
+            finally:
+                scenario.store.release(waiter)
+
+        scenario.hooks["beta"] = queue_behind_beta
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
+
+    assert outcome.complete is True
+    assert said == [
+        "needs 900 MiB; 750 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-4487 (synth, sim, beta) 250 MiB"
+    ]
+
+
 def test_resumed_simulation_record_items_take_their_own_claims_after_the_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

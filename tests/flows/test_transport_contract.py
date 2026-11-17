@@ -238,7 +238,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))
-    monkeypatch.setattr(server, "_job_inline_wait_seconds", lambda: 10.0)
+    monkeypatch.setattr(server, "_job_inline_wait_seconds", lambda: 600.0)
     cli = LintFlow().execute_cli(["--target", "lite"])
     assert cli.exit_code == 0
     cli_report = json.loads((runtime / "runtime/flow-reports/lint.json").read_text())
@@ -246,8 +246,8 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
 
     async def dispatch():
         jobs = server._JobManager(Mock())
-        definition = catalog._mcp_tool_def_from_class(
-            LintFlow, flow_schema(LintFlow()), "lint", module_path="booley.flows.lint"
+        definition = catalog._mcp_tool_def_from_endpoint(
+            LintFlow(), flow_schema(LintFlow()), "lint", module_path="booley.flows.lint"
         )
         content = await server._dispatch_booley_mcp_tool(
             "lint", {"target": "lite"}, definition, {}, jobs

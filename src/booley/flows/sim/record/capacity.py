@@ -5,10 +5,11 @@ from __future__ import annotations
 import sys
 import threading
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.memory_admission import fixed_job_threads, job_threads_at_start
@@ -69,6 +70,7 @@ class SimulationRecordCapacity:
     ) -> None:
         self._admission = admission
         self._item_claim = item_claim
+        self._target = str(cast(Mapping[str, object], manifest.document["target"])["selector"])
         self._lanes = ChildExecutionRegistry.from_project_data(
             manifest, project_data, booley_dir=project_data
         )
@@ -159,6 +161,7 @@ class SimulationRecordCapacity:
         publish: Callable[[ExecutionId], None],
         memory: MemoryClaim,
         queue_reason: str | None = None,
+        tests: Sequence[str] = (),
     ) -> Iterator[ChildPermit]:
         """Give one lane its identity and slot, retiring both on exit.
 
@@ -167,6 +170,8 @@ class SimulationRecordCapacity:
         at its share of the cores for everything it runs.
         *queue_reason* names why a requeued item claims again. While the Flow
         still reserves memory, the claim takes over its reservation and queue place.
+        *tests* are the item's test names, shown beside its run, Flow and Target
+        in queue reports.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
@@ -184,7 +189,7 @@ class SimulationRecordCapacity:
             publish(child_id)
             if self._cancelled():
                 raise ClaimAbortedError("record shutdown requested")
-            token = self._acquire_child(store, child_id, memory, queue_reason)
+            token = self._acquire_child(store, child_id, memory, queue_reason, tests)
         except BaseException:
             self._lanes.mark_terminal(prepared, "record_error")
             raise
@@ -309,6 +314,7 @@ class SimulationRecordCapacity:
         child_execution_id: ExecutionId,
         memory: MemoryClaim,
         queue_reason: str | None,
+        tests: Sequence[str],
     ) -> SlotToken:
         submitted: list[SlotToken] = []
         outer = self._admission.outer_token
@@ -335,6 +341,7 @@ class SimulationRecordCapacity:
                 memory=memory,
                 queue_reason=queue_reason,
                 succeeds=outer if isinstance(outer, SlotToken) else None,
+                job=self._admission.work_item_label(self._target, tests),
             )
         except BaseException:
             with self._gate:

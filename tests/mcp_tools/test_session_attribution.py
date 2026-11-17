@@ -180,7 +180,7 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
         return await server._dispatch_booley_mcp_tool(name, args, source, {}, None, request)
 
     app = McpApplication(
-        [{"name": "sim", "schema": {"type": "object"}}],
+        [{"name": "sim", "schema": {"type": "object"}, "memory_admitted": True}],
         dispatch=dispatch,
         request_dispatch=dispatch,
         canonicalize=lambda n: n,
