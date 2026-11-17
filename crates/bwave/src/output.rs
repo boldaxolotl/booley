@@ -112,7 +112,7 @@ pub struct SignalValue {
 pub struct FindData {
     pub scope_prefix: String,
     pub pattern: String,
-    pub value: String, // edge keyword or literal — as the user passed it
+    pub value: String, // edge keyword, or the literal normalized to raw hex
     pub mode: String,  // "sync" | "async"
     pub unit: String,  // "cycle" | "tick"
     pub count: usize,

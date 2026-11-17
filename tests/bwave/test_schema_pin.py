@@ -31,7 +31,6 @@ RELEASE_PIN_PATTERNS = (
 SCHEMA_FILES = (
     "crates/bwave/src/output.rs",
     "crates/bwave/schema/bwave.json",
-    "crates/bwave/docs/public/reference/json-envelope.md",
 )
 
 

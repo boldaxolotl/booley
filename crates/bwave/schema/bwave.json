@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.4.0/crates/bwave/schema/bwave.json",
   "title": "B-Wave --format json envelope",
-  "description": "B-Wave JSON envelope revision 2; clock-grid diagnostics and stopped ranges are advisory. Obtain the emitted revision using bwave schema.",
+  "description": "B-Wave JSON envelope revision 2, emitted by `--format json` on list, value, find, stats, signal, wave, distance and overview; sample, diff and stuck are text-only and exit 2 on `--format json`. Clock-grid diagnostics and stopped ranges are advisory. `bwave schema` prints the revision the installed binary emits.",
   "type": "object",
   "required": [
     "$schema",
@@ -35,7 +35,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Diagnostics that text mode would write to stderr as `# WARNING: ...` lines."
+      "description": "Diagnostics that text mode would write to stderr as `# WARNING: ...` lines, including --limit truncation. Empty on a clean run."
     },
     "data": {
       "oneOf": [
@@ -66,10 +66,12 @@
       ]
     },
     "clock_regularity": {
-      "$ref": "#/$defs/clockVerdict"
+      "$ref": "#/$defs/clockVerdict",
+      "description": "Verdict on the selected clock. Present on sync queries and on async queries that use cycle tokens; absent on async queries with only tick/time tokens. A `warning` or `unavailable` verdict is repeated in `warnings`."
     },
     "clock_stopped": {
       "type": "array",
+      "description": "Present only when the query window overlaps a clock stop. Each entry is the whole stop, even when the window covers part of it, numbered on the query's reset-aware grid. Not capped by --limit.",
       "items": {
         "$ref": "#/$defs/stoppedRange"
       }
@@ -365,7 +367,7 @@
         },
         "value": {
           "type": "string",
-          "description": "Edge keyword (`rising`, `falling`, `change`) or literal value, as the user passed it."
+          "description": "Edge keyword (`rising`, `falling`, `change`), or the literal value normalized like signalValue.value ('d255 is \"FF\")."
         },
         "mode": {
           "type": "string",
@@ -470,7 +472,7 @@
         },
         "value": {
           "type": "string",
-          "description": "Raw cache value \u2014 no Verilog-literal prefix, no radix formatting. Hex/binary mix per cache encoding."
+          "description": "Raw store value with no Verilog-literal prefix, padding or radix formatting (a 3-bit 5 is \"5\", 0xDEADBEEF is \"DEADBEEF\"); X and Z appear literally. Hex/binary mix per store encoding. The -s %RADIX suffix does not apply to JSON."
         }
       }
     },
@@ -625,6 +627,7 @@
     },
     "clockFinding": {
       "type": "object",
+      "description": "One observation about the clock; reason as in clockVerdict.reason, plus multiple_clock_periods when candidate clocks disagree (context only).",
       "additionalProperties": false,
       "properties": {
         "reason": {
@@ -659,7 +662,8 @@
           ]
         },
         "reason": {
-          "type": "string"
+          "type": "string",
+          "description": "Cause of the status: regular, stopped_stretches, off_grid_edge, non_integer_period, unknown_clock or insufficient_edges. See `bwave docs show reference/sync-vs-async`."
         },
         "clock": {
           "type": "string"
