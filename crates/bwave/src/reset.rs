@@ -17,8 +17,8 @@ pub struct Reset {
 
 /// Name of a signal without its bit-select, as the lowercased last scope part.
 fn leaf(name: &str) -> String {
-    let base = name.split('[').next().unwrap_or(name);
-    base.rsplit('.').next().unwrap_or(base).to_lowercase()
+    let last = name.rsplit('.').next().unwrap_or(name);
+    last.split('[').next().unwrap_or(last).to_lowercase()
 }
 
 /// Pick the reset signal: the shallowest, then alphabetically first, 1-bit
@@ -41,16 +41,19 @@ pub fn candidate(signals: &[CachedSignal], matchers: Option<&[SignalPattern]>) -
         .map(|(i, _)| i)
 }
 
-/// A leaf is active-low when `rst` or `reset` is followed by exactly one low
-/// marker (`n`, `_n`, `_b`, `_l`), optionally `i` or `_i`, then its end.
+/// A leaf is active-low when `rst` or `reset` is followed by one low marker
+/// (`n`, `_n`, `_b`, `_l`), optionally `i`, then its end or a `_` suffix such
+/// as `_sync`.
 pub fn active_low(name: &str) -> bool {
     let leaf = leaf(name);
     ["rst", "reset"].iter().any(|word| {
         leaf.match_indices(word).any(|(at, _)| {
             let rest = &leaf[at + word.len()..];
             ["n", "_n", "_b", "_l"].iter().any(|marker| {
-                rest.strip_prefix(marker)
-                    .is_some_and(|tail| matches!(tail, "" | "i" | "_i"))
+                rest.strip_prefix(marker).is_some_and(|tail| {
+                    let tail = tail.strip_prefix('i').unwrap_or(tail);
+                    tail.is_empty() || tail.starts_with('_')
+                })
             })
         })
     })
@@ -108,5 +111,32 @@ impl ResetReport {
             )
         };
         format!("{head} deasserts @ {time}; {tail}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{active_low, leaf};
+
+    #[test]
+    fn leaf_is_the_last_scope_part_without_its_bit_select() {
+        assert_eq!(leaf("tb.reset_ctrl[0].flag"), "flag");
+        assert_eq!(leaf("tb.gen[0].RST_N"), "rst_n");
+        assert_eq!(leaf("tb.rst[3]"), "rst");
+    }
+
+    #[test]
+    fn low_marker_may_be_followed_by_a_suffix() {
+        for name in [
+            "tb.rst_n_sync",
+            "tb.rstn_q",
+            "tb.rst_ni_meta",
+            "tb.reset_b_d",
+        ] {
+            assert!(active_low(name), "{name}");
+        }
+        for name in ["tb.rst_gen", "tb.rst_in", "tb.reset_en", "tb.rst_new"] {
+            assert!(!active_low(name), "{name}");
+        }
     }
 }

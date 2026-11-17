@@ -451,3 +451,27 @@ fn find_no_match_hint_follows_skipped_cycles() {
     assert!(err.lines().any(|l| l == "# No matches found"), "{err}");
     assert!(!err.contains("skipped before"), "{err}");
 }
+
+#[test]
+fn deassert_time_does_not_saturate_for_large_ticks() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("big.vcd");
+    let fst = dir.path().join("big.fst");
+    std::fs::write(
+        &source,
+        "$timescale 100fs $end\n$scope module tb $end\n$var wire 1 ! clk $end\n\
+         $var wire 1 \" rst $end\n$upscope $end\n$enddefinitions $end\n\
+         #0\n0!\n1\"\n#200000000000000000\n0\"\n1!\n",
+    )
+    .unwrap();
+    let (_, err, code) = run(&[
+        "build",
+        source.to_str().unwrap(),
+        "-o",
+        fst.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let json = json_of(&["overview", fst.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(json["reset"]["deassert_tick"], 200000000000000000u64);
+    assert_eq!(json["reset"]["deassert_time"], "20000000000000000000fs");
+}

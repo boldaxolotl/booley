@@ -103,8 +103,7 @@ Pre-edge details:
 
 By default sync mode skips output until the reset
 deasserts, so your first cycle is "real" simulation
-rather than initialisation. Store loading and every
-query use the same reset.
+rather than initialisation.
 
 - **Detection**: the shallowest 1-bit signal (then
   alphabetically first) whose last name part contains
@@ -112,8 +111,9 @@ query use the same reset.
   `--reset PATTERN` picks a 1-bit signal by glob
   instead.
 - **Polarity**: from the name. `rstn`, `rst_n`, `rst_ni`,
-  `reset_b` and `rst_l` are active-low; `rst`, `reset`,
-  `rst_gen`, `rst_in` and `reset_en` are active-high.
+  `reset_b` and `rst_l` are active-low, also with a suffix such as
+  `rst_n_sync`; `rst`, `reset`, `rst_gen`, `rst_in` and `reset_en`
+  are active-high.
 - **Deassertion**: the first transition to the inactive
   value. A reset that starts at X or Z stays asserted
   until then, and one that never deasserts skips
@@ -128,16 +128,12 @@ query use the same reset.
 
   Without a reset it reads
   `# reset: none detected; no cycles skipped`.
-- **JSON**: `--format json` adds a `reset` object with
-  `signal`, `polarity`, `chosen_by`, `deassert_tick`,
-  `deassert_time`, `skipped_cycles`, and `with_reset`.
+- **JSON**: `--format json` adds a `reset` object with the
+  same facts.
 - **`--with-reset`** keeps the reset phase; the header
   then says so and `skipped_cycles` is 0.
 - **Bad `--reset`**: a glob that does not compile or
   matches no 1-bit signal exits 2 naming the pattern.
-- **No match**: when `find` matches nothing after
-  cycles were skipped, its `# No matches found` line
-  gives the count and suggests `--with-reset`.
 
 ## Async mode (`--async`)
 

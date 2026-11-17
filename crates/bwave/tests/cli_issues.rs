@@ -2358,7 +2358,7 @@ fn issue_1100_raw_pulses_unknowns_virtuals_and_fallback() {
 }
 
 #[test]
-fn issue_1100_reset_cutoff_reassert_unknown_and_first_last_limit() {
+fn issue_1100_reset_cutoff_reassert_and_first_last_limit() {
     // The first post-reset sample is baseline; the next eligible edge
     // observes the fall, and transitions after the final edge are invisible.
     for reset in ["1%"] {

@@ -647,7 +647,7 @@ pub fn reset_report(cache: &ColumnCache, with_reset: bool) -> ResetReport {
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(0);
     let (factor, unit) = cache.timescale_str.split_at(unit_at);
-    let factor: u64 = factor.parse().unwrap_or(1);
+    let factor: u128 = factor.parse().unwrap_or(1);
     let reset = cache.reset.as_ref();
     ResetReport {
         signal: reset.map(|r| r.name.clone()),
@@ -664,7 +664,7 @@ pub fn reset_report(cache: &ColumnCache, with_reset: bool) -> ResetReport {
             "auto"
         },
         deassert_tick: tick,
-        deassert_time: tick.map(|t| format!("{}{unit}", t.saturating_mul(factor))),
+        deassert_time: tick.map(|t| format!("{}{unit}", u128::from(t) * factor)),
         skipped_cycles,
         with_reset,
     }

@@ -226,12 +226,12 @@ def test_reset_object_validates_against_published_schema(tmp_path: Path) -> None
         "without": _build_store(without_reset, tmp_path / "without_reset.fst"),
     }
     cases = [
-        (stores["with"], ["find", "flag", "'b1"], 2, False),
-        (stores["with"], ["overview"], 2, False),
-        (stores["with"], ["find", "flag", "'b1", "--with-reset"], 0, True),
-        (stores["without"], ["overview"], 0, False),
+        (stores["with"], ["find", "flag", "'b1"], "tb.rst_n", 2, False),
+        (stores["with"], ["overview"], "tb.rst_n", 2, False),
+        (stores["with"], ["find", "flag", "'b1", "--with-reset"], "tb.rst_n", 0, True),
+        (stores["without"], ["overview"], None, 0, False),
     ]
-    for path, command, skipped, with_flag in cases:
+    for path, command, signal, skipped, with_flag in cases:
         result = _run(command[0], str(path), *command[1:], "--format", "json")
         assert result.returncode == EXIT_OK, result.stderr
         payload = json.loads(result.stdout)
@@ -239,4 +239,4 @@ def test_reset_object_validates_against_published_schema(tmp_path: Path) -> None
         reset = payload["reset"]
         assert reset["skipped_cycles"] == skipped
         assert reset["with_reset"] is with_flag
-        assert (reset["signal"] is None) == (path == stores["without"])
+        assert reset["signal"] == signal
