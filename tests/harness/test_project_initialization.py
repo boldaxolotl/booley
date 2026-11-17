@@ -152,7 +152,9 @@ def test_stealth_booley_dir_repository_follows_the_outer_branch(
 
     _initialize(project)
 
-    assert _git(inner, "symbolic-ref", "HEAD") == f"refs/heads/{expected}"
+    # Read HEAD from the repository's own directory: a missing `.git` would fall through to the
+    # outer repository's branch.
+    assert (inner / ".git" / "HEAD").read_text(encoding="utf-8") == f"ref: refs/heads/{expected}\n"
 
 
 def test_check_only_names_the_inner_branch_without_creating_it(

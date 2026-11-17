@@ -1460,7 +1460,9 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
 
-    _initialize(root)
+    # private: `initialize_project` also adds these exclusions from later steps, which would
+    # mask this step dropping them.
+    init_cmd._step_core_projections(InitContext(project_root=root))
 
     exclude = (root / ".git/info/exclude").read_text(encoding="utf-8").splitlines()
     assert "/.booley" in exclude
