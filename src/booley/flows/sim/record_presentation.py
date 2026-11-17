@@ -46,8 +46,10 @@ from .coverage_reference import (
 from .coverage_source_gaps import source_gap_report_lines
 from .metrics import coverage_record_path, simulation_flow_metrics
 from .record import (
+    ManifestTarget,
     NewSimulationRecordPreview,
     NewSimulationRecordRunRequest,
+    SimulationRecordManifestView,
     SimulationRecordOutcome,
     SimulationRecordRecoveryStatus,
     build_artifact_reference,
@@ -529,13 +531,13 @@ def _simulation_record_structured_details(
     }
 
 
-def _coverage_request_target(request: NewSimulationRecordRunRequest) -> Mapping[str, object]:
+def _coverage_request_target(request: NewSimulationRecordRunRequest) -> ManifestTarget:
     """Expose the typed Target projection from one immutable record request."""
-    return cast(Mapping[str, object], request.plan.manifest.document["target"])
+    return SimulationRecordManifestView(request.plan.manifest).target
 
 
 def _coverage_request_selector(request: NewSimulationRecordRunRequest) -> str:
-    return str(_coverage_request_target(request)["selector"])
+    return _coverage_request_target(request).selector
 
 
 def _simulation_record_report_detail(

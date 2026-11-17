@@ -406,6 +406,8 @@ def _request(selector: str) -> SimpleNamespace:
                         "selector": selector,
                         "vlnv": "acme:demo:target:1.0",
                         "name": selector,
+                        "role": "candidate",
+                        "revision": "0" * 40,
                     }
                 }
             )
