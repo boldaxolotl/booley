@@ -1102,7 +1102,13 @@ class TestRefreshContainerTransactions:
             ("not-json", "invalid inspection"),
             ("[]", "invalid inspection"),
             (
-                json.dumps({"Config": {}, "State": {"Running": False}, "NetworkSettings": {}}),
+                json.dumps(
+                    {
+                        "Config": {},
+                        "State": {"Running": False},
+                        "NetworkSettings": {"Networks": {}},
+                    }
+                ),
                 "incomplete inspection",
             ),
             (_refresh_state(labels={"booley.role": 7}), "invalid labels"),
