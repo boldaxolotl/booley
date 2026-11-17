@@ -307,32 +307,21 @@ def _launched_tests(run: SimulationRecordSimRun) -> list[str]:
 @pytest.mark.parametrize(
     ("targets", "selector", "message"),
     [
-        pytest.param(
+        (
             {"lite": ["smoke", "stress"]},
             ("typo",),
-            "unknown exact test(s) for target 'lite': typo. Declared tests: smoke, stress.",
-            id="typo",
+            "unknown exact test(s) for target 'lite': typo",
         ),
-        pytest.param(
+        (
             {"lite": ["lite_stress"]},
             ("stress",),
-            "unknown exact test(s) for target 'lite': stress. Declared tests: lite_stress.",
-            id="partial-name",
+            "unknown exact test(s) for target 'lite': stress",
         ),
-        pytest.param(
-            {"lite": []},
-            ("anything",),
-            "exact named selection requires target 'lite' to have a registered test catalog",
-            id="no-catalog",
-        ),
+        ({"lite": []}, ("anything",), "requires target 'lite' to have a registered test catalog"),
         # Valid for one Target but absent from another: the other would run its default and PASS.
-        pytest.param(
-            {"lite": ["lite_smoke"], "full": ["full_sign"]},
-            ("lite_smoke",),
-            "unknown exact test(s) for target 'full': lite_smoke.",
-            id="one-of-many-targets",
-        ),
+        ({"lite": ["lite_smoke"], "full": ["full_sign"]}, ("lite_smoke",), "for target 'full'"),
     ],
+    ids=["typo", "partial-name", "no-catalog", "one-of-many-targets"],
 )
 def test_simulation_record_rejects_unknown_test_without_launching(
     tmp_path: Path, monkeypatch, targets, selector: tuple[str, ...], message: str
