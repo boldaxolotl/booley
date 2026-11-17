@@ -14,6 +14,7 @@ from pathlib import Path
 from booley.flows.terminal_progress import progress_lane
 from booley.runtime import oom_priority
 from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, job_attempt
+from booley.runtime.job_slots import short_test_list
 from booley.runtime.supervised_execution import supervised_execution_scope
 
 from .capacity import ChildPermit, LeaseLostError, SimulationRecordCapacity
@@ -30,14 +31,16 @@ class ScheduledAttempt:
     collision_key: str
 
 
+def _item_tests(item: Mapping[str, object]) -> tuple[str, ...]:
+    """The test names an item selects (none for a default or unfiltered selection)."""
+    selection = item.get("selection")
+    names = selection.get("names") if isinstance(selection, Mapping) else None
+    return tuple(str(name) for name in names) if isinstance(names, list | tuple) else ()
+
+
 def _lane_label(attempt: ScheduledAttempt) -> str:
     """Name a lane by its test(s) and attempt, e.g. ``alpha/1a2b3c4d`` (no whitespace)."""
-    selection = attempt.item.get("selection")
-    names = selection.get("names") if isinstance(selection, Mapping) else None
-    shown = [str(name) for name in names] if isinstance(names, list | tuple) else []
-    if len(shown) > 3:
-        shown = [*shown[:3], f"+{len(shown) - 3}"]
-    test = ",".join(shown) or str(attempt.item.get("work_item_id", ""))
+    test = short_test_list(_item_tests(attempt.item)) or str(attempt.item.get("work_item_id", ""))
     short_attempt = attempt.attempt_id[:8]
     return "".join((f"{test}/{short_attempt}" if test else short_attempt).split())
 
@@ -333,6 +336,7 @@ class BoundedSimulationRecordScheduler:
                     publish=lambda child: self._prepare_child(attempt, str(child)),
                     memory=memory,
                     queue_reason=OOM_REQUEUE_REASON if requeued else None,
+                    tests=_item_tests(item),
                 ) as permit,
                 supervised_execution_scope(permit.scope),
             ):
