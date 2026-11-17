@@ -194,15 +194,20 @@ def test_threshold_miss_uses_exact_rational_not_display_percentage() -> None:
     assert evaluated.evaluation["metrics"][0]["verdict"] == "fail"
 
 
-def test_non_decimal_threshold_is_rejected_at_criterion_construction() -> None:
-    with pytest.raises(ValueError, match="does not round-trip"):
-        _criterion(Fraction(200, 3))
-
-
-def test_out_of_range_threshold_is_rejected_at_criterion_construction() -> None:
-    for minimum in (Fraction(0), Fraction(101), Fraction(-5)):
-        with pytest.raises(ValueError, match=r"finite numbers in \(0, 100\]"):
-            _criterion(minimum)
+@pytest.mark.parametrize(
+    ("minimum", "message"),
+    [
+        (Fraction(200, 3), "does not round-trip"),
+        (Fraction(0), r"finite numbers in \(0, 100\]"),
+        (Fraction(101), r"finite numbers in \(0, 100\]"),
+        (Fraction(-5), r"finite numbers in \(0, 100\]"),
+    ],
+)
+def test_invalid_threshold_is_rejected_at_criterion_construction(
+    minimum: Fraction, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _criterion(minimum)
 
 
 @pytest.mark.parametrize(
@@ -224,105 +229,77 @@ def test_scorer_never_passes_an_empty_threshold_set() -> None:
     assert score_thresholds(_coverage_record().rollups, ()).status == "fail"
 
 
-def test_target_mismatch_blocks_with_stable_diagnostic() -> None:
-    criterion = CoverageCriterion(
-        target=DurableTargetIdentity("acme:demo:other:1.0#sim_other"),
-        thresholds=_criterion().thresholds,
-        tests=None,
+def _approval(point_id: str, *, target: DurableTargetIdentity = _TARGET) -> ApprovedWaiver:
+    return ApprovedWaiver(
+        target=target,
+        point_id=point_id,
+        source="rtl/counter.sv",
+        reason="excluded",
+        waiver_id=f"waiver:{point_id}",
+        waiver_file=f"rtl/counter.sv/{point_id}.toml",
+        waiver_fingerprint=f"sha256:{point_id}",
+        provenance=MappingProxyType({"approval": f"{point_id}.toml"}),
     )
 
-    evaluated = evaluate_coverage_record(_coverage_record(), criterion, _empty_waivers())
 
-    assert evaluated.evaluation["status"] == "blocked"
-    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
-        "COV_EVAL_TARGET_MISMATCH"
-    ]
-
-
-def test_exact_suite_mismatch_blocks_with_stable_diagnostic() -> None:
-    criterion = CoverageCriterion(
-        target=_TARGET,
-        thresholds=_criterion().thresholds,
-        tests=("reset",),
-    )
-
-    evaluated = evaluate_coverage_record(_coverage_record(), criterion, _empty_waivers())
-
-    assert evaluated.evaluation["status"] == "blocked"
-    assert evaluated.evaluation["suite"]["status"] == "mismatch"
-    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
-        "COV_EVAL_SUITE_MISMATCH"
-    ]
-
-
-def test_incomplete_collection_blocks_instead_of_failing_thresholds() -> None:
-    coverage_record = replace(
-        _coverage_record(),
-        collection=MappingProxyType({"status": "incomplete"}),
-        rollups=(),
-    )
-
-    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
-
-    assert evaluated.evaluation["status"] == "blocked"
-    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
-        "COV_EVAL_COLLECTION_INCOMPLETE"
-    ]
-    assert evaluated.evaluation["metrics"] == ()
-
-
-def test_incompatible_normalization_blocks_with_stable_diagnostic() -> None:
-    coverage_record = replace(
-        _coverage_record(),
-        normalization=MappingProxyType({"status": "incompatible"}),
-    )
-
-    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
-
-    assert evaluated.evaluation["status"] == "blocked"
-    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
-        "COV_EVAL_NORMALIZATION_INCOMPATIBLE"
-    ]
-
-
-def test_required_reported_only_metric_blocks_as_unavailable() -> None:
-    coverage_record = _coverage_record()
+def _reported_only(record: CoverageRecord) -> CoverageRecord:
     capability = replace(
-        coverage_record.collector.capabilities[0],
+        record.collector.capabilities[0],
         attributes=MappingProxyType({"collection": "supported", "scoring": "reported_only"}),
     )
-    coverage_record = replace(
-        coverage_record,
-        collector=replace(coverage_record.collector, capabilities=(capability,)),
-    )
+    return replace(record, collector=replace(record.collector, capabilities=(capability,)))
 
-    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
+
+def _incomplete(record: CoverageRecord) -> CoverageRecord:
+    return replace(record, collection=MappingProxyType({"status": "incomplete"}), rollups=())
+
+
+def _incompatible(record: CoverageRecord) -> CoverageRecord:
+    return replace(record, normalization=MappingProxyType({"status": "incompatible"}))
+
+
+def _other_target(criterion: CoverageCriterion) -> CoverageCriterion:
+    return replace(criterion, target=DurableTargetIdentity("acme:demo:other:1.0#sim_other"))
+
+
+@pytest.mark.parametrize(
+    ("change_record", "change_criterion", "expected_codes"),
+    [
+        (None, _other_target, ["COV_EVAL_TARGET_MISMATCH"]),
+        (None, lambda c: replace(c, tests=("reset",)), ["COV_EVAL_SUITE_MISMATCH"]),
+        (_incomplete, None, ["COV_EVAL_COLLECTION_INCOMPLETE"]),
+        (_incompatible, None, ["COV_EVAL_NORMALIZATION_INCOMPATIBLE"]),
+        (_reported_only, None, ["COV_EVAL_METRIC_UNAVAILABLE"]),
+        (
+            lambda r: _reported_only(_incompatible(_incomplete(r))),
+            None,
+            [
+                "COV_EVAL_COLLECTION_INCOMPLETE",
+                "COV_EVAL_NORMALIZATION_INCOMPATIBLE",
+                "COV_EVAL_METRIC_UNAVAILABLE",
+            ],
+        ),
+    ],
+    ids=["target", "suite", "incomplete", "incompatible", "reported-only", "aggregated-order"],
+)
+def test_blocked_evaluations_report_stable_diagnostics(
+    change_record, change_criterion, expected_codes: list[str]
+) -> None:
+    coverage_record = change_record(_coverage_record()) if change_record else _coverage_record()
+    criterion = change_criterion(_criterion()) if change_criterion else _criterion()
+
+    evaluated = evaluate_coverage_record(coverage_record, criterion, _empty_waivers())
 
     assert evaluated.evaluation["status"] == "blocked"
-    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
-        "COV_EVAL_METRIC_UNAVAILABLE"
-    ]
+    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == expected_codes
+    assert evaluated.evaluation["metrics"] == ()
+    if expected_codes == ["COV_EVAL_SUITE_MISMATCH"]:
+        assert evaluated.evaluation["suite"]["status"] == "mismatch"
 
 
 def test_waiving_every_point_blocks_zero_eligible_denominator() -> None:
-    waivers = ApprovedWaiverSet(
-        configuration=MappingProxyType(
-            {"anchor": "rtl_repository", "directory": "coverage-waivers"}
-        ),
-        digest="sha256:approved",
-        waivers=tuple(
-            ApprovedWaiver(
-                target=_TARGET,
-                point_id=point_id,
-                source="rtl/counter.sv",
-                reason="excluded",
-                waiver_id=f"waiver:{point_id}",
-                waiver_file=f"rtl/counter.sv/{point_id}.toml",
-                waiver_fingerprint=f"sha256:{point_id}",
-                provenance=MappingProxyType({"approval": f"{point_id}.toml"}),
-            )
-            for point_id in ("point-0", "point-1")
-        ),
+    waivers = replace(
+        _empty_waivers(), waivers=tuple(_approval(point) for point in ("point-0", "point-1"))
     )
 
     evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), waivers)
@@ -360,19 +337,6 @@ def test_ungated_coverage_record_is_not_requested_and_preserves_observations() -
     }
     assert evaluated.points == coverage_record.points
     assert evaluated.runs[0].simulation_verdict == "fail"
-
-
-def _approval(point_id: str, *, target: DurableTargetIdentity = _TARGET) -> ApprovedWaiver:
-    return ApprovedWaiver(
-        target=target,
-        point_id=point_id,
-        source="rtl/counter.sv",
-        reason="excluded",
-        waiver_id=f"waiver:{point_id}",
-        waiver_file=f"rtl/counter.sv/{point_id}.toml",
-        waiver_fingerprint=f"sha256:{point_id}",
-        provenance=MappingProxyType({"approval": f"{point_id}.toml"}),
-    )
 
 
 def test_ungated_coverage_record_applies_matched_waivers() -> None:
@@ -422,44 +386,12 @@ def test_ungated_partial_normalization_leaves_waivers_unmatched() -> None:
     assert all(point.disposition["kind"] == "eligible" for point in evaluated.points)
 
 
-def test_blocked_diagnostics_are_aggregated_in_stable_order() -> None:
-    coverage_record = _coverage_record()
-    capability = replace(
-        coverage_record.collector.capabilities[0],
-        attributes=MappingProxyType({"collection": "supported", "scoring": "reported_only"}),
-    )
-    coverage_record = replace(
-        coverage_record,
-        collector=replace(coverage_record.collector, capabilities=(capability,)),
-        collection=MappingProxyType({"status": "incomplete"}),
-        normalization=MappingProxyType({"status": "incompatible"}),
-    )
-
-    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
-
-    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
-        "COV_EVAL_COLLECTION_INCOMPLETE",
-        "COV_EVAL_NORMALIZATION_INCOMPATIBLE",
-        "COV_EVAL_METRIC_UNAVAILABLE",
-    ]
-
-
 def test_blocked_gated_coverage_record_still_resolves_approved_dispositions() -> None:
     coverage_record = replace(
         _coverage_record(),
         collection=MappingProxyType({"status": "incomplete"}),
     )
-    waiver = ApprovedWaiver(
-        target=_TARGET,
-        point_id="point-1",
-        source="rtl/counter.sv",
-        reason="excluded",
-        waiver_id="waiver:point-1",
-        waiver_file="rtl/counter.sv/point-1.toml",
-        waiver_fingerprint="sha256:point-1",
-        provenance=MappingProxyType({"approval": "point-1.toml"}),
-    )
-    waivers = replace(_empty_waivers(), waivers=(waiver,))
+    waivers = replace(_empty_waivers(), waivers=(_approval("point-1"),))
 
     evaluated = evaluate_coverage_record(coverage_record, _criterion(), waivers)
 

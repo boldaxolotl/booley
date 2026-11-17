@@ -28,6 +28,7 @@ from booley.flows.sim.coverage_reference import (
     resolve_coverage_record_reference,
     resolve_persisted_coverage_record_reference,
 )
+from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 from tests.flows.sim.coverage_record_test_support import (
     corrupt_coverage_record_with_duplicate_negative_point,
     decode_document,
@@ -107,10 +108,15 @@ def _persisted_reference(
     }
 
 
-def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path: Path) -> None:
+@pytest.fixture
+def published(tmp_path: Path):
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_coverage_record(target)
-    value = _reference(target, nested)
+    return target, nested, _reference(target, nested)
+
+
+def test_reference_codec_round_trips_exact_canonical_immutable_document(published) -> None:
+    _, _, value = published
 
     raw = encode_coverage_record_reference(value)
     decoded = decode_coverage_record_reference(raw)
@@ -165,23 +171,19 @@ def test_building_and_encoding_a_built_reference_never_decodes(
     ],
 )
 def test_reference_codec_rejects_boundary_and_identity_substitutions(
-    tmp_path: Path, pointer: tuple[str, ...], replacement: object
+    published, pointer: tuple[str, ...], replacement: object
 ) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_coverage_record(target))
+    _, _, value = published
 
     with pytest.raises(CoverageRecordReferenceError):
         decode_coverage_record_reference(_rewrite_reference(value, pointer, replacement))
 
 
 def test_reference_codec_refuses_a_nested_v4_coverage_record_as_an_older_booley_record(
-    tmp_path: Path,
+    published,
 ) -> None:
     """Booley 0.3.0 wrote v4: it is too old, not an invalid storage contract."""
-    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
-
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_coverage_record(target))
+    _, _, value = published
 
     with pytest.raises(UnsupportedSimulationRecordFormatError, match="older Booley"):
         decode_coverage_record_reference(
@@ -190,12 +192,10 @@ def test_reference_codec_refuses_a_nested_v4_coverage_record_as_an_older_booley_
 
 
 def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a_directory(
+    published,
     tmp_path: Path,
 ) -> None:
-    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
-
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_coverage_record(target))
+    _, _, value = published
     stray = tmp_path / "stray" / "coverage.json"
     stray.parent.mkdir()
     stray.write_bytes(
@@ -208,21 +208,19 @@ def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a
     assert "delete its Simulation invocation directory and start a fresh run" in str(excinfo.value)
 
 
-def test_reference_codec_rejects_unknown_fields_noncanonical_bytes_and_size() -> None:
+@pytest.mark.parametrize(
+    "raw",
+    [b"{}\n", b"{ }\n", b"x" * (MAX_REFERENCE_BYTES + 1)],
+    ids=["empty-object", "noncanonical-bytes", "oversize"],
+)
+def test_reference_codec_rejects_missing_fields_noncanonical_bytes_and_size(raw: bytes) -> None:
     with pytest.raises(CoverageRecordReferenceError):
-        decode_coverage_record_reference(b"{}\n")
-    with pytest.raises(CoverageRecordReferenceError):
-        decode_coverage_record_reference(b"{ }\n")
-    with pytest.raises(CoverageRecordReferenceError):
-        decode_coverage_record_reference(b"x" * (MAX_REFERENCE_BYTES + 1))
+        decode_coverage_record_reference(raw)
 
 
 @pytest.mark.parametrize("container", [(), ("target",), ("coverage_record",)])
-def test_reference_codec_rejects_unknown_fields(
-    tmp_path: Path, container: tuple[str, ...]
-) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_coverage_record(target))
+def test_reference_codec_rejects_unknown_fields(published, container: tuple[str, ...]) -> None:
+    _, _, value = published
     document = json.loads(encode_coverage_record_reference(value))
     selected = document if not container else document[container[0]]
     selected["substitute"] = "unexpected"  # type: ignore[index]
@@ -232,9 +230,8 @@ def test_reference_codec_rejects_unknown_fields(
         decode_coverage_record_reference(raw)
 
 
-def test_publication_is_create_only_and_idempotent_for_identical_bytes(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_coverage_record(target))
+def test_publication_is_create_only_and_idempotent_for_identical_bytes(published) -> None:
+    target, _, value = published
     path = target / "coverage.json"
 
     assert publish_coverage_record_reference(path, value) == value
@@ -355,11 +352,9 @@ def test_resolver_propagates_nested_coverage_record_validation_findings(tmp_path
 
 
 def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    published, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_coverage_record(target)
-    value = _reference(target, nested)
+    target, _, value = published
     honest = encode_coverage_record_reference(value)
     substitute = _rewrite_reference(value, ("producer_invocation_id",), 20)
     path = target / "coverage.json"
@@ -391,11 +386,9 @@ def test_resolver_rejects_nested_byte_digest_substitution(tmp_path: Path) -> Non
 
 
 def test_resolver_rejects_reference_digest_substitution_even_for_valid_nested_bytes(
-    tmp_path: Path,
+    published,
 ) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_coverage_record(target)
-    value = _reference(target, nested)
+    target, _, value = published
     raw = _rewrite_reference(
         value,
         ("coverage_record", "sha256"),
@@ -408,10 +401,8 @@ def test_resolver_rejects_reference_digest_substitution_even_for_valid_nested_by
         resolve_coverage_record_reference(path)
 
 
-def test_resolver_rejects_linked_reference_and_nested_path_components(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_coverage_record(target)
-    value = _reference(target, nested)
+def test_resolver_rejects_linked_reference_and_nested_path_components(published) -> None:
+    target, _, value = published
     real_reference = target / "real-reference.json"
     real_reference.write_bytes(encode_coverage_record_reference(value))
     (target / "coverage.json").symlink_to(real_reference.name)
