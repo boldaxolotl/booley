@@ -883,7 +883,7 @@ def _aggregate_result_bound_fixture(tmp_path, monkeypatch):
         )
     document = json.loads(_simulation_result("completed"))
     document["$schema"] = RESULT_SCHEMA
-    # The document is built by hand to exceed the ceiling; `_common` supplies its identity fields.
+    # No public builder emits a result document above the ceiling, so it is built by hand and `_common` supplies its identity fields.
     document.update(serial_execution._common(request))
     document["attempt_id"] = request.attempt_id
     document["evidence"] = store.pre_sim_references(request.attempt_directory)

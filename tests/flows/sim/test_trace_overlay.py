@@ -493,9 +493,10 @@ class TestWriteTraceOverlay:
         handle = TargetCatalog.build(tmp_path).select("sim")
         overlay = write_trace_overlay(handle)
         try:
-            setup_command_for_handle(
+            argv = setup_command_for_handle(
                 handle, build_root=tmp_path / "build", resolution_vlnv=overlay.vlnv
             )
+            assert overlay.vlnv in argv
             projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
             doc = read_core(projected)
             entry = doc["filesets"]["booley_trace_dump"]["files"][0]
@@ -572,9 +573,10 @@ class TestWriteTraceOverlay:
         overlay = write_trace_overlay(handle)
         try:
             projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
-            setup_command_for_handle(
+            argv = setup_command_for_handle(
                 handle, build_root=project / "build", resolution_vlnv=overlay.vlnv
             )
+            assert overlay.vlnv in argv
             entry = read_core(projected)["filesets"]["booley_trace_dump"]["files"][0]
             declared = next(iter(entry))
             # Projection roots the dump module under `.booley/cores/`; isolated
