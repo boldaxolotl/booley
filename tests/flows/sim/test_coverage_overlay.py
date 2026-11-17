@@ -36,7 +36,8 @@ class TestCoverageOverlay:
         core = _CORE_TEXT.replace(
             "      tool: verilator\n",
             "      tool: verilator\n"
-            "      verilator_options: [--timing, --coverage, --coverage-line]\n",
+            "      verilator_options: [--timing, --coverage, --coverage-line,"
+            " --dumpi-tree-json, '9', --no-dumpi-V3Global]\n",
         )
         base = _write_core(tmp_path / "ip", core)
         overlay = write_coverage_overlay(
@@ -53,12 +54,17 @@ class TestCoverageOverlay:
             assert "--coverage" not in options
             assert ("--trace" in options) is trace
             assert "--timing" in options
+            start = options.index("--dumpi-tree-json")
+            assert options[start : start + 3] == ["--dumpi-tree-json", "9", "--no-dumpi-V3Global"]
             assert TRACE_OVERLAY_MARKER in overlay.core_file.name
             assert overlay.core_file not in discover_cores(tmp_path)
             assert read_core(base)["targets"]["sim"]["flow_options"]["verilator_options"] == [
                 "--timing",
                 "--coverage",
                 "--coverage-line",
+                "--dumpi-tree-json",
+                "9",
+                "--no-dumpi-V3Global",
             ]
         finally:
             overlay.cleanup()
@@ -118,10 +124,3 @@ class TestCoverageOverlay:
             assert "booley_verilator_coverage_bridge" in document["filesets"]
         finally:
             overlay.cleanup()
-
-
-def test_coverage_overlay_passes_user_dump_options_through_without_declaration_switches():
-    from booley.flows.sim.coverage_overlay import _with_coverage_options
-
-    options = ["--dumpi-tree-json", "9", "--no-dumpi-V3Global", "--coverage-line"]
-    assert _with_coverage_options(options, ("--coverage-line",)) == options

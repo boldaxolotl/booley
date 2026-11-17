@@ -247,14 +247,16 @@ def test_coverage_source_edit_rebuilds_and_never_launches_old_image(
     assert _current_build_root(coverage_env, _PLAIN) == new_root
 
 
-def test_tampered_retained_read_closure_file_rebuilds(coverage_env: Path) -> None:
+@pytest.mark.parametrize("tampered", ["header", "image"])
+def test_tampered_retained_read_closure_file_rebuilds(coverage_env: Path, tampered: str) -> None:
     invoker = _Invoker(coverage_env)
     execution = _execution(coverage_env, invoker)
     _build(execution, coverage_env)
-    old_root = execution.authenticated_image()[0]
+    old_root, artifacts = execution.authenticated_image()
     # A generated header lies outside the staged-input snapshot; only the
     # read closure recorded from the dependency files can notice the edit.
-    (old_root / "Vtb.h").write_text("// tampered generated header\n", encoding="utf-8")
+    target = old_root / "Vtb.h" if tampered == "header" else artifacts[0]
+    target.write_text("// tampered retained file\n", encoding="utf-8")
 
     rebuilt = _build(execution, coverage_env)
 
