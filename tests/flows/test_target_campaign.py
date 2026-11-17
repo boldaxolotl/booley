@@ -13,7 +13,7 @@ from booley.flows.target_campaign import (
 from booley.flows.target_test_suite import NoRunnableTestsError
 
 
-def _campaign(tests: list[str], skips: list[str] | None = None, scope: str = "rtl/dut.sv"):
+def _resolved(tests: list[str], skips: list[str] | None = None, scope: str = "rtl/dut.sv"):
     return resolve_target_campaign(
         "sim",
         scope,
@@ -24,7 +24,7 @@ def _campaign(tests: list[str], skips: list[str] | None = None, scope: str = "rt
 
 
 def test_resolves_scope_and_test_suite() -> None:
-    campaign = _campaign(["smoke", "corner"], ["corner"], "rtl/dut.sv, ,rtl/dut2.sv")
+    campaign = _resolved(["smoke", "corner"], ["corner"], "rtl/dut.sv, ,rtl/dut2.sv")
 
     assert campaign.scope == ("rtl/dut.sv", "rtl/dut2.sv")
     assert campaign.suite.tests == ("smoke",)
@@ -32,7 +32,7 @@ def test_resolves_scope_and_test_suite() -> None:
 
 
 def test_executes_individual_units_through_injected_behavior() -> None:
-    campaign = _campaign(["reset", "corner"])
+    campaign = _resolved(["reset", "corner"])
 
     results = campaign.execute(lambda unit: unit.display_name.upper())
 
@@ -41,7 +41,7 @@ def test_executes_individual_units_through_injected_behavior() -> None:
 
 
 def test_batched_unit_describes_all_selected_tests() -> None:
-    campaign = _campaign(["reset", "corner"])
+    campaign = _resolved(["reset", "corner"])
 
     units = campaign.execution_units(batched=True)
 
@@ -53,7 +53,7 @@ def test_batched_unit_describes_all_selected_tests() -> None:
 
 def test_all_skipped_campaign_is_rejected() -> None:
     with pytest.raises(NoRunnableTestsError, match="every declared test is skipped"):
-        _campaign(["reset", "corner"], ["reset", "corner"])
+        _resolved(["reset", "corner"], ["reset", "corner"])
 
 
 def test_campaign_aggregation_cannot_pass_vacuously() -> None:
