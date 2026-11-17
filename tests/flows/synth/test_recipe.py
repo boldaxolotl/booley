@@ -53,35 +53,30 @@ def _fingerprint(tmp_path, *, mode: str, profile: str | None = None) -> str:
     return synthesis_recipe_snapshot_fingerprint(snapshot)
 
 
-@pytest.mark.parametrize("mode", ["logical", "physical"])
-def test_yosys_profile_settings_change_fingerprint(tmp_path, monkeypatch, mode):
-    """Editing a profile's Yosys settings must invalidate recipe evidence."""
+# The edited profile table is the input under test, and no public API edits it.
+_YOSYS_TABLE = yosys_ppa._YOSYS_PROFILES
+_OPENROAD_TABLE = openroad_ppa._PROFILES
+
+
+@pytest.mark.parametrize(
+    ("table", "field", "value", "mode", "invalidates"),
+    [
+        (_YOSYS_TABLE, "abc_delay_ps", 1234, "logical", True),
+        (_YOSYS_TABLE, "abc_delay_ps", 1234, "physical", True),
+        (_OPENROAD_TABLE, "setup_margin_ns", 0.7, "physical", True),
+        # Logical mode never runs OpenROAD, so its repair knobs are not recipe.
+        (_OPENROAD_TABLE, "setup_margin_ns", 0.7, "logical", False),
+    ],
+)
+def test_profile_table_edit_invalidates_only_recipes_that_run_it(
+    tmp_path, monkeypatch, table, field, value, mode, invalidates
+):
     before = _fingerprint(tmp_path, mode=mode, profile="max_frequency")
-    table = yosys_ppa._YOSYS_PROFILES
     monkeypatch.setitem(
-        table, "max_frequency", dataclasses.replace(table["max_frequency"], abc_delay_ps=1234)
+        table, "max_frequency", dataclasses.replace(table["max_frequency"], **{field: value})
     )
-    assert _fingerprint(tmp_path, mode=mode, profile="max_frequency") != before
 
-
-def test_openroad_profile_settings_change_fingerprint(tmp_path, monkeypatch):
-    """Editing a profile's OpenROAD settings must invalidate physical recipe evidence."""
-    before = _fingerprint(tmp_path, mode="physical", profile="max_frequency")
-    table = openroad_ppa._PROFILES
-    monkeypatch.setitem(
-        table, "max_frequency", dataclasses.replace(table["max_frequency"], setup_margin_ns=0.7)
-    )
-    assert _fingerprint(tmp_path, mode="physical", profile="max_frequency") != before
-
-
-def test_openroad_profile_settings_do_not_affect_logical_fingerprint(tmp_path, monkeypatch):
-    """Logical mode never runs OpenROAD, so its repair knobs are not recipe."""
-    before = _fingerprint(tmp_path, mode="logical", profile="max_frequency")
-    table = openroad_ppa._PROFILES
-    monkeypatch.setitem(
-        table, "max_frequency", dataclasses.replace(table["max_frequency"], setup_margin_ns=0.7)
-    )
-    assert _fingerprint(tmp_path, mode="logical", profile="max_frequency") == before
+    assert (_fingerprint(tmp_path, mode=mode, profile="max_frequency") != before) is invalidates
 
 
 def test_default_profile_is_resolved_when_unset(tmp_path):
