@@ -84,9 +84,20 @@ def test_missing_binary_fails_instead_of_skipping(tmp_path: Path) -> None:
         require_binary(tmp_path / "bwave")
 
 
-def test_missing_validator_fails_import() -> None:
-    code = f"import sys; sys.modules['jsonschema'] = None; sys.path.insert(0, {str(DEV_SUPPORT)!r}); import check_schema"
-    proc = subprocess.run(
+def run_without_jsonschema(snippet: str) -> subprocess.CompletedProcess[str]:
+    code = f"import sys; sys.modules['jsonschema'] = None; {snippet}"
+    return subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
+
+
+def test_missing_validator_fails_import() -> None:
+    proc = run_without_jsonschema(f"sys.path.insert(0, {str(DEV_SUPPORT)!r}); import check_schema")
     assert "ModuleNotFoundError" in proc.stderr
+
+
+def test_missing_validator_exits_two_as_script() -> None:
+    script = str(DEV_SUPPORT / "check_schema.py")
+    proc = run_without_jsonschema(f"import runpy; runpy.run_path({script!r}, run_name='__main__')")
+    assert proc.returncode == 2
+    assert "jsonschema not installed" in proc.stderr

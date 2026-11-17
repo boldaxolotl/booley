@@ -8,8 +8,9 @@ JSON subcommands, including clock-grid diagnostics against a representative
 
 Exits 0 on success, 1 on any drift (schema/envelope mismatch).
 
-The `bwave-integration` CI job runs this through `tests/test_json_schema.py`.
-`jsonschema` comes from Booley's runtime dependencies.
+The `bwave-integration` CI job runs this through `tests/test_json_schema.py`,
+where a missing `jsonschema` fails the import. `jsonschema` comes from Booley's
+runtime dependencies.
 """
 
 from __future__ import annotations
@@ -21,7 +22,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
+try:
+    from jsonschema import Draft202012Validator
+except ImportError:
+    if __name__ != "__main__":
+        raise
+    print("ERROR: jsonschema not installed. `pip install jsonschema`", file=sys.stderr)
+    sys.exit(2)
 
 
 def find_binary() -> str:
