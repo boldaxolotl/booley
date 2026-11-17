@@ -241,11 +241,29 @@ def test_gui_directory_discovers_trace(tmp_path, launched):
 def test_gui_directory_without_trace_errors(tmp_path, launched):
     sim_dir = tmp_path / "empty_sim"
     sim_dir.mkdir()
+    (sim_dir / "sim.log").write_text("no dump\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc:
         _gui(str(sim_dir))
 
-    assert "No trace file found" in str(exc.value)
+    assert str(exc.value) == f"ERROR: No trace file found in {sim_dir}"
+    assert launched == []
+
+
+def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
+    sim_dir = tmp_path / "work"
+    sim_dir.mkdir()
+    dump = sim_dir / "sim.vcd"
+    dump.write_bytes(b"")
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(str(sim_dir))
+
+    message = str(exc.value)
+    assert "not named trace.vcd: sim.vcd" in message
+    assert "[flows.sim].trace_files" in message
+    assert f'bwave register "{dump}" --as ALIAS --build' in message
+    assert f'bwave gui "{dump}"' in message
     assert launched == []
 
 
