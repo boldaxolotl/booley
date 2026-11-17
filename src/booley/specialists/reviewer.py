@@ -816,17 +816,6 @@ def mirror_findings_missing_from_canonical(
     return disagreeing
 
 
-def parse_issues(output: str) -> list[ReviewIssue]:
-    """Parse issues JSON from Specialist output (schema-validated).
-
-    Convenience wrapper around :func:`parse_review_output` that returns
-    just the valid issues. Callers that need to distinguish "no JSON at
-    all" from "JSON with zero valid issues" should use
-    ``parse_review_output`` directly.
-    """
-    return parse_review_output(output).issues
-
-
 def count_by_severity(issues: list[ReviewIssue]) -> dict[str, int]:
     """Count issues grouped by severity."""
     counts: dict[str, int] = {
@@ -839,11 +828,6 @@ def count_by_severity(issues: list[ReviewIssue]) -> dict[str, int]:
         if sev in counts:
             counts[sev] += 1
     return counts
-
-
-def check_gate(counts: dict[str, int]) -> bool:
-    """Gate passes when there are zero critical and zero major issues."""
-    return counts[SEVERITY_CRITICAL] == 0 and counts[SEVERITY_MAJOR] == 0
 
 
 def _format_status_and_counts(
@@ -2679,14 +2663,7 @@ object, even after calling the capability.
     # --- _interpret_output (required by ABC, but _run is overridden) ---
 
     def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
-        """Parse review output (used when called via base Specialist._run)."""
-        issues = parse_issues(output)
-        counts = count_by_severity(issues)
-
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            detail={"issues": len(issues), **counts},
-        )
+        raise NotImplementedError  # pragma: no cover - _run is overridden; required by the ABC
 
 
 if __name__ == "__main__":
