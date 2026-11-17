@@ -184,6 +184,9 @@ class Bench:
                 *argv,
             ]
         )
+        # `_execute_boundary` is the faked Sandbox boundary (no OpenROAD on test
+        # hosts). `_run` rather than `execute_cli`: the CLI's Job admission sets the
+        # host's thread share, which the thread-share test below must control.
         with patch.object(flow, "_execute_boundary", side_effect=self.boundary):
             outcome = flow._run()
         report = json.loads((self.root / "reports" / f"synth_{target}.json").read_text())
@@ -237,6 +240,7 @@ def bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Bench:
             root, selector, flow="generic", eda_tool="yosys", drivable_by=("synth",)
         ),
     )
+    # Private: the FuseSoC resolver is the seam where Target resolution is faked.
     monkeypatch.setattr(fusesoc_registry, "_resolve_target", bench.resolve)
     return bench
 
@@ -525,6 +529,8 @@ def test_no_cache_runs_and_refreshes_slot(bench: Bench, surface: str) -> None:
         assert parse_request(AsicSynthesizeFlow(), argv).no_cache is True
     else:
         assert flow_schema(AsicSynthesizeFlow())["properties"]["no_cache"]["type"] == "boolean"
+        # `_params_to_argv` is the MCP server's argv builder; no public entry
+        # reaches it below the transport.
         argv = _params_to_argv({"target": TARGET, "no_cache": True})
     assert "--no-cache" in argv
 
