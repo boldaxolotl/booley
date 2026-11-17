@@ -167,11 +167,7 @@ class ClaudeSDKBackend:
                 if attempt >= MAX_API_RETRIES:
                     logger.error("All %d retries exhausted: %s", MAX_API_RETRIES, e)
                     if isinstance(e, _RateLimitRetryError):
-                        raise UsageLimitError(
-                            f"Claude usage limit reached ({e.limit_type});"
-                            f" still limited after {MAX_API_RETRIES} attempts",
-                            provider="claude",
-                        ) from e
+                        raise _still_limited_error(e) from e
                     raise
                 backoff = compute_backoff(attempt, e.retry_after)
                 logger.warning(
@@ -744,7 +740,8 @@ async def _consume_claude_stream(
             counters.apply_result(message)
             _dispatch_usage(on_event, counters, _options_model(options))
             state.session_id = getattr(message, "session_id", None)
-        elif isinstance(message, RateLimitEvent):
+        elif isinstance(message, RateLimitEvent) and not counters.got_result:
+            # After a result the answer is complete; a late limit event must not discard it.
             await _handle_rate_limit_event(message)
 
 
@@ -1036,9 +1033,20 @@ _DEADLINE_MARGIN_S = 1.0
 class _RateLimitRetryError(TransientAPIError):
     """A rejected limit event whose wait already ran; keeps the limit for the final error."""
 
-    def __init__(self, message: str, *, limit_type: str | None) -> None:
+    def __init__(self, message: str, *, limit_type: str | None, resets_at: float | None) -> None:
         super().__init__(message, retry_after=0)
         self.limit_type = limit_type
+        self.resets_at = resets_at
+
+
+def _still_limited_error(e: _RateLimitRetryError) -> UsageLimitError:
+    """The terminal error when every attempt ended in a rejected limit event."""
+    reset = f"; resets at {rfc3339_from_epoch(e.resets_at)}" if e.resets_at else ""
+    return UsageLimitError(
+        f"Claude usage limit reached ({e.limit_type}){reset};"
+        f" still limited after {MAX_API_RETRIES} attempts",
+        provider="claude",
+    )
 
 
 def _rate_limit_wait_s(info: Any) -> float:
@@ -1085,6 +1093,7 @@ async def _handle_rate_limit_event(
         raise _RateLimitRetryError(
             f"rate limited ({info.rate_limit_type}), slept {sleep_s:.0f}s",
             limit_type=info.rate_limit_type,
+            resets_at=info.resets_at,
         )
     if info.status == "allowed_warning":
         logger.warning(

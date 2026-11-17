@@ -165,9 +165,8 @@ Where each credential comes from:
 
 - **Subscription:** usage counts against your plan. When you hit a Claude
   rate limit, Booley waits and retries a Specialist call if the limit resets
-  at least a minute before the call's timeout; otherwise the call stops with
-  an error naming the limit and its reset time. A Codex call stops and must be
-  invoked again after the limit resets.
+  soon; if the reset is too far off, the call stops with a usage-limit error.
+  A Codex call stops and must be invoked again after the limit resets.
 - **API key:** you pay per token.
 
 **For long runs, run `booley auth`.** The normal login renews itself

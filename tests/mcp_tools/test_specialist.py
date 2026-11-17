@@ -237,7 +237,7 @@ def test_usage_limit_beyond_the_call_timeout_names_the_limit_and_reset(
     assert result.report_text.startswith(
         "reviewer failed: UsageLimitError: " + FAR_RESET_MESSAGE + ". Diagnostic: "
     )
-    assert queries == [queries[0]]
+    assert len(queries) == 1
     sleep.assert_not_awaited()
 
 

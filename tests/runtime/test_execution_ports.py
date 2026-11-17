@@ -154,17 +154,38 @@ def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(tmp_p
     sleep.assert_not_awaited()
 
 
-def test_claude_rejections_on_every_attempt_end_as_usage_limit(tmp_path, monkeypatch):
-    queries, _sleep = fake_limit_query(monkeypatch, None)
+@pytest.mark.parametrize(
+    ("resets_at", "reset_text"), [(None, ""), (_NOW + 5, "; resets at 2027-01-15T08:00:05Z")]
+)
+def test_claude_rejections_on_every_attempt_end_as_usage_limit(
+    tmp_path, monkeypatch, resets_at, reset_text
+):
+    queries, _sleep = fake_limit_query(monkeypatch, resets_at)
     backend = claude.ClaudeSDKBackend(auth_mode="visitor")
 
     with pytest.raises(UsageLimitError) as raised:
         asyncio.run(backend.call(_limit_params(tmp_path)))
 
     assert str(raised.value) == (
-        "Claude usage limit reached (seven_day); still limited after 5 attempts"
+        f"Claude usage limit reached (seven_day){reset_text}; still limited after 5 attempts"
     )
     assert len(queries) == 5
+
+
+def test_claude_limit_event_after_the_result_keeps_the_result(tmp_path, monkeypatch):
+    async def query(*, prompt, options):
+        yield _successful_result()
+        yield rejected_seven_day(_FAR_RESET)
+
+    monkeypatch.setattr(claude, "RateLimitEvent", _RateLimit)
+    monkeypatch.setattr(claude, "query", query)
+    monkeypatch.setattr(claude, "wall_clock", lambda: _NOW)
+
+    result = asyncio.run(
+        claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path))
+    )
+
+    assert result.output == "done"
 
 
 def test_runtime_import_and_artifact_use_never_load_ticket_board(tmp_path):
