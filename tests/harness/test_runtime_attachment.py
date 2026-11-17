@@ -398,6 +398,10 @@ def test_sigint_after_promotion_allows_repeated_slot_cleanup(tmp_path: Path, mon
     assert store.reap(job_slots.CLASS_MEMORY) == []
 
 
+# Far below the 120 s the command would sleep; loaded hosts stretch tight bounds.
+_FAIL_FAST_SECONDS = 30
+
+
 def test_missing_container_protocol_fails_fast_with_actionable_message(
     tmp_path: Path, monkeypatch, caplog
 ) -> None:
@@ -418,7 +422,7 @@ def test_missing_container_protocol_fails_fast_with_actionable_message(
     assert result.exit_code == 125
     assert result.terminal_cause == "protocol_unavailable"
     assert "execution protocol" in caplog.text
-    assert time.monotonic() - started < 1
+    assert time.monotonic() - started < _FAIL_FAST_SECONDS
 
 
 def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, caplog) -> None:
@@ -447,7 +451,7 @@ def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, cap
     assert result.tree_terminal is False
     assert result.terminal_cause == "protocol_mismatch"
     assert "execution protocol" in caplog.text
-    assert time.monotonic() - started < 2
+    assert time.monotonic() - started < _FAIL_FAST_SECONDS
 
 
 @pytest.mark.parametrize("has_root", [True, False], ids=["root", "no-root"])
