@@ -347,6 +347,12 @@ def test_prepared_build_failure_reports_missing_executable(tmp_path: Path) -> No
         assert outcome.infrastructure_failure.missing_executable == "verilator"
 
 
+def test_ansi_prefixed_marker_line_is_dropped_from_tail() -> None:
+    output = "a\n\x1b[31mBOOLEY_BUILD_STAGE token=abc rc=1\x1b[0m\nb\n"
+
+    assert build_module.build_output_tail(output) == "a\nb"
+
+
 def test_hostile_oom_build_output_publishes_and_decodes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
