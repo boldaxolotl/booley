@@ -1285,6 +1285,7 @@ def test_build_failure_is_replaced_by_the_next_candidate(
 ) -> None:
     _prepare_scope_files(tmp_path, [_SCOPE])
     ranked = _candidates(tmp_path)
+    pristine = (tmp_path / _SCOPE).read_bytes()
 
     _, result, fake = _campaign(
         tmp_path,
@@ -1304,6 +1305,7 @@ def test_build_failure_is_replaced_by_the_next_candidate(
     assert fake.runs == [None, 1, 2, 3, 4]  # the Mutant that did not build never ran
     assert result.detail["invalid_dropped"] == [ranked[1].id]
     assert result.detail["equivalent_dropped"] == []
+    assert (tmp_path / _SCOPE).read_bytes() == pristine  # a Mutant never stays in the live RTL
 
 
 @pytest.mark.parametrize("min_detected", [None, 3], ids=["default", "explicit"])
