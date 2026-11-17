@@ -3286,6 +3286,55 @@ class TestSessionRefresh:
         assert "Sandbox ready: session" in output.out
 
 
+def _container_matches_swap(tmp_path, monkeypatch, memory_swap, swap_limit="{}"):
+    spec = build_spec(dc.APP_NONE, image="sha256:test", memory="8g", memory_swap="10g")
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+    runtime_spec.pin_image(spec)
+    environment = {**spec["remoteEnv"], **spec["containerEnv"]}
+    state = {
+        "Image": "sha256:test",
+        "Config": {
+            "Image": "sha256:test",
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+        },
+        "HostConfig": {"Memory": 8 * 1024**3, "MemorySwap": memory_swap},
+        "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+    }
+    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
+    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
+    monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        sr,
+        "_docker_stdout",
+        lambda argv: (
+            swap_limit
+            if argv[1] == "info"
+            else json.dumps({})
+            if "--format" in argv
+            else json.dumps([state])
+        ),
+    )
+    return sr.container_matches_issuance(
+        "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
+    )
+
+
+def test_container_swap_limit_must_match_spec(tmp_path, monkeypatch):
+    """Docker's default of twice the memory and ``-1`` do not match the issued limit."""
+    assert _container_matches_swap(tmp_path, monkeypatch, 10 * 1024**3) is True
+    assert _container_matches_swap(tmp_path, monkeypatch, 16 * 1024**3) is False
+    assert _container_matches_swap(tmp_path, monkeypatch, -1) is False
+
+
+def test_container_swap_limit_unsupported_host_reports_unlimited(tmp_path, monkeypatch):
+    """A Docker host without swap-limit support drops the issued limit to ``-1``."""
+    assert _container_matches_swap(tmp_path, monkeypatch, -1, swap_limit="false") is True
+    assert _container_matches_swap(tmp_path, monkeypatch, -1, swap_limit="true") is False
+    assert _container_matches_swap(tmp_path, monkeypatch, 16 * 1024**3, "false") is False
+
+
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
     spec = build_spec(dc.APP_NONE)
     argv = sr.docker_run_argv(spec, tmp_path, "test")

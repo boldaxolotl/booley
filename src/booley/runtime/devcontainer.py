@@ -739,7 +739,7 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
     return remote_env
 
 
-def _build_run_args(memory: str, egress: str) -> list[str]:
+def _build_run_args(memory: str, memory_swap: str, egress: str) -> list[str]:
     """Build the ``runArgs`` list for :func:`build_devcontainer_spec`."""
     # --network wires egress; the label lets the reaper own this container.
     # --cap-drop ALL + no-new-privileges + a pids ceiling harden the runtime where
@@ -761,8 +761,10 @@ def _build_run_args(memory: str, egress: str) -> list[str]:
         str(SESSION_PIDS_LIMIT),
     ]
     if memory:
-        # The single Sandbox memory limit (ADR 0028 Decision 12).
+        # The single Sandbox memory limit and its explicit swap limit (ADR 0087).
         run_args += ["--memory", memory]
+        if memory_swap:
+            run_args += ["--memory-swap", memory_swap]
     return run_args
 
 
@@ -893,6 +895,7 @@ def build_devcontainer_spec(
     project_id: str = "${localWorkspaceFolderBasename}",
     mcp_start_command: str | None = None,
     memory: str = "",
+    memory_swap: str = "",
     host_skills: Sequence[tuple[str, str]] = (),
     trusted_eda_mounts: Sequence[tuple[str, str]] = (),
     protected_devcontainer_source: str = "",
@@ -920,10 +923,8 @@ def build_devcontainer_spec(
             container state. Production callers pass :func:`canonical_project_id`.
         mcp_start_command: the shell command for ``postStartCommand`` that starts
             the in-container MCP server (WS4). ``None`` omits the hook.
-        memory: the ONE container memory limit (ADR 0028 Decision 12), e.g.
-            ``"8g"``, from ``[sandbox] memory`` in booley.toml. Rendered as a
-            ``--memory`` run arg; the empty default sets no limit — matching
-            the pre-ADR-0028 devcontainer, so existing installs are unchanged.
+        memory: the ONE container memory limit (ADR 0087), e.g. ``"8g"``, as ``--memory``; empty: none.
+        memory_swap: ``--memory-swap`` (memory plus swap) from ``memory_swap_limit``; empty: none.
         host_skills: ``(name, host_source)`` pairs for the user's HOST agent
             skills, from ``[sandbox] mount_host_skills`` (init resolves the
             real skill dirs behind ``~/.claude/skills`` / ``~/.agents/skills``,
@@ -987,7 +988,6 @@ def build_devcontainer_spec(
     remote_env = _build_remote_env(app, local_timezone, egress)
     _policy_remote_environment(remote_env, app, seeds)
     remote_env.update(identity_env)
-    run_args = _build_run_args(memory, egress)
 
     spec: dict = {
         "name": spec_name([seed.app for seed in seeds], app),
@@ -995,7 +995,7 @@ def build_devcontainer_spec(
         "workspaceMount": _bind_mount("${localWorkspaceFolder}", WORK_DIR),
         "workspaceFolder": WORK_DIR,
         "remoteUser": "agent",
-        "runArgs": run_args,
+        "runArgs": _build_run_args(memory, memory_swap, egress),
         "mounts": mounts,
         "remoteEnv": remote_env,
         "initializeCommand": [

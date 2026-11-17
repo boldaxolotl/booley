@@ -797,6 +797,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     for name in (
         "_check_runtime_location",
         "_check_sandbox_memory",
+        "_check_sandbox_swap",
         "_run_container_checks",
         "_run_mcp_checks",
         "_run_project_checks",
