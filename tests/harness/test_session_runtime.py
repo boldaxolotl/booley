@@ -369,10 +369,13 @@ class _SandboxDocker:
     def __init__(self) -> None:
         self.containers: dict[str, dict | str] = {}
         self.removed: list[str] = []
+        self.rm_attempts: list[list[str]] = []
         self.failing: set[str] = set()
 
     def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         verb, *args = argv[1:]
+        if verb == "rm":
+            self.rm_attempts.append(argv)
         if verb in self.failing or (args and args[0] in self.failing):
             return subprocess.CompletedProcess(argv, 1, "", "container is running")
         if verb == "ps":
@@ -391,6 +394,8 @@ class _SandboxDocker:
             ]
             return subprocess.CompletedProcess(argv, 0, "".join(f"{n}\n" for n in names), "")
         if verb == "inspect":
+            if args[0] not in self.containers:
+                return subprocess.CompletedProcess(argv, 1, "", "No such container")
             state = self.containers[args[0]]
             if "--format" in args:
                 state = state["Config"]["Labels"]
@@ -549,6 +554,8 @@ class TestPrepareLegacyContainer:
             sr.prepare(workspace)
 
         assert "editor" in sandbox_docker.containers
+        assert all(argv == ["docker", "rm", "editor"] for argv in sandbox_docker.rm_attempts)
+        assert len(sandbox_docker.rm_attempts) <= 1
 
     def test_unreadable_mounts_of_a_stopped_container_fail_loudly(
         self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker
@@ -728,9 +735,7 @@ class TestIssuedRuntimeDriftFix:
                 id="unreadable-mounts",
             ),
             pytest.param(
-                lambda state: state["Config"]["Labels"].update(
-                    {"devcontainer.local_folder": None}
-                ),
+                lambda state: state["Config"]["Labels"].pop("devcontainer.local_folder"),
                 "legacy",
                 _AMBIGUOUS,
                 id="unknown-origin",
