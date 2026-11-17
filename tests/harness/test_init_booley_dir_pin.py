@@ -190,6 +190,6 @@ def test_full_init_pins_before_bootstrap_and_stops_on_a_retargeted_link(
 
     reached_bootstrap.clear()
     _retarget(project, _new_target(tmp_path, "ext-b"))
-    # private: see above.
+    # private: same reason as above, no lifecycle lock needed.
     assert init_cmd._run_init_unlocked(args, project) == 2
     assert reached_bootstrap == []

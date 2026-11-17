@@ -763,7 +763,8 @@ def _assert_backfill_report(output: str, missing: list[str]) -> None:
 def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> None:
     from booley.runtime.project_gitignore import missing_gitignore_patterns
 
-    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+    if os.name != "nt":
+        assert stat.S_IMODE(target.stat().st_mode) == 0o700
     assert (target / "booley.toml").read_bytes() == init_cmd.BOOLEY_TOML_SKELETON.encode()
     assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
     assert (target / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
@@ -1214,9 +1215,9 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
         tomllib.loads((repo / ".booley/tests.toml").read_text(encoding="utf-8")),
         "sim",
     )
-    # private: the reporter is the audit's collector.
     reporter = doctor._Reporter.create()
-    # private: the public `doctor.run_doctor_result` also runs host and Docker probes.
+    # private: the reporter is the audit's collector, and the public `doctor.run_doctor_result`
+    # also runs host and Docker probes.
     doctor._run_core_audit(
         project,
         reporter.pass_,
