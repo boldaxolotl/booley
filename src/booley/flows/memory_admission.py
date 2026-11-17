@@ -273,9 +273,9 @@ def job_threads_at_start(
     use no EDA threads and must not shrink a Flow Job's share.
 
     A Simulation Record work item that took its own claim passes its Flow's token as
-    *own_flow*: the Flow's reservation is zero by then (an item takes a claim
-    only after the Flow dropped to zero), so it holds no share of the cores and
-    is left out. Every other caller passes nothing and counts every holder.
+    *own_flow*: the Flow's reservation is zero by then (the item's claim takes
+    over the Flow's reservation and drops it to zero), so it holds no share of
+    the cores and is left out. Every other caller passes nothing and counts every holder.
     """
     holders, _waiters = store.snapshot(CLASS_MEMORY)
     if own_flow is not None:
