@@ -8,9 +8,9 @@ types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.core.boundary import as_dict, as_int
 from booley.flows.metric_declarations import (
@@ -97,7 +97,7 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
         raise MetricsUnavailableError(f"the Coverage Record could not be read: {error}") from error
     collection = coverage_record.collection
     if collection["status"] != "complete":
-        for diagnostic in collection["diagnostics"]:
+        for diagnostic in cast("Iterable[Mapping[str, Any]]", collection["diagnostics"]):
             if diagnostic["code"] != "COV_SIMULATION_ABORTED":
                 raise MetricsUnavailableError(
                     f"the coverage collection did not complete: {diagnostic['message']}"
