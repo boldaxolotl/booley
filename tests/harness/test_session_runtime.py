@@ -307,8 +307,6 @@ def _vscode_labels(
     *,
     spec_digest: str = "current-spec",
 ) -> dict[str, str]:
-    from booley.runtime import session_issuance as runtime_spec
-
     labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     labels.update(
         {
@@ -321,832 +319,497 @@ def _vscode_labels(
     return labels
 
 
-def _container_probe(name: str, state: dict) -> object:
-    encoded = json.dumps([state])
-
-    def docker_stdout(argv: list[str]) -> str | None:
-        if argv[:3] == ["docker", "ps", "-a"]:
-            return f"{name}\n"
-        if argv[:3] == ["docker", "ps", "--filter"]:
-            return ""
-        if argv[:3] == ["docker", "inspect", name]:
-            return encoded
-        return None
-
-    return docker_stdout
-
-
-def _stub_prepare(
-    monkeypatch: pytest.MonkeyPatch,
-    workspace: Path,
-    issuance: SimpleNamespace,
-    docker_stdout: object,
-) -> None:
-    from booley.runtime import session_issuance as runtime_spec
-
-    _write_spec(workspace, _spec())
-    monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-    monkeypatch.setattr(
-        runtime_spec,
-        "authorized_project_data_source",
-        lambda _path: workspace / ".booley",
-    )
-    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
-    monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
-
-
-def _record_successful_removals(monkeypatch: pytest.MonkeyPatch, removed: list[list[str]]) -> None:
-    monkeypatch.setattr(
-        sr,
-        "_run",
-        lambda argv, **_kwargs: (
-            removed.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")
-        ),
-    )
-
-
+_NEW_IMAGE = "sha256:" + "c" * 64
+_OLD_IMAGE = "sha256:" + "d" * 64
+_DIRECTORY_IMAGE = "sha256:" + "e" * 64
 _OUTDATED_LAYOUT_REFUSAL = r"mount an outdated Booley Directory layout"
+_REBUILD = "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+_VSCODE_FIX = f"for VS Code Sandbox(s) 'editor', {_REBUILD}"
+_OUTDATED_FIX = (
+    "close VS Code, then on the host run `docker stop editor` and `docker rm editor` "
+    "(mounted folders and named volumes survive; anything written only inside the "
+    "container is lost), run `booley init --seed`, and reopen the folder in the "
+    "container (Dev Containers: Rebuild Container)"
+)
+_AMBIGUOUS = (
+    "inspect ambiguous Sandbox resource(s) 'editor'; Booley will not remove them automatically"
+)
+
+
+def _vscode_container(
+    workspace: Path,
+    *,
+    running: bool = True,
+    spec_digest: str = "current-spec",
+    booley_dir_targets: tuple[str, ...] = ("/booley", "/work/.booley"),
+    image: str | None = _NEW_IMAGE,
+) -> dict:
+    """Inspect state of this Project's VS Code container, its Booley Directory bound at the targets."""
+    source = str(workspace / ".booley")
+    return {
+        "Image": image,
+        "State": {"Running": running},
+        "Config": {
+            "Labels": _vscode_labels(workspace, _test_issuance(workspace), spec_digest=spec_digest)
+        },
+        "Mounts": [
+            {"Destination": target, "Source": source, "Type": "bind", "RW": True}
+            for target in booley_dir_targets
+        ],
+    }
+
+
+class _SandboxDocker:
+    """Serve the inventory, inspect and `docker rm` calls of the Sandbox reuse checks.
+
+    A container state that is a string is inspect output Docker could not encode.
+    *failing* names the verbs and containers whose calls fail.
+    """
+
+    def __init__(self) -> None:
+        self.containers: dict[str, dict | str] = {}
+        self.removed: list[str] = []
+        self.rm_attempts: list[list[str]] = []
+        self.failing: set[str] = set()
+
+    def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        verb, *args = argv[1:]
+        if verb == "rm":
+            self.rm_attempts.append(argv)
+        if verb in self.failing or (args and args[0] in self.failing):
+            return subprocess.CompletedProcess(argv, 1, "", "container is running")
+        if verb == "ps":
+            filters = [
+                args[i + 1].removeprefix("label=") for i, a in enumerate(args) if a == "--filter"
+            ]
+            names = [
+                name
+                for name, state in self.containers.items()
+                if isinstance(state, dict)
+                and ("-a" in args or state["State"] == {"Running": True})
+                and all(
+                    state["Config"]["Labels"].get(k) == v
+                    for k, v in (f.split("=", 1) for f in filters)
+                )
+            ]
+            return subprocess.CompletedProcess(argv, 0, "".join(f"{n}\n" for n in names), "")
+        if verb == "inspect":
+            if args[0] not in self.containers:
+                return subprocess.CompletedProcess(argv, 1, "", "No such container")
+            state = self.containers[args[0]]
+            if "--format" in args:
+                state = state["Config"]["Labels"]
+            out = (
+                json.dumps(state if "--format" in args else [state])
+                if isinstance(state, dict)
+                else state
+            )
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        assert verb == "rm", argv
+        self.removed.append(args[0])
+        del self.containers[args[0]]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+
+@pytest.fixture
+def sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> _SandboxDocker:
+    docker = _SandboxDocker()
+    # Every Docker command of session_runtime goes through `_run`; no public entry takes a runner.
+    monkeypatch.setattr(sr, "_run", docker.run)
+    monkeypatch.setattr(sr.idk, "network_exists", lambda _name: True)
+    monkeypatch.setattr(sr.idk, "image_exists", lambda _image: True)
+    monkeypatch.setattr(sr.idk, "image_id", lambda image: image)
+    return docker
+
+
+@pytest.fixture
+def issued(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, sandbox_docker: _SandboxDocker
+) -> Mock:
+    """A Project whose host-issued spec validates as `_test_issuance`; returns the `validate` mock."""
+    (workspace / ".booley").mkdir()
+    _write_spec(workspace, _spec())
+    validate = Mock(return_value=_test_issuance(workspace))
+    monkeypatch.setattr(runtime_spec, "validate", validate)
+    monkeypatch.setattr(
+        runtime_spec, "authorized_project_data_source", lambda _path: workspace / ".booley"
+    )
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
+    return validate
+
+
+def _stub_layout_probe(monkeypatch: pytest.MonkeyPatch, layouts: dict[str, str]) -> None:
+    """Answer the real Booley Directory layout probe per image from *layouts*."""
+    from booley.runtime import project_image
+
+    project_image.project_data_alias_capable.cache_clear()
+
+    def answer(argv, **_kwargs):
+        image = next(arg for arg in argv if arg.startswith("sha256:"))
+        return subprocess.CompletedProcess(argv, 0, layouts[image] + "\n", "")
+
+    monkeypatch.setattr(project_image, "run_captured_bounded", answer)
 
 
 class TestPrepareLegacyContainer:
-    def test_malformed_mount_inventory_fails_loudly(self) -> None:
-        with pytest.raises(sr.SessionError, match=r"cannot inspect bind mounts.*current-vscode"):
-            sr._container_has_unavailable_bind("current-vscode", {"Mounts": None})
-
-    def test_unmappable_windows_daemon_bind_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sr, "host_path_from_docker_mount", lambda _source: None)
-        state = {"Mounts": [{"Type": "bind", "Source": "/run/desktop/mnt/host/wsl/x"}]}
-
-        assert not sr._container_has_unavailable_bind("current-vscode", state)
-
-    @pytest.mark.parametrize("config_label", ["current", "missing", "different"])
-    def test_stopped_vscode_container_from_old_issuance_is_removed_before_create(
+    @pytest.mark.parametrize(
+        ("running", "labels", "bind", "removed"),
+        [
+            pytest.param(
+                False, {"booley.spec-digest": "old"}, ".booley", ["editor"], id="old-issuance"
+            ),
+            pytest.param(
+                False, {"devcontainer.config_file": None}, ".booley", ["editor"], id="no-config"
+            ),
+            pytest.param(
+                False,
+                {"devcontainer.config_file": "x.json"},
+                ".booley",
+                ["editor"],
+                id="other-config",
+            ),
+            pytest.param(False, {}, "missing-socket", ["editor"], id="missing-bind"),
+            pytest.param(False, {}, ".booley", [], id="current"),
+            pytest.param(False, {}, "/run/desktop/mnt/host/wsl/x", [], id="unmappable-bind"),
+            pytest.param(
+                False,
+                {"booley.spec-digest": "old", "devcontainer.local_folder": None},
+                ".booley",
+                [],
+                id="headless",
+            ),
+            pytest.param(True, {}, ".booley", [], id="running-current"),
+        ],
+    )
+    def test_prepare_removes_only_outdated_stopped_vscode_containers(
         self,
         workspace: Path,
+        issued: Mock,
+        sandbox_docker: _SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
-        config_label: str,
+        running: bool,
+        labels: dict,
+        bind: str,
+        removed: list[str],
     ) -> None:
-        issuance = _test_issuance(workspace)
-        container_labels = _vscode_labels(workspace, issuance, spec_digest="old-spec")
-        if config_label == "missing":
-            container_labels.pop("devcontainer.config_file")
-        elif config_label == "different":
-            container_labels["devcontainer.config_file"] = str(
-                workspace / ".devcontainer" / "legacy.json"
-            )
-        state = {
-            "State": {"Running": False},
-            "Config": {"Labels": container_labels},
-            "Mounts": [],
-        }
-        removed: list[list[str]] = []
-        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("stale-vscode", state))
-        _record_successful_removals(monkeypatch, removed)
-
-        assert sr.prepare(workspace) == "current-spec"
-        assert removed == [["docker", "rm", "stale-vscode"]]
-
-    def test_stopped_current_container_with_missing_injected_bind_is_removed(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        issuance = _test_issuance(workspace)
-        state = {
-            "State": {"Running": False},
-            "Config": {"Labels": _vscode_labels(workspace, issuance)},
-            "Mounts": [
-                {
-                    "Type": "bind",
-                    "Source": str(workspace / "missing-wayland-socket"),
-                    "Destination": "/tmp/vscode-wayland.sock",
-                }
-            ],
-        }
-        removed: list[list[str]] = []
-        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("current-vscode", state))
-        _record_successful_removals(monkeypatch, removed)
-
-        assert sr.prepare(workspace) == "current-spec"
-        assert removed == [["docker", "rm", "current-vscode"]]
-
-    def test_running_vscode_container_from_old_issuance_is_never_removed(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_issuance as runtime_spec
-
-        _write_spec(workspace, _spec())
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="current-spec",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
+        monkeypatch.setattr(
+            sr,
+            "host_path_from_docker_mount",
+            lambda source: None if source.startswith("/run/desktop/") else Path(source),
         )
-        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-        labels["booley.spec-digest"] = "old-spec"
-        labels.update(
+        state = _vscode_container(workspace, running=running)
+        for key, value in labels.items():
+            state["Config"]["Labels"][key] = value
+            if value is None:
+                del state["Config"]["Labels"][key]
+        source = bind if bind.startswith("/") else str(workspace / bind)
+        state["Mounts"] += [
+            {"Destination": "/extra", "Source": source, "Type": "bind", "RW": True},
             {
-                "booley.role": "interactive",
-                "devcontainer.local_folder": str(workspace),
-                "devcontainer.config_file": str(workspace / ".devcontainer" / "devcontainer.json"),
-            }
-        )
-        running = [{"State": {"Running": True}, "Config": {"Labels": labels}, "Mounts": []}]
-
-        def docker_stdout(argv: list[str]) -> str | None:
-            if argv[:3] == ["docker", "ps", "-a"]:
-                return "active-vscode\n"
-            if argv[:3] == ["docker", "ps", "--filter"]:
-                return ""
-            if argv[:3] == ["docker", "inspect", "active-vscode"]:
-                return json.dumps(running)
-            return None
-
-        monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-        monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
-        remove = Mock()
-        monkeypatch.setattr(sr, "_run", remove)
-
-        with pytest.raises(sr.SessionError, match=r"running Sandbox.*older host issuance"):
-            sr.prepare(workspace)
-
-        remove.assert_not_called()
-
-    def test_headless_session_container_is_never_reconciled_for_vscode(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_issuance as runtime_spec
-
-        _write_spec(workspace, _spec())
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="current-spec",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
-        )
-        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-        labels["booley.spec-digest"] = "old-spec"
-        headless = [{"State": {"Running": False}, "Config": {"Labels": labels}, "Mounts": []}]
-        name = sr.session_container_name(workspace)
-
-        def docker_stdout(argv: list[str]) -> str | None:
-            if argv[:3] == ["docker", "ps", "-a"]:
-                return f"{name}\n"
-            if argv[:3] == ["docker", "ps", "--filter"]:
-                return ""
-            if argv[:3] == ["docker", "inspect", name]:
-                return json.dumps(headless)
-            return None
-
-        monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-        monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
-        remove = Mock()
-        monkeypatch.setattr(sr, "_run", remove)
-
-        assert sr.prepare(workspace) == "current-spec"
-        remove.assert_not_called()
-
-    def test_inventory_is_scoped_to_the_current_project(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_issuance as runtime_spec
-
-        _write_spec(workspace, _spec())
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="current-spec",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
-        )
-        expected_project_id = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))[
-            "booley.project-id"
+                "Destination": "/home/agent/.claude",
+                "Name": "state",
+                "Source": "/var/lib/x",
+                "Type": "volume",
+            },
         ]
-        probes: list[list[str]] = []
-
-        def docker_stdout(argv: list[str]) -> str | None:
-            if argv[:3] == ["docker", "ps", "-a"]:
-                probes.append(argv)
-                return ""
-            if argv[:3] == ["docker", "ps", "--filter"]:
-                return ""
-            return None
-
-        monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-        monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
+        sandbox_docker.containers["editor"] = state
 
         assert sr.prepare(workspace) == "current-spec"
-        assert probes == [
-            [
-                "docker",
-                "ps",
-                "-a",
-                "--filter",
-                f"label={dc.INTERACTIVE_ROLE_LABEL}",
-                "--filter",
-                f"label=booley.project-id={expected_project_id}",
-                "--format",
-                "{{.Names}}",
-            ]
-        ]
+        assert sandbox_docker.removed == removed
 
-    def test_current_container_keeps_valid_binds_and_named_volumes(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    def test_other_projects_containers_are_never_inspected(
+        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker
     ) -> None:
-        issuance = _test_issuance(workspace)
-        state = {
-            "State": {"Running": False},
-            "Config": {"Labels": _vscode_labels(workspace, issuance)},
-            "Mounts": [
-                {"Type": "bind", "Source": str(workspace), "Destination": "/work"},
-                {
-                    "Type": "volume",
-                    "Name": "booley-claude-state-i2c",
-                    "Source": "/var/lib/docker/volumes/not-a-host-bind",
-                    "Destination": "/home/agent/.claude",
-                },
-            ],
-        }
-        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("current-vscode", state))
-        remove = Mock()
-        monkeypatch.setattr(sr, "_run", remove)
+        state = _vscode_container(workspace, running=False, spec_digest="old")
+        state["Config"]["Labels"]["booley.project-id"] = "other-project"
+        sandbox_docker.containers["vanished"] = state
+        sandbox_docker.failing.add("vanished")
 
         assert sr.prepare(workspace) == "current-spec"
-        remove.assert_not_called()
 
-    def test_container_that_starts_during_cleanup_is_not_force_removed(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        issuance = _test_issuance(workspace)
-        state = {
-            "State": {"Running": False},
-            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
-            "Mounts": [],
-        }
-        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("racing-vscode", state))
-        remove = Mock(
-            return_value=subprocess.CompletedProcess(
-                ["docker", "rm", "racing-vscode"],
-                1,
-                "",
-                "container is running",
-            )
-        )
-        monkeypatch.setattr(sr, "_run", remove)
-
-        with pytest.raises(sr.SessionError, match=r"not force-remove.*may have become active"):
-            sr.prepare(workspace)
-
-        assert remove.call_args.args[0] == ["docker", "rm", "racing-vscode"]
-
-    def test_missing_generated_bind_names_source_and_reseed_action(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_issuance as runtime_spec
-
-        _write_spec(workspace, _spec())
-        source = "/host/skills/renamed-skill"
-        target = f"{dc.HOST_SKILLS_SIDECAR}/example-skill"
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-        monkeypatch.setattr(
-            runtime_spec,
-            "validate",
-            Mock(
-                side_effect=runtime_spec.RuntimeSpecError(
-                    f"generated bind source for {target} is missing: {source}"
-                )
+    @pytest.mark.parametrize(
+        ("running", "failing", "refusal"),
+        [
+            pytest.param(
+                True, set(), r"running Sandbox 'editor' uses an older host issuance", id="running"
             ),
+            pytest.param(False, {"rm"}, r"not force-remove.*may have become active", id="started"),
+        ],
+    )
+    def test_prepare_never_removes_an_active_container(
+        self,
+        workspace: Path,
+        issued: Mock,
+        sandbox_docker: _SandboxDocker,
+        running: bool,
+        failing: set[str],
+        refusal: str,
+    ) -> None:
+        sandbox_docker.containers["editor"] = _vscode_container(
+            workspace, running=running, spec_digest="old"
         )
-        monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: [])
+        sandbox_docker.failing |= failing
 
-        with pytest.raises(sr.SessionError) as caught:
+        with pytest.raises(sr.SessionError, match=refusal):
             sr.prepare(workspace)
 
-        message = str(caught.value)
-        assert source in message
-        assert target in message
-        assert (
-            "on the host run `booley init`, then use Dev Containers: Rebuild Container" in message
-        )
-        assert "session refresh" not in message
+        assert "editor" in sandbox_docker.containers
+        assert all(argv == ["docker", "rm", "editor"] for argv in sandbox_docker.rm_attempts)
+        assert len(sandbox_docker.rm_attempts) <= 1
 
-    def test_ambiguous_running_legacy_container_refuses_without_mutation(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    def test_unreadable_mounts_of_a_stopped_container_fail_loudly(
+        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker
     ) -> None:
-        _write_spec(workspace, _spec())
-        legacy = [
-            {
-                "Config": {"Labels": {"devcontainer.local_folder": str(workspace)}},
-                "Mounts": [{"Destination": "/work", "Type": "bind", "RW": True}],
-            }
-        ]
-        validate = Mock()
-        monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
-        )
-        monkeypatch.setattr(
-            "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-        monkeypatch.setattr("booley.runtime.session_issuance.validate", validate)
+        sandbox_docker.containers["editor"] = {
+            **_vscode_container(workspace, running=False),
+            "Mounts": None,
+        }
 
-        with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
+        with pytest.raises(
+            sr.SessionError, match=r"cannot inspect bind mounts for Sandbox 'editor'"
+        ):
             sr.prepare(workspace)
-
-        message = str(caught.value)
-        assert "'legacy'" in message
-        assert "docker rm" not in message
-        assert "Booley will not remove them automatically" in message
-        validate.assert_not_called()
-
-    def test_running_dual_bind_container_allows_validation(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _write_spec(workspace, _spec())
-        source = str(workspace / ".booley")
-        current = [
-            {
-                "Mounts": [
-                    {
-                        "Destination": "/booley",
-                        "Source": source,
-                        "Type": "bind",
-                        "RW": True,
-                    },
-                    {
-                        "Destination": "/work/.booley",
-                        "Source": source,
-                        "Type": "bind",
-                        "RW": True,
-                    },
-                ],
-                "Config": {"Labels": {"devcontainer.local_folder": str(workspace)}},
-            }
-        ]
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="abc",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
-        )
-        monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("current", json.dumps(current))]
-        )
-        monkeypatch.setattr(
-            "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-        monkeypatch.setattr("booley.runtime.session_issuance.validate", lambda *_args: issuance)
-        monkeypatch.setattr(
-            "booley.runtime.session_issuance.requested_license", lambda _path, **_kwargs: None
-        )
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
-
-        assert sr.prepare(workspace) == "abc"
 
     def test_inventory_failure_blocks_before_stamp_validation(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker
     ) -> None:
-        _write_spec(workspace, _spec())
-        validate = Mock()
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _args: None)
-        monkeypatch.setattr(
-            "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-        monkeypatch.setattr("booley.runtime.session_issuance.validate", validate)
+        sandbox_docker.failing.add("ps")
 
-        with pytest.raises(sr.SessionError, match="cannot inventory"):
+        with pytest.raises(sr.SessionError, match="cannot inventory running Sandbox containers"):
             sr.prepare(workspace)
 
-        validate.assert_not_called()
+        issued.assert_not_called()
 
-    def test_source_transition_to_local_blocks_external_container(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    def test_missing_generated_bind_names_source_and_reseed_action(
+        self, workspace: Path, issued: Mock
     ) -> None:
-        _write_spec(workspace, _spec())
-        external = workspace.parent / "external-project-data"
-        legacy = [
-            {
-                "Config": {"Labels": {"devcontainer.local_folder": str(workspace)}},
-                "Mounts": [
-                    {
-                        "Destination": "/booley",
-                        "Source": str(external),
-                        "Type": "bind",
-                        "RW": True,
-                    },
-                    {
-                        "Destination": "/work",
-                        "Source": str(workspace),
-                        "Type": "bind",
-                        "RW": True,
-                    },
-                ],
-            }
-        ]
-        monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
+        source = "/host/skills/renamed-skill"
+        target = f"{dc.HOST_SKILLS_SIDECAR}/example-skill"
+        issued.side_effect = runtime_spec.RuntimeSpecError(
+            f"generated bind source for {target} is missing: {source}"
         )
-        monkeypatch.setattr(
-            "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley",
-        )
-
-        with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL):
-            sr.prepare(workspace)
-
-    def _legacy_vscode_state(self, workspace: Path, container_id: str) -> str:
-        """A running VS Code container that still mounts only the workspace (pre-0.3.0)."""
-        return json.dumps(
-            [
-                {
-                    "Id": container_id,
-                    "State": {"Running": True},
-                    "Config": {"Labels": _vscode_labels(workspace, _test_issuance(workspace))},
-                    "Mounts": [{"Destination": "/work", "Type": "bind", "RW": True}],
-                }
-            ]
-        )
-
-    def test_running_legacy_vscode_container_is_refused_with_repair(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_admission
-
-        issuance = _test_issuance(workspace)
-        _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
-        monkeypatch.setattr(
-            sr,
-            "_strict_running_interactive_states",
-            lambda: [("nifty_wright", self._legacy_vscode_state(workspace, "a" * 64))],
-        )
-        run = Mock()
-        monkeypatch.setattr(sr, "_run", run)
-        claim = Mock()
-        monkeypatch.setattr(session_admission, "claim_vscode_start", claim)
 
         with pytest.raises(sr.SessionError) as caught:
             sr.prepare(workspace)
 
         message = str(caught.value)
-        assert "'nifty_wright'" in message
-        assert "close VS Code" in message
-        assert "`docker stop nifty_wright` and `docker rm nifty_wright`" in message
-        assert "`booley init --seed`" in message
-        run.assert_not_called()
-        claim.assert_not_called()
-
-    def test_legacy_container_refusal_precedes_stale_stamp_rejection(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_issuance as runtime_spec
-
-        _write_spec(workspace, _spec())
-        monkeypatch.setattr(
-            runtime_spec, "authorized_project_data_source", lambda _path: workspace / ".booley"
-        )
-        validate = Mock(
-            side_effect=runtime_spec.RuntimeSpecError(
-                "host-issued spec stamp has an unsupported version"
-            )
-        )
-        monkeypatch.setattr(runtime_spec, "validate", validate)
-        monkeypatch.setattr(
-            sr,
-            "_strict_running_interactive_states",
-            lambda: [("nifty_wright", self._legacy_vscode_state(workspace, "a" * 64))],
-        )
-        run = Mock()
-        monkeypatch.setattr(sr, "_run", run)
-
-        with pytest.raises(sr.SessionError) as caught:
-            sr.prepare(workspace)
-
-        assert "`docker rm nifty_wright`" in str(caught.value)
-        assert "`booley init --seed`" in str(caught.value)
-        validate.assert_not_called()
-        run.assert_not_called()
-
-    def test_source_transition_to_local_refuses_identified_container(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A current-release container on an external source is outdated once the source is local."""
-        from booley.runtime import session_issuance as runtime_spec
-
-        external = workspace.parent / "external-project-data"
-        issuance = _test_issuance(workspace)
-        state = json.loads(self._legacy_vscode_state(workspace, "b" * 64))
-        state[0]["Mounts"] = [
-            {
-                "Destination": "/booley",
-                "Source": str(external),
-                "Type": "bind",
-                "RW": True,
-            },
-            {"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True},
-        ]
-        _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
-        monkeypatch.setattr(runtime_spec, "validate", Mock())
-        monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("editor", json.dumps(state))]
-        )
-        run = Mock()
-        monkeypatch.setattr(sr, "_run", run)
-
-        with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
-            sr.prepare(workspace)
-
-        assert "`docker rm editor`" in str(caught.value)
-        run.assert_not_called()
+        assert f"generated bind source for {target} is missing: {source}; {_REBUILD}" in message
+        assert "session refresh" not in message
 
     @pytest.mark.parametrize(
         "damage",
-        [
-            {"image": 7},
-            {"mounts": "not-a-list"},
-            {"mounts": [7]},
-        ],
+        [{"image": 7}, {"mounts": "not-a-list"}, {"mounts": [7]}],
         ids=["image", "mounts-type", "mount-entry"],
     )
     def test_unreadable_spec_is_left_to_validation(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, damage: dict
+        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker, damage: dict
     ) -> None:
-        from booley.runtime import session_issuance as runtime_spec
-
         _write_spec(workspace, {**_spec(), **damage})
-        monkeypatch.setattr(
-            sr,
-            "_strict_running_interactive_states",
-            lambda: pytest.fail("an unreadable spec must not reach the container inventory"),
-        )
-        monkeypatch.setattr(
-            runtime_spec,
-            "validate",
-            Mock(side_effect=runtime_spec.RuntimeSpecError("spec is malformed")),
-        )
+        sandbox_docker.containers["editor"] = _vscode_container(workspace, booley_dir_targets=())
+        issued.side_effect = runtime_spec.RuntimeSpecError("spec is malformed")
 
         with pytest.raises(
             sr.SessionError, match="refusing Sandbox preparation: spec is malformed"
         ):
             sr.prepare(workspace)
 
-    def test_windows_host_paths_normalize_slashes_and_drive_case(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("targets", "external", "identified"),
+        [
+            pytest.param((), False, True, id="workspace-only"),
+            pytest.param((), False, False, id="unidentified"),
+            pytest.param(("/booley", "/work/.booley"), True, True, id="external-source"),
+            pytest.param(("/former-mount", "/work/.booley"), False, True, id="former-target"),
+        ],
+    )
+    def test_running_container_with_outdated_layout_is_refused_first(
+        self,
+        workspace: Path,
+        issued: Mock,
+        sandbox_docker: _SandboxDocker,
+        targets: tuple[str, ...],
+        external: bool,
+        identified: bool,
     ) -> None:
-        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
-        assert platform_paths.same_host_path(
-            "c:/workplace/picorv32/.devcontainer/devcontainer.json",
-            Path(r"C:\workplace\picorv32\.devcontainer\devcontainer.json"),
+        issued.side_effect = runtime_spec.RuntimeSpecError("spec stamp has an unsupported version")
+        state = _vscode_container(workspace, booley_dir_targets=targets)
+        for mount in state["Mounts"] if external else ():
+            mount["Source"] = str(workspace.parent / "external-project-data")
+        if not identified:
+            del state["Config"]["Labels"]["booley.project-id"]
+        sandbox_docker.containers["editor"] = state
+
+        with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
+            sr.prepare(workspace)
+
+        message = str(caught.value)
+        repair = (
+            "close VS Code, then on the host run `docker stop editor` and `docker rm editor`"
+            if identified
+            else _AMBIGUOUS
         )
+        assert repair in message
+        assert ("`booley init --seed`" in message) is identified
+        issued.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("image", "mask", "accepted"),
+        [
+            pytest.param(_NEW_IMAGE, False, True, id="alias-image"),
+            pytest.param(_OLD_IMAGE, False, False, id="pre-rename-image"),
+            pytest.param(_DIRECTORY_IMAGE, False, False, id="directory-image"),
+            pytest.param(None, False, False, id="no-image-identity"),
+            pytest.param(_NEW_IMAGE, True, False, id="masked-alias"),
+        ],
+    )
+    def test_alias_layout_is_proven_by_the_container_image(
+        self,
+        workspace: Path,
+        issued: Mock,
+        sandbox_docker: _SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        image: str | None,
+        mask: bool,
+        accepted: bool,
+    ) -> None:
+        spec = _spec(image=_NEW_IMAGE)
+        spec["mounts"] = [m for m in spec["mounts"] if f"target={dc.BOOLEY_DIR_TARGET}," not in m]
+        spec["mounts"].append(f"source={workspace / '.booley'},target=/work/.booley,type=bind")
+        _write_spec(workspace, spec)
+        _stub_layout_probe(
+            monkeypatch,
+            {_NEW_IMAGE: "canonical-alias", _OLD_IMAGE: "absent", _DIRECTORY_IMAGE: "directory"},
+        )
+        targets = ("/work/.booley", "/booley/secrets") if mask else ("/work/.booley",)
+        sandbox_docker.containers["editor"] = _vscode_container(
+            workspace, booley_dir_targets=targets, image=image
+        )
+
+        if accepted:
+            assert sr.prepare(workspace) == "current-spec"
+            return
+        with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
+            sr.prepare(workspace)
+        assert "`docker rm editor`" in str(caught.value)
+
+    def test_external_booley_dir_must_be_bound_at_the_current_target(
+        self,
+        workspace: Path,
+        issued: Mock,
+        sandbox_docker: _SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        external = workspace.parent / "external-project-data"
+        monkeypatch.setattr(runtime_spec, "authorized_project_data_source", lambda _path: external)
+        state = _vscode_container(workspace, booley_dir_targets=("/booley",))
+        state["Mounts"][0]["Source"] = str(external)
+        sandbox_docker.containers["editor"] = state
+
+        assert sr.prepare(workspace) == "current-spec"
+        state["Mounts"][0]["Destination"] = "/former-mount"
+        with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL):
+            sr.prepare(workspace)
 
 
 class TestIssuedRuntimeDriftFix:
-    def _state(
+    @pytest.mark.parametrize(
+        ("edit", "layout", "fix"),
+        [
+            pytest.param(
+                lambda state: state.update(State={"Running": False}),
+                "legacy",
+                _VSCODE_FIX,
+                id="stopped",
+            ),
+            pytest.param(lambda state: None, "legacy", _VSCODE_FIX, id="running-pinned"),
+            pytest.param(
+                lambda state: state.update(Mounts=[]),
+                "legacy",
+                _OUTDATED_FIX,
+                id="running-unpinned",
+            ),
+            pytest.param(
+                lambda state: state.update(Mounts=None),
+                "legacy",
+                _OUTDATED_FIX,
+                id="unreadable-mounts",
+            ),
+            pytest.param(
+                lambda state: state["Config"]["Labels"].pop("devcontainer.local_folder"),
+                "legacy",
+                _AMBIGUOUS,
+                id="unknown-origin",
+            ),
+            pytest.param(
+                lambda state: state.update(State="unknown"),
+                "legacy",
+                _AMBIGUOUS,
+                id="malformed-state",
+            ),
+            pytest.param(lambda state: "not-json", "legacy", _AMBIGUOUS, id="unreadable-inspect"),
+            pytest.param(
+                lambda state: None, "canonical-alias", _AMBIGUOUS, id="failed-layout-probe"
+            ),
+        ],
+    )
+    def test_names_the_repair_of_each_drifted_container(
         self,
         workspace: Path,
-        *,
-        running: bool,
-        exact_origin: bool = True,
-        pinned: bool = True,
-    ) -> dict:
+        sandbox_docker: _SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        edit,
+        layout: str,
+        fix: str,
+    ) -> None:
+        _stub_layout_probe(monkeypatch, {_NEW_IMAGE: "unprovable"})
+        state = _vscode_container(workspace)
+        sandbox_docker.containers["editor"] = edit(state) or state
         issuance = _test_issuance(workspace)
-        labels = _vscode_labels(workspace, issuance, spec_digest="old-spec")
-        if not exact_origin:
-            labels.pop("devcontainer.local_folder")
-        # Current, pinned Booley Directory mounts: a running editor is not outdated.
-        source = str(workspace / ".booley")
-        mounts = [
-            {"Destination": target, "Source": source, "Type": "bind", "RW": True}
-            for target in ("/booley", "/work/.booley")
-        ]
-        return {
-            "State": {"Running": running},
-            "Config": {"Labels": labels},
-            "Mounts": mounts if pinned else [],
-        }
+        issuance.project_data_layout = layout
+        canonical = sr.session_container_name(workspace)
 
-    def test_stopped_exact_vscode_names_rebuild_container(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        state = self._state(workspace, running=False)
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
-
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            ["stale-vscode"],
+        assert sr.issued_runtime_drift_fix(workspace, issuance, ["editor", canonical]) == (
+            f"{fix}; run `booley session refresh` on the host"
         )
-
-        assert fix == (
-            "for VS Code Sandbox(s) 'stale-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
-        )
-
-    def test_running_exact_vscode_names_rebuild_container(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        state = self._state(workspace, running=True)
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
-
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            ["active-vscode"],
-        )
-
-        assert fix == (
-            "for VS Code Sandbox(s) 'active-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
-        )
-
-    def test_canonical_headless_drift_names_refresh(
-        self,
-        workspace: Path,
-    ) -> None:
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            [sr.session_container_name(workspace)],
-        )
-
-        assert fix == "run `booley session refresh` on the host"
-
-    def test_drift_without_a_named_resource_lists_both_workflows(
-        self,
-        workspace: Path,
-    ) -> None:
-        fix = sr.issued_runtime_drift_fix(workspace, _test_issuance(workspace), [])
-
-        assert fix == (
-            "in VS Code, on the host run `booley init`, then use Dev Containers: Rebuild Container; "
-            "headless, run `booley session refresh` on the host"
-        )
-
-    def test_running_legacy_vscode_fix_names_removal_steps(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        state = self._state(workspace, running=True, pinned=False)
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
-
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            ["active-vscode"],
-        )
-
-        assert "`docker rm active-vscode`" in fix
-        assert (
-            "`docker rm active-vscode` (mounted folders and named volumes survive; "
-            "anything written only inside the container is lost)"
-        ) in fix
-        assert "`booley init --seed`" in fix
-        assert "for VS Code Sandbox(s)" not in fix
-
-    def test_failed_layout_probe_requires_manual_inspection(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        state = self._state(workspace, running=True, pinned=False)
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
-        monkeypatch.setattr(
-            sr,
-            "_project_data_mount_root_is_pinned",
-            Mock(side_effect=sr.SessionError("cannot prove Booley Directory layout")),
-        )
-
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            ["active-vscode"],
-        )
-
-        assert "inspect ambiguous Sandbox resource(s) 'active-vscode'" in fix
-        assert "docker rm" not in fix
-
-    def test_ambiguous_origin_requires_manual_inspection(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        state = self._state(workspace, running=False, exact_origin=False)
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
-
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            ["ambiguous-runtime"],
-        )
-
-        assert "inspect ambiguous Sandbox resource(s) 'ambiguous-runtime'" in fix
-        assert "will not remove them automatically" in fix
-
-    def test_malformed_runtime_state_requires_manual_inspection(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        state = self._state(workspace, running=False)
-        state["State"] = "unknown"
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
-
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            ["malformed-runtime"],
-        )
-
-        assert "inspect ambiguous Sandbox resource(s) 'malformed-runtime'" in fix
 
     def test_reports_running_and_ambiguous_resources_together(
-        self,
-        workspace: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, workspace: Path, sandbox_docker: _SandboxDocker
     ) -> None:
-        states = {
-            "active-vscode": self._state(workspace, running=True),
-            "ambiguous-runtime": self._state(
-                workspace,
-                running=False,
-                exact_origin=False,
-            ),
+        sandbox_docker.containers["stranger"] = {
+            **_vscode_container(workspace),
+            "State": "unknown",
         }
-        monkeypatch.setattr(
-            sr,
-            "_docker_stdout",
-            lambda argv: json.dumps([states[argv[-1]]]),
-        )
+        sandbox_docker.containers["editor"] = _vscode_container(workspace)
 
         fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            list(states),
+            workspace, _test_issuance(workspace), ["stranger", "editor"]
         )
 
-        assert "inspect ambiguous Sandbox resource(s) 'ambiguous-runtime'" in fix
-        assert (
-            "for VS Code Sandbox(s) 'active-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
-            in fix
+        assert fix == (
+            "inspect ambiguous Sandbox resource(s) 'stranger'; Booley will not remove them "
+            f"automatically; {_VSCODE_FIX}"
         )
-        assert "stop" not in fix
+
+    def test_drift_without_a_named_resource_lists_both_workflows(self, workspace: Path) -> None:
+        fix = sr.issued_runtime_drift_fix(workspace, _test_issuance(workspace), [])
+
+        assert fix == f"in VS Code, {_REBUILD}; headless, run `booley session refresh` on the host"
 
     def test_windows_host_paths_identify_running_vscode(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+        self, sandbox_docker: _SandboxDocker, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         workspace = Path(r"C:\workplace\picorv32")
-        state = self._state(workspace, running=True)
-        labels = state["Config"]["Labels"]
-        labels["devcontainer.local_folder"] = "c:/workplace/picorv32"
-        labels["devcontainer.config_file"] = (
+        state = _vscode_container(workspace)
+        state["Config"]["Labels"]["devcontainer.local_folder"] = "c:/workplace/picorv32"
+        state["Config"]["Labels"]["devcontainer.config_file"] = (
             "c:/workplace/picorv32/.devcontainer/devcontainer.json"
         )
+        sandbox_docker.containers["editor"] = state
         monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
-        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
-        monkeypatch.setattr(sr, "session_container_name", lambda _workspace: "canonical")
 
-        fix = sr.issued_runtime_drift_fix(
-            workspace,
-            _test_issuance(workspace),
-            ["active-vscode"],
-        )
+        fix = sr.issued_runtime_drift_fix(workspace, _test_issuance(workspace), ["editor"])
 
-        assert (
-            "for VS Code Sandbox(s) 'active-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
-            in fix
-        )
+        assert fix == _VSCODE_FIX
 
 
 # ---------------------------------------------------------------------------
@@ -1940,202 +1603,222 @@ class TestUp:
         assert "postCreateCommand failed" in caplog.text
 
 
-class TestMountIssuance:
-    def _workspace_mount(self, workspace: Path) -> dict:
-        return {
-            "Destination": "/work",
-            "Source": str(workspace),
-            "Type": "bind",
-            "RW": True,
-        }
-
-    def _spec(self, workspace: Path) -> dict:
-        return {
-            "workspaceMount": f"source={workspace},target=/work,type=bind",
-            "mounts": [],
-        }
-
-    def test_matching_devcontainer_accepts_vscode_managed_mounts(self, workspace: Path):
-        mounts = [
-            self._workspace_mount(workspace),
-            {"Destination": "/vscode", "Name": "vscode", "Type": "volume", "RW": True},
-            {
-                "Destination": "/tmp/vscode-wayland-1234-abcd.sock",
-                "Source": "/run/user/1000/wayland-0",
-                "Type": "bind",
-                "RW": True,
-            },
-        ]
-
-        assert sr._mounts_match_spec(
-            mounts,
-            self._spec(workspace),
-            workspace,
-            allow_vscode_mounts=True,
+def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[dict]:
+    """Docker's view of the spec's mounts, with the Booley Directory bound at *booley_dir_target*."""
+    mounts: list[dict] = []
+    for raw in [spec["workspaceMount"], *spec["mounts"]]:
+        fields = dict(
+            f.split("=", 1) for f in sr.substitute(raw, workspace).split(",") if "=" in f
         )
+        target = fields["target"]
+        mount = {
+            "Destination": booley_dir_target if target == dc.BOOLEY_DIR_TARGET else target,
+            "Source": fields["source"],
+            "Type": fields["type"],
+            "RW": "readonly" not in raw,
+        }
+        if fields["type"] == "volume":
+            mount.update(
+                Name=fields["source"], Source=f"/var/lib/docker/volumes/{fields['source']}"
+            )
+        mounts.append(mount)
+    return mounts
 
+
+def _issued_container(spec: dict, workspace: Path, *, vscode: bool = False) -> dict:
+    """Inspect state of a container started exactly as *spec* issues it."""
+    sections = (spec["containerEnv"],) if vscode else (spec["remoteEnv"], spec["containerEnv"])
+    environment = {key: value for section in sections for key, value in section.items()}
+    return {
+        "Image": spec["image"],
+        "Config": {
+            "Image": spec["image"],
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+            "Labels": {"devcontainer.local_folder": str(workspace)} if vscode else {},
+        },
+        "HostConfig": {
+            "CapDrop": ["ALL"],
+            "Privileged": False,
+            "PublishAllPorts": False,
+            "SecurityOpt": ["no-new-privileges"],
+            "PidsLimit": dc.SESSION_PIDS_LIMIT,
+            "Memory": 0,
+        },
+        "NetworkSettings": {
+            "Networks": {n: {} for n in _flag_values(spec["runArgs"], "--network")}
+        },
+        "Mounts": _docker_mounts(spec, workspace, dc.BOOLEY_DIR_TARGET),
+    }
+
+
+def _resumes(docker: _SandboxDocker, spec: dict, workspace: Path, state: dict) -> bool:
+    """Whether `session up` would resume *state* as the Sandbox *spec* issues."""
+    issuance = _test_issuance(workspace)
+    issuance.image_id = spec["image"]
+    state["Config"]["Labels"].update(
+        label.split("=", 1) for label in runtime_spec.labels(issuance)
+    )
+    docker.containers["sandbox"] = state
+    return sr.container_matches_issuance("sandbox", issuance, spec=spec, workspace=workspace)
+
+
+def _issued_spec(workspace: Path, **options: object) -> dict:
+    spec = build_spec(
+        "claude", image="sha256:test", booley_dir_source=str(workspace / ".booley"), **options
+    )
+    runtime_spec.pin_image(spec)
+    return spec
+
+
+_VSCODE_VOLUME = {"Destination": "/vscode", "Name": "vscode", "Type": "volume", "RW": True}
+_WAYLAND_SOCKET = {
+    "Destination": "/tmp/vscode-wayland-1234-abcd.sock",
+    "Source": "/run/user/1000/wayland-0",
+    "Type": "bind",
+    "RW": True,
+}
+_HOST_SECRET = {"Destination": "/host-secret", "Source": "/etc", "Type": "bind", "RW": False}
+
+
+class TestContainerResumeChecks:
     @pytest.mark.parametrize(
-        "extra",
+        ("vscode", "edit", "matches"),
         [
-            {"Destination": "/vscode", "Name": "vscode", "Type": "volume", "RW": True},
-            {
-                "Destination": "/host-secret",
-                "Source": "/etc",
-                "Type": "bind",
-                "RW": False,
-            },
+            pytest.param(False, lambda mounts: None, True, id="issued"),
+            pytest.param(
+                True,
+                lambda m: m.extend([_VSCODE_VOLUME, _WAYLAND_SOCKET]),
+                True,
+                id="vscode-managed",
+            ),
+            pytest.param(
+                False, lambda m: m.append(_VSCODE_VOLUME), False, id="headless-vscode-volume"
+            ),
+            pytest.param(False, lambda m: m.append(_HOST_SECRET), False, id="headless-extra"),
+            pytest.param(True, lambda m: m.append(_HOST_SECRET), False, id="vscode-extra"),
+            pytest.param(False, lambda m: m[0].update(Source=None), False, id="unreadable-source"),
+            pytest.param(
+                False,
+                lambda m: m[1].update(Destination="/former-mount"),
+                False,
+                id="former-booley-dir",
+            ),
+            pytest.param(False, lambda m: m[2].update(Name="other"), False, id="other-volume"),
+            pytest.param(False, lambda m: m.pop(1), False, id="missing-booley-dir"),
         ],
     )
-    def test_unissued_extra_mounts_remain_rejected(self, workspace: Path, extra: dict):
-        mounts = [self._workspace_mount(workspace), extra]
+    def test_resume_accepts_only_issued_and_vscode_managed_mounts(
+        self, workspace: Path, sandbox_docker: _SandboxDocker, vscode: bool, edit, matches: bool
+    ) -> None:
+        spec = _issued_spec(workspace)
+        state = _issued_container(spec, workspace, vscode=vscode)
+        edit(state["Mounts"])
 
-        assert not sr._mounts_match_spec(mounts, self._spec(workspace), workspace)
-
-    def test_arbitrary_extra_mount_is_rejected_for_devcontainer(self, workspace: Path):
-        extra = {
-            "Destination": "/host-secret",
-            "Source": "/etc",
-            "Type": "bind",
-            "RW": False,
-        }
-
-        assert not sr._mounts_match_spec(
-            [self._workspace_mount(workspace), extra],
-            self._spec(workspace),
-            workspace,
-            allow_vscode_mounts=True,
-        )
+        assert _resumes(sandbox_docker, spec, workspace, state) is matches
 
     @pytest.mark.parametrize("spec_source", ["/c/Users/dev/project", "/C/Users/dev/project"])
-    def test_wsl2_mount_path_matches_spec(self, monkeypatch: pytest.MonkeyPatch, spec_source: str):
-        from booley.runtime import platform_paths
-
-        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
-        spec = {
-            "workspaceMount": f"source={spec_source},target=/work,type=bind",
-            "mounts": [],
-        }
-        mounts = [
-            {
-                "Destination": "/work",
-                "Source": "/run/desktop/mnt/host/c/Users/dev/project",
-                "Type": "bind",
-                "RW": True,
-            },
-        ]
+    def test_wsl2_mount_path_matches_spec(
+        self, sandbox_docker: _SandboxDocker, monkeypatch: pytest.MonkeyPatch, spec_source: str
+    ) -> None:
         workspace = Path("/c/Users/dev/project")
-
-        assert sr._mounts_match_spec(mounts, spec, workspace)
-
-
-class TestProjectDataMountPinned:
-    @staticmethod
-    def _mount_inspect_json(project_source: str, workspace_source: str) -> str:
-        state = [
-            {
-                "Mounts": [
-                    {
-                        "Destination": "/booley",
-                        "Source": project_source,
-                        "Type": "bind",
-                        "RW": True,
-                    },
-                    {
-                        "Destination": "/work/.booley",
-                        "Source": workspace_source,
-                        "Type": "bind",
-                        "RW": True,
-                    },
-                ],
-            }
-        ]
-        return json.dumps(state)
-
-    @staticmethod
-    def _windows_workspace() -> tuple[SimpleNamespace, Path]:
-        workspace = SimpleNamespace(resolve=lambda: Path("C:/Users/dev/project"))
-        return workspace, workspace.resolve() / ".booley"
-
-    def test_wsl2_prefixed_sources_are_recognized(self, monkeypatch: pytest.MonkeyPatch):
-        from booley.runtime import platform_paths
-
+        spec = _issued_spec(workspace)
+        state = _issued_container(spec, workspace)
         monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
-        workspace, pending = self._windows_workspace()
-        raw = self._mount_inspect_json(
-            "/run/desktop/mnt/host/c/Users/dev/project/.booley",
-            "/run/desktop/mnt/host/c/Users/dev/project/.booley",
+        spec["workspaceMount"] = f"source={spec_source},target=/work,type=bind"
+        state["Mounts"][0]["Source"] = "/run/desktop/mnt/host/c/Users/dev/project"
+
+        assert _resumes(sandbox_docker, spec, workspace, state)
+
+    @pytest.mark.parametrize("vscode", [False, True])
+    @pytest.mark.parametrize(
+        "drift",
+        [
+            None,
+            ("GIT_CONFIG_VALUE_0", None),
+            ("GIT_CONFIG_VALUE_0", "Human"),
+            ("BOOLEY_SANDBOX_IMAGE_ID", None),
+        ],
+        ids=["issued", "missing", "changed", "pre-image-identity"],
+    )
+    def test_resume_requires_issued_git_environment(
+        self, workspace: Path, sandbox_docker: _SandboxDocker, vscode: bool, drift
+    ) -> None:
+        spec = _issued_spec(workspace)
+        state = _issued_container(spec, workspace, vscode=vscode)
+        if drift is not None:
+            key, value = drift
+            env = [item for item in state["Config"]["Env"] if not item.startswith(f"{key}=")]
+            state["Config"]["Env"] = env + ([f"{key}={value}"] if value else [])
+
+        assert _resumes(sandbox_docker, spec, workspace, state) is (drift is None)
+
+    @pytest.mark.parametrize(
+        ("network", "matches"),
+        [(dc.UNPROXIED_NETWORK, True), (dc.EGRESS_NETWORK, False)],
+        ids=["routed-network", "egress-network"],
+    )
+    def test_resume_matches_issued_egress_topology(
+        self, workspace: Path, sandbox_docker: _SandboxDocker, network: str, matches: bool
+    ) -> None:
+        spec = _issued_spec(workspace, egress="unproxied")
+        state = _issued_container(spec, workspace)
+        state["NetworkSettings"]["Networks"] = {network: {}}
+
+        assert _resumes(sandbox_docker, spec, workspace, state) is matches
+
+
+@pytest.mark.parametrize(
+    ("project_source", "view_source", "view_writable", "pinned"),
+    [
+        pytest.param("/run/desktop/mnt/host/c/Users/dev/project", None, True, True, id="wsl2"),
+        pytest.param("/c/Users/dev/project", None, True, True, id="native"),
+        pytest.param(
+            "/run/desktop/mnt/host/c/Users/dev/project",
+            "/c/Users/dev/other",
+            True,
+            False,
+            id="mismatch",
+        ),
+        pytest.param("/c/Users/dev/project", None, False, False, id="read-only-view"),
+        pytest.param(None, None, True, False, id="unreadable-inspect"),
+    ],
+)
+def test_booley_dir_pin_reads_docker_desktop_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    project_source: str | None,
+    view_source: str | None,
+    view_writable: bool,
+    pinned: bool,
+) -> None:
+    # Docker Desktop reports these sources only on a Windows host, and `prepare` cannot run its
+    # other host-path handling with IS_WINDOWS forced on a POSIX runner: drive the pin check.
+    # Its callers decode the inspect output first, so only this call reaches the undecodable case.
+    monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
+    workspace = SimpleNamespace(resolve=lambda: Path("C:/Users/dev/project"))
+    mounts = [
+        {
+            "Destination": "/booley",
+            "Source": f"{project_source}/.booley",
+            "Type": "bind",
+            "RW": True,
+        },
+        {
+            "Destination": "/work/.booley",
+            "Source": f"{view_source or project_source}/.booley",
+            "Type": "bind",
+            "RW": view_writable,
+        },
+    ]
+    raw = json.dumps([{"Mounts": mounts}]) if project_source else "not-json"
+
+    assert (
+        sr._project_data_mount_root_is_pinned(
+            raw, workspace, Path("C:/Users/dev/project/.booley"), layout="legacy"
         )
-
-        assert sr._project_data_mount_root_is_pinned(raw, workspace, pending, layout="legacy")
-
-    def test_native_sources_still_match(self, monkeypatch: pytest.MonkeyPatch):
-        from booley.runtime import platform_paths
-
-        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
-        workspace, pending = self._windows_workspace()
-        raw = self._mount_inspect_json(
-            "/c/Users/dev/project/.booley",
-            "/c/Users/dev/project/.booley",
-        )
-
-        assert sr._project_data_mount_root_is_pinned(raw, workspace, pending, layout="legacy")
-
-    def test_mismatched_sources_are_rejected(self, monkeypatch: pytest.MonkeyPatch):
-        from booley.runtime import platform_paths
-
-        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
-        workspace, pending = self._windows_workspace()
-        raw = self._mount_inspect_json(
-            "/run/desktop/mnt/host/c/Users/dev/project/.booley",
-            "/run/desktop/mnt/host/c/Users/dev/other/.booley",
-        )
-
-        assert not sr._project_data_mount_root_is_pinned(raw, workspace, pending, layout="legacy")
-
-    def test_nonwritable_workspace_view_is_rejected(self, monkeypatch: pytest.MonkeyPatch):
-        from booley.runtime import platform_paths
-
-        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
-        workspace, pending = self._windows_workspace()
-        raw = json.loads(
-            self._mount_inspect_json(
-                "/c/Users/dev/project/.booley",
-                "/c/Users/dev/project/.booley",
-            )
-        )
-        raw[0]["Mounts"][1]["RW"] = False
-
-        assert not sr._project_data_mount_root_is_pinned(
-            json.dumps(raw), workspace, pending, layout="legacy"
-        )
-
-    def test_malformed_inspect_json_is_rejected(self):
-        workspace, pending = self._windows_workspace()
-
-        assert not sr._project_data_mount_root_is_pinned(
-            "not-json", workspace, pending, layout="legacy"
-        )
-        assert sr._decode_container_inspect("not-json") is None
-
-
-class TestCanonicalBindSource:
-    def test_non_string_observed_source_is_rejected(self, workspace: Path):
-        spec = {
-            "workspaceMount": f"source={workspace},target=/work,type=bind",
-            "mounts": [],
-        }
-        mounts = [{"Destination": "/work", "Source": None, "Type": "bind", "RW": True}]
-
-        assert not sr._mounts_match_spec(mounts, spec, workspace)
-
-    def test_volume_source_is_compared_by_name(self, workspace: Path):
-        spec = {
-            "workspaceMount": "source=vscode,target=/work,type=volume",
-            "mounts": [],
-        }
-        mounts = [{"Destination": "/work", "Name": "vscode", "Type": "volume", "RW": True}]
-
-        assert sr._mounts_match_spec(mounts, spec, workspace)
+        is pinned
+    )
 
 
 class TestLicensedRelayLifecycle:
@@ -3601,143 +3284,6 @@ class TestSessionRefresh:
         assert "Automatic Doctor is running" in output.err
         assert "Doctor inputs changed" in output.err
         assert "Sandbox ready: session" in output.out
-
-
-@pytest.mark.parametrize(
-    "capable,duplicate,expected", [(True, False, True), (True, True, False), (False, False, False)]
-)
-def test_canonical_pin_checks_container_image_and_rejects_alias_mask(
-    tmp_path, monkeypatch, capable, duplicate, expected
-):
-    import json
-
-    from booley.runtime import project_image
-
-    workspace = tmp_path / "project"
-    workspace.mkdir()
-    source = workspace / ".booley"
-    mounts = [{"Destination": "/work/.booley", "Source": str(source), "Type": "bind", "RW": True}]
-    if duplicate:
-        mounts.append(
-            {
-                "Destination": "/booley/secrets",
-                "Source": str(source),
-                "Type": "bind",
-                "RW": True,
-            }
-        )
-    image_id = "sha256:" + "a" * 64
-    raw = json.dumps([{"Image": image_id, "Mounts": mounts}])
-    inspected = []
-    monkeypatch.setattr(
-        project_image,
-        "project_data_alias_capable",
-        lambda image: inspected.append(image) or capable,
-    )
-    assert (
-        sr._project_data_mount_root_is_pinned(raw, workspace, source, layout="canonical-alias")
-        is expected
-    )
-    assert inspected == [image_id]
-
-
-def test_canonical_pin_refuses_container_without_image_identity(tmp_path, monkeypatch):
-    import json
-
-    workspace = tmp_path / "project"
-    workspace.mkdir()
-    source = workspace / ".booley"
-    mounts = [{"Destination": "/work/.booley", "Source": str(source), "Type": "bind", "RW": True}]
-    monkeypatch.setattr(
-        sr, "_project_data_alias_capable", lambda _image: pytest.fail("no image to probe")
-    )
-
-    assert not sr._project_data_mount_root_is_pinned(
-        json.dumps([{"Mounts": mounts}]), workspace, source, layout="canonical-alias"
-    )
-
-
-@pytest.mark.parametrize("vscode", [False, True])
-@pytest.mark.parametrize("drift", [None, "missing", "changed", "pre-image-identity"])
-def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch, vscode, drift):
-    spec = build_spec(dc.APP_NONE, image="sha256:test")
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
-    runtime_spec.pin_image(spec)
-    labels = {"devcontainer.local_folder": str(tmp_path)} if vscode else {}
-    sections = (spec["containerEnv"],) if vscode else (spec["containerEnv"], spec["remoteEnv"])
-    environment = {key: value for section in sections for key, value in section.items()}
-    if drift == "missing":
-        environment.pop("GIT_CONFIG_VALUE_0")
-    elif drift == "changed":
-        environment["GIT_CONFIG_VALUE_0"] = "Human"
-    elif drift == "pre-image-identity":
-        environment.pop("BOOLEY_SANDBOX_IMAGE_ID", None)
-    state = {
-        "Image": "sha256:test",
-        "Config": {
-            "Image": "sha256:test",
-            "User": "agent",
-            "WorkingDir": "/work",
-            "Env": [f"{key}={value}" for key, value in environment.items()],
-        },
-        "HostConfig": {"Memory": 0},
-        "NetworkSettings": {
-            "Networks": {network: {} for network in sr._flag_values(spec["runArgs"], "--network")}
-        },
-    }
-    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
-    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
-    monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        sr,
-        "_docker_stdout",
-        lambda argv: json.dumps(labels) if "--format" in argv else json.dumps([state]),
-    )
-    assert sr.container_matches_issuance(
-        "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
-    ) is (drift is None)
-
-
-@pytest.mark.parametrize(
-    "network_constant, matches",
-    [
-        pytest.param("UNPROXIED_NETWORK", True, id="unproxied-on-routed-network"),
-        pytest.param("EGRESS_NETWORK", False, id="unproxied-on-egress-network"),
-    ],
-)
-def test_container_resume_matches_issued_egress_topology(
-    tmp_path, monkeypatch, network_constant, matches
-):
-    spec = build_spec(dc.APP_NONE, image="sha256:test", egress="unproxied")
-    network = getattr(dc, network_constant)
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
-    runtime_spec.pin_image(spec)
-    environment = {**spec["remoteEnv"], **spec["containerEnv"]}
-    state = {
-        "Image": "sha256:test",
-        "Config": {
-            "Image": "sha256:test",
-            "User": "agent",
-            "WorkingDir": "/work",
-            "Env": [f"{key}={value}" for key, value in environment.items()],
-        },
-        "HostConfig": {"Memory": 0},
-        "NetworkSettings": {"Networks": {network: {}}},
-    }
-    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
-    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
-    monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        sr,
-        "_docker_stdout",
-        lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
-    )
-    assert (
-        sr.container_matches_issuance(
-            "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
-        )
-        is matches
-    )
 
 
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
@@ -5383,195 +4929,3 @@ def test_run_keeps_its_result_contract():
             [sys.executable, "-c", "import os; print(os.environ['BOOLEY_TEST_3858'])"], env
         )
         assert sr._run(argv, timeout=timeout).stdout.strip() == "seen", timeout
-
-
-# ---------------------------------------------------------------------------
-# Sandboxes and images that predate the /booley mount point (issue #4090)
-# ---------------------------------------------------------------------------
-
-_NEW_IMAGE = "sha256:" + "c" * 64
-_OLD_IMAGE = "sha256:" + "d" * 64
-
-
-def _running_vscode_state(
-    workspace: Path, *, image: str, booley_dir_target: str | None, alias: bool
-) -> str:
-    """A running VS Code container of this Project; *booley_dir_target* is the bound mount."""
-    source = str(workspace.resolve() / ".booley")
-    targets = ["/work/.booley"] if alias else [booley_dir_target, "/work/.booley"]
-    return json.dumps(
-        [
-            {
-                "Id": "e" * 64,
-                "Image": image,
-                "State": {"Running": True},
-                "Config": {"Labels": _vscode_labels(workspace, _test_issuance(workspace))},
-                "Mounts": [
-                    {"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True},
-                    *(
-                        {"Destination": target, "Source": source, "Type": "bind", "RW": True}
-                        for target in targets
-                    ),
-                ],
-            }
-        ]
-    )
-
-
-def _stub_layout_probe(monkeypatch: pytest.MonkeyPatch, layouts: dict[str, str]) -> None:
-    """Answer the real Booley Directory layout probe per image from *layouts*."""
-    from booley.runtime import project_image
-
-    project_image.project_data_alias_capable.cache_clear()
-
-    def answer(argv, **_kwargs):
-        image = next(arg for arg in argv if arg.startswith("sha256:"))
-        return subprocess.CompletedProcess(argv, 0, layouts[image] + "\n", "")
-
-    monkeypatch.setattr(project_image, "run_captured_bounded", answer)
-
-
-def _alias_spec(workspace: Path) -> dict:
-    """The spec of a canonical-alias issuance: no mount at the Booley Directory target."""
-    spec = _spec(image=_NEW_IMAGE)
-    spec["mounts"] = [m for m in spec["mounts"] if f"target={dc.BOOLEY_DIR_TARGET}," not in m]
-    spec["mounts"].append(f"source={workspace / '.booley'},target=/work/.booley,type=bind")
-    return spec
-
-
-def test_prepare_refuses_alias_container_from_pre_rename_image(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    issuance = _test_issuance(workspace)
-    _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
-    _write_spec(workspace, _alias_spec(workspace))
-    _stub_layout_probe(monkeypatch, {_NEW_IMAGE: "canonical-alias", _OLD_IMAGE: "absent"})
-    states = {
-        image: _running_vscode_state(workspace, image=image, booley_dir_target=None, alias=True)
-        for image in (_NEW_IMAGE, _OLD_IMAGE)
-    }
-    running = [("editor", states[_OLD_IMAGE])]
-    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: running)
-    monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
-
-    with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
-        sr.prepare(workspace)
-
-    assert "`docker rm editor`" in str(caught.value)
-    assert "`booley init --seed`" in str(caught.value)
-    running[:] = [("editor", states[_NEW_IMAGE])]
-    assert sr.prepare(workspace) == "current-spec"
-
-
-def test_running_vscode_container_mount_follows_current_target(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    issuance = _test_issuance(workspace)
-    _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
-    running: list[tuple[str, str]] = []
-    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: running)
-    monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
-
-    def bind_at(target: str) -> None:
-        state = _running_vscode_state(
-            workspace, image=_NEW_IMAGE, booley_dir_target=target, alias=False
-        )
-        running[:] = [("editor", state)]
-
-    bind_at("/booley")
-    assert sr.prepare(workspace) == "current-spec"
-    bind_at("/former-mount")
-    with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
-        sr.prepare(workspace)
-
-    assert "`docker rm editor`" in str(caught.value)
-
-
-def test_external_booley_dir_mount_follows_current_target(tmp_path: Path) -> None:
-    external = tmp_path / "external-project-data"
-
-    def pinned(target: str) -> bool:
-        mount = {"Destination": target, "Source": str(external), "Type": "bind", "RW": True}
-        raw = json.dumps([{"Mounts": [mount]}])
-        return sr._project_data_mount_root_is_pinned(
-            raw, tmp_path / "project", external, layout="legacy"
-        )
-
-    assert pinned("/booley")
-    assert not pinned("/former-mount")
-
-
-def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[dict]:
-    """Docker's view of the spec's mounts, with the Booley Directory bound at *booley_dir_target*."""
-    mounts: list[dict] = []
-    for raw in [spec["workspaceMount"], *spec["mounts"]]:
-        fields = dict(
-            field.split("=", 1)
-            for field in sr.substitute(raw, workspace).split(",")
-            if "=" in field
-        )
-        target = fields["target"]
-        if target in (dc.BOOLEY_DIR_TARGET, "/booley"):
-            target = booley_dir_target
-        mounts.append(
-            {
-                "Destination": target,
-                "Source": fields["source"],
-                "Name": fields["source"],
-                "Type": fields["type"],
-                "RW": "readonly" not in raw,
-            }
-        )
-    return mounts
-
-
-def test_session_up_refuses_sandbox_with_former_booley_dir(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    spec = build_spec(
-        dc.APP_NONE, image="sha256:test", booley_dir_source=str(workspace / ".booley")
-    )
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
-    runtime_spec.pin_image(spec)
-    state: dict = {}
-
-    def bind_at(target: str) -> None:
-        environment = {**spec["remoteEnv"], **spec["containerEnv"], "BOOLEY_DIR": target}
-        state.clear()
-        state.update(
-            {
-                "Image": "sha256:test",
-                "Config": {
-                    "Image": "sha256:test",
-                    "User": "agent",
-                    "WorkingDir": "/work",
-                    "Env": [f"{key}={value}" for key, value in environment.items()],
-                },
-                "HostConfig": {"Memory": 0},
-                "NetworkSettings": {
-                    "Networks": {n: {} for n in sr._flag_values(spec["runArgs"], "--network")}
-                },
-                "Mounts": _docker_mounts(spec, workspace, target),
-            }
-        )
-
-    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
-    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
-    monkeypatch.setattr(
-        sr,
-        "_docker_stdout",
-        lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
-    )
-    issuance = SimpleNamespace(image_id="sha256:test")
-
-    bind_at("/booley")
-    assert sr.container_matches_issuance("test", issuance, spec=spec, workspace=workspace)
-    bind_at("/former-mount")
-    assert not sr.container_matches_issuance("test", issuance, spec=spec, workspace=workspace)
-    request = SimpleNamespace(name="test", issuance=issuance, spec=spec, profile=None)
-    monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
-    monkeypatch.setattr(
-        sr, "sandbox_remedy", lambda *_args, **_kwargs: "run `booley session down`"
-    )
-    with pytest.raises(sr.SessionError, match="does not match the current host issuance"):
-        sr._run_up_transaction(workspace, request, rebuild=False, expected_image_id=None)
