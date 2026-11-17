@@ -15,10 +15,14 @@ from types import SimpleNamespace
 import pytest
 
 from booley.config.tests_toml_rules import TestRunNameError
+
+# Private seam: each decoder is the unit; resume, its only public caller, needs a prior record.
 from booley.flows.sim.execution.engine import _export_line
 from booley.flows.sim.flow_resume import _manifest_run_groups
 from booley.flows.sim.record.projection import _validate_test_runs
 from booley.flows.sim.record.test_run_binding import observation_test_runs, work_item_test_runs
+
+# Private seam: the manifest decoder is the unit under test; resume is its only public caller.
 from booley.flows.sim.record.test_run_report import _manifest_test_runs
 from booley.flows.test_runs import (
     build_test_run,

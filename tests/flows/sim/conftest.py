@@ -44,6 +44,7 @@ def declared_trace_files_convert_after_the_run(monkeypatch: pytest.MonkeyPatch) 
 @pytest.fixture(autouse=True)
 def bare_identity_for_targets_without_a_core(monkeypatch: pytest.MonkeyPatch) -> None:
     """Layer tests with no ``.core``: an undeclared Target's identity is its bare name."""
+    # Private seam: no public input names a Target that has no .core; every record path calls this one method.
     identity = flow.SimulateFlow._target_identity
 
     def identity_or_bare(self: flow.SimulateFlow, target: str) -> str:
