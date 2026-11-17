@@ -441,9 +441,7 @@ def test_unreachable_needs_zero_hits_but_no_model_proof_reference(
     item = {"reason": "unreachable", "evidence": "Tied off", "proof_reference": ""}
 
     # `object()` stands for the verified source closure; only its presence matters here.
-    screening, reason = _candidate_screen(
-        item, point, rtl, object()
-    )  # `object()`: verified sources
+    screening, reason = _candidate_screen(item, point, rtl, object())
     assert screening == expected
     assert reason == expected_reason
 

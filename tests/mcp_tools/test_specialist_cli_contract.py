@@ -121,7 +121,8 @@ def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, mon
     ],
 )
 def test_wrong_kind_suggests_canonical_command(tmp_path, capsys, route, name, suggestion):
-    handler = cli._cmd_specialist if route == "specialist" else cli._cmd_flow  # per-route handler
+    # The route handlers are private; the CLI has no public per-route entry (see command()).
+    handler = cli._cmd_specialist if route == "specialist" else cli._cmd_flow
     assert handler(command([route, name]), tmp_path) == 2
     assert suggestion in capsys.readouterr().err
 
@@ -348,7 +349,7 @@ def test_specialists_have_no_model_flag_or_schema_field():
 
     # Loading the class is what the CLI does after discovery; the loader is not public.
     specialists = [
-        cli._load_mcp_tool_class(info)  # the loader is not public
+        cli._load_mcp_tool_class(info)
         for info in discover_mcp_inventory()
         if info.kind == "specialist"
     ]
@@ -415,7 +416,8 @@ def test_top_level_invalid_duration_is_rejected(tmp_path, route):
         if route == "flow"
         else ["--category", "rtl", "--focus", "bugs", "--scope", "rtl"]
     )
-    handler = cli._cmd_flow if route == "flow" else cli._cmd_specialist  # per-route handler
+    # The route handlers are private; the CLI has no public per-route entry (see command()).
+    handler = cli._cmd_flow if route == "flow" else cli._cmd_specialist
     with pytest.raises(SystemExit) as error:
         handler(command([route, name, *args, "--timeout", "1.5"]), tmp_path)
     assert error.value.code == 2

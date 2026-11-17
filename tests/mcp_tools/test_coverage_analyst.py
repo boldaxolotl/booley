@@ -258,16 +258,6 @@ def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
     assert "collector_error" in result.outcome.report_text
 
 
-@pytest.fixture
-def fresh_evidence_session(monkeypatch):
-    """Start with no bound evidence session: the tool binds one module-global per process."""
-    from booley.mcp import coverage_evidence
-
-    # No public reset: the module binds one session per process.
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)  # the failed-session latch
-
-
 def test_report_records_exact_evidence_scope(tmp_path, monkeypatch, fresh_evidence_session):
     from booley.mcp import coverage_evidence
 

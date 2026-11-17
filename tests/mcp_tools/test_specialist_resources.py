@@ -187,7 +187,7 @@ class _HoldsMemory(MeasuredSpecialist):
         subprocess.run([sys.executable, "-c", _ALLOCATE_AND_EXIT], check=True)
         # _run is the hook a Specialist overrides to make its agent calls.
         super()._run()
-        result = super()._run()  # the second agent call
+        result = super()._run()
         assert len(held) == 128 * _MIB
         return result
 
@@ -278,7 +278,7 @@ def test_run_that_raises_is_recorded_and_still_raises(env: _Env) -> None:
 
     class Raises(MeasuredSpecialist):
         def _run(self) -> McpToolResult:  # the hook a Specialist overrides
-            super()._run()  # make the agent call first
+            super()._run()
             raise BoomError("boom")
 
     env.respond = lambda _params: AgentResult(structured={"approved": True})

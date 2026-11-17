@@ -566,7 +566,7 @@ def extract_scans(monkeypatch):
     return scans
 
 
-@pytest.mark.timeout(120)  # Windows CI: 34.4 s; 3x rounded up to 30 s.
+@pytest.mark.timeout(120)  # Windows CI: 34.4 s; 3x rounded up to 120 s.
 def test_config_only_refresh_reuses_unfiltered_discovery(project, extract_scans):
     from booley.mcp import registry
 

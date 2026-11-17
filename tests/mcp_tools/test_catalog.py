@@ -54,7 +54,7 @@ def test_single_catalog_assembly_preserves_modes(monkeypatch):
         assert definitions[-1] is custom
         assert definitions == sorted(definitions, key=lambda tool: tool["name"])
         # server.py exposes no public builder; main() runs the stdio transport.
-        lifetime = server._McpLifetime(None, None)  # the builder's required argument
+        lifetime = server._McpLifetime(None, None)
         # Same builder as above: the application the stdio transport serves.
         tools = server._build_mcp_application([*endpoints, custom], [], lifetime).list_tools()
         assert [(t.name, t.input_schema) for t in tools] == [

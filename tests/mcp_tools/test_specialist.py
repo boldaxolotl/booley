@@ -571,6 +571,7 @@ def test_session_id_persists_where_resume_can_find_it(
     }.get(where)
     if written is None:
         assert not list(logs.iterdir())
+        assert not (tmp_path / ".runtime" / "sessions" / "k.session_id").exists()
     else:
         assert written.read_text(encoding="utf-8") == "sess-abc-123"
 

@@ -236,7 +236,7 @@ def test_points_encode_only_returned_pages_and_reuse_filtered_selection(monkeypa
         encode_calls += 1
         return encode(point)
 
-    monkeypatch.setattr(coverage_evidence, "_matches", counted_match)  # see the counting above
+    monkeypatch.setattr(coverage_evidence, "_matches", counted_match)
     monkeypatch.setattr(coverage_evidence, "encode_coverage_point", counted_encode)
     session = CoverageEvidenceSession(coverage_record, None)
 
@@ -425,16 +425,6 @@ def test_cumulative_budget_stops_unbounded_model_retrieval():
         "delivered_bytes": session.delivered_bytes,
         "total_budget_bytes": 1_500,
     }
-
-
-@pytest.fixture
-def fresh_evidence_session(monkeypatch):
-    """Start with no bound evidence session: the tool binds one module-global per process."""
-    from booley.mcp import coverage_evidence
-
-    # No public reset: the module binds one session per process.
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)  # the failed-session latch
 
 
 def test_bound_tool_deep_loads_coverage_record_and_publishes_audit(
