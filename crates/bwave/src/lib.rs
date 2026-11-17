@@ -6,6 +6,7 @@ pub mod fst;
 pub mod output;
 pub mod parser;
 mod profile;
+pub mod reset;
 pub mod signal;
 pub mod vcd_chunk;
 pub mod virtual_signal;
@@ -25,7 +26,11 @@ pub struct ExtractConfig {
     pub clock_regularity: Option<clock::ClockVerdict>,
     pub clock_stopped: Vec<clock::StoppedRange>,
     pub clock_pattern: Option<String>,
+    /// `--reset` pattern. The CLI applies it to the store through
+    /// `ColumnCache::select_reset` before any query runs.
     pub reset_pattern: Option<String>,
+    /// The reset report of a sync query, set by the query's config resolution.
+    pub reset_report: Option<reset::ResetReport>,
     pub with_reset: bool,
     pub at_time: Option<i64>,
     pub at_time_is_cycle: bool,
@@ -87,6 +92,7 @@ impl Default for ExtractConfig {
             clock_stopped: Vec::new(),
             clock_pattern: None,
             reset_pattern: None,
+            reset_report: None,
             with_reset: false,
             at_time: None,
             at_time_is_cycle: false,
@@ -136,7 +142,6 @@ impl ExtractConfig {
         let policy = ExtractConfig {
             async_mode: self.async_mode,
             with_reset: self.with_reset,
-            reset_pattern: self.reset_pattern.clone(),
             ..Default::default()
         };
         let resolve = |tok: &TimeToken| cache::resolve_time_token(cache, &policy, tok);

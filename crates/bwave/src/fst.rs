@@ -7,7 +7,7 @@
 //! produces opens directly in GTKWave and VaporView.
 //!
 //! Metadata that `.bwave` v7 headers carried (clock table, sampling edge,
-//! first-rise tick, clock-before-reset flag, cycle-rebased sim start) is
+//! first-rise tick, clock-before-reset flag) is
 //! re-derived here at load time from the FST content itself. FST stores full
 //! async transitions losslessly, so everything the VCD streaming path
 //! computed is recomputable — with one documented exception: VCD *line order
@@ -712,17 +712,14 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
     // -- clock + reset re-derivation ---------------------------------------
     // Mirrors the VCD streaming path's detection (extract.rs detect_clock):
     // candidates are 1-bit signals whose bracket-stripped name contains
-    // "clk" (resp. "rst"), sorted by (scope depth, name).
+    // "clk", sorted by (scope depth, name). The reset comes from the one
+    // reset rule in `crate::reset`.
     let mut clock_candidates: Vec<usize> = Vec::new();
-    let mut reset_candidates: Vec<usize> = Vec::new();
     for (i, v) in vars.iter().enumerate() {
         if v.width == 1 && !v.is_real {
             let stripped = v.name.split('[').next().unwrap_or(&v.name).to_lowercase();
             if stripped.contains("clk") {
                 clock_candidates.push(i);
-            }
-            if stripped.contains("rst") {
-                reset_candidates.push(i);
             }
         }
     }
@@ -732,11 +729,11 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
         da.cmp(&db).then(vars[*a].name.cmp(&vars[*b].name))
     };
     clock_candidates.sort_by(by_depth_then_name);
-    reset_candidates.sort_by(by_depth_then_name);
+    let reset_index = crate::reset::candidate(&signals, None);
 
     // one batched read for every candidate signal
     let mut probe_handles: Vec<usize> = Vec::new();
-    for &i in clock_candidates.iter().chain(reset_candidates.iter()) {
+    for &i in clock_candidates.iter().chain(reset_index.iter()) {
         probe_handles.push(vars[i].handle_idx);
     }
     probe_handles.sort_unstable();
@@ -789,78 +786,6 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
     // clock meta at all, which matches primary_clock = None here unless a
     // later candidate toggles. The differential harness arbitrates.
 
-    // reset: first candidate; active-low from the leaf name
-    let mut reset_deassert_tick: Option<u64> = None;
-    let mut reset_transitions: Option<&Vec<(u64, String)>> = None;
-    let mut reset_active_low = false;
-    if let Some(&ri) = reset_candidates.first() {
-        let leaf = vars[ri]
-            .name
-            .split('[')
-            .next()
-            .unwrap_or(&vars[ri].name)
-            .split('.')
-            .next_back()
-            .unwrap_or(&vars[ri].name)
-            .to_lowercase();
-        reset_active_low = leaf.ends_with('n') || leaf.contains("_n");
-        let rt = trans_of(ri);
-        reset_transitions = Some(rt);
-        // builder starts with reset_active = true; the deassert tick is the
-        // first 0/1 transition observed in the deasserted state
-        for (t, v) in rt {
-            let asserted = if reset_active_low { v == "0" } else { v == "1" };
-            if v == "0" || v == "1" {
-                if !asserted {
-                    reset_deassert_tick = Some(*t);
-                    break;
-                }
-            }
-        }
-    }
-    // reset asserted-state after all events at `tick` (builder evaluates at
-    // the following timestamp boundary): last 0/1 value at or before tick,
-    // initial state = asserted
-    let reset_asserted_after = |tick: u64| -> bool {
-        match reset_transitions {
-            None => false, // no reset signal — builder counts every edge
-            Some(rt) => {
-                let mut asserted = true;
-                for (t, v) in rt {
-                    if *t > tick {
-                        break;
-                    }
-                    if v == "0" || v == "1" {
-                        asserted = if reset_active_low { v == "0" } else { v == "1" };
-                    }
-                }
-                asserted
-            }
-        }
-    };
-
-    // clock-before-reset flag (approximation, see module docs)
-    let mut clock_before_reset_at_deassert = false;
-    if let (Some(dt), Some(&ci)) = (reset_deassert_tick, clock_candidates.first()) {
-        clock_before_reset_at_deassert = trans_of(ci).iter().any(|(t, _)| *t == dt);
-    }
-
-    // sim range: end = last time in the file; start = first counted cycle
-    // (first primary-clock rising edge with reset inactive after that tick),
-    // falling back to the header start time
-    let sim_end_tick = header.end_time;
-    let mut sim_start_tick = header.start_time;
-    if let Some(&ci) = clock_candidates.first() {
-        let mut prev = "x";
-        for (t, v) in trans_of(ci) {
-            if v == "1" && prev == "0" && !reset_asserted_after(*t) {
-                sim_start_tick = *t;
-                break;
-            }
-            prev = v;
-        }
-    }
-
     let (clock_period_ticks, first_rise_tick, clock_id) = match primary_clock {
         Some((p, f, name)) => (p, f, name),
         None => (
@@ -872,6 +797,7 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
         ),
     };
 
+    let sim_end_tick = header.end_time;
     let ticks_to_ns = 10f64.powi(header.timescale_exponent as i32 + 9);
     let timescale_str = timescale_str_from_exponent(header.timescale_exponent);
 
@@ -898,9 +824,8 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
         prefix: Mutex::new(None),
     };
 
-    Ok(ColumnCache::new_fst_backed(
+    let mut cache = ColumnCache::new_fst_backed(
         signals,
-        sim_start_tick,
         sim_end_tick,
         ticks_to_ns,
         Some(header.timescale_exponent),
@@ -908,10 +833,11 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
         first_rise_tick,
         timescale_str,
         clock_id,
-        clock_before_reset_at_deassert,
         clock_table,
         backing,
-    ))
+    );
+    cache.set_reset(reset_index, false);
+    Ok(cache)
 }
 
 // ---------------------------------------------------------------- writing

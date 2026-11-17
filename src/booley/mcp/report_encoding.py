@@ -498,7 +498,11 @@ def _append_stream_section(
     shown = stream[-limit:] if truncated else stream
     rendered = shown
     if truncated and mark_truncation:
-        rendered = f"... (truncated, showing last {limit} bytes)\n{shown}"
+        rendered = (
+            f"... (truncated: at least {len(stream) - limit} earlier bytes dropped, "
+            f"showing last {limit} bytes; the cap is fixed — narrow the request "
+            f"rather than rerun it)\n{shown}"
+        )
     parts.append(f"\n--- {label} ---\n{rendered}")
     return shown, truncated
 

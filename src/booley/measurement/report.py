@@ -137,7 +137,8 @@ def _base_lines(view: Mapping[str, Any]) -> list[_Block]:
     if base_run["problem"] is not None:
         lines.append(_Text(f"base run unreadable: {base_run['problem']}", "warn"))
     elif base_run["base_run_id"] is not None:
-        lines.append(_Text(f"base run `{base_run['base_run_id']}`"))
+        differs = " (its rules differ)" if base_run["rules_differ"] else ""
+        lines.append(_Text(f"base run `{base_run['base_run_id']}`{differs}"))
     elif base_run["command"] is not None:
         lines.append(_Text(f"no base run; create it with `{base_run['command']}`"))
     return lines

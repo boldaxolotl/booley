@@ -25,12 +25,14 @@ pub struct JsonEnvelope<'a, T: Serialize> {
     pub clock_regularity: Option<crate::clock::ClockVerdict>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub clock_stopped: Vec<crate::clock::StoppedRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset: Option<crate::reset::ResetReport>,
 }
 
 /// Serialize and write the envelope to stdout (pretty-printed, trailing newline).
 /// Errors are swallowed — the harness already exits non-zero on upstream failure.
 pub fn emit_json<T: Serialize>(command: &str, data: T, warnings: Vec<String>) {
-    emit_clock_json(command, data, warnings, None, Vec::new());
+    emit_clock_json(command, data, warnings, None, Vec::new(), None);
 }
 
 pub fn emit_clock_json<T: Serialize>(
@@ -39,6 +41,7 @@ pub fn emit_clock_json<T: Serialize>(
     warnings: Vec<String>,
     clock_regularity: Option<crate::clock::ClockVerdict>,
     clock_stopped: Vec<crate::clock::StoppedRange>,
+    reset: Option<crate::reset::ResetReport>,
 ) {
     let env = JsonEnvelope {
         schema: SCHEMA_URL,
@@ -47,6 +50,7 @@ pub fn emit_clock_json<T: Serialize>(
         warnings,
         clock_regularity,
         clock_stopped,
+        reset,
     };
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());

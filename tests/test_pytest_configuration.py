@@ -106,6 +106,7 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_contract.py::test_empty_store_marker_survives_in_binary",
     "tests/bwave/test_contract.py::test_env_errors_stay_exit_env",
     "tests/bwave/test_contract.py::test_native_open_ended_range_includes_tail_clock_events",
+    "tests/bwave/test_contract.py::test_reset_object_validates_against_published_schema",
     "tests/bwave/test_sessions.py::test_query_uses_default_session",
     "tests/bwave/test_sessions.py::test_query_uses_named_alias",
     "tests/bwave/test_sessions.py::test_query_explicit_overrides_session",

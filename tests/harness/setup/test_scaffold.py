@@ -16,9 +16,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from booley.fusesoc import selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import (
-    _resolve_target,
     core_schema_errors,
     read_core,
 )
@@ -39,6 +38,14 @@ from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.subprocess_budget import run_bounded_child
+
+
+def _resolve(root, selector, build_root, *, doctor_private=False):
+    with pytest.MonkeyPatch.context() as patch:
+        if doctor_private:
+            patch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        handle = TargetCatalog.build(root).select(selector)
+    return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
 
 
 @pytest.fixture(autouse=True)
@@ -281,7 +288,7 @@ def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> Non
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    resolved = _resolve_target("sim_my_ip", project_root=tmp_path, build_root=tmp_path / "build")
+    resolved = _resolve(tmp_path, "sim_my_ip", tmp_path / "build")
     staged_rtl = resolved.build_root / "my_ip.sv"
     assert staged_rtl.read_text(encoding="utf-8") == files["rtl/my_ip.sv"]
 
@@ -302,9 +309,7 @@ def test_scaffold_lint_bad_target_resolves_from_dedicated_core(tmp_path: Path) -
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    resolved = _resolve_target(
-        "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build"
-    )
+    resolved = _resolve(tmp_path, "lint_selftest_bad", tmp_path / "build", doctor_private=True)
 
     assert resolved.vlnv == "::my_ip_booley_doctor_selftest:0"
     assert resolved.eda_tool == "verilator"
@@ -930,7 +935,7 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
     assert (tmp_path / "constraints/my_ip.xdc").is_file()
     assert core_schema_errors(tmp_path / "my_ip.core") == []
     assert "synth_my_ip" in {h.name for h in TargetCatalog.build(tmp_path).list()}
-    resolved = _resolve_target("synth_my_ip", project_root=tmp_path, build_root=tmp_path / "build")
+    resolved = _resolve(tmp_path, "synth_my_ip", tmp_path / "build")
     assert resolved.eda_tool == "yosys"
     _track_scaffold(tmp_path)
     cfg = tmp_path / ".booley"
@@ -1116,10 +1121,8 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     )
 
     for target in ("sim_my_ip", "lint_my_ip"):
-        _resolve_target(target, project_root=tmp_path, build_root=tmp_path / "build" / target)
-    bad = _resolve_target(
-        "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build" / "bad"
-    )
+        _resolve(tmp_path, target, tmp_path / "build" / target)
+    bad = _resolve(tmp_path, "lint_selftest_bad", tmp_path / "build" / "bad", doctor_private=True)
     assert bad.vlnv == "::my_ip_booley_doctor_selftest:0"
     assert bad.rtl_source_files[0].absolute(bad.build_root).is_file()
 
@@ -1127,9 +1130,7 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     assert doctor._selftest_plan(project, "sim", warnings.append) is not None
     assert doctor._selftest_plan(project, "lint", warnings.append) is not None
     assert warnings == []
-    sim = _resolve_target(
-        "sim_my_ip", project_root=tmp_path, build_root=tmp_path / "build" / "sim2"
-    )
+    sim = _resolve(tmp_path, "sim_my_ip", tmp_path / "build" / "sim2")
     assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", sim.build_root) == 1
 
     reporter = doctor._Reporter.create()

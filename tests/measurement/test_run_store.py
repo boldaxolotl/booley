@@ -208,9 +208,7 @@ def test_stopped_and_cancelled_runs_are_stored_but_not_measured(tmp_path: Path) 
         assert store.measured(keyed.key) is None
 
 
-def test_rule_change_in_versioned_booley_directory_changes_the_key_but_not_the_base_run(
-    tmp_path: Path,
-) -> None:
+def test_base_run_prefers_the_run_under_the_given_rules_tree(tmp_path: Path) -> None:
     from booley.measurement.run_store import MeasurementStore
 
     repo, booley = make_versioned_booley_directory(tmp_path, "standalone")
@@ -228,15 +226,21 @@ def test_rule_change_in_versioned_booley_directory_changes_the_key_but_not_the_b
     assert after.key.booley_tree != before.key.booley_tree
     assert after.booley_commit == git(booley, "rev-parse", "HEAD")
     assert store.measured(after.key) is None
-    base = store.base_run(after.key.project_tree)
-    assert base is not None and base.run_id == "r1"
-    assert base.document["booley_commit"] == before.booley_commit
-
-    # The base is the latest run of the project tree whatever its rules tree or status.
+    tree, old, new = after.key.project_tree, before.key.booley_tree, after.key.booley_tree
     store.write(make_run(after, "r2", minute=1, status="stopped"), [])
-    base = store.base_run(after.key.project_tree)
-    assert base is not None and base.run_id == "r2"
-    assert base.document["booley_commit"] == after.booley_commit
+
+    def chosen(preferred: str | None) -> str | None:
+        run = store.base_run(tree, preferred)
+        return None if run is None else run.run_id
+
+    assert chosen(old) == "r1"
+    assert chosen(new) == "r2"
+    assert chosen("0" * 40) == "r2"  # no run under that tree: the latest run
+    assert chosen(None) == "r2"  # no preference: the latest run, whatever its rules tree
+    store.write(make_run(before, "r3", minute=2), [])
+    assert chosen(None) == "r3"
+    assert chosen(new) == "r2"
+    assert store.base_run("1" * 40, new) is None
 
 
 def test_stored_key_follows_the_exported_booley_commit(tmp_path: Path) -> None:

@@ -72,18 +72,18 @@ during reset, they're invisible.
 Check the header line for the reset detection result:
 
 ```
-# reset: tb.dut.rst_n  deasserts @ cycle 5
+# reset: tb.dut.rst_n (active-low by name, auto) deasserts @ 25ns; 2 cycles skipped (--with-reset to include)
 ```
 
-If your event was before cycle 5 (in this example),
+If your event was in those skipped cycles (in this example),
 add `--with-reset`:
 
 ```bash
 bwave find sim.fst "*error*" 'h1 --first --with-reset
 ```
 
-See `troubleshooting/reset-skipping` for the full
-detection rules.
+See `reference/sync-vs-async` for how the reset is
+detected.
 
 ## 3. Time range outside the simulation
 
