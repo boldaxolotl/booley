@@ -73,7 +73,8 @@ _WHEEL_SOURCE_FILES = ("pyproject.toml", "VERSION", *SHIPPED_DOCS)
 
 # Keep every non-generated tree read by the B-Wave Cargo build. Cargo validates
 # declared bench paths while parsing the manifest, and the binary embeds docs
-# and the schema at compile time.
+# at compile time. The schema is generated from the output structs; its
+# committed copy stays an input because a test compares it with that output.
 _DEVELOPMENT_CONTEXT_TREES = (
     "src/booley",
     "crates/bwave/src",
