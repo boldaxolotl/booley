@@ -33,6 +33,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.prepared_group import run_prepared_group
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -324,7 +325,7 @@ def _run(
     """Launch one test through the prepared ordinary group path."""
     handle = _select(project)
     execution = SimulationExecution(
-        invoke=recorder, options=options or SimulationOptions(timeout_ms=10_000)
+        invoke=recorder, options=options or SimulationOptions(timeout_ms=hang_guard_s() * 1000)
     )
     return run_prepared_group(execution, handle, (test,))
 
@@ -467,7 +468,11 @@ def test_trace_and_plain_each_reuse_their_own_generation(verilator_env: Path) ->
     """
     recorder = _Recorder(verilator_env)
     outcomes = [
-        _run(verilator_env, recorder, options=SimulationOptions(timeout_ms=10_000, trace=trace))
+        _run(
+            verilator_env,
+            recorder,
+            options=SimulationOptions(timeout_ms=hang_guard_s() * 1000, trace=trace),
+        )
         for trace in (False, True, False, True)
     ]
     plain_first, trace_first, plain_again, trace_again = outcomes
@@ -517,7 +522,7 @@ def test_native_fst_trace_mode_survives_a_reuse_hit(verilator_env: Path) -> None
         verilator_env, options="--timing, --trace, --trace-fst, -CFLAGS, -DVM_TRACE_FMT_FST"
     )
     recorder = _Recorder(verilator_env)
-    options = SimulationOptions(timeout_ms=10_000, trace=True)
+    options = SimulationOptions(timeout_ms=hang_guard_s() * 1000, trace=True)
     first = _run(verilator_env, recorder, options=options)
     second = _run(verilator_env, recorder, options=options)
     assert recorder.builds == 1

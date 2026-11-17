@@ -92,6 +92,7 @@ from tests.flows.sim.simulation_record_test_support import (
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 from tests.sharing_error_support import sharing_error
+from tests.time_budget import hang_guard_s, scaled
 
 
 def _unique_execution_id() -> ExecutionId:
@@ -192,9 +193,13 @@ def test_child_scope_keeps_whole_work_item_nonterminal_between_commands(
     # _execute_local: FlowMechanics has no public command runner; these tests pin its
     # cancellation gate between processes.
     with supervised_execution_scope(scope):
-        first = flow._execute_local([sys.executable, "-c", "print('first')"], timeout=5)
+        first = flow._execute_local(
+            [sys.executable, "-c", "print('first')"], timeout=hang_guard_s()
+        )
         between = read_json(execution_paths(child_id, booley_dir=project_data).record)
-        second = flow._execute_local([sys.executable, "-c", "print('second')"], timeout=5)
+        second = flow._execute_local(
+            [sys.executable, "-c", "print('second')"], timeout=hang_guard_s()
+        )
     record = read_json(execution_paths(child_id, booley_dir=project_data).record)
     assert first.returncode == second.returncode == 0
     assert first.stdout.strip() == "first"
@@ -217,11 +222,13 @@ def test_cancelled_scope_rejects_a_later_command_between_processes(
     flow.args = SimpleNamespace(work_dir=tmp_path)
     marker = tmp_path / "must-not-run"
     with supervised_execution_scope(scope):
-        first = flow._execute_local([sys.executable, "-c", "print('first')"], timeout=5)
+        first = flow._execute_local(
+            [sys.executable, "-c", "print('first')"], timeout=hang_guard_s()
+        )
         cancelled.set()
         second = flow._execute_local(
             [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
-            timeout=5,
+            timeout=hang_guard_s(),
         )
     assert first.returncode == 0
     assert second.returncode == -1
@@ -265,16 +272,18 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
         record_path = execution_paths(permit.child_execution_id, booley_dir=project_data).record
 
         def lose_lease() -> None:
-            assert child_registered.wait(timeout=2)
+            assert child_registered.wait(timeout=hang_guard_s())
             assert (read_json(record_path) or {}).get("state") == "running"
             permit.lease_health.lost.set()
 
         killer = threading.Thread(target=lose_lease)
         killer.start()
         with supervised_execution_scope(permit.scope):
-            flow._execute_local([sys.executable, "-c", "import time; time.sleep(30)"], timeout=35)
-        killer.join(timeout=2)
-    assert time.monotonic() - started < 8
+            flow._execute_local(
+                [sys.executable, "-c", "import time; time.sleep(30)"], timeout=hang_guard_s()
+            )
+        killer.join(timeout=hang_guard_s())
+    assert time.monotonic() - started < scaled(8)
     assert registry.is_terminal(lane_ids[0])
 
 
@@ -468,7 +477,7 @@ def test_capacity_cancellation_withdraws_a_real_queued_child(blocked_capacity) -
     worker.start()
     _wait_until(lambda: len(store.snapshot(CLASS_MEMORY)[1]) == 1)
     capacity.cancel_waiters()
-    worker.join(timeout=2)
+    worker.join(timeout=hang_guard_s())
     assert not worker.is_alive()
     assert len(errors) == 1
     assert store.snapshot(CLASS_MEMORY)[1] == []
@@ -707,7 +716,7 @@ def _run_lease_loss_scheduler(tmp_path, monkeypatch, slots, scope_stop):
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
     capacity = _item_capacity(
         # Keep this cause test within the production shutdown budget.
-        replace(_managed(store, outer), timeout_seconds=30.0),
+        replace(_managed(store, outer), timeout_seconds=hang_guard_s()),
         manifest,
         registry.project_data,
     )

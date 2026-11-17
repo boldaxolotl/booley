@@ -29,7 +29,7 @@ from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.booley_dir import reset_cache
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_bounded_child
 
 _DEPRECATION = "--elab-only, --build-only, and --standalone are deprecated; use --mode"
 _SOURCES = {"dut.sv": b"module dut; endmodule\n", "tb.sv": b"module tb; endmodule\n"}
@@ -392,8 +392,6 @@ def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> Non
 
     completed = run_bounded_child(
         ["sh", "-c", script],
-        # MSYS sh spawns slowly on a loaded Windows runner; this only guards a hang.
-        timeout=SUBPROCESS_TIMEOUT_S if os.name == "nt" else 10,
     )
 
     assert completed.returncode == 7

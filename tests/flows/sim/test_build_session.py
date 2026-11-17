@@ -34,6 +34,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.test_build_reuse import _core_behind_linked_booley_dir, _handle
 from tests.flows.sim.test_coverage_invocation import project
+from tests.time_budget import hang_guard_s, scaled
 
 
 def test_resolved_compile_surface_is_target_scoped_and_snapshot_is_walk_free(
@@ -306,7 +307,8 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
         "class Probe(FlowMechanics):\n"
         "    def _get_cwd(self): return root\n"
         "with SimulationBuildSession(SimpleNamespace(project_root=root, identity='acme:lib:demo:1#sim')):\n"
-        "    Probe()._execute_local(['sh', '-c', 'touch ' + str(marker) + '; sleep 2'], timeout=5)\n"
+        f"    Probe()._execute_local(['sh', '-c', 'touch ' + str(marker) + '; sleep {scaled(2)}'],"
+        f" timeout={hang_guard_s()})\n"
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3] / "src")
@@ -318,24 +320,23 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
         text=True,
     )
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + hang_guard_s()
         while not marker.exists() and parent.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
         assert marker.exists()
         os.kill(parent.pid, signal.SIGKILL)
-        parent.wait(timeout=5)
+        parent.wait(timeout=hang_guard_s())
         with (
             (simulation_build_slot(handle) / "lease.lock").open("a+") as lock,
             pytest.raises(LockContentionError),
         ):
             acquire_file_lock(lock)
-        time.sleep(2.2)
         with SimulationBuildSession(handle):
             pass
     finally:
         if parent.poll() is None:
             parent.kill()
-            parent.wait(timeout=5)
+            parent.wait(timeout=hang_guard_s())
 
 
 def test_generation_snapshot_keeps_reserved_names_the_input_snapshot_ignores(

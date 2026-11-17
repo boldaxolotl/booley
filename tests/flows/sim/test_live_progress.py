@@ -26,6 +26,7 @@ from tests.flows.sim.test_execution_engine import (
     _prepared,
     _write_transport,
 )
+from tests.time_budget import hang_guard_s
 
 
 @pytest.fixture(autouse=True)
@@ -125,7 +126,7 @@ def test_concurrent_attempts_retain_results_and_close_before_late_event(tmp_path
 
     path = tmp_path / "progress.json"
     sink = LiveProgressSink(path, tmp_path, "current-run")
-    both = Barrier(3, timeout=5)
+    both = Barrier(3, timeout=hang_guard_s())
     first_release, second_release = Event(), Event()
     writes = []
     from booley.flows.sim import live_progress
@@ -142,7 +143,7 @@ def test_concurrent_attempts_retain_results_and_close_before_late_event(tmp_path
         with install_progress(sink), attempt_scope(name, attempt_id=name):
             observe_stage(name, "executing")
             both.wait()
-            assert release.wait(5)
+            assert release.wait(hang_guard_s())
             observe_stage(name, "building")
 
     with install_progress(sink), ThreadPoolExecutor(max_workers=2) as pool:
@@ -157,12 +158,12 @@ def test_concurrent_attempts_retain_results_and_close_before_late_event(tmp_path
             assert doc["coverage"] is True and doc["completed_targets"] == ["active"]
             assert doc["detail"]["active"] == {"verdict": "pass"}
             first_release.set()
-            first.result(timeout=5)
+            first.result(timeout=hang_guard_s())
             doc = json.loads(path.read_text())
             assert doc["phase"] == "running" and len(doc["active"]) == 1
             _checkpoint(path, completed=["active"], coverage=True, phase="aborted")
             second_release.set()
-            second.result(timeout=5)
+            second.result(timeout=hang_guard_s())
             final = json.loads(path.read_text())
             assert final["phase"] == "aborted" and "active" not in final
             assert len(writes) <= 9
@@ -476,12 +477,12 @@ def test_hdl_backend_exceptions_are_visible_before_child_completion(tmp_path, mo
                 command=command,
                 run_cwd=tmp_path,
                 env=os.environ.copy(),
-                timeout_s=5,
+                timeout_s=hang_guard_s(),
                 work_dir=evidence,
             ),
         )
         try:
-            assert observed.wait(5)
+            assert observed.wait(hang_guard_s())
             assert not future.done()
             assert "CPU exception handler" in log.read_text()
             assert "run=hdl-live" in log.read_text()
@@ -490,7 +491,7 @@ def test_hdl_backend_exceptions_are_visible_before_child_completion(tmp_path, mo
                 children[0].stdin.write("release\n")
                 children[0].stdin.flush()
                 children[0].stdin.close()
-            future.result(timeout=6)
+            future.result(timeout=hang_guard_s())
 
 
 def test_nested_same_attempt_retains_active_log_until_owning_scope_exits(tmp_path, monkeypatch):
@@ -621,7 +622,7 @@ def test_scope_exit_during_log_observation_preserves_progress(tmp_path, monkeypa
         @property
         def target(self):
             reading.set()
-            assert released.wait(5)
+            assert released.wait(hang_guard_s())
             return identity.target
 
         def pointer(self, *args):
@@ -639,8 +640,8 @@ def test_scope_exit_during_log_observation_preserves_progress(tmp_path, monkeypa
                 attempt_token="owned",
                 log=DelayedLog(),
             )
-            assert reading.wait(5)
-        observed.result(timeout=5)
+            assert reading.wait(hang_guard_s())
+        observed.result(timeout=hang_guard_s())
         assert "active" not in json.loads(path.read_text())
 
 

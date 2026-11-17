@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave import waveform_store
 from booley.flows.run_log import RUN_LOG_IN_PROGRESS_PREFIX, begin_run_log
@@ -29,7 +30,7 @@ FATAL_LINE = "%Warning: tb.sv:9: $readmemh: Cannot open memory.hex"
 SLEEP = "import time; time.sleep(60)"
 FATAL_THEN_SLEEP = f"import time; print({FATAL_LINE!r}, flush=True); time.sleep(60)"
 # Generous wall-clock bound for runs the runner must end in about a second.
-KILLED_WITHIN_S = 20
+KILLED_WITHIN_S = scaled(20)
 
 
 def _launch(tmp_path: Path, script: str, **overrides: Any) -> SimulatorLaunch:
@@ -41,7 +42,7 @@ def _launch(tmp_path: Path, script: str, **overrides: Any) -> SimulatorLaunch:
         "command": [sys.executable, "-u", "-c", script],
         "run_cwd": run_cwd,
         "env": os.environ.copy(),
-        "timeout_s": 30,
+        "timeout_s": hang_guard_s(),
     }
     return SimulatorLaunch(**{**fields, **overrides})
 
@@ -141,7 +142,7 @@ def test_simulator_killed_by_booley_is_not_reported(tmp_path: Path, monkeypatch)
     )
     self_killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
 
-    _, proc, termination = run_supervised(_launch(tmp_path, booley_killed, timeout_s=3))
+    _, proc, termination = run_supervised(_launch(tmp_path, booley_killed, timeout_s=scaled(3)))
     assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "timeout")
     _, proc, termination = run_supervised(_launch(tmp_path, self_killed))
     assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "completed")
@@ -160,7 +161,7 @@ CLOSED_STDOUT = (
 def test_a_quiet_simulator_is_killed_at_the_deadline(tmp_path: Path, script: str):
     """F-13/F-21: a sim that prints nothing, or closes stdout, is still killed at its budget."""
     start = time.monotonic()
-    lines, _, termination = run_supervised(_launch(tmp_path, script, timeout_s=1))
+    lines, _, termination = run_supervised(_launch(tmp_path, script, timeout_s=scaled(1)))
 
     assert time.monotonic() - start < KILLED_WITHIN_S
     assert (termination.kind, termination.failure_kind) == ("timeout", "timeout")

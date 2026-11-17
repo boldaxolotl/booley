@@ -37,6 +37,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _scheduled_attempt,
     _two_item_manifest,
 )
+from tests.time_budget import hang_guard_s
 
 
 class _SimulationRecord:
@@ -76,14 +77,14 @@ class _SimulationRecord:
         def execute(_attempt, child_id) -> None:
             if child_id is not None:
                 # _shutdown: the scheduler's shutdown flag has no public wait, so idle lanes poll it.
-                deadline = time.monotonic() + 5.0  # idle child lane until cancelled
+                deadline = time.monotonic() + hang_guard_s()  # idle child lane until cancelled
                 while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 return
             trigger()
             # The scheduler's await loop has now run its argument-less cancel_waiters,
             # which must not mask the cause that triggered the cancellation.
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + hang_guard_s()
             while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
                 time.sleep(0.01)
             try:

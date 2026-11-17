@@ -15,6 +15,7 @@ from booley.runtime.file_lock import LockTimeoutError
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.mount_change_support import simulate_mount_change
+from tests.time_budget import scaled
 
 PARENT_MARKER = ".booley-simulation-parent.json"
 
@@ -59,7 +60,7 @@ def test_lock_wait_timeout_closes_handle_and_raises(
     run, identity = _run(tmp_path)
     # Private seam: the production wait is 60 s; only a lowered timeout lets a
     # held lock expire inside a test.
-    monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", scaled(0.05))
     with rd.claimed_run_directory(run, identity=identity), pytest.raises(LockTimeoutError):
         rd.cleanup_interrupted_run_directory(run, identity=identity)
     # Once the holder has left, cleanup takes the lock without waiting.
@@ -72,7 +73,7 @@ def test_lock_that_never_stays_current_times_out(
     run, identity = _run(tmp_path)
     # Private seams: the timeout is lowered for speed, and every retry must see
     # a replaced lock file, which no real filesystem produces on demand.
-    monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", scaled(0.05))
     monkeypatch.setattr(rd, "_lock_is_current", lambda lock, path: False)
     with (
         pytest.raises(LockTimeoutError, match="timed out waiting"),
