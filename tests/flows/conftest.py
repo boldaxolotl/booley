@@ -49,7 +49,6 @@ def session_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "BOOLEY_STATE_FILE",
         "BOOLEY_TICKET_FILE",
         "BOOLEY_LOGS_DIR",
-        "BOOLEY_RUNTIME_DIR",
         "BOOLEY_DIR",
     ):
         monkeypatch.delenv(name, raising=False)

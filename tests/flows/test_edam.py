@@ -163,7 +163,12 @@ class TestBuildEdam:
     def test_parameters_keep_their_kind_and_type(
         self, ws: Path, option: str, value: Any, expected: dict[str, Any]
     ):
-        assert _edam(ws, **{option: value})["parameters"] == expected
+        parameters = _edam(ws, **{option: value})["parameters"]
+        assert parameters == expected
+        # 1 == True in dict equality: pin the default's exact type too.
+        assert {k: type(v.get("default")) for k, v in parameters.items()} == {
+            k: type(v.get("default")) for k, v in expected.items()
+        }
 
 
 # ---------------------------------------------------------------------------

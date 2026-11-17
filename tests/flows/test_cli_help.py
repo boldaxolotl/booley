@@ -135,7 +135,7 @@ def test_pair_parsing_and_typed_normalization(
     assert getattr(request, name.replace("-", "_")) is expected
 
 
-def test_projection_isolation() -> None:
+def test_projection_isolation(capsys: pytest.CaptureFixture[str]) -> None:
     for flow_type in FLOWS:
         for human_first in (False, True):
             flow = flow_type()
@@ -155,6 +155,7 @@ def test_projection_isolation() -> None:
             assert transport.parse_args(["--target", "example", "--work-dir", "w"]).work_dir
             with pytest.raises(SystemExit):
                 transport.parse_args(["--target", "example", "--project", "w"])
+            assert "unrecognized arguments: --project" in capsys.readouterr().err
             assert transport.parse_args(["--target", "example", "-q"])._console_quiet
 
 

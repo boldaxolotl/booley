@@ -120,10 +120,12 @@ class TestBooleyFlowExecution:
         exit_code: int,
         text: str,
     ) -> None:
-        result, _seen = _run_command(session_runtime, command, monkeypatch)
+        result, seen = _run_command(session_runtime, command, monkeypatch)
 
         assert result.exit_code == exit_code, result.outcome.report_text
         assert text in result.outcome.report_text
+        if command == ["nonexistent_binary_12345"]:
+            assert seen[0].returncode != 0
 
 
 class TestResourceEvidence:
