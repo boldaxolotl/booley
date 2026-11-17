@@ -58,3 +58,11 @@ def test_commit_scope_rejects_a_message_the_stealth_policy_bans(
         commit_scope(wt, ["rtl.sv"], message)
 
     assert git(wt, "rev-parse", "HEAD") == head
+
+
+def test_a_stealth_project_lists_the_banned_phrases_it_enforces(tmp_path: Path) -> None:
+    from booley.commit_policy import banned_phrases
+
+    wt = _worktree(tmp_path, _EXPLICIT)
+
+    assert banned_phrases(wt) == ["quokka"]
