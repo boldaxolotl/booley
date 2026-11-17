@@ -73,6 +73,8 @@ def _main(
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     reached = EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="reached generation")
     (reports / "mutation.json").unlink(missing_ok=True)  # never read a previous run's report
+    # Private seam: the fake build stages only `rtl/*.sv`, so a faked campaign cannot
+    # materialize the vendored and generated scope entries the passing cases name.
     with patch.object(MutationFlow, "_generate", return_value=reached):
         code = MutationFlow().main(
             ["--work-dir", str(root), "--report-dir", str(reports), "--target", "sim", *args]
@@ -172,10 +174,10 @@ def test_target_without_mutable_rtl_ends_as_error(
     assert "has no mutable RTL" in out
 
 
-def test_repeated_scope_path_is_scoped_once(
+def test_repeated_scope_path_is_scoped_once_and_scope_flags_accumulate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC3: ``--scope a.sv,a.sv`` behaves like ``--scope a.sv``, dry and real."""
+    """AC3, AC5: ``--scope a.sv,a.sv`` is ``--scope a.sv``, dry and real; repeated flags add."""
     outcomes: dict[str, tuple[int, list[tuple[Any, ...]]]] = {}
     for name, scope in (("twice", f"{_SCOPE},{_SCOPE}"), ("once", _SCOPE)):
         _, result, _ = _campaign(
@@ -185,30 +187,19 @@ def test_repeated_scope_path_is_scoped_once(
         outcomes[name] = (result.exit_code, _mutant_keys(result))
     assert outcomes["twice"] == outcomes["once"]
 
-    # The dry run (which fakes the campaign lookup) goes last.
-    _prepare_scope_files(tmp_path, [_SCOPE])
-    for scope in (f"{_SCOPE},{_SCOPE}", _SCOPE):
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, extra_args=["--dry-run"])
+    # The dry run goes last; repeated `--scope` flags accumulate like one comma list.
+    _prepare_scope_files(tmp_path, [_SCOPE, "rtl/mod_b.sv"])
+    for scope, extra, expected in (
+        (f"{_SCOPE},{_SCOPE}", [], [_SCOPE]),
+        (_SCOPE, [], [_SCOPE]),
+        (None, ["--scope", _SCOPE, "--scope", "rtl/mod_b.sv"], [_SCOPE, "rtl/mod_b.sv"]),
+    ):
+        endpoint = _make_endpoint(
+            tmp_path, monkeypatch, scope=scope, extra_args=[*extra, "--dry-run"]
+        )
         result, _ = _run_count_preview(endpoint, monkeypatch)
         assert result.exit_code == EXIT_SUCCESS, scope
-        assert result.detail["scope"] == [_SCOPE], scope
-
-
-def test_repeated_scope_flags_accumulate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC5: ``--scope a.sv --scope b.sv`` scopes both files."""
-    scope = ["rtl/mod_a.sv", "rtl/mod_b.sv"]
-    _prepare_scope_files(tmp_path, scope)
-    endpoint = _make_endpoint(
-        tmp_path,
-        monkeypatch,
-        scope=None,
-        extra_args=["--scope", scope[0], "--scope", scope[1], "--dry-run"],
-    )
-
-    result, _ = _run_count_preview(endpoint, monkeypatch)
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert result.detail["scope"] == scope
+        assert result.detail["scope"] == expected, scope
 
 
 def test_mutation_errors_carry_hints_that_fit_their_cause(

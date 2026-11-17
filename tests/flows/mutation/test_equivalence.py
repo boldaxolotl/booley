@@ -97,20 +97,19 @@ def test_a_mutant_directory_with_the_same_prefix_is_not_folded(tmp_path: Path) -
     assert _generated_cpp(other, other, work_dir) != expected  # a path to the baseline's copy
 
 
-def test_unrecognized_layout_skips_the_check(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("marker", "text"),
+    [("Vtb.cpp", "void f() {}\n"), ("Vtb__ver.d", "Vtb.cpp: dut.sv\n")],
+    ids=["no-dependency-file", "no-generated-cpp"],
+)
+def test_a_layout_verilator_did_not_leave_skips_the_check(
+    tmp_path: Path, marker: str, text: str
+) -> None:
     work_dir = _work_dir(tmp_path)
     root = work_dir / "builds" / "baseline"
     root.mkdir(parents=True)
-    (root / "Vtb.cpp").write_text("void f() {}\n")  # C++, but no `*__ver.d`: not Verilator's
-
-    assert _generated_cpp(root, root, work_dir) is None
-
-
-def test_a_layout_without_generated_cpp_skips_the_check(tmp_path: Path) -> None:
-    work_dir = _work_dir(tmp_path)
-    root = work_dir / "builds" / "baseline"
-    root.mkdir(parents=True)
-    (root / "Vtb__ver.d").write_text("Vtb.cpp: dut.sv\n")  # Verilator's marker, no C++
+    # C++ without Verilator's `*__ver.d`, or the marker without any C++.
+    (root / marker).write_text(text)
 
     assert _generated_cpp(root, root, work_dir) is None
 
