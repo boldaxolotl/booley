@@ -73,6 +73,7 @@ from tests.flows.sim.test_verilator_build_reuse_engine import (
     _isolate_native_cores,
 )
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 
 def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
@@ -1172,7 +1173,7 @@ def test_declared_staged_runtime_input_is_available_at_run_cwd(
         # Hosted Windows runners can spend more than five seconds starting the
         # real shell and Python adapter under load. This test exercises staged
         # input visibility, not timeout classification.
-        options=SimulationOptions(timeout_ms=30_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
 
     assert outcome.passed is True
@@ -1204,7 +1205,8 @@ def _run_real_icarus(
     # Real FuseSoC setup and Icarus startup are substantially slower on
     # Windows runners than the lightweight adapter tests around this one.
     execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
+        invoke=_subprocess_invoker(project),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
     with _real_fusesoc():
         return tuple(run_prepared_group(execution, handle, ("dhry",)) for _ in range(runs))
@@ -1555,7 +1557,7 @@ class _StaleIcarus:
         return TargetCatalog.build(self.project).select(name, for_flow="sim")
 
     def execution(self, **options: Any) -> SimulationExecution:
-        options.setdefault("timeout_ms", 5000)
+        options.setdefault("timeout_ms", hang_guard_s() * 1000)
         base_invoke = _subprocess_invoker(self.project)
 
         def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
@@ -1727,7 +1729,9 @@ def test_missing_new_image_refuses_the_build_and_never_launches(
             launched = True
         return result
 
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    execution = SimulationExecution(
+        invoke=invoke, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
+    )
     with pytest.raises(SimulationBuildSlotError, match="cannot record Simulation image"):
         run_prepared_group(execution, handle, ("smoke",))
     assert launched is False
@@ -1920,7 +1924,7 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
             test_names=("smoke",),
             build_root=group.build_root,
             eda_tool="icarus",
-            timeout_s=30,
+            timeout_s=hang_guard_s(),
             commands=(
                 "printf '\\n# mutation\\n' >> "
                 ".booley/tmp/fusesoc-isolated-cores/booley-isolated-multi.core",
@@ -2880,7 +2884,8 @@ def _real_group(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
+        invoke=_subprocess_invoker(project),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
     with execution.ordinary_group(handle, ()) as group:
         yield group

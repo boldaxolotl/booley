@@ -50,6 +50,7 @@ from tests.flows.sim.simulation_record_test_support import (
 from tests.flows.sim.test_simulation_record_resume_diagnostics import (
     _interrupted_simulation_record as _interrupted_project_record,
 )
+from tests.time_budget import scaled
 
 
 def test_run_directory_parser_rejects_an_unclosed_format_field() -> None:
@@ -228,7 +229,7 @@ def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_e
     )
     assert first == second
     assert store.summary_path.read_bytes() == first_bytes
-    assert elapsed < 15
+    assert elapsed < scaled(15)
 
 
 @pytest.mark.parametrize("cancelled", [False, True])

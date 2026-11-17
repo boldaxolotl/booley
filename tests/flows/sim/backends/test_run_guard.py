@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import symlink_or_skip
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim import run_guard as rg
 
@@ -171,9 +172,9 @@ def test_guard_disabled_when_budget_non_positive(tmp_path: Path):
     assert proc.killed is False
 
 
-def _await_trip(guard, timeout_s: float = 2.0) -> None:
+def _await_trip(guard) -> None:
     """Poll until the guard trips (bounded so a bug can't hang the suite)."""
-    deadline = time.monotonic() + timeout_s
+    deadline = time.monotonic() + hang_guard_s()
     while not guard.tripped and time.monotonic() < deadline:
         time.sleep(0.01)
     guard.stop()
@@ -286,7 +287,7 @@ def test_guard_baseline_falls_to_the_low_water_mark(tmp_path: Path, fake_kill):
     assert guard.baseline == 8192
 
     staged.unlink()  # the TB clears its inputs...
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + hang_guard_s()
     while guard.baseline != 0 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert guard.baseline == 0  # low-water mark, not the size at spawn
@@ -389,7 +390,7 @@ def test_stall_guard_trips_when_sim_time_never_leaves_zero(fake_kill):
     assert guard.stalled() is False  # armed, but the grace has not elapsed
 
     clock.now = 61.0
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + hang_guard_s()
     while not guard.tripped and time.monotonic() < deadline:
         time.sleep(0.01)
     guard.stop()
@@ -480,11 +481,11 @@ def test_child_death_kwargs_kill_the_simulator_when_its_parent_dies():
         import subprocess, sys, time
         from booley.flows.sim.run_guard import child_death_kwargs
         child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
+            [sys.executable, "-c", "import time; time.sleep(600)"],
             **child_death_kwargs(),
         )
         print(child.pid, flush=True)
-        time.sleep(60)
+        time.sleep(600)
         """
     )
     sup = subprocess.Popen(
@@ -504,8 +505,8 @@ def test_child_death_kwargs_kill_the_simulator_when_its_parent_dies():
     try:
         child_pid = int(sup.stdout.readline().strip())
         sup.kill()
-        sup.wait(timeout=10)
-        deadline = time.monotonic() + 10
+        sup.wait(timeout=hang_guard_s())
+        deadline = time.monotonic() + hang_guard_s()
         while time.monotonic() < deadline:
             try:
                 os.kill(child_pid, 0)
@@ -517,7 +518,7 @@ def test_child_death_kwargs_kill_the_simulator_when_its_parent_dies():
     finally:
         if sup.poll() is None:
             sup.kill()
-            sup.wait(timeout=10)
+            sup.wait(timeout=hang_guard_s())
         if sup.stdout is not None:
             sup.stdout.close()
 
@@ -673,8 +674,8 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
     try:
         assert launcher.stdout.readline().strip() == "armed"
         launcher.kill()
-        launcher.wait(timeout=10)
-        deadline = time.monotonic() + 30
+        launcher.wait(timeout=hang_guard_s())
+        deadline = time.monotonic() + hang_guard_s()
         while time.monotonic() < deadline and not exit_file.exists():
             time.sleep(0.05)
         assert exit_file.exists(), (
@@ -686,7 +687,7 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
         stderr_out.close()
         if launcher.poll() is None:
             launcher.kill()
-            launcher.wait(timeout=10)
+            launcher.wait(timeout=hang_guard_s())
         if launcher.stdout is not None:
             launcher.stdout.close()
 
@@ -753,7 +754,7 @@ def test_final_budget_discards_delayed_poll(tmp_path, monkeypatch):
         calls.append(threading.current_thread())
         if threading.current_thread() is not caller:  # the poll thread
             entered.set()
-            assert release.wait(5)
+            assert release.wait(hang_guard_s())
             return 999
         return 9
 
@@ -761,7 +762,7 @@ def test_final_budget_discards_delayed_poll(tmp_path, monkeypatch):
     monkeypatch.setattr(rg, "largest_files_written_since", lambda *args: [])
     guard.start()
     try:
-        assert entered.wait(5)
+        assert entered.wait(hang_guard_s())
         proc.wait()
         guard.finish()
         release.set()
@@ -813,13 +814,13 @@ def test_final_budget_preserves_live_trip_evidence(tmp_path, monkeypatch):
 
     def evidence(*args):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(hang_guard_s())
         return [("output", 9)]
 
     monkeypatch.setattr(rg, "largest_files_written_since", evidence)
     guard.start()
     try:
-        assert entered.wait(5)
+        assert entered.wait(hang_guard_s())
         guard.finish()
         assert guard.tripped
         assert guard.grown == 9
@@ -837,7 +838,7 @@ def test_final_budget_uses_observed_low_water(tmp_path, monkeypatch):
     monkeypatch.setattr(rg, "dir_size_bytes", lambda path: 90)
     guard = rg.DiskBudgetGuard(tmp_path, 8, proc, interval=0.001, baseline=(100, 0))
     guard.start()
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + hang_guard_s()
     while guard.baseline != 90 and time.monotonic() < deadline:
         time.sleep(0.001)
     guard.stop()

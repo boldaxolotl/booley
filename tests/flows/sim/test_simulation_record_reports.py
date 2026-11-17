@@ -36,6 +36,7 @@ from tests.flows.sim.simulation_record_test_support import (
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
+from tests.time_budget import hang_guard_s
 
 __all__ = ["flow_project", "project_alias"]
 
@@ -64,7 +65,7 @@ def test_project_alias_simulation_executes_simulation_record(
             work_dir=flow_project,
             report_dir=Path("booley/reports") if relative else alias / "reports",
             test=("first",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     if result.exit_code:
@@ -457,7 +458,7 @@ def _serialize_resume_waiter(monkeypatch, flow, waiting, completed):
 
     def wait_for_owner(*args, **kwargs):
         waiting.set()
-        assert completed.wait(10)
+        assert completed.wait(hang_guard_s())
         return run(*args, **kwargs)
 
     monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", wait_for_owner)
@@ -486,12 +487,12 @@ def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_pat
     _serialize_resume_waiter(monkeypatch, waiter, waiting, completed)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(waiter.run_prepared_simulation, waiter_prepared, _admission())
-        assert waiting.wait(10)
+        assert waiting.wait(hang_guard_s())
         try:
             owner_result = owner.run_prepared_simulation(owner_prepared, _admission())
         finally:
             completed.set()
-        waiter_result = future.result(timeout=10)
+        waiter_result = future.result(timeout=hang_guard_s())
     assert first_counts["launch"] == 1
     assert second_counts["launch"] == 0
     assert owner_result.detail["pre_sim_current"] == 1
@@ -556,7 +557,7 @@ def _observed_hook_request(tmp_path, observer):
         test_names=("alpha",),
         build_root=tmp_path / "build",
         eda_tool="icarus",
-        timeout_s=5,
+        timeout_s=hang_guard_s(),
         commands=commands,
         run_cwd=".",
     )
@@ -917,7 +918,7 @@ def test_alias_keeps_user_report_links_strict(flow_project, project_alias, defec
             work_dir=flow_project,
             report_dir=report_dir,
             test=("first",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 2
@@ -944,7 +945,7 @@ def test_alias_normalization_precedes_simulation_preparation(
             dry_run=selection == "dry_run",
             mode=SimulationMode.ELAB_ONLY if selection == "elab" else None,
             test=None if selection == "elab" else ("first",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text

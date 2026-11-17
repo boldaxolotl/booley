@@ -9,6 +9,7 @@ first clears a pipe a killed run left behind; the Cocotb launch is covered too.
 from __future__ import annotations
 
 import json
+import math
 import os
 import stat
 import sys
@@ -17,6 +18,7 @@ from typing import NamedTuple
 
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave import waveform_store
 from booley.flows.sim import trace_session
@@ -27,6 +29,7 @@ from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, Trace
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="named pipes need POSIX")
 
+_RUN_TIMEOUT_S = hang_guard_s()
 _VCD = (
     "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! clk $end\n"
     "$upscope $end\n$enddefinitions $end\n#0\n0!\n#5\n1!\n"
@@ -145,7 +148,7 @@ def _run(
     entries: list[str],
     *,
     precreate: dict[str, str] | None = None,
-    timeout: int = 60,
+    timeout: int = _RUN_TIMEOUT_S,
 ) -> Outcome:
     """Run one traced simulation of *adapter* whose simulator performs *steps*."""
     dirs = _stage(adapter, tmp_path, monkeypatch, steps)
@@ -288,7 +291,9 @@ def test_never_opened_pipe_keeps_verdict_and_reports_incident(tmp_path, monkeypa
 def test_converter_exit_does_not_block_writer(tmp_path, monkeypatch):
     """A converter that died is drained, so a simulator writing 1 MiB still finishes."""
     monkeypatch.setenv("FAKE_BWAVE_MODE", "exit_early")
-    out = _run("verilator", tmp_path, monkeypatch, "flood:fpu.vcd", ["fpu.vcd"], timeout=30)
+    out = _run(
+        "verilator", tmp_path, monkeypatch, "flood:fpu.vcd", ["fpu.vcd"], timeout=hang_guard_s()
+    )
 
     assert "[SIM_RESULT] PASSED" in out.output
     assert "streaming fpu.vcd failed: fake bwave refused the input" in out.output
@@ -296,7 +301,14 @@ def test_converter_exit_does_not_block_writer(tmp_path, monkeypatch):
 
 
 def test_pipe_removed_after_timeout_kill(tmp_path, monkeypatch):
-    out = _run("verilator", tmp_path, monkeypatch, "record:fpu.vcd;hang", ["fpu.vcd"], timeout=3)
+    out = _run(
+        "verilator",
+        tmp_path,
+        monkeypatch,
+        "record:fpu.vcd;hang",
+        ["fpu.vcd"],
+        timeout=math.ceil(scaled(3)),
+    )
 
     assert "timed out" in out.output
     assert out.types() == {"fpu.vcd": "fifo"}
@@ -394,7 +406,7 @@ def test_every_launch_clears_only_a_proven_stale_pipe_first(adapter, trace, tmp_
         build_dir=str(dirs.build),
         run_cwd=str(dirs.run),
         work_dir=str(dirs.work),
-        timeout_s=60,
+        timeout_s=hang_guard_s(),
         trace=trace,
         trace_files=("fpu.vcd", "a.vcd", "b.vcd"),
         **fields,

@@ -33,9 +33,10 @@ from tests.flows.sim.simulation_record_test_support import (
     _two_item_manifest,
 )
 from tests.flows.test_terminal_progress import settled_lines
+from tests.time_budget import hang_guard_s
 
 # Bound for every cross-lane wait so a regression fails instead of hanging.
-WAIT_S = 5
+WAIT_S = hang_guard_s()
 
 
 class Screen(io.StringIO):
@@ -60,7 +61,7 @@ def _child(tmp_path: Path, code: str) -> None:
     to the installed sink without an EDA tool or a Pre-Sim hook.
     """
     result = _run_pre_sim_process(
-        [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=30
+        [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=hang_guard_s()
     )
     assert result.returncode == 0, result.stderr
 

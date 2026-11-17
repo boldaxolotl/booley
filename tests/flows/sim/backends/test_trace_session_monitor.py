@@ -20,6 +20,7 @@ from typing import Protocol
 
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
 from booley.flows.sim.trace_session import TraceSession
@@ -28,12 +29,12 @@ from booley.runtime.platform_paths import popen_new_group_kwargs
 
 #: Bound on one stall kill, from monitor start to every process dead: ``stop_monitor``'s
 #: docstring puts the kill path at about 30 s on Windows (about 10 s on POSIX). Kept below
-#: the 60 s CI test budget so a kill that never happens fails as an assertion.
-_MONITOR_KILL_DEADLINE_S = 40.0
+#: the per-test limit so a kill that never happens fails as an assertion.
+_MONITOR_KILL_DEADLINE_S = scaled(40)
 #: Bound on the ``finally`` stop. Cleanup runs after the test body, which may already have
-#: spent its deadline: a short bound keeps a hung kill inside the 60 s CI budget, so the
+#: spent its deadline: a short bound keeps a hung kill inside the per-test limit, so the
 #: body's assertion message survives instead of an unattributed worker timeout.
-_CLEANUP_STOP_S = 5.0
+_CLEANUP_STOP_S = scaled(5)
 #: Sleeper lifetime: far beyond every deadline here, so a sleeper can only die early
 #: by being killed. (A 30 s sleeper would exit on its own inside a 40 s deadline and
 #: turn a missing kill into a pass.)
@@ -142,7 +143,7 @@ def _kill_all(*procs: subprocess.Popen) -> None:
     for proc in procs:
         if proc.poll() is None:
             proc.kill()
-            proc.wait(timeout=5)
+            proc.wait(timeout=hang_guard_s())
 
 
 class _StreamStub:
@@ -206,7 +207,7 @@ class TestStallKill:
             ts.start_monitor(
                 _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
-                stall_timeout=0.2,
+                stall_timeout=scaled(0.2),
                 poll_interval=0.05,
                 kill_after_stalls=2,
             )
@@ -238,7 +239,7 @@ class TestStallKill:
             ts.start_monitor(
                 _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
-                stall_timeout=0.2,
+                stall_timeout=scaled(0.2),
                 poll_interval=0.05,
                 kill_after_stalls=2,
             )
@@ -248,7 +249,7 @@ class TestStallKill:
             # Join here so only the liveness step spends the short budget below.
             assert _stop_monitor_within(ts, _MONITOR_KILL_DEADLINE_S)
             with pytest.raises(AssertionError, match="survived the stall kill"):
-                _await_monitor_kill(ts, sim_proc, deadline_s=1.0)
+                _await_monitor_kill(ts, sim_proc, deadline_s=scaled(1))
         finally:
             _kill_all(sim_proc, bwave_proc)
             _stop_monitor_within(ts, _CLEANUP_STOP_S)
@@ -305,7 +306,7 @@ class TestStallKill:
         session.start_monitor(_AliveStub(), _AliveStub(), stall_timeout=30.0, poll_interval=30.0)
         try:
             # Wait until the monitor thread is running.
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + hang_guard_s()
             while not monitors and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert len(monitors) == 1
@@ -314,7 +315,7 @@ class TestStallKill:
             elapsed = time.monotonic() - started
         finally:
             session.stop_monitor()
-        assert elapsed < 5.0
+        assert elapsed < scaled(5)
         assert not monitors[0].is_alive()
         session.stop_monitor()  # idempotent
 
@@ -330,7 +331,7 @@ class TestStallKill:
 
         def blocked_incident(*_args, **_kwargs):
             entered.set()
-            release.wait(timeout=30)
+            release.wait(timeout=hang_guard_s())
             return tmp_path / "incident.txt"
 
         monkeypatch.setattr(session, "write_incident", blocked_incident)
@@ -361,7 +362,7 @@ class TestStallKill:
             session.start_monitor(
                 bwave, sim, stall_timeout=0.0, poll_interval=0.01, kill_after_stalls=1
             )
-            assert entered.wait(timeout=10), "the stall kill never started"
+            assert entered.wait(timeout=hang_guard_s()), "the stall kill never started"
             helper.start()
             # A bounded join would have returned by now.
             helper.join(timeout=2.0)
@@ -369,7 +370,7 @@ class TestStallKill:
         finally:
             release.set()
             if helper.ident is not None:
-                helper.join(timeout=10)
+                helper.join(timeout=hang_guard_s())
             session.stop_monitor()
         assert not helper.is_alive()
         assert snapshot == {"killed": True, "monitor_alive": False}
@@ -416,16 +417,16 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
         assert conversion.poll() is None
         assert sim_proc.poll() is None
         sim_proc.kill()
-        sim_proc.wait(timeout=5)
+        sim_proc.wait(timeout=hang_guard_s())
         # The monitor ends by itself once the simulator is gone, before any stop request.
         for monitor in monitors:
-            monitor.join(timeout=5)
+            monitor.join(timeout=hang_guard_s())
         assert not any(monitor.is_alive() for monitor in monitors)
     finally:
         _kill_all(sim_proc)
         session.stop_monitor()
         conversion.kill()
-        conversion.finish(timeout_s=5)
+        conversion.finish(timeout_s=hang_guard_s())
 
 
 @_posix_only
@@ -449,7 +450,7 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
         session.start_monitor(
             conversion,
             sim_proc,
-            stall_timeout=0.1,
+            stall_timeout=scaled(0.1),
             poll_interval=0.05,
             kill_after_stalls=2,
             spare_simulator=True,
@@ -465,9 +466,9 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
         assert session.stall_killed is False
     finally:
         sim_proc.kill()
-        sim_proc.wait(timeout=5)
+        sim_proc.wait(timeout=hang_guard_s())
         _stop_monitor_within(session, _CLEANUP_STOP_S)
-        conversion.finish(timeout_s=5)
+        conversion.finish(timeout_s=hang_guard_s())
 
 
 class TestTraceStatusManifest:
@@ -686,7 +687,7 @@ class TestTraceStatusManifest:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        proc.wait(timeout=5)
+        proc.wait(timeout=hang_guard_s())
 
         ts.write_incident("no artifact", sim_proc=proc)
 
@@ -706,20 +707,21 @@ class TestTraceStatusManifest:
 
         sim_proc = _spawn_sleeper()
         bwave_proc = _spawn_sleeper()
+        stall_s = scaled(0.2)
         try:
             ts.start_monitor(
                 _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
-                stall_timeout=0.2,
+                stall_timeout=stall_s,
                 poll_interval=0.05,
                 kill_after_stalls=3,
             )
-            # Grow the file every 50 ms for ~0.6 s — exceeds total kill window
-            # (3 x 0.2 = 0.6 s) but no individual stall lasts long enough.
+            # Grow the file every quarter stall window for three windows: that exceeds the
+            # total kill window (3 stalls) but no individual stall lasts long enough.
             for _i in range(12):
                 with target.open("ab") as f:
                     f.write(b"x")
-                time.sleep(0.05)
+                time.sleep(stall_s / 4)
             # Both procs must still be alive.
             assert sim_proc.poll() is None, "sim_proc was killed despite growth"
             assert bwave_proc.poll() is None, "bwave_proc was killed despite growth"
@@ -730,4 +732,4 @@ class TestTraceStatusManifest:
             for p in (sim_proc, bwave_proc):
                 if p.poll() is None:
                     p.kill()
-                    p.wait(timeout=2)
+                    p.wait(timeout=hang_guard_s())

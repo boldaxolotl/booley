@@ -29,6 +29,7 @@ from booley.flows.sim.record.store import _validate_build_execution_document
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.simulation_record_test_support import _build_execution
 from tests.flows.sim.test_verilator_build_reuse_record import _configure, flow_project
+from tests.time_budget import hang_guard_s
 
 __all__ = ["flow_project"]  # re-exported pytest fixture
 
@@ -69,7 +70,11 @@ def _run_flow_sim(project: Path, reports: Path) -> Path:
     """Run ``booley flow sim --test first``; return the run's report directory."""
     result = SimulateFlow().execute(
         SimRequest(
-            target="sim", work_dir=project, report_dir=reports, test=("first",), timeout_ms=60_000
+            target="sim",
+            work_dir=project,
+            report_dir=reports,
+            test=("first",),
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text

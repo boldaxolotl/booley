@@ -17,6 +17,7 @@ from booley.flows.sim.record.run_directory import (
     restore_run_directory_from_project_data,
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from tests.time_budget import hang_guard_s
 
 TEMPLATE = "work/{record}/{test}/{attempt}"
 ATTEMPT_MARKER = ".booley-simulation-attempt.json"
@@ -219,7 +220,7 @@ def test_unlinked_run_lock_still_serializes_waiters(
     holder_cm.__enter__()
     waiter = threading.Thread(target=critical, args=("waiter",), name="waiter")
     waiter.start()
-    assert waiting.wait(timeout=30)
+    assert waiting.wait(timeout=hang_guard_s())
     time.sleep(0.1)
     holder_cm.__exit__(None, None, None)
     late = threading.Thread(target=critical, args=("late",), name="late")

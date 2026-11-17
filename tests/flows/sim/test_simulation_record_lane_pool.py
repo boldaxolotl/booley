@@ -45,6 +45,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _scheduled_attempt,
     _wait_until,
 )
+from tests.time_budget import hang_guard_s, scaled
 
 # Threads owned by other modules and unchanged by the pool: the slot store's lease
 # renewal and the supervised scope's per-scope process killer.
@@ -135,7 +136,9 @@ def test_parallel_simulation_record_runs_only_bounded_lane_threads(
 
     monkeypatch.setattr(threading.Thread, "start", recording_start)
     try:
-        simulation_record.scheduler(execute, timeout_seconds=30.0).run(simulation_record.items)
+        simulation_record.scheduler(execute, timeout_seconds=hang_guard_s()).run(
+            simulation_record.items
+        )
     finally:
         simulation_record.slots.release(simulation_record.outer)
     pool = sorted(name for name in started if not name.startswith(_UNRELATED_THREAD_PREFIXES))
@@ -173,7 +176,9 @@ def test_child_lane_terminal_cause(tmp_path: Path, failure: str, cause: str) -> 
         if failure == "work_failed":
             raise RuntimeError("work boom")
 
-    scheduler = simulation_record.scheduler(execute, timeout_seconds=30.0, prepare_child=publish)
+    scheduler = simulation_record.scheduler(
+        execute, timeout_seconds=hang_guard_s(), prepare_child=publish
+    )
     try:
         if failure == "completed":
             scheduler.run(simulation_record.items)
@@ -206,7 +211,9 @@ def test_child_token_left_after_terminal_proof_fails_the_simulation_record(
         with pytest.raises(
             SimulationRecordCapacityError, match="child token remained after terminal proof"
         ):
-            simulation_record.scheduler(execute, timeout_seconds=30.0).run(simulation_record.items)
+            simulation_record.scheduler(execute, timeout_seconds=hang_guard_s()).run(
+                simulation_record.items
+            )
     finally:
         simulation_record.slots.release(simulation_record.outer)
 
@@ -299,9 +306,9 @@ def _run_terminal_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ordering
 
     try:
         # A reaped terminal token handled as a lost lease raises LeaseLostError here.
-        simulation_record.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0).run(
-            simulation_record.items
-        )
+        simulation_record.scheduler(
+            lambda _attempt, _child_id: None, timeout_seconds=hang_guard_s()
+        ).run(simulation_record.items)
     finally:
         simulation_record.slots.release(simulation_record.outer)
     assert len(finished) == 2  # each item's own child
@@ -352,7 +359,9 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
         "cancel",
         lambda _registry, execution_id: cancelled.append(execution_id),
     )
-    scheduler = simulation_record.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0)
+    scheduler = simulation_record.scheduler(
+        lambda _attempt, _child_id: None, timeout_seconds=hang_guard_s()
+    )
     # _confirm_lease: the lane's final lease check has no public observation point; the test
     # records its calls to prove no recovery starts after a terminal reap.
     confirm = SimulationRecordCapacity._confirm_lease
@@ -403,7 +412,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path)
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
 
     scheduler = simulation_record.scheduler(
-        execute, timeout_seconds=0.05, cancellation=cancelled.is_set
+        execute, timeout_seconds=scaled(0.05), cancellation=cancelled.is_set
     )
     trigger = threading.Thread(
         target=lambda: (child_running.wait(_PARALLEL_SYNC_TIMEOUT_S), cancelled.set()),
@@ -468,7 +477,7 @@ def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
         child_running.set()
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
 
-    scheduler = simulation_record.scheduler(execute, timeout_seconds=0.05)
+    scheduler = simulation_record.scheduler(execute, timeout_seconds=scaled(0.05))
 
     def failing_recovery() -> None:
         # The owner loop must survive a recovery error (for example a file error).
