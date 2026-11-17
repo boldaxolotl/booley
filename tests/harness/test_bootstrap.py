@@ -70,7 +70,11 @@ def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/fake/" + name)
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/fake/code")
 
-    def run(argv, **_kwargs):
+    real_run = subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[:3] == ["cmd", "/c", "mklink"]:  # Windows QA skill junctions are real
+            return real_run(argv, **kwargs)
         if argv[-1] == "--version":
             output = "git version 2.48.0" if argv[0].endswith("git") else f"{argv[0]} 1.0"
         elif argv[-1] == "info":
