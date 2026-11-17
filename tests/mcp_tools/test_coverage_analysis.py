@@ -428,6 +428,8 @@ def test_unreachable_needs_zero_hits_but_no_model_proof_reference(
     from dataclasses import replace
     from types import MappingProxyType
 
+    # The unreachable-with-hits branch needs a verified on-disk source closure and a re-digested
+    # record to reach through analyze_coverage_record; the screen is a pure function of its inputs.
     from booley.specialists.coverage_analysis import _candidate_screen
 
     document = _valid_document()
@@ -438,6 +440,7 @@ def test_unreachable_needs_zero_hits_but_no_model_proof_reference(
     rtl = {point.identity.source: "sha256:" + "a" * 64}
     item = {"reason": "unreachable", "evidence": "Tied off", "proof_reference": ""}
 
+    # `object()` stands for the verified source closure; only its presence matters here.
     screening, reason = _candidate_screen(item, point, rtl, object())
     assert screening == expected
     assert reason == expected_reason

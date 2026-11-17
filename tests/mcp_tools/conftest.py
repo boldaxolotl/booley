@@ -24,3 +24,13 @@ def _set_booley_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shared_infra, "resolve_project_root", lambda fallback_dir=None: tmp_path)
     monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)
+
+
+@pytest.fixture
+def fresh_evidence_session(monkeypatch):
+    """Start with no bound evidence session: the tool binds one module-global per process."""
+    from booley.mcp import coverage_evidence
+
+    # No public reset: the module binds one session per process.
+    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)  # the failed-session latch
