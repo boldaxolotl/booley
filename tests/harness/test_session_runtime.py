@@ -843,19 +843,16 @@ def wired(workspace: Path, request: pytest.FixtureRequest, monkeypatch: pytest.M
     from booley.runtime import image_lifecycle
 
     _write_spec(workspace, _spec())
-    lifecycle_reconcile = (
-        nullcontext()
-        if getattr(request, "param", None) == "real-image-lifecycle"
-        else patch.object(
+    if getattr(request, "param", None) != "real-image-lifecycle":
+        monkeypatch.setattr(
             image_lifecycle,
             "reconcile",
-            return_value=image_lifecycle.LifecycleResult(
-                "booley-sandbox",
-                "sha256:fixture",
-                image_lifecycle.Status.CURRENT,
+            Mock(
+                return_value=image_lifecycle.LifecycleResult(
+                    "booley-sandbox", "sha256:fixture", image_lifecycle.Status.CURRENT
+                )
             ),
         )
-    )
     issuance = SimpleNamespace(
         project_root=str(workspace),
         spec_sha256="abc",
@@ -874,27 +871,20 @@ def wired(workspace: Path, request: pytest.FixtureRequest, monkeypatch: pytest.M
     monkeypatch.setattr(sr.idk, "inspect_image_metadata", Mock(return_value=None))
     # The stale-container probe resolves the image ID through the Docker helper.
     monkeypatch.setattr(sr.idk, "image_id", Mock(return_value=None))
-    with (
-        lifecycle_reconcile,
-        patch(
-            "booley.runtime.session_issuance.validate",
-            return_value=issuance,
-        ),
-        patch("booley.runtime.session_issuance.authenticate", return_value=issuance),
-        patch(
-            "booley.runtime.session_issuance.authorized_project_data_source",
-            return_value=workspace / ".booley",
-        ),
-        # Every Docker command of session_runtime goes through `_run`, which no public entry
-        # takes as an argument; the tests that use `wired` script its replies, and they set
-        # failing replies the strict Sandbox inventories must not read.
-        patch.object(sr, "_strict_running_sandbox_states", return_value=[]),
-        patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
-        patch.object(sr, "container_matches_issuance", return_value=True),
-        patch.object(sr, "_run") as run,
-    ):
-        run.return_value = subprocess.CompletedProcess([], 0, "", "")
-        yield workspace, run
+    monkeypatch.setattr(runtime_spec, "validate", Mock(return_value=issuance))
+    monkeypatch.setattr(runtime_spec, "authenticate", Mock(return_value=issuance))
+    monkeypatch.setattr(
+        runtime_spec, "authorized_project_data_source", Mock(return_value=workspace / ".booley")
+    )
+    # Every Docker command of session_runtime goes through `_run`, which no public entry
+    # takes as an argument; the tests that use `wired` script its replies, and they set
+    # failing replies the strict Sandbox inventories must not read.
+    monkeypatch.setattr(sr, "_strict_running_sandbox_states", Mock(return_value=[]))
+    monkeypatch.setattr(sr, "_strict_all_sandbox_states", Mock(return_value=[]))
+    monkeypatch.setattr(sr, "container_matches_issuance", Mock(return_value=True))
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(sr, "_run", run)
+    return workspace, run
 
 
 def _argv_of(call) -> list[str]:
