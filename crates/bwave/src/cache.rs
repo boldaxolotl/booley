@@ -666,7 +666,54 @@ fn query_config(cache: &ColumnCache, original: &ExtractConfig) -> ExtractConfig 
         }
     }
     cfg.warnings = crate::output::merge_warnings(cfg.warnings, &warnings);
+    let fit = literal_fit_warnings(cache, &cfg);
+    if !cfg.json_format {
+        for warning in &fit {
+            eprintln!("# WARNING: {warning}");
+        }
+    }
+    cfg.warnings = crate::output::merge_warnings(cfg.warnings, &fit);
     cfg
+}
+
+/// Warnings for value literals that overflow their width prefix or cannot
+/// fit the signals they are compared with, then the `--virtual` comparison
+/// warnings. Virtual Signals targeted by a pattern count as 1-bit.
+fn literal_fit_warnings(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<String> {
+    let signal_names: Vec<String> = cache.signals.iter().map(|s| s.name.clone()).collect();
+    let signal_widths: Vec<u32> = cache.signals.iter().map(|s| s.width).collect();
+    // A bad definition is reported, with exit code 2, by `resolve_virtuals`.
+    let resolved = resolve_virtual_definitions(&cfg.virtual_defs, &signal_names, &signal_widths)
+        .unwrap_or_default();
+    let virtual_names: Vec<String> = resolved.iter().map(|v| v.name.clone()).collect();
+    let mut warnings = Vec::new();
+    for (patterns, literal) in &cfg.value_literals {
+        let Some(bits) = literal.bits() else {
+            continue;
+        };
+        let selection = cache.select_signals_with_names(patterns, &virtual_names, false);
+        let mut groups = std::collections::HashSet::new();
+        let mut narrow: Vec<(&str, u32)> = Vec::new();
+        for &i in &selection.stored {
+            let signal = &cache.signals[i];
+            if signal.width < bits && groups.insert(signal.group_id) {
+                narrow.push((&signal.name, signal.width));
+            }
+        }
+        narrow.extend(
+            selection
+                .extra
+                .iter()
+                .filter(|_| 1 < bits)
+                .map(|&i| (virtual_names[i].as_str(), 1)),
+        );
+        narrow.sort();
+        warnings.extend(literal.fit_warning(&narrow));
+    }
+    for virtual_signal in resolved {
+        warnings.extend(virtual_signal.warnings);
+    }
+    warnings
 }
 
 fn emit_query_json<T: serde::Serialize>(

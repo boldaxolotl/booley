@@ -111,8 +111,9 @@ signals are different widths; there is no implicit
 zero-extension. Slice one side to match: `*sig_a ==
 *sig_b[7:0]`.
 
-Signal-to-literal comparisons coerce the literal to the
-signal width.
+A literal is compared at its full value. When it needs
+more bits than the signal, B-Wave warns that the comparison
+never matches or is always true or always false.
 
 ## Boolean operators
 
