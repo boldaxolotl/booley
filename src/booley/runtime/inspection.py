@@ -48,7 +48,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import devcontainer_path
@@ -60,7 +60,7 @@ from booley.runtime.sandbox_apply import Attachment
 
 @dataclass(frozen=True, slots=True)
 class InteractiveGitRequest:
-    """Inputs needed to inspect Git state that Interactive Mode depends on."""
+    """Inputs needed to inspect Git state that the Sandbox depends on."""
 
     project_root: Path
     booley_dir: Path
@@ -121,7 +121,7 @@ def inspect_runtime(request: RuntimeInspectionRequest) -> RuntimeInspectionResul
 
 
 def inspect_interactive_git(request: InteractiveGitRequest) -> DiagnosticReport:
-    """Inspect Git excludes and tracked scratch for Interactive Mode; never repairs."""
+    """Inspect Git excludes and tracked scratch for the Sandbox; never repairs."""
     report = Findings()
     _check_devcontainer_excludes(request.project_root, report)
     _check_interactive_logs_tracked(request.booley_dir, report)
@@ -131,7 +131,7 @@ def inspect_interactive_git(request: InteractiveGitRequest) -> DiagnosticReport:
 def inspect_retained_resources(project_root: Path, docker_exe: str | None) -> DiagnosticReport:
     """Observe persistent volumes and image keepers without deleting resources."""
     report = Findings()
-    _check_interactive_state_volumes(project_root, docker_exe, report)
+    _check_sandbox_state_volumes(project_root, docker_exe, report)
     _check_issued_image_keepers(project_root, docker_exe, report)
     return report.report()
 
@@ -161,7 +161,7 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
     """
     if _devcontainer_tracked(request.project_root):
         report.fail(
-            ".devcontainer/ is tracked by git - Interactive Mode unavailable",
+            ".devcontainer/ is tracked by git - Sandbox unavailable",
             "remove it from git history; Booley keeps the spec untracked",
         )
         return
@@ -837,7 +837,7 @@ def _probe_mounted_vivado(report: Findings) -> None:
     )
 
 
-def _check_interactive_state_volumes(
+def _check_sandbox_state_volumes(
     project_root: Path, docker_exe: str | None, report: Findings
 ) -> None:
     """Surface persistent home-state volumes and flag orphans for pruning.

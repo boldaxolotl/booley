@@ -1100,7 +1100,7 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
     """#2191: a custom report root under a linked entry is refused at the lock, not later.
 
     Booley-owned roots are derivable: the default ones, deep Doctor's own
-    ``tmp/doctor/flow-reports``, and the per-run runtime roots of Interactive Mode
+    ``tmp/doctor/flow-reports``, and the per-run runtime roots of in-Sandbox MCP sessions
     MCP sessions (``.interactive_logs/<session>/.runtime/flow-reports``) and Goal
     Records (``goals/<goal-id>/.runtime/flow-reports``). A Codespace links
     ``/work/.booley``.

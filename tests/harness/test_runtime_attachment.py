@@ -460,7 +460,7 @@ def test_protocol_failure_logs_fixed_message_and_one_remedy(
 ):
     from unittest.mock import Mock
 
-    from booley.runtime import interactive_docker, session_issuance, session_runtime
+    from booley.runtime import host_docker, session_issuance, session_runtime
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("protocol failure must not load, validate or compare identity")
@@ -468,7 +468,7 @@ def test_protocol_failure_logs_fixed_message_and_one_remedy(
     for owner, name in (
         (session_issuance, "load_issued_snapshot"),
         (session_issuance, "validate"),
-        (interactive_docker, "compare_issued_build"),
+        (host_docker, "compare_issued_build"),
     ):
         monkeypatch.setattr(owner, name, forbidden)
     remedy = Mock(return_value="run the selected remedy")

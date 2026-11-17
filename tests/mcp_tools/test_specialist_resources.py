@@ -81,7 +81,7 @@ class MeasuredSpecialist(Specialist):
 class RefusingSpecialist(MeasuredSpecialist):
     """Refuses its arguments before any agent call."""
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
+    def _validate_call_args(self) -> McpToolResult | None:
         return McpToolResult(exit_code=EXIT_FAILURE, report_text="refused")
 
 
@@ -317,7 +317,7 @@ def test_a_second_run_of_one_instance_records_only_its_own_calls(env: _Env) -> N
     class Refuses(MeasuredSpecialist):
         refuse = False
 
-        def _validate_interactive_args(self) -> McpToolResult | None:
+        def _validate_call_args(self) -> McpToolResult | None:
             if self.refuse:
                 return McpToolResult(exit_code=EXIT_FAILURE, report_text="refused")
             return None

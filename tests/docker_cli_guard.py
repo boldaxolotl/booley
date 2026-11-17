@@ -1,6 +1,6 @@
 """Guard that keeps unit tests from starting a real ``docker`` process.
 
-``booley.runtime.interactive_docker._run_docker`` is the seam the interactive
+``booley.runtime.host_docker._run_docker`` is the seam the interactive
 Docker CLI calls go through; other runtime modules call
 ``booley.runtime.platform_paths.run_captured_bounded`` directly.  Tests that
 must never reach Docker replace the seam with a function that fails the test at
@@ -27,9 +27,9 @@ from booley.runtime import (
     booley_dir_migration,
     docker_capacity,
     host_base_acquisition,
+    host_docker,
     image_lifecycle,
     inspection,
-    interactive_docker,
     platform_paths,
     project_image,
     session_admission,
@@ -50,7 +50,7 @@ def _fail_on_docker_call(args: list[str], *_args: object, **_kwargs: object):
 def forbid_docker_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make any ``_run_docker`` call fail the running test."""
     DOCKER_CLI_CALLS.clear()
-    monkeypatch.setattr(interactive_docker, "_run_docker", _fail_on_docker_call)
+    monkeypatch.setattr(host_docker, "_run_docker", _fail_on_docker_call)
 
 
 def assert_docker_cli_unused() -> None:
@@ -85,7 +85,7 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
             check=False,
         )
 
-    monkeypatch.setattr(interactive_docker, "_run_docker", routed)
+    monkeypatch.setattr(host_docker, "_run_docker", routed)
     route_session_helpers_through_subprocess_run(monkeypatch)
     route_bounded_capture_through_subprocess_run(monkeypatch, *HOST_DOCKER_MODULES)
 

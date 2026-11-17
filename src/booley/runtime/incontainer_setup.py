@@ -1,7 +1,7 @@
 """Mechanisms for registering and starting Booley inside a container.
 
 ADR 0018/0023: the MCP server lives inside the dev container and serves
-Interactive Mode over **streamable HTTP on loopback**. This module, run from
+the Sandbox over **streamable HTTP on loopback**. This module, run from
 the devcontainer ``postCreateCommand``/``postStartCommand`` as ``python -m
 booley.harness.incontainer_register``, does two things on every container start:
 
@@ -691,7 +691,7 @@ def _apply_codex_credential(token: str | None, home: Path | None = None) -> str:
 # "session not launched in bypassPermissions mode"). Left alone, an
 # in-container session therefore tops out at "auto" and charges a prompt for
 # every write inside a cap-dropped, no-new-privileges, egress-proxied
-# container — the opposite of why Interactive Mode runs in a container at all
+# container — the opposite of why the Sandbox runs in a container at all
 # (ADR 0028), and out of step with Booley's own headless agent sessions, which
 # already run ``permission_mode="bypassPermissions"``.
 #

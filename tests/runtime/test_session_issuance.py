@@ -38,6 +38,7 @@ from booley.eda.provisioning.licensing import flexnet_docker
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import booley, eda_grants
 from booley.runtime import devcontainer as dc
+from booley.runtime import host_docker as idk
 from booley.runtime import (
     inspection,
     issuance_invalidation,
@@ -45,7 +46,6 @@ from booley.runtime import (
     session_refresh,
     session_runtime,
 )
-from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.platform_paths import docker_mount_path
@@ -346,7 +346,7 @@ def test_prepared_issue_restores_previous_spec_when_issuance_fails(
     runtime_spec._write_stamp(stamp, previous_issuance)
     keeper_restores = []
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.tag_image",
+        "booley.runtime.host_docker.tag_image",
         lambda source, target: keeper_restores.append((source, target)),
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:old")
@@ -389,8 +389,8 @@ def test_prepared_issue_restores_spec_when_writer_partially_fails(
         raise OSError("disk full")
 
     monkeypatch.setattr(dc, "write_devcontainer", partial_write)
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
-    monkeypatch.setattr("booley.runtime.interactive_docker.remove_image_tag", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.remove_image_tag", lambda _image: None)
 
     with pytest.raises(OSError, match="disk full"):
         runtime_spec.issue_prepared(project, prepared)
@@ -411,9 +411,9 @@ def test_failed_first_issue_removes_new_keeper_tag(
     def remove_keeper(image: str) -> None:
         removed.append(image)
 
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.remove_image_tag",
+        "booley.runtime.host_docker.remove_image_tag",
         remove_keeper,
     )
     monkeypatch.setattr(
@@ -438,7 +438,7 @@ def test_issue_fails_before_writing_when_keeper_state_cannot_be_inspected(
     writer = Mock()
     monkeypatch.setattr(dc, "write_devcontainer", writer)
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.image_id",
+        "booley.runtime.host_docker.image_id",
         lambda _image: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
     )
 
@@ -539,7 +539,7 @@ def test_builder_issuance_serializes_with_concurrent_grant_revoke(
 
 
 def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot resolve Sandbox Image"):
         runtime_spec._resolve_image_id("missing:latest")
@@ -882,7 +882,7 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     cleanup = Mock(return_value=())
     monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", cleanup)
     docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
-    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
+    monkeypatch.setattr("booley.runtime.host_docker._run_docker", docker)
     monkeypatch.setattr(session_runtime, "_run", docker)
     monkeypatch.setattr(session_runtime, "_create_session_container", docker)
     monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", docker)
@@ -1093,7 +1093,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(
             session_runtime,
-            "_strict_all_interactive_states",
+            "_strict_all_sandbox_states",
             lambda _project_id: [],
         )
         monkeypatch.setattr(session_runtime, "_create_session_container", lambda *_args: None)
@@ -1410,7 +1410,7 @@ def _fake_docker_with_failing_keeper(
             return subprocess.CompletedProcess(args, 0, stamp.image_id + "\n", "")
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", fake)
+    monkeypatch.setattr("booley.runtime.host_docker._run_docker", fake)
 
 
 def test_keeper_docker_failure_is_not_reported_as_missing(issued, monkeypatch) -> None:
@@ -1428,9 +1428,7 @@ def test_retain_keeper_docker_failure_names_keeper_and_never_retags(issued, monk
     _project, _spec, _path, stamp = issued
     _fake_docker_with_failing_keeper(monkeypatch, stamp)
     tags: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        "booley.runtime.interactive_docker.tag_image", lambda *args: tags.append(args)
-    )
+    monkeypatch.setattr("booley.runtime.host_docker.tag_image", lambda *args: tags.append(args))
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="Cannot connect") as caught:
         runtime_spec._retain_issued_image(stamp)
@@ -1484,7 +1482,7 @@ def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> 
         retained[target] = retained[source]
 
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", retained.get)
-    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", tag)
+    monkeypatch.setattr("booley.runtime.host_docker.tag_image", tag)
     runtime_spec._retain_issued_image(replace(stamp, image=new_id, image_id=new_id))
     assert tags == [(new_id, stamp.keeper_image)]
     assert retained[stamp.keeper_image] == new_id
@@ -1495,7 +1493,7 @@ def test_reissuance_rejects_unverifiable_keeper(issued, monkeypatch) -> None:
     resolutions = iter((None, "sha256:other"))
 
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: next(resolutions))
-    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
+    monkeypatch.setattr("booley.runtime.host_docker.tag_image", lambda *_args: None)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper could not be verified"):
         runtime_spec._retain_issued_image(stamp)
 
@@ -2521,7 +2519,7 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
 def test_image_contract_is_inspected_without_starting_candidate_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
     calls: list[list[str]] = []
 
@@ -2541,7 +2539,7 @@ def test_image_contract_is_inspected_without_starting_candidate_code(
                 destination.write_bytes(b"\x7fELFfixture")
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(interactive_docker, "_run_docker", run)
+    monkeypatch.setattr(host_docker, "_run_docker", run)
     runtime_spec._validate_image_contract("sha256:trusted")
     assert not any(call[:2] in (["run", "--rm"], ["container", "start"]) for call in calls)
     create = calls[0]
@@ -2553,10 +2551,10 @@ def test_image_contract_is_inspected_without_starting_candidate_code(
 def test_image_contract_rejects_failed_inert_container_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
     monkeypatch.setattr(
-        interactive_docker,
+        host_docker,
         "_run_docker",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "failed"),
     )
@@ -3387,7 +3385,7 @@ def test_refresh_observes_sources_and_preview_once(issued, monkeypatch):
     project, _spec, _path, stamp = issued
     image = session_refresh.RefreshImage(stamp.image_id, None, None, False)
     observed = {"sources": 0, "preview": 0}
-    build_sources = init_cmd._interactive_spec_sources
+    build_sources = init_cmd._sandbox_spec_sources
     preview = runtime_spec.preview
 
     def count_sources(*args, **kwargs):
@@ -3398,7 +3396,7 @@ def test_refresh_observes_sources_and_preview_once(issued, monkeypatch):
         observed["preview"] += 1
         return preview(*args, **kwargs)
 
-    monkeypatch.setattr(init_cmd, "_interactive_spec_sources", count_sources)
+    monkeypatch.setattr(init_cmd, "_sandbox_spec_sources", count_sources)
     monkeypatch.setattr(runtime_spec, "preview", count_preview)
     _RuntimeImages().prepare_spec(project, image)
     assert observed == {"sources": 1, "preview": 1}
@@ -3454,7 +3452,7 @@ def test_refresh_builder_uses_trusted_external_booley_directory(
     }
     (external / "pipeline.toml").write_text(values[setting])
     ctx = init_cmd.InitContext(project_root=project, force=False, verbose=False)
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, None, stamp.image_id
     )
     assert sources.project_data_source == external
@@ -3471,7 +3469,7 @@ def test_refresh_builder_uses_trusted_external_booley_directory(
     reset_cache()
     (project / "booley.toml").write_text('[project]\ndir="' + external.as_posix() + '"\n')
     with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot authorize"):
-        init_cmd._interactive_spec_sources(
+        init_cmd._sandbox_spec_sources(
             ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, None, stamp.image_id
         )
 
@@ -3751,7 +3749,7 @@ def _multi_cli_project(issued, monkeypatch, request, toml: str, app: str = "clau
     (project / ".booley" / "booley.toml").write_text(toml)
     reset_cache()
     request.addfinalizer(reset_cache)
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, None
     )
     spec = sources.build(

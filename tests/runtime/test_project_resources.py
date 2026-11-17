@@ -11,7 +11,7 @@ import pytest
 from booley.config.sandbox import project_image_name_for_identity
 from booley.core.project_identity import project_label_id, project_name_id
 from booley.projects.image_keepers import Leftover
-from booley.runtime import image_lifecycle, interactive_docker, project_resources
+from booley.runtime import host_docker, image_lifecycle, project_resources
 from booley.runtime.devcontainer import state_volume_mount
 from booley.runtime.session_issuance import keeper_image_for_identity
 
@@ -89,7 +89,7 @@ class FakeHost:
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHost:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     fake = FakeHost()
-    monkeypatch.setattr(interactive_docker, "_run_docker", fake)
+    monkeypatch.setattr(host_docker, "_run_docker", fake)
     return fake
 
 
@@ -164,7 +164,7 @@ def test_leftovers_fails_loud_when_docker_cannot_list_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        interactive_docker,
+        host_docker,
         "_run_docker",
         lambda args, **_: subprocess.CompletedProcess(args, 1, "", "daemon down"),
     )

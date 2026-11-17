@@ -638,7 +638,7 @@ class TestConfiguredProvider:
 class TestDeclaredProvider:
     """``_declared_provider`` backs the devcontainer app-drift check, so unlike
     ``_configured_provider`` it must report *only* what booley.toml declares —
-    that is the sole input ``init_cmd._select_interactive_app`` re-seeds from."""
+    that is the sole input ``init_cmd._select_agent_app`` re-seeds from."""
 
     _audit = staticmethod(TestConfiguredProvider._audit)
 
@@ -1256,7 +1256,7 @@ class TestAuthStorePreflight:
         assert "owned" in capsys.readouterr().out
 
 
-def _auth_interactive_ports(monkeypatch):
+def _auth_sandbox_ports(monkeypatch):
     from booley.harness.setup import interactive
     from booley.runtime import dashboard_tasks
 
@@ -1317,7 +1317,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
         return issued
 
     monkeypatch.setattr(session_issuance, "issue_prepared", issue)
-    _auth_interactive_ports(monkeypatch)
+    _auth_sandbox_ports(monkeypatch)
     return bootstrap_calls, captured
 
 

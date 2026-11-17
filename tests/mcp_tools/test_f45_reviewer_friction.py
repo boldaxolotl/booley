@@ -144,7 +144,7 @@ def test_corrective_findings_do_not_complete_terminal_done_review(tmp_path, monk
 
 
 def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
-    """Interactive Mode explicitly replaces findings on each discovery call."""
+    """A Sandbox MCP server explicitly replaces findings on each discovery call."""
     rtl = tmp_path / "rtl" / "uart.sv"
     rtl.parent.mkdir()
     rtl.write_text("module uart; endmodule\n")

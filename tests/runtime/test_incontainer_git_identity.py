@@ -1,4 +1,4 @@
-"""Interactive Mode Git identity setup."""
+"""Sandbox Git identity setup."""
 
 from __future__ import annotations
 

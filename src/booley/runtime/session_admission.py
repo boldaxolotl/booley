@@ -1,4 +1,4 @@
-"""Host-wide admission control for Interactive Mode Sandboxes."""
+"""Host-wide admission control for Sandboxes."""
 
 from __future__ import annotations
 
@@ -252,7 +252,7 @@ def _classified_sandbox(
     if (
         name != local_name
         and role == "license-relay"
-        and _noninteractive_relay(document, container_id, name)
+        and _relay_without_workspace(document, container_id, name)
     ):
         return None
     return _sandbox(document, container_id, name, exact_id=True)
@@ -279,7 +279,7 @@ def recreate_remedy(item: Sandbox) -> str:
     return f"recreate it: {steps}"
 
 
-def _noninteractive_relay(document: dict[str, Any], container_id: str, name: str) -> bool:
+def _relay_without_workspace(document: dict[str, Any], container_id: str, name: str) -> bool:
     """Exclude a relay only after proving it has no interactive workspace bind."""
     try:
         labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))

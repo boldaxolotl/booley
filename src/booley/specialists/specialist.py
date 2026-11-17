@@ -436,8 +436,8 @@ class Specialist(McpTool):
 
         return _on_event
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
-        """Interactive-Mode argument validation hook.
+    def _validate_call_args(self) -> McpToolResult | None:
+        """Developer Agent session argument validation hook.
 
         Default: no-op. Specialists override this to catch missing arguments
         with a useful message before prompt construction or command assembly.
@@ -495,7 +495,7 @@ class Specialist(McpTool):
 
     def _run(self) -> McpToolResult:
         """Invoke the agent and interpret results."""
-        validation_err = self._validate_interactive_args()
+        validation_err = self._validate_call_args()
         if validation_err is not None:
             return validation_err
 

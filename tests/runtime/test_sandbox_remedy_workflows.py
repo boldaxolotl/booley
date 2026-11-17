@@ -64,7 +64,7 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(session_issuance, "load_issued_snapshot", lambda _root: object())
     monkeypatch.setattr(session_runtime, "resolve_running_sandbox", lambda _root: fake.running)
     monkeypatch.setattr(
-        session_runtime, "_strict_all_interactive_states", lambda _id: list(fake.stopped)
+        session_runtime, "_strict_all_sandbox_states", lambda _id: list(fake.stopped)
     )
     return fake
 

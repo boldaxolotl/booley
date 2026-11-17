@@ -13,7 +13,7 @@ import pytest
 
 from booley.core.project_identity import project_label_id
 from booley.harness import booley as cli
-from booley.runtime import interactive_docker, session_admission, session_runtime
+from booley.runtime import host_docker, session_admission, session_runtime
 
 
 def completed(
@@ -128,8 +128,8 @@ def route_session_commands(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     monkeypatch.setattr(session_runtime, "_run", run)
     monkeypatch.setattr(session_admission, "_run", run)
-    monkeypatch.setattr(interactive_docker, "container_exists", lambda name: name in existing)
-    monkeypatch.setattr(interactive_docker, "network_exists", lambda _name: False)
+    monkeypatch.setattr(host_docker, "container_exists", lambda name: name in existing)
+    monkeypatch.setattr(host_docker, "network_exists", lambda _name: False)
     monkeypatch.setattr(cli, "_enforce_runtime_location", lambda _command: None)
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda _command: None)
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
