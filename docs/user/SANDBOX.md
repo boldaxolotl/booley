@@ -87,11 +87,11 @@ admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
 
 `swap` is the swap the Sandbox may use beyond `memory`. Unset, it is a quarter
-of `memory`, but no more than the swap your Docker host has (on Windows, the
-Docker Desktop VM's): `memory = "12g"` allows 3 GiB of swap. Docker's own
-default, as much swap as memory, never applies. `swap = "0"` gives a Sandbox
-no swap, and `swap` has no effect without `memory`. `booley doctor` warns when
-the host cannot back the setting. The same limit applies to `booley shell`.
+of `memory`, but no more than the swap your Docker host has: `memory = "12g"`
+allows 3 GiB of swap. `swap = "0"` gives a Sandbox no swap, and `swap` has no
+effect without `memory`. `booley doctor` warns when the host cannot back the
+setting. `booley shell` uses the same limits, with 4 GB of memory when
+`memory` is unset.
 
 Every `[sandbox]` change takes effect when you
 [apply it](#after-changing-sandbox-settings).

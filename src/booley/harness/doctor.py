@@ -71,6 +71,7 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
+    as_dict,
     as_int,
     require_dict,
     require_int,
@@ -1782,6 +1783,13 @@ def _check_sandbox_swap(
     memory = resource_policy.parse_memory_limit(mem_str)
     if memory is None:
         _skip("sandbox swap skipped - no swap limit without a parseable [sandbox].memory")
+        return
+    raw_swap = (as_dict(project.booley_toml.get("sandbox"), default={}) or {}).get("swap")
+    if raw_swap is not None and not isinstance(raw_swap, str):
+        _warn(
+            f"[sandbox] swap = {raw_swap!r} is not a string: the default swap limit applies",
+            'set [sandbox] swap to a quoted size such as "4g", or "0" for no swap',
+        )
         return
     swap_str = resource_policy.configured_sandbox_swap(project.booley_toml)
     if swap_str and resource_policy.parse_memory_limit(swap_str) is None:

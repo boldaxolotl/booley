@@ -3028,6 +3028,15 @@ def _assert_sandbox_swap_row(row, tmp_path, monkeypatch):
         assert expected in warning
 
 
+def test_sandbox_swap_warns_on_a_non_string_setting(tmp_path, monkeypatch):
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    _edit_booley_toml(booley_dir, 'memory = "16g"\n', 'memory = "16g"\nswap = 0\n')
+    result = _doctor_run(tmp_path)
+    (warning,) = _messages(result, Severity.WARN, check_id="sandbox.swap-unbacked")
+    assert "swap = 0 is not a string" in warning
+
+
 def test_sandbox_swap_skips_without_memory_or_project(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)

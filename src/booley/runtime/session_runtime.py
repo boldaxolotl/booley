@@ -1908,7 +1908,13 @@ def _memory_limits_match(spec: Mapping[str, object], host: Mapping[str, object])
     if expected_memory is None or host.get("Memory") != expected_memory:
         return False
     memory_swap = _flag_values(run_args, "--memory-swap")
-    return not memory_swap or host.get("MemorySwap") == _memory_bytes(memory_swap[0])
+    if not memory_swap or host.get("MemorySwap") == _memory_bytes(memory_swap[0]):
+        return True
+    # A Docker host without swap-limit support drops the issued limit to -1.
+    return (
+        host.get("MemorySwap") == -1
+        and _docker_stdout(["docker", "info", "--format", "{{.SwapLimit}}"]) == "false"
+    )
 
 
 def _flag_values(raw: object, flag: str) -> list[str]:

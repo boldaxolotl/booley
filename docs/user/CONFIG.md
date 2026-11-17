@@ -118,10 +118,7 @@ The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
 reserve: the memory the running agents, the MCP server, and the Dashboard use,
 plus 2 GB. Without `[sandbox].memory` the Sandbox has no limit, so Booley starts
 from the machine's installed memory, which the Sandbox shares with everything
-else; `booley doctor` warns while it is unset. The budget counts memory only:
-`[sandbox].swap` ([SANDBOX.md](SANDBOX.md#project-settings-sandbox)) lets the
-Sandbox use more before the kernel steps in, but Jobs are not admitted against
-it.
+else; `booley doctor` warns while it is unset.
 
 Booley reserves the largest peak memory it recorded for a Job
 ([resource history](#job-resource-history)), plus 25%. With no record of its
@@ -131,7 +128,7 @@ measured makes the Job run alone. A Simulation Record runs independent tests
 in parallel while their reservations fit.
 
 If the kernel kills a Job for running out of memory (when the Sandbox has
-used `[sandbox].memory` plus its swap), Booley runs it again once, alone. A
+used `[sandbox].memory` plus its [swap](SANDBOX.md#project-settings-sandbox)), Booley runs it again once, alone. A
 second kill fails the Job.
 
 Limits apply to one Project.
