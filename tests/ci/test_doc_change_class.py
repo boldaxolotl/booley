@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 from tests.subprocess_budget import run_bounded_child
 
@@ -279,11 +280,11 @@ _POSTREVIEW_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, s
 }
 
 
-def test_classifies_each_rule_kind(tmp_path: Path) -> None:
-    cases = [(n, c, f, "premerge") for n, (c, f) in _PREMERGE_CASES.items()]
-    cases += [(n, c, f, "postreview") for n, (c, f) in _POSTREVIEW_CASES.items()]
-    for name, changes, expected_files, expected_class in cases:
-        assert _classify(tmp_path / name, changes) == (expected_class, expected_files), name
+@pytest.mark.parametrize("name", [*_PREMERGE_CASES, *_POSTREVIEW_CASES])
+def test_classifies_each_rule_kind(tmp_path: Path, name: str) -> None:
+    expected_class = "premerge" if name in _PREMERGE_CASES else "postreview"
+    changes, expected_files = (_PREMERGE_CASES | _POSTREVIEW_CASES)[name]
+    assert _classify(tmp_path, changes) == (expected_class, expected_files)
 
 
 def test_mixed_pr_takes_the_highest_class(tmp_path: Path) -> None:
