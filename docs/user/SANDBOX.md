@@ -90,7 +90,7 @@ covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
 of `memory`, but no more than the swap your Docker host has: `memory = "12g"`
 allows 3 GiB of swap. `swap = "0"` gives a Sandbox no swap, and `swap` has no
 effect without `memory`. `booley doctor` warns when the host cannot back the
-setting. `booley shell` uses the same limits, with 4 GB of memory when
+setting. The debug shell uses the same limits, with 4 GB of memory when
 `memory` is unset.
 
 Every `[sandbox]` change takes effect when you
