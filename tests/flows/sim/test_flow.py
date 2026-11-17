@@ -27,6 +27,7 @@ from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import ExecutionResult
 from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.simulation_record_boundary import (
@@ -105,6 +106,19 @@ def test_display_label_names_the_requested_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets, request_args, expected: str
 ):
     assert _start_label(tmp_path, monkeypatch, targets, **request_args) == expected
+
+
+def test_a_request_outside_the_sandbox_is_refused(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    if runtime_context.inside_session_runtime():
+        pytest.skip("the refusal needs a host process")
+
+    result = SimulateFlow().execute(
+        SimRequest(work_dir=tmp_path, report_dir=tmp_path / "reports", target="lite")
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    assert "runs inside the Booley Sandbox" in result.outcome.report_text
 
 
 @pytest.mark.parametrize(
@@ -194,11 +208,6 @@ def test_job_class_is_memory():
     assert SimulateFlow()._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
-# ---------------------------------------------------------------------------
-# Dry-run mode
-# ---------------------------------------------------------------------------
-
-
 def _preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -209,6 +218,7 @@ def _preview(
 
     *targets* maps each selector to its configured Tests (empty: none configured).
     """
+    from booley.flows.sim.request import SimRequest
     from booley.runtime.booley_dir import reset_cache
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -287,12 +297,10 @@ class TestDryRun:
         assert not [p for p in report_root.glob("*") if p.name.isdigit() or p.suffix == ".lock"]
 
 
-# ---------------------------------------------------------------------------
 # Ordinary simulation through the record path (SimulateFlow.execute)
 #
 # These run the real endpoint, record planning and execution, and Criteria
 # reconciliation; only the process edge is faked (``simulation_record_boundary``).
-# ---------------------------------------------------------------------------
 
 
 def _projection(tmp_path: Path, target: str = "lite") -> dict[str, Any]:
@@ -644,11 +652,6 @@ def test_default_report_root_uses_project_data(tmp_path: Path, monkeypatch):
     assert not (rtl / "flow-reports").exists()
 
 
-# ---------------------------------------------------------------------------
-# Timeout
-# ---------------------------------------------------------------------------
-
-
 class TestTimeout:
     def test_mcp_default_timeout_allows_trace_retry(self, tmp_path: Path):
         flow = SimulateFlow()
@@ -686,11 +689,6 @@ class TestTimeout:
         assert "TIMEOUT: simulation exceeded" in test["error_tail"]
         assert hint in test["error_tail"]
         assert hint in run.result.outcome.report_text
-
-
-# ---------------------------------------------------------------------------
-# Elaboration failure detection
-# ---------------------------------------------------------------------------
 
 
 class TestErrorTailSource:
@@ -732,9 +730,7 @@ class TestErrorTailSource:
         assert "syntax error" in _projection(tmp_path)["tests"][0]["error_tail"]
 
 
-# ---------------------------------------------------------------------------
 # ravenoc F-32 — a missing EDA binary is a Flow error, never a test failure
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

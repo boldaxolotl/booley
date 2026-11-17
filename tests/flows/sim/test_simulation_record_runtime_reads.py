@@ -17,6 +17,7 @@ from booley.flows.sim.record.scheduler import (
     SimulationRecordSchedulingError,
 )
 from booley.runtime import execution_recovery, job_slots, memory_budget
+from booley.runtime.heartbeat import touch_reaper_heartbeat
 from booley.runtime.job_slots import (
     CLASS_MEMORY,
     HOLDING,
@@ -208,3 +209,16 @@ def test_queued_memory_claim_whose_entry_vanishes_during_the_refresh_fails_inste
 
     with pytest.raises(ClaimLostError, match="vanished while waiting"):
         store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=claim, poll_interval=0.01)
+
+
+def test_a_heartbeat_that_cannot_be_published_is_swallowed_and_leaves_no_temporary_file(
+    tmp_path: Path,
+) -> None:
+    """The idle-reaper heartbeat is advisory: a failed publication never reaches the run."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()  # the final rename onto a directory fails after the temporary file exists
+
+    touch_reaper_heartbeat(str(blocked))
+    touch_reaper_heartbeat(str(tmp_path / "missing" / "heartbeat"))  # fails before any file
+
+    assert [path.name for path in tmp_path.iterdir() if path.suffix == ".tmp"] == []

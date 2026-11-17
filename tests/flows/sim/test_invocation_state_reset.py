@@ -14,6 +14,8 @@ import pytest
 from booley.flows import test_runs
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.runtime.endpoint_execution import EndpointOutcome
+from tests.flows.invocation_doubles import replace_run
 from tests.flows.sim.test_flow_test_run_resolution import _MAP, _flow, _launched
 
 
@@ -45,6 +47,18 @@ def test_one_flow_object_resolves_each_request_to_its_own_test_runs(tmp_path, mo
         ["stress+short@22"],
     ]
     assert draws == []
+
+
+def test_a_replaced_run_executes_through_the_ordinary_invocation(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    flow = SimulateFlow()
+    replace_run(monkeypatch, flow, lambda: EndpointOutcome(report_text="sim: ran"))
+
+    result = flow.execute(
+        SimRequest(work_dir=tmp_path, report_dir=tmp_path / "reports", target="sim")
+    )
+
+    assert result.outcome.report_text == "sim: ran"
 
 
 def test_tool_identity_does_not_leak_between_invocations(tmp_path, monkeypatch):
