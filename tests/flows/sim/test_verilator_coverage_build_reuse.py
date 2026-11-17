@@ -39,6 +39,7 @@ from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecu
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim import test_verilator_build_reuse_engine as engine
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -120,7 +121,7 @@ def _execution(project: Path, invoker: _Invoker) -> VerilatorCoverageExecution:
     return VerilatorCoverageExecution(
         _handle(project),
         invoke=invoker,
-        options=SimulationOptions(timeout_ms=10_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
         provenance_path=project.parent / "BOOLEY-SOURCE.txt",
         pre_sim_commands=(),
     )

@@ -33,6 +33,7 @@ from tests.flows.sim.test_verilator_build_reuse_engine import (
     _write_fake_verilator,
     _write_project,
 )
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -81,7 +82,7 @@ def _flow_sim(project: Path, report_root: Path, test: str) -> dict[str, object]:
             work_dir=project,
             report_dir=report_root,
             test=(test,),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
@@ -246,7 +247,12 @@ def test_symlinked_booley_directory_runs_and_reuses_build(
     for _ in range(2):
         before = _report_runs(reports)
         result = SimulateFlow().execute(
-            SimRequest(target="sim", work_dir=flow_project, test=("first",), timeout_ms=30_000)
+            SimRequest(
+                target="sim",
+                work_dir=flow_project,
+                test=("first",),
+                timeout_ms=hang_guard_s() * 1000,
+            )
         )
         assert result.exit_code == 0, result.outcome.report_text
         (run,) = _report_runs(reports) - before

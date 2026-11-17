@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
@@ -72,7 +73,7 @@ def test_traced_document_with_trace_args_starts(tmp_path: Path, monkeypatch, too
         adapter="icarus",
         build_dir=str(build),
         run_cwd="",
-        timeout_s=30,
+        timeout_s=hang_guard_s(),
         work_dir=str(tmp_path / "work"),
         plusargs=("test_id=2",),
         trace=True,
@@ -105,7 +106,7 @@ def test_run_icarus_image_writes_run_log_end_to_end(tmp_path: Path, tool_stub):
     tool_stub("vvp", "echo 'TB chatter'\necho '[SIM_RESULT] PASSED'")
 
     work_dir = tmp_path / "work"
-    ir.run_icarus_image(build_dir=build_dir, work_dir=work_dir, timeout=30)
+    ir.run_icarus_image(build_dir=build_dir, work_dir=work_dir, timeout=hang_guard_s())
 
     log = (work_dir / "run.log").read_text(encoding="utf-8")
     assert "TB chatter" in log
@@ -214,7 +215,7 @@ def _run_disk_kill_adapter(tmp_path: Path, monkeypatch, tool_stub):
         build_dir=build,
         run_cwd=run,
         work_dir=work,
-        timeout=30,
+        timeout=hang_guard_s(),
         max_rundir_bytes=1024,
         transport=identity,
     )
@@ -293,7 +294,7 @@ def _run_traced_icarus(
         run_cwd=run_cwd,
         work_dir=work_dir,
         vcd=True,
-        timeout=30,
+        timeout=hang_guard_s(),
         trace_files=trace_files,
     ).output
 
