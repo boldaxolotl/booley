@@ -837,6 +837,25 @@ def test_unlabelled_holder_is_named_by_its_pid_and_at_most_three_are_listed(root
     )
 
 
+def test_holders_that_reserve_nothing_are_not_named_largest(root, world):
+    store = make_store(root, world)
+    flow = join(store, world, 101, claim(300), job=label("run-3", "sim", "a"))
+    assert store.refresh(flow).state == HOLDING
+    assert store.shrink_reservation(flow, 0)
+    coordinator = join(store, world, 102, companion(0), job=label("run-3", "sim", "b"))
+    big = join(store, world, 103, claim(600), job=label("run-3", "sim", "c"))
+    join(store, world, 104, claim(500))
+    assert store.refresh(coordinator).state == HOLDING and store.refresh(big).state == HOLDING
+
+    wait = store.memory_wait(104)
+
+    assert wait is not None
+    assert wait.describe() == (
+        "needs 500 MiB; 400 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-3 (sim, c) 600 MiB"
+    )
+
+
 def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, world):
     store = make_store(root, world)
     token = join(store, world, 101, claim(100), job=label("run-1", "sim", "a"))
@@ -844,9 +863,28 @@ def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, 
     (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
     assert holders[0].job == label("run-1", "sim", "a")
 
+    item = join(
+        store,
+        world,
+        102,
+        claim(100),
+        job=label("run-1", "sim", "a, b").for_work_item("a", ["t1", "t2", "t3", "t4"]),
+    )
+    assert store.refresh(item).state == HOLDING
+    (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
+    assert holders[1].job == job_slots.JobLabel("run-1", "sim", "a", "t1,t2,t3,+1", True)
+    assert job_slots.JobLabel.from_payload(holders[1].job.to_payload()) == holders[1].job
+    assert job_slots._holder_name(holders[1]) == "run-1 (sim, a, t1,t2,t3,+1)"
+
     entry = token.path
     payload = json.loads(entry.read_text(encoding="utf-8"))
-    for malformed in ("run-1", {"run_id": 1, "flow": "sim", "target": "a"}, {"run_id": "r"}):
+    malformed_labels = (
+        "run-1",
+        {"run_id": 1, "flow": "sim", "target": "a"},
+        {"run_id": "r"},
+        {"run_id": "r", "flow": "sim", "target": "a", "work_item": "yes"},
+    )
+    for malformed in malformed_labels:
         payload["job"] = malformed
         entry.write_text(json.dumps(payload), encoding="utf-8")
         (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)

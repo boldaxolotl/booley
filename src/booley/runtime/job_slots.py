@@ -64,9 +64,10 @@ import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 from booley.core.boundary import as_int, require_finite_number
 from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
@@ -286,25 +287,57 @@ class JobLabel:
 
     Presentation only: it never takes part in admission, so it lives on the
     entry beside ``argv`` rather than inside the ``MemoryClaim``. ``target`` is
-    empty when the Job names none.
+    empty when the Job names none. A work item's claim carries its Job's label
+    through :meth:`for_work_item`: ``work_item`` marks it as not the Job's own
+    claim and ``test`` names the item's tests (empty for a Job's own claim or a
+    build).
     """
 
     run_id: str
     flow: str
     target: str
+    test: str = ""
+    work_item: bool = False
 
-    def to_payload(self) -> dict[str, str]:
-        return {"run_id": self.run_id, "flow": self.flow, "target": self.target}
+    def for_work_item(self, target: str, tests: Sequence[str]) -> JobLabel:
+        """This Job's label for one of its work items: the item's own Target and tests."""
+        return replace(self, target=target, test=short_test_list(tests), work_item=True)
+
+    def to_payload(self) -> dict[str, str | bool]:
+        return {
+            "run_id": self.run_id,
+            "flow": self.flow,
+            "target": self.target,
+            "test": self.test,
+            "work_item": self.work_item,
+        }
 
     @staticmethod
     def from_payload(value: object) -> JobLabel | None:
         """The label an entry persisted, or None when absent or malformed."""
         if not isinstance(value, dict):
             return None
-        run_id, flow, target = (value.get(name) for name in ("run_id", "flow", "target"))
-        if isinstance(run_id, str) and isinstance(flow, str) and isinstance(target, str):
-            return JobLabel(run_id, flow, target)
+        fields = cast("dict[str, object]", value)
+        run_id, flow, target = (fields.get(name) for name in ("run_id", "flow", "target"))
+        test = fields.get("test", "")
+        work_item = fields.get("work_item", False)
+        if (
+            isinstance(run_id, str)
+            and isinstance(flow, str)
+            and isinstance(target, str)
+            and isinstance(test, str)
+            and isinstance(work_item, bool)
+        ):
+            return JobLabel(run_id, flow, target, test, work_item)
         return None
+
+
+def short_test_list(names: Sequence[str]) -> str:
+    """At most three test names then ``+N`` for the rest, joined by ``,``."""
+    shown = list(names[:3])
+    if len(names) > 3:
+        shown.append(f"+{len(names) - 3}")
+    return ",".join(shown)
 
 
 #: How many of the largest memory holders a queue report names.
@@ -318,7 +351,7 @@ class MemoryWait:
     ``position`` is 1-based among the blocked claims. ``free_mb`` is the Memory
     Budget headroom the running holders leave (what admission judges), not host
     free memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
-    taken. ``holders`` are up to three running claims, largest first
+    taken. ``holders`` are up to three running claims that reserve memory, largest first
     (run-alone first, shown with ``None`` for the whole budget).
     """
 
@@ -361,7 +394,7 @@ def _holder_name(token: SlotToken) -> str:
     label = token.job
     if label is None:
         return f"pid {token.pid}"
-    detail = ", ".join(part for part in (label.flow, label.target) if part)
+    detail = ", ".join(part for part in (label.flow, label.target, label.test) if part)
     name = label.run_id or f"pid {token.pid}"
     return f"{name} ({detail})" if detail else name
 
@@ -391,7 +424,8 @@ def memory_wait(
     alone = any(held_claim.run_alone for _held, held_claim in claimed)
     used_mb = sum(held_claim.reservation_mb or 0.0 for _held, held_claim in claimed)
     seats_held = Counter(tool for _held, held_claim in claimed for tool, _cap in held_claim.seats)
-    largest = sorted(claimed, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    reserving = [pair for pair in claimed if _reserves(pair[1])]
+    largest = sorted(reserving, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
     return MemoryWait(
         position=blocked_ahead + 1,
         claim=claim,

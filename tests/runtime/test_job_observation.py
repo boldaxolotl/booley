@@ -399,16 +399,32 @@ def test_child_lane_claims_under_the_jobs_pid_do_not_make_its_state_unavailable(
     assert view.state == "running"
 
 
+_ITEM_LABEL = {"run_id": "one", "flow": "sim", "target": "a", "test": "alpha", "work_item": True}
+
+
 @pytest.mark.parametrize(
-    ("item_kind", "state"), [("h", "running"), ("w", "queued")], ids=["item-holds", "item-waits"]
+    ("item_kind", "state", "item_label"),
+    [
+        ("h", "running", None),
+        ("w", "queued", None),
+        ("h", "running", _ITEM_LABEL),
+        ("w", "queued", _ITEM_LABEL),
+    ],
+    ids=["item-holds", "item-waits", "labelled-item-holds", "labelled-item-waits"],
 )
 def test_a_held_slot_beside_work_item_memory_claims_is_the_job_not_unavailable(
-    tmp_path, monkeypatch, item_kind, state
+    tmp_path, monkeypatch, item_kind, state, item_label
 ):
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    owner = json.dumps({"owner_identity": identity.to_payload()})
+    # A work item's claim carries its Job's run ID and says it is a work item (or no label).
+    owner = json.dumps(
+        {
+            "owner_identity": identity.to_payload(),
+            **({} if item_label is None else {"job": item_label}),
+        }
+    )
     memory = tmp_path / "slots/memory"
     memory.mkdir(parents=True)
     # A mutation coordinator: a memory-class companion claim reserving nothing.
