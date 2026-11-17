@@ -103,28 +103,16 @@ def _write_project_config(
         encoding="utf-8",
     )
     (tmp_path / "constraints").mkdir()
-    (tmp_path / "constraints" / "timing.xdc").write_text("create_clock\n", encoding="utf-8")
+    (tmp_path / "constraints" / "timing.xdc").write_bytes(b"create_clock\n")
     (tmp_path / "rtl" / "include").mkdir(parents=True)
-    (tmp_path / "rtl" / "include" / "defs.svh").write_text("`define FOO 1\n", encoding="utf-8")
-    (tmp_path / "rtl" / "top.sv").write_text("module dut_top; endmodule\n", encoding="utf-8")
-    (tmp_path / "rtl" / "legacy.v").write_text("module legacy; endmodule\n", encoding="utf-8")
-    (tmp_path / "rtl" / "modern.v").write_text("module modern; endmodule\n", encoding="utf-8")
+    (tmp_path / "rtl" / "include" / "defs.svh").write_bytes(b"`define FOO 1\n")
+    (tmp_path / "rtl" / "top.sv").write_bytes(b"module dut_top; endmodule\n")
+    (tmp_path / "rtl" / "legacy.v").write_bytes(b"module legacy; endmodule\n")
+    (tmp_path / "rtl" / "modern.v").write_bytes(b"module modern; endmodule\n")
 
 
 def _flow(tmp_path: Path, state_file: Path, *extra_args: str) -> FpgaImplFlow:
-    flow = FpgaImplFlow()
-    flow.parse_args(
-        [
-            "--target",
-            "default",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-            *extra_args,
-        ]
-    )
-    return flow
+    return _fpga_flow(tmp_path, *extra_args)
 
 
 def _collect_flow(work_dir: Path) -> FpgaImplFlow:
@@ -850,6 +838,24 @@ def test_invalid_target_recipe_fails_before_vivado(
 
     assert outcome.exit_code == EXIT_ERROR
     assert message in outcome.report_text
+    assert _vivado_calls(tmp_path) == 0
+
+
+def test_top_parameter_intent_is_checked_before_vivado(
+    tmp_path: Path, vivado: dict, resolution: _Resolution
+) -> None:
+    """An enabled vlogdefine that the top hides behind a zero-default parameter of
+    the same name is refused before Vivado runs."""
+    _write_project_config(tmp_path)
+    (tmp_path / "rtl" / "top.sv").write_bytes(
+        b"module dut_top #(parameter WIDTH = 0); endmodule\n"
+    )
+    resolution.edit = _with_parameters(WIDTH={"paramtype": "vlogdefine", "default": 16})
+
+    outcome, _ = _run_fpga(tmp_path)
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "enables WIDTH" in outcome.report_text
     assert _vivado_calls(tmp_path) == 0
 
 
