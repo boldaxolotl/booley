@@ -17,8 +17,8 @@ _REPORT_MCP_TOOL_NAME = "booley_report"
 POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
-    "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation / "
-    "coverage_analyst / measure) that were started in the background. When such an endpoint takes "
+    "Wait for long-running endpoints (sim / fpga / synth / lint / reviewer / mutation / "
+    "coverage_analyst / measure / Custom Flows) that were started in the background. When such an endpoint takes "
     "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
     "several Jobs running, call with no run_id: it returns the full result of the first of "
     "your Jobs to finish (or one that finished but whose result you have not read), lists "
@@ -102,15 +102,20 @@ def _find_mcp_tool_class_in_module(
     return None
 
 
-def _mcp_tool_def_from_class(
-    cls: type,
+def _mcp_tool_def_from_endpoint(
+    endpoint: Any,
     schema: dict,
     module_name: str,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Build an MCP tool definition dict from an endpoint class and extracted schema."""
+    """Build an MCP tool definition dict from an endpoint instance and extracted schema.
+
+    ``memory_admitted`` records whether Job memory admission can queue the
+    endpoint, which decides whether its MCP call runs as a background Job.
+    """
     from booley.flows.base import BuiltinFlow, FlowMechanics
 
+    cls = type(endpoint)
     result = {
         "name": cls.name,
         "module": module_name,
@@ -121,6 +126,7 @@ def _mcp_tool_def_from_class(
         "is_flow": issubclass(cls, FlowMechanics),
         "is_builtin_flow": issubclass(cls, BuiltinFlow),
         "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
+        "memory_admitted": endpoint._memory_admitted(),
     }
     result.update(extra)
     return result
@@ -161,11 +167,11 @@ def _import_and_extract(
         logger.warning(msg)
         return None, msg
 
-    cls, instance, schema = found
+    _, instance, schema = found
     is_custom = not import_prefix.startswith("booley.")
     return (
-        _mcp_tool_def_from_class(
-            cls,
+        _mcp_tool_def_from_endpoint(
+            instance,
             schema,
             module_name,
             negative_flags=flow_negative_flags(instance),

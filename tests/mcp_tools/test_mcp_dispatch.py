@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from booley.mcp import (
 from booley.runtime.session_paths import session_jobs_dir
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
+from tests.time_budget import hang_guard_s
 
 __all__ = ["flow_project", "project_alias"]
 
@@ -2274,35 +2276,114 @@ class TestJobPhase:
         assert "requeued" not in _job_phase("simulate-p-4")
 
 
-class TestAsyncJobToolMembership:
-    """Which endpoints route through the submit/poll model (ADR 0027).
+def _catalog_definition(kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """The definition the catalog itself builds for a lint or a Project Custom Flow."""
+    from booley.mcp import catalog_worker
 
-    Membership in ``_ASYNC_JOB_MCP_TOOLS`` is the *only* thing that makes a heavy
-    endpoint detach instead of blocking the MCP client. Dropping a endpoint here
-    silently reintroduces the client-budget timeout the model was built to fix
-    (booley_asic_synthesize_issues #2), with no other test failing — so pin the
-    set explicitly.
-    """
+    if kind == "lint":
+        definition, error = catalog._import_and_extract("flow", import_prefix="booley.flows.lint")
+    else:
+        monkeypatch.syspath_prepend(str(tmp_path))
+        definition, error = catalog_worker._import_and_extract_file(
+            _write_direct_custom_flow(tmp_path)
+        )
+    assert error is None and definition is not None
+    return definition
 
-    def test_heavy_tools_route_async(self):
-        assert "synth" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "fpga" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "sim" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "elab" not in mcp_server._ASYNC_JOB_MCP_TOOLS
-        # Added 2026-07-06: the LLM specialists each drive a 20-30 min sub-agent
-        # loop, so an interactive call came back as a bare client-side timeout
-        # (no run_id, no poll) — recoverable only via booley_report.
-        assert "reviewer" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "mutation" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "coverage_analyst" in mcp_server._ASYNC_JOB_MCP_TOOLS
 
-    def test_poll_endpoint_advertises_the_async_tools(self):
-        # The booley_poll description names the endpoints it redeems; keep it and the
-        # routing set from drifting apart. Read the constant directly so this
-        # doesn't hinge on the endpoint's ambient visibility.
-        desc = catalog._POLL_MCP_TOOL_DESCRIPTION
-        for endpoint in mcp_server._ASYNC_JOB_MCP_TOOLS:
-            assert endpoint in desc
+@pytest.mark.parametrize("kind", ["lint", "custom_flow"])
+class TestMemoryAdmittedEndpointsRunAsJobs:
+    """A Job memory admission can queue hands back a run_id (ADR 0087, ADR 0027)."""
+
+    @staticmethod
+    def _stand_in_child(monkeypatch, pid: int, release: asyncio.Event | None):
+        async def run(_cmd, *, timeout, on_spawn=None, **_kwargs):
+            on_spawn(pid)
+            if release is not None:
+                await release.wait()
+            return 0, "CHILD DONE", "", False
+
+        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.05)
+
+    def test_queued_call_hands_back_run_id_and_poll_follows_the_job(
+        self, kind, _report_env, monkeypatch
+    ):
+        definition = _catalog_definition(kind, _report_env, monkeypatch)
+        name = definition["name"]
+        release = asyncio.Event()
+        self._stand_in_child(monkeypatch, os.getpid(), release)
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        waiter = store.submit(job_slots.CLASS_MEMORY, pid=os.getpid(), argv=[], memory=_RUN_ALONE)
+        queued = "QUEUED (position 1): waits to run alone"
+
+        async def scenario():
+            jobs = _JobManager(_FakeLifetime())
+            handoff = _text(
+                await _bounded(
+                    mcp_server._dispatch_booley_mcp_tool(name, {}, definition, {}, jobs)
+                )
+            )
+            assert handoff.startswith(queued)
+            run_id = _run_id_from(handoff)
+            poll = {"run_id": run_id, "wait_seconds": 0}
+            assert _text(await _dispatch_poll(poll, jobs)).startswith(queued)
+            assert store.refresh(waiter).state == job_slots.HOLDING
+            assert _text(await _dispatch_poll(poll, jobs)).startswith("RUNNING: job ")
+            release.set()
+            done = {"run_id": run_id, "wait_seconds": hang_guard_s()}
+            return _text(await _bounded(_dispatch_poll(done, jobs)))
+
+        text = asyncio.run(scenario())
+        assert "EXIT_CODE: 0" in text and "CHILD DONE" in text
+
+    def test_call_finishing_within_the_inline_wait_returns_its_result(
+        self, kind, _report_env, monkeypatch
+    ):
+        definition = _catalog_definition(kind, _report_env, monkeypatch)
+        self._stand_in_child(monkeypatch, 4_194_305, None)
+
+        async def scenario():
+            jobs = _JobManager(_FakeLifetime())
+            return _text(
+                await _bounded(
+                    mcp_server._dispatch_booley_mcp_tool(
+                        definition["name"], {}, definition, {}, jobs
+                    )
+                )
+            )
+
+        text = asyncio.run(scenario())
+        assert "EXIT_CODE: 0" in text and "CHILD DONE" in text
+        assert "run_id=" not in text
+
+
+async def _bounded(awaitable):
+    return await asyncio.wait_for(awaitable, hang_guard_s())
+
+
+def test_every_builtin_endpoint_is_memory_admitted():
+    """The audit: each built-in endpoint memory admission can queue runs as a Job."""
+    from booley.mcp.registry import discover_mcp_tools
+
+    definitions, errors = catalog.discover_builtin_definitions(
+        discover_mcp_tools(), catalog.Exposure()
+    )
+    assert not errors
+    admitted = {d["name"] for d in definitions if d["memory_admitted"]}
+    assert admitted == {
+        "sim",
+        "lint",
+        "synth",
+        "fpga",
+        "mutation",
+        "reviewer",
+        "coverage_analyst",
+    }
+    for name in admitted:
+        assert name in catalog._POLL_MCP_TOOL_DESCRIPTION
 
 
 class TestReconcileOrphanedJobs:
@@ -2929,7 +3010,12 @@ def test_mcp_simulation_dispatch_reaches_alias_normalization(
                 "target": "sim",
                 "test": ["first"],
             },
-            {"module": "sim", "module_path": "booley.flows.sim", "is_flow": True},
+            {
+                "module": "sim",
+                "module_path": "booley.flows.sim",
+                "is_flow": True,
+                "memory_admitted": True,
+            },
             {},
             MagicMock(),
         )
@@ -3062,6 +3148,55 @@ def test_running_handoff_notes_unreadable_progress(monkeypatch):
     assert not isinstance(result, tuple)
     assert "run-1" in blocks[0].text
     assert "Progress unavailable: Job progress for run-1 unreadable: held" in blocks[0].text
+
+
+def _handoff_text(monkeypatch, phase):
+    import asyncio
+    from types import SimpleNamespace
+
+    from booley.mcp.job_lifecycle import JobPoll
+
+    submission = SimpleNamespace(poll=JobPoll("run-1", "running", True), attached=False)
+    jobs = SimpleNamespace(submit_and_wait=AsyncMock(return_value=submission))
+    monkeypatch.setattr(mcp_server, "_job_phase", lambda _run_id: phase)
+    monkeypatch.setattr(mcp_server, "_running_progress", lambda _run_id: None)
+    result = asyncio.run(
+        _dispatch_async_job("sim", [], 60, jobs, context=_call_ctx())  # type: ignore[arg-type]
+    )
+    assert not isinstance(result, tuple)
+    return result[0].text
+
+
+def test_queued_handoff_says_queued_for_memory_not_started(monkeypatch):
+    phase = "QUEUED (position 1): needs 807 MiB; 266 MiB free of the 14,016 MiB Memory Budget"
+    text = _handoff_text(monkeypatch, phase)
+    assert text.startswith(
+        f"{phase}: 'sim' is queued for memory and has not started yet (run_id=run-1)."
+    )
+    assert "the run has not started" in text
+    assert "call 'booley_poll' with no run_id" in text
+    assert "running in the background" not in text
+    assert "slot" not in text
+
+
+def test_requeued_handoff_says_the_retry_has_not_started(monkeypatch):
+    phase = "QUEUED (position 1): waits to run alone; requeued after out-of-memory"
+    text = _handoff_text(monkeypatch, phase)
+    assert "is queued for memory and has not started yet (run_id=run-1)" in text
+    assert "the retry has not started" in text
+    assert "the run has not started" not in text
+
+
+def test_running_handoff_text_is_unchanged(monkeypatch):
+    text = _handoff_text(monkeypatch, "RUNNING")
+    assert text == (
+        "RUNNING: 'sim' is taking longer than the inline wait and is now running in the "
+        "background (run_id=run-1). This is NOT the result \u2014 the run has not finished. "
+        "With several Jobs running, call 'booley_poll' with no run_id to get whichever of "
+        "your Jobs finishes first; pass run_id=run-1 only to wait for this Job alone. Keep "
+        "polling until you have its EXIT_CODE. Pass/fail criteria are recorded only when "
+        "the run actually completes, so do not conclude the step until then."
+    )
 
 
 def test_attached_untracked_poll_with_held_progress_is_an_error_result(monkeypatch):

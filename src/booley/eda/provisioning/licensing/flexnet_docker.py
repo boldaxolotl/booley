@@ -214,6 +214,10 @@ def outbound_network_create_argv(
     )
 
 
+# The relay never swaps: its memory and its memory-plus-swap are the same 64 MiB.
+_RELAY_MEMORY_FLAGS = ("--memory", "64m", "--memory-swap", "64m")
+
+
 def relay_run_argv(
     resources: RelayResources,
     profile: RelayProfile,
@@ -243,8 +247,7 @@ def relay_run_argv(
         "no-new-privileges",
         "--pids-limit",
         "64",
-        "--memory",
-        "64m",
+        *_RELAY_MEMORY_FLAGS,
         "--cpus",
         "0.50",
         "--ulimit",

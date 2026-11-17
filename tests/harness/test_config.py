@@ -57,3 +57,9 @@ class TestParseSandboxConfig:
             cfg = _parse_sandbox_config(data)
         assert cfg.memory == ""
         assert any("memory_tiers is retired" in r.message for r in caplog.records)
+
+    def test_non_string_swap_warns_and_is_ignored(self, caplog):
+        with caplog.at_level("WARNING"):
+            cfg = _parse_sandbox_config({"sandbox": {"memory": "8g", "swap": 0}})
+        assert cfg.swap == ""
+        assert any("Invalid [sandbox] swap 0" in r.message for r in caplog.records)

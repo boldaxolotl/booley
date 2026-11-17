@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,6 +91,15 @@ class AdmissionContext:
             execution_id or ExecutionId(uuid.uuid4().hex),
         )
 
+    def work_item_label(self, target: str, tests: Sequence[str]) -> job_slots.JobLabel | None:
+        """The label for a work item's claim: the Job's own, narrowed to the item.
+
+        ``None`` when the Job's claim carries no label, so the item's holder reads ``pid N``.
+        """
+        token = self.outer_token
+        label = token.job if isinstance(token, job_slots.SlotToken) else None
+        return None if label is None else label.for_work_item(target, tests)
+
 
 @dataclass(frozen=True, slots=True)
 class _Claim:
@@ -151,7 +160,7 @@ class AdmissionGate:
             token_execution_id = getattr(token, "execution_id", None)
             if token_execution_id is not None and token_execution_id != execution_id:
                 raise AdmissionIdentityError(
-                    f"managed Job Slot execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
+                    f"managed Memory Reservation execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
                 )
             role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
@@ -216,9 +225,9 @@ def _admission_cancellation_cause(
 
     def cause() -> str | None:
         if token.lease_health.lost.is_set():
-            return f"Job Slot lease lost: {slot}"
+            return f"Memory Reservation lease lost: {slot}"
         if store.token_absent(token):
-            return f"Job Slot token missing: {slot}"
+            return f"Memory Reservation missing: {slot}"
         return None
 
     return cause
@@ -296,7 +305,7 @@ def _admission_root(endpoint: EndpointState) -> tuple[Path | None, Path] | None:
     """
     inherited = os.environ.get(job_slots.INHERITED_SLOT_ENV)
     if inherited:
-        logger.debug("%s runs under its parent's %s slot", endpoint.name, inherited)
+        logger.debug("%s runs under its parent's %s Memory Reservation", endpoint.name, inherited)
         return None
     try:
         project = resolve_common_booley_dir()
@@ -331,10 +340,10 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
 
     Direct Flow diagnostics run in-process without logging configured and
     without BOOLEY_LOGS_DIR, so stderr is the sink that keeps a queued run from
-    looking like a hang with no hint that another job held the slot (F-27).
+    looking like a hang with no hint that another job held the Memory Reservation (F-27).
     """
     logger.info("%s: %s", endpoint.name, line)
-    print(f"[slot] {endpoint.name}: {line}", file=sys.stderr, flush=True)
+    print(f"[admission] {endpoint.name}: {line}", file=sys.stderr, flush=True)
     _write_display_event(
         _endpoint_progress_event(endpoint.name, line, identity=endpoint._display_identity)
     )

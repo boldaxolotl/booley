@@ -2,7 +2,9 @@
 
 The Flow reserves memory for preparation, the shared builds and any item that
 runs before the running Simulation Record's last build is settled. Then it drops to zero, keeping its claim
-for its lease and cancellation, and each later item takes a claim of its own.
+for its lease and cancellation, and each later item takes a claim of its own. The first item
+that takes a claim of its own while the Flow still reserves takes over its reservation and
+queue place (#4482): a Job submitted after the Record does not start before that item.
 """
 
 from __future__ import annotations
@@ -79,8 +81,7 @@ class FlowClaim:
         Later Simulation Records of the invocation do not hold the Flow's reservation:
         their own building item reserves its build. True from then on. False
         while this Simulation Record has an unsettled build or when the drop is refused
-        (the Flow's lease is gone): an item then runs under the Flow's claim,
-        and the next item tries again.
+        (the Flow's lease is gone).
         """
         if self._dropped:
             return True
@@ -99,9 +100,13 @@ class FlowClaim:
 
         An item reserves its build when it builds inside itself: a private build,
         a coverage aggregate, Pre-Sim Commands, or a shared build nobody expected.
+        While the Flow still reserves, the returned claim takes over its reservation
+        and queue place (``SimulationRecordCapacity.child_permit``), so the Flow counts as dropped.
         """
-        if not self.release(store_root):
-            return None
+        if not self._dropped:
+            if self._unsettled.get(store_root):
+                return None
+            self._dropped = True
         document = manifest.document
         workload = cast(Mapping[str, object], document["workload"])
         recipe = cast(Mapping[str, object], workload["source_recipe"])

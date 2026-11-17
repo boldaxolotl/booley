@@ -56,6 +56,7 @@ from pathlib import Path
 import tomlkit
 
 from booley import __version__
+from booley.audit.resource_policy import memory_swap_limit
 from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.agent import (
@@ -63,6 +64,7 @@ from booley.config.agent import (
     DEFAULT_AUTH,
     RETIRED_AUTH,
     DeclaredAgent,
+    SandboxConfig,
     encode_cli_policies,
     parse_agent_section,
 )
@@ -1105,23 +1107,25 @@ def _dashboard_enabled(booley_dir: Path) -> bool:
     return enabled(booley_dir)
 
 
-def _project_sandbox_memory(project_root: Path, project_data_source: Path | None = None) -> str:
-    """Return the project's single container memory limit (ADR 0028), or ''.
+def _project_sandbox_config(
+    project_root: Path, project_data_source: Path | None = None
+) -> SandboxConfig:
+    """Return the project's parsed ``[sandbox]`` table (defaults when absent).
 
     Parsed through ``_parse_sandbox_config`` so legacy tier tables /
     ``memory_tiers`` keys get their retirement warning here too.
     """
+    from booley.config.agent import _parse_sandbox_config
+
     toml_path = resolve_toml(project_data_source or authorized_project_data_source(project_root))
     if not toml_path.is_file():
-        return ""
+        return SandboxConfig()
     try:
         with toml_path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
-        return ""
-    from booley.config.agent import _parse_sandbox_config
-
-    return _parse_sandbox_config(data).memory
+        return SandboxConfig()
+    return _parse_sandbox_config(data)
 
 
 def _project_mask_paths(project_root: Path, project_data_source: Path | None = None) -> list[str]:
@@ -1291,6 +1295,7 @@ class _SandboxSpecSources:
     mask_paths: tuple[str, ...]
     project_data_source: Path
     memory: str
+    memory_swap: str
     dashboard: bool
     timezone: str
     legacy_subscription_clis: frozenset[str] = frozenset()
@@ -1313,6 +1318,7 @@ class _SandboxSpecSources:
             project_id=dc.canonical_project_id(self.project_root),
             mcp_start_command=dc.mcp_post_start_command(),
             memory=self.memory,
+            memory_swap=self.memory_swap,
             dashboard=self.dashboard,
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
@@ -1406,6 +1412,16 @@ def _sandbox_spec_sources(
 ) -> _SandboxSpecSources:
     source = authorized_project_data_source(ctx.project_root)
     app = agent_app or _select_agent_app(ctx.project_root, source)
+    sandbox = _project_sandbox_config(ctx.project_root, source)
+    memory_swap = ""
+    if sandbox.memory:
+        try:
+            host = pi.probe_docker_host_memory(
+                runtime_image_id or pi.project_sandbox_image(ctx.project_root)
+            )
+        except pi.DockerImageError as exc:
+            raise RuntimeSpecError(str(exc)) from exc
+        memory_swap = memory_swap_limit(sandbox.memory, sandbox.swap, host.swap_bytes)
     return _SandboxSpecSources(
         credential_plans=_credential_plans(app, ctx.project_root, source),
         project_root=ctx.project_root,
@@ -1415,7 +1431,8 @@ def _sandbox_spec_sources(
         host_skills=tuple(_resolve_host_skills_sources(ctx.project_root, source)),
         mask_paths=tuple(_project_mask_paths(ctx.project_root, source)),
         project_data_source=source,
-        memory=_project_sandbox_memory(ctx.project_root, source),
+        memory=sandbox.memory,
+        memory_swap=memory_swap,
         dashboard=_dashboard_enabled(source),
         timezone=detect_host_timezone(),
         legacy_subscription_clis=_legacy_subscription_clis(ctx.project_root),

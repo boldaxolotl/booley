@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from tests.docker_cli_guard import assert_docker_processes_unused, forbid_docker_processes
+from tests.docker_host_support import fake_docker_host
 from tests.session_issuance_support import install_trusted_validator, stub_keeper
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Findings
@@ -121,10 +122,13 @@ def _seed(
     image_id: str = _IMAGE_A,
     nangate: Path | None = None,
     auth: str | None = None,
+    memory: str = "",
 ) -> dict:
     """Seed the spec the way full init and ``--seed`` do; return it as written."""
     auth_line = "" if auth is None else f'auth = "{auth}"\n'
     toml = "" if app == dc.APP_NONE else f'[agent]\nprovider = "{app}"\n{auth_line}'
+    if memory:
+        toml += f'[sandbox]\nmemory = "{memory}"\n'
     (root / ".booley" / "booley.toml").write_text(toml, encoding="utf-8")
     _set_host_egress(egress)
     init_cmd._step_sandbox(
@@ -230,6 +234,69 @@ def test_freshly_seeded_spec_with_non_default_credential_policy_has_no_drift(
     findings = _inspect(project, monkeypatch, expected_spec=_host(project))
 
     assert [f.severity.value for f in findings] == ["pass"]
+
+
+def _assert_seeded_swap_limit(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    host_swap_gib: int,
+    expected: str,
+) -> None:
+    """With memory 12g and no swap, the Sandbox may swap 3 GiB, or the host's swap if lower."""
+    images = fake_docker_host(monkeypatch, swap_gib=host_swap_gib)
+
+    seeded = _seed(project, dc.APP_NONE, memory="12g")
+
+    assert images[:1] == [_IMAGE_A]
+    args = seeded["runArgs"]
+    assert args[args.index("--memory") + 1 : args.index("--memory") + 4] == [
+        "12g",
+        "--memory-swap",
+        expected,
+    ]
+    argv = session_runtime.docker_run_argv(seeded, tmp_path, "sandbox")
+    assert argv[argv.index("--memory-swap") + 1] == expected
+    findings = _inspect(project, monkeypatch, expected_spec=_host(project))
+    assert [f.severity.value for f in findings] == ["pass"]
+
+
+def test_seeded_spec_bounds_swap_to_a_quarter_of_memory(
+    project: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for host_swap_gib, expected in ((16, "15g"), (1, "13g")):
+        _assert_seeded_swap_limit(project, monkeypatch, tmp_path, host_swap_gib, expected)
+
+
+def test_spec_issued_without_swap_limit_is_drift(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spec written by a Booley that set no swap limit still validates, and is drift."""
+    fake_docker_host(monkeypatch)
+    with monkeypatch.context() as old_booley:
+        old_booley.setattr(init_cmd, "memory_swap_limit", lambda *_args: "")
+        issued = _seed(project, dc.APP_NONE, memory="12g")
+    assert "--memory-swap" not in issued["runArgs"]
+    assert runtime_spec.validate(project, issued, dc.devcontainer_path(project))
+
+    finding = _drift(_inspect(project, monkeypatch, expected_spec=_host(project)))
+
+    assert "--memory-swap" in finding.message
+
+
+def test_unreadable_docker_host_swap_is_a_spec_error(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_docker_host(monkeypatch)
+    _seed(project, dc.APP_NONE, memory="12g")
+
+    def unreadable(_image: str) -> object:
+        raise project_image.DockerImageError("probe failed")
+
+    monkeypatch.setattr(project_image, "probe_docker_host_memory", unreadable)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="probe failed"):
+        init_cmd.current_interactive_spec(project, _IMAGE_A)
 
 
 def test_spec_differing_only_in_image_pin_has_no_drift(

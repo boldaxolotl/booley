@@ -202,6 +202,7 @@ _UNRESOLVED: dict[str, str] = {
     'fail - harness/doctor.py::_Reporter.diagnostics "finding.message"': _OWNER_RECORD,
     'fail - harness/doctor.py::_check_doctor_target_compatibility "*failure"': _RUNTIME_TUPLE,
     'fail - harness/doctor.py::_check_doctor_targets "*failure"': _RUNTIME_TUPLE,
+    'warn sandbox.swap-unbacked harness/doctor.py::_check_sandbox_swap "*problem"': _RUNTIME_TUPLE,
     'fail - harness/doctor.py::_check_riscv_toolchain "finding.message"': _OWNER_RECORD,
     'fail - harness/doctor.py::_probe_model_list "probe.message"': _MODEL_PROBE,
     'fail - harness/doctor.py::_probe_one_model "probe.message"': _MODEL_PROBE,

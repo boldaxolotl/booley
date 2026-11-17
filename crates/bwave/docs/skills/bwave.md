@@ -5,54 +5,38 @@ description: Inspect RTL simulation traces. Works with .fst waveform stores and 
 
 # bwave skill
 
-Inspect RTL simulation traces without ever reading raw VCD or .fst bytes. The
-store it builds is a plain FST file, so it also opens in GTKWave and VaporView.
-`bwave --help` lists the commands and flags; this skill is how to *use* them.
+Inspect RTL simulation traces without ever reading raw VCD or .fst bytes.
+This skill says how to *use* the commands. Each fact below links its full
+topic: `bwave docs show <topic>`. `bwave <cmd> --help` is authoritative for
+flags, and `bwave schema` for `--format json`.
 
-**Never** `cat` / `Read` a `.fst` or `.vcd` — they can be hundreds of MB. Keep
-globs narrow (`-s "tb.dut.*"`) and ranges bounded (`-t 0:100`); prefer
-`--format json` and parse it. Output caps at `--limit` records/columns (default 2000);
-inspect `warnings` as well as `truncated: true` for truncation, since value
-and stats have no `truncated` field. Narrow the query rather than raising the limit.
-
-More depth, in order: `bwave <cmd> --help` (authoritative flags) →
-`bwave docs topics` / `docs show <topic>` / `docs search <q>` (narrative
-corpus) → `bwave schema` (JSON Schema for `--format json`).
+**Never** `cat` / `Read` a `.fst` or `.vcd`: they can be hundreds of MB. Keep
+globs narrow (`-s "tb.dut.*"`) and ranges bounded (`-t 0:100`). Prefer
+`--format json` and parse it; text output is for humans, so do not
+pattern-match it. Output stops at `--limit` (default 2000): check
+`warnings` for truncation, since only some commands carry `truncated`.
+Narrow the query rather than raising the limit.
 
 ## Mental model
 
-- **Query input**: every query and introspection command requires an `.fst`
-  store. Convert a VCD with `bwave build trace.vcd -o trace.fst` first;
-  passing the VCD to a query exits 2 with a build hint. See
-  `bwave docs show commands/overview` for the shared file-input rule.
-- **Sessions**: after `booley flow sim` with tracing, `@<target>` and the
-  default session point at that run's waveform, so queries need no trace path.
-  The latest traced run of the checkout bwave runs in owns them; outside a
-  Project, or in a checkout without a Booley Directory of its own, sessions
-  live in the temporary directory.
-- **Sync mode (default)**: every emitted row is indexed by *clock cycle*. Cycle
-  1 is the first rising edge after reset deasserts. The clock is auto-detected
-  (`*clk*` heuristic, shallowest scope wins) — override with `--clock PATTERN`.
-  Reset is auto-skipped — override with `--with-reset` or `--reset PATTERN`.
-- **Async mode (`--async`)**: every transition reported at its raw VCD
-  timestamp. No cycle numbering, no reset skipping, and time tokens *require* a
-  unit suffix.
-- **Verilog literals on values**: `bwave find sig 'd255`, `'hFF`, `'b1010`,
-  width-prefixed `8'd255`. Bare hex like `FF` is *rejected*.
-- **Virtual signals**: `--virtual "name = expr"` (Verilog-subset boolean
-  expressions), on `wave`, `find`, `sample`, `distance`, `value` only. See
-  `bwave docs show reference/virtual-signals`.
-- **JSON envelope**: `list`, `value`, `find`, `stats`, `signal`, `wave`,
-  `distance`, and `overview` wrap output in `{$schema, command, data, warnings}`.
-  The envelope is the contract for programmatic callers (`bwave schema` has the
-  full grammar). Text output is for humans — do not pattern-match it.
-- **Clock check**: cycle numbers assume a regular clock. Run `bwave overview`
-  (JSON: `clock_regularity`) before trusting them; when it warns, use
-  `--async` with tick/time bounds. See `bwave docs show reference/sync-vs-async`.
-- **Clock stops**: informational, listed in JSON `clock_stopped`. Literal
-  `find`/`sample` triggers skip stopped cycles unless `--include-stopped` is set.
-- **Pre-edge sampling**: `--sample-mode pre-edge` shows what flops captured on
-  each edge, with the same cycle numbers. Post-edge is the default.
+- **Input**: queries need an `.fst` store; `bwave build trace.vcd -o
+  trace.fst` converts a VCD (`commands/build`).
+- **Sessions**: put the alias *first*, `bwave @dut find ...`; with no alias
+  a query reads the default session, the last traced sim
+  (`reference/sessions`).
+- **Patterns**: a bare `-s` name matches a suffix at any depth; a glob is
+  anchored at the `# scope:` line (`reference/patterns`).
+- **Sync mode (default)**: rows are clock cycles, sampled after each edge,
+  starting after reset deasserts; the clock and reset are auto-detected
+  (`--clock`, `--reset`, `--with-reset` override). Run `bwave overview`
+  before trusting cycle numbers; on a clock warning, switch to `--async`
+  (`reference/sync-vs-async`).
+- **Async mode (`--async`)**: raw timestamps, and time tokens need a unit
+  suffix: `100t`, `5us` (`reference/time-tokens`).
+- **Values**: Verilog literals, `'d255`, `'hFF`, `8'd255`; bare hex is
+  rejected (`reference/verilog-literals`).
+- **Virtual Signals**: `--virtual "hsk = *valid & *ready"` defines a 1-bit
+  predicate (`reference/virtual-signals`).
 
 ## Reach for `wave` first
 
@@ -68,49 +52,30 @@ compares two time points, `stuck` finds signals pinned at a constant, and
 
 ```bash
 bwave build dump.vcd -o dump.fst          # build once, query the store many times
-bwave value @dut --at 1000   -s "tb.dut.*"
-bwave value @dut --at 5000ns -s "tb.dut.*" --async   # async needs a unit suffix
-bwave distance @dut "tb.dut.req_fire" rising --to "tb.dut.resp_fire" rising --stats
-bwave find @dut hsk 'h1 --virtual "hsk = *valid & *ready" --count
+bwave @dut wave -s "tb.dut.fifo.*" -t 1180:1260
+bwave @dut value --at 1000   -s "tb.dut.*"
+bwave @dut value --at 5000ns -s "tb.dut.*" --async   # async needs a unit suffix
+bwave @dut distance "tb.dut.req_fire" rising --to "tb.dut.resp_fire" rising --stats
+bwave @dut find hsk 'h1 --virtual "hsk = *valid & *ready" --count
 ```
 
 ## Showing the human a waveform
 
-`bwave gui` is for the HUMAN. It is not how *you* read values — `signal` /
-`find` / `value` / `stats` answer those with no viewer running. When the human
-does need to see something, query first, then show a scoped view of what you
-found:
+`bwave gui` is for the HUMAN; you read values with the query commands. When
+the human needs to see something, query first, then show a scoped view of
+what you found, in named groups with a radix and color per selector. It
+needs an attached VS Code window and hard-errors when none answers: pass the
+setup hint on rather than assuming it worked. How to compose the view:
+`commands/gui`.
 
 ```bash
-bwave find @dut "tb.dut.fifo.overflow" rising --first
+bwave @dut find "tb.dut.fifo.overflow" rising --first
 bwave gui @dut \
   --signals 'tb.clk%b@red' \
   --group 'FIFO handshake=tb.dut.fifo.*%h@green' \
   --group 'Control=tb.dut.ctrl.state%h@blue' \
   --time 1180c:1260c
 ```
-
-**Compose every human view.** Split signals into logical groups and keep
-different module instances in different groups. Within one module, split by
-category when it improves the view—for example AHB, FSM state/outputs, and
-datapath. Choose short names for the roles in the current investigation, not
-merely their hierarchy prefixes. Repeat a name to merge more globs into one
-group; reserve `--signals` for the top-level clock or another intentional
-anchor.
-
-Append a radix and color to each selector as
-`GLOB[%b|%h|%d][@red|@blue|@green]`. Use binary for flags and handshakes,
-hexadecimal for packed state/data, and decimal when magnitude is the point.
-Use red for clocks/resets, blue for known registers, and green for other
-signals. Keep labels and group structure meaningful because color is supporting
-information, not the only information.
-
-It requires an attached VS Code window with VaporView, driven through the
-Viewer Bridge of the Booley Sandbox Integration extension, and hard-errors
-when no window answers — surface the setup hint rather than assuming it
-worked. Flag semantics (native groups, clock row, markers, `--append`,
-`--max-signals`):
-`bwave docs show commands/gui`.
 
 ## Common errors
 

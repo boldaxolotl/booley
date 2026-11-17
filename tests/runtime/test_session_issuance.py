@@ -18,6 +18,7 @@ from unittest.mock import Mock
 import pytest
 from tests import eda_grant_support
 from tests.devcontainer_spec_support import build_spec
+from tests.docker_host_support import fake_docker_host
 from tests.session_issuance_support import (
     damaged,
     fixed,
@@ -1548,6 +1549,32 @@ def test_fixed_environment_drift_names_field_and_values(issued) -> None:
         runtime_spec._validate_environment(spec, None, "proxy")
 
     assert "NO_PROXY localhost,127.0.0.1 -> example.test" in str(caught.value)
+
+
+def test_run_args_validate_with_and_without_swap_limit():
+    """Specs issued before the swap limit existed and specs with it both validate."""
+    labels = ("booley.test=1",)
+    kwargs = {"expected_labels": labels, "private_network": None, "egress": "proxy"}
+
+    def check(limits: list[str]) -> None:
+        raw = [*runtime_spec._FIXED_RUN_ARGS, *limits, "--label", labels[0]]
+        runtime_spec._validate_run_args(raw, **kwargs)
+
+    for accepted in (
+        [],
+        ["--memory", "8g"],
+        ["--memory", "8g", "--memory-swap", "10g"],
+        ["--memory", "8g", "--memory-swap", "8g"],
+    ):
+        check(accepted)
+    for refused, error in (
+        (["--memory", "8g", "--memory-swap", "4g"], "swap limit"),
+        (["--memory", "8g", "--memory-swap", "lots"], "swap limit"),
+        (["--memory", "8g", "--memory-swap"], "swap limit"),
+        (["--memory-swap", "10g"], "issuance labels"),
+    ):
+        with pytest.raises(runtime_spec.RuntimeSpecError, match=error):
+            check(refused)
 
 
 @pytest.mark.parametrize(
@@ -3206,6 +3233,14 @@ def _mutate_issuance_identity(setting, project, tmp_path, config, monkeypatch):
 def _refresh_source_mutator(project, tmp_path, monkeypatch):
     from booley.harness import init_cmd
 
+    fake_docker_host(monkeypatch)
+    real_swap_limit = init_cmd.memory_swap_limit
+    old_booley = {"on": False}
+    monkeypatch.setattr(
+        init_cmd,
+        "memory_swap_limit",
+        lambda *args: "" if old_booley["on"] else real_swap_limit(*args),
+    )
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -3227,10 +3262,13 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
             "git-email": '[agent.git]\nemail="changed@example.test"\n',
             "provider": '[agent]\nprovider="codex"\n',
             "memory": '[sandbox]\nmemory="8g"\n',
+            "swap": '[sandbox]\nmemory="8g"\n',
+            "swap-old": '[sandbox]\nmemory="8g"\n',
             "masks": '[sandbox]\nmask_paths=["private"]\n',
             "dashboard": "[sandbox]\ndashboard=false\n",
             "skills": "[sandbox]\nmount_host_skills=true\n",
         }
+        old_booley["on"] = setting == "swap-old"
         if setting in changes:
             prefix = "" if setting == "provider" else '[agent]\nprovider="claude"\n'
             config.write_text(prefix + changes[setting])
@@ -3268,6 +3306,7 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
         "git-email",
         "provider",
         "memory",
+        "swap",
         "masks",
         "dashboard",
         "timezone",
@@ -3287,6 +3326,8 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
 
     project, _spec, _path, stamp = issued
     mutate = _refresh_source_mutator(project, tmp_path, monkeypatch)
+    if setting == "swap":
+        mutate("swap-old")  # a Sandbox issued by a Booley that set no swap limit
     image = session_refresh.RefreshImage(stamp.image_id, None, None, False)
     initial = _RuntimeImages()
     initial.prepare_spec(project, image)
@@ -3332,6 +3373,8 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
     assert runtime_spec.validate(project, reissued, dc.devcontainer_path(project))
     if setting == "git-name":
         assert "Changed Name" in reissued["containerEnv"].values()
+    if setting == "swap":
+        assert reissued["runArgs"][reissued["runArgs"].index("--memory-swap") + 1] == "10g"
 
 
 def test_refresh_observes_sources_and_preview_once(issued, monkeypatch):
@@ -3363,6 +3406,7 @@ def test_refresh_rejects_config_races_without_publishing(issued, monkeypatch):
     from booley.harness.session_refresh import _RuntimeImages
 
     project, _spec, path, stamp = issued
+    fake_docker_host(monkeypatch)
     adapter = _RuntimeImages()
     image = session_refresh.RefreshImage(stamp.image_id, None, None, False)
     adapter.prepare_spec(project, image)
@@ -3397,6 +3441,7 @@ def test_refresh_builder_uses_trusted_external_booley_directory(
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("fixture")
     monkeypatch.setattr(Path, "home", lambda: home)
+    fake_docker_host(monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(external))
     reset_cache()
     values = {

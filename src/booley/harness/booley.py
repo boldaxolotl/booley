@@ -58,6 +58,8 @@ from booley.runtime.paths import cheatsheet_path
 if TYPE_CHECKING:
     from types import TracebackType
 
+    from booley.harness.sandbox import DockerSandboxConfig
+
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
@@ -1577,6 +1579,19 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
         return 2
 
 
+def _set_shell_memory_swap(docker_cfg: DockerSandboxConfig, swap: str) -> str | None:
+    """Set the shell container's ``--memory-swap``; return an error message when it cannot."""
+    from booley.audit.resource_policy import memory_swap_limit
+    from booley.runtime.project_image import DockerImageError, probe_docker_host_memory
+
+    try:
+        host = probe_docker_host_memory(docker_cfg.image)
+    except DockerImageError as exc:
+        return str(exc)
+    docker_cfg.memory_swap = memory_swap_limit(docker_cfg.memory_limit, swap, host.swap_bytes)
+    return None
+
+
 def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     """Open an interactive shell (or run a one-off command) in a fresh sandbox.
 
@@ -1630,7 +1645,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
         # Sandbox the same Flows and Specialists normally run in.
         memory_limit=cfg.sandbox.memory or "4g",
     )
-    error = docker_cfg.verify()
+    error = docker_cfg.verify() or _set_shell_memory_swap(docker_cfg, cfg.sandbox.swap)
     if error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

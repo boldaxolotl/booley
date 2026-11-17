@@ -8,19 +8,28 @@ from booley.flows.sim.execution.artifacts import TraceArtifactPolicy
 from booley.flows.sim.execution.freshness import ArtifactValidationError
 
 
-def test_absolute_hidden_trace_glob_is_authorized(tmp_path: Path) -> None:
-    run_cwd = tmp_path / "run"
-    build_root = tmp_path / "build"
-    hidden_traces = tmp_path / ".traces"
+def _roots(tmp_path: Path) -> tuple[Path, Path]:
+    run_cwd, build_root = tmp_path / "run", tmp_path / "build"
     run_cwd.mkdir()
     build_root.mkdir()
+    return run_cwd, build_root
+
+
+def _policy_with_old(
+    tmp_path: Path, *old: str, patterns: tuple[str, ...] = ()
+) -> tuple[Path, Path, TraceArtifactPolicy]:
+    run_cwd, build_root = _roots(tmp_path)
+    for name in old:
+        (run_cwd / name).write_bytes(b"old")
+    policy = TraceArtifactPolicy.capture(run_cwd=run_cwd, build_root=build_root, patterns=patterns)
+    return run_cwd.resolve(), build_root.resolve(), policy
+
+
+def test_absolute_hidden_trace_glob_is_authorized(tmp_path: Path) -> None:
+    hidden_traces = tmp_path / ".traces"
     hidden_traces.mkdir()
     trace = hidden_traces / "wave.fst"
-    policy = TraceArtifactPolicy.capture(
-        run_cwd=run_cwd,
-        build_root=build_root,
-        patterns=(str(hidden_traces / "*.fst"),),
-    )
+    _, _, policy = _policy_with_old(tmp_path, patterns=(str(hidden_traces / "*.fst"),))
 
     trace.write_bytes(b"waveform")
 
@@ -28,11 +37,8 @@ def test_absolute_hidden_trace_glob_is_authorized(tmp_path: Path) -> None:
 
 
 def test_recursive_trace_glob_rejects_symlink_escape(tmp_path: Path) -> None:
-    run_cwd = tmp_path / "run"
-    build_root = tmp_path / "build"
+    run_cwd, build_root = _roots(tmp_path)
     outside = tmp_path / "outside"
-    run_cwd.mkdir()
-    build_root.mkdir()
     outside.mkdir()
     trace = outside / "wave.fst"
     trace.write_bytes(b"waveform")
@@ -42,9 +48,7 @@ def test_recursive_trace_glob_rejects_symlink_escape(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f"directory symlinks are unavailable: {exc}")
     policy = TraceArtifactPolicy.capture(
-        run_cwd=run_cwd,
-        build_root=build_root,
-        patterns=("**/*.fst",),
+        run_cwd=run_cwd, build_root=build_root, patterns=("**/*.fst",)
     )
 
     with pytest.raises(ArtifactValidationError, match="symbolic link"):
@@ -52,10 +56,7 @@ def test_recursive_trace_glob_rejects_symlink_escape(tmp_path: Path) -> None:
 
 
 def test_in_root_trace_symlink_cannot_bypass_freshness(tmp_path: Path) -> None:
-    run_cwd = tmp_path / "run"
-    build_root = tmp_path / "build"
-    run_cwd.mkdir()
-    build_root.mkdir()
+    run_cwd, build_root = _roots(tmp_path)
     target = run_cwd / "old.data"
     target.write_bytes(b"stale waveform")
     trace = run_cwd / "wave.fst"
@@ -63,25 +64,10 @@ def test_in_root_trace_symlink_cannot_bypass_freshness(tmp_path: Path) -> None:
         trace.symlink_to(target)
     except OSError as exc:
         pytest.skip(f"file symlinks are unavailable: {exc}")
-    policy = TraceArtifactPolicy.capture(
-        run_cwd=run_cwd,
-        build_root=build_root,
-        patterns=(),
-    )
+    policy = TraceArtifactPolicy.capture(run_cwd=run_cwd, build_root=build_root, patterns=())
 
     with pytest.raises(ArtifactValidationError, match="symbolic link"):
         policy.validate_reported(str(trace))
-
-
-def _policy_with_old(tmp_path: Path, *old: str) -> tuple[Path, Path, TraceArtifactPolicy]:
-    run_cwd = tmp_path / "run"
-    build_root = tmp_path / "build"
-    run_cwd.mkdir()
-    build_root.mkdir()
-    for name in old:
-        (run_cwd / name).write_bytes(b"old")
-    policy = TraceArtifactPolicy.capture(run_cwd=run_cwd, build_root=build_root, patterns=())
-    return run_cwd.resolve(), build_root.resolve(), policy
 
 
 def test_fresh_candidates_list_new_and_changed_but_not_unchanged(tmp_path: Path) -> None:
@@ -97,12 +83,7 @@ def test_fresh_candidates_list_new_and_changed_but_not_unchanged(tmp_path: Path)
 
 
 def test_fresh_candidates_drop_declared_and_empty_files(tmp_path: Path) -> None:
-    run_cwd, build_root = tmp_path / "run", tmp_path / "build"
-    run_cwd.mkdir()
-    build_root.mkdir()
-    policy = TraceArtifactPolicy.capture(
-        run_cwd=run_cwd, build_root=build_root, patterns=("declared.fst",)
-    )
+    run_cwd, _, policy = _policy_with_old(tmp_path, patterns=("declared.fst",))
     (run_cwd / "declared.fst").write_bytes(b"x")
     (run_cwd / "empty.vcd").write_bytes(b"")
     (run_cwd / "real.vcd").write_bytes(b"x")

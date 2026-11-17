@@ -19,9 +19,10 @@ from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
 
-# Endpoints run as background Jobs (submit, then poll). Only these may fall back
-# to the worktree ``session_key`` for records written before Jobs had an owner.
-ASYNC_JOB_ENDPOINTS = frozenset(
+# Endpoints that ran as background Jobs (submit, then poll) before Jobs had an
+# owner. Only these may fall back to the worktree ``session_key`` for such records;
+# this is that history, not the routing rule (the catalog's ``memory_admitted``).
+_PRE_OWNER_BACKGROUND_ENDPOINTS = frozenset(
     {"sim", "fpga", "synth", "reviewer", "mutation", "coverage_analyst", MEASURE_ENDPOINT}
 )
 
@@ -79,7 +80,7 @@ def owns(rec: JobRecord, caller: Caller) -> bool:
     if rec.owner is not None:
         return rec.owner == caller.owner
     return (
-        rec.endpoint in ASYNC_JOB_ENDPOINTS
+        rec.endpoint in _PRE_OWNER_BACKGROUND_ENDPOINTS
         and caller.session_key is not None
         and caller.session_key == rec.session_key
     )

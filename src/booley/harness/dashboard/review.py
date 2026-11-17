@@ -30,7 +30,7 @@ def _plural(count: int, noun: str) -> str:
 def queue_line(facts: RunFacts) -> str:
     """Whether the Job runs now or is admitted by memory, whose fit depends on an estimate the preview lacks."""
     if not facts.takes_slot:
-        return "Runs now (takes no Job slot)"
+        return "Runs now (not admitted by memory)"
     return "Admitted by memory: waits while its estimate does not fit the Memory Budget"
 
 

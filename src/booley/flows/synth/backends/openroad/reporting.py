@@ -311,17 +311,7 @@ def parse_sta_worst_slack(text: str) -> float | None:
     marker = _STA_SLACK_RE.search(text)
     if marker is None:
         return None
-    # EDA-tool-output parsing: the regex constrains the group to a numeric
-    # form, but if the marker format ever drifts, ignore it instead of
-    # crashing the whole synthesis flow.
-    try:
-        return float(marker.group(1))
-    except ValueError:
-        print(
-            "WARNING: STA slack marker present but not a valid float: "
-            f"{marker.group(1)!r}; ignoring it"
-        )
-        return None
+    return float(marker.group(1))
 
 
 def parse_overall_csv_worst_slack(path: Path) -> float | None:

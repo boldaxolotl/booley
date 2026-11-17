@@ -119,7 +119,7 @@ from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.display_identity import DisplayIdentity
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, EndpointOutcome
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
@@ -154,18 +154,11 @@ logging.basicConfig(
     format="[mcp] %(levelname)s %(message)s",
 )
 
-# ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
-# detached background jobs (submit → poll) instead of holding the call open.
-# Everything else stays synchronous — it finishes inside the inline wait.
-# The Specialists (reviewer / coverage_analyst) and the mutation Flow joined
-# 2026-07-06 for the same reason: each runs a long loop with a
-# 20-30 min default_timeout, so an interactive call reliably outran the ~60s
-# client cap and came back as a bare timeout — no run_id, no poll, recoverable
-# only via booley_report. The Specialists are lightweight on memory (Read/Grep/Glob +
-# API calls), so single-flight admission is stricter than they need, but the
-# poll affordance is exactly what was missing. The mutation Flow builds and
-# simulates; it keeps its memory admission on purpose.
-_ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
+# ADR 0027 / ADR 0087: a Job that memory admission admits can wait in the queue
+# for as long as other Jobs hold the memory, so its MCP call runs as a detached
+# background Job (submit -> poll) and hands back a run_id once the inline wait
+# ends. The catalog derives each definition's ``memory_admitted`` from the
+# endpoint class; every other endpoint runs inline.
 
 # How long a submit (and each poll) blocks inline before handing back a run_id.
 # Must sit safely under the generic MCP client's ~60-90s call cap so the caller
@@ -519,7 +512,7 @@ def _params_to_argv(
     return argv
 
 
-# Watchdog sampling interval while a child may be queued for its class slot.
+# Watchdog sampling interval while a child may be queued for memory admission.
 # Queue-state reads are a handful of small file stats/reads per tick; 5s keeps
 # the budget accounting within one tick of the truth without measurable IO.
 
@@ -966,15 +959,18 @@ def _format_job_attached(name: str, run_id: str) -> str:
 def _format_job_running(name: str, run_id: str) -> str:
     """Message returned when a heavy endpoint detaches past the inline wait."""
     phase = _job_phase(run_id)
-    waiting = (
-        "is waiting for its concurrency slot"
+    retry = (
+        "the retry has not started" if OOM_REQUEUE_REASON in phase else "the run has not started"
+    )
+    status = (
+        f"is queued for memory and has not started yet (run_id={run_id}). This is NOT the "
+        f"result — {retry}."
         if phase.startswith("QUEUED")
-        else "is taking longer than the inline wait"
+        else f"is taking longer than the inline wait and is now running in the background "
+        f"(run_id={run_id}). This is NOT the result — the run has not finished."
     )
     return (
-        f"{phase}: '{name}' {waiting} and is now "
-        f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. With several Jobs running, call "
+        f"{phase}: '{name}' {status} With several Jobs running, call "
         f"'{catalog.POLL_MCP_TOOL_NAME}' with no run_id to get whichever of your Jobs "
         f"finishes first; pass run_id={run_id} only to wait for this Job alone. Keep "
         f"polling until you have its EXIT_CODE. Pass/fail criteria are recorded only "
@@ -983,7 +979,7 @@ def _format_job_running(name: str, run_id: str) -> str:
 
 
 def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
-    """Message for a poll whose job is still running (or queued for a slot).
+    """Message for a poll whose job is still running (or queued for memory).
 
     *owned*: the polling agent started the Job, so an argument-free poll covers it.
     """
@@ -1496,10 +1492,11 @@ async def _dispatch_booley_mcp_tool(
 ) -> McpToolContent:
     """Run a Booley Flow subprocess and return an MCP result.
 
-    Heavy, long-running endpoints (``_ASYNC_JOB_MCP_TOOLS``) go through the submit/poll
-    job model (ADR 0027): they can outlive the MCP client's call cap, so holding
-    the call open orphans the subprocess and BLOCKs the next call. Everything
-    else stays synchronous and returns its full result inline.
+    Memory-admitted endpoints (``memory_admitted`` in the definition) go through
+    the submit/poll job model (ADR 0027): admission can queue them past the MCP
+    client's call cap, so holding the call open orphans the subprocess and BLOCKs
+    the next call. Everything else stays synchronous and returns its full result
+    inline.
     """
     work_dir_error = _validate_work_dir(arguments.get("work_dir")) or _unroutable_endpoint_error(
         arguments, request_context
@@ -1520,7 +1517,7 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(f"ERROR: invalid Flow timeout: {exc}")
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
-    if name in _ASYNC_JOB_MCP_TOOLS:
+    if mcp_tool_def.get("memory_admitted"):
         return await _dispatch_async_job(
             name, cmd, mcp_tool_timeout, jobs, context=context, caller=caller
         )

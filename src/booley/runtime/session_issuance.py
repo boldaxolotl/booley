@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from booley.audit.resource_policy import parse_memory_limit
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.config.gateway import (
     GATEWAY_AUTH,
@@ -1199,13 +1200,7 @@ def _validate_run_args(
                 {"fixed_hardening": tuple(raw[:cursor])},
             )
         )
-    if raw[cursor : cursor + 1] == ["--memory"]:
-        if (
-            cursor + 1 >= len(raw)
-            or re.fullmatch(r"[1-9][0-9]*(?:[kKmMgG])?", raw[cursor + 1]) is None
-        ):
-            raise RuntimeSpecError("devcontainer.json memory limit is invalid")
-        cursor += 2
+    cursor = _validate_memory_args(raw, cursor)
     if private_network is not None:
         if raw[cursor : cursor + 2] != ["--network", private_network]:
             raise RuntimeSpecError("licensed Sandbox private network has drifted")
@@ -1216,6 +1211,25 @@ def _validate_run_args(
             "devcontainer.json issuance labels differ from host authority: "
             + _issuance_label_differences(expected_labels, raw[cursor:])
         )
+
+
+def _validate_memory_args(raw: list[str], cursor: int) -> int:
+    """Check the optional ``--memory <v>`` and ``--memory-swap <v>``; return the next cursor."""
+    if raw[cursor : cursor + 1] != ["--memory"]:
+        return cursor
+    pattern = r"[1-9][0-9]*(?:[kKmMgG])?"
+    if cursor + 1 >= len(raw) or re.fullmatch(pattern, raw[cursor + 1]) is None:
+        raise RuntimeSpecError("devcontainer.json memory limit is invalid")
+    memory_bytes = parse_memory_limit(raw[cursor + 1]) or 0
+    cursor += 2
+    if raw[cursor : cursor + 1] == ["--memory-swap"]:
+        swap_limit = raw[cursor + 1] if cursor + 1 < len(raw) else ""
+        if re.fullmatch(pattern, swap_limit) is None or (
+            (parse_memory_limit(swap_limit) or 0) < memory_bytes
+        ):
+            raise RuntimeSpecError("devcontainer.json swap limit is invalid")
+        cursor += 2
+    return cursor
 
 
 def _issuance_label_differences(expected_labels: tuple[str, ...], tail: list[str]) -> str:

@@ -371,7 +371,7 @@ _IN_PROCESS = _InProcessCommands()
 
 
 def _other_jobs_hold_slots() -> bool | None:
-    """Whether another live Job holds a Job Slot; ``None`` when unknown.
+    """Whether another live Job holds a Memory Reservation; ``None`` when unknown.
 
     This process's own slots, and the parent's slot that a baseline child
     inherits, are not other Jobs; a dead holder's stale entry is ignored.
