@@ -1,4 +1,7 @@
-Show a trace in the Waveform Viewer (VaporView in VS Code).
+# gui
+
+Show a trace in the Waveform Viewer (VaporView in VS Code). `gui` is a
+command of the Booley wrapper, not of the native binary.
 
 `gui` is for the HUMAN — it puts a waveform on their screen. It is not how an
 agent reads values: `signal` / `find` / `value` / `stats` answer those, and they
@@ -12,7 +15,7 @@ that neighborhood.
 
 ```bash
 # 1. Locate the event
-bwave find @dut "tb.dut.fifo.overflow" rising --first
+bwave @dut find "tb.dut.fifo.overflow" rising --first
 
 # 2. Show that neighborhood as a named, collapsible section
 bwave gui @dut --group 'FIFO handshake=tb.dut.fifo.*%h@green' --time 1180c:1260c
@@ -59,7 +62,9 @@ For a view with more than one logical role, use repeatable
 `--group 'NAME=GLOB'`. Give each group a short semantic name from the current
 debugging question—`Request path`, `Arbitration`, `Backpressure`, `Response`
 rather than merely repeating a module prefix. VaporView displays each as a
-native named row whose signals can be collapsed.
+native named row whose signals can be collapsed. Keep different module
+instances in different groups; within one module, split by category when it
+helps, for example bus, FSM state and outputs, and datapath.
 
 Repeat a name to add more than one pattern to that group:
 
@@ -91,8 +96,8 @@ common scope that an unfiltered `bwave list` prints (`dut.*` finds
 `TOP.tb.dut.*`), plus the presentation suffixes described below. Combined
 `--signals` and `--group` expansion is capped at 64 signals (`--max-signals`)
 and **errors** past the cap — narrow the glob, don't raise the cap. Use this for
-the few signals that intentionally belong at the top level; prefer named groups
-for a multi-section view.
+the few signals that intentionally belong at the top level, such as the
+clock; prefer named groups for a multi-section view.
 
 ## Radix and color suffixes
 
@@ -107,6 +112,11 @@ bwave gui @dut \
   --group 'State=tb.dut.state%h@blue' \
   --group 'Datapath=tb.dut.result%h@green'
 ```
+
+Use binary for flags and handshakes, hexadecimal for packed state and data,
+and decimal when magnitude is the point. Use red for clocks and resets, blue
+for known registers, and green for other signals. Color only supports the
+labels and groups; never let it carry meaning alone.
 
 An explicit suffix updates an already displayed row under `--append`; omitted
 properties preserve its current presentation. The CLI reads these properties
