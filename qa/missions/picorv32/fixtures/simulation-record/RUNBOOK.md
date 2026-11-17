@@ -1,7 +1,7 @@
 # PicoRV32 Simulation Record QA fixture
 
 This runbook gives the QA agent running the picorv32 mission the exact steps
-for this optional hunt bait ([MISSION.md](../../MISSION.md), `hunt` area): exact
+for its `sim-record` area ([MISSION.md](../../MISSION.md)): exact
 test selection, manifest authority, interruption and resume, and measurement
 scope on a small Icarus Target. Coverage Simulation
 Record recovery lives in the [coverage
