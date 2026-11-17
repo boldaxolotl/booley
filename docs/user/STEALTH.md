@@ -44,7 +44,7 @@ already has commits.
 | Pushes | Not checked | Checked, see [Push checks](#push-checks) |
 | `.booley/` in a worktree | A Snapshot copy | A Paired Checkout of its last commit ([Worktrees](WORKTREES.md#creating-a-worktree)) |
 | Worktree branch names | `booley/<name>` | `wt/<name>`, so the product name stays out of branches you push |
-| Rules a measurement compares with | The Base's | The rules Base, cut in `.booley`'s own repository ([Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#read-the-measurement-report)) |
+| Rules a measurement compares with | The Base's | `.booley`'s own repository, including unpushed commits in its local `main` ([Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#read-the-measurement-report)) |
 | A fresh clone gets | Your RTL and the Booley setup | Your RTL, `.core` files, and constraints; no Booley |
 
 `.devcontainer/`, `.claude/`, and the root `AGENTS.md` and `CLAUDE.md` links are

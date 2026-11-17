@@ -241,13 +241,12 @@ The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer
 sees it.
 
-<details>
+<details markdown>
 <summary>In stealth mode</summary>
 
-The rules Base is cut in the Booley Directory's own repository: the
-merge-base of its commit with its local `main` when `main` holds commits
-`origin` lacks, so unpushed rules count, otherwise with `origin`'s default
-branch, as the Base is. `--base` moves only the Base of your RTL.
+Your rules are compared with the Booley Directory's own repository, including
+rules committed in its local `main` but not yet pushed. `--base` moves only the
+Base of your RTL.
 
 </details>
 
@@ -258,19 +257,18 @@ names another one. A base run is an ordinary stored run of the Base's tree.
 Booley never starts one by itself and it never decides a verdict. When one
 exists, the report adds the Δ column and warns where a metric got worse.
 
-<details>
-<summary>In stealth mode</summary>
-
-Rules can differ between runs of the same tree. The base run is then the
-latest run of the Base's tree measured under the rules Base's rules. Without
-one, it is the latest run of that tree, and the report says "its rules
-differ".
-
-</details>
-
 Without one, the report prints the command to create it:
 `booley measure --all <base>`. A commit on the default branch's own history
 has no Base; name an earlier commit with `--base`.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The base run is the latest run of the Base's tree measured under the same
+rules as your rules comparison. When no run was, the latest run of that tree is
+used and the report says "its rules differ".
+
+</details>
 
 ## Limits
 
