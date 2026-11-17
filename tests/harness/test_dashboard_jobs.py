@@ -829,6 +829,7 @@ def _old_session_jobs_world(tmp_path):
         payload = {"created_at": "2026-10-08T10:00:00Z", "memory": claim}
         if owner is not None:
             payload["owner_identity"] = owner.to_payload()
+            payload["job"] = job_slots.JobLabel("queued", "sim", "").to_payload()
         (directory / name).write_bytes(json.dumps(payload).encode())
     for path in (old, standalone):
         os.utime(path, (1_000, 1_000))
