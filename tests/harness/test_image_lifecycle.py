@@ -12,8 +12,8 @@ import pytest
 
 import booley
 from booley.harness import image_lifecycle as harness_lifecycle
-from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime import host_docker, project_image
+from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildPlan,
