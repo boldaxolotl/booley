@@ -222,6 +222,7 @@ def test_points_encode_only_returned_pages_and_reuse_filtered_selection(monkeypa
     )
     match_calls = 0
     encode_calls = 0
+    # The test proves the filter runs once per query, so it counts calls to the filter itself.
     match = coverage_evidence._matches
     encode = coverage_evidence.encode_coverage_point
 
@@ -426,7 +427,9 @@ def test_cumulative_budget_stops_unbounded_model_retrieval():
     }
 
 
-def test_bound_tool_deep_loads_coverage_record_and_publishes_audit(tmp_path, monkeypatch):
+def test_bound_tool_deep_loads_coverage_record_and_publishes_audit(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
@@ -435,8 +438,6 @@ def test_bound_tool_deep_loads_coverage_record_and_publishes_audit(tmp_path, mon
     monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(audit_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
     result = coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
@@ -447,15 +448,15 @@ def test_bound_tool_deep_loads_coverage_record_and_publishes_audit(tmp_path, mon
     assert audit["evidence_bytes_delivered"] > 0
 
 
-def test_bound_tool_uses_audit_path_as_session_identity(tmp_path, monkeypatch):
+def test_bound_tool_uses_audit_path_as_session_identity(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
     coverage_record_path = source_project(tmp_path)
     monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(tmp_path / "first-audit.json"))
     result = coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
     point_ref = result["points"][0]["point_ref"]
@@ -467,7 +468,9 @@ def test_bound_tool_uses_audit_path_as_session_identity(tmp_path, monkeypatch):
         )
 
 
-def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(tmp_path, monkeypatch):
+def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
@@ -478,14 +481,12 @@ def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(tmp_path
     point_path.write_bytes(stored)
     monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
     with pytest.raises(ValueError, match="COV_POINT_FORMAT"):
         coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
 
-def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch):
+def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch, fresh_evidence_session):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
@@ -494,8 +495,6 @@ def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(audit_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
     with pytest.raises(ValueError, match="Unknown evidence query fields"):
         coverage_evidence.query_active_coverage_evidence({"view": "points", "unsupported": True})
@@ -580,12 +579,19 @@ def test_zero_point_sources_cursor_and_budget_preserve_audit_contract():
         )
 
 
-def test_minimal_overview_retains_count():
-    from booley.flows.sim.coverage_evidence import _minimal_overview
+def test_minimal_overview_retains_count(monkeypatch):
+    from booley.flows.sim import coverage_evidence as module
 
     coverage_record, paths = _coverage_record_with_source_gaps()
-    overview = CoverageEvidenceSession(coverage_record, None).query({"view": "overview"})
-    minimal = _minimal_overview(overview)["rtl_sources_without_points"]
+    session = CoverageEvidenceSession(coverage_record, None)
+    full = len(json.dumps(session.query({"view": "overview"}), separators=(",", ":")))
+    # Only an overview too large for one response is cut down to its rollups.
+    monkeypatch.setattr(module, "MAX_RESPONSE_BYTES", full - 1)
+
+    minimal = CoverageEvidenceSession(coverage_record, None).query({"view": "overview"})[
+        "rtl_sources_without_points"
+    ]
+
     assert minimal["total_sources"] == len(paths)
     assert minimal["omitted"] == len(paths)
     assert minimal["query"]["view"] == "zero_point_sources"

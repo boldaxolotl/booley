@@ -379,6 +379,8 @@ def test_verdict_counts_and_excerpts_match_the_stored_results(tmp_path: Path) ->
         "tracked": 1,
         "not_evaluated": 1,
         "enforced": 4,
+        "enforced_error": 1,
+        "tracked_error": 0,
     }
     assert [(e["key"], e["verdict"], e["excerpt"]) for e in view["excerpts"]] == [
         ("area_um2_max", "unmet", "too big"),
