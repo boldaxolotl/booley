@@ -984,3 +984,88 @@ def test_the_coordinator_does_not_reduce_how_many_specialists_fit(root, world):
 def test_a_companion_claim_is_never_run_alone():
     with pytest.raises(ValueError, match="never run-alone"):
         job_slots.MemoryClaim(budget_mb=10, run_alone=True, companion=True)
+
+
+def take_over(store: SlotStore, holder: job_slots.SlotToken, memory) -> job_slots.SlotToken:
+    """Submit *memory* from the holder's own process, taking over the holder's place (#4482)."""
+    return store.submit(job_slots.CLASS_MEMORY, pid=holder.pid, memory=memory, succeeds=holder)
+
+
+@pytest.mark.parametrize(("wall_s", "expected"), [(180.0, HOLDING), (720.0, QUEUED)])
+def test_a_short_later_claim_still_jumps_a_successor_that_cannot_start(
+    root, world, wall_s, expected
+):
+    store = make_store(root, world)
+    hold(store, world, 101, claim(300, wall_s=600.0))  # frees its memory in 10 min
+    flow = hold(store, world, 102, claim(500))
+    later = join(store, world, 103, claim(300, wall_s=wall_s))
+    successor = take_over(store, flow, claim(800))
+    assert store.refresh(successor) == TokenState(QUEUED, position=0)
+    assert store.refresh(later).state == expected
+    assert store._load_token(flow.path).memory.reservation_mb == 0
+
+
+def test_a_claim_takes_over_only_a_holder_that_still_reserves(root, world):
+    store = make_store(root, world)
+    flow = hold(store, world, 101, claim(500))
+    later = join(store, world, 102, claim(100))
+    assert store.shrink_reservation(flow, 0)
+    behind = take_over(store, flow, claim(100))  # nothing to take over: queues at the back
+    assert store.refresh(later).state == HOLDING
+    assert store.refresh(behind).state == HOLDING
+    assert behind.seq > later.seq
+    # A holder whose lease is gone refuses the takeover and leaves no waiter behind.
+    lost = hold(store, world, 103, claim(100))
+    store.release(lost)
+    with pytest.raises(job_slots.ClaimLostError):
+        take_over(store, lost, claim(100))
+    assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == []
+
+
+def test_no_waiter_ranks_while_a_claim_takes_over_a_holder(root, world, monkeypatch):
+    store = make_store(root, world)
+    rival = make_store(root, world)
+    flow = hold(store, world, 101, claim(None, run_alone=True))
+    later = join(rival, world, 102, claim(100))
+    real_shrink = store.shrink_reservation
+    gate_taken: list[bool] = []
+
+    def shrink_after_rival_tries_the_gate(token, reservation_mb):
+        with rival._promotion_gate(later) as acquired:
+            gate_taken.append(acquired)
+        return real_shrink(token, reservation_mb)
+
+    monkeypatch.setattr(store, "shrink_reservation", shrink_after_rival_tries_the_gate)
+    successor = take_over(store, flow, claim(None, run_alone=True))
+    assert gate_taken == [False]  # no ranking can interleave with the takeover
+    assert rival.refresh(later).state == QUEUED
+    assert store.refresh(successor).state == HOLDING
+
+
+def test_a_busy_promotion_gate_leaves_a_takeover_unsubmitted(root, world):
+    store = make_store(root, world)
+    rival = make_store(root, world)
+    flow = hold(store, world, 101, claim(None, run_alone=True))
+    later = join(rival, world, 102, claim(100))
+    with rival._promotion_gate(later) as acquired:
+        assert acquired
+        with pytest.raises(job_slots.TakeoverBusyError):
+            take_over(store, flow, claim(None, run_alone=True))
+        with pytest.raises(job_slots.ClaimAbortedError):
+            store.acquire(
+                job_slots.CLASS_MEMORY,
+                pid=101,
+                memory=claim(None, run_alone=True),
+                succeeds=flow,
+                should_abort=lambda: True,
+            )
+    assert store._load_token(flow.path).memory.run_alone
+    assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == [102]
+    # Once the gate is free the takeover goes through at the holder's place.
+    successor = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=101,
+        memory=claim(None, run_alone=True),
+        succeeds=flow,
+    )
+    assert successor.seq == flow.seq
