@@ -119,7 +119,7 @@ def _parse_row(raw: bytes) -> SessionRow:
         raise ValueError("unsupported session schema")
     facts = require_dict(data.get("attribution"), field="attribution")
     kind = require_str(facts, "kind")
-    if kind not in {"thread", "process", "worktree"}:
+    if kind not in ("thread", "process", "worktree"):
         raise ValueError("invalid attribution kind")
     process = ProcessIdentity.from_payload(facts.get("process"))
     if facts.get("process") is not None and process is None:
