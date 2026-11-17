@@ -1,36 +1,14 @@
 # bwave build
 
-## Synopsis
-
-```bash
-bwave build <VCD_FILE> -o <FST_FILE> [--scope SCOPE] [--input PATH]
-```
-
 ## Semantics
 
-Parse a VCD waveform and write an FST waveform store
-(`.fst`). The store is a plain FST file: the full
-transition stream, the original timescale, and the scope
-tree, losslessly — it opens directly in GTKWave and
-VaporView. Subsequent queries hit the store instead of
-re-parsing the VCD.
+Parse a VCD and write a plain FST store (`.fst`): the full transition
+stream, the original timescale, and the scope tree, losslessly. It opens
+directly in GTKWave and VaporView. Every query reads the store instead of
+re-parsing the VCD, so `build` is the only expensive step.
 
-`build` is the only B-Wave subcommand that does
-significant work: every query after it is cheap.
-
-## Defaults and requiredness
-
-- Positional `<VCD_FILE>` is optional. If omitted and no
-  `--input` is given, the VCD is read from stdin.
-- `-o / --output <FST_FILE>` is **required**.
-- `--scope SCOPE` is optional. When set, only signals
-  inside that hierarchical scope (e.g. `tb.dut`) are
-  recorded. Useful for trimming massive testbenches.
-- `--input PATH` reads from PATH instead of the positional
-  argument. The blocking open() makes it the right choice
-  for named pipes / FIFOs where the writer side may not
-  open until later. Cannot be combined with a positional
-  VCD argument.
+Use `--input PATH` rather than the positional path for a named pipe (FIFO):
+its blocking open waits until the simulator opens the writer side.
 
 ## Heartbeat sidecar
 
@@ -45,74 +23,33 @@ the process died before any progress was made.
 
 `build` does not write to stdout. The `.fst` file is the
 sole artifact. Errors go to stderr. Exit code 0 on success.
-On success it prints one line to stderr — `# wrote <path>` —
-so stdout stays empty for piping.
+On success it prints `# wrote <path>` to stderr, followed by
+the clock verdict and clock-stop summary, so stdout stays
+empty for piping. A `warning` verdict does not fail the
+build: the store still serves `--async` queries. See
+`reference/sync-vs-async`.
 
 There is no JSON mode for `build`: the result is a binary
 file, not a payload.
 
 ## Common errors
 
-- **`cannot open '<vcd>'`**: wrong path, or the file
-  doesn't exist yet (race with the simulator). For FIFOs,
-  use `--input <fifo>` so B-Wave blocks until the writer
-  appears.
-- **`-o / --output is required`**: clap rejects the
-  invocation. The output path must be explicit; there is
-  no implicit `<vcd>.fst` default.
-- **`--input conflicts with VCD_FILE`**: pick one source.
-  Combining them is ambiguous so clap rejects it.
-- **`.fst` file truncated**: the FST is only flushed and
-  finalized at end-of-VCD. If the simulator crashed
-  mid-write, the resulting store is incomplete and queries
-  will fail to load. Re-run the simulation, then rebuild.
-- **Output path rejected (exit 2)**: the store is plain FST.
-  Use a `.fst` output path, such as `bwave build <vcd> -o trace.fst`.
-- **`input VCD declares no signals` (exit 2)**: the VCD
-  header carries zero `$var` declarations, so the store
-  would be header-only and answer every query with
-  silence — `build` refuses to write it. The classic
-  producer is a Verilator sim traced via the
-  auto-generated `--main`; trace via a custom C++
-  `--exe` main instead.
-- **`--scope '...' matches none of the N signal(s)`
-  (exit 2)**: the scope filter would drop everything,
-  which is the same unqueryable store by another road.
-  Drop `--scope`, or build unscoped and `bwave list` to
-  find the real hierarchy prefix.
+- **Store ends early**: a VCD cut short (the simulator
+  crashed mid-write) still builds, exit 0, from the
+  transitions before the cut. Check the trace end with
+  `bwave stats`, then re-run the simulation and rebuild.
 
 ## Examples
 
-Standard build from a finished VCD:
-
 ```bash
 bwave build sim.vcd -o sim.fst
-```
 
-Stream from stdin (useful when piping from a compressed
-archive):
-
-```bash
+# From a compressed archive, via stdin
 gunzip -c sim.vcd.gz | bwave build -o sim.fst
-```
 
-Limit the store to a single DUT scope to drop testbench
-plumbing:
-
-```bash
-bwave build sim.vcd -o dut.fst --scope tb.dut
-```
-
-FIFO mode: start B-Wave before the simulator runs so the
-FIFO open() blocks both sides correctly:
-
-```bash
+# FIFO: start B-Wave first so both opens block correctly
 mkfifo /tmp/sim.vcd
 bwave build --input /tmp/sim.vcd -o sim.fst &
 my_simulator +vcd=/tmp/sim.vcd
 wait
 ```
-
-After conversion, `build` prints the clock verdict and clock-stop summary to
-stderr. A `warning` verdict does not fail the build: the store still serves
-`--async` queries. See `reference/sync-vs-async`.

@@ -39,7 +39,9 @@ does not count toward a run-alone claim's wait, the first other claim starts
 when only companions hold, and a companion that does not fit never becomes the
 front. An entry whose claim cannot be read
 counts as not fitting and ends jumping. A holder may lower its own reservation
-as its phases finish (``shrink_reservation``), never raise it. A claim may also hold
+as its phases finish (``shrink_reservation``), never raise it. A claim may take
+over a holder's reservation and queue place (``submit(succeeds=...)``): it queues at
+the holder's place and the holder drops to zero in one promotion-gate hold. A claim may also hold
 a **seat** of a licensed EDA tool, judged against the tool's Seat Cap: it
 starts only while fewer seats of that tool are held than the cap, and keeps the
 cap it was created with, so a cap changed while Jobs wait applies to new claims
@@ -64,9 +66,10 @@ import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 from booley.core.boundary import as_int, require_finite_number
 from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
@@ -183,6 +186,13 @@ class ClaimLostError(RuntimeError):
     """
 
 
+class TakeoverBusyError(RuntimeError):
+    """The class promotion gate stayed busy, so a takeover submitted and dropped nothing.
+
+    Raised by ``submit`` with ``succeeds``; ``acquire`` retries it each poll.
+    """
+
+
 class ClaimAbortedError(RuntimeError):
     """The caller's ``should_abort`` hook fired while queued.
 
@@ -286,25 +296,57 @@ class JobLabel:
 
     Presentation only: it never takes part in admission, so it lives on the
     entry beside ``argv`` rather than inside the ``MemoryClaim``. ``target`` is
-    empty when the Job names none.
+    empty when the Job names none. A work item's claim carries its Job's label
+    through :meth:`for_work_item`: ``work_item`` marks it as not the Job's own
+    claim and ``test`` names the item's tests (empty for a Job's own claim or a
+    build).
     """
 
     run_id: str
     flow: str
     target: str
+    test: str = ""
+    work_item: bool = False
 
-    def to_payload(self) -> dict[str, str]:
-        return {"run_id": self.run_id, "flow": self.flow, "target": self.target}
+    def for_work_item(self, target: str, tests: Sequence[str]) -> JobLabel:
+        """This Job's label for one of its work items: the item's own Target and tests."""
+        return replace(self, target=target, test=short_test_list(tests), work_item=True)
+
+    def to_payload(self) -> dict[str, str | bool]:
+        return {
+            "run_id": self.run_id,
+            "flow": self.flow,
+            "target": self.target,
+            "test": self.test,
+            "work_item": self.work_item,
+        }
 
     @staticmethod
     def from_payload(value: object) -> JobLabel | None:
         """The label an entry persisted, or None when absent or malformed."""
         if not isinstance(value, dict):
             return None
-        run_id, flow, target = (value.get(name) for name in ("run_id", "flow", "target"))
-        if isinstance(run_id, str) and isinstance(flow, str) and isinstance(target, str):
-            return JobLabel(run_id, flow, target)
+        fields = cast("dict[str, object]", value)
+        run_id, flow, target = (fields.get(name) for name in ("run_id", "flow", "target"))
+        test = fields.get("test", "")
+        work_item = fields.get("work_item", False)
+        if (
+            isinstance(run_id, str)
+            and isinstance(flow, str)
+            and isinstance(target, str)
+            and isinstance(test, str)
+            and isinstance(work_item, bool)
+        ):
+            return JobLabel(run_id, flow, target, test, work_item)
         return None
+
+
+def short_test_list(names: Sequence[str]) -> str:
+    """At most three test names then ``+N`` for the rest, joined by ``,``."""
+    shown = list(names[:3])
+    if len(names) > 3:
+        shown.append(f"+{len(names) - 3}")
+    return ",".join(shown)
 
 
 #: How many of the largest memory holders a queue report names.
@@ -318,7 +360,7 @@ class MemoryWait:
     ``position`` is 1-based among the blocked claims. ``free_mb`` is the Memory
     Budget headroom the running holders leave (what admission judges), not host
     free memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
-    taken. ``holders`` are up to three running claims, largest first
+    taken. ``holders`` are up to three running claims that reserve memory, largest first
     (run-alone first, shown with ``None`` for the whole budget).
     """
 
@@ -361,7 +403,7 @@ def _holder_name(token: SlotToken) -> str:
     label = token.job
     if label is None:
         return f"pid {token.pid}"
-    detail = ", ".join(part for part in (label.flow, label.target) if part)
+    detail = ", ".join(part for part in (label.flow, label.target, label.test) if part)
     name = label.run_id or f"pid {token.pid}"
     return f"{name} ({detail})" if detail else name
 
@@ -391,7 +433,8 @@ def memory_wait(
     alone = any(held_claim.run_alone for _held, held_claim in claimed)
     used_mb = sum(held_claim.reservation_mb or 0.0 for _held, held_claim in claimed)
     seats_held = Counter(tool for _held, held_claim in claimed for tool, _cap in held_claim.seats)
-    largest = sorted(claimed, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    reserving = [pair for pair in claimed if _reserves(pair[1])]
+    largest = sorted(reserving, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
     return MemoryWait(
         position=blocked_ahead + 1,
         claim=claim,
@@ -644,6 +687,7 @@ class _WaiterRequest:
     memory: MemoryClaim | None = None
     queue_reason: str | None = None
     job: JobLabel | None = None
+    seq: int | None = None  # a place taken over from a holder (else the next sequence)
 
 
 def project_slots_dir(booley_dir: Path) -> Path:
@@ -834,6 +878,7 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
+        succeeds: SlotToken | None = None,
     ) -> SlotToken:
         """Join *job_class* admission; the claim waits in queue order until admitted or withdrawn.
 
@@ -842,6 +887,14 @@ class SlotStore:
         the entry so the caller can read it while the Job waits or runs.
         A claim that opens as zero is refused (only a holder reaches zero),
         except a companion claim, which may reserve nothing.
+
+        *succeeds* is a holder of this process whose reservation the claim takes
+        over. While it still reserves memory, the claim queues at its place (its
+        priority and sequence) and the holder then drops to zero, so a claim
+        submitted after the holder cannot start first. A holder that reserves
+        nothing passes no place. ``TakeoverBusyError`` means the promotion gate
+        stayed busy: nothing was submitted or dropped. ``ClaimLostError`` means
+        the holder's lease is no longer this process's: nothing is left queued.
         """
         if memory is None or job_class != CLASS_MEMORY:
             raise ValueError(f"only the {CLASS_MEMORY} class admits, with a memory claim")
@@ -854,22 +907,39 @@ class SlotStore:
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
         created = self._now()
         linked_execution = self._linked_execution(execution_id, pid)
-        token = self._create_entry(
-            _WaiterRequest(
-                cls_dir=cls_dir,
-                priority=priority,
-                pid=pid,
-                argv=argv or [],
-                role=role,
-                timeout_s=timeout_s,
-                created=created,
-                execution_id=linked_execution,
-                memory=memory,
-                queue_reason=queue_reason,
-                job=job,
-            )
+        request = _WaiterRequest(
+            cls_dir=cls_dir,
+            priority=priority,
+            pid=pid,
+            argv=argv or [],
+            role=role,
+            timeout_s=timeout_s,
+            created=created,
+            execution_id=linked_execution,
+            memory=memory,
+            queue_reason=queue_reason,
+            job=job,
         )
-        return token
+        if succeeds is None or succeeds.memory is None or not _reserves(succeeds.memory):
+            return self._create_entry(request)
+        return self._take_over(
+            succeeds, replace(request, priority=succeeds.priority, seq=succeeds.seq)
+        )
+
+    def _take_over(self, holder: SlotToken, request: _WaiterRequest) -> SlotToken:
+        """Queue *request* at *holder*'s place and drop *holder* to zero, in one promotion-gate hold.
+
+        Every ranking runs inside the gate, so none lists the entries before the
+        claim exists and reads the holder after its drop.
+        """
+        with self._promotion_gate(holder) as acquired:
+            if not acquired:
+                raise TakeoverBusyError("the promotion gate stayed busy during a takeover")
+            token = self._create_entry(request)
+            if self.shrink_reservation(holder, 0):
+                return token
+        self.release(token)
+        raise ClaimLostError(f"the claim it succeeds is no longer held: {holder.path.name}")
 
     def _linked_execution(
         self, execution_id: str | ExecutionId | None, pid: int
@@ -940,7 +1010,7 @@ class SlotStore:
         lease_id = uuid.uuid4().hex
         payload_base = self._new_waiter_payload(request, lease_id, owner_identity)
         for _attempt in range(_ENTRY_CREATE_ATTEMPTS):
-            seq = self._next_seq(request.cls_dir)
+            seq = request.seq if request.seq is not None else self._next_seq(request.cls_dir)
             # A lease owns its filename across waiter/holder transitions and
             # cancellation. Independent stores must never recycle that name.
             entry_number = int(lease_id, 16)
@@ -1232,22 +1302,30 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
+        succeeds: SlotToken | None = None,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
         Queue narration repeats when its interval elapses. ``should_abort``
         lets signal handlers end a wait without leaking the caller's entry.
+        A *succeeds* takeover (see ``submit``) retries each poll while the
+        promotion gate is busy, until ``should_abort`` fires.
         """
-        token = self.submit(
-            job_class,
-            pid=pid,
-            argv=argv,
-            role=role,
-            timeout_s=timeout_s,
-            execution_id=execution_id,
-            memory=memory,
-            queue_reason=queue_reason,
-            job=job,
+        token = self._submit_until_free(
+            lambda: self.submit(
+                job_class,
+                pid=pid,
+                argv=argv,
+                role=role,
+                timeout_s=timeout_s,
+                execution_id=execution_id,
+                memory=memory,
+                queue_reason=queue_reason,
+                job=job,
+                succeeds=succeeds,
+            ),
+            should_abort,
+            poll_interval,
         )
         if on_submitted is not None:
             on_submitted(token)
@@ -1262,6 +1340,23 @@ class SlotStore:
         except BaseException:
             self.release(token)  # idempotent; no-op on the LOST path
             raise
+
+    def _submit_until_free(
+        self,
+        submit: Callable[[], SlotToken],
+        should_abort: Callable[[], bool] | None,
+        poll_interval: float,
+    ) -> SlotToken:
+        """``submit()``, retried each poll while a takeover finds the promotion gate busy."""
+        while True:
+            try:
+                return submit()
+            except TakeoverBusyError:
+                if should_abort is not None and should_abort():
+                    raise ClaimAbortedError(
+                        "aborted while waiting for a memory slot (shutdown requested)"
+                    ) from None
+                self._sleep(poll_interval)
 
     def _wait_for_promotion(
         self,

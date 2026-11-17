@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,6 +90,15 @@ class AdmissionContext:
             "parent_execution_id",
             execution_id or ExecutionId(uuid.uuid4().hex),
         )
+
+    def work_item_label(self, target: str, tests: Sequence[str]) -> job_slots.JobLabel | None:
+        """The label for a work item's claim: the Job's own, narrowed to the item.
+
+        ``None`` when the Job's claim carries no label, so the item's holder reads ``pid N``.
+        """
+        token = self.outer_token
+        label = token.job if isinstance(token, job_slots.SlotToken) else None
+        return None if label is None else label.for_work_item(target, tests)
 
 
 @dataclass(frozen=True, slots=True)

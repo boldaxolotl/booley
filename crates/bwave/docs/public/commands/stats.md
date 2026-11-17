@@ -1,13 +1,5 @@
 # bwave stats
 
-## Synopsis
-
-```bash
-bwave stats <FST_FILE> [-s PATTERN[%RADIX] ...] [-t START:END]
-            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--format text|json] [--limit N]
-```
-
 ## Semantics
 
 Per-signal activity report. For each matching signal,
@@ -18,17 +10,8 @@ Useful for "is this signal active?", "which state
 dominates?", and as a sanity check before deeper
 queries.
 
-`stats` does **not** accept `--virtual` or `--marker`:
-it's an introspection command, not a value consumer.
-
-## Defaults and requiredness
-
-- `<FST_FILE>` required.
-- `-s PATTERN` optional. Without it, every signal is
-  reported (often a wall of output; use `--limit` or
-  narrow with `-s`).
-- `-t START:END` optional. Bounds the stat window.
-- Standard global options apply.
+`stats` takes no Virtual Signals; for the time between
+events on one, use `distance --stats`.
 
 ## Output shape
 
@@ -86,45 +69,15 @@ trace has a timescale.
 When the simulation has no clock, `total_cycles` and
 `clock_period_ns` are `null`.
 
-See `reference/json-envelope` for the full schema.
-
-## Common errors
-
-- **`total_cycles: null`**: no clock detected. Pass
-  `--clock PATTERN` or accept the tick-only summary.
-- **Output truncated**: `--limit` hit. Narrow with
-  `-s` or bump the limit.
-- **`--virtual` rejected**: `stats` doesn't accept
-  consumer options. If you need stats on a virtual
-  signal, the workaround is to add the predicate as a
-  rebuild step (not yet supported) or use `distance
-  --stats` for time-between-events analysis.
+`bwave schema` has the full grammar.
 
 ## Examples
 
-Activity summary for an FSM:
-
 ```bash
 bwave stats sim.fst -s "*state*"
-```
-
-Toggle-rate audit of every clock signal:
-
-```bash
-bwave stats sim.fst -s "*clk*"
-```
-
-JSON for downstream analysis:
-
-```bash
+bwave stats sim.fst -s "*" -t 1000:5000
 bwave stats sim.fst -s "*data_out*" --format json \
     | jq '.data.signals[] | {name, transitions, toggle_pct}'
-```
-
-Stats over a bounded window, e.g. a specific test phase:
-
-```bash
-bwave stats sim.fst -s "*" -t 1000:5000
 ```
 
 ## Clock-grid behavior

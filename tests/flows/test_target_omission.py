@@ -169,9 +169,13 @@ def invoke(entry, name, project, arguments=None):
     async def scenario():
         jobs = server._JobManager(server._McpLifetime(None, None))
         result = await server._dispatch_booley_mcp_tool(
-            name, params, {"module": name, "is_flow": True}, collections.defaultdict(int), jobs
+            name,
+            params,
+            {"module": name, "is_flow": True, "memory_admitted": True},
+            collections.defaultdict(int),
+            jobs,
         )
-        if name in server._ASYNC_JOB_MCP_TOOLS:
+        if jobs._tasks:
             # A fast child may complete inline; always poll terminal jobs as well.
             await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=5)
             assert len(jobs._tasks) == 1
