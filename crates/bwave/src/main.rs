@@ -128,7 +128,7 @@ struct GlobalOpts {
     #[arg(long, value_parser = ["post-edge", "pre-edge"], conflicts_with = "async_mode")]
     sample_mode: Option<String>,
 
-    /// Reset signal pattern for sync mode (default: auto *rst*)
+    /// Reset signal pattern for sync mode (default: auto *rst* or *reset*)
     #[arg(long)]
     reset: Option<String>,
 
@@ -934,6 +934,15 @@ fn load_store_or_exit(store_path: &str) -> ColumnCache {
     })
 }
 
+/// Apply `--reset PATTERN` to the store; an unusable pattern is caller input,
+/// so it exits 2 naming the pattern.
+fn select_reset_or_exit(cache: &mut ColumnCache, pattern: Option<&str>) {
+    if let Some(error) = pattern.and_then(|p| cache.select_reset(p).err()) {
+        eprintln!("ERROR: {error}");
+        process::exit(2);
+    }
+}
+
 /// Run a query through ColumnCache (loads the store file directly).
 fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
     let mut cache = load_store_or_exit(bwave_path);
@@ -946,6 +955,7 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
         eprintln!("ERROR: {}", bwave::cache::no_signals_in_store_message());
         process::exit(2);
     }
+    select_reset_or_exit(&mut cache, cfg.reset_pattern.as_deref());
     if let Some(ref clk_pat) = cfg.clock_pattern {
         match cache.detect_clock_from_pattern(clk_pat) {
             Ok((period, first_rise, name)) => {
@@ -1009,6 +1019,7 @@ fn run_overview(args: OverviewArgs) {
     reject_sample_mode("overview", &g);
     require_bwave(&args.bwave, "bwave overview");
     let mut cache = load_store_or_exit(&args.bwave);
+    select_reset_or_exit(&mut cache, g.reset.as_deref());
     if let Some(pattern) = g.clock {
         let (period, first, name) = cache
             .detect_clock_from_pattern(&pattern)
@@ -1027,6 +1038,7 @@ fn run_overview(args: OverviewArgs) {
             ..Default::default()
         },
     );
+    let reset = bwave::cache::reset_report(&cache, g.with_reset);
     if g.format == "json" {
         bwave::output::emit_clock_json(
             "overview",
@@ -1039,9 +1051,13 @@ fn run_overview(args: OverviewArgs) {
             bwave::output::merge_warnings(cfg.warnings, &g.wrapper_warning),
             cfg.clock_regularity,
             cfg.clock_stopped,
+            Some(reset),
         );
-    } else if let Some(verdict) = cfg.clock_regularity {
-        println!("{}", bwave::clock::verdict_text(&verdict));
+    } else {
+        if let Some(verdict) = cfg.clock_regularity {
+            println!("{}", bwave::clock::verdict_text(&verdict));
+        }
+        println!("{}", reset.text());
     }
 }
 
@@ -1056,6 +1072,7 @@ fn run_list(args: ListArgs) {
     }
     require_bwave(&args.bwave, "bwave list");
     let mut cache = load_store_or_exit(&args.bwave);
+    select_reset_or_exit(&mut cache, g.reset.as_deref());
     if let Some(ref clock) = g.clock {
         match cache.detect_clock_from_pattern(clock) {
             Ok((period, rise, name)) => {
