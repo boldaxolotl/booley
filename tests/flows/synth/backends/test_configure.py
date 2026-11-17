@@ -2,164 +2,55 @@
 
 from __future__ import annotations
 
-import argparse
-from unittest.mock import patch
-
 import pytest
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+from booley.flows.synth.backends import configure
+from booley.flows.synth.backends.configure import parse_configure_argv, resolve_spec
+from booley.flows.synth.backends.yosys.parsing import parse_params
+from booley.flows.target_parameters import ParameterValue
 
 
-def _make_args(**overrides) -> argparse.Namespace:
-    defaults = {
-        "action": "configure",
-        "top": None,
-        "define": [],
-        "liberty": None,
-        "workdir": None,
-        "extra_rtl": None,
-        "flatten": True,
-        "param": [],
-        "sdc": None,
-        "tdelay": 4000,
-        "abc_recipe": "balanced",
-        "frontend": "sv2v",
-        "synth_mode": "physical",
-        "sta_sdc": None,
-        "utilization_pct": None,
-        "repair_timing": None,
-        "retry": False,
-        "no_retry": True,
-        "max_attempts": 3,
-        "timeout": None,
-    }
-    defaults.update(overrides)
-    return argparse.Namespace(**defaults)
+def _argv(tmp_path, *extra):
+    """Parse a logical-mode configure argv over a real RTL file and Liberty file."""
+    rtl = tmp_path / "dut.sv"
+    rtl.write_text("module dut; endmodule\n", encoding="utf-8")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("library (x) {}\n", encoding="utf-8")
+    return parse_configure_argv(
+        [
+            "configure",
+            "-t",
+            "dut",
+            "--extra-rtl",
+            str(rtl),
+            "--liberty",
+            str(lib),
+            "--synth-mode",
+            "logical",
+            *extra,
+        ]
+    )
 
 
-# ---------------------------------------------------------------------------
-# Argument parsing — --extra-rtl accumulation
-# ---------------------------------------------------------------------------
-
-
-class TestExtraRtlParsing:
-    """Regression: the asic_synthesize wrapper emits one ``--extra-rtl <file>``
-    per resolved source. With a plain ``nargs="+"`` argparse OVERWRITES on each
-    repeated flag, keeping only the LAST file and synthesizing an all-but-empty
-    design. ``action="extend"`` must make repeated flags accumulate.
-    """
-
-    def test_repeated_flags_accumulate(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    [
+        # Regression: the wrapper emits one ``--extra-rtl <file>`` per source; a plain
+        # ``nargs="+"`` kept only the LAST file (action="extend" must accumulate).
+        (
+            ["--extra-rtl", "a.sv", "--extra-rtl", "b.sv", "--extra-rtl", "c.sv"],
+            {"extra_rtl": ["a.sv", "b.sv", "c.sv"]},
+        ),
+        (["--extra-rtl", "a.sv", "b.sv", "c.sv"], {"extra_rtl": ["a.sv", "b.sv", "c.sv"]}),
+        ([], {"extra_rtl": [], "frontend": "sv2v", "slang_option": []}),
+        # Regression (ravenoc halt #2b): the canonical value is itself a flag, so the
+        # emitter MUST use the `=`-joined form; the two-token form is rejected.
+        (
+            ["--slang-option=--single-unit", "--slang-option=--allow-use-before-declare"],
+            {"slang_option": ["--single-unit", "--allow-use-before-declare"]},
+        ),
+        (
             [
-                "configure",
-                "-t",
-                "top",
-                "--extra-rtl",
-                "a.sv",
-                "--extra-rtl",
-                "b.sv",
-                "--extra-rtl",
-                "c.sv",
-            ]
-        )
-        # All three survive — not just the last (the bug we're guarding against).
-        assert args.extra_rtl == ["a.sv", "b.sv", "c.sv"]
-
-    def test_batched_values_accumulate(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(
-            [
-                "configure",
-                "-t",
-                "top",
-                "--extra-rtl",
-                "a.sv",
-                "b.sv",
-                "c.sv",
-            ]
-        )
-        assert args.extra_rtl == ["a.sv", "b.sv", "c.sv"]
-
-    def test_no_flag_defaults_empty(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(["configure", "-t", "top"])
-        assert args.extra_rtl == []
-
-    def test_frontend_defaults_sv2v(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(["configure", "-t", "top"])
-        assert args.frontend == "sv2v"
-
-    def test_slang_option_joined_form_carries_flag_valued_token(self):
-        """`--slang-option=--single-unit` parses and accumulates.
-
-        Regression (ravenoc halt #2b): the canonical value is itself a flag,
-        so the emitter MUST use the `=`-joined form — argparse's two-token form
-        rejects a dash-leading value with "expected one argument". This pins
-        the parser side of that contract.
-        """
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(
-            [
-                "configure",
-                "-t",
-                "top",
-                "--slang-option=--single-unit",
-                "--slang-option=--allow-use-before-declare",
-            ]
-        )
-        assert args.slang_option == ["--single-unit", "--allow-use-before-declare"]
-
-    def test_slang_option_defaults_empty(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(["configure", "-t", "top"])
-        assert args.slang_option == []
-
-
-# ---------------------------------------------------------------------------
-# Synthesis-mode arguments
-# ---------------------------------------------------------------------------
-
-
-class TestTimingArgs:
-    def test_physical_resolve_requires_target_owned_sdc(self, tmp_path):
-        from booley.flows.synth.backends import configure as mod
-
-        rtl = tmp_path / "dut.sv"
-        rtl.write_text("module dut; endmodule\n", encoding="utf-8")
-        args = mod._build_parser().parse_args(
-            [
-                "configure",
-                "-t",
-                "dut",
-                "--extra-rtl",
-                str(rtl),
-                "--synth-mode",
-                "physical",
-            ]
-        )
-
-        with pytest.raises(SystemExit, match="requires a Target-owned"):
-            mod.resolve_spec(args, project_root=tmp_path, require_liberty=False)
-
-    def test_profiles_and_backend_overrides_parse(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(
-            [
-                "configure",
-                "-t",
-                "top",
                 "--ppa-profile",
                 "compact",
                 "--abc-recipe",
@@ -167,219 +58,133 @@ class TestTimingArgs:
                 "--placement-density",
                 "0.72",
                 "--repair-hold",
-            ]
-        )
-        assert args.ppa_profile == "compact"
-        assert args.abc_recipe == "fast"
-        assert args.placement_density == 0.72
-        assert args.repair_hold is True
-
-    def test_profile_aware_explicit_density_override_is_preserved(self):
-        from booley.flows.synth.backends import configure as mod
-
-        args = mod._build_parser().parse_args(
-            [
-                "configure",
-                "-t",
-                "top",
-                "--ppa-profile",
-                "balanced",
-                "--placement-density",
-                "0.72",
-            ]
-        )
-        _profile, _yosys, openroad = mod._resolve_ppa_settings(args)
-        assert openroad.placement_density == 0.72
-
-    def test_conflicting_abc_controls_are_clean_config_error(self):
-        from booley.flows.synth.backends.configure import _build_parser, _resolve_ppa_settings
-
-        args = _build_parser().parse_args(
-            ["configure", "-t", "top", "--abc-recipe", "fast", "--abc-script", "+strash"]
-        )
-        with pytest.raises(SystemExit, match="mutually exclusive"):
-            _resolve_ppa_settings(args)
-
-    def test_utilization_and_no_repair_timing(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(
-            ["configure", "-t", "top", "--utilization-pct", "55", "--no-repair-timing"]
-        )
-        assert args.utilization_pct == 55.0
-        assert args.repair_timing is False
-
-    def test_repair_timing_tristate_defaults_none(self):
-        """Absent --no-repair-timing must leave repair_timing None so TOML decides."""
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(["configure", "-t", "top"])
-        assert args.repair_timing is None
-        assert args.utilization_pct is None
-
-    @pytest.mark.parametrize(
-        ("option", "value", "field"),
-        [
-            ("--utilization-pct", "nan", "utilization_pct"),
-            ("--placement-density", "inf", "placement_density"),
-            ("--setup-margin-ns", "nan", "setup_margin_ns"),
-            ("--repair-tns-percent", "-inf", "repair_tns_percent"),
-        ],
-    )
-    def test_non_finite_openroad_override_rejected(self, option, value, field):
-        from booley.flows.synth.backends.configure import _build_parser, _resolve_ppa_settings
-
-        args = _build_parser().parse_args(["configure", "-t", "top", f"{option}={value}"])
-        with pytest.raises(SystemExit, match=field):
-            _resolve_ppa_settings(args)
-
-    def test_explicit_source_without_profile_preserves_legacy_timing_recipe(self, monkeypatch):
-        from booley.flows.synth.backends import configure as mod
-
-        monkeypatch.setattr(
-            "booley.runtime.shared_infra._load_rtl_config",
-            lambda project_root=None: {
-                "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
+            ],
+            {
+                "ppa_profile": "compact",
+                "abc_recipe": "fast",
+                "placement_density": 0.72,
+                "repair_hold": True,
             },
-        )
-        args = mod._build_parser().parse_args(
-            ["configure", "-t", "top", "--synth-mode", "logical"]
-        )
-        _profile, _yosys, openroad = mod._resolve_ppa_settings(args)
-        timing = mod._resolve_syn_timing(args, openroad)
-        assert timing.utilization_pct == 55.0
-        assert timing.repair_timing is False
-        assert timing.placement_density is None
+        ),
+        (
+            ["--utilization-pct", "55", "--no-repair-timing"],
+            {"utilization_pct": 55.0, "repair_timing": False},
+        ),
+        # Absent --no-repair-timing leaves repair_timing None so TOML decides.
+        ([], {"repair_timing": None, "utilization_pct": None}),
+    ],
+)
+def test_configure_argv_parses_options(tail, expected):
+    args = parse_configure_argv(["configure", "-t", "top", *tail])
+    assert {key: getattr(args, key) for key in expected} == expected
 
-    def test_explicit_profile_replaces_legacy_timing_recipe(self, monkeypatch):
-        from booley.flows.synth.backends import configure as mod
 
-        monkeypatch.setattr(
-            "booley.runtime.shared_infra._load_rtl_config",
-            lambda project_root=None: {
-                "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
-            },
-        )
-        args = mod._build_parser().parse_args(
-            [
-                "configure",
-                "-t",
-                "top",
-                "--synth-mode",
-                "logical",
-                "--ppa-profile",
-                "compact",
-            ]
-        )
-        _profile, _yosys, openroad = mod._resolve_ppa_settings(args)
-        timing = mod._resolve_syn_timing(args, openroad)
-        assert timing.utilization_pct == 40.0
-        assert timing.repair_timing is True
-        assert timing.placement_density == 0.65
+def test_physical_resolve_requires_target_owned_sdc(tmp_path):
+    args = _argv(tmp_path, "--synth-mode", "physical")
+    with pytest.raises(SystemExit, match="requires a Target-owned"):
+        resolve_spec(args, project_root=tmp_path, require_liberty=False)
 
-    @pytest.mark.parametrize(
-        "option",
-        ["--default-clock", "--clock", "--period-ps", "--input-delay-pct", "--output-delay-pct"],
+
+def test_profile_aware_explicit_density_override_is_preserved(tmp_path):
+    args = _argv(tmp_path, "--ppa-profile", "balanced", "--placement-density", "0.72")
+    spec = resolve_spec(args, project_root=tmp_path)
+    assert spec.timing.placement_density == 0.72
+
+
+def test_conflicting_abc_controls_are_clean_config_error(tmp_path):
+    args = _argv(tmp_path, "--abc-recipe", "fast", "--abc-script", "+strash")
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        resolve_spec(args, project_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "field"),
+    [
+        ("--utilization-pct", "nan", "utilization_pct"),
+        ("--placement-density", "inf", "placement_density"),
+        ("--setup-margin-ns", "nan", "setup_margin_ns"),
+        ("--repair-tns-percent", "-inf", "repair_tns_percent"),
+    ],
+)
+def test_non_finite_openroad_override_rejected(tmp_path, option, value, field):
+    args = _argv(tmp_path, f"{option}={value}")
+    with pytest.raises(SystemExit, match=field):
+        resolve_spec(args, project_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ([], (55.0, False, None)),
+        (["--ppa-profile", "compact"], (40.0, True, 0.65)),
+    ],
+)
+def test_explicit_profile_replaces_legacy_timing_recipe(tmp_path, extra, expected):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(
+        "[flows.synth.timing]\nutilization_pct = 55\nrepair_timing = false\n",
+        encoding="utf-8",
     )
-    def test_generated_constraint_options_are_not_accepted(self, option):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        with pytest.raises(SystemExit):
-            _build_parser().parse_args(["configure", "-t", "top", option, "4000"])
+    timing = resolve_spec(_argv(tmp_path, *extra), project_root=tmp_path).timing
+    assert (timing.utilization_pct, timing.repair_timing, timing.placement_density) == expected
 
 
-# ---------------------------------------------------------------------------
-# do_clean
-# ---------------------------------------------------------------------------
-
-
-class TestDoClean:
-    def test_removes_result_dir(self, tmp_path):
-        from booley.flows.synth.backends import configure as mod
-
-        result_dir = tmp_path / "syn_result"
-        result_dir.mkdir()
-        (result_dir / "test.log").write_text("old", encoding="utf-8")
-        with patch.object(mod, "_synth_result_root", return_value=result_dir):
-            mod.do_clean()
-        assert not result_dir.exists()
-
-    def test_clean_nothing(self, tmp_path):
-        from booley.flows.synth.backends import configure as mod
-
-        # No syn_result dir — should not crash
-        with patch.object(mod, "_synth_result_root", return_value=tmp_path / "syn_result"):
-            mod.do_clean()
-
-
-# ---------------------------------------------------------------------------
-# SETUP-27: result dirs land under .booley/.runtime, not util/syn
-# ---------------------------------------------------------------------------
-
-
-class TestSynResultRoot:
-    def test_result_root_under_runtime_tree(self, tmp_path):
-        """The Yosys result root must live under the project runtime tree,
-        never in the design repo's util/syn/ namespace (SETUP-27)."""
-        from booley.flows.synth.backends import configure as mod
-
-        (tmp_path / ".booley").mkdir()
-        result_root = mod._synth_result_root(tmp_path)
-        parts = result_root.parts
-        assert ".booley" in parts
-        assert ".runtime" in parts
-        assert result_root.name == "syn_result"
-        assert "util" not in parts
-
-    def test_resolve_workdir_uses_result_root(self, tmp_path):
-        from booley.flows.synth.backends import configure as mod
-
-        args = _make_args(workdir="core_a")
-        with patch.object(mod, "_synth_result_root", return_value=tmp_path / "syn_result"):
-            wd = mod._resolve_syn_workdir(args, "my_top", {})
-        assert wd == tmp_path / "syn_result" / "core_a"
-
-    def test_resolve_workdir_default_name(self, tmp_path):
-        from booley.flows.synth.backends import configure as mod
-
-        args = _make_args(workdir=None)
-        with patch.object(mod, "_synth_result_root", return_value=tmp_path / "syn_result"):
-            wd = mod._resolve_syn_workdir(args, "my_top", {})
-        assert wd == tmp_path / "syn_result" / "standalone.my_top"
-
-
-# ---------------------------------------------------------------------------
-
-
-def test_backend_rejects_unknown_fanout_option(capsys):
-    from booley.flows.synth.backends.configure import _build_parser
-
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--default-clock",
+        "--clock",
+        "--period-ps",
+        "--input-delay-pct",
+        "--output-delay-pct",
+        "--max-fanout",
+    ],
+)
+def test_removed_constraint_options_are_not_accepted(option, capsys):
     with pytest.raises(SystemExit):
-        _build_parser().parse_args(["configure", "-t", "top", "--max-fanout", "50"])
-    assert "unrecognized arguments: --max-fanout" in capsys.readouterr().err
+        parse_configure_argv(["configure", "-t", "top", option, "4000"])
+    assert f"unrecognized arguments: {option}" in capsys.readouterr().err
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    """Make ``do_configure`` and ``do_clean`` resolve ``tmp_path`` as the checkout."""
+    monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    (tmp_path / ".booley").mkdir()
+    return tmp_path
+
+
+def test_configured_work_dirs_live_in_the_runtime_result_root(project):
+    """SETUP-27: result dirs land under .booley/.runtime, not the design repo's util/syn."""
+    result_root = project.resolve() / ".booley" / ".runtime" / "syn" / "syn_result"
+    assert configure.do_configure(_argv(project, "--workdir", "core_a")) == result_root / "core_a"
+    assert configure.do_configure(_argv(project)) == result_root / "standalone.dut"
+
+
+def test_string_workdir_suffix_cannot_traverse(project):
+    root = configure.do_configure(_argv(project)).parent
+    for value in ["../../escape", "/absolute/path", "a\\b", "a" * 4096]:
+        path = configure.do_configure(
+            _argv(project, "--param", f"NAME={value}", "--param-datatype", "NAME=str")
+        )
+        assert path.parent == root
+        assert len(path.name) < 80
+
+
+def test_clean_removes_the_result_root(project, capsys):
+    result_root = configure.do_configure(_argv(project)).parent
+    capsys.readouterr()
+    configure.do_clean()
+    assert not result_root.exists()
+    assert "Removed:" in capsys.readouterr().out
+    configure.do_clean()
+    assert "Nothing to clean." in capsys.readouterr().out
 
 
 def test_declared_string_parser_preserves_whitespace():
-    from booley.flows.synth.backends.yosys.parsing import parse_params
-    from booley.flows.target_parameters import ParameterValue
-
     assert parse_params(["NAME=  ../a b  ", "N= 12 "], ["NAME=file"]) == {
         "NAME": ParameterValue("file", "  ../a b  "),
         "N": "12",
     }
-
-
-def test_string_workdir_suffix_cannot_traverse(tmp_path):
-    from types import SimpleNamespace
-
-    from booley.flows.synth.backends.configure import _resolve_syn_workdir
-    from booley.flows.target_parameters import ParameterValue
-
-    args = SimpleNamespace(workdir=None)
-    root = _resolve_syn_workdir(args, "top", {}, project_root=tmp_path).parent
-    for value in ["../../escape", "/absolute/path", "a\\b", "a" * 4096]:
-        path = _resolve_syn_workdir(
-            args, "top", {"NAME": ParameterValue("str", value)}, project_root=tmp_path
-        )
-        assert path.parent == root
-        assert len(path.name) < 80

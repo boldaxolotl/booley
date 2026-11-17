@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from booley.flows.synth.backends.openroad import timing as openroad_timing
+from booley.flows.synth.timing import StaTimingConfig
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _config(**overrides):
-    from booley.flows.synth.timing import StaTimingConfig
-
     base = {
         "mode": "physical",
         "sdc": (),
@@ -38,8 +41,6 @@ def _make_pdk(tmp_path: Path) -> Path:
 
 class TestResolvePdk:
     def test_found_via_prj_lib_dir(self, monkeypatch, tmp_path):
-        from booley.flows.synth.backends.openroad import timing as openroad_timing
-
         root = _make_pdk(tmp_path)
         monkeypatch.setenv("PRJ_LIB_DIR", str(root))
         pdk = openroad_timing.resolve_openroad_pdk()
@@ -48,8 +49,6 @@ class TestResolvePdk:
         assert pdk.stdcell_lef.exists() and pdk.layer_rc.exists()
 
     def test_missing_returns_none_with_warning(self, monkeypatch, tmp_path, capsys):
-        from booley.flows.synth.backends.openroad import timing as openroad_timing
-
         monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path))  # no nangate45/ subdir
         assert openroad_timing.resolve_openroad_pdk() is None
         assert "PDK files not found" in capsys.readouterr().out
@@ -62,8 +61,6 @@ class TestResolvePdk:
 
 class TestWriteScript:
     def _write(self, tmp_path, **cfg_overrides):
-        from booley.flows.synth.backends.openroad import timing as openroad_timing
-
         root = _make_pdk(tmp_path)
         pdk = openroad_timing.OpenRoadPdk(
             tech_lef=root / "nangate45" / "Nangate45_tech.lef",
@@ -86,19 +83,66 @@ class TestWriteScript:
         )
         return path.read_text(encoding="utf-8")
 
-    def test_lefs_and_floorplan(self, tmp_path):
-        text = self._write(tmp_path, utilization_pct=45.0)
-        assert "read_lef" in text and "Nangate45_tech.lef" in text
-        assert "Nangate45_stdcell.lef" in text
-        assert "initialize_floorplan -utilization 45.000" in text
-        assert "FreePDK45_38x28_10R_NP_162NW_34O" in text
-        assert "-core_space {2.8 2.8 2.09 2.09}" in text
-        assert "-core_space 2.0" not in text
-        # make_tracks is mandatory — the vendored tech LEF ships no TRACKS, so
-        # without it place_pins dies with PPL-0021 (regression guard).
-        assert "make_tracks" in text
-        assert "remove_buffers" in text.splitlines()
-        assert "remove_buffers [get_cells *]" not in text
+    @pytest.mark.parametrize(
+        ("overrides", "present", "absent"),
+        [
+            (
+                {"utilization_pct": 45.0},
+                [
+                    "read_lef",
+                    "Nangate45_tech.lef",
+                    "Nangate45_stdcell.lef",
+                    "initialize_floorplan -utilization 45.000",
+                    "FreePDK45_38x28_10R_NP_162NW_34O",
+                    "-core_space {2.8 2.8 2.09 2.09}",
+                    # make_tracks is mandatory: the vendored tech LEF ships no TRACKS, so
+                    # without it place_pins dies with PPL-0021 (regression guard).
+                    "make_tracks",
+                    "\nremove_buffers\n",  # exact line, not the `[get_cells *]` form
+                ],
+                ["-core_space 2.0", "remove_buffers [get_cells *]"],
+            ),
+            (
+                {},
+                [
+                    "set_wire_rc -signal -layer metal3",
+                    "set_wire_rc -clock -layer metal6",
+                    "estimate_parasitics -placement",
+                ],
+                [],
+            ),
+            (
+                {"repair_timing": True},
+                ["repair_timing -setup -skip_gate_cloning"],
+                [],
+            ),
+            (
+                {"repair_timing": False},
+                ['puts "BOOLEY_STAGE: repair_design"', "repair_design"],
+                ["repair_timing -setup", 'puts "BOOLEY_STAGE: repair_timing"'],
+            ),
+            # density = min(0.80, util/100 + 0.25): 0.65 at util=40, clamped at util=70.
+            ({"utilization_pct": 40.0}, ["-density 0.650"], []),
+            ({"utilization_pct": 70.0}, ["-density 0.800"], []),
+            ({"utilization_pct": 40.0, "placement_density": 0.72}, ["-density 0.720"], []),
+            (
+                {
+                    "setup_margin_ns": 0.2,
+                    "repair_tns_percent": 75.0,
+                    "gate_cloning": True,
+                    "repair_hold": True,
+                },
+                ["repair_timing -setup -setup_margin 0.2 -repair_tns 75", "repair_timing -hold"],
+                ["-skip_gate_cloning"],
+            ),
+        ],
+    )
+    def test_script_fragments(self, tmp_path, overrides, present, absent):
+        text = self._write(tmp_path, **overrides)
+        for fragment in present:
+            assert fragment in text, fragment
+        for fragment in absent:
+            assert fragment not in text, fragment
 
     def test_fanout_uses_native_defaults_and_authored_sdc(self, tmp_path):
         sdc = tmp_path / "c.sdc"
@@ -126,12 +170,6 @@ class TestWriteScript:
         assert "foreach _clk [all_clocks]" in before_collection_shim
         assert "foreach_in_collection _clk [all_clocks]" not in before_collection_shim
 
-    def test_wire_rc_layers(self, tmp_path):
-        text = self._write(tmp_path)
-        assert "set_wire_rc -signal -layer metal3" in text
-        assert "set_wire_rc -clock -layer metal6" in text
-        assert "estimate_parasitics -placement" in text
-
     def test_reg2reg_block_embedded(self, tmp_path):
         # The internal reg->reg worst-path query must be emitted so the I/O
         # delay budget can't hide the true logic Fmax.
@@ -158,16 +196,6 @@ class TestWriteScript:
         assert "-to $_clk" in text
         # The per-clock block precedes the reg->reg block (before, per source).
         assert text.index("STA_PERCLOCK") < text.index("STA_REG2REG_SLACK_NS")
-
-    def test_repair_timing_present_when_enabled(self, tmp_path):
-        text = self._write(tmp_path, repair_timing=True)
-        assert "repair_timing -setup -skip_gate_cloning" in text
-
-    def test_repair_timing_absent_when_disabled(self, tmp_path):
-        text = self._write(tmp_path, repair_timing=False)
-        assert "repair_timing -setup" not in text
-        # repair_design still runs — only the setup timing pass is gated.
-        assert "repair_design" in text
 
     @staticmethod
     def _lines(text, needle):
@@ -253,68 +281,21 @@ class TestWriteScript:
         ):
             assert f'puts "BOOLEY_STAGE: {name}"' in text, name
 
-    def test_stage_markers_skip_repair_timing_when_disabled(self, tmp_path):
-        text = self._write(tmp_path, repair_timing=False)
-        assert 'puts "BOOLEY_STAGE: repair_timing"' not in text
-        assert 'puts "BOOLEY_STAGE: repair_design"' in text
-
-    def test_density_tracks_utilization(self, tmp_path):
-        # density = min(0.80, util/100 + 0.25) -> 0.40 + 0.25 = 0.65 at util=40.
-        text = self._write(tmp_path, utilization_pct=40.0)
-        assert "-density 0.650" in text
-        # Clamp: util=70 -> 0.95 clamps to 0.80.
-        text2 = self._write(tmp_path, utilization_pct=70.0)
-        assert "-density 0.800" in text2
-
-    def test_explicit_density_overrides_derived_value(self, tmp_path):
-        text = self._write(tmp_path, utilization_pct=40.0, placement_density=0.72)
-        assert "-density 0.720" in text
-
-    def test_expert_timing_repair_controls(self, tmp_path):
-        text = self._write(
-            tmp_path,
-            setup_margin_ns=0.2,
-            repair_tns_percent=75.0,
-            gate_cloning=True,
-            repair_hold=True,
-        )
-        assert "repair_timing -setup -setup_margin 0.2 -repair_tns 75" in text
-        assert "-skip_gate_cloning" not in text
-        assert "repair_timing -hold" in text
-
 
 # ---------------------------------------------------------------------------
 # parse_openroad_area
 # ---------------------------------------------------------------------------
 
 
-class TestParseArea:
-    def test_happy(self):
-        from booley.flows.synth.backends.openroad import timing as openroad_timing
-
-        area, util = openroad_timing.parse_openroad_area("Design area 235 u^2 33% utilization.")
-        assert area == 235.0
-        assert util == 33.0
-
-    def test_float_values(self):
-        from booley.flows.synth.backends.openroad import timing as openroad_timing
-
-        area, util = openroad_timing.parse_openroad_area(
-            "Design area 1234.56 u^2 41.7% utilization."
-        )
-        assert area == 1234.56
-        assert util == 41.7
-
-    def test_26q3_um2_unit(self):
-        from booley.flows.synth.backends.openroad import timing as openroad_timing
-
-        area, util = openroad_timing.parse_openroad_area(
-            "Design area 1234.56 um^2 41.7% utilization."
-        )
-        assert area == 1234.56
-        assert util == 41.7
-
-    def test_garbage_returns_none(self):
-        from booley.flows.synth.backends.openroad import timing as openroad_timing
-
-        assert openroad_timing.parse_openroad_area("no area here") == (None, None)
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Design area 235 u^2 33% utilization.", (235.0, 33.0)),
+        ("Design area 1234.56 u^2 41.7% utilization.", (1234.56, 41.7)),
+        # 26Q3 spells the unit um^2.
+        ("Design area 1234.56 um^2 41.7% utilization.", (1234.56, 41.7)),
+        ("no area here", (None, None)),
+    ],
+)
+def test_parse_openroad_area(text, expected):
+    assert openroad_timing.parse_openroad_area(text) == expected
