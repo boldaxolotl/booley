@@ -786,9 +786,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     def _lint_plan_inspection(self, target: TargetHandle) -> Any | None:
         """Inspect a Target, tolerating only the supported legacy no-top shape."""
-        catalog = getattr(self, "_target_catalog", None)
         try:
-            return (catalog or TargetCatalog.build(target.project_root)).inspect(target)
+            return TargetCatalog.build(target.project_root).inspect(target)
         except fusesoc_registry.FuseSocError as exc:
             if not isinstance(exc, MissingTargetToplevelError) and not target.doctor_private:
                 raise
@@ -846,10 +845,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             work_root_for(self.args.work_dir, "lint", selector),
         )
         if prepared is None:
-            prepared_units, errors = self._prepare_lint_targets((target,))
-            if errors:
-                return errors[0]
-            prepared = prepared_units[target.identity]
+            prepared = self._prepare_lint_targets((target,))[0][target.identity]
         result = prepared.result
         self.record_eda_tool(selector, prepared.resolved.configured_eda_tool)
         cmd = prepared.command
