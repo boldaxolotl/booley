@@ -39,7 +39,6 @@ def test_empty_sdc_does_not_require_checkout(tmp_path, monkeypatch):
     from booley.flows.synth.backends.yosys import core
 
     _detached_data_config(tmp_path, monkeypatch, "[flows.synth.timing]\nutilization_pct = 55\n")
-    assert core._resolve_sta_sdc_paths([], None) == []
     timing = core.synth_timing_config()
     assert timing.utilization_pct == 55
     assert timing.sdc == ()
@@ -55,7 +54,7 @@ def test_nonempty_sdc_requires_checkout_containment(tmp_path, monkeypatch, absol
     constraint.write_text("create_clock -period 10 [get_ports clk]\n")
     selected = str(constraint) if absolute else constraint.name
     with pytest.raises(ProjectRootDiscoveryError):
-        core._resolve_sta_sdc_paths([selected], None)
+        core.synth_timing_config(sdc=[selected])
 
 
 def test_import_is_lazy_but_implicit_operation_refuses(tmp_path, monkeypatch):
