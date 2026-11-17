@@ -930,18 +930,6 @@ class TestSingleProcess:
             store.submit("warp", pid=100)
 
 
-def test_entry_creation_exhaustion_names_the_memory_reservation(root, world, monkeypatch):
-    spawn(world, 100)
-    store = make_store(root, world)
-
-    def always_taken(_path, _target):
-        raise FileExistsError
-
-    monkeypatch.setattr(Path, "hardlink_to", always_taken)
-    with pytest.raises(RuntimeError, match="unique Memory Reservation entry"):
-        store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-
-
 def test_same_store_interleaved_submission_preserves_exact_entry_number(root, world, monkeypatch):
     spawn(world, 100)
     store = make_store(root, world)

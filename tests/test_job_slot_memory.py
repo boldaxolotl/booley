@@ -946,3 +946,15 @@ def test_the_coordinator_does_not_reduce_how_many_specialists_fit(root, world):
 def test_a_companion_claim_is_never_run_alone():
     with pytest.raises(ValueError, match="never run-alone"):
         job_slots.MemoryClaim(budget_mb=10, run_alone=True, companion=True)
+
+
+def test_entry_creation_exhaustion_names_the_memory_reservation(root, world, monkeypatch):
+    spawn(world, 100)
+    store = make_store(root, world)
+
+    def always_taken(_path, _target):
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "hardlink_to", always_taken)
+    with pytest.raises(RuntimeError, match="unique Memory Reservation entry"):
+        store.submit(job_slots.CLASS_MEMORY, memory=claim(1.0), pid=100)
