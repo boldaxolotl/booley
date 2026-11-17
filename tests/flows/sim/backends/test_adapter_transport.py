@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
+from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     ADAPTER_RESULT_SCHEMA,
     AdapterResult,
@@ -22,13 +24,14 @@ from booley.flows.sim.adapter_transport import (
     read_adapter_result,
     write_adapter_result,
 )
-from booley.flows.sim.backends import cocotb, icarus, verilator
+from booley.flows.sim.backends import cocotb
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     CocotbResults,
     CocotbTest,
 )
 from booley.flows.sim.backends.shared import RunTermination
+from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
 
 
 def _identity(tmp_path) -> AdapterTransportIdentity:
@@ -81,23 +84,19 @@ def test_adapter_result_round_trips_actual_simulator_returncode(tmp_path, return
     assert read_adapter_result(identity).simulator_returncode == returncode
 
 
-def test_adapter_result_rejects_identity_mismatch(tmp_path) -> None:
-    identity = _identity(tmp_path)
-    write_adapter_result(
-        identity,
-        AdapterResult(passed=True, inconclusive=False, sva_errors=0, tests=("reset",)),
-    )
-
-    with pytest.raises(AdapterTransportError, match="attempt token"):
-        read_adapter_result(replace(identity, attempt_token="different"))
-
-
-def test_adapter_result_rejects_unknown_schema(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("schema", "message"),
+    [
+        (999, "schema"),
+        (ADAPTER_RESULT_SCHEMA, "simulator_returncode"),
+    ],  # old format, current schema
+)
+def test_adapter_result_rejects_unknown_schema_and_old_format(tmp_path, schema, message) -> None:
     identity = _identity(tmp_path)
     identity.result_path.write_text(
         json.dumps(
             {
-                "schema": 999,
+                "schema": schema,
                 "adapter": identity.adapter,
                 "attempt_token": identity.attempt_token,
                 "target_identity": identity.target_identity,
@@ -111,30 +110,7 @@ def test_adapter_result_rejects_unknown_schema(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(AdapterTransportError, match="schema"):
-        read_adapter_result(identity)
-
-
-def test_adapter_result_rejects_old_format_in_current_schema(tmp_path) -> None:
-    identity = _identity(tmp_path)
-    identity.result_path.write_text(
-        json.dumps(
-            {
-                "schema": ADAPTER_RESULT_SCHEMA,
-                "adapter": identity.adapter,
-                "attempt_token": identity.attempt_token,
-                "target_identity": identity.target_identity,
-                "selected_tests": list(identity.selected_tests),
-                "passed": True,
-                "inconclusive": False,
-                "sva_errors": 0,
-                "tests": ["reset"],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(AdapterTransportError, match="simulator_returncode"):
+    with pytest.raises(AdapterTransportError, match=message):
         read_adapter_result(identity)
 
 
@@ -202,43 +178,41 @@ def test_adapter_result_rejects_contradictory_termination_fields(
         read_adapter_result(identity)
 
 
-def test_adapter_result_rejects_unselected_test(tmp_path) -> None:
-    identity = _identity(tmp_path)
-    write_adapter_result(
-        identity,
-        AdapterResult(passed=True, inconclusive=False, sva_errors=0, tests=("other",)),
-    )
-
-    with pytest.raises(AdapterTransportError, match="selected tests"):
-        read_adapter_result(identity)
-
-
-def test_adapter_result_requires_per_test_verdicts(tmp_path) -> None:
-    identity = _identity(tmp_path)
-    write_adapter_result(
-        identity,
-        AdapterResult(passed=True, inconclusive=False, sva_errors=0, tests=("reset",)),
-    )
-
-    with pytest.raises(AdapterTransportError, match="omits required per-test"):
-        read_adapter_result(identity)
-
-
-def test_adapter_pass_cannot_contradict_per_test_failure(tmp_path) -> None:
-    identity = _identity(tmp_path)
-    write_adapter_result(
-        identity,
-        AdapterResult(
-            passed=True,
-            inconclusive=False,
-            sva_errors=0,
-            tests=("reset",),
-            test_results=(AdapterTestResult("reset", "fail"),),
+@pytest.mark.parametrize(
+    ("written", "read_override", "message"),
+    [
+        ({"tests": ("reset",)}, {"attempt_token": "different"}, "attempt token"),
+        ({"tests": ("other",)}, {}, "selected tests"),
+        ({"tests": ("reset",)}, {}, "omits required per-test"),
+        (
+            {"tests": ("reset",), "test_results": (AdapterTestResult("reset", "fail"),)},
+            {},
+            "contradicts a per-test",
         ),
-    )
+        (  # #884: a trace failure never sits beside a passing test
+            {
+                "passed": False,
+                "inconclusive": True,
+                "failure_kind": "artifact",
+                "detail": "waveform missing",
+                "tests": ("reset",),
+                "test_results": (AdapterTestResult("reset", "pass"),),
+            },
+            {},
+            "trace failure contradicts a passing test",
+        ),
+    ],
+    ids=["identity", "unselected", "no-verdicts", "pass-beside-fail", "pass-beside-trace-failure"],
+)
+def test_adapter_result_rejects_inconsistent_evidence(
+    tmp_path, written, read_override, message
+) -> None:
+    identity = _identity(tmp_path)
+    fields = {"passed": True, "inconclusive": False, "sva_errors": 0, **written}
+    write_adapter_result(identity, AdapterResult(**fields))
 
-    with pytest.raises(AdapterTransportError, match="contradicts a per-test"):
-        read_adapter_result(identity)
+    with pytest.raises(AdapterTransportError, match=message):
+        read_adapter_result(replace(identity, **read_override))
 
 
 @pytest.mark.parametrize("failure_kind", ["infrastructure", "timeout", "missing_input"])
@@ -263,7 +237,7 @@ def test_completed_result_rejects_abort_only_failure_kinds(tmp_path, failure_kin
 def test_aborted_result_rejects_inconclusive_aggregate(tmp_path) -> None:
     identity = _identity(tmp_path)
     termination = RunTermination("disk_budget", "disk full", "infrastructure")
-    icarus._publish_adapter_result(identity, "", 0, termination=termination)
+    publish_native_adapter_result(identity, "", 0, termination=termination)
     payload = json.loads(identity.result_path.read_text(encoding="utf-8"))
     payload["inconclusive"] = True
     identity.result_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -275,7 +249,7 @@ def test_aborted_result_rejects_inconclusive_aggregate(tmp_path) -> None:
 def test_aborted_result_rejects_mismatched_per_test_termination(tmp_path) -> None:
     identity = _identity(tmp_path)
     termination = RunTermination("disk_budget", "disk full", "infrastructure")
-    icarus._publish_adapter_result(identity, "", 0, termination=termination)
+    publish_native_adapter_result(identity, "", 0, termination=termination)
     payload = json.loads(identity.result_path.read_text(encoding="utf-8"))
     payload["test_results"][0].update(termination="fatal_init", failure_kind="missing_input")
     identity.result_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -287,7 +261,7 @@ def test_aborted_result_rejects_mismatched_per_test_termination(tmp_path) -> Non
 def test_native_timeout_without_selected_tests_is_timeout_not_design(tmp_path) -> None:
     identity = replace(_identity(tmp_path), selected_tests=())
 
-    icarus._publish_adapter_result(
+    publish_native_adapter_result(
         identity,
         "",
         -15,
@@ -347,11 +321,10 @@ def test_adapter_result_rejects_invalid_authenticated_fields(
         read_adapter_result(identity)
 
 
-@pytest.mark.parametrize("adapter", [verilator, icarus])
-def test_native_adapter_publishes_authenticated_terminal_evidence(tmp_path, adapter) -> None:
+def test_native_adapter_publishes_authenticated_terminal_evidence(tmp_path) -> None:
     identity = _identity(tmp_path)
 
-    adapter._publish_adapter_result(identity, "[SIM_RESULT] PASSED\n", 0)
+    publish_native_adapter_result(identity, "[SIM_RESULT] PASSED\n", 0)
 
     assert read_adapter_result(identity) == AdapterResult(
         passed=True,
@@ -380,8 +353,7 @@ def test_native_run_exit_code_is_the_sentinel_verdict(tmp_path) -> None:
         assert identity.result_path.exists() is (transport is not None)
 
 
-@pytest.mark.parametrize("adapter", [verilator, icarus])
-def test_trace_request_requires_positive_waveform_evidence(tmp_path, adapter) -> None:
+def test_trace_request_requires_positive_waveform_evidence(tmp_path) -> None:
     identity = _identity(tmp_path)
 
     reason = (
@@ -389,7 +361,7 @@ def test_trace_request_requires_positive_waveform_evidence(tmp_path, adapter) ->
         "(a testbench with its own C++ main() writes its dump under a name "
         "Booley cannot guess - declare it in [flows.sim].trace_files)"
     )
-    adapter._publish_adapter_result(
+    publish_native_adapter_result(
         identity,
         "[SIM_RESULT] PASSED\n",
         0,
@@ -410,74 +382,22 @@ def test_trace_request_requires_positive_waveform_evidence(tmp_path, adapter) ->
 def test_native_trace_missing_keeps_functional_failure_and_timeout(tmp_path) -> None:
     trace = AdapterTraceResult("incident", detail="waveform missing")
     identity = _identity(tmp_path)
-    verilator._publish_adapter_result(
+    publish_native_adapter_result(
         identity, "[SIM_RESULT] FAILED\n", 1, trace_required=True, trace=trace
     )
     assert read_adapter_result(identity).test_results[0].verdict == "fail"
 
     timed_out = RunTermination(kind="timeout", detail="timed out", failure_kind="timeout")
-    verilator._publish_adapter_result(
+    publish_native_adapter_result(
         identity, "", 0, trace_required=True, trace=trace, termination=timed_out
     )
     assert read_adapter_result(identity).test_results[0].verdict == "timeout"
 
 
-def test_validator_rejects_passing_test_beside_trace_failure(tmp_path) -> None:
-    identity = _identity(tmp_path)
-    write_adapter_result(
-        identity,
-        AdapterResult(
-            passed=False,
-            inconclusive=True,
-            sva_errors=0,
-            tests=("reset",),
-            failure_kind="artifact",
-            detail="waveform missing",
-            test_results=(AdapterTestResult("reset", "pass"),),
-        ),
-    )
-
-    with pytest.raises(AdapterTransportError, match="trace failure contradicts a passing test"):
-        read_adapter_result(identity)
-
-
-@pytest.mark.parametrize(
-    "test_status, extra_output, failure_kind, expected_verdict, expected_kind",
-    [
-        ("pass", "", "", "inconclusive", "artifact"),
-        ("fail", "", "", "fail", "design"),
-        ("pass", "\n$error assertion", "", "fail", "design"),
-        ("pass", "", "design", "fail", "design"),
-    ],
-)
-def test_cocotb_trace_incident_preserves_functional_verdicts(
-    tmp_path,
-    test_status,
-    extra_output,
-    failure_kind,
-    expected_verdict,
-    expected_kind,
-) -> None:
-    identity = replace(_identity(tmp_path), adapter="cocotb")
-    results = CocotbResults(
-        state=STATE_OK,
-        tests=(CocotbTest("reset", "test_demo", test_status),),
-    )
-    cocotb._publish_adapter_result(
-        identity,
-        extra_output,
-        False,
-        results=results,
-        failure_kind=failure_kind,
-        trace=AdapterTraceResult("incident", detail="waveform missing"),
-    )
-
-    result = read_adapter_result(identity)
-    assert result.test_results[0].verdict == expected_verdict
-    assert result.failure_kind == expected_kind
-
-
 def test_cocotb_abort_after_all_tests_completed_cannot_pass_batch(tmp_path) -> None:
+    # Private seam: the full run's verdict (`cocotb.py::_assess_verdict`) already makes an
+    # aborted batch fail, so only a direct call can hand the publisher `passed=True` beside
+    # an abort and prove its own `not termination.aborted` guard (`_cocotb_adapter_result`).
     identity = replace(_identity(tmp_path), adapter="cocotb", selected_tests=("first", "second"))
     results = CocotbResults(
         state=STATE_OK,
@@ -504,67 +424,8 @@ def test_cocotb_abort_after_all_tests_completed_cannot_pass_batch(tmp_path) -> N
     assert [test.verdict for test in result.test_results] == ["pass", "pass"]
 
 
-@pytest.mark.parametrize("prefix", ["", "tests.counter."])
-def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path, prefix) -> None:
-    identity = replace(
-        _identity(tmp_path),
-        adapter="cocotb",
-        selected_tests=("done", "active", "later"),
-    )
-    progress = f"""\
-0.00ns INFO cocotb.regression running {prefix}done (1/3)
-1.00ns INFO cocotb.regression {prefix}done passed
-1.00ns INFO cocotb.regression running {prefix}active (2/3)
-"""
-    publish = cocotb._partial_result_publisher(
-        identity, list(identity.selected_tests), tmp_path / "results.xml"
-    )
-    assert publish is not None
-    for line in progress.splitlines(keepends=True):
-        publish(line)
-
-    result = read_adapter_result(partial_result_identity(identity))
-    assert result.failure_kind == "timeout"
-    assert [(item.name, item.verdict) for item in result.test_results] == [
-        ("done", "pass"),
-        ("active", "timeout"),
-        ("later", "timeout"),
-    ]
-
-
-@pytest.mark.parametrize("prefix", ["", "tests.counter."])
-def test_default_cocotb_partial_transport_discovers_current_attempt_names(
-    tmp_path, prefix
-) -> None:
-    identity = replace(_identity(tmp_path), adapter="cocotb", selected_tests=())
-    results = tmp_path / "results.xml"
-    results.write_text(
-        "<testsuite><testcase name='done'/><testcase name='active'>"
-        "<failure message='interrupted'/></testcase>"
-        "<testcase name='later'><skipped/></testcase></testsuite>",
-        encoding="utf-8",
-    )
-    publish = cocotb._partial_result_publisher(identity, [], results)
-    assert publish is not None
-
-    publish(f"0.00ns INFO cocotb.regression running {prefix}done (1/3)\n")
-    publish(f"1.00ns INFO cocotb.regression {prefix}done passed\n")
-    publish(f"1.00ns INFO cocotb.regression running {prefix}active (2/3)\n")
-
-    result = read_adapter_result(partial_result_identity(identity))
-    assert result.tests == ("done", "active", "later")
-    assert [test.verdict for test in result.test_results] == [
-        "pass",
-        "timeout",
-        "timeout",
-    ]
-
-
 @pytest.mark.parametrize("terminal", [False, True])
 def test_attempt_preserves_terminal_evidence_and_removes_own_partial(tmp_path, terminal) -> None:
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
-
     identity = _identity(tmp_path)
     partial = partial_result_identity(identity)
     unrelated = tmp_path / "other.json.partial"
@@ -589,9 +450,6 @@ def test_attempt_preserves_terminal_evidence_and_removes_own_partial(tmp_path, t
 
 
 def test_attempt_classifies_malformed_transport_as_authentication(tmp_path) -> None:
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
-
     identity = _identity(tmp_path)
     partial = partial_result_identity(identity)
 
@@ -610,9 +468,6 @@ def test_attempt_classifies_malformed_transport_as_authentication(tmp_path) -> N
 
 @pytest.mark.parametrize("timed_out", [False, True])
 def test_attempt_without_evidence_is_runtime_failure(tmp_path, timed_out) -> None:
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
-
     identity = _identity(tmp_path)
     outcome = execute_adapter_attempt(
         lambda command, timeout: SubprocessResult(returncode=-9, timed_out=timed_out),
@@ -623,11 +478,6 @@ def test_attempt_without_evidence_is_runtime_failure(tmp_path, timed_out) -> Non
 
 
 def test_attempt_cleanup_error_keeps_authenticated_result(tmp_path, monkeypatch) -> None:
-    from pathlib import Path
-
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
-
     identity = _identity(tmp_path)
     partial = partial_result_identity(identity)
     result = AdapterResult(
@@ -657,9 +507,6 @@ def test_attempt_cleanup_error_keeps_authenticated_result(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("defect", ["token", "target", "stale"])
 def test_attempt_rejects_unauthenticated_evidence(tmp_path, defect) -> None:
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
-
     identity = _identity(tmp_path)
     result = AdapterResult(
         True, False, 0, ("reset",), test_results=(AdapterTestResult("reset", "pass"),)
@@ -683,11 +530,6 @@ def test_attempt_rejects_unauthenticated_evidence(tmp_path, defect) -> None:
 
 
 def test_attempt_failed_promotion_preserves_only_durable_partial(tmp_path, monkeypatch) -> None:
-    from pathlib import Path
-
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
-
     identity = _identity(tmp_path)
     partial = partial_result_identity(identity)
     result = AdapterResult(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sys
-from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,80 +19,143 @@ from booley.flows.sim.backends import shared as backend_shared
 from booley.flows.sim.backends import verilator as vr
 from booley.flows.sim.backends.supervision import SimulatorLaunch
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
+from booley.flows.sim.trace_session import TraceSession
 
 
-def test_find_binary_locates_flat_vtop(tmp_path: Path):
+def _build_dir(tmp_path: Path) -> Path:
+    """A build dir holding an edalize-style flat ``Vtb_top`` that the fake launch never runs."""
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "Vtb_top").write_text("#!/bin/sh\n")
+    return build
+
+
+@pytest.mark.parametrize(
+    ("plusargs", "tail"),
+    [
+        # bare plusargs gain a leading +, already-prefixed ones are left alone
+        (["test_id=1", "+already"], ["+test_id=1", "+already"]),
+        # ADR 0072: the seed plusarg reaches the binary as ``+verilator+seed+<n>``
+        (["test_id=1", "verilator+seed+2147483647"], ["+test_id=1", "+verilator+seed+2147483647"]),
+        # SETUP-7: a '-'/'--' selector is a getopt argument, forwarded without a '+'
+        (["--meminit=ram,boot.elf"], ["--meminit=ram,boot.elf"]),
+    ],
+)
+def test_binary_is_launched_flat_with_the_plusargs(tmp_path: Path, fake_launch, plusargs, tail):
     """Edalize links V<top> flat in the build dir (no obj_dir/)."""
-    exe = tmp_path / "Vtb_top"
-    exe.write_text("#!/bin/sh\n")
-    assert vr._find_binary(tmp_path, "tb_top") == exe
-    assert vr._find_binary(tmp_path, "missing") is None
+    build = _build_dir(tmp_path)
+    vr.run_verilated_binary(top_module="tb_top", bin_dir=build, plusargs=plusargs)
+    launch = fake_launch.launches[0]
+    assert launch.command == [str(build / "Vtb_top"), *tail]
+    if sys.platform != "win32":  # a DPI .so placed beside the binary still resolves
+        assert str(build) in launch.env["LD_LIBRARY_PATH"]
 
 
-def test_build_run_cmd_appends_plusargs(tmp_path: Path):
-    exe = tmp_path / "Vtop"
-    cmd, env = vr._build_run_cmd(exe, tmp_path, ["test_id=1", "+already"])
-    assert cmd[0] == str(exe)
-    # bare plusargs gain a leading +, already-prefixed ones are left alone
-    assert "+test_id=1" in cmd
-    assert "+already" in cmd
-    # Trace arguments are appended by _setup_trace, which owns the destination.
-    assert "+trace" not in cmd
-    # LD_LIBRARY_PATH widened to the binary dir (harmless for a static binary)
-    if "LD_LIBRARY_PATH" in env:
-        assert str(tmp_path) in env["LD_LIBRARY_PATH"]
+class _StandInConversion:
+    """A FIFO conversion whose ``finish`` records when the adapter cleans it up."""
+
+    pid = 0
+    return_code = 0
+
+    def __init__(self, events: list[str]):
+        self.events = events
+
+    def poll(self) -> int:
+        return 0
+
+    def finish(self):
+        self.events.append("finish")
 
 
-def test_build_run_cmd_passes_the_seed_option_the_runtime_reads(tmp_path: Path):
-    # ADR 0072: the engine renders the seed as the plusarg ``verilator+seed+<n>``;
-    # the binary must receive Verilator's own ``+verilator+seed+<n>`` spelling.
-    cmd, _ = vr._build_run_cmd(
-        tmp_path / "Vtop", tmp_path, ["test_id=1", "iters=5", "verilator+seed+2147483647"]
+@pytest.fixture
+def fifo_conversion(monkeypatch) -> list[str]:
+    """``start_streaming_conversion`` yields a stand-in; the list records ``finish`` calls."""
+    events: list[str] = []
+    monkeypatch.setattr(
+        "booley.flows.sim.trace_session.start_streaming_conversion",
+        lambda *_args, **_kwargs: _StandInConversion(events),
     )
-    assert cmd[1:] == ["+test_id=1", "+iters=5", "+verilator+seed+2147483647"]
+    return events
 
 
-def test_build_run_cmd_forwards_getopt_arg_verbatim(tmp_path: Path):
-    # SETUP-7: a '-'/'--' selector is a getopt argument, forwarded to the
-    # binary's main WITHOUT a '+' prefix (unlike bare plusargs).
-    cmd, _ = vr._build_run_cmd(tmp_path / "Vtop", tmp_path, ["--meminit=ram,boot.elf"])
-    assert "--meminit=ram,boot.elf" in cmd
-    assert "+--meminit=ram,boot.elf" not in cmd
+@pytest.mark.parametrize(
+    ("mode", "dest", "trace_args", "tail"),
+    [
+        # F-15: the trace CLI is the project's to declare; the default is Booley's plusargs
+        (vr.TraceMode.NATIVE_FST, "trace.fst", None, ["+trace", "+tracefile={trace}"]),
+        (vr.TraceMode.NATIVE_FST, "trace.fst", ["--trace={file}"], ["--trace={trace}"]),
+        (vr.TraceMode.VCD_FIFO, "trace.fifo", ["--trace={file}"], ["--trace={trace}"]),
+    ],
+)
+def test_trace_arguments_follow_the_declared_contract(
+    tmp_path: Path, fake_launch, fifo_conversion, mode, dest, trace_args, tail
+):
+    build, work = _build_dir(tmp_path), tmp_path / "work"
+    vr.run_verilated_binary(
+        top_module="tb_top",
+        bin_dir=build,
+        work_dir=work,
+        vcd=True,
+        trace_scope="tb",
+        trace_mode=mode,
+        trace_args=trace_args,
+    )
+    expected = [arg.format(trace=work / dest) for arg in tail]
+    assert fake_launch.launches[0].command == [str(build / "Vtb_top"), *expected]
 
 
-class TestTraceArgContract:
-    """F-15: the trace CLI is the project's to declare, not Booley's to assume.
+def test_file_templates_dropped_without_a_destination(tmp_path: Path, fake_launch, monkeypatch):
+    # No FIFO means nowhere to write; an unrendered template would reach the
+    # binary as the literal string "{file}".
+    monkeypatch.setattr(
+        "booley.flows.sim.trace_session.start_streaming_conversion", lambda *_a, **_k: None
+    )
+    build = _build_dir(tmp_path)
+    vr.run_verilated_binary(
+        top_module="tb_top",
+        bin_dir=build,
+        vcd=True,
+        trace_scope="tb",
+        trace_args=["-t", "--trace={file}"],
+    )
+    assert fake_launch.launches[0].command == [str(build / "Vtb_top"), "-t"]
 
-    Ibex's VerilatorSimCtrl enables capture only for getopt `-t`/`--trace=FILE`.
-    Booley's generic plusarg pair was ignored, the run passed, and a 443-byte
-    header-only FST was accepted as a traced simulation.
-    """
 
-    def test_default_is_booleys_own_plusarg_convention(self, tmp_path: Path):
-        rendered = vr._render_trace_args(None, tmp_path / "trace.fifo")
-        assert rendered == ["+trace", f"+tracefile={tmp_path / 'trace.fifo'}"]
+@pytest.mark.skipif(sys.platform == "win32", reason="the FIFO recipe is POSIX only")
+def test_launch_passes_guard_inputs_and_cleans_the_fifo_conversion(
+    tmp_path: Path, fake_launch, fifo_conversion
+):
+    """Every guard input reaches the shared runner; the converter is finished after it."""
+    build = _build_dir(tmp_path)
+    fake_launch.during = lambda launch: fifo_conversion.append("launch")
 
-    def test_project_contract_replaces_the_default(self, tmp_path: Path):
-        fifo = tmp_path / "trace.fifo"
-        rendered = vr._render_trace_args(["--trace={file}"], fifo)
-        assert rendered == [f"--trace={fifo}"]
-        assert "+trace" not in rendered
+    vr.run_verilated_binary(
+        top_module="tb_top",
+        bin_dir=build,
+        vcd=True,
+        trace_scope="tb",
+        timeout=42,
+        max_rundir_bytes=1234,
+        runtime_inputs=("memory.hex",),
+    )
 
-    def test_file_templates_dropped_without_a_destination(self):
-        # The non-FIFO path has nowhere to write; an unrendered template would
-        # reach the binary as the literal string "{file}".
-        assert vr._render_trace_args(["-t", "--trace={file}"], None) == ["-t"]
-
-    def test_setup_bwave_appends_the_configured_contract(self, tmp_path: Path):
-        class FakeTrace:
-            fifo_path = tmp_path / "trace.fifo"
-
-            def start_fifo(self):
-                return None, True, None
-
-        cmd = ["/bin/Vtop"]
-        vr._setup_bwave(FakeTrace(), cmd, ["--trace={file}"])
-        assert cmd == ["/bin/Vtop", f"--trace={tmp_path / 'trace.fifo'}"]
+    (launch,) = fake_launch.launches
+    assert launch == SimulatorLaunch(
+        "Verilator",
+        [str(build / "Vtb_top"), "+trace", f"+tracefile={build / 'trace.fifo'}"],
+        build,
+        launch.env,
+        42,
+        build,
+        1234,
+        ("memory.hex",),
+        trace=launch.trace,
+        conversion=launch.conversion,
+        streams=launch.streams,
+    )
+    assert isinstance(launch.trace, TraceSession)
+    assert launch.conversion is not None  # the stall monitor needs the converter
+    assert fifo_conversion == ["launch", "finish"]
 
 
 def _verilator_work(tmp_path: Path, **overrides: object) -> PreparedSimulationWork:
@@ -201,18 +263,15 @@ def _launch_prints(tmp_path: Path, monkeypatch, capsys, printed: str, expected_e
     assert printed in capsys.readouterr().out
 
 
-def test_run_verilated_binary_missing_exe_returns_error(tmp_path: Path):
-    """A missing binary yields a clear error string (no crash)."""
-    out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path).output
-    assert "not found" in out
-
-
-def test_missing_exe_is_marked_as_infra_not_a_verdict(tmp_path: Path):
+def test_missing_exe_is_an_infra_error_not_a_verdict(tmp_path: Path):
     """SETUP-F-41b: no binary means no observation — the marker lets a grading
-    caller refuse to score the run instead of reading rc!=0 as a FAIL."""
-    out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path).output
+    caller refuse to score the run instead of reading rc!=0 as a FAIL. The
+    run-half still creates the work dir it owns (a missing parent broke os.mkfifo)."""
+    work_dir = tmp_path / "sim" / "config_a"  # nested, does not exist
+    out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path, work_dir=work_dir).output
+    assert "not found" in out
     assert SIM_INFRA_ERROR_PREFIX in out
-    assert (tmp_path / "run.log").exists()
+    assert (work_dir / "run.log").exists()
 
 
 def test_cocotb_vtop_binary_is_named_not_silently_run(tmp_path: Path):
@@ -220,7 +279,6 @@ def test_cocotb_vtop_binary_is_named_not_silently_run(tmp_path: Path):
     would run a VPI-driven binary with no cocotb env (an empty pass), so the
     run-half must name the mismatch instead."""
     (tmp_path / "Vtop").write_text("#!/bin/sh\n", encoding="utf-8")
-    assert vr._find_binary(tmp_path, "ravenoc_wrapper") is None
 
     out = vr.run_verilated_binary(top_module="ravenoc_wrapper", bin_dir=tmp_path).output
     assert "Cocotb Target" in out
@@ -249,18 +307,6 @@ def test_run_verilated_binary_writes_run_log_end_to_end(tmp_path: Path, capsys):
     assert (work_dir / "result.json").exists()  # run.log sits beside result.json
 
 
-def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
-    """The run-half owns its output dir: a caller-derived trace/result dir that
-    doesn't exist yet is created (else os.mkfifo / write_result_json would fail
-    on a missing parent — the bug that broke the first coverage A.2 run)."""
-    bin_dir = tmp_path / "build"
-    bin_dir.mkdir()
-    work_dir = tmp_path / "sim" / "config_a"  # nested, does not exist
-    # No binary present → returns early after the mkdir, before any run.
-    vr.run_verilated_binary(top_module="tb_top", bin_dir=bin_dir, work_dir=work_dir)
-    assert work_dir.is_dir()
-
-
 @pytest.mark.parametrize(
     ("kind", "failure_kind", "missing_path"),
     [
@@ -270,29 +316,18 @@ def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
     ],
 )
 def test_guard_termination_is_published_to_adapter_transport(
-    tmp_path: Path, monkeypatch, kind: str, failure_kind: str, missing_path: str
+    tmp_path: Path, fake_launch, kind: str, failure_kind: str, missing_path: str
 ) -> None:
-    termination = vr.RunTermination(
+    fake_launch.termination = vr.RunTermination(
         kind, f"{kind} stopped the simulator", failure_kind, missing_path
     )
-    process = type("Process", (), {"returncode": 9})()
-    monkeypatch.setattr(
-        vr,
-        "_execute_supervised",
-        lambda *_args: (deque(["guard fired\n"]), process, termination),
-    )
-    monkeypatch.setattr(
-        vr,
-        "_finalize_verilated_run",
-        lambda *_args: ("guard fired\n", None),
-    )
+    fake_launch.returncode = 9
+    fake_launch.output = ["guard fired\n"]
     identity = AdapterTransportIdentity(
         "verilator", "attempt", "acme:lib:dut:1#sim", ("smoke",), tmp_path / "adapter.json"
     )
-    paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
-    trace = vr._TraceRuntime(None, None, vr.TraceMode.VCD_FIFO, None)
 
-    vr._execute_verilated_and_publish([], paths, {}, 30, trace, 0, (), None, None, False, identity)
+    vr.run_verilated_binary(top_module="tb_top", bin_dir=_build_dir(tmp_path), transport=identity)
 
     result = read_adapter_result(identity)
     assert result.simulator_returncode == 9
@@ -301,130 +336,31 @@ def test_guard_termination_is_published_to_adapter_transport(
     assert result.missing_input_path == missing_path
 
 
-def test_execute_supervised_cleans_fifo_conversion(tmp_path: Path, monkeypatch):
-    class FakeSession:
-        def __init__(self):
-            self.cleaned = None
-
-        def cleanup_fifo(self, conversion):
-            self.cleaned = conversion
-
-    session = FakeSession()
-    conversion = object()
-    trace = vr._TraceRuntime(
-        session=session,
-        current=None,
-        mode=vr.TraceMode.VCD_FIFO,
-        conversion=conversion,
-    )
-    paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
-    monkeypatch.setattr(
-        vr,
-        "run_supervised",
-        lambda *_args, **_kwargs: (deque(), object(), vr.RunTermination()),
-    )
-
-    vr._execute_supervised([], paths, {}, 1, trace, 0, ())
-
-    assert session.cleaned is conversion
-
-
-def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch):
-    """AC3 wiring: every guard input reaches the shared runner's launch spec."""
-    launches: list[SimulatorLaunch] = []
-
-    class FakeSession:
-        def cleanup_fifo(self, conversion):
-            pass
-
-    session = FakeSession()
-    conversion = object()
-    trace = vr._TraceRuntime(
-        session=session,
-        current=None,
-        mode=vr.TraceMode.VCD_FIFO,
-        conversion=conversion,
-    )
-    run_cwd = tmp_path / "cwd"
-    work_dir = tmp_path / "work"
-    paths = vr._RunPaths(tmp_path, run_cwd, work_dir)
-
-    def record(launch):
-        launches.append(launch)
-        return deque(), object(), vr.RunTermination()
-
-    monkeypatch.setattr(vr, "run_supervised", record)
-
-    vr._execute_supervised(["Vtb_top", "+x"], paths, {"K": "V"}, 42, trace, 1234, ("memory.hex",))
-
-    (launch,) = launches
-    assert launch == SimulatorLaunch(
-        "Verilator",
-        ["Vtb_top", "+x"],
-        run_cwd,
-        {"K": "V"},
-        42,
-        work_dir,
-        1234,
-        ("memory.hex",),
-        trace=session,
-        conversion=conversion,
-    )
-
-
-class _FinishedProcess:
-    """Small cross-platform stand-in for a successfully exited simulator."""
-
-    pid = 0
-    returncode = 0
-
-    def poll(self) -> int:
-        return self.returncode
-
-
-def _stub_verilated_execution(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    trace_path: Path | None = None,
-) -> None:
-    """Replace OS process startup while retaining run-finalization behavior."""
-
-    def execute(*_args, **_kwargs):
-        if trace_path is not None:
-            trace_path.write_bytes(MINIMAL_FST_BYTES)
-        return deque(["[SIM_RESULT] PASSED\n"]), _FinishedProcess(), vr.RunTermination()
-
-    monkeypatch.setattr(vr, "_execute_supervised", execute)
-
-
-def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeypatch):
-    bin_dir = tmp_path / "build"
-    work_dir = tmp_path / "trace"
-    bin_dir.mkdir()
-    exe = bin_dir / "Vtb_top"
-    exe.touch()
-    _stub_verilated_execution(monkeypatch, trace_path=work_dir / "trace.fst")
+@pytest.fixture
+def bwave_info(monkeypatch) -> None:
+    """The native bwave binary reports a queryable one-signal waveform."""
     monkeypatch.setattr("booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave")
+    info = {
+        "scope_prefix": "tb_top",
+        "root_scopes": ["tb_top"],
+        "signal_count": 1,
+        "total_ticks": 2,
+        "signals": [{"name": "clk"}],
+    }
     monkeypatch.setattr(
         vr.subprocess,
         "run",
         lambda *_args, **_kwargs: vr.subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "data": {
-                        "scope_prefix": "tb_top",
-                        "root_scopes": ["tb_top"],
-                        "signal_count": 1,
-                        "total_ticks": 2,
-                        "signals": [{"name": "clk"}],
-                    }
-                }
-            ),
-            stderr="",
+            args=[], returncode=0, stdout=json.dumps({"data": info}), stderr=""
         ),
     )
+
+
+@pytest.mark.usefixtures("bwave_info")
+def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, fake_launch):
+    bin_dir = _build_dir(tmp_path)
+    work_dir = tmp_path / "trace"
+    fake_launch.during = lambda _launch: (work_dir / "trace.fst").write_bytes(MINIMAL_FST_BYTES)
 
     output = vr.run_verilated_binary(
         top_module="tb_top",
@@ -441,35 +377,10 @@ def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeyp
     assert not (work_dir / "trace.fifo").exists()
 
 
-def test_declared_native_fst_must_be_fresh_for_current_run(tmp_path: Path, monkeypatch):
-    bin_dir = tmp_path / "build"
-    bin_dir.mkdir()
-    stale = bin_dir / "hardcoded.fst"
-    stale.write_bytes(MINIMAL_FST_BYTES)
-    exe = bin_dir / "Vtb_top"
-    exe.touch()
-    _stub_verilated_execution(monkeypatch)
-    monkeypatch.setattr("booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave")
-    monkeypatch.setattr(
-        vr.subprocess,
-        "run",
-        lambda *_args, **_kwargs: vr.subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "data": {
-                        "scope_prefix": "tb_top",
-                        "root_scopes": ["tb_top"],
-                        "signal_count": 1,
-                        "total_ticks": 2,
-                        "signals": [{"name": "clk"}],
-                    }
-                }
-            ),
-            stderr="",
-        ),
-    )
+@pytest.mark.usefixtures("bwave_info", "fake_launch")
+def test_declared_native_fst_must_be_fresh_for_current_run(tmp_path: Path):
+    bin_dir = _build_dir(tmp_path)
+    (bin_dir / "hardcoded.fst").write_bytes(MINIMAL_FST_BYTES)
 
     output = vr.run_verilated_binary(
         top_module="tb_top",
