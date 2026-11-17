@@ -164,9 +164,9 @@ Where each credential comes from:
 | `codex` | your Codex login (`codex login`, saved in `~/.codex/auth.json`) | `OPENAI_API_KEY` |
 
 - **Subscription:** usage counts against your plan. When you hit a Claude
-  rate limit, Booley waits and retries a Specialist call within its retry and
-  timeout budgets; a Codex call stops and must be invoked again after the
-  limit resets.
+  rate limit, Booley waits and retries a Specialist call if the limit resets
+  soon; if the reset is too far off, the call stops with a usage-limit error.
+  A Codex call stops and must be invoked again after the limit resets.
 - **API key:** you pay per token.
 
 **For long runs, run `booley auth`.** The normal login renews itself
