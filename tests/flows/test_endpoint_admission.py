@@ -806,7 +806,7 @@ def test_memory_queue_narration_names_the_need_and_the_largest_holders(
     endpoint_admission._memory_narrator(endpoint, store, pid)(0)  # type: ignore[arg-type]
 
     assert capsys.readouterr().err == (
-        "[slot] synth: waiting for memory (position 1): needs 400 MiB; 300 MiB free "
+        "[admission] synth: waiting for memory (position 1): needs 400 MiB; 300 MiB free "
         "of the 1,000 MiB Memory Budget; largest holders: run-2 (synth, t2) 500 MiB, "
         "run-1 (synth, t1) 200 MiB\n"
     )
@@ -1302,11 +1302,15 @@ def test_requeued_job_narrates_the_requeue_reason_while_queued(
 
     harness.execute()
 
-    lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("[slot]")]
+    lines = [
+        line for line in capsys.readouterr().err.splitlines() if line.startswith("[admission]")
+    ]
     assert len(lines) == 2
-    assert lines[0].startswith("[slot] synth: waiting for memory (position 1): needs 500 MiB")
+    assert lines[0].startswith("[admission] synth: waiting for memory (position 1): needs 500 MiB")
     assert lines[0].count(REQUEUE_REASON) == 0
-    assert lines[1].startswith("[slot] synth: waiting for memory (position 1): waits to run alone")
+    assert lines[1].startswith(
+        "[admission] synth: waiting for memory (position 1): waits to run alone"
+    )
     assert lines[1].endswith(f"; {REQUEUE_REASON}")
 
 

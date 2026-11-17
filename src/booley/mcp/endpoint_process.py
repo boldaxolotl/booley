@@ -148,7 +148,7 @@ async def _wait_with_queue_credit(
 ) -> bool:
     """Wait for *proc*, charging only non-queued time against *timeout*.
 
-    The child claims its concurrency slot INSIDE its own process (ADR 0028),
+    The child claims its Memory Reservation INSIDE its own process (ADR 0028),
     so wall-clock since spawn includes any queue wait — which can exceed the
     endpoint's whole budget when a long run holds the class slot. Killing a job
     for time it spent waiting in line defeats the queue, so the watchdog

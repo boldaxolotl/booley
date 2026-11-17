@@ -1027,7 +1027,7 @@ class SlotStore:
                 with contextlib.suppress(OSError):
                     tmp.unlink(missing_ok=True)
             return self._new_waiter_token(path, payload, request)
-        raise RuntimeError("could not allocate a unique Job slot entry")
+        raise RuntimeError("could not allocate a unique Memory Reservation entry")
 
     @staticmethod
     def _new_waiter_payload(
@@ -1372,7 +1372,7 @@ class SlotStore:
         while token.path.exists():
             if should_abort is not None and should_abort():
                 raise ClaimAbortedError(
-                    f"aborted while waiting for a {token.job_class} slot (shutdown requested)"
+                    f"aborted while waiting for {token.job_class} admission (shutdown requested)"
                 )
             state = self.refresh(token)
             if state.state == HOLDING:
@@ -1409,7 +1409,7 @@ class SlotStore:
         if self._release_entry(token):
             return
         logger.warning(
-            "Release of slot entry %s deferred: it could not take its lease gate. Retrying in the "
+            "Release of Memory Reservation %s deferred: it could not take its lease gate. Retrying in the "
             "background; if this process exits first, the entry keeps its reservation "
             "until reap removes it",
             token.path.name,
@@ -1463,7 +1463,7 @@ class SlotStore:
     @staticmethod
     def _warn_release_gave_up(token: SlotToken) -> None:
         logger.warning(
-            "Could not release slot entry %s: it could not take its lease gate; "
+            "Could not release Memory Reservation %s: it could not take its lease gate; "
             "the entry keeps its reservation until reaped",
             token.path.name,
         )
@@ -1723,7 +1723,7 @@ class SlotStore:
         return self._retry_entry_io(
             lambda: path.unlink(missing_ok=True),
             on_exhausted=lambda: logger.warning(
-                "Could not remove slot entry after retries: %s", path.name
+                "Could not remove Memory Reservation after retries: %s", path.name
             ),
         )
 
@@ -1879,7 +1879,9 @@ class SlotStore:
             except FileNotFoundError:
                 return False  # promoted (renamed) or already removed: the race is lost
             except OSError as exc:
-                logger.warning("Refusing to withdraw queued slot entry %s: %s", path.name, exc)
+                logger.warning(
+                    "Refusing to withdraw queued Memory Reservation %s: %s", path.name, exc
+                )
                 return False
             return True
 
@@ -1960,7 +1962,7 @@ class SlotStore:
         for path in list(cls_dir.glob("*.json")):
             if self._is_stale(path) and self._unlink_entry(path):
                 reaped.append(path.name)
-                logger.info("Reaped stale slot entry %s", path.name)
+                logger.info("Reaped stale Memory Reservation %s", path.name)
         return reaped
 
     def _is_stale(self, path: Path) -> bool:

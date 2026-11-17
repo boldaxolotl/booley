@@ -118,7 +118,11 @@ def _token_missing(simulation_record, monkeypatch):
         lambda token: withdrawn.is_set() or real_absent(token),
     )
     # A really missing file (released by the run) is still absent.
-    return withdrawn.set, "token missing", lambda: real_absent(simulation_record.outer) is True
+    return (
+        withdrawn.set,
+        "Memory Reservation missing",
+        lambda: real_absent(simulation_record.outer) is True,
+    )
 
 
 @pytest.mark.parametrize("scenario", [_lease_lost, _token_missing])
@@ -166,7 +170,7 @@ def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
             assert permit.scope.cancellation_cause() is None
             permit.lease_health.lost.set()
             assert permit.scope.cancellation_cause() == (
-                f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
+                f"Memory Reservation lease lost: {permit.token.job_class}/{permit.token.path.name}"
             )
     finally:
         simulation_record.slots.release(simulation_record.outer)
@@ -177,14 +181,14 @@ def test_cancelled_simulation_record_stops_before_publication(tmp_path: Path) ->
     admission = replace(
         _admission(),
         cancellation=lambda: True,
-        cancellation_cause=lambda: "Job Slot token missing: memory/entry.json",
+        cancellation_cause=lambda: "Memory Reservation missing: memory/entry.json",
     )
     project = tmp_path / "project"
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     executor = OrdinaryHdlSerialExecutor(invoke=lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
     with pytest.raises(
-        SimulationRecordCancellationError, match="cancelled: Job Slot token missing"
+        SimulationRecordCancellationError, match="cancelled: Memory Reservation missing"
     ):
         SimulationRecord(executor, work_item_request=lambda *_args: None).run(
             NewSimulationRecordRunRequest(

@@ -1244,7 +1244,7 @@ async def test_commands_without_a_slot_run_now_on_a_busy_queue(
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, flow)
         await check_arguments(app, pilot, wizard, text)
-        assert shown(wizard, "#run-review").splitlines()[0] == "Runs now (takes no Job slot)"
+        assert shown(wizard, "#run-review").splitlines()[0] == "Runs now (not admitted by memory)"
         assert shown(wizard, "#run-error") == ""
         await pilot.press("enter")
         await pilot.pause()

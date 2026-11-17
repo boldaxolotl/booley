@@ -986,6 +986,18 @@ def test_a_companion_claim_is_never_run_alone():
         job_slots.MemoryClaim(budget_mb=10, run_alone=True, companion=True)
 
 
+def test_entry_creation_exhaustion_names_the_memory_reservation(root, world, monkeypatch):
+    spawn(world, 100)
+    store = make_store(root, world)
+
+    def always_taken(_path, _target):
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "hardlink_to", always_taken)
+    with pytest.raises(RuntimeError, match="unique Memory Reservation entry"):
+        store.submit(job_slots.CLASS_MEMORY, memory=claim(1.0), pid=100)
+
+
 def take_over(store: SlotStore, holder: job_slots.SlotToken, memory) -> job_slots.SlotToken:
     """Submit *memory* from the holder's own process, taking over the holder's place (#4482)."""
     return store.submit(job_slots.CLASS_MEMORY, pid=holder.pid, memory=memory, succeeds=holder)
