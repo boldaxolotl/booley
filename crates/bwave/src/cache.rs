@@ -708,6 +708,12 @@ fn observation_boundaries(
 
 fn query_config(cache: &ColumnCache, original: &ExtractConfig) -> ExtractConfig {
     let mut cfg = clock_query_config(cache, original);
+    if let Some(text) = window_outside_trace(cache, &cfg) {
+        if !cfg.json_format {
+            eprintln!("# WARNING: {text}");
+        }
+        cfg.warnings = crate::output::merge_warnings(cfg.warnings, &[text]);
+    }
     if !cfg.async_mode {
         let report = reset_report(cache, cfg.with_reset);
         if !cfg.json_format {
@@ -4312,20 +4318,68 @@ pub fn resolve_time_token(
     }
 }
 
-fn sampled_cycle_window(cache: &ColumnCache, cfg: &ExtractConfig, base: u64) -> (u64, u64) {
+fn last_counted_cycle(cache: &ColumnCache, base: u64) -> u64 {
     let period = cache.clock_period_ticks;
-    let total = if period == 0 || base > cache.sim_end_tick {
+    if period == 0 || base > cache.sim_end_tick {
         0
     } else {
         ((cache.sim_end_tick - base) / period)
             .checked_add(1)
             .expect("sampled cycle count overflow")
-    };
+    }
+}
+
+fn sampled_cycle_window(cache: &ColumnCache, cfg: &ExtractConfig, base: u64) -> (u64, u64) {
+    let total = last_counted_cycle(cache, base);
     let start = u64::try_from(cfg.time_min).unwrap_or(0).max(1);
     let end = cfg
         .time_max
         .map_or(total, |max| u64::try_from(max).unwrap_or(0).min(total));
     (start, end)
+}
+
+/// Tick at which `wave` reads a window bound when it has no counted grid: raw
+/// ticks for a typed async `-t`, nanoseconds otherwise.
+fn wave_bound_tick(cache: &ColumnCache, cfg: &ExtractConfig, value: i64) -> Result<u64, String> {
+    let value = value.max(0) as u64;
+    if cfg.async_mode && cfg.time_str.is_some() {
+        Ok(value)
+    } else {
+        crate::format::nanoseconds_to_tick(value, cache.timescale_exponent)
+    }
+}
+
+/// Text naming a query window that holds no part of the trace, or `None`.
+fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<String> {
+    let flag = cfg.window_flag.as_deref()?;
+    let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
+    if cfg.async_mode || cache.clock_period_ticks == 0 {
+        let start = if cfg.wave_mode {
+            wave_bound_tick(cache, cfg, cfg.time_min).ok()?
+        } else {
+            u64::try_from(cfg.time_min).unwrap_or(0)
+        };
+        return (start > cache.sim_end_tick).then(|| {
+            format!(
+                "{flag} lies outside the trace: the trace ends at tick {} ({end_ns}ns)",
+                cache.sim_end_tick
+            )
+        });
+    }
+    let reset_tick = query_reset_deassert_tick(cache, cfg);
+    let base = cycle_base(cache, reset_tick.unwrap_or(0));
+    let (start, end) = sampled_cycle_window(cache, cfg, base);
+    let counted = if reset_tick.is_some() {
+        "counted after reset"
+    } else {
+        "counted from the first clock edge"
+    };
+    (start > end).then(|| {
+        format!(
+            "{flag} lies outside the trace: counted cycles are 1..{} ({counted}), and the trace ends at {end_ns}ns",
+            last_counted_cycle(cache, base)
+        )
+    })
 }
 
 /// Lazily compare observations on the eligible clock grid, within the query
@@ -4586,6 +4640,27 @@ fn render_wave_grid(
 
 // -- Wave (horizontal waveform) from cache -----------------------------------
 
+/// Report an empty wave window: the stderr note, plus an empty envelope in JSON
+/// mode so `warnings[]` still reaches the caller.
+fn no_wave_data(cfg: &ExtractConfig, mode: &str, err: &mut impl Write) {
+    let _ = writeln!(err, "# No data in range");
+    let _ = err.flush();
+    if cfg.json_format {
+        emit_query_json(
+            cfg,
+            "wave",
+            crate::output::WaveData {
+                mode: mode.into(),
+                columns: &[],
+                ticks: &[],
+                names: &[],
+                values: &[],
+            },
+            Vec::new(),
+        );
+    }
+}
+
 pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let resolved_cfg = query_config(cache, cfg);
     let cfg = &resolved_cfg;
@@ -4705,8 +4780,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         record_limit(cfg, col_headers.len() + usize::from(c <= cycle_end));
 
         if col_ticks.is_empty() {
-            let _ = writeln!(err, "# No data in range");
-            let _ = err.flush();
+            no_wave_data(cfg, "sync", &mut err);
             return;
         }
 
@@ -4808,19 +4882,10 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     } else {
         // Async: need range-bounded decode, then collect tick set from results
         if range_end_opt.is_some_and(|end| end < 0) {
-            let _ = writeln!(err, "# No data in range");
-            let _ = err.flush();
+            no_wave_data(cfg, "async", &mut err);
             return;
         }
-        let raw_ticks = cfg.async_mode && cfg.time_str.is_some();
-        let bound_tick = |value: i64| {
-            let value = value.max(0) as u64;
-            if raw_ticks {
-                Ok(value)
-            } else {
-                crate::format::nanoseconds_to_tick(value, cache.timescale_exponent)
-            }
-        };
+        let bound_tick = |value: i64| wave_bound_tick(cache, cfg, value);
         let range_start_tick = bound_tick(range_start).unwrap_or_else(|error| {
             eprintln!("ERROR: cannot convert wave start: {error}");
             std::process::exit(2);
@@ -4882,8 +4947,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
 
         if col_ticks.is_empty() {
-            let _ = writeln!(err, "# No data in range");
-            let _ = err.flush();
+            no_wave_data(cfg, "async", &mut err);
             return;
         }
 

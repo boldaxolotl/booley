@@ -88,10 +88,11 @@ bwave gui @dut \
 - **`register` refused a raw `.vcd`**: queries need a built store, so an alias
   bound to a VCD could never answer one. `bwave build <vcd> -o <out>.fst` first,
   or `register <vcd> --as ALIAS --build` to do it in one step.
-- **Async query returned only the t=0 row** (exit 0, no warning): the window
-  held no transitions — usually because it is outside the trace. `list` reports
-  `total_ticks` in *ticks*, not nanoseconds; converting by eye is how you land
-  past the end. Check the timescale, or drop `--async` and use cycles.
+- **Async query returned only the t=0 row** (exit 0, no warning): the window is
+  inside the trace but held no transitions. A `# WARNING: ... outside the trace`
+  means the window is past the end. `list` reports `total_ticks` in *ticks*,
+  not nanoseconds; converting by eye is how you land past the end. Check the
+  timescale, or drop `--async` and use cycles.
 - **`signal` printed nothing for `-t N:N`**: it prints *transitions*. It falls
   back to the held value and says so, but `value --at N` is the direct way to
   ask "what is it holding right now?".

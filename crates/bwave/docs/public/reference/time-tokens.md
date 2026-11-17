@@ -59,6 +59,13 @@ you'll get a "no VCD timescale available" error.
 they accept bare integers in both modes (cycle in sync,
 tick in async). These bounds are plain `i64` values.
 
+## Windows outside the trace
+
+A `-t`, `--after` or `--before` window past the end of the trace (in sync
+mode, also one before the first counted cycle) prints one `# WARNING:` line
+and exits 0. It names the flag as typed and where the trace ends. With
+`--format json` the text goes in `warnings[]`.
+
 ## Examples
 
 ```bash

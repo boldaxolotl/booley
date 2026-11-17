@@ -88,7 +88,8 @@ detected.
 ## 3. Time range outside the simulation
 
 `-t 50000:60000` on a 10000-cycle sim returns nothing
-silently. Verify the simulation length with `stats`:
+and prints a `# WARNING:` with the trace's extent.
+Verify the simulation length with `stats`:
 
 ```bash
 bwave stats sim.fst -s "*clk*"
