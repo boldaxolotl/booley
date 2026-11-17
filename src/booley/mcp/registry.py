@@ -100,11 +100,11 @@ def discover_mcp_inventory(
     """Read unfiltered endpoint metadata without executing Project Python."""
     if booley_src is None:
         booley_src = Path(__file__).resolve().parent.parent
-    discovered = _scan_builtin_flows(booley_src / "flows", {})
+    discovered = _scan_builtin_flows(booley_src / "flows")
     for package in ("mcp", "specialists"):
-        discovered.extend(_scan_directory(booley_src / package, {}, builtin=True, package=package))
+        discovered.extend(_scan_directory(booley_src / package, builtin=True, package=package))
     if project_mcp_tools_dir and project_mcp_tools_dir.is_dir():
-        discovered.extend(_scan_directory(project_mcp_tools_dir, {}, builtin=False))
+        discovered.extend(_scan_directory(project_mcp_tools_dir, builtin=False))
     return discovered
 
 
@@ -124,10 +124,7 @@ def filter_mcp_tools(
     ]
 
 
-def _scan_builtin_flows(
-    flows_dir: Path,
-    flow_config: dict[str, Any],
-) -> list[McpToolInfo]:
+def _scan_builtin_flows(flows_dir: Path) -> list[McpToolInfo]:
     """Discover only the explicitly registered built-in Flow packages."""
     results: list[McpToolInfo] = []
     for package_name in BUILTIN_FLOW_PACKAGES:
@@ -143,25 +140,18 @@ def _scan_builtin_flows(
         if info is None:
             logger.warning("Built-in Flow metadata missing: %s", flow_file)
             continue
-        endpoint_entry = flow_config.get(info.name)
-        if isinstance(endpoint_entry, dict) and endpoint_entry.get("enabled") is False:
-            logger.debug("MCP endpoint %s disabled via config", info.name)
-            continue
         results.append(info)
     return results
 
 
 def _scan_directory(
     endpoint_dir: Path,
-    specialist_config: dict[str, Any],
-    flow_config: dict[str, Any] | None = None,
     *,
     builtin: bool,
     package: str = "",
 ) -> list[McpToolInfo]:
-    """Scan a directory for enabled MCP endpoint subclasses via AST."""
+    """Scan a directory for MCP endpoint subclasses via AST."""
     results: list[McpToolInfo] = []
-    flow_config = flow_config or {}
     if not endpoint_dir.is_dir():
         return results
 
@@ -172,10 +162,6 @@ def _scan_directory(
 
         info = extract_mcp_tool_info(py_file, builtin=builtin, package=package)
         if info is None:
-            continue
-
-        if not endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config):
-            logger.debug("MCP endpoint %s disabled via config", info.name)
             continue
 
         results.append(info)
