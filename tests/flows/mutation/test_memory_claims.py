@@ -19,16 +19,23 @@ from typing import Any
 import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import MemorySizing
-from booley.flows.mutation.flow import MutationFlow
+from booley.flows.mutation.memory_claims import CampaignClaims
 from booley.runtime import job_slots, resource_history
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.oom_priority import COORDINATOR_GAP, tool_adj
 from booley.runtime.timefmt import utc_now_rfc3339
-from tests.flows.mutation.test_flow import _fake_proc, _make_endpoint
-from tests.flows.mutation.test_runtime_inputs import _make_project, _Project
+from tests.flows.mutation.test_flow import (
+    _SCOPE,
+    _fake_proc,
+    _make_endpoint,
+    _patch_fake_simulation,
+    _patch_resolve_target,
+    _prepare_scope_files,
+)
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc, inert_oom_proc  # noqa: F401  (fixture)
 
@@ -68,6 +75,8 @@ class _Managed:
             [_record("sim_prepare", 100), _record("sim_build", 400), _record("sim_run", 200)],
         )
 
+    # Private seam: the slot store matches an entry to the live process's argv and
+    # `job_records` has no public argv reader (production reads it the same way).
     def context(self, job: job_slots.JobLabel | None = None) -> AdmissionContext:
         pid = os.getpid()
         # The coordinating Job: a memory-class companion claim that reserves nothing.
@@ -147,36 +156,20 @@ def _watch(
     return seen
 
 
-def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Project:
-    project = _make_project(tmp_path, monkeypatch)
-    project.elab()  # a real (stand-in) build, before the tools are watched
-    return project
-
-
-def _campaign(
-    monkeypatch: pytest.MonkeyPatch,
-    project: _Project,
-    context: AdmissionContext,
-    *tools: Callable[[MutationFlow], object],
+def _admitted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context: AdmissionContext | None
 ) -> EndpointOutcome:
-    """Run *tools* as the campaign, through the invocation the endpoint prepared and admitted."""
-    endpoint = project.endpoint
+    """Run a whole one-Mutant campaign through the invocation the endpoint prepared and admitted.
 
-    def run() -> EndpointOutcome:
-        for tool in tools:
-            tool(endpoint)
-        return EndpointOutcome(exit_code=0)
-
-    monkeypatch.setattr(endpoint, "_run", run)
+    Only the tools' ``subprocess.run`` is replaced (by ``_watch`` beforehand): the baseline
+    and the Mutant each build and simulate, so four tools claim memory.
+    """
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    _patch_resolve_target(monkeypatch)
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, target=_TARGET, scope=_SCOPE, count=1, min_detected=0
+    )
     return endpoint.prepare_endpoint_invocation().run(context)
-
-
-def _build(tmp_path: Path) -> Callable[[MutationFlow], object]:
-    return lambda endpoint: endpoint._run_elab(_TARGET, tmp_path, tmp_path / "variant")
-
-
-def _simulate(tmp_path: Path, project: _Project) -> Callable[[MutationFlow], object]:
-    return lambda endpoint: endpoint._run_target_test_suite(_TARGET, tmp_path, project.build, "tb")
 
 
 def _items(seen: _Observed) -> list[tuple[int, job_slots.MemoryClaim | None]]:
@@ -201,19 +194,15 @@ def test_builds_and_simulations_hold_a_reservation_sized_from_the_target_history
     inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     managed.record_history()
-    project = _project(tmp_path, monkeypatch)
     seen = _watch(monkeypatch, managed, inert_oom_proc)
 
-    _campaign(
-        monkeypatch, project, managed.context(), _build(tmp_path), _simulate(tmp_path, project)
-    )
+    _admitted_run(tmp_path, monkeypatch, managed.context())
 
-    build, simulation = seen
-    # The build reserves its phases' largest estimate; the simulation not the shared build's.
-    assert [pid for pid, _claim in _items(build)] == [os.getpid()]
-    assert _reserved(build) == [500.0]
-    assert [pid for pid, _claim in _items(simulation)] == [os.getpid()]
-    assert _reserved(simulation) == [250.0]
+    assert len(seen) == 4
+    for observed in seen:
+        assert [pid for pid, _claim in _items(observed)] == [os.getpid()]
+    # A build reserves its phases' largest estimate; a simulation not the shared build's.
+    assert [_reserved(observed) for observed in seen] == [[500.0], [250.0], [500.0], [250.0]]
     # Each claim is released when its tool ends.
     assert _only_the_coordinator_holds(managed)
 
@@ -224,14 +213,11 @@ def test_unsized_build_and_simulation_run_alone(
     managed: _Managed,
     inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
-    project = _project(tmp_path, monkeypatch)  # no Resource History
-    seen = _watch(monkeypatch, managed, inert_oom_proc)
+    seen = _watch(monkeypatch, managed, inert_oom_proc)  # no Resource History
 
-    _campaign(
-        monkeypatch, project, managed.context(), _build(tmp_path), _simulate(tmp_path, project)
-    )
+    _admitted_run(tmp_path, monkeypatch, managed.context())
 
-    assert len(seen) == 2
+    assert len(seen) == 4
     for observed in seen:
         assert [pid for pid, _claim in _items(observed)] == [os.getpid()]
         claim = _items(observed)[0][1]
@@ -246,7 +232,6 @@ def test_a_job_queued_behind_a_build_or_simulation_names_the_mutation_job(
     inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     managed.record_history()
-    project = _project(tmp_path, monkeypatch)
     said: list[str] = []
 
     def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -263,16 +248,17 @@ def test_a_job_queued_behind_a_build_or_simulation_names_the_mutation_job(
     monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", run)
     job = job_slots.JobLabel("run-7", "mutation", _TARGET)
 
-    _campaign(
-        monkeypatch, project, managed.context(job), _build(tmp_path), _simulate(tmp_path, project)
-    )
+    _admitted_run(tmp_path, monkeypatch, managed.context(job))
 
-    assert said == [
+    build = (
         "needs 900 MiB; 500 MiB free of the 1,000 MiB Memory Budget; "
-        "largest holders: run-7 (mutation, default) 500 MiB",
+        "largest holders: run-7 (mutation, default) 500 MiB"
+    )
+    simulation = (
         "needs 900 MiB; 750 MiB free of the 1,000 MiB Memory Budget; "
-        "largest holders: run-7 (mutation, default, <default>) 250 MiB",
-    ]
+        "largest holders: run-7 (mutation, default, <default>) 250 MiB"
+    )
+    assert said == [build, simulation, build, simulation]
 
 
 def test_campaign_processes_rank_as_the_held_claim(
@@ -282,56 +268,26 @@ def test_campaign_processes_rank_as_the_held_claim(
     inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     managed.record_history()
-    project = _project(tmp_path, monkeypatch)
     inert_oom_proc.add(os.getpid(), value=0)
     seen = _watch(monkeypatch, managed, inert_oom_proc)
 
-    _campaign(monkeypatch, project, managed.context(), _build(tmp_path))
+    _admitted_run(tmp_path, monkeypatch, managed.context())
 
     # The only claim is the newest of none: the first tool level, the coordinator just below.
     assert seen[0].oom_adj == tool_adj(0) - COORDINATOR_GAP
     assert inert_oom_proc.values[os.getpid()] == 0
 
 
-def test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
-) -> None:
-    _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "cancellation")
-
-
-def test_queued_claim_is_withdrawn_when_booley_cancel_removes_it(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
-) -> None:
-    _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "booley_cancel")
-
-
-def test_queued_simulation_claim_is_withdrawn_when_the_campaign_is_cancelled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
-) -> None:
-    _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "cancellation", True)
-
-
-def _withdraw_queued_claim(
+@pytest.mark.parametrize("withdrawn_by", ["cancellation", "booley_cancel"])
+def test_queued_claim_is_withdrawn_when_the_run_is_cancelled_or_removed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
     inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
     withdrawn_by: str,
-    simulation: bool = False,
 ) -> None:
-    project = _project(tmp_path, monkeypatch)
-    context = (
-        managed.context()
-    )  # the coordinator's claim comes first: a run-alone holder would stop it
+    # The coordinator's claim comes first: a run-alone holder would stop it.
+    context = managed.context()
     managed.hold_budget()
     ran = _watch(monkeypatch, managed, inert_oom_proc)
 
@@ -344,13 +300,12 @@ def _withdraw_queued_claim(
 
     managed.cancellation = cancel
 
-    tool = _simulate(tmp_path, project) if simulation else _build(tmp_path)
-    outcome = _campaign(monkeypatch, project, context, tool)
+    outcome = _admitted_run(tmp_path, monkeypatch, context)
 
     assert outcome.exit_code == EXIT_ERROR
     assert "RESULT: ERROR (cancelled: " in outcome.report_text
     assert "waited for memory" in outcome.report_text
-    assert ran == []  # the tool never started
+    assert ran == []  # the baseline build never started
     holders, waiters = managed.store.snapshot(job_slots.CLASS_MEMORY)
     # Only the budget holder and the coordinator's own claim; the queued entry is gone.
     assert len(holders) == 2 and waiters == []
@@ -359,9 +314,6 @@ def _withdraw_queued_claim(
 def test_a_run_outside_admission_claims_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, managed: _Managed
 ) -> None:
-    from booley.flows.mutation.memory_claims import CampaignClaims
-
-    flow = _make_endpoint(tmp_path, monkeypatch)
     asked: list[str] = []
 
     def request() -> JobRequest | None:
@@ -384,17 +336,20 @@ def test_a_run_outside_admission_claims_nothing(
             assert _only_the_coordinator_holds(managed)
     assert asked == []
 
-    # An admission-less invocation leaves the Flow's claims unmanaged after its run.
-    monkeypatch.setattr(flow, "_run", lambda: EndpointOutcome(exit_code=0))
-    assert flow.prepare_endpoint_invocation().run(None).exit_code == 0
-    with flow._claims.hold(request, build=True, target=_TARGET):
-        pass
-    assert asked == []
+    # A whole campaign without admission runs and claims nothing.
+    fake = _patch_fake_simulation(monkeypatch)
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=1, min_detected=0)
+    assert endpoint.prepare_endpoint_invocation().run(None).exit_code == 0
+    assert fake.builds == [None, 1]
+    assert _only_the_coordinator_holds(managed)
 
 
 def test_a_target_that_cannot_be_sized_runs_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Private seam: campaign resolution refuses a Target the catalog cannot read before any
+    # build, so only a direct call reaches the request builders' `None`.
     flow = _make_endpoint(tmp_path, monkeypatch)
 
     def refuse(*_args: object, **_kwargs: object) -> object:
@@ -413,18 +368,24 @@ def test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result(
     managed: _Managed,
     inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
-    from booley.flows.endpoint_session import _attach_memory_warning
-
     resource_history.append_records(
         managed.booley_dir,
         [_record("sim_prepare", 100), _record("sim_build", 4000), _record("sim_run", 200)],
     )
-    project = _project(tmp_path, monkeypatch)
     _watch(monkeypatch, managed, inert_oom_proc)
     context = managed.context()
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    _patch_resolve_target(monkeypatch)
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, target=_TARGET, scope=_SCOPE, count=1, min_detected=0
+    )
+    invocation = endpoint.prepare_endpoint_invocation()
 
-    outcome = _campaign(monkeypatch, project, context, _build(tmp_path))
-    _attach_memory_warning(outcome, context)
+    outcome = endpoint.invoke_endpoint(
+        PreparedExecution(None, None, False, False, invocation),
+        admission=context,
+        started=0.0,
+    )
 
     assert "exceeds the Memory Budget of 1000 MiB; this Job ran alone." in outcome.report_text
     assert "memory_admission_warning" in outcome.detail

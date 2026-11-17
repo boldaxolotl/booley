@@ -92,6 +92,8 @@ def _snapshot(worktree: Path) -> tuple[bytes, bytes, bytes]:
 
 def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
     """Run the real sweep, replacing only external compiler/simulator work."""
+    # Private seam: this runs in a child that re-executes this file with `runpy`, where the
+    # `tests` package is not importable, so it cannot use the campaign fakes.
     root = Path(worktree)
     source = root / SCOPE
     specs = [MutationSpec(1, "operator", SCOPE, 1, "a + b", "a - b")]
@@ -271,6 +273,8 @@ async def test_public_job_cancel_preserves_dirty_scope(
             assert not is_pid_alive(record.pid)
             assert _snapshot(dirty_worktree) == before
         finally:
+            # Private seam: `JobLifecycle` has no public way to await its tasks, and the test
+            # must leave nothing running.
             tasks = list(jobs._tasks.values())
             for task in tasks:
                 if not task.done():

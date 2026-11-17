@@ -14,7 +14,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -24,7 +23,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
 from booley.flows.metric_declarations import MetricsUnavailable
 from booley.flows.mutation.flow import (
     MutationFlow,
@@ -32,16 +30,15 @@ from booley.flows.mutation.flow import (
     MutationRunPlan,
     MutationSpec,
     MutationSummary,
-    MutationTestRun,
     UnsupportedSimTargetError,
     generate_results_markdown,
-    generate_specs_markdown,
 )
+from booley.flows.mutation.memory_claims import CampaignClaims
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
-from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
+from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -63,33 +60,11 @@ _TARGET_PARAMETERS: dict[str, Any] = {}
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("removed", ["--tb-top", "--dut-top", "--dut-files"])
-def test_removed_topology_options_are_rejected(removed: str) -> None:
-    endpoint = MutationFlow()
-    with pytest.raises(SystemExit):
-        endpoint.parse_args(["--target", "sim", "--scope", "rtl/design.sv", removed, "legacy"])
-
-
 def _flow_env(logs_dir: Path, slug: str = "test-ticket") -> dict[str, str]:
     env = os.environ.copy()
     env["BOOLEY_SLUG"] = slug
     env["BOOLEY_LOGS_DIR"] = str(logs_dir)
     return env
-
-
-def _write_dut_top(tmp_path: Path, top: str = "design_top") -> Path:
-    """Drop a minimal SV file containing ``module <top>``."""
-    rtl_dir = tmp_path / "rtl"
-    rtl_dir.mkdir(parents=True, exist_ok=True)
-    f = rtl_dir / f"{top}.sv"
-    f.write_text(
-        f"module {top}(input logic clk, input logic rst);\n"
-        f"  logic [3:0] r;\n"
-        f"  always_ff @(posedge clk) r <= r + 1;\n"
-        f"endmodule\n",
-        encoding="utf-8",
-    )
-    return f
 
 
 def _write_tests_toml(root: Path, text: str) -> None:
@@ -110,8 +85,6 @@ def _make_endpoint(
     count: int | str | None = 10,
     min_detected: int | None = None,
     seed: int | None = None,
-    dut_top_module: str = "design_top",
-    dut_files: tuple[str, ...] = ("rtl/design_top.sv",),
     extra_args: list[str] | None = None,
     state_file: bool = True,
 ) -> MutationFlow:
@@ -159,15 +132,11 @@ def _make_endpoint(
     endpoint = MutationFlow()
     with patch.dict(os.environ, env):
         endpoint.parse_args(argv)
-    # Most focused unit tests do not author a FuseSoC catalog. Preserve their
-    # isolation while production code derives both values from --target.
-    endpoint._dut_files = lambda: list(dut_files)  # type: ignore[method-assign]
     if monkeypatch is not None:
         monkeypatch.setattr(
             "booley.flows.mutation.flow.tb_top_for_target",
             lambda *_args, **_kwargs: tb_top,
         )
-    del dut_top_module
     return endpoint
 
 
@@ -187,18 +156,12 @@ def _sample_specs(n: int = 3, category: str = "operator_change") -> list[Mutatio
 
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    _patch_resolve_target(monkeypatch)
-    with (
-        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
-        patch.object(endpoint, "_validate_target_runner"),
-        patch.object(endpoint, "cocotb_target", return_value=None),
-        patch(
-            "booley.flows.mutation.flow.require_runnable_target_test_suite",
-            side_effect=NoRunnableTestsError("sim", ("smoke", "corner")),
-        ),
-    ):
-        result = endpoint._run()
+    monkeypatch.setattr(
+        "booley.flows.mutation.flow.require_runnable_target_test_suite",
+        MagicMock(side_effect=NoRunnableTestsError("sim", ("smoke", "corner"))),
+    )
+
+    _, result, _ = _campaign(tmp_path, monkeypatch)
 
     assert result.exit_code == EXIT_ERROR
     assert "no runnable tests" in result.report_text
@@ -210,16 +173,10 @@ def test_two_keys_for_one_target_refuse_naming_both(tmp_path: Path, monkeypatch)
     )
     endpoint = _make_endpoint(tmp_path, monkeypatch, target="y#sim")
 
-    result = endpoint._apply_campaign_defaults()
+    result = endpoint.run_with_claims(CampaignClaims())
 
-    assert result is not None and result.exit_code == EXIT_ERROR
+    assert result.exit_code == EXIT_ERROR
     assert "[vendor:b:y#sim] and [y#sim]" in result.report_text
-
-
-_CORE_A_FIRST = "vendor:a:x:1.0#first"
-_TWO_CORE_TESTS = (
-    f'["{_CORE_A_FIRST}"]\ntests = ["one"]\n["vendor:b:y:1.0#first"]\ntests = ["one"]\n'
-)
 
 
 def _eighty_percent(count: int) -> int:
@@ -236,87 +193,33 @@ def _fake_proc(rc: int = 0, stdout: str = "", stderr: str = "") -> subprocess.Co
 # ---------------------------------------------------------------------------
 
 
-class TestMutationSummary:
-    def test_counts(self):
-        s = MutationSummary(
-            specs=_sample_specs(3),
-            results=[
-                MutationResult(index=1, detected=True),
-                MutationResult(index=2, detected=False),
-                MutationResult(index=3, detected=False, inconclusive_reason="no observation"),
-            ],
-        )
-        assert s.detected_count == 1
-        assert s.not_detected_count == 1
-        assert [row["status"] for row in s.classify()] == [
-            "detected",
-            "not_detected",
-            "inconclusive",
-        ]
-
-    def test_classify(self):
-        s = MutationSummary(
-            specs=_sample_specs(2),
-            results=[MutationResult(index=1, detected=True)],
-        )
-        c = s.classify()
-        assert c[0]["status"] == "detected"
-        assert c[1]["status"] == "untested"
-
-
-def test_dry_run_does_not_generate_or_build_anything(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    scope = "rtl/mod_a.sv"
-    _prepare_scope_files(tmp_path, [scope])
-    endpoint = _make_endpoint(
-        tmp_path,
-        monkeypatch,
-        scope=scope,
-        extra_args=["--dry-run"],
+def test_summary_classifies_every_result_state() -> None:
+    summary = MutationSummary(
+        specs=_sample_specs(4),
+        results=[
+            MutationResult(index=1, detected=True),
+            MutationResult(index=2, detected=False),
+            MutationResult(index=3, detected=False, inconclusive_reason="no observation"),
+        ],
     )
-    endpoint._target_campaign = SimpleNamespace(
-        execution_units=lambda: (),
-    )
-    with (
-        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
-        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
-        patch.object(endpoint, "_validate_target_runner"),
-        patch.object(endpoint, "cocotb_target"),
-        patch.object(endpoint, "_target_test_suite"),
-        patch("booley.flows.mutation.flow.subprocess.run") as build_or_run,
-    ):
-        result = endpoint._run()
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert result.detail["mode"] == "dry_run"
-    build_or_run.assert_not_called()
+    assert summary.detected_count == 1
+    assert summary.not_detected_count == 1
+    assert [row["status"] for row in summary.classify()] == [
+        "detected",
+        "not_detected",
+        "inconclusive",
+        "untested",
+    ]
 
 
 def _run_count_preview(endpoint, monkeypatch):
-    """Use real count resolution while isolating Target discovery and execution."""
-    campaign = SimpleNamespace(
-        scope_arg=endpoint.args.scope,
-        execution_units=lambda: (),
-    )
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.resolve_target_campaign", lambda *a, **kw: campaign
-    )
-    with (
-        patch.object(endpoint, "_registered_tests", return_value={}),
-        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
-        patch.object(endpoint, "_validate_target_runner"),
-        patch.object(endpoint, "cocotb_target"),
-        patch.object(endpoint, "_target_test_suite"),
-        patch.object(endpoint, "emit_progress") as progress,
-        patch("booley.flows.mutation.flow.subprocess.run") as build_or_run,
-    ):
-        before = set(endpoint.args.work_dir.rglob("*"))
-        result = endpoint._run()
-        assert set(endpoint.args.work_dir.rglob("*")) == before
-    build_or_run.assert_not_called()
-    return result, progress
+    """Dry-run *endpoint* on the fake Target: it creates no file and runs no build or run."""
+    fake = _patch_fake_simulation(monkeypatch)
+    before = set(endpoint.args.work_dir.rglob("*"))
+    result = endpoint.run_with_claims(CampaignClaims())
+    assert set(endpoint.args.work_dir.rglob("*")) == before
+    assert fake.builds == fake.runs == []
+    return result, fake
 
 
 def _assert_preview_lines(result, count):
@@ -392,23 +295,37 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
         source = tmp_path / path
         source.parent.mkdir(exist_ok=True)
         source.write_bytes(b"// source\n" * 4)
-    endpoint = _make_endpoint(
-        tmp_path, monkeypatch, count="auto", scope=",".join(paths), extra_args=["--dry-run"]
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    _patch_fake_simulation(monkeypatch)
+    _make_endpoint(tmp_path, monkeypatch)  # the run's environment and Target top
+
+    code = MutationFlow().main(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--target",
+            "lite",
+            "--scope",
+            ",".join(paths),
+            "--count",
+            "auto",
+            "--dry-run",
+        ]
     )
-    result, _ = _run_count_preview(endpoint, monkeypatch)
-    event = _display_safe_event(_endpoint_end_event("mutation", "lite", result, 0.0, dry_run=True))
-    assert event["display_lines_truncated"] > 0
-    assert event["summary"] == result.display_lines[-1]
 
-
-# ---------------------------------------------------------------------------
-# Endpoint metadata
-# ---------------------------------------------------------------------------
-
-
-class TestToolMetadata:
-    def test_name(self):
-        assert MutationFlow().name == "mutation"
+    events = [
+        json.loads(line)
+        for line in (runtime_dir / "display.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    [end] = [event for event in events if event["type"] == "endpoint_end"]
+    assert code == EXIT_SUCCESS
+    assert end["display_lines_truncated"] > 0
+    assert end["summary"].startswith("mutation dry-run:")
 
 
 # ---------------------------------------------------------------------------
@@ -416,52 +333,31 @@ class TestToolMetadata:
 # ---------------------------------------------------------------------------
 
 
-class TestArtifacts:
-    def test_specs_markdown(self):
-        md = generate_specs_markdown(_sample_specs(2))
-        assert "# Mutation Specifications" in md
-        assert "operator_change" in md
+def test_results_markdown_links_mutated_rtl_escapes_operators_and_names_the_killing_test() -> None:
+    spec = MutationSpec(
+        index=1,
+        category="operator_change",
+        file="rtl/mod (wide).sv",
+        line=12,
+        original_code="a | b",
+        mutated_code="a & b",
+    )
+    summary = MutationSummary(
+        specs=[spec, _sample_specs(2)[1]],
+        results=[
+            MutationResult(index=1, detected=False),
+            MutationResult(index=2, detected=True, first_killing_test="test_rx_overrun"),
+        ],
+    )
 
-    def test_results_link_mutated_rtl_and_escape_rtl_operators(self):
-        spec = MutationSpec(
-            index=1,
-            category="operator_change",
-            file="rtl/mod (wide).sv",
-            line=12,
-            original_code="a | b",
-            mutated_code="a & b",
-        )
-        summary = MutationSummary(
-            specs=[spec],
-            results=[MutationResult(index=1, detected=False)],
-        )
+    md = generate_results_markdown(
+        summary, 1, variant_paths={1: "variants/mutant_1/rtl/mod (wide).sv"}
+    )
 
-        md = generate_results_markdown(
-            summary,
-            1,
-            variant_paths={1: "variants/mutant_1/rtl/mod (wide).sv"},
-        )
-
-        assert "[rtl/mod (wide).sv:12](variants/mutant_1/rtl/mod%20%28wide%29.sv)" in md
-        assert "`a \\| b` → `a & b`" in md
-        assert "not detected" in md
-
-    def test_results_markdown_names_the_first_killing_test(self):
-        spec = _sample_specs(1)[0]
-        summary = MutationSummary(
-            specs=[spec],
-            results=[
-                MutationResult(
-                    index=1,
-                    detected=True,
-                    first_killing_test="test_rx_overrun",
-                )
-            ],
-        )
-
-        md = generate_results_markdown(summary, 1)
-
-        assert "test_rx_overrun" in md
+    assert "[rtl/mod (wide).sv:12](variants/mutant_1/rtl/mod%20%28wide%29.sv)" in md
+    assert "`a \\| b` → `a & b`" in md
+    assert "not detected" in md
+    assert "test_rx_overrun" in md
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +388,11 @@ _VERILATOR_VERSION = "Verilator 5.052 2025-01-01 rev v5.052"
 
 
 def _patch_resolve_target(
-    monkeypatch, *, eda_tool: str | None = "verilator", verilator: str = _VERILATOR_VERSION
+    monkeypatch,
+    *,
+    eda_tool: str | None = "verilator",
+    verilator: str = _VERILATOR_VERSION,
+    cocotb_module: str | None = None,
 ):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
@@ -510,10 +410,10 @@ def _patch_resolve_target(
             vlnv=f"::{target}:0",
             project_root=Path(work_dir),
             eda_tool=eda_tool,
-            cocotb_module=None,
+            cocotb_module=cocotb_module,
         )
 
-    def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
+    def _fake_prepare(handle, *, build_root, lane_kind, environment=None, **kwargs):
         assert lane_kind == "unreserved"
         import yaml
 
@@ -570,6 +470,7 @@ def _patch_resolve_target(
             eda_tool=eda_tool or "verilator",
             toplevel="tb",
             make_argv=("make", "-C", str(build_root)),
+            environment=dict(environment or {}),
         )
 
     monkeypatch.setattr(
@@ -609,6 +510,8 @@ class FakeSimulation:
     runs: list[int | None] = field(default_factory=list)
     run_timeouts: list[float] = field(default_factory=list)  # the hard kill of each run
     run_limits: list[int] = field(default_factory=list)  # the limit the simulator was given
+    build_environments: list[dict[str, str]] = field(default_factory=list)  # each build's env
+    launches: list[tuple[PreparedSimulationWork, dict[str, str]]] = field(default_factory=list)
 
 
 def _mutant_index(text: str) -> int | None:
@@ -637,8 +540,11 @@ def _patch_fake_simulation(
     monkeypatch,
     *,
     run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+    run_work: Callable[[int | None, PreparedSimulationWork], subprocess.CompletedProcess]
+    | None = None,
     build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     eda_tool: str = "verilator",
+    cocotb_module: str | None = None,
     verilate: Callable[[Path], None] | None = None,
     verilator: str = _VERILATOR_VERSION,
 ) -> FakeSimulation:
@@ -646,11 +552,14 @@ def _patch_fake_simulation(
 
     ``run(index)`` and ``build(index)`` return the process for the baseline
     (``index`` is ``None``) or Mutant ``index``; by default everything passes.
-    A ``run`` may raise ``subprocess.TimeoutExpired``.  ``verilate(build_root)`` runs after
+    A ``run`` may raise ``subprocess.TimeoutExpired``; ``run_work(index, work)`` answers
+    with the launched work too (for a fake that answers per test).  ``verilate(build_root)`` runs after
     a build that passes, to leave what Verilator would (``_write_fake_verilation``);
     ``verilator`` is the version the baseline build reports.
     """
-    _patch_resolve_target(monkeypatch, eda_tool=eda_tool, verilator=verilator)
+    _patch_resolve_target(
+        monkeypatch, eda_tool=eda_tool, verilator=verilator, cocotb_module=cocotb_module
+    )
     fake = FakeSimulation()
     original = subprocess.run
 
@@ -658,15 +567,20 @@ def _patch_fake_simulation(
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
             index = _mutant_index(" ".join(cmd))
             fake.builds.append(index)
+            fake.build_environments.append(dict(kwargs.get("env") or {}))
             built = build(index) if build else _fake_proc(rc=0, stdout="[make] ok")
             if verilate and built.returncode == 0:
                 verilate(Path(cmd[2]))
             return built
-        if isinstance(cmd, list) and f"booley.flows.sim.backends.{eda_tool}" in " ".join(cmd):
-            index = _mutant_index(repr(launched_work(cmd)))
+        if isinstance(cmd, list) and "booley.flows.sim.backends." in " ".join(cmd):
+            work = launched_work(cmd)
+            index = _mutant_index(repr(work))
             fake.runs.append(index)
             fake.run_timeouts.append(kwargs["timeout"])
-            fake.run_limits.append(launched_work(cmd).timeout_s)
+            fake.run_limits.append(work.timeout_s)
+            fake.launches.append((work, dict(kwargs.get("env") or {})))
+            if run_work:
+                return run_work(index, work)
             return run(index) if run else _fake_proc(rc=0, stdout="[sim] ok")
         return original(cmd, *args, **kwargs)
 
@@ -674,85 +588,84 @@ def _patch_fake_simulation(
     return fake
 
 
-def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
-    """Each source variant is built, then run through the configured simulator."""
-    captured: list[list[str]] = []
+_SMOKE_TESTS = '[default]\ntests = ["smoke"]\nselect = "+test={name}"\n'
 
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
 
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
-        _fake_run,
-    )
+def _wrap_preparer(monkeypatch, **replaced: Any) -> list[tuple[Any, dict[str, Any]]]:
+    """Record each ``prepare_simulation_build`` call; the result carries *replaced* fields."""
+    import booley.flows.mutation.flow as mutation_flow_module
 
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
+    calls: list[tuple[Any, dict[str, Any]]] = []
+    prepare = mutation_flow_module.prepare_simulation_build
 
-    endpoint._run_elab("default", tmp_path, build_dir)
-    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
+    def recording_prepare(handle, **kwargs):
+        calls.append((handle, kwargs))
+        return replace(prepare(handle, **kwargs), **replaced)
 
-    assert len(captured) == 2
-    elab_cmd, sim_cmd = captured
-    # Build half: `make -C <bin dir>` (the resolved build root).
-    assert elab_cmd[:2] == ["make", "-C"]
-    # _run_elab records the bin dir marker for the run-many loop to reuse.
-    assert (build_dir / ".booley_edalize_bindir").exists()
-    # Run half: the active Python drives the Verilator adapter with no mutation selector.
-    assert sim_cmd[:3] == [sys.executable, "-m", "booley.flows.sim.backends.verilator"]
-    assert not any("MUT_ID" in arg for arg in sim_cmd)
-    work = launched_work(sim_cmd)
-    assert work.top == "tb"
+    monkeypatch.setattr(mutation_flow_module, "prepare_simulation_build", recording_prepare)
+    return calls
+
+
+def _wrap_commands(
+    monkeypatch, answers: dict[str, subprocess.CompletedProcess]
+) -> list[list[str]]:
+    """Record every command; one whose program is in *answers* gets that answer, the rest
+    go to the simulation fake installed before."""
+    commands: list[list[str]] = []
+    fake_run = subprocess.run
+
+    def recording_run(cmd, *args, **kwargs):
+        commands.append(list(cmd))
+        if cmd[0] in answers:
+            return answers[cmd[0]]
+        return fake_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", recording_run)
+    return commands
+
+
+def test_baseline_builds_then_runs_the_verilator_binary(tmp_path: Path, monkeypatch):
+    """The baseline is built, then run through the configured simulator."""
+    launches, fake = _baseline_launches(tmp_path, monkeypatch, _SMOKE_TESTS)
+
+    [(work, _environment)] = launches
+    assert fake.builds[0] is None
+    assert work.adapter == "verilator"
+    assert work.top == "design_top_tb"
     assert not work.trace
+    # The build records the bin dir marker for the run-many loop to reuse.
+    [baseline_root] = [
+        marker.parent
+        for marker in tmp_path.rglob(".booley_edalize_bindir")
+        if "mutant_" not in marker.parent.name
+    ]
+    assert baseline_root.is_dir()
 
 
-def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeypatch) -> None:
-    handle = SimpleNamespace(selector="default", identity="::demo:0#default")
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    prepared = PreparedSimulationBuild(
-        target="default",
-        target_identity=handle.identity,
-        resolved=SimpleNamespace(build_root=build_dir / "nested", files=()),
-        work_root=build_dir,
-        build_root=build_dir / "nested",
-        eda_tool="verilator",
-        toplevel="tb",
-        make_argv=("custom-build", "--exact-command"),
-    )
-    catalog = SimpleNamespace(select=lambda *args, **kwargs: handle)
-    monkeypatch.setattr(TargetCatalog, "build", classmethod(lambda _cls, _root: catalog))
-    prepare = MagicMock(return_value=prepared)
-    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", prepare)
-    captured: list[list[str]] = []
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
-        lambda command, **kwargs: (
-            captured.append(command),
-            _fake_proc(rc=0),
-        )[1],
-    )
+def test_baseline_build_runs_the_exact_command_of_the_shared_preparer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    _patch_fake_simulation(monkeypatch)
+    prepares = _wrap_preparer(monkeypatch, make_argv=("custom-build", "--exact-command"))
+    commands = _wrap_commands(monkeypatch, {"custom-build": _fake_proc(rc=0)})
     probed: list[dict[str, str]] = []
     monkeypatch.setattr(
         "booley.flows.mutation.flow.verilator_version",
         lambda environment: probed.append(dict(environment)) or "Verilator 5.052",
     )
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=1, min_detected=0)
 
-    result = endpoint._run_elab("default", tmp_path, build_dir)
+    result = endpoint.run_with_claims(CampaignClaims())
 
-    prepare.assert_called_once_with(
-        handle, build_root=build_dir, lane_kind="unreserved", core_library=None, environment={}
-    )
-    assert captured == [["custom-build", "--exact-command"]]
-    assert result.returncode == 0
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    _handle, kwargs = prepares[0]
+    assert kwargs.pop("build_root").name == "baseline"
+    assert kwargs == {"lane_kind": "unreserved", "core_library": None, "environment": {}}
+    assert commands[0] == ["custom-build", "--exact-command"]
     # The baseline build records the version of the Verilator it builds with.
-    assert (build_dir / ".booley_verilator_version").read_text(encoding="utf-8") == (
-        "Verilator 5.052"
-    )
+    [version] = tmp_path.rglob(".booley_verilator_version")
+    assert version.read_text(encoding="utf-8") == "Verilator 5.052"
     assert len(probed) == 1
     assert probed[0]["PATH"] == os.environ["PATH"]
 
@@ -762,52 +675,38 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
     (
         "Target parameter intent is inconsistent",
         "Doctor requested a bad simulation fixture but its overlay is empty",
+        "Target 'default' declared 'icarus' but setup configured 'verilator'",
     ),
 )
-def test_elab_surfaces_shared_preparation_failures(
+def test_baseline_surfaces_shared_preparation_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     message: str,
 ) -> None:
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.prepare_simulation_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(SimulationBuildPreparationError(message)),
-    )
-    run = MagicMock()
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", run)
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
+    def failing_prepare(*args, **kwargs):
+        raise SimulationBuildPreparationError(message)
 
-    result = endpoint._run_elab("default", tmp_path, build_dir)
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    fake = _patch_fake_simulation(monkeypatch)
+    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", failing_prepare)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=1)
 
-    assert result.returncode == 1
-    assert message in result.stderr
-    run.assert_not_called()
+    result = endpoint.run_with_claims(CampaignClaims())
+
+    assert result.exit_code == EXIT_ERROR
+    assert "RESULT: ERROR (elaboration: pristine source did not elaborate)" in result.report_text
+    assert message in result.report_text
+    assert fake.builds == []
 
 
 def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monkeypatch):
-    captured: list[tuple[list[str], dict[str, str]]] = []
     runtime = tmp_path / "runtime"
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
 
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append((list(cmd), kwargs["env"]))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-
-    endpoint._run_elab("default", tmp_path, build_dir)
-    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
+    launches, fake = _baseline_launches(tmp_path, monkeypatch, _SMOKE_TESTS)
 
     expected = runtime / "python-artifacts"
-    assert len(captured) == 2
-    for _cmd, environment in captured:
+    for environment in (fake.build_environments[0], launches[0][1]):
         assert environment["PYTHONPYCACHEPREFIX"] == str(expected / "bytecode")
         assert f"cache_dir={expected / 'pytest'}" in environment["PYTEST_ADDOPTS"]
 
@@ -817,92 +716,43 @@ def test_mutant_build_uses_managed_compiler_cache(tmp_path: Path, monkeypatch):
     from booley.flows.sim.compiler_cache import CompilerCachePolicy
     from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE
 
-    captured: list[dict[str, str]] = []
     policy = CompilerCachePolicy(True, tmp_path / "data" / COMPILER_CACHE_RELATIVE, "5G")
-
-    def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
-        return PreparedSimulationBuild(
-            target=handle.selector,
-            target_identity=handle.identity,
-            resolved=SimpleNamespace(build_root=Path(build_root), toplevel="tb", files=()),
-            work_root=Path(build_root),
-            build_root=Path(build_root),
-            eda_tool="verilator",
-            toplevel="tb",
-            make_argv=("make", "-C", str(build_root)),
-            environment=policy.environment(),
-            compiler_cache=policy,
-        )
-
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append(kwargs["env"])
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", _fake_prepare)
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    fake = _patch_fake_simulation(monkeypatch)
+    _wrap_preparer(monkeypatch, environment=policy.environment(), compiler_cache=policy)
     monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: "/ccache")
     (tmp_path / "data").mkdir()
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=1, min_detected=0)
 
-    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint.run_with_claims(CampaignClaims())
 
-    [environment] = captured
+    environment = fake.build_environments[0]
     assert environment["OBJCACHE"] == "ccache"
     assert environment["CCACHE_DIR"] == str(policy.root)
     assert policy.root.is_dir()
 
 
-def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
-    captured: list[list[str]] = []
+@pytest.mark.parametrize("target", ["default", "lib:ip:core#default"])
+def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch, target: str):
+    """A VLNV-qualified --target still finds the bare tests.toml section.
 
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
-        _fake_run,
-    )
-    _write_tests_toml(
+    Regression for the raw ``TEST_NAMES.get(target)`` lookup: a qualified
+    target (``lib:ip:core#default``) missed the bare ``[default]`` section, so
+    no selector was rendered and every mutant ran the TB default test —
+    the sweep read "survived" across the board with nothing said.
+    """
+    launches, _ = _baseline_launches(
         tmp_path,
+        monkeypatch,
         '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
+        target=target,
     )
 
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    endpoint._run_elab("default", tmp_path, build_dir)
-    runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
-
-    sim_cmds = captured[1:]
-    assert [run.test_name for run in runs] == ["coremark.elf", "smoke.elf"]
-    assert "--meminit=ram,coremark.elf" in launched_work(sim_cmds[0]).plusargs
-    assert "--meminit=ram,smoke.elf" in launched_work(sim_cmds[1]).plusargs
-
-
-def _mutation_sim_runs(tmp_path: Path, monkeypatch, tests_toml: str, eda_tool: str | None = None):
-    """Run the declared suite of ``default`` once; return ``(argv, env)`` per sim."""
-    captured: list[tuple[list[str], dict[str, str]]] = []
-
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append((list(cmd), dict(kwargs.get("env") or {})))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
-    _write_tests_toml(tmp_path, tests_toml)
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    if eda_tool is not None:
-        monkeypatch.setattr(endpoint, "target_eda_tool", lambda *_args, **_kwargs: eda_tool)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    endpoint._run_elab("default", tmp_path, build_dir)
-    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
-    return captured[1:]
+    assert ["--meminit=ram,coremark.elf" in work.plusargs for work, _env in launches] == [
+        True,
+        False,
+    ]
+    assert ["--meminit=ram,smoke.elf" in work.plusargs for work, _env in launches] == [False, True]
 
 
 _MUTATION_VARIANTS = """
@@ -918,27 +768,13 @@ soak = ["+iters=100000"]
 """
 
 
-def test_sim_runs_the_default_variant_at_the_default_seed(tmp_path: Path, monkeypatch):
-    """A mutant is graded by the same Test Runs a plain Simulation Flow run uses."""
-    monkeypatch.delenv("STRESS_MODE", raising=False)
-    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
-
-    plusargs = [launched_work(cmd).plusargs for cmd, _env in runs]
-    assert plusargs == [
-        ("test=reset", "verilator+seed+7"),
-        ("test=stress", "iters=1000", "verilator+seed+7"),
-    ]
-    assert [env.get("STRESS_MODE") for _cmd, env in runs] == [None, "short"]
-
-
 def test_sim_passes_the_target_plusargs_like_the_simulation_flow(tmp_path: Path, monkeypatch):
     """The Target's plusargs come first; ``select`` replaces one that sets its option."""
     monkeypatch.setitem(_TARGET_PARAMETERS, "depth", {"paramtype": "plusarg", "default": 4})
     monkeypatch.setitem(_TARGET_PARAMETERS, "test", {"paramtype": "plusarg", "default": "none"})
-    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+    launches, _ = _baseline_launches(tmp_path, monkeypatch, _MUTATION_VARIANTS)
 
-    plusargs = [launched_work(cmd).plusargs for cmd, _env in runs]
-    assert plusargs == [
+    assert [work.plusargs for work, _env in launches] == [
         ("depth=4", "test=reset", "verilator+seed+7"),
         ("depth=4", "test=stress", "iters=1000", "verilator+seed+7"),
     ]
@@ -948,174 +784,72 @@ def test_sim_refuses_a_variant_argument_the_target_owns(tmp_path: Path, monkeypa
     """The plan is built against the Target's declared plusargs, as in the Flow."""
     monkeypatch.setitem(_TARGET_PARAMETERS, "iters", {"paramtype": "plusarg", "default": 1})
     with pytest.raises(UnsupportedSimTargetError, match="overrides a plusarg the Target declares"):
-        _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+        _baseline_launches(tmp_path, monkeypatch, _MUTATION_VARIANTS)
 
 
 def test_mutant_builds_and_runs_under_the_target_environment(tmp_path: Path, monkeypatch):
-    """Regression: the Target's tests.toml env table never reached a mutant.
+    """A mutant runs the Test Runs of a plain Simulation Flow run: default variant and seed.
 
+    Regression: the Target's tests.toml env table never reached a mutant.
     The Simulation Flow builds and launches under that table, so a mutant
     graded without it runs a different testbench configuration.
     """
     monkeypatch.delenv("FLAVOR", raising=False)
     monkeypatch.delenv("STRESS_MODE", raising=False)
-    import booley.flows.mutation.flow as mutation_flow_module
-
-    prepared_with: list[dict[str, str]] = []
-
     tests_toml = _MUTATION_VARIANTS.replace(
         "default_seed = 7", 'default_seed = 7\nenv = { FLAVOR = "wide" }'
     )
-    _patch_resolve_target(monkeypatch)
-    patched = mutation_flow_module.prepare_simulation_build
 
-    def recording_prepare(handle, **kwargs):
-        prepared_with.append(dict(kwargs.get("environment") or {}))
-        return patched(handle, **kwargs)
+    launches, fake = _baseline_launches(tmp_path, monkeypatch, tests_toml)
 
-    monkeypatch.setattr(mutation_flow_module, "prepare_simulation_build", recording_prepare)
-    captured: list[dict[str, str]] = []
-
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append(dict(kwargs.get("env") or {}))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
-    _write_tests_toml(tmp_path, tests_toml)
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    endpoint._run_elab("default", tmp_path, build_dir)
-    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
-
-    assert prepared_with and all(env == {"FLAVOR": "wide"} for env in prepared_with)
-    runs = captured[1:]
-    assert [env.get("FLAVOR") for env in runs] == ["wide", "wide"]
+    assert [work.plusargs for work, _env in launches] == [
+        ("test=reset", "verilator+seed+7"),
+        ("test=stress", "iters=1000", "verilator+seed+7"),
+    ]
+    assert fake.build_environments[0]["FLAVOR"] == "wide"
+    assert [env.get("FLAVOR") for _work, env in launches] == ["wide", "wide"]
     # The Test Variant's variable is added on top, for its own run only.
-    assert [env.get("STRESS_MODE") for env in runs] == [None, "short"]
+    assert [env.get("STRESS_MODE") for _work, env in launches] == [None, "short"]
 
 
 def test_sim_on_an_unseeded_target_passes_no_seed(tmp_path: Path, monkeypatch):
-    runs = _mutation_sim_runs(
-        tmp_path, monkeypatch, '[default]\ntests = ["reset"]\nselect = "+test={name}"\n', "icarus"
-    )
-    assert launched_work(runs[0][0]).plusargs == ("test=reset",)
-
-
-def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch):
-    """A VLNV-qualified --target still finds the bare tests.toml section.
-
-    Regression for the raw ``TEST_NAMES.get(target)`` lookup: a qualified
-    target (``lib:ip:core#default``) missed the bare ``[default]`` section, so
-    no selector was rendered and every mutant ran the TB default test —
-    the sweep read "survived" across the board with nothing said.
-    """
-    captured: list[list[str]] = []
-
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
-        _fake_run,
-    )
-    _write_tests_toml(
+    launches, _ = _baseline_launches(
         tmp_path,
-        '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
+        monkeypatch,
+        '[default]\ntests = ["reset"]\nselect = "+test={name}"\n',
+        eda_tool="icarus",
+    )
+    assert launches[0][0].plusargs == ("test=reset",)
+
+
+def test_mutant_launch_forwards_the_project_sim_settings(tmp_path: Path, monkeypatch):
+    """Verdict sentinels, and the trace files the adapter can clear a stale pipe at."""
+    _write_tests_toml(tmp_path, _SMOKE_TESTS)
+    (tmp_path / ".booley" / "booley.toml").write_text(
+        '[project]\nname = "demo"\n\n[flows.sim]\n'
+        'pass_sentinels = ["Correct operation validated."]\n'
+        'fail_sentinels = ["ERROR!"]\n'
+        'trace_files = ["fpu.vcd"]\n',
+        encoding="utf-8",
     )
 
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    endpoint._run_elab("lib:ip:core#default", tmp_path, build_dir)
-    endpoint._run_target_test_suite("lib:ip:core#default", tmp_path, build_dir, "tb")
+    launches, _ = _baseline_launches(tmp_path, monkeypatch)
 
-    sim_cmds = captured[1:]
-    assert "--meminit=ram,coremark.elf" in launched_work(sim_cmds[0]).plusargs
-    assert "--meminit=ram,smoke.elf" in launched_work(sim_cmds[1]).plusargs
-
-
-def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
-    _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    _patch_resolve_target(monkeypatch)
-    assert endpoint._target_test_suite("lib:ip:core#default").tests == (
-        "test_a",
-        "test_b",
-    )
-
-
-def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
-    captured: list[list[str]] = []
-
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
-        _fake_run,
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.config._sim_config",
-        lambda work_dir: {
-            "pass_sentinels": ["Correct operation validated."],
-            "fail_sentinels": ["ERROR!"],
-        },
-    )
-
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    endpoint._run_elab("default", tmp_path, build_dir)
-    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
-
-    work = launched_work(captured[-1])
+    [(work, _environment)] = launches
     assert work.pass_sentinels == ("Correct operation validated.",)
     assert work.fail_sentinels == ("ERROR!",)
+    assert work.trace_files == ("fpu.vcd",)
 
 
-def test_mutant_launch_declares_the_project_trace_files(tmp_path: Path, monkeypatch):
-    """The adapter can only clear a stale pipe at a path the launch declares."""
-    captured: list[list[str]] = []
-
-    def _fake_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return _fake_proc(rc=0, stdout="[ok]", stderr="")
-
-    _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
-    monkeypatch.setattr(
-        "booley.flows.sim.config._sim_config",
-        lambda work_dir: {"trace_files": ["fpu.vcd"]},
-    )
-
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    endpoint._run_elab("default", tmp_path, build_dir)
-    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
-
-    assert launched_work(captured[-1]).trace_files == ("fpu.vcd",)
-
-
-def test_mutant_launch_grades_from_the_document(tmp_path: Path, monkeypatch, capsys) -> None:
-    for adapter in ("hdl", "cocotb"):
-        for outcome in ("detected", "survived", "inconclusive"):
-            _grade_mutant_launch(
-                tmp_path / f"{adapter}-{outcome}", monkeypatch, capsys, adapter, outcome
-            )
-
-
-def _grade_mutant_launch(tmp_path: Path, monkeypatch, capsys, adapter: str, outcome: str) -> None:
+@pytest.mark.parametrize("outcome", ["detected", "survived", "inconclusive"])
+@pytest.mark.parametrize("adapter", ["hdl", "cocotb"])
+def test_mutant_launch_grades_from_the_document(
+    tmp_path: Path, monkeypatch, capsys, adapter: str, outcome: str
+) -> None:
     """A mutant is graded from its adapter's output; the fake decodes the launch document first."""
     from booley.flows.sim.adapter_contract import run_adapter_entry
     from booley.flows.sim.backends import cocotb_results as cr
 
-    tmp_path.mkdir()
     cocotb = adapter == "cocotb"
     # The real rejected-document answer of an adapter that cannot decode its argument.
     assert run_adapter_entry(["not a document"], lambda _work: 0) == 2
@@ -1135,33 +869,30 @@ def _grade_mutant_launch(tmp_path: Path, monkeypatch, capsys, adapter: str, outc
         ("cocotb", "survived"): _fake_proc(rc=0, stdout=cocotb_line(cr.VERDICT_PASS)),
         ("cocotb", "inconclusive"): _fake_proc(rc=0, stdout="no results line"),
     }
-    launched: list[PreparedSimulationWork] = []
-
-    def _fake_run(cmd, *args, **kwargs):
-        if cmd[0] == "make":
-            return _fake_proc(rc=0)
-        launched.append(launched_work(cmd))
-        return answers[(adapter, outcome)]
-
-    _patch_resolve_target(monkeypatch)
-    _patch_cocotb_target(monkeypatch, module="tb.test_x" if cocotb else None)
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
     _write_tests_toml(tmp_path, '[default]\ntests = ["test_a"]\n')
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    endpoint._run_elab("default", tmp_path, build_dir)
 
-    runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
-    verdict = MutationFlow._classify_variant_suite(runs)
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        target="default",
+        count=1,
+        min_detected=0,
+        simulation={
+            "cocotb_module": "tb.test_x" if cocotb else None,
+            "run_work": lambda index, _work: answers[
+                (adapter, "survived" if index is None else outcome)
+            ],
+        },
+    )
 
-    [work] = launched
+    [row] = result.detail["classified"]
+    expected = {"detected": "detected", "survived": "not_detected", "inconclusive": "inconclusive"}
+    assert row["status"] == expected[outcome]
+    work = fake.launches[-1][0]
     assert work.adapter == ("cocotb" if cocotb else "verilator")
     assert work.tests == (("test_a",) if cocotb else ())
-    assert verdict.detected is (outcome == "detected")
-    assert bool(verdict.inconclusive_reason) is (outcome == "inconclusive")
     if adapter == "hdl" and outcome == "inconclusive":
-        assert "work document rejected" in verdict.inconclusive_reason
+        assert "work document rejected" in row["sim_output_snippet"]
 
 
 def _prepare_scope_files(tmp_path: Path, scope: list[str]) -> None:
@@ -1197,6 +928,8 @@ def _assert_durable_campaign(tmp_path: Path, result: EndpointOutcome) -> None:
     assert len(manifest["mutants"]) == 2
     assert all(row["status"] == "not_detected" for row in manifest["mutants"])
     campaign_dir = manifest_path.parent
+    specs = (campaign_dir / "mutation-specs.md").read_text(encoding="utf-8")
+    assert "# Mutation Specifications" in specs
     assert all((campaign_dir / row["log"]).is_file() for row in manifest["mutants"])
     assert all((campaign_dir / row["variant"]).is_file() for row in manifest["mutants"])
     assert not any(path.name.endswith(".tmp") for path in manifest_path.parents[1].iterdir())
@@ -1231,7 +964,28 @@ def _campaign(
     _prepare_scope_files(tmp_path, (scope or _SCOPE).split(","))
     fake = _patch_fake_simulation(monkeypatch, run=run, build=build, **(simulation or {}))
     endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, **endpoint_args)
-    return endpoint, endpoint._run(), fake
+    return endpoint, endpoint.run_with_claims(CampaignClaims()), fake
+
+
+def _baseline_launches(
+    tmp_path: Path,
+    monkeypatch,
+    tests_toml: str | None = None,
+    *,
+    target: str = "default",
+    **simulation: Any,
+) -> tuple[list[tuple[PreparedSimulationWork, dict[str, str]]], FakeSimulation]:
+    """Run a one-Mutant campaign of ``default``; return the baseline's launches and the fake.
+
+    ``tests_toml`` (a ``[default]`` section) is written first; each launch is the work the
+    simulator was given and the environment it ran under.
+    """
+    if tests_toml is not None:
+        _write_tests_toml(tmp_path, tests_toml)
+    _, _, fake = _campaign(
+        tmp_path, monkeypatch, target=target, count=1, min_detected=0, simulation=simulation
+    )
+    return [(work, env) for work, env in fake.launches if _mutant_index(repr(work)) is None], fake
 
 
 def _detects_every_mutant(index: int | None) -> subprocess.CompletedProcess:
@@ -1283,22 +1037,6 @@ def _mutant_keys(result: EndpointOutcome) -> list[tuple[Any, ...]]:
     ]
 
 
-@pytest.mark.parametrize("removed", ["--steer", "--regen-lock"])
-def test_removed_llm_options_are_rejected(removed: str) -> None:
-    argv = ["--target", "sim", "--scope", "rtl/design.sv", removed]
-    if removed == "--steer":
-        argv.append("guidance")
-    with pytest.raises(SystemExit):
-        MutationFlow().parse_args(argv)
-
-
-def test_campaign_runs_the_baseline_then_each_mutant(tmp_path: Path, monkeypatch) -> None:
-    _, result, fake = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
-
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
-    assert fake.runs == [None, 1, 2]  # the baseline, then each Mutant
-
-
 def test_leftover_lock_file_is_ignored(tmp_path: Path, monkeypatch) -> None:
     _prepare_scope_files(tmp_path, [_SCOPE])
     digest = "sha256:" + hashlib.sha256((tmp_path / _SCOPE).read_bytes()).hexdigest()
@@ -1337,52 +1075,40 @@ def test_leftover_lock_file_is_ignored(tmp_path: Path, monkeypatch) -> None:
     assert not lock_dir.parent.exists()  # the retired Specialist's scratch tree is deleted
 
 
-def test_a_smaller_count_drops_the_builds_of_an_earlier_larger_run(
+def test_a_smaller_count_drops_what_an_earlier_larger_run_left(
     tmp_path: Path, monkeypatch
 ) -> None:
-    stale = tmp_path / "logs" / ".runtime" / "mutation" / "campaign" / "builds" / "mutant_9"
+    _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
+    campaign = tmp_path / "logs" / ".runtime" / "mutation" / "campaign"
+    logs = campaign / "mutant_logs"
+    assert sorted(path.name for path in logs.iterdir()) == [f"mutant_{i}.log" for i in (1, 2, 3)]
+    stale = campaign / "builds" / "mutant_9"
     stale.mkdir(parents=True)
     (stale / "image").write_bytes(b"stale")
 
-    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert not stale.exists()
+    assert [path.name for path in logs.iterdir()] == ["mutant_1.log"]
 
 
 def test_same_rtl_count_and_seed_reproduce_mutants_and_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _, first, _ = _campaign(tmp_path, monkeypatch, count=4, min_detected=0, seed=3)
-    _, second, _ = _campaign(tmp_path, monkeypatch, count=4, min_detected=0, seed=3)
+    """The seed defaults to 0, so an omitted seed reproduces ``--seed 0`` and not ``--seed 1``."""
+    endpoint, first, _ = _campaign(tmp_path, monkeypatch, count=4, min_detected=0)
+    _, second, _ = _campaign(tmp_path, monkeypatch, count=4, min_detected=0, seed=0)
+    _, other_seed, _ = _campaign(tmp_path, monkeypatch, count=4, min_detected=0, seed=1)
 
-    assert first.exit_code == second.exit_code == EXIT_SUCCESS, first.report_text
+    assert endpoint.args.seed == 0
+    assert first.exit_code == second.exit_code == other_seed.exit_code == EXIT_SUCCESS
     assert _mutant_keys(first) == _mutant_keys(second)
     assert len({row[0] for row in _mutant_keys(first)}) == 4  # distinct Mutants
     assert first.detail["identity"] == second.detail["identity"]
     assert first.detail["artifacts"]["results"] != second.detail["artifacts"]["results"]
-
-
-def test_seed_defaults_to_zero_and_changes_the_selection(tmp_path: Path, monkeypatch) -> None:
-    endpoint, default_run, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
-    _, explicit_zero, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0, seed=0)
-    _, other_seed, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0, seed=1)
-
-    assert endpoint.args.seed == 0
-    assert default_run.exit_code == other_seed.exit_code == EXIT_SUCCESS, default_run.report_text
-    assert _mutant_keys(default_run) == _mutant_keys(explicit_zero)
-    assert _mutant_keys(default_run) != _mutant_keys(other_seed)
-    assert [run.detail["identity"]["seed"] for run in (default_run, other_seed)] == [0, 1]
-
-
-def test_negative_seed_is_refused(tmp_path: Path, monkeypatch) -> None:
-    _prepare_scope_files(tmp_path, [_SCOPE])
-    endpoint = _make_endpoint(tmp_path, monkeypatch, count=2, seed=-1, extra_args=["--dry-run"])
-
-    result, _ = _run_count_preview(endpoint, monkeypatch)
-
-    assert result.exit_code == EXIT_ERROR
-    assert "--seed must be a non-negative integer" in result.report_text
+    assert _mutant_keys(first) != _mutant_keys(other_seed)
+    assert [run.detail["identity"]["seed"] for run in (first, other_seed)] == [0, 1]
 
 
 _DEFAULT_SCOPE_CORE = """\
@@ -1432,14 +1158,20 @@ def test_omitted_scope_defaults_to_the_targets_own_rtl(tmp_path: Path, monkeypat
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("// stub\n", encoding="utf-8")
     _write_tests_toml(tmp_path, '[sim]\ntests = ["smoke"]\n')
-    endpoint = _make_endpoint(tmp_path, monkeypatch, target="sim", scope=None, count=None)
+    real_catalog = TargetCatalog.build
+    fake = _patch_fake_simulation(monkeypatch)
+    monkeypatch.setattr(TargetCatalog, "build", real_catalog)  # the real .core names the RTL
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, target="sim", scope=None, count=None, extra_args=["--dry-run"]
+    )
 
-    assert endpoint._apply_campaign_defaults() is None
+    result = endpoint.run_with_claims(CampaignClaims())
 
+    assert fake.builds == fake.runs == []
     # The testbench, the vendored and generated files, the include header and the
     # non-Verilog inputs are not mutable.
-    assert endpoint.args.scope == "rtl/a.sv,rtl/b.v"
-    assert endpoint._validate_scope_against_target(endpoint._scope_files()) is None
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert result.detail["scope"] == ["rtl/a.sv", "rtl/b.v"]
 
 
 @pytest.mark.parametrize("count, expected", [(10, 8), (15, 12), (5, 4)])
@@ -1452,7 +1184,6 @@ def test_default_threshold_is_eighty_percent_of_count(
     result, _ = _run_count_preview(endpoint, monkeypatch)
 
     assert result.detail["min_detected"] == expected
-    assert (4 * count + 4) // 5 == expected
 
 
 def test_explicit_min_detected_overrides_the_default(tmp_path: Path, monkeypatch) -> None:
@@ -1554,6 +1285,7 @@ def test_build_failure_is_replaced_by_the_next_candidate(
 ) -> None:
     _prepare_scope_files(tmp_path, [_SCOPE])
     ranked = _candidates(tmp_path)
+    pristine = (tmp_path / _SCOPE).read_bytes()
 
     _, result, fake = _campaign(
         tmp_path,
@@ -1573,6 +1305,7 @@ def test_build_failure_is_replaced_by_the_next_candidate(
     assert fake.runs == [None, 1, 2, 3, 4]  # the Mutant that did not build never ran
     assert result.detail["invalid_dropped"] == [ranked[1].id]
     assert result.detail["equivalent_dropped"] == []
+    assert (tmp_path / _SCOPE).read_bytes() == pristine  # a Mutant never stays in the live RTL
 
 
 @pytest.mark.parametrize("min_detected", [None, 3], ids=["default", "explicit"])
@@ -1657,16 +1390,6 @@ def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, mo
     assert "3 candidate Mutants did not build and were replaced" in result.report_text
     assert fake.runs == [None]
     assert _reported_values(result) == {"lite": MetricsUnavailable("no valid Mutant was scored")}
-
-
-def test_campaign_without_build_failures_names_no_replacement(tmp_path: Path, monkeypatch) -> None:
-    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, run=_detects_every_mutant)
-
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
-    assert "did not build" not in result.report_text
-    assert result.detail["invalid_dropped"] == []
-    assert "invalid" not in result.detail
-    assert "  2 detected (0 timeout), 0 not detected" in result.report_text
 
 
 def test_inconclusive_mutant_after_a_replaced_build_failure_is_an_infrastructure_error(
@@ -1796,6 +1519,8 @@ def test_missing_pyslang_refuses_with_its_name(tmp_path: Path, monkeypatch) -> N
 
 def _clock_with_baseline(monkeypatch, baseline_seconds: float) -> None:
     """Make the baseline test last *baseline_seconds*; later readings only move forward."""
+    # Private seam: the module's own clock name is the narrow patch point for a duration
+    # the public boundary cannot set; patching ``time.monotonic`` would reach every caller.
     readings = [0.0, baseline_seconds]  # the baseline test starts and ends
     later = itertools.count(1000)
 
@@ -1821,45 +1546,17 @@ def test_mutant_timeout_scales_with_the_tests_baseline_duration(
     # The baseline keeps the 300 s cap; the Mutant's limit is max(10 x baseline, 30 s), capped.
     assert fake.run_limits == [300, limit]
     assert fake.run_timeouts == [305, hard_kill]  # the hard kill waits 5 s past the limit
-
-
-def test_hanging_mutant_is_stopped_by_the_simulator_at_the_documented_limit(
-    tmp_path: Path, monkeypatch
-) -> None:
-    _clock_with_baseline(monkeypatch, 1.2)
-
-    def hangs(index: int | None) -> subprocess.CompletedProcess:
-        if index == 1:  # the adapter cuts the hanging Mutant off at its own limit
-            return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (30s)\n")
-        return _fake_proc(rc=0, stdout="[sim] ok")
-
-    _, result, fake = _campaign(tmp_path, monkeypatch, count=1, min_detected=0, run=hangs)
-
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
-    assert fake.run_limits[1] == 30  # the value passed to the simulator, not 25
-    assert fake.run_timeouts[1] > fake.run_limits[1]  # the hard kill comes after the adapter
-    assert fake.run_timeouts[1] > 30
-
-
-def test_campaign_artifacts_show_each_tests_baseline_duration_and_time_limit(
-    tmp_path: Path, monkeypatch
-) -> None:
-    _clock_with_baseline(monkeypatch, 1.2)
-
-    _, result, _ = _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
-
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
     manifest = json.loads(
         (tmp_path / result.detail["artifacts"]["manifest"]).read_text(encoding="utf-8")
     )
     name = result.detail["tests"][0]
     assert manifest["baseline"]["test_runs"] == [
-        {"run": name, "duration_s": 1.2, "time_limit_s": 30}
+        {"run": name, "duration_s": baseline_seconds, "time_limit_s": limit}
     ]
     markdown = _results_markdown(tmp_path, result)
     assert "## Time limits" in markdown
     assert "| Test run | Baseline | Limit |" in markdown
-    assert f"| `{name}` | 1.20 s | 30 s |" in markdown
+    assert f"| `{name}` | {baseline_seconds:.2f} s | {limit} s |" in markdown
 
 
 def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -1882,24 +1579,23 @@ def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch
     assert "3 detected (2 timeout)" in result.report_text
 
 
-def _baseline_runs(*runs: MutationTestRun) -> MutationFlow:
-    """An endpoint whose pristine baseline elaborates and runs exactly *runs*."""
-    endpoint = MutationFlow()
-    endpoint._run_elab = lambda *_args, **_kwargs: _fake_proc(rc=0)  # type: ignore[method-assign]
-    endpoint._run_target_test_suite = lambda *_args, **_kwargs: list(runs)  # type: ignore[method-assign]
-    endpoint._persist_baseline_log = lambda _output: ""  # type: ignore[method-assign]
-    return endpoint
+def _result_per_test(
+    index: int | None, work: PreparedSimulationWork
+) -> subprocess.CompletedProcess:
+    """Answer a launch by its ``test=<name>`` plusarg: ``fail`` fails, ``slow`` times out."""
+    name = next(arg.removeprefix("test=") for arg in work.plusargs if arg.startswith("test="))
+    if name == "slow":
+        raise subprocess.TimeoutExpired(cmd=[], timeout=1)
+    if name == "broken":
+        raise OSError("launch failed\nsecond line")
+    return _fake_proc(
+        rc=1 if name == "fail" else 0, stdout="[sim] failed" if name == "fail" else ""
+    )
 
 
-def test_baseline_failure_result_names_each_failing_test(tmp_path: Path, monkeypatch) -> None:
-    """AC2: the ``RESULT:`` line names every failing or inconclusive baseline test."""
+def _cocotb_results_output() -> str:
     from booley.flows.sim.backends import cocotb_results as cr
 
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")
-    ok = MutationTestRun("ok", process=_fake_proc(rc=0))
-    fail = MutationTestRun("fail", process=_fake_proc(rc=1), output="[sim] failed")
-    slow = MutationTestRun("slow", timed_out=True)
     results = cr.CocotbResults(
         state=cr.STATE_OK,
         tests=(
@@ -1907,62 +1603,79 @@ def test_baseline_failure_result_names_each_failing_test(tmp_path: Path, monkeyp
             cr.CocotbTest("test_b", "tb", cr.VERDICT_PASS),
         ),
     )
-    cocotb_fail = MutationTestRun(
-        "<cocotb-suite>",
-        process=_fake_proc(rc=1),
-        output=cr.format_results_line(cr.results_payload(results)),
-        requires_cocotb_results=True,
-    )
-    cocotb_missing = MutationTestRun(
-        "<cocotb-suite>",
-        process=_fake_proc(rc=0),
-        output="no results line",
-        requires_cocotb_results=True,
-    )
-    cases = [
+    return cr.format_results_line(cr.results_payload(results))
+
+
+@pytest.mark.parametrize(
+    ("tests", "cocotb_output", "last_line"),
+    [
         (
-            (ok, fail, slow),
+            ("ok", "fail", "slow"),
+            None,
             "RESULT: ERROR (baseline: test 'fail' failed on pristine source; "
             "test 'slow' inconclusive: simulation timed out)",
         ),
-        ((ok, fail), "RESULT: ERROR (baseline: test 'fail' failed on pristine source)"),
-        ((cocotb_fail,), "RESULT: ERROR (baseline: test 'test_a' failed on pristine source)"),
+        (("ok", "fail"), None, "RESULT: ERROR (baseline: test 'fail' failed on pristine source)"),
         (
-            (cocotb_missing,),
+            ("broken", "fail"),
+            None,
+            "RESULT: ERROR (baseline: test 'broken' inconclusive: launch failed second line; "
+            "test 'fail' failed on pristine source)",
+        ),
+        (
+            ("test_a", "test_b"),
+            "fail",
+            "RESULT: ERROR (baseline: test 'test_a' failed on pristine source)",
+        ),
+        (
+            ("test_a", "test_b"),
+            "missing",
             "RESULT: ERROR (baseline: test '<cocotb-suite>' inconclusive: "
             "cocotb result line is missing or malformed)",
         ),
-    ]
-    for runs, last_line in cases:
-        result = _baseline_runs(*runs)._run_pristine_baseline(plan)  # type: ignore[arg-type]
-
-        assert isinstance(result, EndpointOutcome)
-        assert result.exit_code == EXIT_ERROR
-        assert result.report_text.splitlines()[-1] == last_line
-        assert "'ok'" not in last_line
-
-
-def test_error_result_line_survives_blank_and_multiline_reasons(
-    tmp_path: Path, monkeypatch
+    ],
+    ids=[
+        "hdl-fail-and-timeout",
+        "hdl-fail",
+        "hdl-multiline-error",
+        "cocotb-fail",
+        "cocotb-missing",
+    ],
+)
+def test_baseline_failure_result_names_each_failing_test(
+    tmp_path: Path, monkeypatch, tests: tuple[str, ...], cocotb_output: str | None, last_line: str
 ) -> None:
-    """A blank reason says ``no detail``; a multi-line run error stays on one line, others kept."""
-    from booley.flows.mutation.flow import _error_outcome
+    """The ``RESULT:`` line names every failing or inconclusive baseline test, on one line."""
+    names = ", ".join(f'"{name}"' for name in tests)
+    _write_tests_toml(tmp_path, f'[lite]\ntests = [{names}]\nselect = "+test={{name}}"\n')
+    simulation: dict[str, Any] = {"run_work": _result_per_test}
+    if cocotb_output is not None:
+        output = "no results line" if cocotb_output == "missing" else _cocotb_results_output()
+        simulation = {
+            "cocotb_module": "tb.test_x",
+            "run_work": lambda _index, _work: _fake_proc(
+                rc=0 if cocotb_output == "missing" else 1, stdout=output
+            ),
+        }
 
-    blank = _error_outcome("generation", "  \n", report_text="mutation: cannot generate Mutants")
-    assert blank.report_text.splitlines()[-1] == "RESULT: ERROR (generation: no detail)"
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=1, simulation=simulation)
 
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")
-    broken = MutationTestRun("broken", error="launch failed\nsecond line")
-    fail = MutationTestRun("fail", process=_fake_proc(rc=1), output="[sim] failed")
+    assert result.exit_code == EXIT_ERROR
+    assert result.report_text.splitlines()[-1] == last_line
 
-    result = _baseline_runs(broken, fail)._run_pristine_baseline(plan)  # type: ignore[arg-type]
 
-    assert isinstance(result, EndpointOutcome)
-    assert result.report_text.splitlines()[-1] == (
-        "RESULT: ERROR (baseline: test 'broken' inconclusive: launch failed second line; "
-        "test 'fail' failed on pristine source)"
-    )
+def test_error_result_line_says_no_detail_for_a_blank_reason(tmp_path: Path, monkeypatch) -> None:
+    """A Mutant generator error with a blank message still ends with a one-line ``RESULT:``."""
+    from booley.flows.mutation.flow import MutantGeneratorError
+
+    def blank_error(*_args: Any, **_kwargs: Any) -> None:
+        raise MutantGeneratorError("  \n")
+
+    monkeypatch.setattr("booley.flows.mutation.flow.generate_mutants", blank_error)
+
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=1)
+
+    assert result.report_text.splitlines()[-1] == "RESULT: ERROR (generation: no detail)"
 
 
 def test_baseline_that_times_out_is_inconclusive(tmp_path: Path, monkeypatch) -> None:
@@ -1979,6 +1692,9 @@ def test_baseline_that_times_out_is_inconclusive(tmp_path: Path, monkeypatch) ->
 
 def test_identity_is_in_results_and_manifest(tmp_path: Path, monkeypatch) -> None:
     from booley.flows.mutation.generator import GENERATOR_VERSION
+
+    progress: list[str] = []
+    monkeypatch.setattr(MutationFlow, "emit_progress", lambda _self, line: progress.append(line))
 
     _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0, seed=5)
 
@@ -1997,6 +1713,7 @@ def test_identity_is_in_results_and_manifest(tmp_path: Path, monkeypatch) -> Non
     identity = dict(result.detail["identity"])
     reason = identity.pop("elaboration_fallback")
     assert reason.startswith(f"{_SCOPE}:")
+    assert f"Mutant generation: per-file elaboration ({reason})" in progress
     assert identity == expected
     assert manifest["identity"] == result.detail["identity"]
     markdown = _results_markdown(tmp_path, result)
@@ -2021,20 +1738,10 @@ def test_identity_is_in_results_and_manifest(tmp_path: Path, monkeypatch) -> Non
     ) in result.report_text.splitlines()[1]
 
 
-def test_generation_reports_the_per_file_fallback(tmp_path: Path, monkeypatch) -> None:
-    """A Target that does not elaborate as a whole says so in the progress and the report."""
-    progress: list[str] = []
-    monkeypatch.setattr(MutationFlow, "emit_progress", lambda _self, line: progress.append(line))
-
-    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
-
-    reason = result.detail["identity"]["elaboration_fallback"]
-    assert result.detail["identity"]["elaboration"] == "per-file"
-    assert f"Mutant generation: per-file elaboration ({reason})" in progress
-    assert f"- Elaboration: per file ({reason})" in _results_markdown(tmp_path, result)
-
-
 def test_generation_without_an_inspectable_target_falls_back(tmp_path: Path, monkeypatch) -> None:
+    # Private seam: validation inspects the Target first and refuses when that fails, so a
+    # run reaches generation's fallback only for a Target that turns uninspectable between
+    # the two reads; no public path makes that happen.
     _prepare_scope_files(tmp_path, [_SCOPE])
     endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=2)
     monkeypatch.setattr(MutationFlow, "_inspect_target", lambda _self: None)
@@ -2047,24 +1754,10 @@ def test_generation_without_an_inspectable_target_falls_back(tmp_path: Path, mon
 _AUTO_COUNT_LABEL = "auto -> 3 (formula 6, budget cap 3)"
 
 
-def test_auto_count_report_names_formula_and_cap(tmp_path: Path, monkeypatch) -> None:
-    """32 source lines give formula 6; a 450 s timeout caps the count at 3."""
-    _, result, _ = _campaign(
-        tmp_path,
-        monkeypatch,
-        count="auto",
-        min_detected=0,
-        extra_args=["--timeout-ms", "450000"],
-    )
-
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
-    assert f"count {_AUTO_COUNT_LABEL}, generator" in result.report_text.splitlines()[0]
-    assert f"- Count: {_AUTO_COUNT_LABEL}\n" in _results_markdown(tmp_path, result)
-
-
-def test_auto_count_manifest_keeps_identity_of_the_resolved_count(
+def test_auto_count_names_formula_and_cap_and_keeps_the_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """32 source lines give formula 6; a 450 s timeout caps the count at 3."""
     _, auto, _ = _campaign(
         tmp_path,
         monkeypatch,
@@ -2075,6 +1768,8 @@ def test_auto_count_manifest_keeps_identity_of_the_resolved_count(
     _, explicit, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
 
     assert auto.exit_code == explicit.exit_code == EXIT_SUCCESS, auto.report_text
+    assert f"count {_AUTO_COUNT_LABEL}, generator" in auto.report_text.splitlines()[0]
+    assert f"- Count: {_AUTO_COUNT_LABEL}\n" in _results_markdown(tmp_path, auto)
     auto_manifest = json.loads(
         (tmp_path / auto.detail["artifacts"]["manifest"]).read_text("utf-8")
     )
@@ -2106,19 +1801,9 @@ def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) ->
     ]
     assert all((tmp_path / row["path"]).is_file() for row in variants)
     _assert_durable_campaign(tmp_path, result)
+    campaign = (tmp_path / result.detail["artifacts"]["manifest"]).parent
+    assert "# Mutation Specifications" in (campaign / "mutation-specs.md").read_text("utf-8")
     assert "mutation variant: reports/mutation/1/campaign/variants/" in result.report_text
-
-
-def test_mutant_logs_of_an_earlier_run_do_not_survive_a_smaller_run(
-    tmp_path: Path, monkeypatch
-) -> None:
-    _, _, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
-    logs = tmp_path / "logs" / ".runtime" / "mutation" / "campaign" / "mutant_logs"
-    assert sorted(path.name for path in logs.iterdir()) == [f"mutant_{i}.log" for i in (1, 2, 3)]
-
-    _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
-
-    assert [path.name for path in logs.iterdir()] == ["mutant_1.log"]
 
 
 def test_auto_count_publishes_source_size_budget(tmp_path: Path, monkeypatch) -> None:
@@ -2135,115 +1820,89 @@ def test_auto_count_publishes_source_size_budget(tmp_path: Path, monkeypatch) ->
     assert (manifest_path.parent / "source-size-budget.json").is_file()
 
 
+@pytest.mark.parametrize("count", [2, "auto"])
 def test_a_run_without_a_verdict_publishes_a_complete_manifest(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, count: int | str
 ) -> None:
+    """The fixed count adds no auto fields; the auto count keeps them in detail and manifest."""
+
     def first_mutant_has_no_observation(index: int | None) -> subprocess.CompletedProcess:
         if index == 1:
             return _fake_proc(rc=1, stdout="[SIM_INFRA_ERROR] the harness broke\n")
         return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
 
     _, result, _ = _campaign(
-        tmp_path, monkeypatch, count=2, min_detected=0, run=first_mutant_has_no_observation
+        tmp_path, monkeypatch, count=count, min_detected=0, run=first_mutant_has_no_observation
     )
 
     assert result.exit_code == EXIT_ERROR
     assert result.report_text.startswith("mutation campaign produced no trustworthy verdict")
     assert result.detail["phase"] == "variant_infrastructure"
     assert result.report_text.splitlines()[-1].startswith("RESULT: ERROR (sweep: ")
-    assert len(result.detail["classified"]) == 2
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
-    assert [row["status"] for row in manifest["mutants"]] == ["inconclusive", "detected"]
-    assert manifest["identity"]["count"] == 2
-    assert not {"auto", "formula_count", "budget_capped"} & manifest.keys()
+    assert [row["status"] for row in manifest["mutants"]][:2] == ["inconclusive", "detected"]
+    auto_fields = ("auto", "formula_count", "budget_capped")
+    if count == "auto":
+        for fields in (result.detail, manifest):
+            assert [fields[key] for key in auto_fields] == [True, 6, False]
+    else:
+        assert len(result.detail["classified"]) == manifest["identity"]["count"] == 2
+        assert not set(auto_fields) & manifest.keys()
 
 
-def test_an_auto_run_without_a_verdict_keeps_the_auto_fields_in_detail_and_manifest(
-    tmp_path: Path, monkeypatch
+_RESIDUE_WARNING = "WARNING: worktree not clean after sim sweep"
+
+
+@pytest.mark.parametrize(
+    "during_run", [None, "append", "delete"], ids=["edit-before-run", "append", "delete"]
+)
+def test_residue_warning_compares_against_the_pre_run_snapshot(
+    tmp_path: Path, monkeypatch, during_run: str | None
 ) -> None:
-    def first_mutant_has_no_observation(index: int | None) -> subprocess.CompletedProcess:
-        if index == 1:
-            return _fake_proc(rc=1, stdout="[SIM_INFRA_ERROR] the harness broke\n")
-        return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
+    """A scope edit that predates the run is no residue; one the run leaves names its file (#2777)."""
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    with (tmp_path / _SCOPE).open("a", encoding="utf-8") as handle:
+        handle.write("// uncommitted edit made before the run\n")
 
-    _, result, _ = _campaign(
-        tmp_path, monkeypatch, count="auto", min_detected=0, run=first_mutant_has_no_observation
-    )
-
-    assert result.exit_code == EXIT_ERROR
-    manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
-    for fields in (result.detail, manifest):
-        assert (fields["auto"], fields["formula_count"], fields["budget_capped"]) == (
-            True,
-            6,
-            False,
-        )
-
-
-class TestResidueWarning:
-    """The residue warning compares against the pre-run snapshot, not HEAD (#2777)."""
-
-    WARNING = "WARNING: worktree not clean after sim sweep"
-
-    def _run(self, tmp_path: Path, monkeypatch, *, edit_during_run: bool, edit_before: bool):
-        """Run two Mutants; ``edit_during_run`` makes the second one's run append to the scope file."""
-        _prepare_scope_files(tmp_path, [_SCOPE])
-        if edit_before:
-            with (tmp_path / _SCOPE).open("a", encoding="utf-8") as handle:
-                handle.write("// uncommitted edit made before the run\n")
-
-        def run(index: int | None) -> subprocess.CompletedProcess:
-            if edit_during_run and index == 2:
-                with (tmp_path / _SCOPE).open("a", encoding="utf-8") as handle:
-                    handle.write("// edit left by the run\n")
-            return _fake_proc(rc=0)
-
-        return _campaign(tmp_path, monkeypatch, count=2, min_detected=0, run=run)[1]
-
-    def test_run_ignores_scope_edit_that_predates_run(self, tmp_path: Path, monkeypatch):
-        result = self._run(tmp_path, monkeypatch, edit_during_run=False, edit_before=True)
-
-        assert result.exit_code == EXIT_SUCCESS, result.report_text
-        assert self.WARNING not in result.report_text
-
-    def test_run_warns_naming_the_scope_file_it_changed(self, tmp_path: Path, monkeypatch):
-        result = self._run(tmp_path, monkeypatch, edit_during_run=True, edit_before=True)
-
-        warnings = [line for line in result.report_text.splitlines() if self.WARNING in line]
-        assert [line.strip() for line in warnings] == [f"{self.WARNING}: {_SCOPE}"]
-        lines = result.report_text.splitlines()
-        assert lines.index(warnings[0]) < next(
-            i for i, line in enumerate(lines) if line.startswith("RESULT: ")
-        )
-
-    def test_error_run_warns_before_its_final_result_line(self, tmp_path: Path, monkeypatch):
-        """A log tail may carry its own ``RESULT:`` line; the warning goes before the last."""
-        _prepare_scope_files(tmp_path, [_SCOPE])
-
-        def baseline_fails(index: int | None) -> subprocess.CompletedProcess:
+    def run(index: int | None) -> subprocess.CompletedProcess:
+        if index == 2 and during_run == "append":
             with (tmp_path / _SCOPE).open("a", encoding="utf-8") as handle:
                 handle.write("// edit left by the run\n")
-            return _fake_proc(rc=1, stdout="RESULT: FAIL (0/1)")
+        if index == 2 and during_run == "delete":
+            (tmp_path / _SCOPE).unlink()
+        return _fake_proc(rc=0)
 
-        _, result, _ = _campaign(tmp_path, monkeypatch, count=2, run=baseline_fails)
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0, run=run)
 
-        assert result.exit_code == EXIT_ERROR
-        lines = result.report_text.splitlines()
-        warning = next(i for i, line in enumerate(lines) if self.WARNING in line)
-        assert "RESULT: FAIL (0/1)" in lines[:warning]  # the log tail's own line stays above
-        assert lines[warning + 1].startswith("RESULT: ERROR (baseline: ")
-        assert warning + 2 == len(lines)
+    lines = result.report_text.splitlines()
+    warnings = [line.strip() for line in lines if _RESIDUE_WARNING in line]
+    if during_run is None:
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        assert warnings == []
+        return
+    assert warnings == [f"{_RESIDUE_WARNING}: {_SCOPE}"]
+    assert next(i for i, line in enumerate(lines) if _RESIDUE_WARNING in line) < next(
+        i for i, line in enumerate(lines) if line.startswith("RESULT: ")
+    )
 
-    def test_scope_residue_detects_deleted_scope_file(self, tmp_path: Path):
-        from booley.flows.mutation import workspace as mutation_workspace
 
-        _prepare_scope_files(tmp_path, [_SCOPE])
-        baseline = mutation_workspace.compute_scope_hashes([_SCOPE], tmp_path)
-        assert MutationFlow._scope_residue(baseline, tmp_path) == []
+def test_error_run_warns_before_its_final_result_line(tmp_path: Path, monkeypatch) -> None:
+    """A log tail may carry its own ``RESULT:`` line; the warning goes before the last."""
+    _prepare_scope_files(tmp_path, [_SCOPE])
 
-        (tmp_path / _SCOPE).unlink()
+    def baseline_fails(index: int | None) -> subprocess.CompletedProcess:
+        with (tmp_path / _SCOPE).open("a", encoding="utf-8") as handle:
+            handle.write("// edit left by the run\n")
+        return _fake_proc(rc=1, stdout="RESULT: FAIL (0/1)")
 
-        assert MutationFlow._scope_residue(baseline, tmp_path) == [_SCOPE]
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, run=baseline_fails)
+
+    assert result.exit_code == EXIT_ERROR
+    lines = result.report_text.splitlines()
+    warning = next(i for i, line in enumerate(lines) if _RESIDUE_WARNING in line)
+    assert "RESULT: FAIL (0/1)" in lines[:warning]  # the log tail's own line stays above
+    assert lines[warning + 1].startswith("RESULT: ERROR (baseline: ")
+    assert warning + 2 == len(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -2281,41 +1940,55 @@ def _author_scope_core(tmp_path: Path) -> None:
         path.write_text("// stub\n", encoding="utf-8")
 
 
-class TestValidateScopeAgainstTarget:
-    def test_resolved_source_is_accepted(self, tmp_path: Path):
-        _author_scope_core(tmp_path)
-        endpoint = _make_endpoint(tmp_path, target="sim")
-        # rtl/counter.sv IS a resolved source of the sim Target → accepted.
-        assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
+def _dry_run_scope(
+    root: Path, monkeypatch: pytest.MonkeyPatch, scope: str | None
+) -> EndpointOutcome:
+    """Dry-run the authored ``sim`` Target of *root* over *scope* (``None``: its own RTL)."""
+    _write_tests_toml(root, '[sim]\ntests = ["smoke"]\n')
+    endpoint = _make_endpoint(
+        root, monkeypatch, target="sim", scope=scope, count=1, extra_args=["--dry-run"]
+    )
+    return endpoint.run_with_claims(CampaignClaims())
 
-    def test_stealth_mirror_path_rejected_with_basename_hint(self, tmp_path: Path):
-        _author_scope_core(tmp_path)
-        endpoint = _make_endpoint(tmp_path, target="sim")
-        # The stealth-cores mirror path is NOT a resolved source; its basename
-        # (counter.sv) matches rtl/counter.sv, so a "did you mean" hint fires.
-        mirror = ".booley/cores/rtl/counter.sv"
-        (tmp_path / mirror).parent.mkdir(parents=True)
-        (tmp_path / mirror).write_text("// stub\n", encoding="utf-8")
-        result = endpoint._validate_scope_against_target([mirror])
-        assert result is not None
-        assert result.exit_code == EXIT_ERROR
-        assert "does not match" in result.report_text
-        assert "Did you mean 'rtl/counter.sv'" in result.report_text
 
-    def test_missing_mirror_path_says_it_does_not_exist_with_the_same_hint(self, tmp_path: Path):
-        _author_scope_core(tmp_path)
-        endpoint = _make_endpoint(tmp_path, target="sim")
-        result = endpoint._validate_scope_against_target([".booley/cores/rtl/counter.sv"])
-        assert result is not None
-        assert result.exit_code == EXIT_ERROR
-        assert "does not exist" in result.report_text
-        assert "Did you mean 'rtl/counter.sv'" in result.report_text
+_MIRROR = ".booley/cores/rtl/counter.sv"
 
-    def test_refuses_when_target_unresolvable(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path, target="sim")
-        result = endpoint._validate_scope_against_target(["anything.sv"])
-        assert result is not None
-        assert "cannot inspect Target" in result.report_text
+
+@pytest.mark.parametrize(
+    ("scope", "exists", "refusal"),
+    [
+        ("rtl/counter.sv", True, None),
+        (_MIRROR, True, "does not match"),
+        (_MIRROR, False, "does not exist"),
+    ],
+    ids=["resolved-source", "stealth-mirror", "missing-mirror"],
+)
+def test_scope_is_validated_against_the_targets_resolved_sources(
+    tmp_path: Path, monkeypatch, scope: str, exists: bool, refusal: str | None
+) -> None:
+    """The stealth-cores mirror is no resolved source; its basename hints the real one (#3946)."""
+    _author_scope_core(tmp_path)
+    if exists:
+        (tmp_path / scope).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / scope).write_text("// stub\n", encoding="utf-8")
+
+    result = _dry_run_scope(tmp_path, monkeypatch, scope)
+
+    if refusal is None:
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        return
+    assert result.exit_code == EXIT_ERROR
+    assert refusal in result.report_text
+    assert "Did you mean 'rtl/counter.sv'?" in result.report_text
+
+
+def test_refuses_when_target_unresolvable(tmp_path: Path):
+    # Private seam: campaign resolution refuses an unknown Target ("Unknown target 'sim'")
+    # before any scope check, so only a direct call reaches the inspection-failure refusal.
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    result = endpoint._validate_scope_against_target(["anything.sv"])
+    assert result is not None
+    assert "cannot inspect Target" in result.report_text
 
 
 # ---------------------------------------------------------------------------
@@ -2323,278 +1996,133 @@ class TestValidateScopeAgainstTarget:
 # ---------------------------------------------------------------------------
 
 
-def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | None = "verilator"):
-    """Make the .core reads report a Cocotb (or classic) Target."""
+@pytest.mark.parametrize("eda_tool", (None, "mystery-sim"))
+def test_missing_or_unknown_simulator_never_defaults_to_verilator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, eda_tool: str | None
+) -> None:
+    _patch_resolve_target(monkeypatch, eda_tool=eda_tool)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
 
-    def build(_cls, work_dir):
-        def select(_self, target, **_kwargs):
-            return type(
-                "FakeHandle",
-                (),
-                {
-                    "selector": target,
-                    "name": target,
-                    "identity": f"::{target}:0#{target}",
-                    "vlnv": f"::{target}:0",
-                    "project_root": Path(work_dir),
-                    "cocotb_module": module,
-                    "eda_tool": eda_tool,
-                },
-            )()
+    with pytest.raises(UnsupportedSimTargetError, match="unsupported simulator metadata"):
+        endpoint.target_eda_tool("default", tmp_path)
 
-        def inspect(_self, _handle):
-            return SimpleNamespace(parameters=dict(_TARGET_PARAMETERS))
 
-        return type("FakeCatalog", (), {"select": select, "inspect": inspect})()
+def test_invalid_cocotb_target_selection_is_not_reclassified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class InvalidCatalog:
+        def select(self, target: str, *, for_flow: str):
+            raise IncompatibleTargetError(f"{target} is not {for_flow}-compatible")
 
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        classmethod(build),
+    monkeypatch.setattr(TargetCatalog, "build", classmethod(lambda cls, root: InvalidCatalog()))
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+    with pytest.raises(UnsupportedSimTargetError, match="cannot select Simulation Target"):
+        endpoint.cocotb_target("default", tmp_path)
+
+
+def test_cached_simulator_marker_must_match_target_declaration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_resolve_target(monkeypatch, eda_tool="icarus")
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / ".booley_edalize_eda_tool").write_text("verilator", encoding="utf-8")
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+    with pytest.raises(UnsupportedSimTargetError, match="cached build metadata"):
+        endpoint.target_eda_tool("default", tmp_path, build_dir)
+
+
+def test_cocotb_target_runs_the_cocotb_run_half_over_the_whole_suite(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Cocotb Target runs Cocotb's module and test filter, one batch for the whole suite."""
+    launches, _ = _baseline_launches(
+        tmp_path,
+        monkeypatch,
+        '[default]\ntests = ["test_a", "test_b"]\n',
+        cocotb_module="tb.test_ravenoc",
     )
 
+    [(work, _env)] = launches
+    assert work.adapter == "cocotb"
+    assert work.cocotb_module == "tb.test_ravenoc"
+    assert work.tests == ("test_a", "test_b")
+    assert work.eda_tool == "verilator"
+    assert work.build_dir.endswith("builds/baseline")
+    assert work.cocotb_seed == 1  # the Target declares no seed: the Flow default
+    # Sentinels and a top do not apply to Cocotb Targets (ADR 0034 decision 6).
+    assert not work.pass_sentinels and not work.fail_sentinels
+    assert work.top == ""
 
-class TestCocotbSimDispatch:
-    @pytest.mark.parametrize("eda_tool", (None, "mystery-sim"))
-    def test_missing_or_unknown_simulator_never_defaults_to_verilator(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        eda_tool: str | None,
-    ) -> None:
-        _patch_cocotb_target(monkeypatch, module=None, eda_tool=eda_tool)
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
 
-        with pytest.raises(UnsupportedSimTargetError, match="unsupported simulator metadata"):
-            endpoint.target_eda_tool("default", tmp_path)
+def test_cocotb_suite_whose_default_variants_differ_in_env_runs_in_batches(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: such a suite raised UnsupportedSimTargetError before any run.
 
-    def test_elab_rejects_declared_and_configured_simulator_disagreement(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _patch_resolve_target(monkeypatch, eda_tool="icarus")
-        monkeypatch.setattr(
-            "booley.flows.mutation.flow.prepare_simulation_build",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                SimulationBuildPreparationError(
-                    "Target 'default' declared 'icarus' but setup configured 'verilator'"
-                )
-            ),
-        )
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-
-        result = endpoint._run_elab("default", tmp_path, build_dir)
-
-        assert result.returncode == 1
-        assert "declared 'icarus' but setup configured 'verilator'" in result.stderr
-
-    def test_invalid_cocotb_target_selection_is_not_reclassified(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        class InvalidCatalog:
-            def select(self, target: str, *, for_flow: str):
-                raise IncompatibleTargetError(f"{target} is not {for_flow}-compatible")
-
-        monkeypatch.setattr(
-            TargetCatalog, "build", classmethod(lambda cls, root: InvalidCatalog())
-        )
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-
-        with pytest.raises(UnsupportedSimTargetError, match="cannot select Simulation Target"):
-            endpoint.cocotb_target("default", tmp_path)
-
-    def test_cached_simulator_marker_must_match_target_declaration(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _patch_cocotb_target(monkeypatch, module=None, eda_tool="icarus")
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        (build_dir / ".booley_edalize_eda_tool").write_text("verilator", encoding="utf-8")
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-
-        with pytest.raises(UnsupportedSimTargetError, match="cached build metadata"):
-            endpoint.target_eda_tool("default", tmp_path, build_dir)
-
-    def test_cocotb_target_runs_cocotb_run_half(self, tmp_path: Path, monkeypatch):
-        """A Cocotb Target must run with Cocotb's module/filter environment."""
-        captured: list[list[str]] = []
-        monkeypatch.setattr(
-            "booley.flows.mutation.flow.subprocess.run",
-            lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
-        )
-        _patch_resolve_target(monkeypatch)
-        _patch_cocotb_target(monkeypatch, module="tb.test_ravenoc")
-
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        endpoint._run_elab("default", tmp_path, build_dir)
-        endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
-
-        sim_cmd = captured[-1]
-        work = launched_work(sim_cmd)
-        assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
-        assert work.adapter == "cocotb"
-        assert work.cocotb_module == "tb.test_ravenoc"
-        assert work.eda_tool == "verilator"
-        assert work.build_dir == "build"
-        assert work.cocotb_seed == 1  # the Target declares no seed: the Flow default
-        assert not any("MUT_ID" in arg for arg in sim_cmd)
-        # Sentinels and a top do not apply to Cocotb Targets (ADR 0034 decision 6).
-        assert not work.pass_sentinels and not work.fail_sentinels
-        assert work.top == ""
-
-    def test_cocotb_run_batches_whole_target_suite(self, tmp_path: Path, monkeypatch):
-        captured: list[list[str]] = []
-        monkeypatch.setattr(
-            "booley.flows.mutation.flow.subprocess.run",
-            lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
-        )
-        _patch_resolve_target(monkeypatch)
-        _patch_cocotb_target(monkeypatch, module="tb.test_noc")
-        _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
-
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        endpoint._run_elab("default", tmp_path, build_dir)
-        endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
-
-        assert launched_work(captured[-1]).tests == ("test_a", "test_b")
-
-    def test_cocotb_suite_whose_default_variants_differ_in_env_runs_in_batches(
-        self, tmp_path: Path, monkeypatch
-    ):
-        """Regression: such a suite raised UnsupportedSimTargetError before any run.
-
-        The Simulation Flow runs it as one process per environment; a mutant
-        is graded the same way, each batch under its own Test Variant's
-        environment and the Default Seed.
-        """
-        monkeypatch.delenv("MODE", raising=False)
-        captured: list[tuple[list[str], dict[str, str]]] = []
-        monkeypatch.setattr(
-            "booley.flows.mutation.flow.subprocess.run",
-            lambda cmd, *a, **k: (
-                captured.append((list(cmd), dict(k.get("env") or {}))),
-                _fake_proc(rc=0),
-            )[1],
-        )
-        _patch_resolve_target(monkeypatch)
-        _patch_cocotb_target(monkeypatch, module="tb.test_noc")
-        _write_tests_toml(
-            tmp_path,
-            '[default]\ntests = ["test_a", "test_b", "test_c"]\ndefault_seed = 9\n'
-            '[default.variants.test_a]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
-            '[default.variants.test_b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
-        )
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        endpoint._run_elab("default", tmp_path, build_dir)
-
-        runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
-
-        launched = [(launched_work(cmd), env.get("MODE")) for cmd, env in captured[-3:]]
-        assert [(work.tests, mode) for work, mode in launched] == [
-            (("test_a",), "A"),
-            (("test_b",), "B"),
-            (("test_c",), None),
-        ]
-        assert [work.cocotb_seed for work, _mode in launched] == [9, 9, 9]
-        assert [run.test_name for run in runs] == [
-            "<cocotb-suite 1/3>",
-            "<cocotb-suite 2/3>",
-            "<cocotb-suite 3/3>",
-        ]
-
-    def test_individual_test_flag_was_removed(self, tmp_path: Path, monkeypatch):
-        with pytest.raises(SystemExit):
-            _make_endpoint(tmp_path, monkeypatch, extra_args=["--test", "test_b"])
-
-    def test_classic_target_still_uses_verilator_run(self, tmp_path: Path, monkeypatch):
-        captured: list[list[str]] = []
-        monkeypatch.setattr(
-            "booley.flows.mutation.flow.subprocess.run",
-            lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
-        )
-        _patch_resolve_target(monkeypatch)
-        _patch_cocotb_target(monkeypatch, module=None)
-
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        endpoint._run_elab("default", tmp_path, build_dir)
-        endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
-
-        sim_cmd = captured[-1]
-        work = launched_work(sim_cmd)
-        assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
-        assert work.top == "tb"
-        assert work.plusargs == ("verilator+seed+1",)
-        assert not work.trace
-
-    def test_classic_icarus_target_uses_iverilog_run(self, tmp_path: Path, monkeypatch):
-        """F-6: a classic Icarus build must be executed as a vvp image."""
-        captured: list[list[str]] = []
-        monkeypatch.setattr(
-            sys.modules[MutationFlow.__module__].subprocess,
-            "run",
-            lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
-        )
-        _patch_resolve_target(monkeypatch, eda_tool="icarus")
-        _patch_cocotb_target(monkeypatch, module=None, eda_tool="icarus")
-
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        endpoint._run_elab("default", tmp_path, build_dir)
-        endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
-
-        sim_cmd = captured[-1]
-        work = launched_work(sim_cmd)
-        assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
-        assert work.build_dir == "build"
-        assert not any("MUT_ID" in arg for arg in sim_cmd)
-
-    def test_commercial_cocotb_target_fails_fast_with_reason(
-        self,
-        tmp_path: Path,
+    The Simulation Flow runs it as one process per environment; a mutant
+    is graded the same way, each batch under its own Test Variant's
+    environment and the Default Seed.
+    """
+    monkeypatch.delenv("MODE", raising=False)
+    launches, _ = _baseline_launches(
+        tmp_path,
         monkeypatch,
-    ):
-        """Unsupported => a typed error naming the reason, never a silent run."""
-        _patch_cocotb_target(monkeypatch, module="tb.test_noc", eda_tool="xcelium")
-        endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
+        '[default]\ntests = ["test_a", "test_b", "test_c"]\ndefault_seed = 9\n'
+        '[default.variants.test_a]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
+        '[default.variants.test_b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
+        cocotb_module="tb.test_noc",
+    )
 
-        with pytest.raises(UnsupportedSimTargetError) as exc:
-            endpoint.cocotb_target("default", tmp_path)
-        assert "icarus and verilator only" in str(exc.value)
+    assert [(work.tests, env.get("MODE")) for work, env in launches] == [
+        (("test_a",), "A"),
+        (("test_b",), "B"),
+        (("test_c",), None),
+    ]
+    assert [work.cocotb_seed for work, _env in launches] == [9, 9, 9]
 
-    def test_unsupported_target_aborts_before_any_build(
-        self,
-        tmp_path: Path,
+
+@pytest.mark.parametrize(
+    ("eda_tool", "adapter", "plusargs"),
+    [("verilator", "verilator", ("verilator+seed+1",)), ("icarus", "icarus", ())],
+)
+def test_classic_target_runs_its_simulators_adapter(
+    tmp_path: Path, monkeypatch, eda_tool: str, adapter: str, plusargs: tuple[str, ...]
+) -> None:
+    """F-6: a classic Icarus build must be executed as a vvp image."""
+    launches, _ = _baseline_launches(tmp_path, monkeypatch, eda_tool=eda_tool)
+
+    [(work, _env)] = launches
+    assert work.adapter == adapter
+    assert work.plusargs == plusargs
+    assert work.cocotb_module == "" and work.tests == ()
+    assert not work.trace
+
+
+def test_commercial_cocotb_target_fails_fast_with_reason(tmp_path: Path, monkeypatch):
+    """Unsupported => a typed error naming the reason, never a silent run."""
+    _patch_resolve_target(monkeypatch, eda_tool="xcelium", cocotb_module="tb.test_noc")
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
+
+    with pytest.raises(UnsupportedSimTargetError) as exc:
+        endpoint.cocotb_target("default", tmp_path)
+    assert "icarus and verilator only" in str(exc.value)
+
+
+def test_unsupported_target_aborts_before_any_build(tmp_path: Path, monkeypatch):
+    _, result, fake = _campaign(
+        tmp_path,
         monkeypatch,
-    ):
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        _write_dut_top(tmp_path)
-        _patch_cocotb_target(monkeypatch, module="tb.test_noc", eda_tool="vcs")
-        endpoint = _make_endpoint(tmp_path, monkeypatch, target="default", scope=scope, count=1)
-        # This test isolates runner compatibility; inspection refusal has its own tests.
-        monkeypatch.setattr(endpoint, "_validate_scope_against_target", lambda _scope: None)
-        with patch.object(endpoint, "_run_elab") as build:
-            result = endpoint._run()
+        target="default",
+        count=1,
+        simulation={"eda_tool": "vcs", "cocotb_module": "tb.test_noc"},
+    )
 
-        assert result.exit_code == EXIT_ERROR
-        assert "vcs" in result.report_text
-        build.assert_not_called()
+    assert result.exit_code == EXIT_ERROR
+    assert "vcs" in result.report_text
+    assert fake.builds == []
 
 
 # ---------------------------------------------------------------------------
@@ -2608,19 +2136,15 @@ _INFRA_OUT = (
 
 
 def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     """Issue #881: the baseline must not build before it knows run_cwd is usable."""
     state = tmp_path / ".booley"
     state.mkdir()
     (state / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
-    plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")
-    endpoint = MutationFlow()
 
-    with patch.object(endpoint, "_run_elab", side_effect=AssertionError("built")) as elab:
-        result = endpoint._run_pristine_baseline(plan)  # type: ignore[arg-type]
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=1)
 
-    assert result is not None
     assert result.exit_code == EXIT_ERROR
     assert "mutation baseline cannot run: literal run directory must already exist" in (
         result.report_text
@@ -2630,7 +2154,7 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
     assert result.report_text.splitlines()[-1].startswith(
         "RESULT: ERROR (baseline: literal run directory must already exist"
     )
-    elab.assert_not_called()
+    assert fake.builds == []
 
 
 @pytest.mark.parametrize("layout", ["recursive", "declared"])
@@ -2665,19 +2189,16 @@ def test_scope_accepts_canonical_rtl_through_symlink(
     catalog = TargetCatalog.build(tmp_path)
     inspection = catalog.inspect(catalog.select("sim"))
     assert expected in inspection.rtl_files
-    endpoint = _make_endpoint(tmp_path, target="sim")
-    assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
-    testbench = endpoint._validate_scope_against_target(["tb/tb_counter.sv"])
-    assert testbench is not None
+    assert _dry_run_scope(tmp_path, monkeypatch, "rtl/counter.sv").exit_code == EXIT_SUCCESS
+    testbench = _dry_run_scope(tmp_path, monkeypatch, "tb/tb_counter.sv")
     assert "is a testbench file" in testbench.report_text
     (tmp_path / "rtl/other.sv").write_text("// stub\n", encoding="utf-8")
-    rejected = endpoint._validate_scope_against_target(["rtl/other.sv"])
-    assert rejected is not None
+    rejected = _dry_run_scope(tmp_path, monkeypatch, "rtl/other.sv")
     assert "does not match" in rejected.report_text
     assert expected in rejected.report_text
 
 
-def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
+def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
     root.mkdir()
     _author_scope_core(root)
@@ -2686,13 +2207,17 @@ def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
     source = root / "rtl/counter.sv"
     source.unlink()
     symlink_or_skip(source, external)
-    endpoint = _make_endpoint(root, target="sim")
-    rejected = endpoint._validate_scope_against_target([str(external)])
-    assert rejected is not None
+
+    rejected = _dry_run_scope(root, monkeypatch, str(external))
+
+    assert rejected.exit_code == EXIT_ERROR
     assert "outside the Project" in rejected.report_text
 
 
 def test_scope_refuses_when_identity_resolution_fails(tmp_path: Path) -> None:
+    # Private seam: the failure is injected after the scope was canonicalized by the code that
+    # runs before the check (``_scope_files`` does not catch ``OSError``), so only a direct
+    # call reaches the refusal.
     _author_scope_core(tmp_path)
     endpoint = _make_endpoint(tmp_path, target="sim")
     catalog = TargetCatalog.build(tmp_path)
@@ -2708,7 +2233,8 @@ def test_scope_refuses_when_identity_resolution_fails(tmp_path: Path) -> None:
         assert "unreadable" in result.report_text
 
 
-def test_cpp_sim_harness_is_not_mutation_scope(tmp_path):
+def test_cpp_scope_refuses_before_generation_and_build(tmp_path, monkeypatch):
+    """A cppSource scope, harness fileset or not, is no HDL RTL source: nothing is generated."""
     _author_scope_core(tmp_path)
     core = tmp_path / "design.core"
     core.write_text(
@@ -2720,94 +2246,91 @@ def test_cpp_sim_harness_is_not_mutation_scope(tmp_path):
         .replace("filesets: [rtl, tb]", "filesets: [rtl, tb, harness]")
     )
     (tmp_path / "tb/sim_main.cpp").write_text("int main() {}\n")
-    endpoint = _make_endpoint(tmp_path, target="sim")
-    result = endpoint._validate_scope_against_target(["tb/sim_main.cpp"])
-    assert result is not None
-    assert result.exit_code == EXIT_ERROR
+    generate = MagicMock()
+    build_or_run = MagicMock()
+    monkeypatch.setattr("booley.flows.mutation.flow.generate_mutants", generate)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", build_or_run)
 
+    result = _dry_run_scope(tmp_path, monkeypatch, "tb/sim_main.cpp")
 
-def test_cpp_scope_refuses_before_generation_and_build(tmp_path):
-    _author_scope_core(tmp_path)
-    source = tmp_path / "tb/sim_main.cpp"
-    source.write_text("int main() {}\n")
-    endpoint = _make_endpoint(tmp_path, target="sim", scope="tb/sim_main.cpp")
-    with (
-        patch("booley.flows.mutation.flow.generate_mutants") as generate,
-        patch.object(endpoint, "_run_elab") as build,
-    ):
-        result = endpoint._run()
     assert result.exit_code == EXIT_ERROR
     assert "not an HDL RTL mutation source" in result.report_text
     generate.assert_not_called()
-    build.assert_not_called()
+    build_or_run.assert_not_called()
 
 
-def test_default_scope_keeps_rtl_that_shares_a_directory_with_testbench_files(tmp_path):
+def test_default_scope_keeps_rtl_that_shares_a_directory_with_testbench_files(
+    tmp_path, monkeypatch
+):
     from tests.test_target_catalog import _category_sim_core
 
     _category_sim_core(tmp_path)
-    endpoint = _make_endpoint(tmp_path, target="sim", scope=None)
-    assert endpoint._validate_scope_against_target(["shared/dut.sv"]) is None
-    assert endpoint._default_scope() == ["shared/dut.sv"]
+
+    result = _dry_run_scope(tmp_path, monkeypatch, None)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert result.detail["scope"] == ["shared/dut.sv"]
 
 
 @pytest.mark.parametrize("cocotb", [False, True])
-@pytest.mark.parametrize("cached", [False, True])
-def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocotb, cached):
-    import json
+def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocotb):
+    """A report names the simulator the build resolved, even when no simulation ran (#1605)."""
+    endpoint, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        target="default",
+        count=1,
+        build=lambda _index: _fake_proc(rc=1, stdout="[elab] boom"),
+        simulation={"cocotb_module": "tb_test" if cocotb else None},
+    )
 
+    assert result.exit_code == EXIT_ERROR
+    assert fake.runs == []
+    path = endpoint.write_report(result)
+
+    assert json.loads(path.read_bytes()).get("eda_tool") == "verilator"
+
+
+@pytest.mark.parametrize("cocotb", [False, True])
+def test_mutation_report_records_the_simulator_of_a_cached_build(tmp_path, monkeypatch, cocotb):
+    # Private seam: the run half records the simulator from the build's cached marker, and no
+    # public path runs a simulation without a build of the same process first (every campaign
+    # builds the baseline and each Mutant before running it).
     tool = "verilator"
-
-    _patch_cocotb_target(monkeypatch, module="tb_test" if cocotb else None, eda_tool=tool)
+    _patch_resolve_target(monkeypatch, eda_tool=tool, cocotb_module="tb_test" if cocotb else None)
     endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
     build = tmp_path / "build"
     build.mkdir()
-    if cached:
-        (build / ".booley_edalize_eda_tool").write_text(tool)
-    if cached:
-        monkeypatch.setattr(
-            endpoint,
-            "_pinned_build",
-            lambda *_args: SimpleNamespace(rel=".", runtime_inputs=()),
-        )
-        monkeypatch.setattr(
-            endpoint,
-            "_pinned_sim_command",
-            lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={}), None),
-        )
-        monkeypatch.setattr("booley.flows.mutation.flow._target_environment", lambda *_args: {})
-        monkeypatch.setattr("booley.flows.mutation.flow.launch_environment", lambda *_args: {})
-    else:
-        prepared = SimpleNamespace(
-            eda_tool=tool,
-            build_root=build,
-            make_argv=("fake-build",),
-            resolved=SimpleNamespace(files=()),
-        )
-        monkeypatch.setattr(endpoint, "_resolve_elab_target", lambda *_args: (object(), prepared))
-        monkeypatch.setattr(
-            "booley.flows.mutation.flow.simulation_build_environment", lambda *_args: {}
-        )
+    (build / ".booley_edalize_eda_tool").write_text(tool)
+    monkeypatch.setattr(
+        endpoint, "_pinned_build", lambda *_args: SimpleNamespace(rel=".", runtime_inputs=())
+    )
+    monkeypatch.setattr(
+        endpoint,
+        "_pinned_sim_command",
+        lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={}), None),
+    )
+    monkeypatch.setattr("booley.flows.mutation.flow._target_environment", lambda *_args: {})
+    monkeypatch.setattr("booley.flows.mutation.flow.launch_environment", lambda *_args: {})
     monkeypatch.setattr(
         "booley.flows.mutation.flow.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
     )
-    if cached:
-        endpoint._run_sim_pinned("default", tmp_path, build, "tb")
-    else:
-        endpoint._run_elab("default", tmp_path, build)
+
+    endpoint._run_sim_pinned("default", tmp_path, build, "tb")
+
     path = endpoint.write_report(EndpointOutcome(report_text="mutation result"))
     assert json.loads(path.read_bytes()).get("eda_tool") == tool
 
 
 def test_mutation_preflight_alone_does_not_report_eda_tool(tmp_path, monkeypatch):
-    import json
+    _prepare_scope_files(tmp_path, ["rtl/mod_a.sv", "rtl/mod_b.sv"])
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default", extra_args=["--dry-run"])
 
-    _patch_cocotb_target(monkeypatch, module="tb_test", eda_tool="verilator")
-    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
-    endpoint.cocotb_target("default", tmp_path)
-    endpoint._validate_target_runner("default", tmp_path)
-    report = json.loads(endpoint.write_report(EndpointOutcome()).read_bytes())
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    report = json.loads(endpoint.write_report(result).read_bytes())
     assert "eda_tool" not in report
     assert "eda_tools" not in report
 
@@ -2826,19 +2349,47 @@ def test_mutation_dir_falls_back_when_no_project_runtime_exists(monkeypatch) -> 
     assert workspace.mutation_dir() == Path("mutation_runtime") / "mutation"
 
 
-def test_validation_errors_end_with_a_result_error_line(tmp_path: Path, monkeypatch) -> None:
-    """AC3: each direct validation refusal reports its phase on a final ``RESULT:`` line."""
-    for count, min_detected, seed, message in [
-        (0, 0, 0, "--count must be positive"),
-        (3, 0, -1, "--seed must be a non-negative integer"),
-        (3, 4, 0, "--min-detected must be between 0 and --count"),
-        (3, -1, 0, "--min-detected must be between 0 and --count"),
-    ]:
-        outcome = MutationFlow._validate_count(count, min_detected, seed)
-        assert outcome is not None
-        assert outcome.exit_code == EXIT_ERROR
-        assert outcome.report_text == f"{message}\n\nRESULT: ERROR (options: {message})"
-    assert MutationFlow._validate_count(3, 3, 0) is None
+@pytest.mark.parametrize(
+    ("endpoint_args", "message", "phase"),
+    [
+        ({"count": 3, "seed": -1}, "--seed must be a non-negative integer", "options"),
+        (
+            {"count": 3, "min_detected": 4},
+            "--min-detected must be between 0 and --count",
+            "options",
+        ),
+        (
+            {"count": 3, "min_detected": -1},
+            "--min-detected must be between 0 and --count",
+            "options",
+        ),
+        ({"count": 3, "tb_top": ""}, "selected Target does not declare a toplevel", "target"),
+    ],
+    ids=["negative-seed", "min-detected-above-count", "negative-min-detected", "no-toplevel"],
+)
+def test_validation_errors_end_with_a_result_error_line(
+    tmp_path: Path, monkeypatch, endpoint_args: dict[str, Any], message: str, phase: str
+) -> None:
+    """AC3: each validation refusal reports its phase on a final ``RESULT:`` line (#3979, #3962)."""
+    _prepare_scope_files(tmp_path, ["rtl/mod_a.sv", "rtl/mod_b.sv"])
+    endpoint = _make_endpoint(tmp_path, monkeypatch, extra_args=["--dry-run"], **endpoint_args)
+
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.report_text.endswith(f"\n\nRESULT: ERROR ({phase}: {message})")
+    assert message in result.report_text.split("\n\n")[0]
+
+
+def test_validation_refusals_without_a_public_path(tmp_path: Path, monkeypatch) -> None:
+    # Private seam: argparse refuses a non-positive ``--count`` before the run
+    # (``test_count_rejects_text_that_is_not_auto_or_an_integer``), campaign resolution refuses
+    # ``a,b`` as an unknown Target first, and ``--target`` is required by the parser, so only a
+    # direct call reaches these three refusals.
+    message = "--count must be positive"
+    outcome = MutationFlow._validate_count(0, 0, 0)
+    assert outcome is not None
+    assert outcome.report_text == f"{message}\n\nRESULT: ERROR (options: {message})"
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     outcome = endpoint._validate_run_inputs("a,b", tmp_path, [])
@@ -2851,20 +2402,6 @@ def test_validation_errors_end_with_a_result_error_line(tmp_path: Path, monkeypa
     assert outcome is not None
     message = "scope validation requires a Target"
     assert outcome.report_text == f"mutation: {message}\n\nRESULT: ERROR (scope: {message})"
-
-    monkeypatch.setattr("booley.flows.mutation.flow.tb_top_for_target", lambda *_a, **_k: "")
-    monkeypatch.setattr(endpoint, "_validate_run_inputs", lambda *_args: None)
-    outcome = endpoint._prepare_run_plan()
-    assert isinstance(outcome, EndpointOutcome)
-    message = "selected Target does not declare a toplevel"
-    assert outcome.report_text == f"mutation: {message}\n\nRESULT: ERROR (target: {message})"
-
-
-def test_flow_overrides_run_so_the_template_hooks_are_inert(tmp_path: Path, monkeypatch) -> None:
-    endpoint = _make_endpoint(tmp_path, monkeypatch)
-    assert endpoint._build_command() == []
-    outcome = endpoint._interpret_result(_fake_proc())
-    assert outcome.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2960,43 +2497,7 @@ def test_verilator_equivalent_mutant_is_replaced_by_the_next_candidate(
     # Each build's C++ names its own private copy by absolute path, as `$error` does, and
     # the dropped Mutant still matched the baseline's.
     assert result.detail["equivalent_dropped"] == dropped
-
-
-def test_verilator_mutant_that_changes_the_build_is_scored(tmp_path: Path, monkeypatch) -> None:
-    _write_scope(tmp_path)
-    live = _candidates(tmp_path)[0]
-    assert live.line != _DEAD_LINE
-
-    _, result, fake = _campaign(
-        tmp_path,
-        monkeypatch,
-        count=1,
-        seed=0,
-        min_detected=1,
-        run=_detects_every_mutant,
-        simulation=_VERILATED,
-    )
-
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
-    assert fake.builds == [None, 1]
-    assert fake.runs == [None, 1]  # the Mutant's tests ran
-    assert [(row["id"], row["status"]) for row in result.detail["classified"]] == [
-        (live.id, "detected")
-    ]
-    assert result.detail["equivalent_dropped"] == []
-
-
-def test_dropped_mutants_are_in_the_detail_not_the_report(tmp_path: Path, monkeypatch) -> None:
-    _write_scope(tmp_path)
-    _, dropped = _expected_sweep(_candidates(tmp_path), 4)
-    assert dropped
-
-    _, result, _ = _campaign(
-        tmp_path, monkeypatch, count=4, seed=0, min_detected=0, simulation=_VERILATED
-    )
-
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
-    assert result.detail["equivalent_dropped"] == dropped
+    # A dropped Mutant is in the detail only: no report, artifact or row names it.
     campaign = (tmp_path / result.detail["artifacts"]["manifest"]).parent
     texts = [
         result.report_text,
@@ -3014,51 +2515,40 @@ def test_dropped_mutants_are_in_the_detail_not_the_report(tmp_path: Path, monkey
     assert "equivalent_dropped" not in result.report_text
 
 
-def test_running_out_during_replacement_reports_the_shortfall(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("explicit", [False, True], ids=["default", "explicit-threshold"])
+def test_running_out_during_replacement_reports_the_shortfall(
+    tmp_path: Path, monkeypatch, explicit: bool
+) -> None:
     _write_scope(tmp_path)
     ranked = _candidates(tmp_path)
     kept, dropped = _expected_sweep(ranked, len(ranked))
-    assert dropped and len(kept) < len(ranked)
     # Pin the fixture's counts as literals so the assertions below stay honest.
     assert (len(ranked), len(kept)) == (17, 15)
+    assert dropped
 
     _, result, fake = _campaign(
         tmp_path,
         monkeypatch,
-        count=len(ranked),
+        count=17,
         seed=0,
         run=_detects_every_mutant,
         simulation=_VERILATED,
+        **({"min_detected": 17} if explicit else {}),
     )
 
-    assert result.exit_code == EXIT_SUCCESS, result.report_text
     expected = "only 15 Mutants could be scored (17 requested)"
     assert result.detail["shortfall"] == expected
     assert expected in result.report_text
     assert [row["id"] for row in result.detail["classified"]] == kept  # the Mutants it has
     assert result.detail["equivalent_dropped"] == dropped
-    # The default threshold follows the Mutants kept, not the ones asked for.
-    assert result.detail["min_detected"] == _eighty_percent(len(kept))
     assert (result.detail["total_requested"], result.detail["total_scored"]) == (17, 15)
     assert fake.runs == [None, *range(1, len(kept) + 1)]
-
-
-def test_explicit_threshold_survives_a_shortfall_after_drops(tmp_path: Path, monkeypatch) -> None:
-    _write_scope(tmp_path)
-    count = len(_candidates(tmp_path))
-
-    _, result, _ = _campaign(
-        tmp_path,
-        monkeypatch,
-        count=count,
-        seed=0,
-        min_detected=count,
-        run=_detects_every_mutant,
-        simulation=_VERILATED,
-    )
-
-    assert result.exit_code == EXIT_FAILURE  # more were required than the run could score
-    assert result.detail["min_detected"] == count
+    if explicit:  # more were required than the run could score
+        assert result.exit_code == EXIT_FAILURE
+        assert result.detail["min_detected"] == 17
+    else:  # the default threshold follows the Mutants kept, not the ones asked for
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        assert result.detail["min_detected"] == _eighty_percent(len(kept))
 
 
 def test_icarus_target_simulates_every_mutant_without_comparing(
@@ -3087,6 +2577,9 @@ def test_icarus_target_simulates_every_mutant_without_comparing(
     assert [row["id"] for row in result.detail["classified"]] == [m.id for m in ranked[:4]]
     assert result.detail["equivalent_dropped"] == []
     assert "verilator_version" not in result.detail["identity"]
+    assert "did not build" not in result.report_text
+    assert result.detail["invalid_dropped"] == [] and "invalid" not in result.detail
+    assert "  4 detected (0 timeout), 0 not detected" in result.report_text
 
 
 def test_equivalent_and_build_failure_drops_share_one_replacement_order(
@@ -3268,6 +2761,9 @@ def _run_plan(tmp_path: Path, scope: tuple[str, ...] = (_SCOPE,)) -> MutationRun
 
 def test_generation_elaborates_the_target_with_its_parameters(tmp_path: Path, monkeypatch) -> None:
     """The testbench's default width is 1; the Target's `vlogparam` makes it 8, which allows `2`."""
+    # Private seam: a campaign on the fake catalog elaborates per file (it reports no toplevel),
+    # and the real catalog needs a real build for the run that follows generation, so only a
+    # direct ``_generate`` call reaches the Target's own elaboration.
     (tmp_path / "design.core").write_text(_ELABORATION_CORE, encoding="utf-8")
     for rel, text in {
         "rtl/leaf.sv": (

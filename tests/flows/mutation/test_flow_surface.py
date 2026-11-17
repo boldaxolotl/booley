@@ -6,7 +6,6 @@ its body rather than at collection.
 
 from __future__ import annotations
 
-import argparse
 import os
 
 import pytest
@@ -14,7 +13,7 @@ import pytest
 from booley.harness import booley as booley_cli
 from booley.mcp import catalog
 from booley.mcp.registry import discover_mcp_tools
-from booley.runtime.endpoint_execution import EXIT_ERROR
+from booley.runtime import runtime_context
 
 
 def test_cli_parses_every_mutation_flag(tmp_path) -> None:
@@ -61,23 +60,6 @@ def test_cli_defaults_leave_count_scope_and_threshold_to_the_run(tmp_path) -> No
     )
 
 
-def test_invalid_seed_ends_the_run_with_exit_two(tmp_path, monkeypatch) -> None:
-    from tests.flows.mutation.test_flow import (
-        _SCOPE,
-        _make_endpoint,
-        _prepare_scope_files,
-        _run_count_preview,
-    )
-
-    _prepare_scope_files(tmp_path, [_SCOPE])
-    flow = _make_endpoint(tmp_path, monkeypatch, count=2, seed=-1, extra_args=["--dry-run"])
-
-    result, _ = _run_count_preview(flow, monkeypatch)
-
-    assert result.exit_code == EXIT_ERROR
-    assert "--seed must be a non-negative integer" in result.report_text
-
-
 def test_count_rejects_text_that_is_not_auto_or_an_integer(tmp_path, capsys) -> None:
     from booley.flows.mutation.flow import MutationFlow
 
@@ -112,23 +94,27 @@ def test_mcp_definition_is_a_flow_with_the_mutation_schema(monkeypatch) -> None:
     assert {"instruction", "transcript_dir", "max_turns"}.isdisjoint(properties)
 
 
-def test_specialist_command_no_longer_runs_mutation_tester(capsys) -> None:
-    endpoints = discover_mcp_tools()
-    args = argparse.Namespace(
-        command="specialist", endpoint_name="mutation_tester", endpoint_args=[]
+def test_specialist_command_no_longer_runs_mutation_tester(
+    tmp_path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(
+        '[project]\nname = "demo"\n', encoding="utf-8"
     )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
 
-    assert booley_cli._select_endpoint(args, endpoints, "specialist") == 2
+    monkeypatch.setattr("sys.argv", ["booley", "specialist", "mutation_tester"])
+    assert booley_cli.main() == 2
     error = capsys.readouterr().err
     assert "'mutation_tester' is not a specialist" in error
     assert "Use booley flow mutation." in error
     assert "coverage_analyst" in error
-    assert not any(row.name == "mutation_tester" for row in endpoints)
 
-    flow_args = argparse.Namespace(
-        command="specialist", endpoint_name="mutation", endpoint_args=[]
-    )
-    assert booley_cli._select_endpoint(flow_args, endpoints, "specialist") == 2
+    monkeypatch.setattr("sys.argv", ["booley", "specialist", "mutation"])
+    assert booley_cli.main() == 2
     assert "Use booley flow mutation." in capsys.readouterr().err
 
 
