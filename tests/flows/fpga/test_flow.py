@@ -505,8 +505,8 @@ def _fake_fpga_resolved(
 
 
 # Captured before the autouse fixture below patches the attribute, so the
-# real-fusesoc e2e can reach the genuine resolver.
-_REAL_RESOLVE = fusesoc_registry._resolve_target
+# real-fusesoc e2e can reach the genuine handle resolver.
+_REAL_RESOLVE_HANDLE = fusesoc_registry.resolve_target_handle
 
 
 @pytest.fixture(autouse=True)
@@ -516,13 +516,13 @@ def _stub_fusesoc_resolution(tmp_path: Path):
     The Edalize-path tests mock only the boundary executor; without this,
     ``_prepare_fpga_command`` would shell out to a real ``fusesoc run --setup``
     against a project with no ``.core``. Tests that exercise resolution itself
-    re-patch ``_resolve_target`` inside a ``with`` block (that inner patch wins);
-    the e2e uses ``_REAL_RESOLVE``.
+    re-patch ``resolve_target_handle`` inside a ``with`` block (that inner patch wins);
+    the e2e uses ``_REAL_RESOLVE_HANDLE``.
     """
     with patch.object(
         fusesoc_registry,
-        "_resolve_target",
-        side_effect=lambda target="default", **k: _fake_fpga_resolved(tmp_path, config=target),
+        "resolve_target_handle",
+        side_effect=lambda handle, **_k: _fake_fpga_resolved(tmp_path, config=handle.selector),
     ):
         yield
 
@@ -565,7 +565,7 @@ def test_dry_run_call_profile_overrides_target_profile(
         },
     )
 
-    with patch.object(fusesoc_registry, "_resolve_target", return_value=configured):
+    with patch.object(fusesoc_registry, "resolve_target_handle", return_value=configured):
         result = flow._run()
 
     profile = result.detail["work_units"][0]["recipe"]["ppa_profile"]
@@ -673,13 +673,13 @@ def test_dry_run_reports_no_target_metadata_when_later_target_setup_fails(
     _write_project_config(tmp_path)
     flow = _flow(tmp_path, state_file, "--dry-run")
 
-    def resolve(target="default", **_kwargs):
-        if target == "bad":
+    def resolve(handle, **_kwargs):
+        if handle.selector == "bad":
             raise fusesoc_registry.FuseSocError("setup rejected bad")
-        return _fake_fpga_resolved(tmp_path, config=target)
+        return _fake_fpga_resolved(tmp_path, config=handle.selector)
 
     with (
-        patch.object(fusesoc_registry, "_resolve_target", side_effect=resolve),
+        patch.object(fusesoc_registry, "resolve_target_handle", side_effect=resolve),
         patch.object(
             run_evidence,
             "capture_flow_source_evidence",
@@ -1077,7 +1077,7 @@ class TestFpgaResolution:
         tmp_path: Path,
         state_file: Path,
     ) -> None:
-        """_resolve_target gets the config name, the Project Root, and an isolated
+        """resolve_target_handle gets the selected handle and an isolated
         per-variant build dir distinct from the vivado configure() work_root."""
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
@@ -1094,13 +1094,8 @@ class TestFpgaResolution:
         build_p, cfg_p, run_p = _patch_edam_build(captured)
         seen: dict = {}
 
-        def fake_resolve(target, *, project_root, build_root, **kw):
-            seen.update(
-                target=target,
-                project_root=project_root,
-                build_root=build_root,
-                vlnv=kw.get("vlnv"),
-            )
+        def fake_resolve(handle, *, build_root, **_kw):
+            seen.update(handle=handle, build_root=build_root)
             return _fake_fpga_resolved(tmp_path, config="default")
 
         with (
@@ -1109,15 +1104,13 @@ class TestFpgaResolution:
             run_p,
             patch.object(
                 fusesoc_registry,
-                "_resolve_target",
+                "resolve_target_handle",
                 side_effect=fake_resolve,
             ),
         ):
             flow._prepare_fpga_command("default")
 
-        assert seen["target"] == "default"
-        assert seen["vlnv"] == "::test:0"
-        assert seen["project_root"] == tmp_path
+        assert seen["handle"] is handle
         # FuseSoC build dir is keyed distinctly so it can't clobber the vivado dir.
         # Compare build_root in POSIX form so the assertion is portable.
         assert seen["build_root"].as_posix().endswith("fpga/default-fusesoc")
@@ -1144,7 +1137,7 @@ class TestFpgaResolution:
             build_p,
             cfg_p,
             run_p,
-            patch.object(fusesoc_registry, "_resolve_target", return_value=resolved),
+            patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
             patch(
                 "booley.flows.fpga.backends.vivado.edam.apply_ppa_profile",
                 side_effect=lambda *_args: calls.append("profile"),
@@ -1195,7 +1188,7 @@ class TestTargetRecipeBoundary:
             build_p,
             cfg_p,
             run_p,
-            patch.object(fusesoc_registry, "_resolve_target", return_value=resolved),
+            patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
             pytest.raises(
                 BoundaryError,
                 match="out_of_context",
@@ -1262,7 +1255,7 @@ class TestTargetRecipeBoundary:
 
         with patch.object(
             fusesoc_registry,
-            "_resolve_target",
+            "resolve_target_handle",
             side_effect=fusesoc_registry.TargetResolutionError("no such target"),
         ):
             result = flow._run()
@@ -1341,9 +1334,9 @@ class TestTargetRecipeBoundary:
             run_p,
             patch.object(
                 fusesoc_registry,
-                "_resolve_target",
-                side_effect=lambda *a, **k: _REAL_RESOLVE(
-                    *a,
+                "resolve_target_handle",
+                side_effect=lambda handle, **k: _REAL_RESOLVE_HANDLE(
+                    handle,
                     **{**k, "fusesoc_cmd": fusesoc_cmd},
                 ),
             ),

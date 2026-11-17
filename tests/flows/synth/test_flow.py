@@ -560,12 +560,6 @@ def _write_syn_demo_project(work_dir: Path) -> None:
     (work_dir / "syn_demo.core").write_text(_SYN_CORE_TEXT, encoding="utf-8")
 
 
-# The genuine resolver, captured before the autouse fixture below replaces it.
-# `_resolve_target` is the one seam below the public Target-handle entry points
-# that every Flow path funnels through; no public name reaches the unfaked one.
-_REAL_RESOLVE = fusesoc_registry._resolve_target
-
-
 # The Target-handle entry points the lenient catalog adapter replaces per test
 # (it drops the build's library plan); the AC4 test needs the genuine ones.
 _REAL_RESOLVE_HANDLE = fusesoc_registry.resolve_target_handle
@@ -579,11 +573,6 @@ def _fusesoc_cmd() -> list[str]:
     if shutil.which("fusesoc"):
         return list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
     return [sys.executable, "-c", "from fusesoc.main import main; main()"]
-
-
-def _real_resolve(*args, **kwargs):
-    """Run the genuine legacy FuseSoC resolver."""
-    return _REAL_RESOLVE(*args, **{**kwargs, "fusesoc_cmd": _fusesoc_cmd()})
 
 
 def _real_resolve_handle(handle, **kwargs):
@@ -605,18 +594,18 @@ def _stub_fusesoc_resolution(tmp_path: Path):
     A real ``fusesoc run --setup`` against a project with no ``.core`` fails, so
     the execution-path tests resolve through this fake. It yields the holder
     whose ``resolve`` a test replaces to shape the resolved Target; tests that
-    exercise resolution itself re-patch ``_resolve_target`` inside a ``with``
-    block, and the real-FuseSoC tests set ``resolve`` to ``_real_resolve``.
+    exercise resolution itself re-patch ``resolve_target_handle`` inside a ``with``
+    block, and the real-FuseSoC tests set ``resolve`` to ``_real_resolve_handle``.
     """
     resolution = _Resolution(
-        resolve=lambda target="lite", **_kwargs: _fake_synth_resolved(tmp_path, config=target)
+        resolve=lambda handle, **_kwargs: _fake_synth_resolved(tmp_path, config=handle.selector)
     )
 
     def resolve(*args, **kwargs):
         return resolution.resolve(*args, **kwargs)  # a test may have replaced it
 
-    # Same seam as `_REAL_RESOLVE`: no FuseSoC run or `.core` exists on a test host.
-    with patch.object(fusesoc_registry, "_resolve_target", side_effect=resolve):
+    # Same seam as `_REAL_RESOLVE_HANDLE`: no FuseSoC run or `.core` exists on a test host.
+    with patch.object(fusesoc_registry, "resolve_target_handle", side_effect=resolve):
         yield resolution
 
 
@@ -802,8 +791,8 @@ def _staged(
 def _resolving(make: Callable[[Path], fusesoc_registry.ResolvedTarget]):
     """A resolver that builds and stages its Target for the checkout it is asked about."""
 
-    def resolve(target="lite", *, project_root=None, **_kwargs):
-        return _staged(make(Path(project_root)))
+    def resolve(handle, **_kwargs):
+        return _staged(make(Path(handle.project_root)))
 
     return resolve
 
@@ -849,7 +838,7 @@ def test_dry_run_records_evidence_for_projected_stealth_core(
     (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
     (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
     synth_cli.project = work_dir
-    synth_cli.resolution.resolve = _real_resolve
+    synth_cli.resolution.resolve = _real_resolve_handle
 
     dry = synth_cli.plan(target="syn")
     synth_cli.run(target="syn")
@@ -1394,13 +1383,13 @@ def test_resolution_gets_a_clean_isolated_build_root(synth_cli: SynthCli, tmp_pa
     stale.write_text("module old; endmodule\n", encoding="utf-8")
     seen: list[tuple[str, Path, str, str | None, bool]] = []
 
-    def resolve(target, *, project_root, build_root, vlnv=None, **_kwargs):
+    def resolve(handle, *, build_root, **_kwargs):
         seen.append(
             (
-                target,
-                Path(project_root).resolve(),
-                Path(build_root).relative_to(project_root).as_posix(),
-                vlnv,
+                handle.selector,
+                Path(handle.project_root).resolve(),
+                Path(build_root).relative_to(handle.project_root).as_posix(),
+                handle.vlnv,
                 stale.exists(),
             )
         )
@@ -1476,7 +1465,7 @@ def test_real_fusesoc_synth_setup(synth_cli: SynthCli, tmp_path: Path) -> None:
     work_dir = tmp_path / "proj"
     _write_syn_demo_project(work_dir)
     synth_cli.project = work_dir
-    synth_cli.resolution.resolve = _real_resolve
+    synth_cli.resolution.resolve = _real_resolve_handle
 
     synth_cli.run(target="syn")
 
@@ -1532,8 +1521,9 @@ def test_stable_constraint_identity_preserves_selfcompare_diagnostic(
     ):
         run_bounded_child(["git", *args], cwd=project, check=True)
 
-    def resolve(target, *, project_root, **_kwargs):
-        resolved = _fake_synth_resolved(Path(project_root), config=target)
+    def resolve(handle, **_kwargs):
+        project_root = handle.project_root
+        resolved = _fake_synth_resolved(Path(project_root), config=handle.selector)
         if recipe_changed and Path(project_root).resolve() != project.resolve():
             resolved = dataclasses.replace(
                 resolved, flow_options={**resolved.flow_options, "flatten": False}
@@ -2450,11 +2440,6 @@ class TestSingleConfigRun:
 
         with (
             patch.object(flow, "_execute", side_effect=held_eda_run),
-            patch.object(
-                fusesoc_registry,
-                "_setup_command",
-                return_value=["fusesoc", "run", "--setup", "--target", "lite"],
-            ),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
             running = pool.submit(flow._run)
@@ -2489,11 +2474,6 @@ class TestSingleConfigRun:
                 ),
             ),
             patch.object(shutil, "copy2", wraps=shutil.copy2) as copy2,
-            patch.object(
-                fusesoc_registry,
-                "_setup_command",
-                return_value=["fusesoc", "run", "--setup", "--target", "lite"],
-            ),
         ):
             result = flow._run()
 

@@ -9,7 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 import yaml
@@ -262,30 +262,22 @@ class TestLintResolution:
         )
         captured = {}
 
-        def fake_resolve(target, *, project_root, build_root, **kw):
-            captured.update(
-                target=target,
-                project_root=project_root,
-                build_root=build_root,
-                vlnv=kw["vlnv"],
-            )
+        def fake_resolve(handle, *, build_root, **_kw):
+            captured.update(handle=handle, build_root=build_root)
             return fake
 
+        handle = _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
         with patch.object(
             fusesoc_registry,
-            "_resolve_target",
+            "resolve_target_handle",
             side_effect=fake_resolve,
         ):
-            prepared = flow._prepare_lint_command(
-                _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
-            )
+            prepared = flow._prepare_lint_command(handle)
             cmd = prepared.command
 
-        # Target name and Project Root are forwarded; build_root is the
+        # The selected handle is forwarded; build_root is the
         # per-(EDA tool, config) Edalize dir.
-        assert captured["target"] == "lite"
-        assert captured["vlnv"] == "::lint_demo:0"
-        assert Path(captured["project_root"]) == Path(flow.args.work_dir)
+        assert captured["handle"] is handle
         assert captured["build_root"] == (
             tmp_path / ".booley" / ".runtime" / "edalize" / "lint" / "lite"
         )
@@ -304,7 +296,7 @@ class TestLintResolution:
         with (
             patch.object(
                 fusesoc_registry,
-                "_resolve_target",
+                "resolve_target_handle",
                 side_effect=fusesoc_registry.TargetResolutionError("boom"),
             ),
             pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
@@ -469,7 +461,7 @@ class TestDoctorTargetAuthority:
         )
         monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
 
-        with patch.object(fusesoc_registry, "_resolve_target") as resolve:
+        with patch.object(fusesoc_registry, "resolve_target_handle") as resolve:
             exit_code = LintFlow().main(
                 [
                     "--work-dir",
@@ -507,21 +499,17 @@ class TestDoctorTargetAuthority:
         resolved = _stub_resolved("verible")
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", target.selector])
-        with patch.object(fusesoc_registry, "_resolve_target", return_value=resolved) as resolve:
+        with patch.object(
+            fusesoc_registry, "resolve_target_handle", return_value=resolved
+        ) as resolve:
             flow._prepare_lint_command(target)
 
         resolve.assert_called_once_with(
-            "doctor#lint",
-            project_root=tmp_path,
+            target,
             build_root=(tmp_path / ".booley" / ".runtime" / "edalize" / "lint" / "doctor_lint"),
-            vlnv="acme:ip:doctor:1.0",
+            library_plan=ANY,
         )
-        setup = fusesoc_registry._setup_command(
-            target.selector,
-            project_root=tmp_path,
-            build_root=tmp_path / "build",
-            vlnv=target.vlnv,
-        )
+        setup = fusesoc_registry.setup_command_for_handle(target, build_root=tmp_path / "build")
         target_index = setup.index("--target")
         assert setup[target_index + 1] == "lint"
         assert setup[-1] == "acme:ip:doctor:1.0"
@@ -788,7 +776,7 @@ class TestDryRun:
         """Dry-run previews ``fusesoc run --setup`` + ``make`` without resolving.
 
         The preview is sourced from a cheap ``.core`` YAML read; patching
-        ``_resolve_target`` to fail proves dry-run never invokes fusesoc.
+        ``resolve_target_handle`` to fail proves dry-run never invokes fusesoc.
         """
         from booley.fusesoc import fusesoc_registry
 
@@ -801,7 +789,7 @@ class TestDryRun:
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite", "--dry-run"])
         with patch.object(
             fusesoc_registry,
-            "_resolve_target",
+            "resolve_target_handle",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()
@@ -828,7 +816,7 @@ class TestDryRun:
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite", "--dry-run"])
         with patch.object(
             fusesoc_registry,
-            "_setup_command",
+            "setup_command_for_handle",
             side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
         ):
             result = flow._run()
@@ -2235,7 +2223,7 @@ class TestVeribleTargets:
         )
         with patch.object(
             fusesoc_registry,
-            "_resolve_target",
+            "resolve_target_handle",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()
