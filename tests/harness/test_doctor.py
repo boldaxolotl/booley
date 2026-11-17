@@ -2977,11 +2977,15 @@ def test_sandbox_memory(row, tmp_path, monkeypatch):
         assert "memory_budget" not in warning
 
 
-@pytest.mark.parametrize(
-    "row", ["fits", "over-host-swap", "over-host-total", "unparseable", "host-unknown"]
-)
-def test_sandbox_swap(row, tmp_path, monkeypatch):
+def test_sandbox_swap(tmp_path, monkeypatch):
     """ADR 0087: Doctor warns on a ``[sandbox].swap`` the Docker host cannot back."""
+    for row in ("fits", "over-host-swap", "over-host-total", "unparseable", "host-unknown"):
+        root = tmp_path / row
+        root.mkdir()
+        _assert_sandbox_swap_row(row, root, monkeypatch)
+
+
+def _assert_sandbox_swap_row(row, tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     # memory 16g on a host with 32g of memory and 16g of swap (the fake default).

@@ -3740,15 +3740,7 @@ def test_container_resume_matches_issued_egress_topology(
     )
 
 
-@pytest.mark.parametrize(
-    "memory_swap, matches",
-    [
-        pytest.param(10 * 1024**3, True, id="issued-limit"),
-        pytest.param(16 * 1024**3, False, id="dockers-default-twice-memory"),
-        pytest.param(-1, False, id="unlimited"),
-    ],
-)
-def test_container_swap_limit_must_match_spec(tmp_path, monkeypatch, memory_swap, matches):
+def _container_matches_swap(tmp_path, monkeypatch, memory_swap):
     spec = build_spec(dc.APP_NONE, image="sha256:test", memory="8g", memory_swap="10g")
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
     runtime_spec.pin_image(spec)
@@ -3772,12 +3764,16 @@ def test_container_swap_limit_must_match_spec(tmp_path, monkeypatch, memory_swap
         "_docker_stdout",
         lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
     )
-    assert (
-        sr.container_matches_issuance(
-            "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
-        )
-        is matches
+    return sr.container_matches_issuance(
+        "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
     )
+
+
+def test_container_swap_limit_must_match_spec(tmp_path, monkeypatch):
+    """Docker's default of twice the memory and ``-1`` do not match the issued limit."""
+    assert _container_matches_swap(tmp_path, monkeypatch, 10 * 1024**3) is True
+    assert _container_matches_swap(tmp_path, monkeypatch, 16 * 1024**3) is False
+    assert _container_matches_swap(tmp_path, monkeypatch, -1) is False
 
 
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):

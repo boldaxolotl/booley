@@ -51,25 +51,29 @@ def test_configured_sandbox_swap_reads_the_section() -> None:
     assert resource_policy.configured_sandbox_swap({"sandbox": "invalid"}) == ""
 
 
-@pytest.mark.parametrize(
-    ("memory", "swap", "host_swap", "expected"),
-    [
-        pytest.param("12g", "", 16 * _GIB, "15g", id="host-16g"),
-        pytest.param("12g", "", 1 * _GIB, "13g", id="host-1g"),
-        pytest.param("12g", "", 0, "12g", id="no-host-swap"),
-        pytest.param("12g", "lots", 16 * _GIB, "15g", id="unparseable-swap"),
-        pytest.param("12g", "0", 16 * _GIB, "12g", id="zero"),
-        pytest.param("12g", "2g", 0, "14g", id="explicit"),
-        pytest.param("1000m", "", 16 * _GIB, "1250m", id="mebibytes"),
-        pytest.param("1000k", "", 16 * _GIB, "1250k", id="kibibytes"),
-        pytest.param("1001", "", 16 * _GIB, "1251", id="bytes"),
-        pytest.param("", "2g", 16 * _GIB, "", id="no-memory"),
-        pytest.param("lots", "2g", 16 * _GIB, "", id="unparseable-memory"),
-    ],
-)
-def test_memory_swap_limit(memory: str, swap: str, host_swap: int, expected: str) -> None:
+_SWAP_ROWS = [
+    ("12g", "", 16 * _GIB, "15g"),
+    ("12g", "", 1 * _GIB, "13g"),
+    ("12g", "", 0, "12g"),
+    ("12g", "lots", 16 * _GIB, "15g"),
+    ("12g", "0", 16 * _GIB, "12g"),
+    ("12g", "2g", 0, "14g"),
+    ("1000m", "", 16 * _GIB, "1250m"),
+    ("1000k", "", 16 * _GIB, "1250k"),
+    ("1001", "", 16 * _GIB, "1251"),
+    ("", "2g", 16 * _GIB, ""),
+    ("lots", "2g", 16 * _GIB, ""),
+]
+
+
+def test_memory_swap_limit() -> None:
     """The default swap is a quarter of memory, capped at the host's swap."""
-    assert resource_policy.memory_swap_limit(memory, swap, host_swap) == expected
+    for memory, swap, host_swap, expected in _SWAP_ROWS:
+        assert resource_policy.memory_swap_limit(memory, swap, host_swap) == expected, (
+            memory,
+            swap,
+            host_swap,
+        )
 
 
 def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeypatch) -> None:

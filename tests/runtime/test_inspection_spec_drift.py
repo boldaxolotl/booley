@@ -236,8 +236,7 @@ def test_freshly_seeded_spec_with_non_default_credential_policy_has_no_drift(
     assert [f.severity.value for f in findings] == ["pass"]
 
 
-@pytest.mark.parametrize(("host_swap_gib", "expected"), [(16, "15g"), (1, "13g")])
-def test_seeded_spec_bounds_swap_to_a_quarter_of_memory(
+def _assert_seeded_swap_limit(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -260,6 +259,13 @@ def test_seeded_spec_bounds_swap_to_a_quarter_of_memory(
     assert argv[argv.index("--memory-swap") + 1] == expected
     findings = _inspect(project, monkeypatch, expected_spec=_host(project))
     assert [f.severity.value for f in findings] == ["pass"]
+
+
+def test_seeded_spec_bounds_swap_to_a_quarter_of_memory(
+    project: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for host_swap_gib, expected in ((16, "15g"), (1, "13g")):
+        _assert_seeded_swap_limit(project, monkeypatch, tmp_path, host_swap_gib, expected)
 
 
 def test_spec_issued_without_swap_limit_is_drift(
