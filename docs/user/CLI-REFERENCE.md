@@ -117,8 +117,7 @@ booley specialist reviewer --recheck <evidence.json>   # re-check an earlier rev
 
 Targets, options, exit codes, and results are in
 [Running Flows](FLOW_REFERENCE.md). Specialists are in
-[Specialists](SPECIALISTS.md), [Reviewer](REVIEWER.md) (including
-[checking your fixes](REVIEWER.md#checking-your-fixes)), and
+[Specialists](SPECIALISTS.md), [Reviewer](REVIEWER.md), and
 [Analyzing a Coverage Record](COVERAGE.md#analyzing-a-coverage-record). `booley cheat --flows`
 and `booley cheat --specialists` print both lists with their main options.
 

@@ -71,17 +71,10 @@ against what the RTL happens to do.
 Run one full review, then ask the agent to re-check its findings after each
 round of fixes: *"Re-check the review's findings."* The Reviewer looks only at
 the findings that are still open, against the current files, and reports each as
-`fixed`, `still open`, or `can't tell`. It reports no new findings, and it
-calls a finding `fixed` only when it points at the current code that shows
-the fix. Repeat until every finding is fixed.
-
-A re-check reads the report of the earlier review or re-check, and writes a
-report of its own for the next one. It takes the focus and the files from that
-report. A `can't tell` finding counts as open.
-
-A new full review replaces the findings of the previous one and can report
-problems the first did not. Run one on purpose, for example after a large
-rewrite, not as the check that ends this loop.
+`fixed`, `still open`, or `can't tell`. It reports no new findings, and each
+`fixed` names the code that shows the fix. Repeat until every finding is fixed;
+a `can't tell` finding counts as open. A new full review replaces the earlier
+findings, so run one only when you want fresh findings.
 
 ### Reviewing only a change
 

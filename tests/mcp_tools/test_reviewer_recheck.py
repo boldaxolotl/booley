@@ -328,7 +328,7 @@ UNUSABLE = {
     ),
     "contract-version": (
         _edit(lambda d: d["detail"]["contract"].update(version=3)),
-        "has detail version 3",
+        "has contract version 3",
     ),
     "no-issue-list": (_edit(lambda d: d["detail"].pop("issue_list")), "has no findings list"),
     "bad-finding": (
@@ -337,6 +337,10 @@ UNUSABLE = {
     ),
     "bad-severity": (
         _edit(lambda d: d["detail"]["issue_list"][0].update(severity="HUGE")),
+        "finding 1 is malformed",
+    ),
+    "bad-fields": (
+        _edit(lambda d: d["detail"]["issue_list"][0].pop("file")),
         "finding 1 is malformed",
     ),
     "bad-category": (
@@ -447,6 +451,8 @@ def test_recheck_dry_run_lists_findings_without_calling_the_model(
     assert result.exit_code == 0, result.report_text
     invoke.assert_not_called()
     assert result.detail["mode"] == "dry_run"
+    assert ids[RESET] in result.report_text
+    assert ids[ENABLE] in result.report_text
     assert sorted(result.detail["open_finding_ids"]) == sorted([ids[RESET], ids[ENABLE]])
     assert result.detail["carried_over"] == 1
     assert result.detail["category"] == "rtl"
@@ -578,3 +584,16 @@ def test_recheck_reads_only_the_given_file_and_writes_only_its_evidence(
     assert after - before == {Path(result.detail["audit_evidence"])}
     assert before - after == set()
     assert elsewhere.exists()
+
+
+def test_recheck_reports_an_open_finding_that_shares_its_id_with_an_advisory_one(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence, ids = full_review(
+        project, monkeypatch, [finding(RESET), finding(RESET, disposition="advisory")]
+    )
+    result, _ = recheck(project, monkeypatch, evidence, [verdict(ids[RESET], "still_open")])
+
+    assert result.exit_code == 0, result.report_text
+    assert result.report_text.count(ids[RESET]) == 1
+    assert [row["status"] for row in result.detail["issue_list"]] == ["still_open", "advisory"]

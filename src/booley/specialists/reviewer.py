@@ -45,6 +45,7 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_CURRENT,
     DISPOSITION_DEFERRED,
     DISPOSITION_OUT_OF_SCOPE,
+    OPEN_STATUSES,
     ORIGIN_PRE_EXISTING,
     STATUS_CANT_TELL,
     STATUS_STILL_OPEN,
@@ -2553,7 +2554,8 @@ object, even after calling the capability.
         return self._dry_run_result(
             summary=(
                 f"reviewer re-check dry-run: {recheck.category}/{recheck.focus}; "
-                f"{len(open_ids)} open finding(s); {carried} carried over"
+                f"{len(open_ids)} open finding(s) to re-check: {', '.join(open_ids)}; "
+                f"{carried} carried over"
             ),
             detail={
                 "recheck_of": str(recheck.path),
@@ -2629,8 +2631,13 @@ object, even after calling the capability.
         self, recheck: RecheckInput, records: list[dict[str, Any]], *, elapsed: float
     ) -> McpToolResult:
         """Report each re-checked finding; ``--fail-on`` counts only those still open."""
-        open_ids = {row["finding_id"] for row in recheck.open_findings}
-        judged = [row for row in records if row["finding_id"] in open_ids]
+        # Records keep the input's order, so an open input record and its result pair up by
+        # position; an ID shared with a carried-over record cannot pull that one in.
+        judged = [
+            record
+            for source, record in zip(recheck.findings, records, strict=True)
+            if source["status"] in OPEN_STATUSES
+        ]
         still_open = [
             row for row in judged if row["status"] in (STATUS_STILL_OPEN, STATUS_CANT_TELL)
         ]

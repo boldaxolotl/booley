@@ -81,10 +81,10 @@ def _read_detail(path: Path) -> dict[str, Any]:
         raise RecheckInputError(f"{path} is not a Reviewer evidence file")
     version = detail.get("review_detail_version")
     contract_version = _obj(detail.get("contract")).get("version")
-    for found in (version, contract_version):
+    for name, found in (("detail", version), ("contract", contract_version)):
         if found != REVIEW_DETAIL_VERSION:
             raise RecheckInputError(
-                f"Reviewer evidence file {path} has detail version {found}; this Booley reads "
+                f"Reviewer evidence file {path} has {name} version {found}; this Booley reads "
                 f"version {REVIEW_DETAIL_VERSION}. Run a new full review."
             )
     return detail
@@ -101,6 +101,9 @@ def _finding_rows(path: Path, detail: dict[str, Any], severities: Collection[str
             and isinstance(entry.get("status"), str)
             and isinstance(entry.get("severity"), str)
             and entry["severity"].upper() in severities
+            and isinstance(entry.get("file"), str)
+            and isinstance(entry.get("line"), int)
+            and isinstance(entry.get("summary"), str)
         ):
             raise RecheckInputError(f"Reviewer evidence file {path} finding {number} is malformed")
     return rows
