@@ -50,6 +50,8 @@ class DockerSandboxConfig:
     extra_env: dict[str, str] = field(default_factory=dict)
     needs_network: bool = True
     memory_limit: str = "512m"
+    # Docker ``--memory-swap`` (memory plus swap); empty adds no flag.
+    memory_swap: str = ""
     pids_limit: int = 512
 
     def verify(self) -> str | None:  # noqa: PLR0911 — ordered precondition ladder; each early return is a distinct health-check failure
@@ -301,6 +303,7 @@ class DockerRunner:
             network,
             "--memory",
             self.config.memory_limit,
+            *(["--memory-swap", self.config.memory_swap] if self.config.memory_swap else []),
             "--pids-limit",
             str(self.config.pids_limit),
             "--security-opt",

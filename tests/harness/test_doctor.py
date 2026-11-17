@@ -70,6 +70,7 @@ from tests.docker_cli_guard import (
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
+from tests.docker_host_support import fake_docker_host
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
@@ -279,6 +280,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
 ) -> list[list[str]]:
     reset_cache()
     route_bounded_captures_through_subprocess_run(monkeypatch)
+    fake_docker_host(monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.
@@ -2973,6 +2975,96 @@ def test_sandbox_memory(row, tmp_path, monkeypatch):
         assert "the Memory Budget falls back to installed memory" in warning
         assert ("unparseable" in warning) is (row == "unparseable")
         assert "memory_budget" not in warning
+
+
+def test_sandbox_swap(tmp_path, monkeypatch):
+    """ADR 0087: Doctor warns on a ``[sandbox].swap`` the Docker host cannot back."""
+    for row in ("fits", "over-host-swap", "over-host-total", "unparseable", "host-unknown"):
+        root = tmp_path / row
+        root.mkdir()
+        _assert_sandbox_swap_row(row, root, monkeypatch)
+
+
+def _assert_sandbox_swap_row(row, tmp_path, monkeypatch):
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    # memory 16g on a host with 32g of memory and 16g of swap (the fake default).
+    if row == "over-host-swap":
+        _edit_booley_toml(booley_dir, 'memory = "16g"\n', 'memory = "16g"\nswap = "20g"\n')
+    elif row == "over-host-total":
+        fake_docker_host(monkeypatch, memory_gib=8, swap_gib=4)
+        _edit_booley_toml(booley_dir, 'memory = "16g"\n', 'memory = "16g"\nswap = "2g"\n')
+    elif row == "unparseable":
+        _edit_booley_toml(booley_dir, 'memory = "16g"\n', 'memory = "16g"\nswap = "lots"\n')
+    elif row == "host-unknown":
+
+        def unreadable(_image):
+            raise doctor.pi.DockerImageError("probe failed")
+
+        monkeypatch.setattr(doctor.pi, "probe_docker_host_memory", unreadable, raising=False)
+
+    result = _doctor_run(tmp_path)
+
+    warns = _messages(result, Severity.WARN, check_id="sandbox.swap-unbacked")
+    if row == "fits":
+        assert warns == []
+        assert "[sandbox].swap: the Sandbox may swap up to 4g beyond its memory" in _messages(
+            result, Severity.PASS
+        )
+    elif row == "host-unknown":
+        assert warns == []
+        assert any(
+            "the Docker host's swap is unknown: probe failed" in m
+            for m in _messages(result, Severity.SKIP)
+        )
+    else:
+        assert len(warns) == 1
+        warning = warns[0]
+        expected = {
+            "over-host-swap": "20g is more than the 16g of swap the Docker host has",
+            "over-host-total": "18g is more than the 12g of memory plus swap",
+            "unparseable": "'lots' is unparseable",
+        }[row]
+        assert expected in warning
+
+
+def test_sandbox_swap_warns_on_a_non_string_setting(tmp_path, monkeypatch):
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    _edit_booley_toml(booley_dir, 'memory = "16g"\n', 'memory = "16g"\nswap = 0\n')
+    result = _doctor_run(tmp_path)
+    (warning,) = _messages(result, Severity.WARN, check_id="sandbox.swap-unbacked")
+    assert "swap = 0 is not a string" in warning
+
+
+def test_sandbox_swap_skips_without_memory_or_project(tmp_path, monkeypatch):
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    _edit_booley_toml(booley_dir, 'memory = "16g"\n', "")
+    result = _doctor_run(tmp_path)
+    assert any("no swap limit without a parseable" in m for m in _messages(result, Severity.SKIP))
+
+    (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
+    result = _doctor_run(tmp_path)
+    assert "sandbox swap skipped - no valid project config" in _messages(result, Severity.SKIP)
+
+
+def test_sandbox_swap_reads_the_host_inside_the_sandbox(tmp_path, monkeypatch):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 8388608 kB\nSwapTotal: 0 kB\n", encoding="utf-8")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(doctor, "_PROC_MEMINFO", meminfo)
+    host, why = doctor._read_host_memory(None, "img")
+    assert why == ""
+    assert (host.memory_bytes, host.swap_bytes) == (8 * 1024**3, 0)
+
+    meminfo.write_text("nothing\n", encoding="utf-8")
+    host, why = doctor._read_host_memory(None, "img")
+    assert host is None
+    assert "cannot read /proc/meminfo" in why
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    assert doctor._read_host_memory(None, "img") == (None, "Docker is not available")
 
 
 def _runtime_setup(
