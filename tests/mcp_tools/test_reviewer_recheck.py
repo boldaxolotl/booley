@@ -183,47 +183,37 @@ def test_recheck_reports_no_new_findings_from_extra_entries(
     ]
 
 
-@pytest.mark.parametrize(
-    "evidence",
-    [
-        None,
-        {"file": "rtl/dut.sv", "line": 3},
-        {"file": "rtl/missing.sv", "line": 3, "reason": "moved"},
-        {"file": "rtl/dut.sv", "line": 999, "reason": "past the end"},
-        {"file": "rtl/dut.sv", "line": 0, "reason": "not a line"},
-        {"file": "rtl/dut.sv", "line": True, "reason": "bool is not a line"},
-        {"file": "../outside.sv", "line": 1, "reason": "outside the work directory"},
-        {"file": "rtl", "line": 1, "reason": "a directory"},
-        "rtl/dut.sv:3",
-        {"file": "rtl/dut\0.sv", "line": 1, "reason": "a NUL byte"},
-    ],
-    ids=[
-        "none",
-        "no-reason",
-        "missing-file",
-        "line-past-end",
-        "line-zero",
-        "line-bool",
-        "outside",
-        "directory",
-        "not-an-object",
-        "nul-byte",
-    ],
-)
+NO_EVIDENCE = [
+    None,
+    {"file": "rtl/dut.sv", "line": 3},
+    {"file": "rtl/missing.sv", "line": 3, "reason": "moved"},
+    {"file": "rtl/dut.sv", "line": 999, "reason": "past the end"},
+    {"file": "rtl/dut.sv", "line": 0, "reason": "not a line"},
+    {"file": "rtl/dut.sv", "line": True, "reason": "bool is not a line"},
+    {"file": "../outside.sv", "line": 1, "reason": "outside the work directory"},
+    {"file": "rtl", "line": 1, "reason": "a directory"},
+    "rtl/dut.sv:3",
+    {"file": "rtl/dut\0.sv", "line": 1, "reason": "a NUL byte"},
+]
+
+
 def test_fixed_without_current_source_evidence_is_still_open(
-    project: Path, monkeypatch: pytest.MonkeyPatch, evidence: Any
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (project.parent / "outside.sv").write_text("// outside\n")
     path, ids = full_review(project, monkeypatch, [finding(RESET)])
-    claim: dict[str, Any] = {"finding_id": ids[RESET], "verdict": "fixed"}
-    if evidence is not None:
-        claim["evidence"] = evidence
-    result, _ = recheck(project, monkeypatch, path, [claim])
+    for evidence in NO_EVIDENCE:
+        claim: dict[str, Any] = {"finding_id": ids[RESET], "verdict": "fixed"}
+        if evidence is not None:
+            claim["evidence"] = evidence
+        result, _ = recheck(project, monkeypatch, path, [claim])
 
-    assert statuses(result) == {RESET: "still_open"}
-    assert "recheck_evidence" not in result.detail["issue_list"][0]
-    assert [row["reason"] for row in result.detail["rejected"]] == ["fixed_without_evidence"]
-    assert "still open" in result.report_text
+        assert statuses(result) == {RESET: "still_open"}, evidence
+        assert "recheck_evidence" not in result.detail["issue_list"][0], evidence
+        assert [row["reason"] for row in result.detail["rejected"]] == [
+            "fixed_without_evidence"
+        ], evidence
+        assert "still open" in result.report_text, evidence
 
 
 def test_fixed_with_evidence_keeps_the_citation(
@@ -279,33 +269,28 @@ def test_provider_failure_is_a_specialist_error(
     assert "provider down" in result.report_text
 
 
-@pytest.mark.parametrize(
-    ("fail_on", "severity", "status", "expected"),
-    [
-        ("major", "MAJOR", "fixed", 0),
-        ("major", "MAJOR", "still_open", 1),
-        ("major", "MAJOR", "cant_tell", 1),
-        ("major", "MINOR", "still_open", 0),
-        ("minor", "MINOR", "cant_tell", 1),
-    ],
-)
-def test_fail_on_counts_only_still_open_and_cant_tell(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    fail_on: str,
-    severity: str,
-    status: str,
-    expected: int,
-) -> None:
-    path, ids = full_review(
-        project,
-        monkeypatch,
-        [finding(RESET, severity), finding(NAMING, "CRITICAL", "advisory")],
-    )
-    verdicts = [] if status == "cant_tell" else [verdict(ids[RESET], status)]
-    result, _ = recheck(project, monkeypatch, path, verdicts, "--fail-on", fail_on)
+FAIL_ON_CASES = [
+    ("major", "MAJOR", "fixed", 0),
+    ("major", "MAJOR", "still_open", 1),
+    ("major", "MAJOR", "cant_tell", 1),
+    ("major", "MINOR", "still_open", 0),
+    ("minor", "MINOR", "cant_tell", 1),
+]
 
-    assert result.exit_code == expected, result.report_text
+
+def test_fail_on_counts_only_still_open_and_cant_tell(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for fail_on, severity, status, expected in FAIL_ON_CASES:
+        path, ids = full_review(
+            project,
+            monkeypatch,
+            [finding(RESET, severity), finding(NAMING, "CRITICAL", "advisory")],
+        )
+        verdicts = [] if status == "cant_tell" else [verdict(ids[RESET], status)]
+        result, _ = recheck(project, monkeypatch, path, verdicts, "--fail-on", fail_on)
+
+        assert result.exit_code == expected, (fail_on, severity, status, result.report_text)
 
 
 def test_recheck_without_fail_on_exits_zero(
@@ -370,45 +355,41 @@ UNUSABLE = {
 }
 
 
-@pytest.mark.parametrize("case", sorted(UNUSABLE))
-def test_unusable_evidence_file_is_refused(
-    project: Path, monkeypatch: pytest.MonkeyPatch, case: str
-) -> None:
+def test_unusable_evidence_file_is_refused(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for case, (damage, message) in UNUSABLE.items():
+        path, _ = full_review(project, monkeypatch, [finding(RESET)])
+        damage(path)
+        result, invoke = recheck(project, monkeypatch, path, [])
+
+        assert result.exit_code == 2, case
+        assert message in result.report_text, case
+        assert str(path) in result.report_text, case
+        invoke.assert_not_called()
+
+
+CONFLICTS = [
+    (["--scope", "rtl/dut.sv"], "--scope"),
+    (["--base", "HEAD"], "--base"),
+    (["--category", "rtl"], "--category"),
+    (["--focus", "bugs"], "--focus"),
+    (["--spec", "spec.md"], "--spec"),
+    (["--spec-text", "text"], "--spec-text"),
+    (["--steer", "look at reset"], "--steer"),
+    (["--scope", "rtl/dut.sv", "--steer", "x"], "--scope, --steer"),
+]
+
+
+def test_recheck_refuses_review_options(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path, _ = full_review(project, monkeypatch, [finding(RESET)])
-    damage, message = UNUSABLE[case]
-    damage(path)
-    result, invoke = recheck(project, monkeypatch, path, [])
+    for flags, named in CONFLICTS:
+        result, invoke = recheck(project, monkeypatch, path, [], *flags)
 
-    assert result.exit_code == 2
-    assert message in result.report_text
-    assert str(path) in result.report_text
-    invoke.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("flags", "named"),
-    [
-        (["--scope", "rtl/dut.sv"], "--scope"),
-        (["--base", "HEAD"], "--base"),
-        (["--category", "rtl"], "--category"),
-        (["--focus", "bugs"], "--focus"),
-        (["--spec", "spec.md"], "--spec"),
-        (["--spec-text", "text"], "--spec-text"),
-        (["--steer", "look at reset"], "--steer"),
-        (["--scope", "rtl/dut.sv", "--steer", "x"], "--scope, --steer"),
-    ],
-)
-def test_recheck_refuses_review_options(
-    project: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], named: str
-) -> None:
-    path, _ = full_review(project, monkeypatch, [finding(RESET)])
-    result, invoke = recheck(project, monkeypatch, path, [], *flags)
-
-    assert result.exit_code == 2
-    assert f"--recheck takes category, focus and scope from the evidence file; remove {named}" in (
-        result.report_text
-    )
-    invoke.assert_not_called()
+        assert result.exit_code == 2, named
+        assert (
+            f"--recheck takes category, focus and scope from the evidence file; remove {named}"
+            in result.report_text
+        )
+        invoke.assert_not_called()
 
 
 def test_display_tag_follows_the_evidence_file_once_it_is_read(
