@@ -155,7 +155,9 @@ def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(tmp_p
 
 
 @pytest.mark.parametrize(
-    ("resets_at", "reset_text"), [(None, ""), (_NOW + 5, "; resets at 2027-01-15T08:00:05Z")]
+    ("resets_at", "reset_text"),
+    [(None, ""), (_NOW + 5, "; resets at 2027-01-15T08:00:05Z")],
+    ids=["no-reset", "known-reset"],
 )
 def test_claude_rejections_on_every_attempt_end_as_usage_limit(
     tmp_path, monkeypatch, resets_at, reset_text
