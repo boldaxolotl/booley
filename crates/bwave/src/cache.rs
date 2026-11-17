@@ -14,6 +14,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::format::{format_value_with_radix, values_match, Radix, TriggerMode};
+use crate::reset::{Reset, ResetReport};
 use crate::signal::{anchored_form, compile_patterns, match_signal};
 use crate::ExtractConfig;
 
@@ -94,7 +95,6 @@ pub struct CachedSignal {
 /// Query-facing view of an FST waveform store: header metadata plus read
 /// primitives, all backed by `crate::fst::FstBacking`.
 pub struct ColumnCache {
-    pub sim_start_tick: u64,
     pub sim_end_tick: u64,
     pub ticks_to_ns: f64,
     /// Authoritative decimal seconds exponent for exact input conversion.
@@ -104,6 +104,8 @@ pub struct ColumnCache {
     pub timescale_str: String,
     pub clock_id: String,
     pub clock_before_reset_at_deassert: bool,
+    /// The reset all queries use: auto-detected at load, or chosen by `--reset`.
+    pub reset: Option<crate::reset::Reset>,
     pub clock_table: Vec<ClockEntry>,
     pub signals: Vec<CachedSignal>,
     fst: crate::fst::FstBacking,
@@ -143,7 +145,6 @@ impl ColumnCache {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_fst_backed(
         signals: Vec<CachedSignal>,
-        sim_start_tick: u64,
         sim_end_tick: u64,
         ticks_to_ns: f64,
         timescale_exponent: Option<i8>,
@@ -151,12 +152,10 @@ impl ColumnCache {
         first_rise_tick: u64,
         timescale_str: String,
         clock_id: String,
-        clock_before_reset_at_deassert: bool,
         clock_table: Vec<ClockEntry>,
         backing: crate::fst::FstBacking,
     ) -> ColumnCache {
         ColumnCache {
-            sim_start_tick,
             sim_end_tick,
             ticks_to_ns,
             timescale_exponent,
@@ -164,7 +163,8 @@ impl ColumnCache {
             first_rise_tick,
             timescale_str,
             clock_id,
-            clock_before_reset_at_deassert,
+            clock_before_reset_at_deassert: false,
+            reset: None,
             clock_table,
             signals,
             fst: backing,
@@ -195,6 +195,43 @@ impl ColumnCache {
             }
         }
         suggestions
+    }
+
+    /// Make the signal at `index` the store's reset (none when `None`) and
+    /// record whether the selected clock toggles at its deassert tick.
+    pub(crate) fn set_reset(&mut self, index: Option<usize>, chosen_by_option: bool) {
+        self.reset = index.map(|i| {
+            let name = self.signals[i].name.clone();
+            let active_low = crate::reset::active_low(&name);
+            let deassert_tick = crate::reset::deassert_tick(&self.read_transitions(i), active_low);
+            Reset {
+                name,
+                active_low,
+                chosen_by_option,
+                deassert_tick,
+            }
+        });
+        let clock = self.signals.iter().position(|s| s.name == self.clock_id);
+        self.clock_before_reset_at_deassert = match (self.reset_deassert_tick(), clock) {
+            (Some(dt), Some(c)) => self.read_transitions(c).iter().any(|(t, _)| *t == dt),
+            _ => false,
+        };
+    }
+
+    /// Replace the reset with the 1-bit signal `--reset PATTERN` names.
+    pub fn select_reset(&mut self, pattern: &str) -> Result<(), String> {
+        let matchers = compile_patterns(&[pattern.to_string()], self.scope_prefix())
+            .map_err(|e| format!("--reset '{pattern}': {e}"))?;
+        let index = crate::reset::candidate(&self.signals, Some(&matchers))
+            .ok_or_else(|| format!("--reset '{pattern}' matches no 1-bit signal"))?;
+        self.set_reset(Some(index), true);
+        Ok(())
+    }
+
+    /// Tick where the reset deasserts; `None` without a reset or when it
+    /// never reaches its inactive value.
+    pub fn reset_deassert_tick(&self) -> Option<u64> {
+        self.reset.as_ref().and_then(|r| r.deassert_tick)
     }
 
     /// Override the display clock with a different signal's timing.
@@ -527,7 +564,7 @@ pub fn clock_query_config(cache: &ColumnCache, original: &ExtractConfig) -> Extr
     let reset = if cfg.with_reset {
         0
     } else {
-        find_reset_deassert_tick(cache, &cfg).unwrap_or(0)
+        cache.reset_deassert_tick().unwrap_or(0)
     };
     let base = cycle_base(cache, reset);
     let analysis = cache.clock_analysis();
@@ -596,6 +633,45 @@ pub fn clock_query_config(cache: &ColumnCache, original: &ExtractConfig) -> Extr
     cfg
 }
 
+/// The reset facts a sync query or `overview` reports: how many clock cycles
+/// the reset phase takes off the front unless `with_reset` keeps them.
+pub fn reset_report(cache: &ColumnCache, with_reset: bool) -> ResetReport {
+    let tick = cache.reset_deassert_tick();
+    let skipped_cycles = match tick {
+        Some(dt) if !with_reset && cache.clock_period_ticks > 0 => {
+            cycle_base(cache, dt).saturating_sub(cycle_base(cache, 0)) / cache.clock_period_ticks
+        }
+        _ => 0,
+    };
+    // `timescale_str` is a decade factor plus a unit: `10ns`, `1ps`.
+    let unit_at = cache
+        .timescale_str
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(0);
+    let (factor, unit) = cache.timescale_str.split_at(unit_at);
+    let factor: u128 = factor.parse().unwrap_or(1);
+    let reset = cache.reset.as_ref();
+    ResetReport {
+        signal: reset.map(|r| r.name.clone()),
+        polarity: reset.map(|r| {
+            if r.active_low {
+                "active_low"
+            } else {
+                "active_high"
+            }
+        }),
+        chosen_by: if reset.is_some_and(|r| r.chosen_by_option) {
+            "--reset"
+        } else {
+            "auto"
+        },
+        deassert_tick: tick,
+        deassert_time: tick.map(|t| format!("{}{unit}", u128::from(t) * factor)),
+        skipped_cycles,
+        with_reset,
+    }
+}
+
 fn sampled_value(cfg: &ExtractConfig, transitions: &[(u64, String)], edge: u64) -> String {
     cfg.sample_tick(edge)
         .map_or_else(|| "x".into(), |tick| value_at_tick(transitions, tick))
@@ -632,6 +708,13 @@ fn observation_boundaries(
 
 fn query_config(cache: &ColumnCache, original: &ExtractConfig) -> ExtractConfig {
     let mut cfg = clock_query_config(cache, original);
+    if !cfg.async_mode {
+        let report = reset_report(cache, cfg.with_reset);
+        if !cfg.json_format {
+            eprintln!("{}", report.text());
+        }
+        cfg.reset_report = Some(report);
+    }
     let mut budget = AliasBudget::default();
     let mut warnings = if cfg.explicit_selectors {
         alias_warnings(cache, &cfg.patterns, false, &mut budget)
@@ -681,6 +764,7 @@ fn emit_query_json<T: serde::Serialize>(
         crate::output::merge_warnings(warnings, &cfg.warnings),
         cfg.clock_regularity.clone(),
         cfg.clock_stopped.clone(),
+        cfg.reset_report.clone(),
     );
 }
 
@@ -1192,7 +1276,7 @@ pub struct CacheStatsEntry {
 
 fn query_reset_deassert_tick(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<u64> {
     if !cfg.with_reset && !cfg.async_mode {
-        find_reset_deassert_tick(cache, cfg)
+        cache.reset_deassert_tick()
     } else {
         None
     }
@@ -1403,15 +1487,11 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut entries: Vec<CacheStatsEntry> = Vec::new();
 
     // Find clock signal data_offset for boundary disambiguation
-    let clock_group_id: Option<u64> = if reset_deassert_tick.is_some() && !cache.clock_id.is_empty()
-    {
+    let clock_group_id: Option<u64> = if reset_deassert_tick.is_some() {
         cache
             .signals
             .iter()
-            .find(|s| {
-                let leaf = s.name.rsplit('.').next().unwrap_or(&s.name);
-                leaf.starts_with("clk") || leaf == "clock"
-            })
+            .find(|s| s.name == cache.clock_id)
             .map(|s| s.group_id)
     } else {
         None
@@ -1883,7 +1963,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let sync_mode = !cfg.async_mode;
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
-        find_reset_deassert_tick(cache, cfg)
+        cache.reset_deassert_tick()
     } else {
         None
     };
@@ -2215,7 +2295,18 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     } else if find_count > 0 && !cfg.first_match && !cfg.last_match {
         let _ = writeln!(err, "# {} matches found", find_count);
     } else if find_count == 0 {
-        let _ = writeln!(err, "# No matches found");
+        match cfg.reset_report.as_ref().map(|r| r.skipped_cycles) {
+            Some(n) if n > 0 => {
+                let unit = if n == 1 { "cycle" } else { "cycles" };
+                let _ = writeln!(
+                    err,
+                    "# No matches found; {n} {unit} skipped before reset deasserts (--with-reset to include)"
+                );
+            }
+            _ => {
+                let _ = writeln!(err, "# No matches found");
+            }
+        }
     }
     let _ = out.flush();
     let _ = err.flush();
@@ -2259,7 +2350,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let sync_mode = !cfg.async_mode;
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
-        find_reset_deassert_tick(cache, cfg)
+        cache.reset_deassert_tick()
     } else {
         None
     };
@@ -2545,7 +2636,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
-        find_reset_deassert_tick(cache, cfg)
+        cache.reset_deassert_tick()
     } else {
         None
     };
@@ -2775,7 +2866,7 @@ pub fn diff_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
-        find_reset_deassert_tick(cache, cfg)
+        cache.reset_deassert_tick()
     } else {
         None
     };
@@ -3487,7 +3578,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             .is_some_and(|(_, value)| TriggerMode::classify(value) == TriggerMode::Change);
     let reset_deassert_tick = if !cfg.with_reset && (sync_mode || (change_query && !cfg.async_mode))
     {
-        find_reset_deassert_tick(cache, cfg)
+        cache.reset_deassert_tick()
     } else {
         None
     };
@@ -4068,6 +4159,7 @@ pub fn list_signals_from_cache(
             crate::output::merge_warnings(warnings, &clock_cfg.warnings),
             clock_cfg.clock_regularity,
             Vec::new(),
+            None,
         );
         return;
     }
@@ -4190,7 +4282,7 @@ pub fn resolve_time_token(
     let effective_start = if cfg.with_reset {
         0
     } else {
-        find_reset_deassert_tick(cache, cfg).unwrap_or(0)
+        cache.reset_deassert_tick().unwrap_or(0)
     };
     if let TimeToken::Cycle(0) = *token {
         return i64::try_from(effective_start)
@@ -4277,69 +4369,6 @@ fn value_at_tick(transitions: &[(u64, String)], tick: u64) -> String {
     } else {
         transitions[end - 1].1.clone()
     }
-}
-
-/// Find the best reset signal index.
-/// With explicit pattern: glob match. Without: contains("rst") on leaf name.
-/// Among matches, prefer shallowest scope depth, then lexicographic.
-fn find_best_reset_idx(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<usize> {
-    let explicit_matchers = match cfg.reset_pattern.as_ref() {
-        Some(pat) => Some(compile_patterns(&[pat.clone()], cache.scope_prefix()).ok()?),
-        None => None,
-    };
-
-    let mut candidates: Vec<(usize, &str)> = Vec::new();
-    for (i, s) in cache.signals.iter().enumerate() {
-        if s.width != 1 {
-            continue;
-        }
-        if let Some(ref matchers) = explicit_matchers {
-            if match_signal(&s.name, matchers) {
-                candidates.push((i, &s.name));
-            }
-        } else {
-            let stripped = s.name.split('[').next().unwrap_or(&s.name);
-            if stripped.to_lowercase().contains("rst") {
-                candidates.push((i, &s.name));
-            }
-        }
-    }
-
-    candidates.sort_by(|a, b| {
-        let da = a.1.matches('.').count();
-        let db = b.1.matches('.').count();
-        da.cmp(&db).then(a.1.cmp(b.1))
-    });
-
-    candidates.first().map(|&(i, _)| i)
-}
-
-/// Find the tick where reset deasserts. Returns None if no reset or reset never deasserts.
-fn find_reset_deassert_tick(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<u64> {
-    let idx = find_best_reset_idx(cache, cfg)?;
-    let sig = &cache.signals[idx];
-    let transitions = cache.read_transitions(idx);
-
-    // Determine polarity from name
-    let leaf = sig
-        .name
-        .split('[')
-        .next()
-        .unwrap_or(&sig.name)
-        .split('.')
-        .last()
-        .unwrap_or(&sig.name)
-        .to_lowercase();
-    let active_low = leaf.ends_with('n') || leaf.contains("_n");
-
-    // Find deassert
-    for (tick, val) in &transitions {
-        let is_asserted = if active_low { val == "0" } else { val == "1" };
-        if !is_asserted {
-            return Some(*tick);
-        }
-    }
-    None
 }
 
 // -- Wave rendering helper ----------------------------------------------------
@@ -4610,7 +4639,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
-        find_reset_deassert_tick(cache, cfg)
+        cache.reset_deassert_tick()
     } else {
         None
     };
@@ -5722,10 +5751,8 @@ b0 #
         let mut cache = build_cache("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! rstn $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#18446744073709551615\n1!\n");
         cache.first_rise_tick = 6;
         cache.clock_period_ticks = 10;
-        let policy = ExtractConfig {
-            reset_pattern: Some("tb.rstn".into()),
-            ..Default::default()
-        };
+        cache.select_reset("tb.rstn").unwrap();
+        let policy = ExtractConfig::default();
         assert_eq!(
             resolve_time_token(&cache, &policy, &crate::format::TimeToken::Nano(i64::MAX))
                 .unwrap_err(),

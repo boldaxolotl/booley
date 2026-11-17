@@ -10,8 +10,9 @@ Output is an indented hierarchical tree. The deepest scope shared by all
 matches is stripped from each line and printed once as `# scope:` on
 stderr.
 
-`--clock` changes only the reported clock metadata; `--async`, `--reset`,
-and `--with-reset` have no effect. `--limit` never truncates `--tree`. The
+`--clock` changes only the reported clock metadata; `--async` and
+`--with-reset` have no effect, and `--reset` is only checked: a bad pattern
+exits 2. `--limit` never truncates `--tree`. The
 Booley wrapper defaults `--limit` to 400.
 
 ## Output shape
