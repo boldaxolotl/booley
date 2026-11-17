@@ -966,15 +966,15 @@ def _format_job_attached(name: str, run_id: str) -> str:
 def _format_job_running(name: str, run_id: str) -> str:
     """Message returned when a heavy endpoint detaches past the inline wait."""
     phase = _job_phase(run_id)
-    waiting = (
-        "is waiting for its concurrency slot"
+    status = (
+        f"is queued for memory and has not started yet (run_id={run_id}). This is NOT the "
+        f"result — the run has not started."
         if phase.startswith("QUEUED")
-        else "is taking longer than the inline wait"
+        else f"is taking longer than the inline wait and is now running in the background "
+        f"(run_id={run_id}). This is NOT the result — the run has not finished."
     )
     return (
-        f"{phase}: '{name}' {waiting} and is now "
-        f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. With several Jobs running, call "
+        f"{phase}: '{name}' {status} With several Jobs running, call "
         f"'{catalog.POLL_MCP_TOOL_NAME}' with no run_id to get whichever of your Jobs "
         f"finishes first; pass run_id={run_id} only to wait for this Job alone. Keep "
         f"polling until you have its EXIT_CODE. Pass/fail criteria are recorded only "

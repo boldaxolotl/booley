@@ -151,7 +151,7 @@ class AdmissionGate:
             token_execution_id = getattr(token, "execution_id", None)
             if token_execution_id is not None and token_execution_id != execution_id:
                 raise AdmissionIdentityError(
-                    f"managed Job Slot execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
+                    f"managed Memory Reservation execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
                 )
             role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
@@ -216,9 +216,9 @@ def _admission_cancellation_cause(
 
     def cause() -> str | None:
         if token.lease_health.lost.is_set():
-            return f"Job Slot lease lost: {slot}"
+            return f"Memory Reservation lease lost: {slot}"
         if store.token_absent(token):
-            return f"Job Slot token missing: {slot}"
+            return f"Memory Reservation missing: {slot}"
         return None
 
     return cause
@@ -296,7 +296,7 @@ def _admission_root(endpoint: EndpointState) -> tuple[Path | None, Path] | None:
     """
     inherited = os.environ.get(job_slots.INHERITED_SLOT_ENV)
     if inherited:
-        logger.debug("%s runs under its parent's %s slot", endpoint.name, inherited)
+        logger.debug("%s runs under its parent's %s Memory Reservation", endpoint.name, inherited)
         return None
     try:
         project = resolve_common_booley_dir()
@@ -334,7 +334,7 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
     looking like a hang with no hint that another job held the slot (F-27).
     """
     logger.info("%s: %s", endpoint.name, line)
-    print(f"[slot] {endpoint.name}: {line}", file=sys.stderr, flush=True)
+    print(f"[admission] {endpoint.name}: {line}", file=sys.stderr, flush=True)
     _write_display_event(
         _endpoint_progress_event(endpoint.name, line, identity=endpoint._display_identity)
     )

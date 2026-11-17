@@ -289,7 +289,9 @@ class SimulationRecordCapacity:
 
     def _child_cancellation_cause(self, permit: ChildPermit) -> str | None:
         if permit.lease_health.lost.is_set():
-            return f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
+            return (
+                f"Memory Reservation lease lost: {permit.token.job_class}/{permit.token.path.name}"
+            )
         return self.cancellation_cause()
 
     def _confirm_lease(self, permit: ChildPermit) -> bool:

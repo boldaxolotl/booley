@@ -91,7 +91,7 @@ Try:
   `synth_ecc_top`, `lint_caliptra` and `sim_ecc` a few seconds apart. Sum the
   estimates against the budget; exactly the Jobs that do not fit wait. Each
   waiter reports memory needed, memory free of the budget, its position, and
-  the largest holders by run, Flow, Target and MiB. The CLI repeats a `[slot]`
+  the largest holders by run, Flow, Target and MiB. The CLI repeats a `[admission]`
   line about every 30 seconds.
 - `small-budget` below `sim_caliptra`'s estimate: it runs alone with the
   "exceeds the Memory Budget" warning in its result.
@@ -256,7 +256,8 @@ staged Project and its resources in `resources.md`: `booley session down`, then
 
 ## Known traps
 - There is no `booley jobs` command and `booley_status` shows no queue: read
-  the CLI's `[slot]` lines, `booley_poll`, the Dashboard and the claim files.
+  the CLI's `[admission]` lines, `booley_poll`, the Dashboard and the claim
+  files.
 - "Free" in the queue text is the budget minus reservations, not free host
   memory; it is 0 while a Job runs alone.
 - Each claim keeps the budget it was created with; a `booley.toml` change only
