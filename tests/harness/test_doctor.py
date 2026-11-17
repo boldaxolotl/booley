@@ -3216,7 +3216,7 @@ def test_runtime_location(row, tmp_path, monkeypatch):
     if row == "inside-marker":
         assert any("BOOLEY_CONTAINER=1 set" in m for m in passes)
         assert "agent provider-side web access disabled" in passes
-        assert any("slot store root writable" in m for m in passes)
+        assert any("Memory Reservation store root writable" in m for m in passes)
         assert any("already inside the Sandbox" in m and "nested Docker" in m for m in skips)
         assert not any("HOST" in m for m in _messages(result))
     elif row == "inside-fallback":
@@ -3224,9 +3224,12 @@ def test_runtime_location(row, tmp_path, monkeypatch):
         assert "/.dockerenv fallback" in warning
         assert "recreate the Sandbox: in VS Code, " in warning
         assert "--force" not in warning
-        assert any("slot store root writable" in m for m in passes)
+        assert any("Memory Reservation store root writable" in m for m in passes)
     elif row == "inside-unwritable":
-        assert any("slot store root not writable" in m for m in _messages(result, Severity.FAIL))
+        assert any(
+            "Memory Reservation store root not writable" in m
+            for m in _messages(result, Severity.FAIL)
+        )
     elif row == "inside-no-project":
         assert "Sandbox Git identity checks skipped - project config invalid" in skips
     elif row == "host-marker":

@@ -669,7 +669,9 @@ class TestSingleProcess:
             assert token.path.exists()
 
         messages = [r.getMessage() for r in caplog.records]
-        assert any("Could not release slot entry" in m and token.path.name in m for m in messages)
+        assert any(
+            "Could not release Memory Reservation" in m and token.path.name in m for m in messages
+        )
         assert sleeps.count(job_slots._RELEASE_RETRY_SECONDS) == job_slots._RELEASE_RETRY_ATTEMPTS
 
     def test_release_without_a_thread_logs_the_give_up(self, root, world, caplog, monkeypatch):
@@ -688,7 +690,9 @@ class TestSingleProcess:
         with other._lease_gate(token):
             store.release(token)
 
-        assert any("Could not release slot entry" in r.getMessage() for r in caplog.records)
+        assert any(
+            "Could not release Memory Reservation" in r.getMessage() for r in caplog.records
+        )
 
     def test_release_of_a_removed_entry_starts_no_retry(self, root, world, caplog):
         spawn(world, 100)
@@ -841,7 +845,7 @@ class TestSingleProcess:
         assert [i["result"] for i in entry_unlinks] == [False]
         assert [i["exhausted_runs"] for i in entry_unlinks] == [1]
         assert [r.getMessage() for r in caplog.records] == [
-            f"Could not remove slot entry after retries: {tok.path.name}"
+            f"Could not remove Memory Reservation after retries: {tok.path.name}"
         ]
 
     def test_undecodable_entry_reads_as_absent(self, root, world):
@@ -1145,7 +1149,7 @@ class TestGhostReaping:
 
         assert dead_tok.path.exists()
         assert [r.getMessage() for r in caplog.records] == [
-            f"Could not remove slot entry after retries: {dead_tok.path.name}"
+            f"Could not remove Memory Reservation after retries: {dead_tok.path.name}"
         ]
         assert attempts[dead_tok.path] == job_slots._ENTRY_IO_ATTEMPTS
         assert store.reap(CLASS_MEMORY) == [dead_tok.path.name]

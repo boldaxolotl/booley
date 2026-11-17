@@ -3064,6 +3064,47 @@ def test_running_handoff_notes_unreadable_progress(monkeypatch):
     assert "Progress unavailable: Job progress for run-1 unreadable: held" in blocks[0].text
 
 
+def _handoff_text(monkeypatch, phase):
+    import asyncio
+    from types import SimpleNamespace
+
+    from booley.mcp.job_lifecycle import JobPoll
+
+    submission = SimpleNamespace(poll=JobPoll("run-1", "running", True), attached=False)
+    jobs = SimpleNamespace(submit_and_wait=AsyncMock(return_value=submission))
+    monkeypatch.setattr(mcp_server, "_job_phase", lambda _run_id: phase)
+    monkeypatch.setattr(mcp_server, "_running_progress", lambda _run_id: None)
+    result = asyncio.run(
+        _dispatch_async_job("sim", [], 60, jobs, context=_call_ctx())  # type: ignore[arg-type]
+    )
+    assert not isinstance(result, tuple)
+    return result[0].text
+
+
+def test_queued_handoff_says_queued_for_memory_not_started(monkeypatch):
+    phase = "QUEUED (position 1): needs 807 MiB; 266 MiB free of the 14,016 MiB Memory Budget"
+    text = _handoff_text(monkeypatch, phase)
+    assert text.startswith(
+        f"{phase}: 'sim' is queued for memory and has not started yet (run_id=run-1)."
+    )
+    assert "the run has not started" in text
+    assert "call 'booley_poll' with no run_id" in text
+    assert "running in the background" not in text
+    assert "slot" not in text
+
+
+def test_running_handoff_text_is_unchanged(monkeypatch):
+    text = _handoff_text(monkeypatch, "RUNNING")
+    assert text == (
+        "RUNNING: 'sim' is taking longer than the inline wait and is now running in the "
+        "background (run_id=run-1). This is NOT the result \u2014 the run has not finished. "
+        "With several Jobs running, call 'booley_poll' with no run_id to get whichever of "
+        "your Jobs finishes first; pass run_id=run-1 only to wait for this Job alone. Keep "
+        "polling until you have its EXIT_CODE. Pass/fail criteria are recorded only when "
+        "the run actually completes, so do not conclude the step until then."
+    )
+
+
 def test_attached_untracked_poll_with_held_progress_is_an_error_result(monkeypatch):
     import asyncio
     from types import SimpleNamespace
