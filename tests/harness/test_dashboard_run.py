@@ -44,6 +44,7 @@ from tests.harness.test_dashboard_targets import (
     world,
     write_files,
 )
+from tests.time_budget import hang_guard_s, scaled
 
 if TYPE_CHECKING:
     from booley.harness.dashboard.wizard import RunWizard
@@ -57,7 +58,7 @@ FLOW_NAMES = sorted(info.name for info in discover_mcp_tools() if info.kind == "
 @pytest.fixture(autouse=True)
 def _quiet_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generous first read and no timer reads: the tests order every read themselves."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
     monkeypatch.setattr(dashboard_app, "REFRESH_SECONDS", 3600)
 
 
@@ -604,9 +605,11 @@ def test_check_changes_no_environment_and_writes_nothing(tmp_path, capfd):
 def test_check_reports_a_timeout_and_a_worktree_that_cannot_start_it(tmp_path, monkeypatch):
     from booley.harness.dashboard import launch
 
-    monkeypatch.setattr(launch, "CHECK_TIMEOUT_S", 0.001)
+    timeout_s = scaled(0.001)
+    monkeypatch.setattr(launch, "CHECK_TIMEOUT_S", timeout_s)
     assert (
-        launch.check(tmp_path, "flow", "lint", ()).error == "argument check timed out after 0.001s"
+        launch.check(tmp_path, "flow", "lint", ()).error
+        == f"argument check timed out after {timeout_s}s"
     )
     message = launch.check(tmp_path / "missing", "flow", "lint", ()).error
     assert "No such file or directory" in message or "cannot find" in message.lower()
@@ -862,7 +865,7 @@ class FormGate(FakeLauncher):
         self.built: list[str] = []
 
     def form(self, kind, name, worktree):
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         self.built.append(name)
         if self.failures:
             raise self.failures.pop(0)
@@ -1106,7 +1109,7 @@ class GatedLauncher(FakeLauncher):
 
     def check(self, worktree, kind, name, argv):
         self.started.set()
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         return super().check(worktree, kind, name, argv)
 
 
@@ -1119,7 +1122,7 @@ async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
         await set_text(pilot, wizard, "--scope", "a.sv")
         await goto_row(pilot, wizard, "Review the command")
         await pilot.press("enter")
-        assert launcher.started.wait(timeout=60)
+        assert launcher.started.wait(timeout=hang_guard_s())
         await set_toggle(pilot, wizard, "--dry-run")  # flipped while the check runs
         launcher.release.set()
         await settle_check(app, pilot)
@@ -1456,7 +1459,7 @@ class GatedWorktrees(TargetsReader):
         self.release = threading.Event()
 
     def worktrees(self):
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         return super().worktrees()
 
 
@@ -1542,7 +1545,7 @@ async def test_a_check_that_crashes_after_the_human_moved_on_is_not_shown(checko
 
     class SlowCrash(FakeLauncher):
         def check(self, worktree, kind, name, argv):
-            assert gate.wait(timeout=60)
+            assert gate.wait(timeout=hang_guard_s())
             raise ValueError("embedded null byte")
 
     app = make_app(checkout, SlowCrash())

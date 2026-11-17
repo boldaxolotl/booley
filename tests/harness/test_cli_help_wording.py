@@ -261,7 +261,7 @@ def test_help_from_the_booley_entry_point(
     """The wording reaches a person who types the command inside a Project."""
     for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", INVOCATION_ORIGIN_ENV):
         monkeypatch.delenv(name, raising=False)
-    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)

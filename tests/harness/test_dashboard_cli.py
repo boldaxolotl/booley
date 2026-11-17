@@ -14,6 +14,7 @@ import pytest
 
 from booley.harness.dashboard import command
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 
 @pytest.fixture(autouse=True)
@@ -260,7 +261,6 @@ def test_dashboard_label_sets_linux_proc_identity():
             "restore() if restore else None",
         ],
         env=_dashboard_child_env(),
-        timeout=10,
         check=True,
     )
     identity = json.loads(child.stdout)
@@ -322,13 +322,16 @@ raise SystemExit(command.run_dashboard(Path(sys.argv[1])))
 """
 
 
+_PTY_DEADLINE_S = scaled(10)
+
+
 def _drain_dashboard_pty(child, master):
     import errno
     import select
     import time
 
     captured = bytearray()
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _PTY_DEADLINE_S
     while time.monotonic() < deadline:
         if not select.select([master], [], [], 0.05)[0]:
             continue
@@ -343,8 +346,8 @@ def _drain_dashboard_pty(child, master):
         captured.extend(chunk)
         assert len(captured) <= 1024 * 1024, "Dashboard PTY output exceeded 1 MiB"
     else:
-        pytest.fail("Dashboard PTY child exceeded its 10-second deadline")
-    return child.wait(timeout=max(0.1, deadline - time.monotonic())), bytes(captured)
+        pytest.fail(f"Dashboard PTY child exceeded its {_PTY_DEADLINE_S:g}-second deadline")
+    return child.wait(timeout=hang_guard_s()), bytes(captured)
 
 
 def _run_dashboard_pty(tmp_path):
@@ -375,7 +378,7 @@ def _run_dashboard_pty(tmp_path):
             if child.poll() is None:
                 child.kill()
             # Kept on subprocess.Popen: reaping the PTY child the test drives.
-            child.wait(timeout=2)
+            child.wait(timeout=hang_guard_s())
         os.close(master)
         if slave is not None:
             os.close(slave)

@@ -39,7 +39,7 @@ def projects(tmp_path, monkeypatch):
     for name in ("a", "b"):
         root = tmp_path / name
         root.mkdir()
-        run_bounded_child(["git", "init", "-q", str(root)], check=True, timeout=10)
+        run_bounded_child(["git", "init", "-q", str(root)], check=True)
         (root / ".booley").mkdir()
         (root / "rtl").mkdir()
         roots.append(root)

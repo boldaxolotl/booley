@@ -39,6 +39,7 @@ from tests.harness.test_measure_children_flows import (
     declare_stub_metrics,
     started_targets,
 )
+from tests.time_budget import hang_guard_s
 
 __all__ = ["make_world"]
 
@@ -326,14 +327,16 @@ def test_an_mcp_cancel_stops_the_measurement_and_its_children(
 
     async def scenario() -> tuple[str | None, float, str]:
         jobs = _JobManager(_FakeLifetime())
-        run_id = jobs.submit("measure", command, 600, context=resolve_call_context({}))
-        deadline = time.monotonic() + 60
+        run_id = jobs.submit(
+            "measure", command, 3 * hang_guard_s(), context=resolve_call_context({})
+        )
+        deadline = time.monotonic() + hang_guard_s()
         while not (world.ctl / "lingering").exists():
             assert run_id in jobs._tasks and not jobs._tasks[run_id].done(), "measure ended early"
             assert time.monotonic() < deadline, "the child Flow never started"
             await asyncio.sleep(0.05)
         began = time.monotonic()
-        phase = await asyncio.wait_for(jobs.cancel(run_id), timeout=60)
+        phase = await asyncio.wait_for(jobs.cancel(run_id), timeout=hang_guard_s())
         record = job_records.read_record(run_id, jobs._job_roots[run_id])
         assert record is not None
         return phase, time.monotonic() - began, record.status

@@ -18,6 +18,11 @@ import pytest
 from booley.runtime import host_docker as idk
 from booley.runtime import image_identity
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.time_budget import hang_guard_s, scaled
+
+# The 2 s timeout the tests expect to expire, and how long they allow the kill and drain.
+_DEADLINE_S = scaled(2)
+_HANG_LIMIT_S = scaled(25)
 
 
 def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -488,7 +493,7 @@ class TestRunDockerTimeout:
         python, *args = parent_argv(tmp_path, sys.executable, paths, mode)
         start = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
-            idk._run_docker(args, timeout=2, executable=python)
+            idk._run_docker(args, timeout=_DEADLINE_S, executable=python)
         return time.monotonic() - start
 
     def test_timeout_kills_the_whole_process_tree(self, tmp_path, grandchild):
@@ -501,14 +506,16 @@ class TestRunDockerTimeout:
         self, tmp_path, grandchild
     ):
         elapsed = self._run_timing_out(tmp_path, grandchild, "exit")
-        assert elapsed < 25, f"_run_docker hung {elapsed:.1f}s on a pipe held by a grandchild"
+        assert elapsed < _HANG_LIMIT_S, (
+            f"_run_docker hung {elapsed:.1f}s on a pipe held by a grandchild"
+        )
 
     @pytest.mark.skipif(os.name == "nt", reason="start_new_session is POSIX-only")
     def test_timeout_abandons_pipes_held_by_a_grandchild_that_escaped_the_group(
         self, tmp_path, grandchild
     ):
         elapsed = self._run_timing_out(tmp_path, grandchild, "escape")
-        assert elapsed < 25, (
+        assert elapsed < _HANG_LIMIT_S, (
             f"_run_docker hung {elapsed:.1f}s on a pipe held by an escaped grandchild"
         )
 
@@ -518,7 +525,7 @@ class TestRunDockerProcess:
 
     @staticmethod
     def _python(code: str):
-        return idk._run_docker(["-c", code], timeout=30, executable=sys.executable)
+        return idk._run_docker(["-c", code], timeout=hang_guard_s(), executable=sys.executable)
 
     def test_returns_text_output_for_success(self):
         result = self._python("import sys; print('out'); print('err', file=sys.stderr)")
@@ -534,4 +541,6 @@ class TestRunDockerProcess:
 
     def test_missing_executable_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            idk._run_docker(["version"], timeout=5, executable=str(tmp_path / "no-such-docker"))
+            idk._run_docker(
+                ["version"], timeout=hang_guard_s(), executable=str(tmp_path / "no-such-docker")
+            )

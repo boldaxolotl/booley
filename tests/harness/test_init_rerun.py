@@ -1161,7 +1161,7 @@ def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, mon
 
 
 def _managed_git(root: Path, *args: str) -> str:
-    return run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 def test_initial_authored_scaffolding_remains_uncommitted(repo):

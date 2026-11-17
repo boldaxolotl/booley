@@ -18,6 +18,7 @@ from booley.harness.setup.project_git_hook_bundle import (
     build_project_git_hook_bundle,
 )
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 
 def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
@@ -193,7 +194,7 @@ def _bundled_push(
         capture_output=True,
         text=True,
         check=False,
-        timeout=30,
+        timeout=hang_guard_s(),
     )
 
 
@@ -206,7 +207,7 @@ def _bundled_hook_environment(minimum):
             if env.get("BOOLEY_TEST_REQUIRE_MIN_GIT") == "1":
                 pytest.fail("required minimum Git bundle executable absent")
             pytest.skip("optional bundled minimum Git execution needs BOOLEY_TEST_MIN_GIT")
-        version = run_bounded_child([executable, "--version"], check=True, timeout=10)
+        version = run_bounded_child([executable, "--version"], check=True)
         assert re.fullmatch(r"git version 2\.37\.2(?:\.windows\.\d+)?", version.stdout.strip())
         env["PATH"] = str(Path(executable).resolve().parent) + os.pathsep + env["PATH"]
     return env
