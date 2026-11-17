@@ -48,6 +48,8 @@ _STAMP = 1_000  # whole NTFS ticks (100 ns), so the stamp reads back unchanged
         ("codex", ["exec", "resume", "x"], ResumeRequest("x", 0, 1)),
         ("codex", ["e", "resume", "x"], ResumeRequest("x", 0, 1)),
         ("codex", ["-m", "o3", "resume", "x"], ResumeRequest("x", 0, 2)),
+        ("codex", ["-i", "a.png", "b.png", "-m", "o3", "resume", "x"], ResumeRequest("x", 0, 5)),
+        ("codex", ["--image", "a.png", "b.png", "resume", "x"], ResumeRequest("x", 0, 3)),
         ("codex", ["resume", "-m", "y", "x"], ResumeRequest("x")),
         (
             "codex",

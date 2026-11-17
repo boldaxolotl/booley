@@ -72,7 +72,8 @@ def _claude_request(args: list[str]) -> ResumeRequest | None:
 
 
 # Codex options that take a separate value (`--opt=value` takes no extra token), from the help
-# of `codex`, `codex exec`, `codex resume` and `codex exec resume` (0.169.0).
+# of `codex`, `codex exec`, `codex resume` and `codex exec resume` (0.169.0). An option missing
+# here leaves its value looking like a positional, so that launch stays unrouted.
 _CODEX_VALUE_OPTIONS = frozenset(
     {
         "-c",
@@ -106,14 +107,23 @@ _CODEX_VALUE_OPTIONS = frozenset(
 
 
 def _codex_positionals(args: list[str]) -> list[int]:
-    """The indexes of the positional tokens: not options, not option values; all after a `--`."""
+    """The indexes of the positional tokens: not options, not option values; all after a `--`.
+
+    `-i`/`--image` takes several files, so its values run up to the next option or subcommand.
+    """
     found: list[int] = []
     skip = False
+    images = False
     for index, token in enumerate(args):
         if token == "--":
             return [*found, *range(index + 1, len(args))]
+        if images and not token.startswith("-") and token not in ("exec", "e", "resume"):
+            continue
+        images = token in ("-i", "--image")
         if skip:
             skip = False
+        elif images:
+            continue
         elif token in _CODEX_VALUE_OPTIONS:
             skip = True
         elif not token.startswith("-"):
