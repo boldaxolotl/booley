@@ -15,6 +15,7 @@ from booley.harness.setup import cleanup_cli
 from booley.runtime.booley_dir import reset_cache
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.conftest import symlink_or_skip
+from tests.time_budget import scaled
 
 MARKER = ".booley-setup-run"
 
@@ -230,7 +231,7 @@ def test_apply_keeps_run_root_when_findings_lock_times_out(tmp_path, capsys, mon
     source.write_text("retain evidence\n", encoding="utf-8")
     append(Finding(title="attached", attachments=[str(source)]), booley_dir)
     before = log_path(booley_dir).read_bytes()
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
 
     with holding_findings_lock(booley_dir):
         code, out = _cli(tmp_path, capsys, "apply", "--run-id", "r1")

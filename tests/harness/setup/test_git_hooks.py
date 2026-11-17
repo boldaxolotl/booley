@@ -1803,7 +1803,7 @@ def test_line_ending_summary_detail(tmp_path, monkeypatch, status, observations,
 
 
 def _tracking_git(root: Path, *args: str) -> str:
-    return run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged):
@@ -1921,7 +1921,6 @@ def test_paired_hooks_use_main_bundle_without_local_copy(tmp_path, monkeypatch, 
     head = _tracking_git(repo, "rev-parse", "HEAD")
     rejected = run_bounded_child(
         ["git", "-C", str(repo), "commit", "-qm", "fix(core): primaryphrase pairedphrase"],
-        timeout=10,
     )
     # Each checkout's own policy rejects its own phrase and names only that one.
     present, absent = (

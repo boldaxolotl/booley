@@ -37,6 +37,7 @@ from booley.measurement.verdicts import FlowFailed, FlowValues, evaluate_table
 from booley.runtime import job_records
 from tests.harness.test_checkout_flow import git
 from tests.measurement.metrics_project_support import EXAMPLE_METRICS, write_metrics_project
+from tests.time_budget import scaled
 
 
 def _measure(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) -> int:
@@ -115,7 +116,7 @@ def test_validate_refuses_an_automatic_mutation_count(
 
 TWO_LINT_TABLES = "[sim_core.lint]\nwarnings_max = 0\n[sim_two.lint]\nwarnings_max = 0\n"
 ONE_LINT_TABLE = "[sim_core.lint]\nwarnings_max = 0\n"
-DEADLINE_S = 20
+DEADLINE_S = scaled(20)
 # Windows has no SIGHUP: SIGINT stands in, so the tests still import and run there.
 HANGUP = getattr(signal, "SIGHUP", signal.SIGINT)
 NOTHING_IN_SCOPE = "nothing to measure, add a `[target.flow]` table"

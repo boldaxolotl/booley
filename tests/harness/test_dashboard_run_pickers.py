@@ -50,6 +50,7 @@ from tests.harness.test_dashboard_targets import (
     world,
     write_files,
 )
+from tests.time_budget import hang_guard_s
 
 if TYPE_CHECKING:
     from booley.harness.dashboard.targets import RunChoices, TargetListing
@@ -70,7 +71,7 @@ SIM_FIFO_RUNS = ["reset", "stress", "stress+short", "stress+soak", "slow"]
 @pytest.fixture(autouse=True)
 def _quiet_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generous first read and no timer reads: the tests order every read themselves."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
     monkeypatch.setattr(dashboard_app, "REFRESH_SECONDS", 3600)
 
 
@@ -405,7 +406,7 @@ class GatedReader(TargetsReader):
     def _wait(self, key: str) -> None:
         gate = self.gates.get(key)
         if gate is not None:
-            assert gate.wait(timeout=60)
+            assert gate.wait(timeout=hang_guard_s())
 
     def listing(self, worktree: Path) -> TargetListing:
         self._wait(worktree.name)

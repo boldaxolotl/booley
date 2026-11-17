@@ -22,6 +22,7 @@ from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime.job_records import JobRecord
 from tests.harness.test_dashboard import STAMP, open_session, snapshot
+from tests.time_budget import hang_guard_s
 
 # Positions in the Jobs window's bar: Sessions, Jobs, Targets, Running, Finished, All, owner, Help.
 RUNNING, FINISHED, ALL, OWNER = 3, 4, 5, 6
@@ -32,7 +33,7 @@ DASHBOARD_DOC = Path(__file__).parents[2] / "docs" / "user" / "USAGE.md"
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """Let a slow CI worker finish the first read before any key press (#2023)."""
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
 
 
 def job(run_id, state, session_key=None, *, owner_handle=""):

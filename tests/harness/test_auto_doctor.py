@@ -29,6 +29,7 @@ from booley.runtime import (
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.time_budget import hang_guard_s
 
 
 @pytest.fixture(autouse=True)
@@ -486,7 +487,7 @@ def test_pretrust_viewer_bridge_publishes_no_fail(tmp_path: Path, monkeypatch):
         server.bind(str(socket_path))
         server.listen(4)
 
-        server.settimeout(5)
+        server.settimeout(hang_guard_s())
 
         def serve() -> None:
             # Bounded: the check pings each window a handful of times at most.
@@ -496,7 +497,7 @@ def test_pretrust_viewer_bridge_publishes_no_fail(tmp_path: Path, monkeypatch):
                 except OSError:
                     return
                 with conn:
-                    conn.settimeout(5)
+                    conn.settimeout(hang_guard_s())
                     conn.recv(65536)
                     conn.sendall((json.dumps(pretrust_ping) + "\n").encode())
 

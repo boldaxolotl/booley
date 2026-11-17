@@ -23,6 +23,7 @@ from booley.harness.worktree_rm import WorktreeRemovalBlockedError, WorktreeRemo
 from booley.runtime.worktree_usage import last_used
 from tests.git_support import git
 from tests.harness.test_worktree_rm import _add, _commit, _pin_namespace, _versioned
+from tests.time_budget import scaled
 
 pytestmark = [
     pytest.mark.skipif(shutil.which("git") is None, reason="needs git"),
@@ -441,7 +442,7 @@ def test_a_session_end_frees_the_lock_and_counts_as_a_use(repo: Path, terminal: 
 
     assert released == ["released"]
     stamp = last_used(repo / ".booley", "s1")
-    assert stamp is not None and time.time() - stamp < 60
+    assert stamp is not None and time.time() - stamp < scaled(60)
 
 
 def test_nothing_happens_when_the_child_made_no_worktree(

@@ -43,6 +43,7 @@ from tests.harness.test_dashboard_run import (
     write_config,
 )
 from tests.harness.test_dashboard_targets import settle
+from tests.time_budget import hang_guard_s
 
 # Fixtures of the Run tests, shared by assignment so a test finds them by name.
 checkout = run_tests.checkout
@@ -52,7 +53,7 @@ spawned = run_tests.spawned
 @pytest.fixture(autouse=True)
 def _quiet_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generous first read and no timer reads: the tests order every read themselves."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
     monkeypatch.setattr(dashboard_app, "REFRESH_SECONDS", 3600)
 
 
@@ -286,7 +287,7 @@ class SpecialistGate(ReviewerLauncher):
         self.release = threading.Event()
 
     def specialists(self, worktree):
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         return super().specialists(worktree)
 
 
@@ -338,7 +339,7 @@ class KeyedListing(ReviewerLauncher):
         from booley.harness.dashboard.launch import SpecialistChoice, SpecialistListing
 
         self.reads.append(worktree)
-        assert self.gates.setdefault(worktree, threading.Event()).wait(timeout=60)
+        assert self.gates.setdefault(worktree, threading.Event()).wait(timeout=hang_guard_s())
         if self.broken:
             return SpecialistListing((), "EndpointConfigError: bad toml")
         return SpecialistListing((SpecialistChoice("reviewer", str(worktree)),))

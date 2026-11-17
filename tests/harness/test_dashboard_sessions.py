@@ -27,6 +27,7 @@ from booley.mcp.session_registry import Attribution, SessionRow
 from booley.runtime.job_records import JobRecord
 from booley.runtime.session_activity import UNKNOWN, WAITING_USER, WORKING, Activity
 from booley.runtime.timefmt import rfc3339_from_epoch
+from tests.time_budget import hang_guard_s
 
 NOW = 1791454200  # 2026-10-08T10:10:00Z
 STARTED = rfc3339_from_epoch(NOW - 300)
@@ -36,7 +37,7 @@ NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """A slow worker must finish the first read before any key press."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 def stamp(seconds_ago: float) -> str:

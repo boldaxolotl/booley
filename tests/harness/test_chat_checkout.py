@@ -35,6 +35,7 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 if sys.platform != "linux" or shutil.which("git") is None:
     pytest.skip(
@@ -341,7 +342,7 @@ def test_never_and_here_use_main_without_waiting_for_a_held_lock(project, monkey
         started_at = time.monotonic()
         busy = _start(project, monkeypatch, capsys, flag="never")
     assert busy.cwd == project
-    assert time.monotonic() - started_at < 5
+    assert time.monotonic() - started_at < scaled(5)
     assert "works in worktree" not in busy.stderr
     assert _worktrees(project) == []
 
@@ -378,7 +379,7 @@ def test_a_crashed_lock_holder_does_not_block_the_next_launch(project, monkeypat
         assert not _lock_is_free(project)
         holder.send_signal(signal.SIGKILL)
         # Kept on subprocess.Popen: test drives the process (reads a line, SIGKILLs it)
-        holder.wait(timeout=30)
+        holder.wait(timeout=hang_guard_s())
     finally:
         if holder.poll() is None:
             holder.kill()

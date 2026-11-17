@@ -18,6 +18,7 @@ from booley.harness.dashboard.jobs import JobSnapshot
 from tests.harness.test_dashboard import choose_in_bar, open_session, snapshot
 from tests.harness.test_dashboard_sessions import standalone_job
 from tests.harness.test_dashboard_windows import world
+from tests.time_budget import hang_guard_s
 
 NARROW = (90, 24)
 WIDE = (160, 30)
@@ -26,7 +27,7 @@ WIDE = (160, 30)
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """Let a slow CI worker finish the first read before any key press (#2023)."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 async def _open_help(app, pilot):

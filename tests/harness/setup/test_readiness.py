@@ -196,7 +196,6 @@ def _commit_all(root: Path) -> None:
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
             cwd=root,
             check=True,
-            timeout=10,
         )
 
 

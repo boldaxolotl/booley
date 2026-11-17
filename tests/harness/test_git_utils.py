@@ -33,6 +33,7 @@ from booley.runtime.git import (
 from tests.conftest import symlink_or_skip
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 # ---------------------------------------------------------------------------
 # Helpers — tiny git repo factory
@@ -588,10 +589,10 @@ def test_git_run_timeout_kills_the_tree_and_returns_promptly(tmp_path: Path) -> 
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
         start = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
-            git_run(tmp_path, _hanging_alias(argv), timeout=5)
+            git_run(tmp_path, _hanging_alias(argv), timeout=scaled(5))
         elapsed = time.monotonic() - start
         # Timeout plus the helper's documented Windows worst case (~32 s), inside the test budget.
-        assert elapsed < 40, f"git_run took {elapsed:.1f}s to give up"
+        assert elapsed < scaled(40), f"git_run took {elapsed:.1f}s to give up"
         assert paths["heartbeat"].exists(), "the hung command never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "a descendant is still running"
 
@@ -628,5 +629,5 @@ def test_windows_git_process_probe_stops_a_hung_tree(tmp_path: Path, monkeypatch
 
         assert _iter_git_process_cmdlines_windows() == []
 
-        assert time.monotonic() - started < 38
+        assert time.monotonic() - started < scaled(38)
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
