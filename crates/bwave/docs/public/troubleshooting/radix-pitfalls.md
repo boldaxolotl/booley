@@ -127,13 +127,13 @@ Verilog literals:
 If your JSON post-processor expects Verilog literals,
 use the JSON value contract: prefix-free strings, the
 caller decides the radix. See
-`reference/json-envelope`.
+`bwave schema`.
 
 ### Pitfall 6: stats histogram keys
 
 The JSON `stats` output uses Verilog literals matching the display radix
 for `value_hist` keys: `"'d5"` / `"'hFF"`. Parse these keys as Verilog
-literals. See `reference/json-envelope`.
+literals. See `bwave schema`.
 
 ## Quick rules
 
