@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -25,7 +24,6 @@ from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
     AdmissionIdentityError,
-    _Claim,
 )
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.endpoint_state import EndpointState
@@ -38,7 +36,7 @@ from booley.runtime.endpoint_execution import (
     EndpointRejectedError,
     ExecutionResult,
 )
-from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
+from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 from tests.oom_priority_support import (
     PROC_PATH,
     FakeProc,
@@ -57,7 +55,6 @@ def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.chdir(tmp_path)
     for name in (
-        "BOOLEY_STATE_FILE",
         "BOOLEY_TICKET_FILE",
         "BOOLEY_LOGS_DIR",
         "BOOLEY_RUNTIME_DIR",
@@ -66,16 +63,6 @@ def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     ):
         monkeypatch.delenv(name, raising=False)
     return tmp_path
-
-
-class _FakeStore:
-    """A slot store that records which claims were released."""
-
-    def __init__(self) -> None:
-        self.released: list[object] = []
-
-    def release(self, token: object) -> None:
-        self.released.append(token)
 
 
 @dataclass
@@ -147,14 +134,12 @@ def _build_harness(kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch) ->
             )
             prepare_as(monkeypatch, flow, invocation)
     else:
-        # Class-level, so the real Target-selection kind runs the double.
-        monkeypatch.setattr(type(flow), "_run", lambda _self: run())
 
         def prepare() -> None:
             from booley.flows.prepared_invocation import TargetSelectionInvocation
             from tests.flows.invocation_doubles import prepare_as
 
-            prepare_as(monkeypatch, flow, TargetSelectionInvocation(flow, None, flow._run))
+            prepare_as(monkeypatch, flow, TargetSelectionInvocation(flow, None, run))
 
     observed.prepare = prepare
 
@@ -177,22 +162,21 @@ def _build_harness(kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch) ->
     return observed
 
 
-def _use_slot(monkeypatch: pytest.MonkeyPatch, store: _FakeStore, claim: object) -> None:
-    """Admit every Flow Job with *claim*, as if its Memory Reservation were granted."""
-    monkeypatch.setattr(
-        endpoint_admission,
-        "_acquire_memory_reservation",
-        lambda _endpoint, _prepared, *, requeued=False: _Claim(store, claim),  # type: ignore[arg-type]
-    )
-
-
 def _refuse_slot(monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
-    def refuse(_endpoint: EndpointState, _prepared: object, *, requeued: bool = False) -> object:
+    """Make every claim on the slot store fail with *failure* at the store's public ``acquire``."""
+
+    def refuse(_store: job_slots.SlotStore, _job_class: str, **_kwargs: object) -> object:
         raise failure
 
-    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", refuse)
+    monkeypatch.setattr(job_slots.SlotStore, "acquire", refuse)
 
 
+def _forbid_slot_store(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    """Fail the test if admission opens the slot store."""
+    monkeypatch.setattr(job_slots, "SlotStore", lambda *_args, **_kwargs: pytest.fail(reason))
+
+
+@pytest.mark.usefixtures("memory_runtime")
 def test_withdrawn_queued_run_reports_cancelled(
     harness: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -209,28 +193,12 @@ def test_withdrawn_queued_run_reports_cancelled(
     assert harness.invocations == []
 
 
-def test_admitted_endpoint_borrows_admission_context(
-    harness: _Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store, claim = _FakeStore(), object()
-    _use_slot(monkeypatch, store, claim)
-
-    assert harness.execute().exit_code == 0
-
-    (borrowed,) = harness.admissions
-    assert isinstance(borrowed, AdmissionContext)
-    assert borrowed.mode == "managed"
-    assert borrowed.outer_token is claim
-
-
+@pytest.mark.usefixtures("memory_runtime")
 def test_invalid_runtime_identity_names_endpoint(
     harness: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "not-an-execution-id")
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission._acquire_memory_reservation",
-        lambda *_args, **_kwargs: pytest.fail("slot acquisition must not run"),
-    )
+    _forbid_slot_store(monkeypatch, "slot acquisition must not run")
 
     result = harness.execute()
 
@@ -242,16 +210,19 @@ def test_invalid_runtime_identity_names_endpoint(
 
 
 def test_disagreeing_token_identity_names_endpoint(
-    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+    harness: _Harness, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A managed token linked to another execution is rejected and still released."""
 
-    class Token:
-        execution_id = "a" * 32
+    class LinkingStore(job_slots.SlotStore):
+        def __init__(self, root: Path, **kwargs: Any) -> None:
+            # The store links the new entry to the execution this verifier vouches for.
+            super().__init__(
+                root, inherited_execution_verifier=lambda *_args: ExecutionId("a" * 32), **kwargs
+            )
 
-    store, claim = _FakeStore(), Token()
+    monkeypatch.setattr(job_slots, "SlotStore", LinkingStore)
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "b" * 32)
-    _use_slot(monkeypatch, store, claim)
 
     result = harness.execute()
 
@@ -260,7 +231,7 @@ def test_disagreeing_token_identity_names_endpoint(
         f"{harness.flow.name}: invalid {RUNTIME_EXECUTION_ENV}: "
     )
     assert harness.invocations == []
-    assert store.released == [claim]
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
 def _fail() -> EndpointOutcome:
@@ -281,13 +252,12 @@ def _cancel() -> EndpointOutcome:
 )
 def test_slot_released_when_run_ends(
     harness: _Harness,
-    monkeypatch: pytest.MonkeyPatch,
+    memory_runtime: Path,
     ending: str,
     behavior: Callable[[], EndpointOutcome],
 ) -> None:
-    store, claim = _FakeStore(), object()
-    _use_slot(monkeypatch, store, claim)
     harness.behavior = behavior
+    stdout_before = sys.stdout
 
     if ending == "cancelled":
         with pytest.raises(KeyboardInterrupt):
@@ -299,41 +269,25 @@ def test_slot_released_when_run_ends(
     assert len(harness.invocations) == 1
     (borrowed,) = harness.admissions
     assert isinstance(borrowed, AdmissionContext)
-    assert borrowed.outer_token is claim
-    assert store.released == [claim]
+    assert borrowed.mode == "managed"
+    assert isinstance(borrowed.outer_token, job_slots.SlotToken)
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+    assert sys.stdout is stdout_before
 
 
-def _prepared(*, dry_run: bool = False, borrowing: bool = False) -> PreparedExecution:
-    """A prepared execution; *borrowing* selects an invocation that takes admission."""
+def _prepared() -> PreparedExecution:
+    """A prepared execution of an ordinary run."""
     from booley.flows.prepared_invocation import OrdinaryRunInvocation
 
-    return PreparedExecution(
-        display_target=None,
-        display_label=None,
-        dry_run=dry_run,
-        non_persisting_dry_run=dry_run,
-        invocation=_borrowing_invocation()
-        if borrowing
-        else OrdinaryRunInvocation(EndpointOutcome),
-    )
+    return _prepared_for(OrdinaryRunInvocation(EndpointOutcome))
 
 
-def _borrowing_invocation() -> object:
-    """A prepared invocation of the borrowing kind, as a Simulation Record is."""
-    from booley.flows.sim.flow import PreparedSimulationEndpoint
-    from booley.flows.sim.record_invocation import SimulationRecordInvocation
-
-    return SimulationRecordInvocation(SimulateFlow(), PreparedSimulationEndpoint((), None, (), {}))
-
-
+@pytest.mark.usefixtures("memory_runtime")
 def test_dry_run_invocation_runs_without_admission(
     harness: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A non-persisting dry run takes no slot and writes no numbered report."""
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission._acquire_memory_reservation",
-        lambda *_args, **_kwargs: pytest.fail("a dry run must not take a slot"),
-    )
+    _forbid_slot_store(monkeypatch, "a dry run must not take a slot")
     harness.request = replace(harness.request, dry_run=True)
 
     result = harness.execute()
@@ -371,72 +325,23 @@ class _StubEndpoint:
         return None
 
 
-@pytest.mark.usefixtures("runtime")
+@pytest.mark.usefixtures("memory_runtime")
 @pytest.mark.parametrize("case", ("unclassed", "inherited", "no_runtime"))
 def test_no_slot_cases_admit_unmanaged(case: str, monkeypatch: pytest.MonkeyPatch) -> None:
     endpoint = _StubEndpoint("custom", None if case == "unclassed" else job_slots.CLASS_MEMORY)
-    acquisitions = 0
-    real_acquire = endpoint_admission._acquire_memory_reservation
-
-    def counted(*args: Any, **kwargs: Any) -> Any:
-        nonlocal acquisitions
-        acquisitions += 1
-        return real_acquire(*args, **kwargs)
-
-    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", counted)
     if case == "inherited":
         monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "memory/slot")
     if case == "no_runtime":
         monkeypatch.setattr(job_slots, "slots_dir", lambda _project=None: None)
-    monkeypatch.setattr(
-        job_slots,
-        "SlotStore",
-        lambda *_args, **_kwargs: pytest.fail("no slot store may be opened"),
-    )
+    _forbid_slot_store(monkeypatch, "no slot store may be opened")
 
     with endpoint_admission.admission(endpoint, _prepared()) as borrowed:  # type: ignore[arg-type]
         assert isinstance(borrowed, AdmissionContext)
         assert borrowed.mode == "unmanaged"
         assert borrowed.slot_store is None
         assert borrowed.outer_token is None
-    # An unclassed endpoint is never memory-admitted, so it does not even try to claim.
-    assert acquisitions == (0 if case == "unclassed" else 1)
 
 
-@pytest.mark.usefixtures("runtime")
-@pytest.mark.parametrize("name", ("sim", "other"))
-def test_admission_ignores_endpoint_name(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A Simulation payload on a differently named endpoint is admitted identically."""
-    endpoint = _StubEndpoint(name, job_slots.CLASS_MEMORY)
-    store, claim = _FakeStore(), object()
-    monkeypatch.setattr(
-        endpoint_admission,
-        "_acquire_memory_reservation",
-        lambda *_args, **_kwargs: endpoint_admission._Claim(store, claim),
-    )
-    prepared = _prepared(borrowing=True)
-
-    with endpoint_admission.admission(endpoint, prepared) as borrowed:  # type: ignore[arg-type]
-        assert isinstance(borrowed, AdmissionContext)
-        assert (borrowed.mode, borrowed.outer_token) == ("managed", claim)
-    assert store.released == [claim]
-
-    def withdrawn(*_args: Any, **_kwargs: Any) -> object:
-        raise job_slots.ClaimLostError("vanished")
-
-    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", withdrawn)
-    with (
-        pytest.raises(EndpointRejectedError) as rejected,
-        endpoint_admission.admission(endpoint, prepared),  # type: ignore[arg-type]
-    ):
-        pytest.fail("a withdrawn run must not be admitted")
-    assert rejected.value.outcome.exit_code == EXIT_ERROR
-    assert rejected.value.outcome.report_text == (
-        f"CANCELLED: this queued '{name}' run was withdrawn (booley_cancel) before it started."
-    )
-
-
-@pytest.mark.usefixtures("runtime")
 @pytest.mark.parametrize(
     "failure",
     (
@@ -446,33 +351,24 @@ def test_admission_ignores_endpoint_name(name: str, monkeypatch: pytest.MonkeyPa
     ids=("claim_lost", "identity"),
 )
 def test_body_failures_are_not_remapped_to_admission_rejections(
-    failure: Exception, monkeypatch: pytest.MonkeyPatch
+    failure: Exception, memory_runtime: Path, runtime: Path
 ) -> None:
     """Only entering admission is mapped; the invocation body's errors pass through."""
-    endpoint = _StubEndpoint("sim", job_slots.CLASS_MEMORY)
-    store, claim = _FakeStore(), object()
-    monkeypatch.setattr(
-        endpoint_admission,
-        "_acquire_memory_reservation",
-        lambda *_args, **_kwargs: endpoint_admission._Claim(store, claim),
-    )
+    flow = AsicSynthesizeFlow()
 
     with (
         pytest.raises(type(failure)),
-        endpoint_admission.admission(endpoint, _prepared(borrowing=True)),  # type: ignore[arg-type]
+        endpoint_admission.admission(flow, _selection_prepared(flow, runtime)),
     ):
         raise failure
-    assert store.released == [claim]
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
-def test_invocation_exception_is_normalized(
-    harness: _Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.mark.usefixtures("memory_runtime")
+def test_invocation_exception_is_normalized(harness: _Harness) -> None:
     """An unexpected invocation failure becomes the stable exit-2 report, and cleans up."""
     from booley.runtime.exception_diagnostics import exception_report_text
 
-    store, claim = _FakeStore(), object()
-    _use_slot(monkeypatch, store, claim)
     harness.behavior = _fail
     stdout_before = sys.stdout
 
@@ -483,18 +379,15 @@ def test_invocation_exception_is_normalized(
     # The persisted diagnostic path trails the stable "<name> failed: <Type>: <message>" text.
     assert result.outcome.report_text.startswith(expected)
     assert sys.stdout is stdout_before
-    assert store.released == [claim]
 
 
 def test_publication_resources_outlive_final_report(
-    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+    harness: _Harness, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Invocation resources and the slot are held until the final report is written."""
-    store, claim = _FakeStore(), object()
-    _use_slot(monkeypatch, store, claim)
     flow = harness.flow
     events: list[str] = []
-    at_final_report: list[tuple[list[str], list[object]]] = []
+    at_final_report: list[tuple[list[str], int]] = []
 
     def behavior() -> EndpointOutcome:
         flow.publication_resources.callback(events.append, "resources_released")
@@ -506,7 +399,8 @@ def test_publication_resources_outlive_final_report(
     original_write_report = type(flow).write_report
 
     def spy_write_report(self: object, result: EndpointOutcome) -> object:
-        at_final_report.append((list(events), list(store.released)))
+        held = len(_held(memory_runtime, job_slots.CLASS_MEMORY))
+        at_final_report.append((list(events), held))
         return original_write_report(self, result)  # type: ignore[arg-type]
 
     monkeypatch.setattr(type(flow), "write_report", spy_write_report)
@@ -515,9 +409,9 @@ def test_publication_resources_outlive_final_report(
     assert harness.execute().exit_code == 0
 
     assert at_final_report
-    assert at_final_report[-1] == ([], [])
+    assert at_final_report[-1] == ([], 1)
     assert events == ["resources_released"]
-    assert store.released == [claim]
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
 # --- memory admission (#3701) ---------------------
@@ -561,21 +455,69 @@ def memory_runtime(
     return booley_dir
 
 
-def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExecution:
-    """The preparation of *flow* as a Target-selection invocation over its one Target ``a``."""
+def _target_selection(
+    flow: Any, work_dir: Path, *names: str, drivable_by: str = "synth"
+) -> PreparedExecution:
+    """The preparation of *flow* as a Target-selection invocation over the Targets *names*."""
     from booley.flows.prepared_invocation import TargetSelectionInvocation
     from tests.target_test_support import make_target_handle
 
-    handle = make_target_handle(work_dir, "a", drivable_by=("synth",))
-    flow._args = SimpleNamespace(work_dir=work_dir, target="a")
-    selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
+    handles = tuple(make_target_handle(work_dir, n, drivable_by=(drivable_by,)) for n in names)
+    # Private seam: Target selection reads the Flow's parsed request, and preparing it through
+    # execute needs a resolved FuseSoC core.
+    flow._args = SimpleNamespace(work_dir=work_dir, target=",".join(names))
+    selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
+    return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]
+
+
+def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExecution:
+    """The preparation of *flow* as a Target-selection invocation over its one Target ``a``."""
+    return _target_selection(flow, work_dir, "a")
+
+
+def _prepared_for(invocation: Any) -> PreparedExecution:
     return PreparedExecution(
         display_target=None,
         display_label=None,
         dry_run=False,
         non_persisting_dry_run=False,
-        invocation=TargetSelectionInvocation(flow, selection, flow._run),  # type: ignore[arg-type]
+        invocation=invocation,
     )
+
+
+@contextmanager
+def _holding(
+    booley_dir: Path, *claims: job_slots.MemoryClaim, job: job_slots.JobLabel | None = None
+) -> Iterator[list[job_slots.SlotToken]]:
+    """Hold each claim in the memory Job Class for this live process, as another Job would."""
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
+    tokens = [
+        store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), memory=claim, job=job)
+        for claim in claims
+    ]
+    try:
+        yield tokens
+    finally:
+        for token in tokens:
+            store.release(token)
+
+
+class _QueuedError(Exception):
+    """Raised from the store's wait to stop a claim once it has narrated that it is queued."""
+
+
+@pytest.fixture
+def queued_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop an admission that must wait: it narrates once, then its first sleep raises."""
+
+    def stop(_seconds: float) -> None:
+        raise _QueuedError
+
+    class StoppingStore(job_slots.SlotStore):
+        def __init__(self, root: Path, **kwargs: Any) -> None:
+            super().__init__(root, sleep=stop, **kwargs)
+
+    monkeypatch.setattr(job_slots, "SlotStore", StoppingStore)
 
 
 def _held(booley_dir: Path, job_class: str) -> list[job_slots.SlotToken]:
@@ -584,13 +526,15 @@ def _held(booley_dir: Path, job_class: str) -> list[job_slots.SlotToken]:
 
 
 def test_memory_admission_claims_the_estimated_reservation(
-    memory_runtime: Path, runtime: Path
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _seed_history(memory_runtime, ("a", 400))
+    monkeypatch.setenv("BOOLEY_RUN_ID", "run-7")
     flow = AsicSynthesizeFlow()
 
     with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.job == job_slots.JobLabel("run-7", "synth", "a")
         # One phase with its own history: 1.0 s x the estimator's 1.25 headroom.
         assert holder.memory == job_slots.MemoryClaim(
             budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
@@ -656,7 +600,7 @@ def test_memory_admission_survives_a_budget_it_cannot_compute(
 
 
 def test_over_budget_job_result_carries_the_memory_warning(
-    runtime: Path, memory_runtime: Path
+    harness: _Harness, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.job_estimates import JobRequest
     from booley.flows.prepared_invocation import TargetSelectionInvocation
@@ -666,21 +610,17 @@ def test_over_budget_job_result_carries_the_memory_warning(
     _seed_history(memory_runtime, ("a", 2000))
     request = (JobRequest("synth", "a"),)
     warning = "Memory estimate 2500 MiB exceeds the Memory Budget of 1000 MiB; this Job ran alone."
+    monkeypatch.setattr(TargetSelectionInvocation, "job_requests", lambda _self: request)
+    monkeypatch.setattr(SimulationRecordInvocation, "job_requests", lambda _self: request)
+    harness.behavior = lambda: EndpointOutcome(report_text="RESULT: PASS")
 
-    for kind in ("sim", "synth"):
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(TargetSelectionInvocation, "job_requests", lambda _self: request)
-            patch.setattr(SimulationRecordInvocation, "job_requests", lambda _self: request)
-            harness = _build_harness(kind, runtime, patch)
-            harness.behavior = lambda: EndpointOutcome(report_text="RESULT: PASS")
+    result = harness.execute()
 
-            result = harness.execute()
-
-        assert result.exit_code == 0, kind
-        assert result.outcome.detail["memory_admission_warning"] == warning, kind
-        assert result.outcome.report_text.splitlines()[:2] == ["RESULT: PASS", warning], kind
-        (borrowed,) = harness.admissions
-        assert borrowed is not None and borrowed.memory_warning == warning, kind
+    assert result.exit_code == 0
+    assert result.outcome.detail["memory_admission_warning"] == warning
+    assert result.outcome.report_text.splitlines()[:2] == ["RESULT: PASS", warning]
+    (borrowed,) = harness.admissions
+    assert borrowed is not None and borrowed.memory_warning == warning
 
 
 def test_unwarned_job_result_is_unchanged(harness: _Harness, memory_runtime: Path) -> None:
@@ -773,70 +713,6 @@ def test_specialist_holds_a_companion_memory_reservation(memory_runtime: Path) -
     assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
-def _memory_store(root: Path, *holders: tuple[int, float, str]) -> job_slots.SlotStore:
-    """A store whose memory class holds each ``(pid, MiB, run ID)`` as a labelled synth Job."""
-    import os
-
-    store = job_slots.SlotStore(root)
-    for pid, reservation_mb, run_id in holders:
-        token = store.submit(
-            job_slots.CLASS_MEMORY,
-            pid=os.getpid(),  # a live process, or the reaper would drop the entry
-            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=reservation_mb),
-            job=job_slots.JobLabel(run_id, "synth", f"t{pid}"),
-        )
-        assert store.refresh(token).state == job_slots.HOLDING
-    return store
-
-
-def test_memory_queue_narration_names_the_need_and_the_largest_holders(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import os
-
-    store = _memory_store(tmp_path / "slots", (1, 200.0, "run-1"), (2, 500.0, "run-2"))
-    pid = os.getpid()
-    store.submit(
-        job_slots.CLASS_MEMORY,
-        pid=pid,
-        memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=400.0),
-    )
-    endpoint = SimpleNamespace(name="synth", _display_identity=None)
-
-    endpoint_admission._memory_narrator(endpoint, store, pid)(0)  # type: ignore[arg-type]
-
-    assert capsys.readouterr().err == (
-        "[admission] synth: waiting for memory (position 1): needs 400 MiB; 300 MiB free "
-        "of the 1,000 MiB Memory Budget; largest holders: run-2 (synth, t2) 500 MiB, "
-        "run-1 (synth, t1) 200 MiB\n"
-    )
-
-
-def test_memory_narrator_says_nothing_once_the_claim_has_started(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import os
-
-    store = job_slots.SlotStore(tmp_path / "slots")
-    endpoint = SimpleNamespace(name="synth", _display_identity=None)
-
-    endpoint_admission._memory_narrator(endpoint, store, os.getpid())(0)  # type: ignore[arg-type]
-
-    assert capsys.readouterr().err == ""
-
-
-def test_memory_claim_names_its_run_flow_and_target(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _seed_history(memory_runtime, ("a", 400))
-    monkeypatch.setenv("BOOLEY_RUN_ID", "run-7")
-    flow = AsicSynthesizeFlow()
-
-    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
-        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
-        assert holder.job == job_slots.JobLabel("run-7", "synth", "a")
-
-
 def test_memory_claim_of_a_job_without_requests_names_the_selected_target(
     memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -852,40 +728,39 @@ def test_memory_claim_of_a_job_without_requests_names_the_selected_target(
         assert holder.job == job_slots.JobLabel("run-8", "echo_flow", "echo")
 
 
-def test_unparseable_holder_timeout_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", "soon")
-    assert endpoint_admission._holder_deadline_seconds() is None
-    monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", "30")
-    assert endpoint_admission._holder_deadline_seconds() == 60.0
-    monkeypatch.delenv("BOOLEY_SLOT_TIMEOUT_S")
-    assert endpoint_admission._holder_deadline_seconds() is None
+@pytest.mark.parametrize(
+    ("value", "deadline"),
+    (("soon", None), ("30", 60.0), (None, None)),
+    ids=("bad", "set", "unset"),
+)
+def test_holder_deadline_follows_the_slot_timeout(
+    memory_runtime: Path,
+    runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str | None,
+    deadline: float | None,
+) -> None:
+    """The reaper's deadline is twice the exported budget, and an unparseable one is ignored."""
+    if value is None:
+        monkeypatch.delenv("BOOLEY_SLOT_TIMEOUT_S", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", value)
+    flow = AsicSynthesizeFlow()
+
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.timeout_s == deadline
 
 
 # --- lint and Custom Flow Jobs (#3703) ------------------------------
 
 
-def _prepared_for(invocation: Any) -> PreparedExecution:
-    return PreparedExecution(
-        display_target=None,
-        display_label=None,
-        dry_run=False,
-        non_persisting_dry_run=False,
-        invocation=invocation,
-    )
-
-
 def _lint_prepared(work_dir: Path) -> tuple[Any, PreparedExecution]:
     """A lint Job over Targets ``a`` and ``b``, prepared as a Target-selection invocation."""
     from booley.flows.lint.flow import LintFlow
-    from booley.flows.prepared_invocation import TargetSelectionInvocation
-    from tests.target_test_support import make_target_handle
 
     flow = LintFlow()
-    handles = tuple(make_target_handle(work_dir, name, drivable_by=("lint",)) for name in "ab")
-    flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
-    selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
-    invocation = TargetSelectionInvocation(flow, selection, flow._run)  # type: ignore[arg-type]
-    return flow, _prepared_for(invocation)
+    return flow, _target_selection(flow, work_dir, "a", "b", drivable_by="lint")
 
 
 def _custom_flow(target: str) -> tuple[Any, PreparedExecution]:
@@ -905,6 +780,8 @@ def _custom_flow(target: str) -> tuple[Any, PreparedExecution]:
             return EndpointOutcome()
 
     flow = EchoFlow()
+    # Private seam: the Flow's parsed request names the Target; preparing it through execute
+    # needs a resolved FuseSoC core.
     flow._args = SimpleNamespace(target=target)  # type: ignore[assignment]
     invocation = flow.prepare_endpoint_invocation()
     assert not isinstance(invocation, EndpointOutcome)
@@ -953,194 +830,128 @@ def test_custom_flow_job_reserves_its_flow_phase(memory_runtime: Path) -> None:
         assert _held(memory_runtime, job_slots.CLASS_MEMORY) == [], target
 
 
-class _QueuedError(Exception):
-    """Raised from the queue narrator to stop the wait once the Job is known to be QUEUED."""
-
-
+@pytest.mark.parametrize(("kind", "need_mb"), (("lint", 750), ("custom", 500)))
 def test_lint_and_custom_flow_jobs_queue_behind_a_run_alone_job(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+    kind: str,
+    need_mb: int,
+    memory_runtime: Path,
+    runtime: Path,
+    queued_once: None,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    for kind in ("lint", "custom"):
-        _assert_queues_behind_run_alone_job(kind, memory_runtime, runtime, monkeypatch)
-
-
-def _assert_queues_behind_run_alone_job(
-    kind: str, memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A *kind* Job waits (QUEUED, position 0) while a run-alone Job holds the budget."""
-    import os
-
+    """A *kind* Job waits (QUEUED, position 1) while a run-alone Job holds the budget."""
     flow, prepared = _admitted_job(kind, runtime, memory_runtime)
-    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime))
-    pid = os.getpid()
-    first = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=pid,
-        argv=endpoint_admission._proc_cmdline(pid) or [],
-        memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
-    )
-    positions: list[int] = []
+    holder = job_slots.JobLabel("run-1", "synth", "t1")
 
-    def narrator(*_args: object, **_kwargs: object) -> Callable[[int], None]:
-        def narrate(position: int) -> None:
-            positions.append(position)
-            raise _QueuedError
-
-        return narrate
-
-    monkeypatch.setattr(endpoint_admission, "_memory_narrator", narrator)
-
-    try:
+    with _holding(
+        memory_runtime, job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True), job=holder
+    ) as (first,):
         with pytest.raises(_QueuedError), AdmissionGate(flow, prepared).enter():
             pytest.fail("the Job entered while a run-alone Job held the budget")
 
         # Queued behind the first holder, then withdrawn when the wait ended.
-        assert positions == [0]
-        remaining = _held(memory_runtime, job_slots.CLASS_MEMORY)
-        assert [token.seq for token in remaining] == [first.seq]
-    finally:
-        store.release(first)
+        assert [token.seq for token in _held(memory_runtime, job_slots.CLASS_MEMORY)] == [
+            first.seq
+        ]
+    assert capsys.readouterr().err == (
+        f"[admission] {flow.name}: waiting for memory (position 1): needs {need_mb} MiB; "
+        "0 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-1 (synth, t1) whole budget\n"
+    )
 
 
 # --- Seat Caps for licensed EDA tools (#3244) -----------------------
 
 
-def _fpga_prepared(work_dir: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True):
+def _fpga_prepared(work_dir: Path) -> tuple[Any, PreparedExecution]:
     """An FPGA Job over Target ``a`` (its Vivado Job needs one seat), as Target selection."""
     from booley.flows.fpga.flow import FpgaImplFlow
-    from booley.flows.prepared_invocation import TargetSelectionInvocation
-    from tests.target_test_support import make_target_handle
 
     flow = FpgaImplFlow()
-    handle = make_target_handle(work_dir, "a", drivable_by=("fpga",))
-    flow._args = SimpleNamespace(work_dir=work_dir, target="a")
-    monkeypatch.setattr(FpgaImplFlow, "_flow_enabled", lambda _self: enabled)
-    selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
-    invocation = TargetSelectionInvocation(flow, selection, flow._run)  # type: ignore[arg-type]
-    return flow, _prepared_for(invocation)
+    return flow, _target_selection(flow, work_dir, "a", drivable_by="fpga")
 
 
-def _write_jobs(booley_dir: Path, seats: str | None) -> None:
-    """Write ``[jobs]``, with *seats* as ``[jobs.seats]`` if given."""
+def _write_jobs(booley_dir: Path, seats: str | None, *, fpga_enabled: bool = True) -> None:
+    """Write ``[jobs]``, with *seats* as ``[jobs.seats]`` if given, and the FPGA Flow's switch."""
     seats_table = "" if seats is None else f"\n[jobs.seats]\n{seats}\n"
-    (booley_dir / "booley.toml").write_text(f"[jobs]\n{seats_table}", encoding="utf-8")
-
-
-def _hold_vivado_seat(booley_dir: Path, cap: int) -> tuple[job_slots.SlotStore, Any]:
-    """A running Job that holds one Vivado seat and 100 MiB, as another process would."""
-    import os
-
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
-    pid = os.getpid()
-    token = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=pid,
-        argv=endpoint_admission._proc_cmdline(pid) or [],
-        memory=job_slots.MemoryClaim(
-            budget_mb=1000.0, reservation_mb=100.0, seats=(("vivado", cap),)
-        ),
+    flows_table = "" if fpga_enabled else "\n[flows.fpga]\nenabled = false\n"
+    (booley_dir / "booley.toml").write_text(
+        f"[jobs]\n{seats_table}{flows_table}", encoding="utf-8"
     )
-    return store, token
 
 
 def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+    memory_runtime: Path,
+    runtime: Path,
+    queued_once: None,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import os
-
     _write_jobs(memory_runtime, "vivado = 1")
     _seed_records(memory_runtime, ("a", "fpga_impl", 400))
-    flow, prepared = _fpga_prepared(runtime, monkeypatch)
-    store, first = _hold_vivado_seat(memory_runtime, cap=1)
-    positions: list[int] = []
-    waits: list[str] = []
+    flow, prepared = _fpga_prepared(runtime)
+    seat = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0, seats=(("vivado", 1),))
 
-    def narrator(
-        _endpoint: object, wait_store: job_slots.SlotStore, pid: int
-    ) -> Callable[[int], None]:
-        def narrate(position: int) -> None:
-            positions.append(position)
-            wait = wait_store.memory_wait(pid)
-            assert wait is not None
-            waits.append(wait.describe())
-            raise _QueuedError
-
-        return narrate
-
-    monkeypatch.setattr(endpoint_admission, "_memory_narrator", narrator)
-
-    try:
+    with _holding(memory_runtime, seat) as (first,):
         # 100 + 500 MiB fit the 1,000 MiB budget: only the seat holds the Job back.
         with pytest.raises(_QueuedError), AdmissionGate(flow, prepared).enter():
             pytest.fail("the Job entered while the only Vivado seat was held")
 
-        assert positions == [0]
-        assert waits == [
-            "needs 500 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
-            f"waits for a vivado seat (1 of 1 held); largest holders: pid {os.getpid()} 100 MiB"
-        ]
         assert [token.seq for token in _held(memory_runtime, job_slots.CLASS_MEMORY)] == [
             first.seq
         ]
-    finally:
-        store.release(first)
+    assert capsys.readouterr().err == (
+        "[admission] fpga: waiting for memory (position 1): "
+        "needs 500 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
+        f"waits for a vivado seat (1 of 1 held); largest holders: pid {os.getpid()} 100 MiB\n"
+    )
 
 
 def test_fpga_job_runs_beside_another_vivado_job_under_a_cap_of_two(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+    memory_runtime: Path, runtime: Path
 ) -> None:
     _write_jobs(memory_runtime, "vivado = 2")
     _seed_records(memory_runtime, ("a", "fpga_impl", 400))
-    flow, prepared = _fpga_prepared(runtime, monkeypatch)
-    store, first = _hold_vivado_seat(memory_runtime, cap=2)
+    flow, prepared = _fpga_prepared(runtime)
+    seat = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0, seats=(("vivado", 2),))
 
-    try:
-        with AdmissionGate(flow, prepared).enter():
-            holders = _held(memory_runtime, job_slots.CLASS_MEMORY)
-            (mine,) = (token for token in holders if token.seq != first.seq)
-            assert mine.memory == job_slots.MemoryClaim(
-                budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25, seats=(("vivado", 2),)
-            )
-            assert len(holders) == 2
-    finally:
-        store.release(first)
+    with (
+        _holding(memory_runtime, seat) as (first,),
+        AdmissionGate(flow, prepared).enter(),
+    ):
+        holders = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        (mine,) = (token for token in holders if token.seq != first.seq)
+        assert mine.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25, seats=(("vivado", 2),)
+        )
+        assert len(holders) == 2
 
 
-def test_fpga_job_without_a_vivado_seat_cap_is_refused_before_admission(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("seats", "refusal"),
+    (
+        pytest.param(None, "[jobs.seats] vivado = <seats you own>", id="missing"),
+        pytest.param("vivado = 0", "[jobs.seats].vivado", id="non_positive"),
+    ),
+)
+def test_fpga_job_without_a_usable_vivado_seat_cap_is_refused_before_admission(
+    seats: str | None, refusal: str, memory_runtime: Path, runtime: Path
 ) -> None:
-    from contextlib import ExitStack
+    _write_jobs(memory_runtime, seats)
+    flow, prepared = _fpga_prepared(runtime)
 
-    _write_jobs(memory_runtime, None)
-    flow, prepared = _fpga_prepared(runtime, monkeypatch)
-
-    with pytest.raises(EndpointRejectedError) as refused, ExitStack() as held:
-        endpoint_admission._enter_admission(flow, held, prepared)
+    with (
+        pytest.raises(EndpointRejectedError) as refused,
+        endpoint_admission.admission(flow, prepared),
+    ):
+        pytest.fail("the Job was admitted without a usable Vivado seat cap")
 
     assert refused.value.outcome.exit_code == EXIT_ERROR
-    assert "[jobs.seats] vivado = <seats you own>" in refused.value.outcome.report_text
+    assert refusal in refused.value.outcome.report_text
     assert refused.value.outcome.report_text.startswith("fpga: ")
     assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
-def test_fpga_job_with_a_non_positive_vivado_seat_cap_is_refused_before_admission(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from contextlib import ExitStack
-
-    _write_jobs(memory_runtime, "vivado = 0")
-    flow, prepared = _fpga_prepared(runtime, monkeypatch)
-
-    with pytest.raises(EndpointRejectedError) as refused, ExitStack() as held:
-        endpoint_admission._enter_admission(flow, held, prepared)
-
-    assert "[jobs.seats].vivado" in refused.value.outcome.report_text
-    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
-
-
-def test_jobs_owing_no_seat_ignore_seat_caps(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_jobs_owing_no_seat_ignore_seat_caps(memory_runtime: Path, runtime: Path) -> None:
     # A synth Job runs no licensed tool: a bad [jobs.seats] refuses nothing and adds no seat.
     _write_jobs(memory_runtime, "vivado = 0")
     _seed_history(memory_runtime, ("a", 400))
@@ -1152,25 +963,14 @@ def test_jobs_owing_no_seat_ignore_seat_caps(
         )
 
     # A disabled FPGA Flow reaches its own refusal instead of a seat refusal.
-    _write_jobs(memory_runtime, None)
+    _write_jobs(memory_runtime, None, fpga_enabled=False)
     _seed_records(memory_runtime, ("a", "fpga_impl", 400))
-    fpga, prepared = _fpga_prepared(runtime, monkeypatch, enabled=False)
+    fpga, prepared = _fpga_prepared(runtime)
     with AdmissionGate(fpga, prepared).enter():
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
         assert holder.memory == job_slots.MemoryClaim(
             budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
         )
-
-
-def _two_target_synth_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExecution:
-    """The preparation of *flow* as a Target-selection invocation over Targets ``a`` and ``b``."""
-    from booley.flows.prepared_invocation import TargetSelectionInvocation
-    from tests.target_test_support import make_target_handle
-
-    handles = tuple(make_target_handle(work_dir, name, drivable_by=("synth",)) for name in "ab")
-    flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
-    selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
-    return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]
 
 
 def test_memory_admitted_job_shrinks_when_a_phase_ends(
@@ -1181,7 +981,7 @@ def test_memory_admitted_job_shrinks_when_a_phase_ends(
     _seed_history(memory_runtime, ("a", 400), ("b", 200))
     flow = AsicSynthesizeFlow()
 
-    with AdmissionGate(flow, _two_target_synth_prepared(flow, runtime)).enter():
+    with AdmissionGate(flow, _target_selection(flow, runtime, "a", "b")).enter():
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
         assert holder.memory is not None and holder.memory.reservation_mb == 500.0
         report_phase_end("a", "synth")
@@ -1196,6 +996,7 @@ def test_memory_admitted_job_shrinks_when_a_phase_ends(
     # The shrinker is gone with the claim: a late report touches nothing.
     from booley.flows import reservation_phases
 
+    # Private seam: the shrinker is a context variable with no public reader.
     assert reservation_phases._active.get() is None
 
 
@@ -1287,6 +1088,8 @@ def test_requeued_job_narrates_the_requeue_reason_while_queued(
     def narrating_acquire(
         self: job_slots.SlotStore, job_class: str, **kwargs: Any
     ) -> job_slots.SlotToken:
+        # A claim that is no longer waiting narrates nothing: no entry exists yet.
+        kwargs["on_queued"](0)
         # As if the claim had to wait once: a waiting entry exists while it narrates.
         waiting = self.submit(
             job_class,
@@ -1316,19 +1119,12 @@ def test_requeued_job_narrates_the_requeue_reason_while_queued(
 
 def test_requeue_never_waits_behind_its_own_claim(memory_runtime: Path, runtime: Path) -> None:
     """A deferred release can leave this process's claim behind: refuse, never wait for ourselves."""
-    import os
-
     flow = AsicSynthesizeFlow()
     prepared = _selection_prepared(flow, runtime)
-    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime))
-    pid = os.getpid()
-    leftover = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=pid,
-        argv=endpoint_admission._proc_cmdline(pid) or [],
-        memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
-    )
-    try:
+
+    with _holding(memory_runtime, job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True)) as (
+        leftover,
+    ):
         with (
             pytest.raises(EndpointRejectedError, match="still holds its claim") as refused,
             AdmissionGate(flow, prepared, requeued=True).enter(),
@@ -1338,8 +1134,6 @@ def test_requeue_never_waits_behind_its_own_claim(memory_runtime: Path, runtime:
         assert [token.seq for token in _held(memory_runtime, job_slots.CLASS_MEMORY)] == [
             leftover.seq
         ]
-    finally:
-        store.release(leftover)
 
 
 def test_second_oom_kill_fails_the_job_with_its_oom_outcome(
@@ -1463,14 +1257,15 @@ def test_killed_attempt_runs_no_command_after_its_oom_kill(
     monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
     marker = runtime / "attempts.txt"
     harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    flow = harness.flow
+    # Private seam: the Flow's command runner has no public caller short of a real EDA tool.
+    run_command = harness.flow._execute_local
 
     def attempt() -> EndpointOutcome:
         number = len(harness.invocations)
-        flow._execute_local(
+        run_command(
             [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
         )
-        flow._execute_local(
+        run_command(
             [sys.executable, "-c", f"open({str(marker)!r}, 'a').write('attempt {number}\\n')"]
         )
         return EndpointOutcome(exit_code=1 if number == 1 else 0)
@@ -1516,6 +1311,8 @@ def _checkpoint(harness: _Harness, outcome: Callable[[], EndpointOutcome]) -> At
 
 def _progress_of_job(runtime: Path) -> dict[str, Any] | None:
     """What a caller polling the Job reads as its progress."""
+    # Private seam: an MCP poll reads a Job's progress through this reader, reachable
+    # publicly only from a live MCP session; read_progress_for_run lacks its fallbacks.
     from booley.mcp.job_results import _progress_for_run_id
 
     return _progress_for_run_id("synth", PROGRESS_RUN_ID, report_dirs=(runtime / "reports",))
@@ -1560,6 +1357,8 @@ def test_progress_retirement_failure_does_not_stop_the_requeue(
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise OSError("progress is held")
 
+    # Private seam: the only way to fail the retirement write without a file-permission trick,
+    # which does not hold on Windows.
     monkeypatch.setattr(progress_lifecycle, "_replace_if_unchanged", refuse)
     harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
     _per_attempt(harness, memory_runtime, _checkpoint(harness, _killed), EndpointOutcome)
@@ -1573,126 +1372,80 @@ def test_progress_retirement_failure_does_not_stop_the_requeue(
     assert "progress is held" in error["message"]
 
 
-def test_job_that_is_not_requeued_keeps_its_progress(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.progress_lifecycle import read_progress_for_run
-
-    _progress_run(monkeypatch)
-    cases: dict[str, Callable[[], EndpointOutcome]] = {
-        # Armed, but it fails without an OOM kill.
-        "failed": lambda: EndpointOutcome(exit_code=1),
-        # OOM-killed, but the Job still succeeded.
-        "killed but passed": lambda: _killed(exit_code=0),
-    }
-    for name, outcome in cases.items():
-        shutil.rmtree(runtime / "reports", ignore_errors=True)
-        harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-        _per_attempt(harness, memory_runtime, _checkpoint(harness, outcome))
-
-        harness.execute()
-
-        assert len(harness.invocations) == 1, name
-        found = read_progress_for_run((runtime / "reports",), "synth", PROGRESS_RUN_ID)
-        assert found is not None, name
-        assert found[1]["phase"] == "running", name
-        assert found[1]["run_id"] == PROGRESS_RUN_ID, name
+def _killed_but_passed() -> EndpointOutcome:
+    return _killed(exit_code=0)
 
 
-def _attempts_of(harness: _Harness, memory_runtime: Path, attempt: Attempt) -> int:
-    """How many times the Job's body ran when every attempt behaves as *attempt*."""
-    _per_attempt(harness, memory_runtime, attempt)
-    harness.execute()
-    return len(harness.invocations)
+def _cancelled_after_kill() -> EndpointOutcome:
+    from booley.runtime.endpoint_execution import EXIT_CANCELLED
+
+    return _killed(exit_code=EXIT_CANCELLED)
 
 
-def test_only_a_failed_oom_killed_job_is_requeued(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _cancelled_after_skipped_command() -> EndpointOutcome:
     from booley.runtime.endpoint_execution import (
         EXIT_CANCELLED,
         job_stopped_after_oom,
         note_job_oom_kill,
     )
 
-    def failed_without_kill() -> EndpointOutcome:
-        return EndpointOutcome(exit_code=1)
+    note_job_oom_kill()
+    assert job_stopped_after_oom()  # a command was skipped
+    return EndpointOutcome(exit_code=EXIT_CANCELLED)
 
-    def succeeded_despite_kill() -> EndpointOutcome:
-        note_job_oom_kill()  # a killed command in a Job that went on and succeeded
-        return EndpointOutcome()
 
-    def cancelled_after_kill() -> EndpointOutcome:
-        return _killed(exit_code=EXIT_CANCELLED)
+@pytest.mark.parametrize(
+    ("case", "outcome"),
+    (
+        # Armed, but it fails without an OOM kill.
+        pytest.param("failed", lambda: EndpointOutcome(exit_code=1), id="failed"),
+        # OOM-killed, but the Job still succeeded.
+        pytest.param("killed_but_passed", _killed_but_passed, id="killed_but_passed"),
+        pytest.param("cancelled_after_kill", _cancelled_after_kill, id="cancelled_after_kill"),
+        pytest.param(
+            "cancelled_after_skipped_command",
+            _cancelled_after_skipped_command,
+            id="cancelled_after_skipped_command",
+        ),
+        # Under a parent's claim the Job holds none of its own: nothing to requeue.
+        pytest.param("inherited_claim", _killed, id="inherited_claim"),
+    ),
+)
+def test_job_that_is_not_requeued_runs_once_and_keeps_its_progress(
+    case: str,
+    outcome: Callable[[], EndpointOutcome],
+    memory_runtime: Path,
+    runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.flows.progress_lifecycle import read_progress_for_run
 
-    def cancelled_after_skipped_command() -> EndpointOutcome:
-        note_job_oom_kill()
-        assert job_stopped_after_oom()  # a command was skipped
-        return EndpointOutcome(exit_code=EXIT_CANCELLED)
-
-    not_requeued = (
-        failed_without_kill,
-        succeeded_despite_kill,
-        cancelled_after_kill,
-        cancelled_after_skipped_command,
-    )
-    for attempt in not_requeued:
-        harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-        assert _attempts_of(harness, memory_runtime, attempt) == 1, attempt.__name__
-
-    # Under a parent's claim the Job holds none of its own: nothing to requeue.
-    monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "memory/1")
+    _progress_run(monkeypatch)
+    if case == "inherited_claim":
+        monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "memory/1")
     harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    harness.behavior = _killed
+    attempt = _checkpoint(harness, outcome)
+    if case == "inherited_claim":
+        harness.behavior = attempt
+    else:
+        _per_attempt(harness, memory_runtime, attempt)
+
     harness.execute()
-    assert len(harness.invocations) == 1
-    monkeypatch.delenv(job_slots.INHERITED_SLOT_ENV)
 
-    # The contrast: an own OOM kill that fails the Job is requeued.
-    harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    assert _attempts_of(harness, memory_runtime, _killed) == 2
+    assert len(harness.invocations) == 1
+    found = read_progress_for_run((runtime / "reports",), "synth", PROGRESS_RUN_ID)
+    assert found is not None
+    assert found[1]["phase"] == "running"
+    assert found[1]["run_id"] == PROGRESS_RUN_ID
 
 
 # --- Verilator -j from the container's cores and the running Jobs (#3246) ------------
 
 
-@contextmanager
-def _running_memory_jobs(booley_dir: Path, count: int) -> Iterator[None]:
-    """Hold *count* other Jobs' Memory Reservations (50 MiB each) in the memory Job Class."""
-    import os
-
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
-    pid = os.getpid()
-    tokens = [
-        store.acquire(
-            job_slots.CLASS_MEMORY,
-            pid=pid,
-            argv=endpoint_admission._proc_cmdline(pid) or [],
-            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=50.0),
-        )
-        for _ in range(count)
-    ]
-    try:
-        yield
-    finally:
-        for token in tokens:
-            store.release(token)
-
-
 @pytest.fixture
 def eight_cores(monkeypatch: pytest.MonkeyPatch) -> None:
-    """8 available cores, as admission and the build's ``-j`` read them."""
-    import importlib
-
-    # Admission reads the cores from cpu_budget; the build from build_parallelism.
-    # Resolved by name so a tree without cpu_budget still reaches its assertions.
-    for name in ("booley.runtime.cpu_budget", "booley.flows.sim.build_parallelism"):
-        try:
-            module = importlib.import_module(name)
-        except ModuleNotFoundError:
-            continue
-        monkeypatch.setattr(module, "_affinity_cpu_count", lambda: 8)
-        monkeypatch.setattr(module, "_read_text", lambda _path: None)
+    """8 available cores, as admission counts them for an admitted Job's ``-j``."""
+    monkeypatch.setattr(endpoint_admission, "available_cpu_count", lambda: 8)
 
 
 def _verilator_inspection(*make_options: str) -> Any:
@@ -1715,43 +1468,35 @@ def _verilator_arguments_in_admitted_job(
 
 
 @pytest.mark.usefixtures("eight_cores")
-def test_memory_admitted_verilator_build_shares_cores_with_one_running_job(
-    memory_runtime: Path, runtime: Path
+@pytest.mark.parametrize(
+    ("others", "jobs_option"), ((0, "-j8"), (1, "-j4"), (2, "-j2"), (9, "-j1"))
+)
+def test_memory_admitted_verilator_build_shares_cores_with_the_running_jobs(
+    others: int, jobs_option: str, memory_runtime: Path, runtime: Path
 ) -> None:
     from booley.flows.sim.build_parallelism import verilator_backend_arguments
 
+    # Other running Jobs -> the -j this Job gets: 8 // (others + 1), rounded down.
+    reservation = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=50.0)
     _seed_history(memory_runtime, ("a", 40))
     flow = AsicSynthesizeFlow()
+    expected = (jobs_option, "VM_PARALLEL_BUILDS=1")
     with (
-        _running_memory_jobs(memory_runtime, 1),
+        _holding(memory_runtime, *([reservation] * others)),
         AdmissionGate(flow, _selection_prepared(flow, runtime)).enter(),
     ):
         inspection = _verilator_inspection()
-        assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
+        assert verilator_backend_arguments(inspection) == expected
         # The count is fixed at the Job's start: a Job that arrives later changes nothing.
-        with _running_memory_jobs(memory_runtime, 1):
-            assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
-
-
-@pytest.mark.usefixtures("eight_cores")
-def test_memory_admitted_verilator_build_alone_and_among_ten_jobs(
-    memory_runtime: Path, runtime: Path
-) -> None:
-    # Other running Jobs -> the -j this Job gets: 8 // (others + 1), rounded down.
-    expected = {0: "-j8", 2: "-j2", 9: "-j1"}
-    for others, jobs_option in expected.items():
-        with _running_memory_jobs(memory_runtime, others):
-            (arguments,) = _verilator_arguments_in_admitted_job(
-                memory_runtime, runtime, _verilator_inspection()
-            )
-        assert arguments == (jobs_option, "VM_PARALLEL_BUILDS=1"), f"{others} other Jobs"
+        with _holding(memory_runtime, reservation):
+            assert verilator_backend_arguments(inspection) == expected
 
 
 @pytest.mark.usefixtures("eight_cores")
 def test_memory_admitted_job_keeps_a_project_set_thread_count(
     memory_runtime: Path, runtime: Path
 ) -> None:
-    with _running_memory_jobs(memory_runtime, 1):
+    with _holding(memory_runtime, job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=50.0)):
         authored, plain = _verilator_arguments_in_admitted_job(
             memory_runtime,
             runtime,
