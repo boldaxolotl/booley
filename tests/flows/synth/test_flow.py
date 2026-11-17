@@ -1132,6 +1132,12 @@ def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli)
         configure.parse_configure_argv(argv), project_root=synth_cli.project, require_liberty=False
     )
     assert spec.timing.report_paths == 3
+    # The standalone configure CLI resolves timing without a Project root (it
+    # reads the working directory's config); no public name reaches that step
+    # without also discovering the root.
+    args = configure.parse_configure_argv(argv)
+    _profile, _yosys, openroad = configure._resolve_ppa_settings(args)
+    assert configure._resolve_syn_timing(args, openroad).report_paths == 3
 
 
 def _physical_target_without_usable_sdc(case: str, project: Path):
