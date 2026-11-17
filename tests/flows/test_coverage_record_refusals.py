@@ -30,6 +30,7 @@ def test_coverage_execution_refuses_unusable_test_lists(
     detail: dict[str, object], message: str
 ) -> None:
     with pytest.raises(coverage_execution.SimulationRecordIntegrityError, match=message):
+        # Private seam: it runs only inside a Coverage Record execution's publication.
         coverage_execution._coverage_tests(_any(detail=detail))
 
 
@@ -38,6 +39,7 @@ def test_coverage_execution_refuses_an_invalid_test_item() -> None:
         coverage_execution.SimulationRecordIntegrityError,
         match="Coverage Record test evidence is invalid",
     ):
+        # Private seam: it runs only inside a Coverage Record execution's publication.
         coverage_execution._coverage_test_outcome({"name": "t", "verdict": "bogus"})
 
 
@@ -53,6 +55,8 @@ def test_coverage_evidence_refuses_a_disagreeing_source_snapshot(
     with pytest.raises(
         CoverageEvidenceError, match="Verified source snapshot disagrees with Coverage Record"
     ):
+        # Private seam: it is reachable publicly only behind query_active_coverage_evidence's
+        # session cache and audit files.
         coverage_evidence._load_session("record", str(tmp_path), str(snapshot))
 
 
@@ -63,12 +67,15 @@ def test_coverage_analysis_refuses_an_unusable_normalization() -> None:
         normalization={"status": "failed"},
     )
     with pytest.raises(CoverageAnalysisError, match="Coverage Record normalization is not usable"):
+        # Private seam: analyze_coverage_record first encodes the whole Coverage Record
+        # (_analysis_envelope) before it judges eligibility.
         coverage_analysis._eligibility(record)
 
 
 def test_coverage_analyst_has_no_prompt_of_its_own() -> None:
     specialist = object.__new__(coverage_analyst.CoverageAnalystSpecialist)
     with pytest.raises(NotImplementedError, match="validated Coverage Record seam"):
+        # Private seam: the abstract-method override no public path calls; _run replaces it.
         specialist._build_prompt()
 
 
