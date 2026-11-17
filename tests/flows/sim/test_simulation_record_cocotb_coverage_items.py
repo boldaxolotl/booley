@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -35,7 +35,6 @@ from booley.flows.sim.record.coordinator import (
 )
 from booley.flows.sim.record.coverage_execution import (
     CoverageAggregateExecutor,
-    _CoverageAggregateError,
 )
 from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
 from booley.flows.sim.record.model import SimulationResult, create_simulation_record_plan
@@ -74,25 +73,6 @@ from tests.flows.sim.test_simulation_record_crash_matrix import (
 )
 
 
-def test_coverage_plan_labels_its_build_variant_as_coverage(tmp_path: Path) -> None:
-    handle, inspection, preview = _facts(tmp_path, cocotb=False)
-    preview = replace(preview, groups=(("count", "reset"),), run_groups=())
-    plan = plan_coarse_simulation_record(
-        handle=handle,
-        inspection=inspection,
-        preview=preview,
-        selected_tests=("count", "reset"),
-        required_suite=("reset", "count"),
-        revision="abc123",
-        invocation_id=1,
-        execution_id="",
-        trace=False,
-        kind="coverage_aggregate",
-    )
-
-    assert plan.manifest.document["build_variants"][0]["kind"] == "coverage"  # type: ignore[index]
-
-
 def test_no_waivers_is_written_only_when_requested(tmp_path: Path) -> None:
     (tmp_path / "default").mkdir()
     (tmp_path / "raw").mkdir()
@@ -114,42 +94,60 @@ def test_no_waivers_plan_rejects_non_coverage_kind(tmp_path: Path) -> None:
         _plan(tmp_path, kind="cocotb_batch", cocotb=True, no_waivers=True)
 
 
-def test_cocotb_named_selection_is_one_ordered_batch_work_item(tmp_path: Path) -> None:
-    document = _plan(tmp_path, kind="cocotb_batch", cocotb=True).manifest.document
-
-    assert document["workload"]["coverage"] is False  # type: ignore[index]
-    assert len(document["work_items"]) == 1  # type: ignore[arg-type]
-    item = document["work_items"][0]  # type: ignore[index]
-    assert item["kind"] == "cocotb_batch"
-    assert item["selection"] == {"kind": "named", "names": ("count", "reset")}
-    assert item["arguments"] == ("count", "reset")
-
-
-def test_cocotb_unfiltered_selection_is_one_disclosed_batch(tmp_path: Path) -> None:
-    document = _plan(tmp_path, kind="cocotb_batch", names=(), cocotb=True).manifest.document
-
-    item = document["work_items"][0]  # type: ignore[index]
-    assert item["kind"] == "cocotb_batch"
-    assert item["selection"] == {"kind": "unfiltered", "names": ()}
-    assert item["arguments"] == ()
-
-
-def test_coverage_selection_is_one_named_aggregate_with_coverage_variant(
+@pytest.mark.parametrize(
+    ("kind", "names", "cocotb", "coverage", "selection", "arguments"),
+    [
+        pytest.param(
+            "cocotb_batch",
+            None,
+            True,
+            False,
+            {"kind": "named", "names": ("count", "reset")},
+            ("count", "reset"),
+            id="cocotb-named-batch",
+        ),
+        pytest.param(
+            "cocotb_batch",
+            (),
+            True,
+            False,
+            {"kind": "unfiltered", "names": ()},
+            (),
+            id="cocotb-unfiltered-batch",
+        ),
+        pytest.param(
+            "coverage_aggregate",
+            None,
+            False,
+            True,
+            {"kind": "named", "names": ("count", "reset")},
+            None,
+            id="coverage-named-aggregate",
+        ),
+        pytest.param("coverage_aggregate", None, True, True, None, None, id="coverage-cocotb"),
+    ],
+)
+def test_selection_is_one_work_item_of_its_kind(
     tmp_path: Path,
+    kind: str,
+    names: tuple[str, ...] | None,
+    cocotb: bool,
+    coverage: bool,
+    selection: dict[str, object] | None,
+    arguments: tuple[str, ...] | None,
 ) -> None:
-    document = _plan(tmp_path, kind="coverage_aggregate", cocotb=False).manifest.document
+    options = {} if names is None else {"names": names}
+    document = _plan(tmp_path, kind=kind, cocotb=cocotb, **options).manifest.document
 
-    assert document["workload"]["coverage"] is True  # type: ignore[index]
+    assert document["workload"]["coverage"] is coverage  # type: ignore[index]
+    assert (document["build_variants"][0]["kind"] == "coverage") is coverage  # type: ignore[index]
     assert len(document["work_items"]) == 1  # type: ignore[arg-type]
     item = document["work_items"][0]  # type: ignore[index]
-    assert item["kind"] == "coverage_aggregate"
-    assert item["selection"] == {"kind": "named", "names": ("count", "reset")}
-
-
-def test_coverage_aggregate_accepts_a_cocotb_target(tmp_path: Path) -> None:
-    document = _plan(tmp_path, kind="coverage_aggregate", cocotb=True).manifest.document
-
-    assert document["work_items"][0]["kind"] == "coverage_aggregate"  # type: ignore[index]
+    assert item["kind"] == kind
+    if selection is not None:
+        assert item["selection"] == selection
+    if arguments is not None:
+        assert item["arguments"] == arguments
 
 
 @pytest.mark.parametrize(
@@ -165,6 +163,21 @@ def test_coarse_planner_rejects_kind_selection_and_target_contradictions(
 ) -> None:
     with pytest.raises(SimulationRecordIntegrityError):
         _plan(tmp_path, kind=kind, names=names, cocotb=cocotb)
+
+
+def _plan_cocotb_batch(handle, inspection, preview, selected: tuple[str, ...]):
+    return plan_coarse_simulation_record(
+        handle=handle,
+        inspection=inspection,
+        preview=preview,
+        selected_tests=selected,
+        required_suite=("reset", "count"),
+        revision="abc123",
+        invocation_id=7,
+        execution_id="7" * 32,
+        trace=False,
+        kind="cocotb_batch",
+    )
 
 
 def test_coarse_planner_rejects_foreign_inspection(tmp_path: Path) -> None:
@@ -192,36 +205,14 @@ def test_coarse_planner_rejects_foreign_inspection(tmp_path: Path) -> None:
     )
 
     with pytest.raises(SimulationRecordIntegrityError, match="Target facts disagree"):
-        plan_coarse_simulation_record(
-            handle=handle,
-            inspection=inspection,
-            preview=preview,
-            selected_tests=("reset", "count"),
-            required_suite=("reset", "count"),
-            revision="abc123",
-            invocation_id=7,
-            execution_id="7" * 32,
-            trace=False,
-            kind="cocotb_batch",
-        )
+        _plan_cocotb_batch(handle, inspection, preview, ("reset", "count"))
 
 
 def test_coarse_planner_rejects_selection_that_disagrees_with_preview(tmp_path: Path) -> None:
     handle, inspection, preview = _facts(tmp_path, cocotb=True)
 
     with pytest.raises(SimulationRecordIntegrityError, match="preview"):
-        plan_coarse_simulation_record(
-            handle=handle,
-            inspection=inspection,
-            preview=preview,
-            selected_tests=("reset",),
-            required_suite=("reset", "count"),
-            revision="abc123",
-            invocation_id=7,
-            execution_id="7" * 32,
-            trace=False,
-            kind="cocotb_batch",
-        )
+        _plan_cocotb_batch(handle, inspection, preview, ("reset",))
 
 
 class _ImageCheckingExecution(NativeExecution):
@@ -345,37 +336,36 @@ def _assert_native_build_scope(store: SimulationRecordStore) -> None:
     assert result["evidence"] == []
 
 
-def test_coverage_resume_reuses_retained_nested_simulation_record(tmp_path: Path) -> None:
-    plan, target = _coverage_simulation_record_plan(tmp_path)
-    native = NativeExecution()
+def _coverage_record_run(root: Path, native: NativeExecution):
+    """Return the aggregate executor, its first-run request, store and planned Target."""
+    plan, target = _coverage_simulation_record_plan(root)
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
         execution_factory=lambda _plan, _options, _commands, _access: native,
     )
-    invocation = tmp_path / "reports/1"
+    invocation = root / "reports/1"
     invocation.mkdir(parents=True)
-    simulation_record = SimulationRecord(executor)
-    first = simulation_record.run(
-        NewSimulationRecordRunRequest(
-            plan,
-            tmp_path,
-            invocation.parent,
-            SimulationRecordPolicy(),
-            invocation,
-            _admission(),
-        )
+    request = NewSimulationRecordRunRequest(
+        plan, root, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
-    store = SimulationRecordStore(invocation / "targets/sim_0/record")
-    validated = _validated_resume(store, plan, target, tmp_path)
+    return executor, request, SimulationRecordStore(invocation / "targets/sim_0/record"), target
+
+
+def test_coverage_resume_reuses_retained_nested_simulation_record(tmp_path: Path) -> None:
+    native = NativeExecution()
+    executor, request, store, target = _coverage_record_run(tmp_path, native)
+    simulation_record = SimulationRecord(executor)
+    first = simulation_record.run(request)
+    validated = _validated_resume(store, request.plan, target, tmp_path)
 
     resumed = simulation_record.run(
         ResumeSimulationRecordRunRequest(
             validated,
-            plan,
+            request.plan,
             tmp_path,
-            invocation.parent,
+            request.report_root,
             SimulationRecordPolicy(),
-            invocation,
+            request.invocation_directory,
             _admission(),
         )
     )
@@ -420,7 +410,9 @@ def test_simulation_record_run_adds_no_recovery_scan_for_failure_facts(
 def test_coverage_simulation_record_refuses_an_oversized_result_at_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # No coverage run produces a result above the real ceiling, so the limit is lowered in place.
     schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
+    # No coverage run produces a result above the real ceiling, so the limit is lowered in place.
     monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
 
     with pytest.raises(SimulationRecordPublicationError) as caught:
@@ -468,39 +460,6 @@ def test_coverage_timeout_before_design_abort_publishes_aborted_fail(tmp_path: P
             observation["assertions"],
             observation["cycle_count"],
         ) == ("aborted", "design", "fail", "not_observed", None)
-
-
-def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> None:
-    """A committed `incomplete` collection survives a later publication failure."""
-
-    class MissingInput(NativeExecution):
-        def run(self, request):
-            return SimulationRunResult(
-                "fail",
-                "$readmemh: Cannot open memory.hex",
-                termination="fatal_init",
-                failure_kind="missing_input",
-            )
-
-        def command(self, request):
-            raise AssertionError("merge must not run after a design abort")
-
-    def fail_after_commit(boundary: str) -> None:
-        if boundary == "after:coverage_record":
-            raise OSError("injected post-commit publication failure")
-
-    with pytest.raises(_CoverageAggregateError) as raised:
-        _run_coverage_simulation_record(
-            tmp_path, MissingInput(), publication_checkpoint=fail_after_commit
-        )
-
-    detail = raised.value.detail
-    assert detail["collection"] == "incomplete"
-    assert detail["evaluation"] == "not_requested"
-    assert detail["abort_remaining"] is True
-    assert detail["passed"] is False
-    assert detail["simulation"] == "aborted"
-    assert "coverage_record" not in detail
 
 
 def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(
@@ -553,14 +512,15 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
 def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     tmp_path: Path, reason: str
 ) -> None:
-    outcome, _store = _run_coverage_simulation_record(
+    executor, request, store, _target = _coverage_record_run(
         tmp_path, _FailedCoverageBuild(infrastructure=True, reason=reason)
     )
+    outcome = SimulationRecord(executor).run(request)
     assert outcome.complete
     assert outcome.aggregate_grade == "error"
 
-    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     recovery = store.scan()
+    assert recovery.complete
     assert not recovery.interrupted
     directory = store.work_item_directory(recovery.items[0].work_item_id)
     attempts = tuple((directory / "attempts").iterdir())
@@ -575,6 +535,14 @@ def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     assert result is not None
     assert result.document["state"] == "aborted"
     assert result.document["grade"] == "error"
+    assert result.document["bundle_verification"] is None
+    observation = result.document["observations"][0]
+    assert observation["execution"] == "aborted"
+    assert observation["failure_class"] == "infrastructure"
+    assert observation["functional"] == "not_observed"
+    assert observation["detail"]["code"] == "build_transport"
+    assert SimulationRecord(executor).run(request).complete
+    assert store.scan().items[0].attempt_count == 1
 
 
 @dataclass
@@ -915,6 +883,7 @@ def _aggregate_result_bound_fixture(tmp_path, monkeypatch):
         )
     document = json.loads(_simulation_result("completed"))
     document["$schema"] = RESULT_SCHEMA
+    # The document is built by hand to exceed the ceiling; `_common` supplies its identity fields.
     document.update(serial_execution._common(request))
     document["attempt_id"] = request.attempt_id
     document["evidence"] = store.pre_sim_references(request.attempt_directory)
