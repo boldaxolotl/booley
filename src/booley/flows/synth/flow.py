@@ -15,7 +15,6 @@ the make run left in the build directory.
 
 from __future__ import annotations
 
-import copy
 import logging
 import os
 import re
@@ -23,7 +22,7 @@ import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
@@ -77,10 +76,8 @@ from booley.flows.reservation_phases import report_phase_end
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
-    compose_result,
     note_line,
     status_cell,
-    tty_text,
 )
 from booley.flows.synth import openroad_reuse
 from booley.flows.synth.backends.pipeline import openroad_thread_assignment
@@ -100,7 +97,6 @@ from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
-    EndpointOutcome,
 )
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import (
@@ -109,7 +105,6 @@ from booley.runtime.timefmt import (
     rfc3339_from_epoch,
     utc_now_rfc3339,
 )
-from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts, edam
@@ -118,29 +113,23 @@ from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
     git_full_sha,
-    git_short_sha,
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
     baseline_execution_context,
-    candidate_execution_refs,
     resolve_target_execution_ref,
-    target_pair_plans_for_handles,
 )
 from ..implementation_flow import ImplementationFlow
 from ..implementation_publication import (
-    ImplementationProgressRun,
     target_report_slug,
 )
 from ..implementation_report import (
     ImplementationAggregate,
     ImplementationContext,
     ImplementationReport,
-    build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
-from ..progress_lifecycle import ProgressPublicationError
 from ..run_evidence import (
     build_flow_run_evidence,
 )
@@ -1209,8 +1198,13 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         example="booley flow synth --target synth_soc --baseline main",
     )
     code_modifying: bool = False
-    # ``[flows.synth].timing_report_paths``, latched by ``_resolve_run_policy``.
+    # ``[flows.synth].timing_report_paths``, latched by ``_run_policy_error``.
     _report_path_count: int | None = None
+    # Set when a stealth-cores self-compare is detected in the baseline checkout;
+    # reset per run by ``_begin_run``.
+    _baseline_selfcompare_msg: str | None = None
+    # Candidate selector -> published baseline timing dir (None: publishing failed).
+    _baseline_timing: dict[str, str | None]
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: ClassVar[int] = 7200
@@ -2139,21 +2133,97 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
     # -- Main run logic -------------------------------------------------------
 
-    def _resolve_run_policy(self, enabled: bool) -> str | None:
+    def _run_policy_error(self) -> str | None:
         """Latch the per-run policy state, or return the message that blocks the run.
 
         The ``fail_on_timing_violation`` gate (F-37) must be settled before a
         half-hour synthesis starts: a mistyped knob has to fail now, not while
         formatting the report at the end.
         """
-        if not enabled:
-            return "synth is disabled ([flows.synth].enabled = false)."
         try:
             self._timing_violation_is_fatal = _fail_on_timing_violation(self.args.work_dir)
             self._report_path_count = _timing_report_paths(self.args.work_dir)
         except BoundaryError as exc:
             return f"synth: {exc}"
         return None
+
+    def _begin_run(self, targets: list[str], /) -> None:
+        """Reset the per-run baseline state so a reused instance never leaks a stale value."""
+        self._baseline_selfcompare_msg = None
+        self._baseline_timing = {}
+
+    def _enter_baseline_worktree(
+        self, pairs: Sequence[TargetPairPlan], project_root: Path, worktree: Path, /
+    ) -> None:
+        """Warn when every pair compares a Target against its own identity."""
+        if all(plan.baseline.identity == plan.candidate.identity for plan in pairs):
+            self._baseline_selfcompare_msg = _baseline_self_compare_warning(project_root, worktree)
+
+    def _run_target(self, target: str, publish: Callable[[SynthMetrics], None], /) -> SynthMetrics:
+        """Synthesize one Target under its work-root lease, publishing inside the lease."""
+        baseline = getattr(self, "_execution_role", "candidate") == "baseline"
+        output = ""
+        try:
+            with edam.work_root_lease(
+                self._synth_work_root(target),
+                timeout_s=self._get_timeout(),
+                on_wait=lambda: self._report_workspace_wait(target),
+            ):
+                metrics, output = self._run_single_config(target)
+                if baseline:
+                    self._publish_baseline_timing(
+                        metrics, target, self._target_pairs, self._project_root
+                    )
+                publish(metrics)
+        except edam.WorkRootLeaseError as exc:
+            logger.error("Synth %s%s: %s", "baseline " if baseline else "", target, exc)
+            output = str(exc)
+            metrics = _infra_metrics(output)
+            publish(metrics)
+        if baseline:
+            metrics.log_path = self._persist_baseline_log(target, output, self._project_root)
+        return metrics
+
+    def _result_text(
+        self,
+        targets: list[str],
+        current: dict[str, SynthMetrics],
+        baseline: dict[str, SynthMetrics],
+        reports: dict[str, ImplementationReport],
+        aggregate: ImplementationAggregate,
+        /,
+    ) -> tuple[list[str], list[str], str]:
+        """Build the synthesis table, notes and ``RESULT:`` headline from policy-resolved evidence."""
+        self._discard_stale_selfcompare(targets, current, baseline)
+        notes, failed_targets, selfcompare_msg = self._aggregate_prefix(baseline, reports)
+        violated = self._append_target_blocks(notes, failed_targets, targets, current)
+        self._append_fatal_timing_failure(failed_targets, violated)
+        headline = _result_line(
+            failed_targets,
+            selfcompare_msg,
+            violated,
+            self._eda_warning_headlines(targets, current),
+            aggregate.exit_code,
+        )
+        table = self._summary_table_lines(targets, current, baseline, selfcompare_msg, reports)
+        return table, notes, headline
+
+    def _result_detail(
+        self,
+        targets: list[str],
+        current: dict[str, SynthMetrics],
+        baseline: dict[str, SynthMetrics],
+        short_sha: str | None,
+        reports: dict[str, ImplementationReport],
+        aggregate: ImplementationAggregate,
+        /,
+    ) -> dict[str, Any]:
+        return self._implementation_aggregate_detail(
+            targets, current, baseline, short_sha, reports, aggregate
+        )
+
+    def _display_lines(self, targets: list[str], current: dict[str, SynthMetrics], /) -> list[str]:
+        return _first_valid_display(targets, current)
 
     def _synth_work_unit(
         self,
@@ -2246,7 +2316,31 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             for argument in normalize_plan_argv(planned.command, root)
         )
 
-    def _plan_synth_implementation(self, targets: list[str]) -> FlowPlan:
+    def _plan_candidate_unit(
+        self,
+        target: str,
+        revision: str | None,
+        recipes: dict[str, _PlannedSynthRecipe],
+    ) -> WorkUnitPlan:
+        """Plan one candidate Target: in scratch for a dry run, else under its lease."""
+        if self.args.dry_run:
+            with tempfile.TemporaryDirectory(
+                prefix=".booley-synth-plan-",
+                dir=self.args.work_dir,
+            ) as scratch:
+                planned = self._resolve_synth_recipe(target, build_root=Path(scratch) / target)
+                return self._synth_work_unit(target, planned, role="candidate", revision=revision)
+        lease = edam.work_root_lease(
+            self._synth_work_root(target),
+            timeout_s=self._get_timeout(),
+            on_wait=lambda selected=target: self._report_workspace_wait(selected),
+        )
+        with lease:
+            planned = self._resolve_synth_recipe(target)
+        recipes[target] = planned
+        return self._synth_work_unit(target, planned, role="candidate", revision=revision)
+
+    def _plan_implementation(self, targets: list[str]) -> FlowPlan:
         """Resolve candidate and baseline recipes before either revision runs."""
         candidate_units: list[WorkUnitPlan] = []
         baseline_units: list[WorkUnitPlan] = []
@@ -2255,37 +2349,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         candidate_recipes: dict[str, _PlannedSynthRecipe] = {}
         for target in targets:
             try:
-                if self.args.dry_run:
-                    with tempfile.TemporaryDirectory(
-                        prefix=".booley-synth-plan-",
-                        dir=self.args.work_dir,
-                    ) as scratch:
-                        planned = self._resolve_synth_recipe(
-                            target,
-                            build_root=Path(scratch) / target,
-                        )
-                        unit = self._synth_work_unit(
-                            target,
-                            planned,
-                            role="candidate",
-                            revision=candidate_revision,
-                        )
-                else:
-                    lease = edam.work_root_lease(
-                        self._synth_work_root(target),
-                        timeout_s=self._get_timeout(),
-                        on_wait=lambda selected=target: self._report_workspace_wait(selected),
-                    )
-                    with lease:
-                        planned = self._resolve_synth_recipe(target)
-                    candidate_recipes[target] = planned
-                    unit = self._synth_work_unit(
-                        target,
-                        planned,
-                        role="candidate",
-                        revision=candidate_revision,
-                    )
-                candidate_units.append(unit)
+                candidate_units.append(
+                    self._plan_candidate_unit(target, candidate_revision, candidate_recipes)
+                )
             except (
                 BoundaryError,
                 edam.WorkRootLeaseError,
@@ -2366,179 +2432,6 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             self._recipe_evidence = candidate_evidence
         return units, errors
 
-    def _run(self) -> EndpointOutcome:  # noqa: PLR0911 — linear guarded orchestration
-        """Execute synthesis for all targets, optionally comparing to baseline."""
-        # Populated by _run_baseline_configs when a stealth-cores self-compare is
-        # detected; read by _aggregate_results. Reset per run so a stale value
-        # from a reused instance never leaks into a fresh invocation.
-        self._baseline_selfcompare_msg: str | None = None
-        self._baseline_full_sha: str | None = None
-        self._implementation_reports = {}
-        self._execution_role = "candidate"
-
-        handles = self._selected_target_handles()
-        self._target_handles = {handle.selector: handle for handle in handles}
-        targets = [handle.selector for handle in handles]
-        if not targets:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "synth: no Target selected. Pass --target <name> "
-                    "(bare name if unambiguous, else vlnv#name)."
-                ),
-            )
-        preparation_error = self._prepare_target_pairs(handles)
-        if preparation_error is not None:
-            return preparation_error
-        plan = self._plan_synth_implementation(targets)
-        self._flow_plan = plan
-        if self.args.dry_run:
-            return self._dry_run_result(plan)
-        if plan.aggregate_errors:
-            detail: dict[str, Any] = {"plan": plan.as_dict()}
-            for target in targets:
-                prefix = f"candidate {target}: "
-                message = next(
-                    (
-                        error.removeprefix(prefix)
-                        for error in plan.aggregate_errors
-                        if error.startswith(prefix)
-                    ),
-                    None,
-                )
-                if message is not None:
-                    detail[target] = {"infra_error": message}
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "synth: infrastructure error during planning: "
-                    + "; ".join(plan.aggregate_errors)
-                ),
-                detail=detail,
-            )
-        self.reserve_invocation_dir()
-        progress = ImplementationProgressRun(
-            self.name,
-            lambda current, baseline, phase, baseline_ref, complete: self._write_progress_report(
-                targets,
-                current,
-                baseline,
-                phase=phase,
-                baseline_ref=baseline_ref,
-                complete=complete,
-            ),
-        )
-        try:
-            with progress:
-                baseline_outcome, short_sha = self._run_baseline_configs(
-                    self._target_pairs, progress.baseline_results
-                )
-                if isinstance(baseline_outcome, EndpointOutcome):
-                    return baseline_outcome
-                progress.baseline_ref = short_sha
-                current_results = self._run_current_targets(
-                    targets,
-                    progress.baseline_results,
-                    short_sha,
-                    progress.current_results,
-                )
-                self._discard_stale_selfcompare(
-                    targets, current_results, progress.baseline_results
-                )
-                result = self._aggregate_results(
-                    targets, current_results, progress.baseline_results, short_sha
-                )
-                return progress.complete(result)
-        except ProgressPublicationError as exc:
-            return progress.publication_failure(exc)
-
-    def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> EndpointOutcome | None:
-        comparison_error: str | None = None
-        try:
-            self._target_pairs = target_pair_plans_for_handles(handles, flow="synth")
-            self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
-        except ImplementationComparisonError as exc:
-            comparison_error = f"synth: {exc}"
-        if comparison_error is not None:
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=comparison_error)
-        # Resolve enablement once per run, then reuse it in each config and the
-        # dry-run report.
-        config_error = self._resolve_run_policy(self._flow_enabled())
-        if config_error is not None:
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=config_error)
-        return None
-
-    def _run_current_targets(
-        self,
-        targets: list[str],
-        baseline_results: dict[str, SynthMetrics],
-        short_sha: str | None,
-        current_results: dict[str, SynthMetrics] | None = None,
-    ) -> dict[str, SynthMetrics]:
-        current_results = current_results if current_results is not None else {}
-        for tgt in targets:
-            try:
-                with edam.work_root_lease(
-                    self._synth_work_root(tgt),
-                    timeout_s=self._get_timeout(),
-                    on_wait=lambda target=tgt: self._report_workspace_wait(target),
-                ):
-                    metrics, _output = self._run_single_config(tgt)
-                    self._publish_current_target(
-                        tgt,
-                        metrics,
-                        targets,
-                        current_results,
-                        baseline_results,
-                        short_sha,
-                    )
-            except edam.WorkRootLeaseError as exc:
-                logger.error("Synth %s: %s", tgt, exc)
-                metrics = _infra_metrics(str(exc))
-                self._publish_current_target(
-                    tgt,
-                    metrics,
-                    targets,
-                    current_results,
-                    baseline_results,
-                    short_sha,
-                )
-            if len(targets) > 1:
-                self.emit_completion(
-                    self._format_config_line(
-                        tgt,
-                        metrics,
-                        baseline_results.get(tgt),
-                        human=True,
-                    )
-                )
-        return current_results
-
-    def _publish_current_target(
-        self,
-        target: str,
-        metrics: SynthMetrics,
-        targets: list[str],
-        current_results: dict[str, SynthMetrics],
-        baseline_results: dict[str, SynthMetrics],
-        baseline_ref: str | None,
-    ) -> None:
-        """Publish one Target while its mutable workspace is still owned."""
-        self._persist_target_outcome(
-            target,
-            metrics,
-            baseline_results.get(target),
-            baseline_ref,
-        )
-        current_results[target] = metrics
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="current",
-            baseline_ref=baseline_ref,
-        )
-
     def _discard_stale_selfcompare(
         self,
         targets: list[str],
@@ -2552,59 +2445,6 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             for target in targets
         ):
             self._baseline_selfcompare_msg = None
-
-    def _run_baseline_configs(
-        self,
-        pairs: Sequence[TargetPairPlan],
-        baseline_results: dict[str, SynthMetrics] | None = None,
-    ) -> tuple[dict[str, SynthMetrics] | EndpointOutcome, str | None]:
-        """Synthesize paired baseline Targets in an ephemeral worktree."""
-        # Candidate selector -> published baseline timing dir (None: publishing failed).
-        self._baseline_timing: dict[str, str | None] = {}
-        baseline_ref = self.args.baseline
-        if not baseline_ref:
-            return baseline_results or {}, None
-        targets = [plan.candidate.selector for plan in pairs]
-        project_root = Path(self.args.work_dir)
-        short_sha = git_short_sha(baseline_ref, project_root)
-        full_sha = git_full_sha(str(baseline_ref), project_root)
-        if full_sha is not None:
-            self._baseline_full_sha = full_sha
-        try:
-            with baseline_worktree(
-                project_root,
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as wt:
-                self.args.work_dir = wt
-                self._project_root = project_root
-                current_handles = getattr(self, "_target_handles", {})
-                current_refs = getattr(self, "_target_execution_refs", {})
-                current_role = getattr(self, "_execution_role", "candidate")
-                self._target_handles, self._target_execution_refs = baseline_execution_context(
-                    pairs, wt
-                )
-                self._execution_role = "baseline"
-                if all(plan.baseline.identity == plan.candidate.identity for plan in pairs):
-                    self._baseline_selfcompare_msg = _baseline_self_compare_warning(
-                        project_root, wt
-                    )
-                try:
-                    result = self._execute_baseline_pairs(
-                        pairs, targets, project_root, short_sha, baseline_results
-                    )
-                finally:
-                    self._target_handles = current_handles
-                    self._target_execution_refs = current_refs
-                    self._execution_role = current_role
-                    self.args.work_dir = project_root
-                    self._project_root = None
-        except (BaselineWorktreeError, ImplementationComparisonError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"synth: {exc}",
-            ), None
-        return result, short_sha
 
     def _publish_baseline_timing(
         self,
@@ -2635,41 +2475,6 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             )
             if published != "":
                 self._baseline_timing[candidate] = published
-
-    def _execute_baseline_pairs(
-        self,
-        pairs: Sequence[TargetPairPlan],
-        targets: list[str],
-        project_root: Path,
-        short_sha: str,
-        baseline_results: dict[str, SynthMetrics] | None = None,
-    ) -> dict[str, SynthMetrics]:
-        baseline_results = baseline_results if baseline_results is not None else {}
-        executed: dict[str, SynthMetrics] = {}
-        for plan in pairs:
-            baseline = plan.baseline.selector
-            candidate = plan.candidate.selector
-            if baseline not in executed:
-                try:
-                    with edam.work_root_lease(
-                        self._synth_work_root(baseline),
-                        timeout_s=self._get_timeout(),
-                        on_wait=lambda target=baseline: self._report_workspace_wait(target),
-                    ):
-                        metrics, output = self._run_single_config(baseline)
-                        self._publish_baseline_timing(metrics, baseline, pairs, project_root)
-                except edam.WorkRootLeaseError as exc:
-                    logger.error("Synth baseline %s: %s", baseline, exc)
-                    output = str(exc)
-                    metrics = _infra_metrics(output)
-                metrics.log_path = self._persist_baseline_log(baseline, output, project_root)
-                executed[baseline] = metrics
-            metrics = copy.deepcopy(executed[baseline])
-            baseline_results[candidate] = metrics
-            self._write_progress_report(
-                targets, {}, baseline_results, phase="baseline", baseline_ref=short_sha
-            )
-        return baseline_results
 
     def _target_note_lines(self, tgt: str, cur: SynthMetrics) -> list[str]:
         """Render the notes (everything but the table row) for one target."""
@@ -2760,66 +2565,6 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             detail[target]["passed"] = report.passed
         detail["implementation"] = aggregate.detail
         return detail
-
-    def _aggregate_results(
-        self,
-        targets: list[str],
-        current_results: dict[str, SynthMetrics],
-        baseline_results: dict[str, SynthMetrics],
-        short_sha: str | None,
-    ) -> EndpointOutcome:
-        """Build the final synthesis report from policy-resolved target evidence."""
-        implementation_reports = {
-            target: getattr(self, "_implementation_reports", {}).get(target)
-            or self._implementation_report(
-                target,
-                current_results[target],
-                baseline_results.get(target),
-                short_sha,
-            )
-            for target in targets
-        }
-        implementation_aggregate = build_implementation_aggregate(
-            implementation_reports,
-            baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
-        )
-        notes, failed_targets, selfcompare_msg = self._aggregate_prefix(
-            baseline_results, implementation_reports
-        )
-        violated = self._append_target_blocks(notes, failed_targets, targets, current_results)
-        self._append_fatal_timing_failure(failed_targets, violated)
-        eda_warnings = self._eda_warning_headlines(targets, current_results)
-        result_line = _result_line(
-            failed_targets,
-            selfcompare_msg,
-            violated,
-            eda_warnings,
-            implementation_aggregate.exit_code,
-        )
-        result = compose_result(
-            short_sha if self.args.baseline else None,
-            self._summary_table_lines(
-                targets, current_results, baseline_results, selfcompare_msg, implementation_reports
-            ),
-            notes,
-            result_line,
-        )
-        report_text = result.record
-        print(tty_text(result))
-        detail = self._implementation_aggregate_detail(
-            targets,
-            current_results,
-            baseline_results,
-            short_sha,
-            implementation_reports,
-            implementation_aggregate,
-        )
-        return EndpointOutcome(
-            exit_code=implementation_aggregate.exit_code,
-            report_text=report_text,
-            display_lines=_first_valid_display(targets, current_results),
-            detail=detail,
-        )
 
     @staticmethod
     def _eda_warning_headlines(

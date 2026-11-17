@@ -105,10 +105,10 @@ def executed(monkeypatch):
     monkeypatch.setattr(LintFlow, "_plan_lint", lambda self, targets: FlowPlan("lint", "lint", ()))
     monkeypatch.setattr(LintFlow, "_prepare_lint_targets", lambda self, targets: ({}, []))
     monkeypatch.setattr(LintFlow, "_run_all_targets", run_lint)
-    for cls, name in ((AsicSynthesizeFlow, "synth"), (FpgaImplFlow, "fpga")):
+    for cls in (AsicSynthesizeFlow, FpgaImplFlow):
         monkeypatch.setattr(
             cls,
-            f"_plan_{name}_implementation",
+            "_plan_implementation",
             lambda self, targets: FlowPlan(self.name, "implementation", ()),
         )
         monkeypatch.setattr(cls, "_run_baseline_configs", lambda self, *args: ({}, None))
@@ -120,8 +120,8 @@ def executed(monkeypatch):
         )
     monkeypatch.setattr(
         AsicSynthesizeFlow,
-        "_resolve_run_policy",
-        lambda self, enabled: None if enabled else "synth is disabled",
+        "_run_policy_error",
+        lambda self: None,
     )
     return seen
 
@@ -440,11 +440,14 @@ def test_automatic_candidate_selection_is_not_repeated_in_baseline(
     flow._target_handles = {h.selector: h for h in handles}
     flow._target_execution_refs = candidate_execution_refs(handles, pairs)
     module = importlib.import_module(FLOWS[name].__module__)
+    base_module = importlib.import_module("booley.flows.implementation_flow")
     monkeypatch.setattr(
-        module, "baseline_worktree", lambda *args, **kwargs: contextlib.nullcontext(baseline)
+        base_module,
+        "baseline_worktree",
+        lambda *args, **kwargs: contextlib.nullcontext(baseline),
     )
-    monkeypatch.setattr(module, "git_short_sha", lambda *args: "old")
-    monkeypatch.setattr(module, "git_full_sha", lambda *args: "a" * 40)
+    monkeypatch.setattr(base_module, "git_short_sha", lambda *args: "old")
+    monkeypatch.setattr(base_module, "git_full_sha", lambda *args: "a" * 40)
     if name == "synth":
         monkeypatch.setattr(module, "_baseline_self_compare_warning", lambda *args: None)
     seen = []
