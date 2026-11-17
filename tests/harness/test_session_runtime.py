@@ -838,7 +838,7 @@ def _write_spec(workspace: Path, spec: dict) -> None:
 
 
 @pytest.fixture
-def wired(workspace: Path, request: pytest.FixtureRequest):
+def wired(workspace: Path, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     """A workspace with a spec on disk and mocked external boundaries."""
     from booley.runtime import image_lifecycle
 
@@ -866,13 +866,15 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         project_data_source=str(workspace / ".booley"),
         project_data_layout="legacy",
     )
+    # monkeypatch, not patch.object: tests re-patch these names with the same fixture, and one
+    # undo stack restores them in order instead of leaking a mock into other modules.
+    monkeypatch.setattr(sr.idk, "network_exists", Mock(return_value=True))
+    monkeypatch.setattr(sr.idk, "image_exists", Mock(return_value=True))
+    # No image metadata, as when the inspect finds nothing (no Docker CLI call).
+    monkeypatch.setattr(sr.idk, "inspect_image_metadata", Mock(return_value=None))
+    # The stale-container probe resolves the image ID through the Docker helper.
+    monkeypatch.setattr(sr.idk, "image_id", Mock(return_value=None))
     with (
-        patch.object(sr.idk, "network_exists", return_value=True),
-        patch.object(sr.idk, "image_exists", return_value=True),
-        # No image metadata, as when the inspect finds nothing (no Docker CLI call).
-        patch.object(sr.idk, "inspect_image_metadata", return_value=None),
-        # The stale-container probe resolves the image ID through the Docker helper.
-        patch.object(sr.idk, "image_id", return_value=None),
         lifecycle_reconcile,
         patch(
             "booley.runtime.session_issuance.validate",
