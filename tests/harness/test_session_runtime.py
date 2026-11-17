@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar, NoReturn
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -360,19 +360,29 @@ def _vscode_container(
 
 
 class _SandboxDocker:
-    """Serve the inventory, inspect and `docker rm` calls of the Sandbox reuse checks.
+    """Serve the inventory, inspect, `docker stop` and `docker rm` calls of the Sandbox checks.
 
     A container state that is a string is inspect output Docker could not encode.
-    *failing* names the verbs and containers whose calls fail.
+    *failing* names the verbs and containers whose calls fail. A stop or remove
+    names a container or its ``Id``.
     """
 
     def __init__(self) -> None:
         self.containers: dict[str, dict | str] = {}
+        self.networks: set[str] = set()
+        self.calls: list[list[str]] = []
         self.removed: list[str] = []
         self.rm_attempts: list[list[str]] = []
         self.failing: set[str] = set()
 
+    def find(self, key: str) -> str | None:
+        for name, state in self.containers.items():
+            if key == name or (isinstance(state, dict) and state.get("Id") == key):
+                return name
+        return None
+
     def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(argv)
         verb, *args = argv[1:]
         if verb == "rm":
             self.rm_attempts.append(argv)
@@ -393,21 +403,27 @@ class _SandboxDocker:
                 )
             ]
             return subprocess.CompletedProcess(argv, 0, "".join(f"{n}\n" for n in names), "")
-        if verb == "inspect":
-            if args[0] not in self.containers:
+        if verb in {"inspect", "container"}:
+            strict = verb == "container"  # `docker container inspect <name> --format {{json .}}`
+            name = self.find(args[1] if strict else args[0])
+            if name is None:
                 return subprocess.CompletedProcess(argv, 1, "", "No such container")
-            state = self.containers[args[0]]
-            if "--format" in args:
+            state = self.containers[name]
+            if "--format" in args and not strict:
                 state = state["Config"]["Labels"]
             out = (
-                json.dumps(state if "--format" in args else [state])
-                if isinstance(state, dict)
-                else state
+                state
+                if isinstance(state, str)
+                else json.dumps(state if "--format" in args else [state])
             )
             return subprocess.CompletedProcess(argv, 0, out, "")
-        assert verb == "rm", argv
-        self.removed.append(args[0])
-        del self.containers[args[0]]
+        name = self.find(args[-1])
+        assert verb in {"stop", "rm"} and name is not None, argv
+        if verb == "stop":
+            self.containers[name]["State"]["Running"] = False
+        else:
+            self.removed.append(name)
+            del self.containers[name]
         return subprocess.CompletedProcess(argv, 0, "", "")
 
 
@@ -822,24 +838,21 @@ def _write_spec(workspace: Path, spec: dict) -> None:
 
 
 @pytest.fixture
-def wired(workspace: Path, request: pytest.FixtureRequest):
+def wired(workspace: Path, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     """A workspace with a spec on disk and mocked external boundaries."""
     from booley.runtime import image_lifecycle
 
     _write_spec(workspace, _spec())
-    lifecycle_reconcile = (
-        nullcontext()
-        if getattr(request, "param", None) == "real-image-lifecycle"
-        else patch.object(
+    if getattr(request, "param", None) != "real-image-lifecycle":
+        monkeypatch.setattr(
             image_lifecycle,
             "reconcile",
-            return_value=image_lifecycle.LifecycleResult(
-                "booley-sandbox",
-                "sha256:fixture",
-                image_lifecycle.Status.CURRENT,
+            Mock(
+                return_value=image_lifecycle.LifecycleResult(
+                    "booley-sandbox", "sha256:fixture", image_lifecycle.Status.CURRENT
+                )
             ),
         )
-    )
     issuance = SimpleNamespace(
         project_root=str(workspace),
         spec_sha256="abc",
@@ -850,30 +863,28 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         project_data_source=str(workspace / ".booley"),
         project_data_layout="legacy",
     )
-    with (
-        patch.object(sr.idk, "network_exists", return_value=True),
-        patch.object(sr.idk, "image_exists", return_value=True),
-        # No image metadata, as when the inspect finds nothing (no Docker CLI call).
-        patch.object(sr.idk, "inspect_image_metadata", return_value=None),
-        # The stale-container probe resolves the image ID through the Docker helper.
-        patch.object(sr.idk, "image_id", return_value=None),
-        lifecycle_reconcile,
-        patch(
-            "booley.runtime.session_issuance.validate",
-            return_value=issuance,
-        ),
-        patch("booley.runtime.session_issuance.authenticate", return_value=issuance),
-        patch(
-            "booley.runtime.session_issuance.authorized_project_data_source",
-            return_value=workspace / ".booley",
-        ),
-        patch.object(sr, "_strict_running_sandbox_states", return_value=[]),
-        patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
-        patch.object(sr, "container_matches_issuance", return_value=True),
-        patch.object(sr, "_run") as run,
-    ):
-        run.return_value = subprocess.CompletedProcess([], 0, "", "")
-        yield workspace, run
+    # monkeypatch, not patch.object: tests re-patch these names with the same fixture, and one
+    # undo stack restores them in order instead of leaking a mock into other modules.
+    monkeypatch.setattr(sr.idk, "network_exists", Mock(return_value=True))
+    monkeypatch.setattr(sr.idk, "image_exists", Mock(return_value=True))
+    # No image metadata, as when the inspect finds nothing (no Docker CLI call).
+    monkeypatch.setattr(sr.idk, "inspect_image_metadata", Mock(return_value=None))
+    # The stale-container probe resolves the image ID through the Docker helper.
+    monkeypatch.setattr(sr.idk, "image_id", Mock(return_value=None))
+    monkeypatch.setattr(runtime_spec, "validate", Mock(return_value=issuance))
+    monkeypatch.setattr(runtime_spec, "authenticate", Mock(return_value=issuance))
+    monkeypatch.setattr(
+        runtime_spec, "authorized_project_data_source", Mock(return_value=workspace / ".booley")
+    )
+    # Every Docker command of session_runtime goes through `_run`, which no public entry
+    # takes as an argument; the tests that use `wired` script its replies, and they set
+    # failing replies the strict Sandbox inventories must not read.
+    monkeypatch.setattr(sr, "_strict_running_sandbox_states", Mock(return_value=[]))
+    monkeypatch.setattr(sr, "_strict_all_sandbox_states", Mock(return_value=[]))
+    monkeypatch.setattr(sr, "container_matches_issuance", Mock(return_value=True))
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(sr, "_run", run)
+    return workspace, run
 
 
 def _argv_of(call) -> list[str]:
@@ -900,295 +911,235 @@ def _refresh_state(
     }
 
 
+_LICENSE_PROFILE = SimpleNamespace(
+    server_ipv4="10.20.30.40",
+    server_hostid="license-server-01",
+    lmgrd_port=2100,
+    vendor_port=2101,
+)
+
+
+def _relay(workspace: Path):
+    """The Project's deterministic license relay objects."""
+    from booley.eda.provisioning.licensing import flexnet_docker
+
+    return flexnet_docker.resources_for_session(str(workspace.resolve()))
+
+
+def _issued_state(workspace: Path, image: str, labels: dict[str, str | None]) -> dict:
+    """Strict inspect data of a container carrying `_test_issuance`'s labels and *labels*."""
+    merged = dict(label.split("=", 1) for label in runtime_spec.labels(_test_issuance(workspace)))
+    merged.update(labels)
+    state = _refresh_state(labels={k: v for k, v in merged.items() if v is not None})
+    state.update(Id="c" * 64, Image=image)
+    return state
+
+
+def _headless_state(
+    workspace: Path, *, running: bool = True, image: str | None = None, **labels: str | None
+) -> dict:
+    """This Project's headless Sandbox, current for `_test_issuance` unless overridden."""
+    image = image or _test_issuance(workspace).image_id
+    state = _issued_state(workspace, image, {"booley.role": "interactive", **labels})
+    state["State"]["Running"] = running
+    return state
+
+
+def _relay_state(workspace: Path, *, image: str | None = None, **labels: str) -> dict:
+    """This Project's license relay, current for `_test_issuance` unless overridden."""
+    owner = {"booley.role": "license-relay", "booley.session-id": _relay(workspace).session_id}
+    image = image or _test_issuance(workspace).relay_image_id
+    return _issued_state(workspace, image, {**owner, **labels})
+
+
+@pytest.fixture
+def host_docker(sandbox_docker: _SandboxDocker, monkeypatch: pytest.MonkeyPatch) -> _SandboxDocker:
+    """`sandbox_docker` that also answers existence probes and removes the license relay."""
+    from booley.eda.provisioning.licensing import flexnet_docker
+
+    docker = sandbox_docker
+    monkeypatch.setattr(sr.idk, "container_exists", lambda name: docker.find(name) is not None)
+    monkeypatch.setattr(
+        sr.idk, "container_running", lambda name: docker.containers[name]["State"]["Running"]
+    )
+    monkeypatch.setattr(sr.idk, "network_exists", docker.networks.__contains__)
+    monkeypatch.setattr(
+        flexnet_docker,
+        "remove_relay",
+        lambda relay, **_kwargs: docker.removed.append(relay.relay_container),
+    )
+    return docker
+
+
 class TestInitReconciliation:
-    def test_plan_reports_stopped_old_runtime_without_removing_it(self, workspace: Path) -> None:
-        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
-        state = _refresh_state(running=False)
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
-            patch.object(sr, "_remove_stopped_session_container") as remove,
-            patch.object(sr, "_relay_objects_exist", return_value=False),
-        ):
-            plan = sr.plan_stopped_headless_runtime_reconciliation(workspace, issuance)
-
-        assert plan.pending
-        remove.assert_not_called()
-
-    def test_removes_only_a_stopped_owned_runtime_from_an_old_issuance(
-        self, workspace: Path
+    @pytest.mark.parametrize(
+        "drift",
+        [{"booley.spec-digest": "older-spec"}, {"image": _OLD_IMAGE}],
+        ids=["labels", "image"],
+    )
+    def test_plans_then_removes_stopped_runtime_from_an_old_issuance(
+        self, workspace: Path, host_docker: _SandboxDocker, drift: dict
     ) -> None:
-        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
-        state = _refresh_state(running=False)
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
-            patch.object(sr, "_remove_stopped_session_container") as remove,
-            patch.object(sr, "_relay_objects_exist", return_value=False),
-        ):
-            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
+        name = sr.session_container_name(workspace)
+        host_docker.containers[name] = _headless_state(workspace, running=False, **drift)
+        issuance = _test_issuance(workspace)
 
-        assert changed
-        remove.assert_called_once_with(sr.session_container_name(workspace))
+        assert sr.plan_stopped_headless_runtime_reconciliation(workspace, issuance).pending
+        assert host_docker.removed == []
+        assert sr.reconcile_stopped_headless_runtime(workspace, issuance)
+        assert host_docker.removed == [name]
 
     @pytest.mark.parametrize("running", [True, False])
-    def test_preserves_current_runtime(self, workspace: Path, running: bool) -> None:
-        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
-        state = _refresh_state(running=running)
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_refresh_candidate_matches", return_value=True),
-            patch.object(sr, "_remove_stopped_session_container") as remove,
-        ):
-            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
-
-        assert not changed
-        remove.assert_not_called()
-
-    def test_stale_running_runtime_names_grant_change_remedy(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    def test_preserves_current_runtime(
+        self, workspace: Path, host_docker: _SandboxDocker, running: bool
     ) -> None:
-        """The refusal names the workflow Sandbox validation prints after a Grant change."""
-        from booley.runtime import runtime_context, session_issuance
+        name = sr.session_container_name(workspace)
+        host_docker.containers[name] = _headless_state(workspace, running=running)
 
-        def withdrawn(_root: Path) -> NoReturn:
-            raise session_issuance.IssuanceUnavailableError("withdrawn")
+        assert not sr.reconcile_stopped_headless_runtime(workspace, _test_issuance(workspace))
+        assert host_docker.removed == []
+
+    @pytest.mark.parametrize("withdrawn", [True, False], ids=["grant-change", "issuance-stands"])
+    def test_stale_running_runtime_names_session_refresh(
+        self,
+        workspace: Path,
+        host_docker: _SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        withdrawn: bool,
+    ) -> None:
+        """The refusal names the workflow Sandbox validation prints, also after a Grant change."""
+        from booley.runtime import runtime_context
+
+        def snapshot(_root: Path) -> SimpleNamespace:
+            if withdrawn:
+                raise runtime_spec.IssuanceUnavailableError("withdrawn")
+            return SimpleNamespace(license_profile=None)
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-        monkeypatch.setattr(session_issuance, "load_issued_snapshot", withdrawn)
-        monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
-        state = _refresh_state(running=True)
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(sr, "_remove_stopped_session_container") as remove,
-            pytest.raises(sr.SessionError) as refusal,
-        ):
-            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
-
-        message = str(refusal.value)
-        assert "uses an older host issuance; run `booley session refresh` on the host" in message
-        assert "run `booley session refresh` on the host" in message
-        assert "init --seed" not in message
-        assert "retry `booley init`" not in message
-        remove.assert_not_called()
-
-    def test_stale_running_runtime_names_refresh_when_issuance_stands(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without a withdrawn issuance the refusal names `session refresh`, as validation does."""
-        from booley.runtime import runtime_context, session_issuance
-
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-        monkeypatch.setattr(
-            session_issuance,
-            "load_issued_snapshot",
-            lambda _root: SimpleNamespace(license_profile=None),
-        )
-        monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
-        monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
+        monkeypatch.setattr(runtime_spec, "load_issued_snapshot", snapshot)
         monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
         monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
-        state = _refresh_state(running=True)
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            pytest.raises(sr.SessionError) as refusal,
-        ):
-            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+        name = sr.session_container_name(workspace)
+        host_docker.containers[name] = _headless_state(workspace, image=_OLD_IMAGE)
 
-        message = str(refusal.value)
-        assert message.endswith("run `booley session refresh` on the host")
-        assert "retry `booley init`" not in message
+        with pytest.raises(sr.SessionError) as refusal:
+            sr.reconcile_stopped_headless_runtime(workspace, _test_issuance(workspace))
 
-    def test_other_project_session_blocks_relay_mutation(self, workspace: Path) -> None:
-        state = _refresh_state(running=False)
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(
-                sr,
-                "_strict_all_sandbox_states",
-                return_value=[("vscode-session", "state")],
-            ),
-            patch.object(sr, "_remove_stopped_session_container") as remove,
-            patch.object(sr, "_remove_license_relay") as remove_relay,
-            pytest.raises(sr.SessionError, match="other Project Sessions"),
-        ):
-            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+        assert str(refusal.value).endswith(
+            "uses an older host issuance; run `booley session refresh` on the host"
+        )
+        assert host_docker.removed == []
 
-        remove.assert_not_called()
-        remove_relay.assert_not_called()
-
-    def test_retry_finishes_stale_relay_cleanup_after_container_is_gone(
-        self, workspace: Path
+    def test_other_project_session_blocks_relay_mutation(
+        self, workspace: Path, host_docker: _SandboxDocker
     ) -> None:
-        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=None),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_relay_resources", return_value=relay),
-            patch.object(sr, "_relay_objects_exist", return_value=True),
-            patch.object(sr, "_relay_matches_issuance", return_value=False),
-            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
-            patch.object(sr, "_remove_license_relay") as remove_relay,
-        ):
-            changed = sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
-
-        assert changed
-        remove_relay.assert_called_once_with(relay)
-
-    def test_missing_relay_container_is_not_current(self, workspace: Path) -> None:
-        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
-        with patch.object(sr, "_strict_refresh_container", return_value=None):
-            assert not sr._relay_matches_issuance(relay, _test_issuance(workspace))
-
-    def test_foreign_relay_container_is_preserved(self, workspace: Path) -> None:
-        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
-        state = {
-            "Config": {
-                "Labels": {
-                    "booley.role": "interactive",
-                    "booley.session-id": relay.session_id,
-                }
-            }
-        }
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            pytest.raises(sr.SessionError, match="not owned by this Project"),
-        ):
-            sr._relay_matches_issuance(relay, _test_issuance(workspace))
-
-    def test_relay_issuance_labels_determine_currency(self, workspace: Path) -> None:
-        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
-        issuance = _test_issuance(workspace)
-        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-        labels.update(
-            {
-                "booley.role": "license-relay",
-                "booley.session-id": relay.session_id,
-            }
+        relay = _relay(workspace)
+        host_docker.containers[sr.session_container_name(workspace)] = _headless_state(
+            workspace, running=False, image=_OLD_IMAGE
         )
-        state = {"Image": issuance.relay_image_id, "Config": {"Labels": labels}}
-        with patch.object(sr, "_strict_refresh_container", return_value=state):
-            assert sr._relay_matches_issuance(relay, issuance)
-            labels["booley.spec-digest"] = "older-spec"
-            assert not sr._relay_matches_issuance(relay, issuance)
+        host_docker.containers["vscode-session"] = _headless_state(workspace)
+        host_docker.containers[relay.relay_container] = _relay_state(workspace, image=_OLD_IMAGE)
 
-    def test_relay_image_identity_determines_currency(self, workspace: Path) -> None:
-        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
-        issuance = _test_issuance(workspace)
-        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-        labels.update(
-            {
-                "booley.role": "license-relay",
-                "booley.session-id": relay.session_id,
-            }
-        )
-        state = {"Image": "sha256:" + "b" * 64, "Config": {"Labels": labels}}
-
-        with patch.object(sr, "_strict_refresh_container", return_value=state):
-            assert not sr._relay_matches_issuance(relay, issuance)
-
-    def test_preserves_foreign_container(self, workspace: Path) -> None:
-        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
-        state = _refresh_state(labels={"booley.role": "interactive"})
-        with (
-            patch.object(sr, "_strict_refresh_container", return_value=state),
-            patch.object(sr, "_refresh_project_id", return_value="project-id"),
-            patch.object(sr, "_remove_stopped_session_container") as remove,
-            pytest.raises(sr.SessionError, match="was not modified"),
+        with pytest.raises(
+            sr.SessionError, match="other Project Sessions exist: 'vscode-session'"
         ):
-            sr.reconcile_stopped_headless_runtime(workspace, issuance)
+            sr.reconcile_stopped_headless_runtime(workspace, _test_issuance(workspace))
 
-        remove.assert_not_called()
+        assert host_docker.removed == []
+
+    @pytest.mark.parametrize(
+        ("relay_state", "stale"),
+        [
+            (None, True),
+            ({}, False),
+            ({"booley.spec-digest": "older-spec"}, True),
+            ({"image": _OLD_IMAGE}, True),
+        ],
+        ids=["only-networks-left", "current", "older-labels", "other-image"],
+    )
+    def test_retry_finishes_stale_relay_cleanup_after_container_is_gone(
+        self, workspace: Path, host_docker: _SandboxDocker, relay_state: dict | None, stale: bool
+    ) -> None:
+        relay = _relay(workspace)
+        host_docker.networks.add(relay.private_network)
+        if relay_state is not None:
+            host_docker.containers[relay.relay_container] = _relay_state(workspace, **relay_state)
+
+        assert sr.reconcile_stopped_headless_runtime(workspace, _test_issuance(workspace)) is stale
+        assert host_docker.removed == ([relay.relay_container] if stale else [])
+
+    @pytest.mark.parametrize("owner", ["sandbox", "relay"])
+    def test_preserves_foreign_container(
+        self, workspace: Path, host_docker: _SandboxDocker, owner: str
+    ) -> None:
+        if owner == "sandbox":
+            name = sr.session_container_name(workspace)
+            state = _headless_state(workspace, running=False, **{"booley.project-id": None})
+        else:
+            name = _relay(workspace).relay_container
+            state = _relay_state(workspace, **{"booley.role": "interactive"})
+        host_docker.containers[name] = state
+
+        with pytest.raises(sr.SessionError, match="it was not modified"):
+            sr.reconcile_stopped_headless_runtime(workspace, _test_issuance(workspace))
+
+        assert host_docker.removed == []
 
 
 class TestRefreshContainerTransactions:
-    def test_strict_inspect_accepts_complete_state_and_absence(self, monkeypatch):
-        state = _refresh_state()
-        responses = iter(
-            [
-                subprocess.CompletedProcess([], 0, json.dumps(state), ""),
-                subprocess.CompletedProcess([], 1, "", "No such container"),
-            ]
-        )
-        monkeypatch.setattr(sr, "_run", lambda *_args, **_kwargs: next(responses))
-
-        assert sr._strict_refresh_container("session") == state
-        assert sr._strict_refresh_container("missing") is None
-
     @pytest.mark.parametrize(
-        ("result", "message"),
+        ("state", "message"),
         [
-            (subprocess.CompletedProcess([], 1, "", "permission denied"), "permission denied"),
-            (subprocess.CompletedProcess([], 0, "not-json", ""), "invalid inspection"),
-            (subprocess.CompletedProcess([], 0, "[]", ""), "invalid inspection"),
+            (None, "cannot inspect Sandbox"),
+            ("not-json", "invalid inspection"),
+            ("[]", "invalid inspection"),
             (
-                subprocess.CompletedProcess(
-                    [],
-                    0,
-                    json.dumps(
-                        {
-                            "Config": {},
-                            "State": {"Running": False},
-                            "NetworkSettings": {"Networks": {}},
-                        }
-                    ),
-                    "",
+                json.dumps(
+                    {
+                        "Config": {},
+                        "State": {"Running": False},
+                        "NetworkSettings": {"Networks": {}},
+                    }
                 ),
                 "incomplete inspection",
             ),
+            (_refresh_state(labels={"booley.role": 7}), "invalid labels"),
         ],
+        ids=["docker-error", "not-json", "not-an-object", "incomplete", "non-string-label"],
     )
-    def test_strict_inspect_rejects_untrusted_docker_output(self, monkeypatch, result, message):
-        monkeypatch.setattr(sr, "_run", lambda *_args, **_kwargs: result)
+    def test_strict_inspect_rejects_untrusted_docker_output(
+        self, workspace: Path, host_docker: _SandboxDocker, state: dict | str | None, message: str
+    ) -> None:
+        if state is None:
+            host_docker.failing.add("container")
+        else:
+            host_docker.containers[sr.session_container_name(workspace)] = state
 
         with pytest.raises(sr.SessionError, match=message):
-            sr._strict_refresh_container("session")
+            sr.remove_refresh_predecessor(workspace)
 
-    def test_refresh_labels_reject_non_string_values(self):
-        state = _refresh_state(labels={"booley.role": 7})
+        assert host_docker.removed == []
 
-        with pytest.raises(sr.SessionError, match="invalid labels"):
-            sr._refresh_container_labels(state)
+    @pytest.mark.parametrize(
+        ("backup_exists", "message"),
+        [(True, "recovery container"), (False, r"rename failed.*restart.*start failed")],
+        ids=["recovery-container-exists", "park-fails"],
+    )
+    def test_rebuild_keeps_the_running_sandbox_when_it_cannot_park_it(
+        self, wired, monkeypatch: pytest.MonkeyPatch, backup_exists: bool, message: str
+    ) -> None:
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda n: n == name or backup_exists)
+        monkeypatch.setattr(sr.idk, "container_running", lambda _name: True)
+        run.side_effect = lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, int(argv[1] in {"rename", "start"}), "", f"{argv[1]} failed"
+        )
 
-    def test_candidate_match_checks_exact_image_and_all_issuance_labels(self):
-        state = _refresh_state(labels={"expected": "yes", "extra": "allowed"})
-        state["Image"] = "sha256:fresh"
-        issuance = SimpleNamespace(image_id="sha256:fresh")
-        with patch.object(runtime_spec, "labels", return_value=("expected=yes",)):
-            assert sr._refresh_candidate_matches(state, issuance)
-            state["Image"] = "sha256:different"
-            assert not sr._refresh_candidate_matches(state, issuance)
+        with pytest.raises(sr.SessionError, match=message):
+            sr.up(workspace, rebuild=True)
 
-    def test_shared_parking_reports_rename_and_restart_failures(self, monkeypatch):
-        parked = sr.ParkedSession("session", "session-pre-refresh", True)
-
-        def fail_rename_and_restart(argv, **_kwargs):
-            if argv[:2] == ["docker", "stop"]:
-                return subprocess.CompletedProcess(argv, 0, "", "")
-            return subprocess.CompletedProcess(argv, 1, "", f"{argv[1]} failed")
-
-        monkeypatch.setattr(sr, "_run", fail_rename_and_restart)
-
-        with pytest.raises(sr.SessionError, match=r"rename failed.*restart.*start failed"):
-            sr._park_session_container(parked)
-
-    def test_rebuild_rejects_existing_recovery_container(self):
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            pytest.raises(sr.SessionError, match="recovery container"),
-        ):
-            sr._park_session_for_rebuild("session")
+        assert not any(_argv_of(call)[1] in {"run", "rm"} for call in run.call_args_list)
 
 
 class TestUp:
@@ -1822,179 +1773,75 @@ def test_booley_dir_pin_reads_docker_desktop_sources(
 
 
 class TestLicensedRelayLifecycle:
-    @staticmethod
-    def _profile() -> SimpleNamespace:
-        return SimpleNamespace(
-            server_ipv4="10.20.30.40",
-            server_hostid="license-server-01",
-            lmgrd_port=2100,
-            vendor_port=2101,
-        )
+    @pytest.fixture
+    def relay(self, wired, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+        """License the `wired` Project and fake the relay module's Docker operations."""
+        from booley.eda.provisioning.licensing import flexnet_docker
 
-    def test_provisions_healthy_relay_before_session_and_attaches_after_create(self, wired):
+        monkeypatch.setattr(runtime_spec, "requested_license", lambda *_a, **_k: _LICENSE_PROFILE)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        fake = SimpleNamespace(relay=SimpleNamespace(relay_container="relay"))
+        fake.recreate, fake.validate, fake.remove = Mock(return_value=fake.relay), Mock(), Mock()
+        monkeypatch.setattr(flexnet_docker, "recreate_relay", fake.recreate)
+        monkeypatch.setattr(flexnet_docker, "validate_relay", fake.validate)
+        monkeypatch.setattr(flexnet_docker, "remove_relay", fake.remove)
+        return fake
+
+    def test_relay_start_failure_prevents_session_create(self, wired, relay):
+        from booley.eda.provisioning.licensing import flexnet_docker
+
         workspace, run = wired
-        events: list[str] = []
-        relay = SimpleNamespace(relay_container="relay")
-
-        def provision(*_args):
-            events.append("provision")
-            return relay
-
-        def execute(argv, **_kwargs):
-            events.append("session-create" if argv[:2] == ["docker", "run"] else "hook")
-            return subprocess.CompletedProcess([], 0, "", "")
-
-        with (
-            patch(
-                "booley.runtime.session_issuance.requested_license",
-                return_value=self._profile(),
-            ),
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "container_running", return_value=False),
-            patch.object(sr, "_provision_license_relay", side_effect=provision),
-            patch.object(
-                sr,
-                "_connect_and_validate_license_relay",
-                side_effect=lambda *_args: events.append("connect-validate"),
-            ),
-        ):
-            run.side_effect = execute
-            sr.up(workspace)
-
-        assert events[:3] == ["provision", "session-create", "connect-validate"]
-
-    def test_relay_start_failure_prevents_session_create(self, wired):
-        workspace, run = wired
-        with (
-            patch(
-                "booley.runtime.session_issuance.requested_license",
-                return_value=self._profile(),
-            ),
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr, "_provision_license_relay", side_effect=sr.SessionError("unhealthy")),
-            pytest.raises(sr.SessionError, match="unhealthy"),
-        ):
+        relay.recreate.side_effect = flexnet_docker.RelayDockerError("unhealthy")
+        with pytest.raises(sr.SessionError, match="could not start licensed Sandbox: unhealthy"):
             sr.up(workspace)
         assert not any(_argv_of(call)[:2] == ["docker", "run"] for call in run.call_args_list)
 
-    def test_fresh_create_replaces_deterministic_orphan_topology(self, workspace):
-        profile = self._profile()
-        expected = SimpleNamespace(relay_container="replacement")
-        with patch(
-            "booley.eda.provisioning.licensing.flexnet_docker.recreate_relay",
-            return_value=expected,
-        ) as recreate:
-            assert (
-                sr._provision_license_relay(
-                    workspace,
-                    profile,
-                    ("label=value",),
-                    "sha256:" + "a" * 64,
-                )
-                is expected
-            )
-        recreate.assert_called_once()
-        assert recreate.call_args.kwargs["issuance_labels"] == ("label=value",)
-        assert recreate.call_args.kwargs["image"] == "sha256:" + "a" * 64
+    @pytest.mark.parametrize("failure", ["create", "connect"])
+    def test_failed_start_removes_session_and_relay(self, wired, relay, failure):
+        from booley.eda.provisioning.licensing import flexnet_docker
 
-    def test_session_create_failure_rolls_back_relay(self, wired):
         workspace, run = wired
-        relay = SimpleNamespace(relay_container="relay")
-        run.return_value = subprocess.CompletedProcess([], 1, "", "create failed")
-        with (
-            patch(
-                "booley.runtime.session_issuance.requested_license",
-                return_value=self._profile(),
-            ),
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr, "_provision_license_relay", return_value=relay),
-            patch.object(sr, "_remove_license_relay") as remove,
-            pytest.raises(sr.SessionError, match="create failed"),
-        ):
+        if failure == "create":
+            run.return_value = subprocess.CompletedProcess([], 1, "", "create failed")
+        else:
+            relay.validate.side_effect = flexnet_docker.RelayDockerError("connect failed")
+        with pytest.raises(sr.SessionError, match=f"{failure} failed"):
             sr.up(workspace)
-        remove.assert_called_once_with(relay)
+        relay.remove.assert_called_once()
+        assert relay.remove.call_args.args == (relay.relay,)
+        removed = ["docker", "rm", "-f", sr.session_container_name(workspace)]
+        assert (removed in [_argv_of(call) for call in run.call_args_list]) is (
+            failure == "connect"
+        )
 
-    def test_private_connect_failure_removes_session_and_relay(self, wired):
+    def test_resume_validates_exact_relay_before_start(self, wired, relay, monkeypatch):
         workspace, run = wired
         ours = sr.session_container_name(workspace)
-        relay = SimpleNamespace(relay_container="relay")
-        with (
-            patch(
-                "booley.runtime.session_issuance.requested_license",
-                return_value=self._profile(),
-            ),
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr, "_provision_license_relay", return_value=relay),
-            patch.object(
-                sr,
-                "_connect_and_validate_license_relay",
-                side_effect=sr.SessionError("connect failed"),
-            ),
-            patch.object(sr, "_remove_license_relay") as remove,
-            pytest.raises(sr.SessionError, match="connect failed"),
-        ):
-            sr.up(workspace)
-        assert ["docker", "rm", "-f", ours] in [_argv_of(call) for call in run.call_args_list]
-        remove.assert_called_once_with(relay)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda name: name == ours)
+        monkeypatch.setattr(sr.idk, "container_running", lambda _name: False)
 
-    def test_resume_validates_exact_relay_before_start(self, wired):
-        workspace, run = wired
-        ours = sr.session_container_name(workspace)
-        relay = SimpleNamespace(relay_container="relay")
-        with (
-            patch(
-                "booley.runtime.session_issuance.requested_license",
-                return_value=self._profile(),
-            ),
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=False),
-            patch.object(sr, "_relay_resources", return_value=relay),
-            patch.object(sr, "_validate_license_relay") as validate,
-        ):
-            sr.up(workspace)
-        validate.assert_called_once()
+        sr.up(workspace)
+
+        assert relay.validate.call_args.args[:2] == (_relay(workspace), ours)
+        relay.recreate.assert_not_called()
         assert ["docker", "start", ours] in [_argv_of(call) for call in run.call_args_list]
 
-    def test_vscode_prepare_provisions_relay_before_create(self, wired):
+    @pytest.mark.parametrize("relay_exists", [False, True], ids=["provisions", "validates"])
+    def test_vscode_prepare_readies_relay_before_create(
+        self, wired, relay, monkeypatch, relay_exists: bool
+    ):
         workspace, _run = wired
-        relay = SimpleNamespace(relay_container="relay")
-        with (
-            patch(
-                "booley.runtime.session_issuance.requested_license",
-                return_value=self._profile(),
-            ),
-            patch.object(sr, "_relay_objects_exist", return_value=False),
-            patch.object(sr, "_provision_license_relay", return_value=relay) as provision,
-        ):
-            assert sr.prepare(workspace) == "abc"
-        provision.assert_called_once()
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: relay_exists)
+        monkeypatch.setattr(
+            sr.idk, "network_exists", lambda name: relay_exists or name == dc.EGRESS_NETWORK
+        )
 
-    def test_vscode_prepare_validates_existing_relay_without_a_session(self, wired):
-        workspace, _run = wired
-        relay = SimpleNamespace(relay_container="relay")
-        with (
-            patch(
-                "booley.runtime.session_issuance.requested_license",
-                return_value=self._profile(),
-            ),
-            patch.object(sr, "_relay_resources", return_value=relay),
-            patch.object(sr, "_relay_objects_exist", return_value=True),
-            patch("booley.eda.provisioning.licensing.flexnet_docker.validate_relay") as validate,
-            patch.object(sr, "_provision_license_relay") as provision,
-        ):
-            assert sr.prepare(workspace) == "abc"
-        assert validate.call_args.args[1] is None
-        provision.assert_not_called()
+        assert sr.prepare(workspace) == "abc"
 
-    def test_default_down_removes_relay_even_if_session_is_absent(self, workspace):
-        relay = SimpleNamespace(relay_container="relay")
-        with (
-            patch.object(sr, "_relay_resources", return_value=relay),
-            patch.object(sr.idk, "container_exists", side_effect=[False, True]),
-            patch.object(sr, "_remove_license_relay") as remove,
-        ):
-            assert sr.down(workspace).relay is True
-        remove.assert_called_once_with(relay)
+        assert relay.recreate.called is not relay_exists
+        assert relay.validate.called is relay_exists
+        if relay_exists:  # validated on its own: no Session container exists yet
+            assert relay.validate.call_args.args[:2] == (_relay(workspace), None)
 
 
 class TestPreflight:
@@ -2334,181 +2181,112 @@ class TestStaleSessionContainerWarning:
 
 
 class TestDownAndStatus:
-    def test_down_on_absent_container_is_false(self, workspace: Path):
-        with (
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "network_exists", return_value=False),
-        ):
-            assert not sr.down(workspace)
+    @pytest.mark.parametrize("relay_exists", [False, True], ids=["nothing", "relay-only"])
+    def test_down_without_a_sandbox_removes_only_the_relay(
+        self, workspace: Path, host_docker: _SandboxDocker, relay_exists: bool
+    ) -> None:
+        relay = _relay(workspace)
+        if relay_exists:
+            host_docker.networks.add(relay.private_network)
+        hook = Mock()
 
-    def test_down_never_removes_the_issuance_image_keeper(self, workspace: Path):
-        relay = SimpleNamespace(relay_container="relay")
-        with (
-            patch.object(sr, "_relay_resources", return_value=relay),
-            patch.object(sr, "_relay_objects_exist", return_value=False),
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr, "_run") as run,
-        ):
-            run.return_value = subprocess.CompletedProcess([], 0)
-            assert sr.down(workspace).headless is True
-        commands = [_argv_of(call) for call in run.call_args_list]
-        assert ["docker", "stop", sr.session_container_name(workspace)] in commands
-        assert ["docker", "rm", "-f", sr.session_container_name(workspace)] in commands
-        assert not any(command[:3] == ["docker", "image", "rm"] for command in commands)
+        assert sr.down(workspace, before_stop=hook) == sr.DownResult(relay=relay_exists)
 
-    def test_down_rejects_unproven_vscode_identity_before_mutation(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+        assert host_docker.removed == ([relay.relay_container] if relay_exists else [])
+        hook.assert_not_called()
+
+    @pytest.mark.parametrize("owner", ["unproven", "vscode"])
+    def test_down_refuses_before_any_mutation(
+        self,
+        workspace: Path,
+        host_docker: _SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        owner: str,
     ) -> None:
         from booley.runtime import session_admission
 
-        run = Mock()
-        monkeypatch.setattr(sr, "_run", run)
-        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
-        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
-        monkeypatch.setattr(
-            session_admission,
-            "running_project_sandboxes",
-            Mock(side_effect=session_admission.AdmissionError("identity disagrees")),
-        )
+        def found(*_args: object, **_kwargs: object) -> tuple[SimpleNamespace, ...]:
+            if owner == "unproven":
+                raise session_admission.AdmissionError("identity disagrees")
+            return (SimpleNamespace(container_id="id", name="ed", running=True, vscode=True),)
 
-        with pytest.raises(sr.SessionError, match="identity disagrees"):
-            sr.down(workspace)
+        monkeypatch.setattr(session_admission, "running_project_sandboxes", found)
+        host_docker.containers[sr.session_container_name(workspace)] = _headless_state(workspace)
+        hook = Mock()
 
-        run.assert_not_called()
+        message = "identity disagrees" if owner == "unproven" else "VS Code owns"
+        with pytest.raises(sr.SessionError, match=message):
+            sr.down(workspace, before_stop=hook)
 
-    def test_down_stops_revalidated_vscode_and_clears_claim(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_admission
-
-        item = SimpleNamespace(container_id="editor-id", name="editor", running=True, vscode=True)
-        discovered = Mock(side_effect=[(item,), (item,)])
-        monkeypatch.setattr(session_admission, "running_project_sandboxes", discovered)
-        monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda _root: True)
-        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
-        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
-        run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
-        monkeypatch.setattr(sr, "_run", run)
-
-        with pytest.raises(sr.SessionError, match="VS Code owns"):
-            sr.down(workspace)
-        run.assert_not_called()
-
-    def test_down_rejects_vscode_that_disappears_before_stop(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_admission
-
-        item = SimpleNamespace(container_id="editor-id", name="editor", running=True, vscode=True)
-        monkeypatch.setattr(
-            session_admission, "running_project_sandboxes", Mock(side_effect=[(item,), ()])
-        )
-        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
-        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
-
-        with pytest.raises(sr.SessionError, match="VS Code owns"):
-            sr.down(workspace)
+        assert host_docker.calls == []
+        hook.assert_not_called()
 
     @pytest.mark.parametrize("running", [True, False], ids=["running", "stopped-container"])
     def test_down_runs_before_stop_then_stops(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, running: bool
+        self,
+        workspace: Path,
+        host_docker: _SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        running: bool,
     ) -> None:
         from booley.runtime import session_admission
 
-        events: list[str] = []
-        item = SimpleNamespace(container_id="sandbox-id", name="sb", running=True, vscode=False)
+        name = sr.session_container_name(workspace)
+        host_docker.containers[name] = _headless_state(workspace, running=running)
+        item = SimpleNamespace(container_id="c" * 64, name=name, running=True, vscode=False)
         found = (item,) if running else ()
         monkeypatch.setattr(
             session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: found
         )
-        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
-        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
-        monkeypatch.setattr(
-            sr,
-            "_run",
-            lambda argv, **_kwargs: (
-                events.append(" ".join(argv[:2])) or subprocess.CompletedProcess(argv, 0, "", "")
-            ),
-        )
 
-        result = sr.down(workspace, before_stop=lambda sandbox: events.append(f"hook {sandbox}"))
+        result = sr.down(workspace, before_stop=host_docker.calls.append)
 
         assert result.headless is True
-        assert events == [f"hook {item if running else None}", "docker stop", "docker rm"]
-
-    @pytest.mark.parametrize("case", ["no-container", "vscode-owned"])
-    def test_down_skips_before_stop_when_it_will_not_stop(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, case: str
-    ) -> None:
-        from booley.runtime import session_admission
-
-        found = (
-            (SimpleNamespace(container_id="id", name="ed", running=True, vscode=True),)
-            if case == "vscode-owned"
-            else ()
-        )
-        monkeypatch.setattr(
-            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: found
-        )
-        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
-        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
-        hook = Mock()
-
-        if case == "vscode-owned":
-            with pytest.raises(sr.SessionError, match="VS Code owns"):
-                sr.down(workspace, before_stop=hook)
-        else:
-            assert not sr.down(workspace, before_stop=hook)
-
-        hook.assert_not_called()
+        stopped = item.container_id if running else name
+        assert host_docker.calls == [
+            item if running else None,
+            ["docker", "stop", stopped],
+            ["docker", "rm", "-f", stopped],
+        ]
 
     @pytest.mark.parametrize("failure", ["stop", "rm"])
     def test_down_reports_headless_docker_failure(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+        self, workspace: Path, host_docker: _SandboxDocker, failure: str
     ) -> None:
-        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
-        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
-
-        def run(argv: list[str], **_kwargs):
-            failed = argv[1] == failure
-            return subprocess.CompletedProcess(
-                argv, 1 if failed else 0, "", "denied" if failed else ""
-            )
-
-        monkeypatch.setattr(sr, "_run", run)
+        host_docker.containers[sr.session_container_name(workspace)] = _headless_state(workspace)
+        host_docker.failing.add(failure)
 
         message = "cannot remove" if failure == "rm" else "cannot stop"
         with pytest.raises(sr.SessionError, match=message):
             sr.down(workspace)
 
-    def test_down_reports_vscode_stop_failure(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("running", "pending", "expected"),
+        [
+            (None, True, "start-pending"),
+            (None, False, "absent"),
+            (False, False, "stopped"),
+            (True, False, "running"),
+        ],
+    )
+    def test_status_reports_each_state(
+        self,
+        workspace: Path,
+        host_docker: _SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        running: bool | None,
+        pending: bool,
+        expected: str,
     ) -> None:
         from booley.runtime import session_admission
 
-        item = SimpleNamespace(container_id="editor-id", name="editor", running=True, vscode=True)
-        monkeypatch.setattr(
-            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: (item,)
-        )
-        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
-        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
-        monkeypatch.setattr(
-            sr,
-            "_run",
-            lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "denied"),
-        )
+        monkeypatch.setattr(session_admission, "has_pending_claim", lambda _root: pending)
+        if running is not None:
+            host_docker.containers[sr.session_container_name(workspace)] = _headless_state(
+                workspace, running=running
+            )
 
-        with pytest.raises(sr.SessionError, match="VS Code owns"):
-            sr.down(workspace)
-
-    def test_status_reports_pending_editor_start(
-        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import session_admission
-
-        monkeypatch.setattr(session_admission, "has_pending_claim", lambda _root: True)
-
-        assert sr.status(workspace) == "start-pending"
+        assert sr.status(workspace) == expected
 
     def test_status_reports_claim_inspection_failure(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
@@ -2522,20 +2300,6 @@ class TestDownAndStatus:
 
         with pytest.raises(sr.SessionError, match="claim unavailable"):
             sr.status(workspace)
-
-    def test_status_reports_three_states(self, workspace: Path):
-        with patch.object(sr.idk, "container_exists", return_value=False):
-            assert sr.status(workspace) == "absent"
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
-            assert sr.status(workspace) == "stopped"
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=True),
-        ):
-            assert sr.status(workspace) == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -3451,17 +3215,17 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
         },
         "State": {"Running": True, "StartedAt": "2026-09-27T08:00:00Z"},
     }
+    # Every Docker command of session_runtime goes through `_run`; no public entry takes a runner.
     monkeypatch.setattr(sr, "_run", docker)
     monkeypatch.setattr(sr.idk, "container_exists", lambda name: False)
-    monkeypatch.setattr(sr, "_relay_resources", lambda root: None)
-    monkeypatch.setattr(sr, "_relay_objects_exist", lambda relay: False)
+    monkeypatch.setattr(sr.idk, "network_exists", lambda name: False)
     with pytest.raises(sr.SessionError, match="identity disagrees"):
-        sr._down_unlocked(project)
+        sr.down(project)
     documents["editor-id"]["State"]["Running"] = False
     with pytest.raises(sr.SessionError, match="identity disagrees"):
-        sr._down_unlocked(project)
+        sr.down(project)
     del documents["editor-id"]
-    assert sr._down_unlocked(project).claim_cleared
+    assert sr.down(project).claim_cleared
     admission.admit_start(project, target_name="headless", run=docker)
     assert admission.claim_vscode_start(project, run=docker)
 
@@ -4685,10 +4449,11 @@ def _as_headless_sandbox(workspace: Path, fixture: SimpleNamespace, monkeypatch)
         "BOOLEY_DIR=/booley",
         f"{_CREDENTIAL_KEY}=container-held-secret",
     ]
+    # The shared resolution fixture serves its inspections through `_docker_stdout`, the
+    # module's Docker probe seam that no public entry takes; wrap it for the image-ID format.
     inspect = sr._docker_stdout
 
     def stdout(argv: list[str]) -> str | None:
-        # The fixture transport answers label/JSON inspections; add the image-ID format.
         if argv[-1] == "{{.Image}}":
             return fixture.state["Image"]
         return inspect(argv)
@@ -4734,19 +4499,12 @@ def test_verified_headless_container_requires_running_relay(
     fixture.state["Config"]["Labels"].update(
         label.split("=", 1) for label in runtime_spec.labels(fixture.issuance)
     )
-    profile = SimpleNamespace(
-        server_ipv4="10.20.30.40",
-        server_hostid="license-server-01",
-        lmgrd_port=2100,
-        vendor_port=2101,
-    )
-    monkeypatch.setattr(runtime_spec, "requested_license", lambda *_a, **_k: profile)
-    relay_resources = sr._relay_resources(workspace)
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda *_a, **_k: _LICENSE_PROFILE)
     validate = Mock()
     monkeypatch.setattr(flexnet_docker, "validate_relay", validate)
 
     assert sr.verified_headless_container(workspace, _refresh_image()) == fixture.state["Id"]
-    assert validate.call_args.args[:2] == (relay_resources, sr.session_container_name(workspace))
+    assert validate.call_args.args[:2] == (_relay(workspace), sr.session_container_name(workspace))
     assert validate.call_args.kwargs["image"] == fixture.issuance.relay_image_id
 
     # A stopped (or otherwise drifted) relay makes the matching Sandbox not current.
@@ -4754,20 +4512,14 @@ def test_verified_headless_container_requires_running_relay(
     assert sr.verified_headless_container(workspace, _refresh_image()) is None
 
 
-def test_remove_refresh_relay_removes_existing_relay_objects(workspace, monkeypatch):
-    from booley.eda.provisioning.licensing import flexnet_docker
-
-    remove = Mock()
-    monkeypatch.setattr(flexnet_docker, "remove_relay", remove)
-    relay = sr._relay_resources(workspace)
-
-    monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+def test_remove_refresh_relay_removes_existing_relay_objects(workspace, host_docker):
+    relay = _relay(workspace)
     sr.remove_refresh_relay(workspace)
-    remove.assert_not_called()
+    assert host_docker.removed == []
 
-    monkeypatch.setattr(sr, "_relay_objects_exist", lambda candidate: candidate == relay)
+    host_docker.networks.add(relay.outbound_network)
     sr.remove_refresh_relay(workspace)
-    remove.assert_called_once_with(relay, runner=sr.idk.relay_docker)
+    assert host_docker.removed == [relay.relay_container]
 
 
 def test_require_only_canonical_sandbox(workspace, monkeypatch):
@@ -4797,17 +4549,14 @@ def _prepare_refresh_start(wired, monkeypatch, *, licensed: bool):
     issuance = _test_issuance(workspace)
     issuance.image_id = _REFRESH_IMAGE_ID
     issuance.license_profile = "site" if licensed else None
-    profile = SimpleNamespace(
-        server_ipv4="10.20.30.40",
-        server_hostid="license-server-01",
-        lmgrd_port=2100,
-        vendor_port=2101,
-    )
+    started = json.dumps({**_headless_state(workspace), "Id": "new-id"})
     events: list[str] = []
 
     def execute(argv, **_kwargs):
         if argv[:2] == ["docker", "run"]:
             events.append("docker run")
+        if argv[1:3] == ["container", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, started, "")
         stdout = _REFRESH_IMAGE_ID if argv[-1] == "{{.Image}}" else ""
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
@@ -4815,16 +4564,13 @@ def _prepare_refresh_start(wired, monkeypatch, *, licensed: bool):
     request = sr.UpRequest(
         _spec(),
         issuance,
-        profile if licensed else None,
+        _LICENSE_PROFILE if licensed else None,
         name,
         runtime_spec.labels(issuance),
-        sr._relay_resources(workspace),
+        _relay(workspace),
     )
     monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
     monkeypatch.setattr(sr.idk, "container_running", lambda _name: False)
-    monkeypatch.setattr(
-        sr, "_strict_refresh_container", lambda _name: {"Id": "new-id", "State": {"Running": True}}
-    )
     relay = SimpleNamespace(relay_container="relay")
     recreate = Mock(side_effect=lambda *_a, **_k: events.append("recreate relay") or relay)
     validate = Mock(side_effect=lambda *_a, **_k: events.append("validate relay"))
@@ -4861,89 +4607,64 @@ def test_start_refreshed_sandbox_provisions_relay_for_new_issuance(wired, monkey
 def test_start_refreshed_sandbox_skips_stopped_vscode_cleanup(wired, monkeypatch):
     fixture = _prepare_refresh_start(wired, monkeypatch, licensed=False)
     stale = "vscode-stale"
-    candidates = Mock(return_value=[stale])
-    remove = Mock()
-    monkeypatch.setattr(sr, "_stopped_vscode_reconcile_candidates", candidates)
-    monkeypatch.setattr(sr, "_remove_stopped_session_container", remove)
+    # `wired` empties the strict Sandbox inventory that `session up` reads for this
+    # cleanup; no public entry restores it, so serve the stale container through it.
+    state = _vscode_container(fixture.workspace, running=False, spec_digest="older-spec")
+    monkeypatch.setattr(
+        sr, "_strict_all_sandbox_states", lambda _project: [(stale, json.dumps([state]))]
+    )
 
     assert (
         sr.start_refreshed_sandbox(fixture.workspace, fixture.request, _refresh_image())
         == "new-id"
     )
 
-    remove.assert_not_called()
     assert fixture.events == ["docker run"]
     assert not any(stale in _argv_of(call) for call in fixture.run.call_args_list)
 
 
-def _headless_state(workspace: Path, **label_overrides: str | None) -> dict:
-    """Strict inspect data for a headless Sandbox this Project could own."""
-    labels = {
-        "booley.role": "interactive",
-        "booley.project-id": sr.project_label_id(str(workspace.resolve())),
-    }
-    for key, value in label_overrides.items():
-        if value is None:
-            labels.pop(key, None)
-        else:
-            labels[key] = value
-    state = _refresh_state(running=True, labels=labels)
-    state["Id"] = "c" * 64
-    return state
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        ({"booley.project-id": "someone-else"}, "not this Project's headless Sandbox"),
+        ({"booley.role": None}, "not this Project's headless Sandbox"),
+        ({"devcontainer.local_folder": "/work"}, "not this Project's headless Sandbox"),
+        (None, "no immutable container identity"),
+    ],
+    ids=["other-project", "missing-role", "vscode-folder", "no-identity"],
+)
+def test_remove_refresh_predecessor_refuses_unproven_container(
+    workspace, host_docker, labels, message
+):
+    state = _headless_state(workspace, **(labels or {}))
+    if labels is None:
+        del state["Id"]
+    host_docker.containers[sr.session_container_name(workspace)] = state
 
-
-def test_remove_refresh_predecessor_refuses_unproven_container(workspace, monkeypatch):
-    docker = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
-    monkeypatch.setattr(sr, "_run", docker)
-    cases = {
-        "other project": {"booley.project-id": "someone-else"},
-        "missing role": {"booley.role": None},
-        "vscode folder": {"devcontainer.local_folder": str(workspace)},
-    }
-    for label, overrides in cases.items():
-        state = _headless_state(workspace, **overrides)
-        monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name, s=state: s)
-        with pytest.raises(sr.SessionError, match="not this Project's headless Sandbox"):
-            sr.remove_refresh_predecessor(workspace)
-        assert docker.call_count == 0, label
-
-
-def test_remove_refresh_predecessor_refuses_container_without_identity(workspace, monkeypatch):
-    docker = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
-    monkeypatch.setattr(sr, "_run", docker)
-    state = _headless_state(workspace)
-    del state["Id"]
-    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
-
-    with pytest.raises(sr.SessionError, match="no immutable container identity"):
+    with pytest.raises(sr.SessionError, match=message):
         sr.remove_refresh_predecessor(workspace)
 
-    docker.assert_not_called()
+    assert [argv[1] for argv in host_docker.calls] == ["container"]
 
 
-def test_remove_refresh_predecessor_stops_then_removes_by_immutable_id(workspace, monkeypatch):
-    state = _headless_state(workspace)
-    calls: list[list[str]] = []
-
-    def docker(argv, **_kwargs):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(sr, "_run", docker)
-    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
-
-    assert sr.remove_refresh_predecessor(workspace) == state["Id"]
-    assert calls == [["docker", "stop", state["Id"]], ["docker", "rm", "-f", state["Id"]]]
-
-    calls.clear()
-    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: None)
+def test_remove_refresh_predecessor_stops_then_removes_by_immutable_id(workspace, host_docker):
     assert sr.remove_refresh_predecessor(workspace) is None
-    assert calls == []
+    assert [argv[1] for argv in host_docker.calls] == ["container"]
+    host_docker.containers[sr.session_container_name(workspace)] = _headless_state(workspace)
+    host_docker.calls.clear()
+
+    assert sr.remove_refresh_predecessor(workspace) == "c" * 64
+    assert host_docker.calls[1:] == [
+        ["docker", "stop", "c" * 64],
+        ["docker", "rm", "-f", "c" * 64],
+    ]
 
 
 # ---------------------------------------------------------------------------
 # _run timeout contract (real processes, no Docker needed)
 # ---------------------------------------------------------------------------
+# `_run` is the module's only process runner, and every public entry passes it a Docker
+# argv; these tests run real non-Docker processes through it, so they call it directly.
 
 
 def test_run_timeout_kills_the_tree_and_returns_promptly(tmp_path):
