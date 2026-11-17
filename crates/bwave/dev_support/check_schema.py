@@ -8,8 +8,8 @@ JSON subcommands, including clock-grid diagnostics against a representative
 
 Exits 0 on success, 1 on any drift (schema/envelope mismatch).
 
-Requires: `jsonschema` (pip install jsonschema). On Windows the bundled
-Python 3.14 has it; on MSYS2 Bash you'd need to use the project venv.
+The `bwave-integration` CI job runs this through `tests/test_json_schema.py`.
+`jsonschema` comes from Booley's runtime dependencies.
 """
 
 from __future__ import annotations
@@ -21,11 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-try:
-    from jsonschema import Draft202012Validator
-except ImportError:
-    print("ERROR: jsonschema not installed. `pip install jsonschema`", file=sys.stderr)
-    sys.exit(2)
+from jsonschema import Draft202012Validator
 
 
 def find_binary() -> str:
@@ -135,39 +131,42 @@ def clock_fixture(binary: str, directory: Path, off_grid: bool) -> Path:
     return store
 
 
+def load_validator(binary: str) -> Draft202012Validator:
+    rc, stdout, stderr = run_bwave(binary, ["schema"])
+    if rc != 0:
+        raise RuntimeError(f"schema exited {rc}: {stderr}")
+    schema = json.loads(stdout)
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
+def envelope_errors(
+    binary: str, validator: Draft202012Validator, fixture: Path, directory: Path
+) -> list[str]:
+    errors = validate_cases(binary, validator, fixture)
+    for off_grid in [False, True]:
+        store = clock_fixture(binary, directory, off_grid)
+        errors.extend(validate_cases(binary, validator, store))
+        args = ["value", str(store), "--at", "4", "--sample-mode", "pre-edge", "--format", "json"]
+        rc, payload, stderr = run_bwave(binary, args)
+        if rc != 0:
+            errors.append(f"pre-edge value: {stderr}")
+        else:
+            errors.extend(validate(validator, "pre-edge value", payload))
+    return errors
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     binary = find_binary()
     fixture = find_fixture(repo_root)
-    rc, stdout, stderr = run_bwave(binary, ["schema"])
-    if rc != 0:
-        print(f"ERROR: schema exited {rc}: {stderr}", file=sys.stderr)
+    try:
+        validator = load_validator(binary)
+    except RuntimeError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    schema = json.loads(stdout)
-    Draft202012Validator.check_schema(schema)
-    validator = Draft202012Validator(schema)
-    errors = validate_cases(binary, validator, fixture)
     with tempfile.TemporaryDirectory(prefix="bwave-schema-") as directory:
-        for off_grid in [False, True]:
-            store = clock_fixture(binary, Path(directory), off_grid)
-            errors.extend(validate_cases(binary, validator, store))
-            rc, payload, stderr = run_bwave(
-                binary,
-                [
-                    "value",
-                    str(store),
-                    "--at",
-                    "4",
-                    "--sample-mode",
-                    "pre-edge",
-                    "--format",
-                    "json",
-                ],
-            )
-            if rc != 0:
-                errors.append(f"pre-edge value: {stderr}")
-            else:
-                errors.extend(validate(validator, "pre-edge value", payload))
+        errors = envelope_errors(binary, validator, fixture, Path(directory))
     if errors:
         print("FAIL: schema drift detected:\n" + "\n".join(errors), file=sys.stderr)
         return 1
