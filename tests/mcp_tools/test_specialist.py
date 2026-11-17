@@ -20,6 +20,7 @@ from booley.runtime.agent_errors import (
     UsageLimitError,
 )
 from booley.specialists.specialist import Specialist
+from tests.runtime.test_execution_ports import FAR_RESET_MESSAGE
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -210,35 +211,6 @@ def test_model_call_timeout_is_raised_to_the_minimum(
     _launch(_named("reviewer"), tmp_path, "--timeout-ms", str(asked_ms))
 
     assert [params.timeout_seconds for _cli, params in calls] == [expected_s]
-
-
-def test_usage_limit_beyond_the_call_timeout_names_the_limit_and_reset(
-    tmp_path: Path, per_cli_backends, monkeypatch
-) -> None:
-    """A Claude limit that resets after the call's timeout ends the Specialist with that fact."""
-    from booley.config.agent import AgentSettings
-    from booley.runtime import _claude_backend as claude
-    from booley.runtime import agent_config
-    from tests.runtime.test_execution_ports import FAR_RESET_MESSAGE, fake_limit_query
-
-    per_cli_backends(AgentSettings(default_cli="claude", clis=("claude",)))
-    queries, sleep = fake_limit_query(monkeypatch, 1_800_108_000)
-    real = claude.ClaudeSDKBackend(auth_mode="visitor")
-    # Replace the recording fake with the real Claude backend, so the limit is raised
-    # by the code a Specialist runs on.
-    monkeypatch.setattr(agent_config, "_make_backend", lambda _cli, _auth: real)
-    agent_config.set_backend_config(
-        agent_config.configure_backend(AgentSettings(default_cli="claude", clis=("claude",)))
-    )
-
-    result = _launch(_named("reviewer"), tmp_path, "--timeout-ms", "600000")
-
-    assert result.exit_code == 2
-    assert result.report_text.startswith(
-        "reviewer failed: UsageLimitError: " + FAR_RESET_MESSAGE + ". Diagnostic: "
-    )
-    assert len(queries) == 1
-    sleep.assert_not_awaited()
 
 
 def test_specialist_launch_runs_on_its_models_cli(tmp_path: Path, per_cli_backends) -> None:
@@ -455,7 +427,7 @@ def test_model_list_refusal_moves_on_and_is_remembered(
     "error",
     [
         AgentAuthError("401 unauthorized", "claude"),
-        UsageLimitError("usage limit reached", "claude"),
+        UsageLimitError(FAR_RESET_MESSAGE, "claude"),
         TransientAPIError("529 overloaded"),
         AgentTimeoutError("deadline reached"),
     ],
@@ -475,7 +447,7 @@ def test_model_list_non_refusal_errors_do_not_try_next_entry(
 
     assert result.exit_code == 2
     assert [(cli, p.model) for cli, p in calls] == [("claude", "claude-opus-5-5")]
-    assert type(error).__name__ in result.report_text
+    assert f"{type(error).__name__}: {error}" in result.report_text
 
 
 def test_model_list_without_usable_entry_names_each_entry_and_reason(

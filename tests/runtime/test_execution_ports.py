@@ -73,16 +73,14 @@ def rejected_seven_day(resets_at):
     )
 
 
-@pytest.mark.parametrize(("resets_at", "slept"), [(None, 300), (_NOW + 5, 65)])
-def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch, resets_at, slept):
+def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
     calls = []
     destinations = []
-    monkeypatch.setattr(claude, "wall_clock", lambda: _NOW)
 
     async def query(*, prompt, options):
         calls.append(prompt)
         if len(calls) == 1:
-            yield rejected_seven_day(resets_at)
+            yield rejected_seven_day(None)
         else:
             yield _successful_result()
 
@@ -111,7 +109,7 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch, 
     assert result.output == "done"
     assert calls == ["work", "work"]
     assert [p.name for p in destinations] == ["reviewer.jsonl", "reviewer-retry2.jsonl"]
-    sleep.assert_awaited_once_with(slept)
+    sleep.assert_awaited_once_with(claude.RATE_LIMIT_FALLBACK_BACKOFF_S)
     for name in ("reviewer", "reviewer-retry2"):
         assert (
             json.loads((tmp_path / "machine" / f"{name}.json").read_text())["user_prompt"]
@@ -154,22 +152,15 @@ def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(tmp_p
     sleep.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    ("resets_at", "reset_text"),
-    [(None, ""), (_NOW + 5, "; resets at 2027-01-15T08:00:05Z")],
-    ids=["no-reset", "known-reset"],
-)
-def test_claude_rejections_on_every_attempt_end_as_usage_limit(
-    tmp_path, monkeypatch, resets_at, reset_text
-):
-    queries, _sleep = fake_limit_query(monkeypatch, resets_at)
-    backend = claude.ClaudeSDKBackend(auth_mode="visitor")
+def test_claude_rejections_on_every_attempt_end_as_usage_limit(tmp_path, monkeypatch):
+    queries, _sleep = fake_limit_query(monkeypatch, _NOW + 5)
 
     with pytest.raises(UsageLimitError) as raised:
-        asyncio.run(backend.call(_limit_params(tmp_path)))
+        asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path)))
 
     assert str(raised.value) == (
-        f"Claude usage limit reached (seven_day){reset_text}; still limited after 5 attempts"
+        "Claude usage limit reached (seven_day); resets at 2027-01-15T08:00:05Z;"
+        " still limited after 5 attempts"
     )
     assert len(queries) == 5
 

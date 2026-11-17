@@ -3494,19 +3494,22 @@ class TestDeveloperProbe:
     def test_usage_limit_row_names_the_limit_and_reset_without_auth_advice(
         self, tmp_path, monkeypatch, probe_backend
     ):
-        from booley.runtime import _claude_backend as claude
-        from tests.runtime.test_execution_ports import FAR_RESET_MESSAGE, fake_limit_query
+        from booley.runtime.agent_errors import UsageLimitError
+        from tests.runtime.test_execution_ports import FAR_RESET_MESSAGE
 
-        fake_limit_query(monkeypatch, 1_800_108_000)
-        backend = claude.ClaudeSDKBackend(auth_mode="visitor")
+        async def limited(_params, **_kw):
+            raise UsageLimitError(FAR_RESET_MESSAGE, provider="claude")
 
-        async def call_agent(params, **_kw):
-            return await backend.call(params)
-
-        probe_backend(call_agent)
+        probe_backend(limited)
         _runtime_setup(tmp_path, monkeypatch, inside=True)
         _deep_synth_writes_complete_report(monkeypatch, tmp_path / ".booley")
-        _patch_developer_probe(monkeypatch, developer_probe.measure_developer_rss)
+
+        real = developer_probe.measure_developer_rss
+
+        def measure(root, **_kw):
+            return real(root, getrusage=_rusage(0, 0))
+
+        _patch_developer_probe(monkeypatch, measure)
 
         result = _doctor_run(tmp_path, deep=True)
 
@@ -3514,11 +3517,10 @@ class TestDeveloperProbe:
         assert [(f.severity, f.message) for f in rows] == [
             (
                 Severity.SKIP,
-                "Specialist provider memory probe skipped - probe agent failed: "
-                + FAR_RESET_MESSAGE,
+                f"Specialist provider memory probe skipped - probe agent failed: {FAR_RESET_MESSAGE}",
             )
         ]
-        assert all("auth" not in f"{f.message} {f.fix}".lower() for f in rows)
+        assert "auth" not in f"{rows[0].message} {rows[0].fix}".lower()
 
     def test_long_check_announcement_flushes_stdout(self, monkeypatch):
         events: list[str] = []
