@@ -3,17 +3,18 @@
 import pytest
 
 from booley.flows.base import SubprocessResult
-from booley.flows.eda_failures import classify_eda_failure
+from booley.flows.eda_failures import (
+    classify_eda_failure,
+    find_missing_executable,
+    first_tool_diagnostic,
+    format_missing_eda_tool,
+    new_attempt_token,
+    render_failure_marker,
+    strip_failure_markers,
+)
 
 
 def test_authenticated_missing_eda_tool_marker_survives_make_rc_translation() -> None:
-    from booley.flows.eda_failures import (
-        classify_eda_failure,
-        format_missing_eda_tool,
-        new_attempt_token,
-        render_failure_marker,
-    )
-
     token = new_attempt_token()
     marker = render_failure_marker(token, "missing_eda_tool", "yosys", "yosys")
     result = classify_eda_failure(
@@ -30,8 +31,6 @@ def test_authenticated_missing_eda_tool_marker_survives_make_rc_translation() ->
 
 
 def test_missing_required_toolchain_file_is_infrastructure() -> None:
-    from booley.flows.eda_failures import classify_eda_failure
-
     result = classify_eda_failure(
         SubprocessResult(
             returncode=1,
@@ -49,8 +48,6 @@ def test_missing_required_toolchain_file_is_infrastructure() -> None:
 
 
 def test_untrusted_and_ambiguous_markers_are_ignored() -> None:
-    from booley.flows.eda_failures import classify_eda_failure, render_failure_marker
-
     token = "0123456789abcdef0123456789abcdef"
     marker = render_failure_marker(token, "missing_eda_tool", "yosys", "yosys")
     for text in (
@@ -67,8 +64,6 @@ def test_untrusted_and_ambiguous_markers_are_ignored() -> None:
 
 
 def test_runtime_missing_file_text_is_not_toolchain_infrastructure() -> None:
-    from booley.flows.eda_failures import classify_eda_failure
-
     result = classify_eda_failure(
         SubprocessResult(
             returncode=1,
@@ -80,8 +75,6 @@ def test_runtime_missing_file_text_is_not_toolchain_infrastructure() -> None:
 
 
 def test_direct_spawn_failure_names_boundary_not_child() -> None:
-    from booley.flows.eda_failures import classify_eda_failure
-
     result = classify_eda_failure(
         SubprocessResult(returncode=-1),
         expected_executable="verilator",
@@ -170,14 +163,10 @@ _MARKER_LINE = (
     ],
 )
 def test_2808_first_tool_diagnostic(text: str, default: str | None, expected: str) -> None:
-    from booley.flows.eda_failures import first_tool_diagnostic
-
     assert first_tool_diagnostic(text, default) == expected
 
 
 def test_2808_strip_failure_markers_drops_marker_lines_only() -> None:
-    from booley.flows.eda_failures import strip_failure_markers
-
     other_token = _MARKER_LINE.replace("0123456789abcdef", "fedcba9876543210")
     text = f"before\n{_MARKER_LINE}\n  BOOLEY_EDA_FAILURE junk\n{other_token}\nafter"
     assert strip_failure_markers(text) == "before\nafter"
@@ -210,8 +199,6 @@ _VERILATOR_ECHOED_SOURCE_LOG = """\
 
 
 def test_echoed_verilator_source_is_not_a_missing_tool() -> None:
-    from booley.flows.eda_failures import find_missing_executable
-
     assert "    6 |" in _VERILATOR_ECHOED_SOURCE_LOG
     result = classify_eda_failure(
         SubprocessResult(returncode=0, stdout=_VERILATOR_ECHOED_SOURCE_LOG),
@@ -235,8 +222,6 @@ def test_echoed_verilator_source_is_not_a_missing_tool() -> None:
     ],
 )
 def test_wrapped_spawn_failure_still_names_the_tool(text: str, tool: str) -> None:
-    from booley.flows.eda_failures import find_missing_executable
-
     assert find_missing_executable(text) == tool
 
 

@@ -55,6 +55,7 @@ PAIRS = (
 HIDDEN = {"--work-dir", "--timeout-ms", "--elab-only", "--build-only", "--standalone"}
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 @pytest.mark.parametrize("flow_type", FLOWS)
 @pytest.mark.parametrize("cli", [False, True])
 def test_complete_grouped_help(flow_type: type[BuiltinFlow], cli: bool) -> None:
@@ -96,6 +97,7 @@ def test_complete_grouped_help(flow_type: type[BuiltinFlow], cli: bool) -> None:
         assert all("Defaults are tuned" in g.description for g in named[-2:])
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 @pytest.mark.parametrize("width", [46, 100])
 def test_pair_rendering(width: int) -> None:
     flow = next(cls() for cls in FLOWS if cls.name == "synth")
@@ -150,11 +152,13 @@ def test_projection_isolation() -> None:
             assert parsers[0].format_help() == parsers[2].format_help()
             assert parsers[1].format_help() == parsers[3].format_help()
             transport = build_cli_parser(flow, CliInvocation(transport=True))
-            assert "--work-dir" in transport._option_string_actions
-            assert "--project" not in transport._option_string_actions
+            assert transport.parse_args(["--target", "example", "--work-dir", "w"]).work_dir
+            with pytest.raises(SystemExit):
+                transport.parse_args(["--target", "example", "--project", "w"])
             assert transport.parse_args(["--target", "example", "-q"])._console_quiet
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 def test_resume_and_required_target_guidance() -> None:
     for cls in FLOWS:
         parser = build_parser(cls(), human=True)
@@ -182,6 +186,7 @@ MUTATION_TARGET_RULE = "Required: omission is a parse error."
 DEFAULT_MARKERS = ("When omitted", "Default:", "(default ")
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 def test_target_help_states_each_rule_once() -> None:
     """Every Built-in Flow's human `--target` help says the omission rule once."""
     for cls in FLOWS:
@@ -203,6 +208,7 @@ def test_target_help_states_each_rule_once() -> None:
         assert rendered.count(rule) == 1, flow.name
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 def test_human_help_states_each_default_once() -> None:
     """Each human option's omission/default text appears once, not in its description too."""
     for cls in FLOWS:
