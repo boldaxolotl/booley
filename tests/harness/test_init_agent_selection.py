@@ -215,7 +215,7 @@ def _initialize_nested_git_repositories(parent_booley_dir, child):
         ),
     )
     for root, *args in commands:
-        run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10)
+        run_bounded_child(["git", "-C", str(root), *args], check=True)
     return (parent_booley_dir / ".git" / "config").read_bytes()
 
 

@@ -26,6 +26,7 @@ from tests.harness.test_dashboard import (
     open_session,
     snapshot,
 )
+from tests.time_budget import hang_guard_s
 
 # The session list starts with the running Jobs owned by the session.
 JOB_ROW = 0
@@ -34,7 +35,7 @@ JOB_ROW = 0
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """Let a slow CI worker finish the first read before any key press (#2023)."""
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
 
 
 def world(*, jobs=45):

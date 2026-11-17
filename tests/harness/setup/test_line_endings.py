@@ -21,6 +21,7 @@ from booley.harness.setup.line_endings import (
     reconcile_project_line_endings,
 )
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
@@ -735,7 +736,7 @@ def test_partial_recheckout_failure_leaves_no_phantom_modifications(tmp_path: Pa
 def _wait_for_next_second() -> None:
     """Git compares ctime in whole seconds; return once the clock is in a later one."""
     start = int(time.time())
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + hang_guard_s()
     while int(time.time()) == start and time.monotonic() < deadline:
         time.sleep(0.05)
 

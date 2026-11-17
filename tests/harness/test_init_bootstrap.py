@@ -15,6 +15,7 @@ from booley.harness import bootstrap, bootstrap_cli, init_cmd
 from booley.runtime import issuance_invalidation
 from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+from tests.time_budget import hang_guard_s
 
 
 def _args(**overrides: object) -> argparse.Namespace:
@@ -99,10 +100,10 @@ def test_host_setup_waits_for_lifecycle_lock(
         ThreadPoolExecutor(max_workers=1) as executor,
     ):
         result = executor.submit(run)
-        assert waiting.wait(2)
+        assert waiting.wait(hang_guard_s())
         assert not result.done()
         holder.release()
-        assert result.result(timeout=5) == 0
+        assert result.result(timeout=hang_guard_s()) == 0
 
     assert invoked == [operation]
     assert "host Docker lifecycle is busy" in caplog.text

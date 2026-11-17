@@ -17,10 +17,11 @@ import pytest
 
 from tests.harness.setup import test_git_hooks
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 #: Forced bound, short enough to keep the test fast and long enough for the
 #: Git -> sh -> Python start on a loaded runner (matches tests/test_subprocess_budget.py).
-FORCED_TIMEOUT_S = 10
+FORCED_TIMEOUT_S = scaled(10)
 
 # Prints a marker, then hangs while holding the output pipes, as a stalled hook
 # would. It also stops once the stop file appears, so code that leaves it running
@@ -32,7 +33,7 @@ _STALLED_CHILD = textwrap.dedent(
 
     print("HARNESS-GIT-PARTIAL", flush=True)
     stop_file = Path(sys.argv[1])
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + {stall_s!r}
     while time.monotonic() < deadline and not stop_file.exists():
         time.sleep(0.05)
     """
@@ -53,7 +54,9 @@ def test_stalled_harness_git_child_fails_with_elapsed_time_and_partial_output(
     monkeypatch.setattr(test_git_hooks, "run_bounded_child", run_with_short_bound, raising=False)
 
     script = tmp_path / "stalled_child.py"
-    script.write_text(_STALLED_CHILD, encoding="utf-8", newline="\n")
+    script.write_text(
+        _STALLED_CHILD.format(stall_s=3 * FORCED_TIMEOUT_S), encoding="utf-8", newline="\n"
+    )
     stop_file = tmp_path / "stop"
     # A git alias runs through ``sh``, so the Python process is a grandchild. The
     # marker lives in the script, not in argv, so the command echoed in the
@@ -68,7 +71,7 @@ def test_stalled_harness_git_child_fails_with_elapsed_time_and_partial_output(
         stop_file.touch()
 
     message = str(raised.value)
-    assert f"timed out after {FORCED_TIMEOUT_S} s" in message
+    assert f"timed out after {FORCED_TIMEOUT_S:g} s" in message
     assert "HARNESS-GIT-PARTIAL" in message
     elapsed = re.search(r"elapsed (\d+\.\d) s", message)
     assert elapsed, message

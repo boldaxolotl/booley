@@ -54,6 +54,7 @@ from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 
 @pytest.fixture(autouse=True)
@@ -107,10 +108,10 @@ def test_session_up_waits_for_lifecycle_lock(
         ThreadPoolExecutor(max_workers=1) as executor,
     ):
         result = executor.submit(sr.up, workspace)
-        assert waiting.wait(2)
+        assert waiting.wait(hang_guard_s())
         assert not result.done()
         holder.release()
-        assert result.result(timeout=5) == "sandbox"
+        assert result.result(timeout=hang_guard_s()) == "sandbox"
 
     assert invoked == ["up"]
     assert "host Docker lifecycle is busy" in caplog.text
@@ -2503,11 +2504,11 @@ class _ParallelEnterProbe:
             call = self.select_calls
         if call == 1:
             self.first_selecting.set()
-            assert self.release_first.wait(timeout=2)
+            assert self.release_first.wait(timeout=hang_guard_s())
         return "runtime", self.command_env
 
     def run_command(self, *_args, **_kwargs) -> SimpleNamespace:
-        self.execution_barrier.wait(timeout=2)
+        self.execution_barrier.wait(timeout=hang_guard_s())
         return SimpleNamespace(exit_code=0)
 
 
@@ -2678,13 +2679,13 @@ class TestRunProjectCommand:
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             first = executor.submit(sr.enter, workspace, ["bwave", "first"], tty=False)
-            assert probe.first_selecting.wait(timeout=2)
+            assert probe.first_selecting.wait(timeout=hang_guard_s())
             second = executor.submit(sr.enter, workspace, ["bwave", "second"], tty=False)
-            assert probe.second_waiting.wait(timeout=2)
+            assert probe.second_waiting.wait(timeout=hang_guard_s())
             assert not second.done()
             probe.release_first.set()
-            assert first.result(timeout=5) == 0
-            assert second.result(timeout=5) == 0
+            assert first.result(timeout=hang_guard_s()) == 0
+            assert second.result(timeout=hang_guard_s()) == 0
 
         assert probe.select_calls == 2
 
@@ -4673,9 +4674,9 @@ def test_run_timeout_kills_the_tree_and_returns_promptly(tmp_path):
         argv = parent_argv(tmp_path, sys.executable, paths, "live")
         start = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
-            sr._run(argv, timeout=2)
+            sr._run(argv, timeout=scaled(2))
         elapsed = time.monotonic() - start
-        assert elapsed < 25, f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
+        assert elapsed < scaled(25), f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
         assert paths["heartbeat"].exists(), "grandchild never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), (
             "grandchild still running after the timeout"
@@ -4684,7 +4685,7 @@ def test_run_timeout_kills_the_tree_and_returns_promptly(tmp_path):
 
 def test_run_keeps_its_result_contract():
     """Timed and untimed calls return text, return non-zero exits, and raise on a missing program."""
-    for timeout in (None, 30):
+    for timeout in (None, hang_guard_s()):
         ok = sr._run(
             [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
             timeout=timeout,

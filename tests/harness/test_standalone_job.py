@@ -17,6 +17,7 @@ from booley.mcp.registry import McpToolInfo
 from booley.runtime import job_records
 from booley.runtime.handles import job_handle_expired
 from tests.conftest import symlink_or_skip
+from tests.time_budget import hang_guard_s
 
 # Where the Dashboard already scans for Job records: the common Booley Directory's standalone log
 # root, with machine-owned records under ``.runtime/jobs`` and each run's output beside them.
@@ -24,9 +25,10 @@ STANDALONE_ROOT = Path(".interactive_logs") / "standalone"
 JOBS_ROOT = STANDALONE_ROOT / ".runtime" / "jobs"
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
-CHILD_TIMEOUT_S = 60
-# Each wait on the child ends before pytest's 60 s timeout so a hang fails with the child's output.
-CHILD_WAIT_S = 20
+CHILD_TIMEOUT_S = 2 * hang_guard_s()
+# Each wait on the child is the hang guard and ends before the child's own timeout, so a hang
+# fails with the child's output.
+CHILD_WAIT_S = hang_guard_s()
 
 
 class StubEndpoint:

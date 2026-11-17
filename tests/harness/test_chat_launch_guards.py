@@ -27,6 +27,7 @@ from tests.harness.test_chat_exit import (  # noqa: F401  (fixtures)
     repo,
     terminal,
 )
+from tests.time_budget import scaled
 
 
 def test_launch_without_fork_makes_no_exit_step(project, monkeypatch, capsys):  # noqa: F811
@@ -58,7 +59,7 @@ def test_launch_inside_a_worktree_counts_as_its_use(project, monkeypatch, capsys
 
     stamped = last_used(project / ".booley", "s9")
     assert stamped is not None
-    assert time.time() - stamped < 3600
+    assert time.time() - stamped < scaled(3600)
 
 
 def test_interrupted_forced_removal_hints_force(repo, terminal, monkeypatch, capsys):  # noqa: F811
