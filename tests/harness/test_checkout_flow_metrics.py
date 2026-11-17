@@ -310,6 +310,13 @@ class _MergeFailsExecution(_MixedCoverageExecution):
         return SimulationCommandResult(1)
 
 
+class _IncompatibleDatabaseExecution(_MixedCoverageExecution):
+    """Every Test Run writes a native database in a format Booley does not read."""
+
+    def payload(self, hits: int) -> str:
+        return "not a coverage database\n"
+
+
 def test_target_whose_values_cannot_be_produced_returns_the_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -339,6 +346,9 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
         ),
         "native merge failed": coverage_result(
             tmp_path / "f", monkeypatch, _MergeFailsExecution()
+        ),
+        "incompatible native database": coverage_result(
+            tmp_path / "g", monkeypatch, _IncompatibleDatabaseExecution()
         ),
     }
 

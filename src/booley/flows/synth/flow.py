@@ -33,6 +33,7 @@ from booley.core.boundary import (
     as_dict,
     as_float,
     as_int,
+    as_str,
     as_str_list,
     require_bool,
     require_positive_int,
@@ -998,12 +999,12 @@ def _incomplete_reason(summary: dict[str, Any]) -> str | None:
 
     A summary without ``ppa_complete`` is not a completed run: the reader fails closed.
     """
-    infra_error = summary.get("infra_error")
-    if isinstance(infra_error, str) and infra_error:
+    if infra_error := as_str(summary.get("infra_error")):
         return infra_error
     if summary.get("ppa_complete") is not True:
+        termination = as_str(summary.get("termination"))
         return (
-            f"the synthesis run did not complete ({summary.get('termination')}); "
+            f"the synthesis run did not complete{f' ({termination})' if termination else ''}; "
             "its partial numbers are not final QoR"
         )
     return None

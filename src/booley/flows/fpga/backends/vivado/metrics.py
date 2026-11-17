@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import as_dict, as_float, as_int
+from booley.core.boundary import as_dict, as_float, as_int, as_str
 from booley.evidence.timing import ClockTiming, per_clock_from_json, per_clock_to_json
 from booley.flows.edam import EdamFile
 from booley.flows.metric_declarations import (
@@ -46,8 +46,7 @@ FPGA_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
 def _incomplete_reason(entry: object) -> str | None:
     """Why a Target's implementation run did not complete, or ``None`` when it did."""
     status = as_dict((as_dict(entry) or {}).get("status")) or {}
-    infra_error = status.get("infra_error")
-    reason = infra_error if isinstance(infra_error, str) and infra_error else None
+    reason = as_str(status.get("infra_error")) or None
     if status.get("timed_out") is True:
         text = "the FPGA implementation timed out"
         return f"{text}: {reason}" if reason else text

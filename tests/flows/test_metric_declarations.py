@@ -308,11 +308,11 @@ def _synth_partial_ppa() -> tuple[str, Any, str]:
     return "synth", _synth_detail(metrics), reason
 
 
-def _fpga_incomplete(**state: Any) -> tuple[str, Any, str]:
+def _fpga_incomplete(**state: Any) -> Any:
     metrics = _routed_fpga_metrics()
     for name, value in state.items():
         setattr(metrics, name, value)
-    return "fpga", _fpga_detail(metrics), ""
+    return _fpga_detail(metrics)
 
 
 _INFRA = "Vivado required reports lack usable utilization/timing evidence"
@@ -324,22 +324,20 @@ _INFRA = "Vivado required reports lack usable utilization/timing evidence"
         pytest.param(*_synth_partial_ppa(), id="synth-partial-ppa"),
         pytest.param(
             "fpga",
-            _fpga_incomplete(timed_out=True)[1],
+            _fpga_incomplete(timed_out=True),
             "the FPGA implementation timed out",
             id="fpga-timeout",
         ),
         pytest.param(
             "fpga",
-            _fpga_incomplete(timed_out=True, infra_error=_INFRA)[1],
+            _fpga_incomplete(timed_out=True, infra_error=_INFRA),
             f"the FPGA implementation timed out: {_INFRA}",
             id="fpga-timeout-infra-error",
         ),
-        pytest.param(
-            "fpga", _fpga_incomplete(infra_error=_INFRA)[1], _INFRA, id="fpga-infra-error"
-        ),
+        pytest.param("fpga", _fpga_incomplete(infra_error=_INFRA), _INFRA, id="fpga-infra-error"),
         pytest.param(
             "fpga",
-            _fpga_incomplete(route_completed=False)[1],
+            _fpga_incomplete(route_completed=False),
             "Vivado did not complete route_design",
             id="fpga-route-incomplete",
         ),
@@ -365,6 +363,19 @@ def test_synth_summary_with_an_infrastructure_error_has_no_values() -> None:
     values = report_metric_values("synth", {"targets": ["asic"], "asic": summary})
 
     assert values == {"asic": MetricsUnavailable("synthesis execution timeout")}
+
+
+def test_synth_summary_that_never_completed_fails_closed_without_a_termination() -> None:
+    from booley.flows.metric_declarations import MetricsUnavailable
+    from booley.measurement.flow_metrics import report_metric_values
+
+    values = report_metric_values("synth", {"targets": ["asic"], "asic": {"cell_count": 3}})
+
+    assert values == {
+        "asic": MetricsUnavailable(
+            "the synthesis run did not complete; its partial numbers are not final QoR"
+        )
+    }
 
 
 def test_report_without_declared_metrics_or_targets_yields_none() -> None:
