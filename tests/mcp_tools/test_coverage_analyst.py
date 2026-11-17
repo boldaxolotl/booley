@@ -258,7 +258,17 @@ def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
     assert "collector_error" in result.outcome.report_text
 
 
-def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
+@pytest.fixture
+def fresh_evidence_session(monkeypatch):
+    """Start with no bound evidence session: the tool binds one module-global per process."""
+    from booley.mcp import coverage_evidence
+
+    # No public reset: the module binds one session per process.
+    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)  # the failed-session latch
+
+
+def test_report_records_exact_evidence_scope(tmp_path, monkeypatch, fresh_evidence_session):
     from booley.mcp import coverage_evidence
 
     path = persist_coverage_record(tmp_path)
@@ -266,7 +276,6 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
     def querying_model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         coverage_evidence.query_active_coverage_evidence(
             {"view": "points", "disposition": "eligible", "limit": 1}
         )
@@ -283,7 +292,9 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
     assert "point_references" not in report["analysis_scope"]
 
 
-def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monkeypatch):
+def test_model_short_references_resolve_to_exact_report_point_ids(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
     path = persist_coverage_record(tmp_path)
@@ -295,7 +306,6 @@ def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monk
         )
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         result = coverage_evidence.query_active_coverage_evidence(
             {"view": "points", "disposition": "eligible", "limit": 1}
         )
@@ -347,7 +357,9 @@ def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
     assert "/waiver_candidates/0/point_ref: unknown_point_ref" in result.outcome.report_text
 
 
-def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatch):
+def test_delivered_legacy_exact_model_ids_remain_compatible(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
     path = persist_coverage_record(tmp_path)
@@ -356,7 +368,6 @@ def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatc
     def legacy_model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
         return AgentResult(
             structured={
@@ -455,10 +466,10 @@ def source_project(root):
         "CAPI=2:\nname: acme:demo:counter:1.0\nfilesets:\n  rtl:\n    files: [rtl/counter.sv]\n    file_type: systemVerilogSource\n  tb:\n    files: [tb/counter_tb.sv]\n    file_type: systemVerilogSource\n    tags: [tb]\ntargets:\n  sim_counter:\n    flow: sim\n    filesets: [rtl, tb]\n    toplevel: counter_tb\n    flow_options:\n      tool: verilator\n"
     )
     document = json.loads(path.read_text())
-    for category in ("rtl", "testbench"):
+    for category, fingerprint in (("rtl", "rtl_sources"), ("testbench", "testbench_sources")):
         for item in document["source_closure"][category]:
             item["sha256"] = content_digest((root / item["path"]).read_bytes())
-        document["fingerprints"][category + "_sources"] = coverage_digest(
+        document["fingerprints"][fingerprint] = coverage_digest(
             document["source_closure"][category]
         )
     document["fingerprints"]["target_definition"] = coverage_digest(
@@ -574,7 +585,9 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
     assert report["eligibility"] == "eligible"
 
 
-def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch):
+def test_verified_candidate_is_ready_only_for_human_review(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
     path = source_project(tmp_path)
@@ -583,7 +596,6 @@ def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch
     def model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         result = coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
         return AgentResult(
             structured={
@@ -824,7 +836,9 @@ def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
     assert "Narrow the analysis instruction" in result.outcome.report_text
 
 
-def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
+def test_cli_rejects_malformed_persisted_evidence_audit(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
     path = persist_coverage_record(tmp_path)
@@ -832,7 +846,6 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
     def corrupting_model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
         audit_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_AUDIT"])
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -922,6 +935,7 @@ def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatc
             structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
 
+    # The model call is the seam that shows which evidence files the scoped tool was given.
     monkeypatch.setattr(CoverageAnalystSpecialist, "_invoke_agent", invoke)
 
     report = analyze_coverage_record(coverage_record, None, "Explain gaps").to_dict()
@@ -930,23 +944,21 @@ def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatc
     assert staged_paths and not staged_paths[0].exists()
 
 
-def test_image_alias_analyst_binds_canonical_coverage_record(project_alias, monkeypatch):
+def test_image_alias_analyst_binds_canonical_coverage_record(project_alias):
     alias, root = project_alias
     path = persist_coverage_record(root)
-    specialist = CoverageAnalystSpecialist(model=Model())
-    specialist._args = specialist.parse_args(["--work-dir", str(root), "--record", str(path)])
-    seen = []
-    monkeypatch.setattr(
-        specialist,
-        "_analyze_bound",
-        lambda _coverage_record, _sources, _instruction, bound, **_kwargs: seen.append(bound),
-    )
-    _report, loaded, bound = specialist._analyze_path(alias / path.relative_to(root), "explain")
-    assert bound == path and seen == [path]
-    assert loaded.coverage_record.target.selector == "sim_counter"
+    model = Model()
+    specialist = CoverageAnalystSpecialist(model=model)
+    specialist.parse_args(["--work-dir", str(root), "--record", str(path)])
+
+    specialist.coverage_analyst(alias / path.relative_to(root), "explain")
+
+    # The scoped evidence tool is bound to the canonical path, not the image alias.
+    assert [call.nested_mcp_env["BOOLEY_COVERAGE_RECORD"] for call in model.calls] == [str(path)]
     (root / "linked").symlink_to(root, target_is_directory=True)
     with pytest.raises(ValueError, match=r"link|traversal"):
-        specialist._analyze_path(alias / "linked" / path.relative_to(root), "explain")
+        specialist.coverage_analyst(alias / "linked" / path.relative_to(root), "explain")
+    assert len(model.calls) == 1
 
 
 def test_image_alias_analyst_traversal_uses_domain_error(project_alias) -> None:

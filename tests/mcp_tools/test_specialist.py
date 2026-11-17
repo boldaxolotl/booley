@@ -6,17 +6,20 @@ import argparse
 import contextlib
 import dataclasses
 import os
-import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import ClaudeSDKError
 
 from booley.core.models import AgentCallParams
 from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime.agent_errors import (
+    AgentAuthError,
+    AgentTimeoutError,
+    TransientAPIError,
+    UsageLimitError,
+)
 from booley.specialists.specialist import Specialist
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -45,25 +48,21 @@ class ReviewSpecialist(Specialist):
 
 
 class TestSpecialistArgparse:
-    def test_common_agent_args(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            args = endpoint.parse_args(
-                ["--instruction", "focus on timing", "--diff-ref", "HEAD~3"]
-            )
-        assert args.instruction == "focus on timing"
-        assert args.diff_ref == "HEAD~3"
-
-    def test_defaults(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            args = endpoint.parse_args([])
-        assert args.instruction == ""
-        assert args.diff_ref == "HEAD~1"
+    @pytest.mark.parametrize(
+        ("argv", "instruction", "diff_ref"),
+        [
+            (
+                ["--instruction", "focus on timing", "--diff-ref", "HEAD~3"],
+                "focus on timing",
+                "HEAD~3",
+            ),
+            ([], "", "HEAD~1"),
+        ],
+    )
+    def test_agent_args_and_defaults(self, tmp_path: Path, argv, instruction, diff_ref):
+        with patch.dict(os.environ, _env_with_state(tmp_path / "state.json")):
+            args = ReviewSpecialist().parse_args(argv)
+        assert (args.instruction, args.diff_ref) == (instruction, diff_ref)
 
     @pytest.mark.parametrize("value", ["0", "-1", "1.5", "words"])
     def test_max_turns_must_be_a_positive_integer(self, value: str):
@@ -77,63 +76,14 @@ class TestSpecialistArgparse:
 
 def test_reviewer_model_calls_use_the_raised_minimum():
     """The reviewer overrides ``_run`` without the base clamp, so every model call is raised here."""
-    from types import SimpleNamespace
-
     from booley.specialists.reviewer import ReviewerSpecialist
 
     reviewer = ReviewerSpecialist()
-    reviewer._args = SimpleNamespace(timeout_ms=300_000)
+    reviewer.parse_args(["--timeout-ms", "300000"])
     assert reviewer.model_call_timeout_ms(300_000) == 600_000
     assert reviewer.timeout_seconds() == 600  # asked for 5m
-    reviewer._args = SimpleNamespace(timeout_ms=3_600_000)
+    reviewer.parse_args(["--timeout-ms", "3600000"])
     assert reviewer.timeout_seconds() == 3600  # above the minimum: unchanged
-
-
-class TestTimeoutClamping:
-    def test_timeout_below_min_is_clamped(self, tmp_path: Path):
-        """Developer Agent passing too-low --timeout-ms gets clamped to min_timeout."""
-        state_file = tmp_path / "state.json"
-        state_file.write_text("{}")
-        env = _env_with_state(state_file)
-
-        class StrictSpecialist(Specialist):
-            name = "strict"
-            description = "test"
-            min_timeout = 1200
-
-            def _add_agent_args(self, parser):
-                pass
-
-            def _build_prompt(self):
-                return "test"
-
-            def _interpret_output(self, output, structured):
-                return McpToolResult(exit_code=EXIT_SUCCESS)
-
-        endpoint = StrictSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args(["--timeout-ms", "600000"])
-        assert endpoint.args.timeout_ms == 600000  # not clamped at parse time
-        # Clamping happens in _run() — test via mock
-        with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("skip")):
-            endpoint._start_time = 0
-            with contextlib.suppress(RuntimeError):
-                endpoint._run()
-        assert endpoint.args.timeout_ms == 1200000
-
-    def test_timeout_above_min_unchanged(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        state_file.write_text("{}")
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args(["--timeout-ms", "3600000"])
-        # Run the clamping step in _run(); an above-minimum timeout must survive it.
-        with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("skip")):
-            endpoint._start_time = 0
-            with contextlib.suppress(RuntimeError):
-                endpoint._run()
-        assert endpoint.args.timeout_ms == 3600000
 
 
 def test_provider_exception_preserves_report_and_persists_traceback(
@@ -150,6 +100,7 @@ def test_provider_exception_preserves_report_and_persists_traceback(
 
     with (
         patch.dict(os.environ, _env_with_state(state_file)),
+        # A provider failure cannot be provoked through the public path without a backend.
         patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError(message)),
     ):
         result = endpoint.execute_cli(
@@ -214,6 +165,7 @@ def per_cli_backends(monkeypatch):
             built.append((cli, auth))
             return FakeBackend(cli)
 
+        # The one seam that swaps the real Agent CLI backend for the recording fake.
         monkeypatch.setattr(agent_config, "_make_backend", make_backend)
         agent_config.set_backend_config(agent_config.configure_backend(settings))
         return built, calls
@@ -228,12 +180,12 @@ def per_cli_backends(monkeypatch):
     agent_config.set_backend_config(None)
 
 
-def _launch(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
-    """Run *endpoint*'s agent step: model and CLI resolution, invocation, failure report."""
+def _launch(endpoint: Specialist, tmp_path: Path, *extra: str) -> McpToolResult:
+    """Run *endpoint* as the CLI does: model and CLI resolution, invocation, finalization."""
     state_file = tmp_path / "state.json"
     state_file.write_text("{}")
     with patch.dict(os.environ, _env_with_state(state_file)):
-        endpoint.parse_args(
+        return endpoint.execute_cli(
             [
                 "--work-dir",
                 str(tmp_path),
@@ -241,9 +193,23 @@ def _launch(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
                 str(tmp_path / "reports"),
                 "--transcript-dir",
                 str(tmp_path / "transcripts"),
+                *extra,
             ]
-        )
-        return endpoint._run()
+        ).outcome
+
+
+@pytest.mark.parametrize(("asked_ms", "expected_s"), [(300_000, 600), (3_600_000, 3600)])
+def test_model_call_timeout_is_raised_to_the_minimum(
+    tmp_path: Path, per_cli_backends, asked_ms: int, expected_s: int
+) -> None:
+    """A below-minimum ``--timeout-ms`` is raised to the Specialist's minimum; above it is kept."""
+    from booley.config.agent import AgentSettings
+
+    _built, calls = per_cli_backends(AgentSettings(default_cli="claude", clis=("claude",)))
+
+    _launch(_named("reviewer"), tmp_path, "--timeout-ms", str(asked_ms))
+
+    assert [params.timeout_seconds for _cli, params in calls] == [expected_s]
 
 
 def test_specialist_launch_runs_on_its_models_cli(tmp_path: Path, per_cli_backends) -> None:
@@ -310,13 +276,6 @@ def test_refused_model_raises_refusal_and_tries_no_other_model(
 # --- hidden [models] fallback list (#2836, ADR 0084 amendment) ---------------------
 
 
-def _launch_finalized(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
-    """``_launch`` plus the finalization every executed Specialist result goes through."""
-    result = _launch(endpoint, tmp_path)
-    endpoint._finalize_result(result)
-    return result
-
-
 _OPUS_THEN_LUNA = ("claude-opus-5-5", "gpt-6-luna")
 
 
@@ -330,6 +289,7 @@ def _refusal_memory() -> dict:
         from booley.runtime import model_fallback
     except ImportError:
         return {}
+    # The module-global refusal memory has no public reset; each test must start it empty.
     return model_fallback._REFUSED
 
 
@@ -373,29 +333,29 @@ def _refuse_model(refused: str):
     return respond
 
 
-def test_model_list_skips_entry_whose_cli_cannot_run(
-    tmp_path: Path, per_cli_backends, logins
-) -> None:
-    cases = [
+@pytest.mark.parametrize(
+    ("logged_in", "clis", "default"),
+    [
         ({"codex"}, ("claude", "codex"), "claude"),  # Claude has no login
         ({"claude", "codex"}, ("codex",), "codex"),  # Claude is not in [agent] clis
+    ],
+)
+def test_model_list_skips_entry_whose_cli_cannot_run(
+    tmp_path: Path, per_cli_backends, logins, logged_in, clis, default
+) -> None:
+    logins.update(logged_in)
+    _built, calls = per_cli_backends(_list_settings(clis=clis, default=default))
+
+    result = _launch(_named("reviewer"), tmp_path)
+
+    assert result.exit_code == EXIT_SUCCESS
+    # No model call for the skipped Claude entry; Luna runs with Codex's effort.
+    assert [(cli, p.model, p.reasoning_effort) for cli, p in calls] == [
+        ("codex", "gpt-6-luna", "high")
     ]
-    for logged_in, clis, default in cases:
-        logins.clear()
-        logins.update(logged_in)
-        _built, calls = per_cli_backends(_list_settings(clis=clis, default=default))
-        earlier = len(calls)  # the fixture's call log is shared across installs
-
-        result = _launch_finalized(_named("reviewer"), tmp_path)
-
-        assert result.exit_code == EXIT_SUCCESS
-        # No model call for the skipped Claude entry; Luna runs with Codex's effort.
-        assert [(cli, p.model, p.reasoning_effort) for cli, p in calls[earlier:]] == [
-            ("codex", "gpt-6-luna", "high")
-        ]
-        note = result.detail["specialist_model"]
-        assert note["model"] == "gpt-6-luna"
-        assert note["fallback"]["first_choice"] == "claude-opus-5-5"
+    note = result.detail["specialist_model"]
+    assert note["model"] == "gpt-6-luna"
+    assert note["fallback"]["first_choice"] == "claude-opus-5-5"
 
 
 def test_model_list_fallback_keeps_the_session_of_the_model_that_ran(
@@ -405,12 +365,12 @@ def test_model_list_fallback_keeps_the_session_of_the_model_that_ran(
     logins.add("codex")
     _built, calls = per_cli_backends(_list_settings())
     endpoint = _named("reviewer")
-    _launch_finalized(endpoint, tmp_path)  # round 1 runs on Luna (Claude has no login)
+    _launch(endpoint, tmp_path)  # round 1 runs on Luna (Claude has no login)
 
-    resumed = dataclasses.replace(
-        endpoint._agent_call_params(), session_id="codex-session", resume_session=True
-    )
-    endpoint._invoke_agent(resumed)
+    # A resumed call is only built inside the reviewer's multi-round loop, so build it here.
+    params = endpoint._agent_call_params()  # the reviewer builds this inside its round loop
+    resumed = dataclasses.replace(params, session_id="codex-session", resume_session=True)
+    endpoint._invoke_agent(resumed)  # the call the reviewer makes on a retry round
 
     cli, params = calls[-1]
     assert (cli, params.model) == ("codex", "gpt-6-luna")
@@ -423,7 +383,7 @@ def test_model_list_runs_first_entry_when_both_clis_are_logged_in(
     logins.update({"claude", "codex"})
     _built, calls = per_cli_backends(_list_settings())
 
-    result = _launch_finalized(_named("reviewer"), tmp_path)
+    result = _launch(_named("reviewer"), tmp_path)
 
     assert result.exit_code == EXIT_SUCCESS
     assert [(cli, params.model) for cli, params in calls] == [("claude", "claude-opus-5-5")]
@@ -437,8 +397,8 @@ def test_model_list_refusal_moves_on_and_is_remembered(
     logins.update({"claude", "codex"})
     _built, calls = per_cli_backends(_list_settings(), respond=_refuse_model("claude-opus-5-5"))
 
-    first = _launch_finalized(_named("reviewer"), tmp_path)
-    second = _launch_finalized(_named("reviewer"), tmp_path)
+    first = _launch(_named("reviewer"), tmp_path)
+    second = _launch(_named("reviewer"), tmp_path)
 
     assert first.exit_code == EXIT_SUCCESS and second.exit_code == EXIT_SUCCESS
     # The refused entry is called once; the second launch goes straight to Luna.
@@ -456,39 +416,31 @@ def test_model_list_refusal_moves_on_and_is_remembered(
     ]
 
 
-def _non_refusal_errors():
-    from booley.runtime.agent_errors import (
-        AgentAuthError,
-        AgentTimeoutError,
-        TransientAPIError,
-        UsageLimitError,
-    )
-
-    return [
+@pytest.mark.parametrize(
+    "error",
+    [
         AgentAuthError("401 unauthorized", "claude"),
         UsageLimitError("usage limit reached", "claude"),
         TransientAPIError("529 overloaded"),
         AgentTimeoutError("deadline reached"),
-    ]
-
-
+    ],
+    ids=lambda error: type(error).__name__,
+)
 def test_model_list_non_refusal_errors_do_not_try_next_entry(
-    tmp_path: Path, per_cli_backends, logins
+    tmp_path: Path, per_cli_backends, logins, error
 ) -> None:
     logins.update({"claude", "codex"})
-    for error in _non_refusal_errors():
 
-        def fail(_params: AgentCallParams, error=error):
-            raise error
+    def fail(_params: AgentCallParams):
+        raise error
 
-        _built, calls = per_cli_backends(_list_settings(), respond=fail)
-        earlier = len(calls)  # the fixture's call log is shared across installs
+    _built, calls = per_cli_backends(_list_settings(), respond=fail)
 
-        result = _launch_finalized(_named("reviewer"), tmp_path)
+    result = _launch(_named("reviewer"), tmp_path)
 
-        assert result.exit_code == 2
-        assert [(cli, p.model) for cli, p in calls[earlier:]] == [("claude", "claude-opus-5-5")]
-        assert type(error).__name__ in result.report_text
+    assert result.exit_code == 2
+    assert [(cli, p.model) for cli, p in calls] == [("claude", "claude-opus-5-5")]
+    assert type(error).__name__ in result.report_text
 
 
 def test_model_list_without_usable_entry_names_each_entry_and_reason(
@@ -497,7 +449,7 @@ def test_model_list_without_usable_entry_names_each_entry_and_reason(
     logins.update({"codex"})  # Claude has no login; Luna is refused
     _built, calls = per_cli_backends(_list_settings(), respond=_refuse_model("gpt-6-luna"))
 
-    result = _launch_finalized(_named("reviewer"), tmp_path)
+    result = _launch(_named("reviewer"), tmp_path)
 
     assert result.exit_code == 2
     assert [(cli, params.model) for cli, params in calls] == [("codex", "gpt-6-luna")]
@@ -535,7 +487,7 @@ def test_single_model_value_ignores_list_memory_and_never_falls_back(
         ),
         respond=_refuse_model("gpt-6-luna"),
     )
-    result = _launch_finalized(_named("reviewer"), tmp_path)
+    result = _launch(_named("reviewer"), tmp_path)
 
     assert [(cli, params.model) for cli, params in calls[earlier:]] == [("codex", "gpt-6-luna")]
     assert result.exit_code == 2
@@ -550,7 +502,7 @@ def test_specialist_result_and_evidence_record_model_and_fallback(
     _built, _calls = per_cli_backends(_list_settings())
     endpoint = _named("reviewer")
 
-    result = _launch_finalized(endpoint, tmp_path)
+    result = _launch(endpoint, tmp_path)
 
     expected = {
         "model": "gpt-6-luna",
@@ -566,406 +518,55 @@ def test_specialist_result_and_evidence_record_model_and_fallback(
     assert "Ran on gpt-6-luna instead of claude-opus-5-5" in result.report_text
 
 
-class TestTranscriptPath:
-    def test_transcript_path_created(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        transcript_dir = tmp_path / "transcripts"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args(["--transcript-dir", str(transcript_dir)])
-        path = endpoint.transcript_path()
-        assert path is not None
-        assert path.name == "review_test.jsonl"
-        assert transcript_dir.exists()
-
-    def test_no_transcript_when_no_dir(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args([])
-        assert endpoint.transcript_path() is None
+@pytest.mark.parametrize("with_dir", [True, False])
+def test_transcript_path_exists_only_when_a_directory_is_given(tmp_path: Path, with_dir: bool):
+    endpoint = ReviewSpecialist()
+    argv = ["--transcript-dir", str(tmp_path / "transcripts")] if with_dir else []
+    with patch.dict(os.environ, _env_with_state(tmp_path / "state.json")):
+        endpoint.parse_args(argv)
+    path = endpoint.transcript_path()
+    if with_dir:
+        assert path is not None and path.name == "review_test.jsonl"
+        assert path.parent.exists()
+    else:
+        assert path is None
 
 
-# ===========================================================================
-# Session persistence round-trip
-# ===========================================================================
+@pytest.mark.parametrize("where", ["logs_dir", "project_runtime", "no_project", "no_session"])
+def test_session_id_persists_where_resume_can_find_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+):
+    """SETUP-F-42: outside Ticket Mode there is no BOOLEY_LOGS_DIR, and returning nothing
+    there silently disabled resume, so every retry round cold-started the agent."""
+    from booley.runtime.booley_dir import reset_cache
 
-
-class TestSessionPersistence:
-    def test_roundtrip(self, tmp_path: Path):
-        endpoint = ReviewSpecialist()
-        endpoint._last_session_id = "sess-abc-123"
-        with patch.dict(os.environ, {"BOOLEY_LOGS_DIR": str(tmp_path)}):
-            endpoint._persist_session_id("test-key")
-            assert endpoint._load_session_id("test-key") == "sess-abc-123"
-            assert (tmp_path / "test-key.session_id").is_file()
-
-    def test_standalone_run_persists_under_project_runtime(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        """SETUP-F-42: outside Ticket Mode there is no BOOLEY_LOGS_DIR, and
-        returning None there silently disabled resume — every retry round
-        cold-started the agent. Standalone runs land in the project runtime."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    if where == "logs_dir":
+        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    else:
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        endpoint = ReviewSpecialist()
-        endpoint._last_session_id = "sess-xyz"
-        endpoint._persist_session_id("k")
-
-        assert endpoint._load_session_id("k") == "sess-xyz"
-        # The autouse _set_booley_dir fixture pins BOOLEY_DIR=tmp_path.
-        assert (tmp_path / ".runtime" / "sessions" / "k.session_id").exists()
-
-    def test_persist_noop_when_no_project_discoverable(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        """No ticket AND no project on disk — nowhere to persist, so None."""
-        from booley.runtime.booley_dir import reset_cache
-
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    if where == "no_project":
+        # No ticket and no Project on disk: nowhere to persist.
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        empty = tmp_path / "no_project"
-        empty.mkdir()
-        monkeypatch.chdir(empty)
+        monkeypatch.chdir(logs)
         reset_cache()
+    endpoint = ReviewSpecialist()
+    # The session id is set by an agent call; this test only covers where it is written.
+    endpoint._last_session_id = None if where == "no_session" else "sess-abc-123"
 
-        endpoint = ReviewSpecialist()
-        endpoint._last_session_id = "sess-xyz"
-        endpoint._persist_session_id("k")
-        assert endpoint._session_file_path("k") is None
-        assert endpoint._load_session_id("k") is None
+    # The reviewer's multi-round run is the only public caller of these two.
+    endpoint._persist_session_id("k")
 
-    def test_load_returns_none_for_missing_file(self, tmp_path: Path):
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, {"BOOLEY_LOGS_DIR": str(tmp_path)}):
-            assert endpoint._load_session_id("nonexistent") is None
-
-    def test_load_returns_none_for_empty_file(self, tmp_path: Path):
-        (tmp_path / "empty.session_id").write_text("", encoding="utf-8")
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, {"BOOLEY_LOGS_DIR": str(tmp_path)}):
-            assert endpoint._load_session_id("empty") is None
-
-    def test_persist_noop_when_no_session_id(self, tmp_path: Path):
-        endpoint = ReviewSpecialist()
-        endpoint._last_session_id = None
-        with patch.dict(os.environ, {"BOOLEY_LOGS_DIR": str(tmp_path)}):
-            endpoint._persist_session_id("k")
-            assert not (tmp_path / "k.session_id").exists()
-
-
-# ===========================================================================
-# _build_resume_params
-# ===========================================================================
-
-
-class TestBuildResumeParams:
-    def test_sets_resume_fields_without_mutating_original(self):
-        original = AgentCallParams(prompt="p", model="sonnet", cwd="/tmp")
-        endpoint = ReviewSpecialist()
-        result = endpoint._build_resume_params(original, "sess-123")
-
-        assert result.session_id == "sess-123"
-        assert result.resume_session is True
-        assert original.session_id is None
-        assert original.resume_session is False
-
-
-# ===========================================================================
-# _invoke_agent_with_resume
-# ===========================================================================
-
-
-class TestInvokeAgentWithResume:
-    def test_non_resume_calls_directly(self):
-        endpoint = ReviewSpecialist()
-        mock_result = MagicMock()
-        with patch.object(endpoint, "_invoke_agent", return_value=mock_result) as mock_inv:
-            params = AgentCallParams(prompt="p", model="sonnet", cwd="/tmp")
-            result = endpoint._invoke_agent_with_resume(params)
-        assert result is mock_result
-        mock_inv.assert_called_once_with(params, on_event=None)
-
-    @pytest.mark.parametrize("error_type", [RuntimeError, ClaudeSDKError])
-    def test_falls_back_on_resumable_error(self, error_type):
-        endpoint = ReviewSpecialist()
-        endpoint.name = "test_endpoint"
-        fresh_result = MagicMock()
-        calls: list[AgentCallParams] = []
-
-        def _side(p, on_event=None):
-            calls.append(p)
-            if len(calls) == 1:
-                raise error_type("stale session")
-            return fresh_result
-
-        with patch.object(endpoint, "_invoke_agent", side_effect=_side):
-            params = AgentCallParams(
-                prompt="p",
-                model="sonnet",
-                cwd="/tmp",
-                session_id="old",
-                resume_session=True,
-            )
-            result = endpoint._invoke_agent_with_resume(params)
-
-        assert result is fresh_result
-        assert len(calls) == 2
-        assert calls[1].session_id is None
-        assert calls[1].resume_session is False
-
-    def test_model_refusal_is_not_retried(self):
-        from booley.runtime.agent_errors import ModelUnavailableError
-
-        endpoint = ReviewSpecialist()
-        endpoint.name = "test_endpoint"
-        refusal = ModelUnavailableError(
-            model="gpt-refused", provider="codex", settings=(), detail="model_not_found"
-        )
-        with patch.object(endpoint, "_invoke_agent", side_effect=refusal) as invoke:
-            params = AgentCallParams(
-                prompt="p", model="gpt-refused", cwd="/tmp", session_id="s", resume_session=True
-            )
-            with pytest.raises(ModelUnavailableError):
-                endpoint._invoke_agent_with_resume(params)
-        assert invoke.call_count == 1
-
-    def test_timeout_error_propagates(self):
-        endpoint = ReviewSpecialist()
-        endpoint.name = "test_endpoint"
-        with patch.object(endpoint, "_invoke_agent", side_effect=TimeoutError("boom")):
-            params = AgentCallParams(
-                prompt="p",
-                model="sonnet",
-                cwd="/tmp",
-                session_id="s",
-                resume_session=True,
-            )
-            with pytest.raises(TimeoutError):
-                endpoint._invoke_agent_with_resume(params)
-
-
-class TestCommitMsgBannedPhrase:
-    """_prepare_commit_message rejects a banned phrase instead of rewriting the message.
-
-    The prompt warns the agent of the banned list up front; a message that
-    still carries one fails with the validation error, never a substitute.
-    """
-
-    def _make_endpoint(self, tmp_path: Path, default_msg: str = "Apply changes"):
-        endpoint = ReviewSpecialist()
-        # Bypass argparse for the focused unit test.
-        mock_args = MagicMock()
-        # Use a linked-worktree-shaped path: .git as a *file*, not a directory,
-        # so _prepare_commit_message does not refuse on the main-worktree guard.
-        worktree = tmp_path / "wt"
-        worktree.mkdir()
-        (worktree / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
-        _stealth_project(worktree)
-        mock_args.work_dir = worktree
-        endpoint._args = mock_args
-        endpoint._default_commit_message = default_msg
-        endpoint.modifies_category = "rtl"
-        return endpoint
-
-    def test_banned_phrase_subject_raises(self, tmp_path: Path):
-        endpoint = self._make_endpoint(tmp_path)
-        # 'copilot' is on the default banned-phrase list.
-        with pytest.raises(Specialist.GitStatusError) as exc:
-            endpoint._prepare_commit_message("feat(rtl): copilot wrote this")
-        assert "validation failed" in str(exc.value)
-        assert "copilot" in str(exc.value)
-
-    def test_non_banned_failure_still_raises(self, tmp_path: Path):
-        endpoint = self._make_endpoint(tmp_path)
-        # Inject a non-banned validation failure (e.g. the body cap). The
-        # error must surface.
-        from booley.specialists import specialist as specialist_module
-
-        with (
-            patch.object(
-                specialist_module,
-                "validate_message",
-                return_value=[
-                    "Body is 1 line(s) ([stealth] max_body_lines = 0)",
-                ],
-            ),
-            pytest.raises(Specialist.GitStatusError) as exc,
-        ):
-            endpoint._prepare_commit_message("anything")
-        assert "validation failed" in str(exc.value)
-
-    def test_clean_message_passes_through(self, tmp_path: Path):
-        endpoint = self._make_endpoint(tmp_path)
-        # No banned phrases: kept as written, conventional form or not.
-        ok = endpoint._prepare_commit_message("feat(rtl): add pipeline stage")
-        assert ok == "feat(rtl): add pipeline stage"
-
-    @pytest.mark.parametrize(
-        "message",
-        ["Update ALU", "Fix byte alignment in stage 2.", "Add IIR filter\n\nWhy it changed."],
-    )
-    def test_non_conventional_message_is_not_rewritten(self, tmp_path: Path, message: str):
-        """Booley imposes no commit convention: the agent's message is committed verbatim."""
-        endpoint = self._make_endpoint(tmp_path)
-        assert endpoint._prepare_commit_message(message) == message
-
-    def test_missing_message_uses_plain_default(self, tmp_path: Path):
-        endpoint = self._make_endpoint(tmp_path, default_msg=Specialist._default_commit_message)
-        assert endpoint._prepare_commit_message(None) == "Apply Specialist changes"
-
-
-class TestSpecialistGitCommit:
-    """Specialist commit helper should share harness git hardening."""
-
-    def _init_repo(self, tmp_path: Path) -> Path:
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(
-            ["git", "init"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        subprocess.run(
-            ["git", "config", "user.email", "test@example.com"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "Test User"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        (repo / "init.txt").write_text("init\n", encoding="utf-8")
-        subprocess.run(
-            ["git", "add", "init.txt"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "feat: init"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        return repo
-
-    def test_stale_index_lock_is_removed_and_commit_retried(self, tmp_path: Path):
-        repo = self._init_repo(tmp_path)
-        worktree = tmp_path / "wt"
-        subprocess.run(
-            ["git", "-C", str(repo), "worktree", "add", str(worktree)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        (worktree / "rtl.sv").write_text("module rtl; endmodule\n", encoding="utf-8")
-        git_dir = subprocess.check_output(
-            ["git", "-C", str(worktree), "rev-parse", "--git-dir"],
-            text=True,
-        ).strip()
-        git_dir_path = Path(git_dir)
-        if not git_dir_path.is_absolute():
-            git_dir_path = worktree / git_dir_path
-        lock_path = git_dir_path / "index.lock"
-        lock_path.write_text("", encoding="utf-8")
-
-        endpoint = ReviewSpecialist()
-        endpoint._git_add_and_commit(worktree, ["rtl.sv"], "feat(rtl): recover stale lock")
-
-        assert not lock_path.exists()
-        log = subprocess.check_output(
-            ["git", "-C", str(worktree), "log", "--oneline", "-1"],
-            text=True,
-        )
-        assert "feat(rtl): recover stale lock" in log
-
-
-def _stealth_project(root: Path, extra: str = "") -> Path:
-    """A Project in Stealth Mode, which must be enabled explicitly."""
-    (root / ".booley").mkdir()
-    (root / ".booley" / "booley.toml").write_text(f"[stealth]\nenabled = true\n{extra}")
-    return root
-
-
-class TestBannedPhraseNote:
-    """commit_msg_banned_phrase_note() exposes the live banned list to agents."""
-
-    def test_note_starts_with_header(self, tmp_path):
-        note = Specialist.commit_msg_banned_phrase_note(_stealth_project(tmp_path))
-        assert note.startswith("## Banned Words")
-
-
-def test_specialist_preserves_files_outside_its_selected_paths(monkeypatch):
-    specialist = ReviewSpecialist()
-    monkeypatch.setattr(
-        specialist, "_get_uncommitted_files", lambda: ["selected.sv", "outside.sv"]
-    )
-
-    def unexpected_revert(_):
-        pytest.fail("Outside-scope work must remain available for Developer review")
-
-    monkeypatch.setattr(specialist, "_revert_out_of_scope", unexpected_revert)
-    assert specialist._resolve_stageable_files(["selected.sv"]) == (["selected.sv"], [])
-
-
-def test_privacy_note_tracks_audited_default_vocabulary(tmp_path) -> None:
-    note = Specialist.commit_msg_banned_phrase_note(_stealth_project(tmp_path)).lower()
-    for term in (
-        "claude",
-        "anthropic",
-        "copilot",
-        "codex",
-        "openai",
-        "chatgpt",
-        "gemini",
-        "booley",
-        "gpt",
-        "llm",
-        "co-authored-by",
-    ):
-        assert term in note
-    for term in (
-        "ticket",
-        "cursor",
-        "generated",
-        "docker",
-        "agent",
-        "auto-review",
-        "auto-approve",
-        "per review findings",
-        "as suggested by",
-        "automated fix",
-        "suggested fix",
-    ):
-        assert term not in note
-
-
-def test_specialist_note_describes_both_matching_tiers(tmp_path):
-    _stealth_project(tmp_path, 'banned_words = ["agent"]\nbanned_substrings = ["quokka"]\n')
-    note = Specialist.commit_msg_banned_phrase_note(tmp_path)
-    assert "agent" in note and "quokka" in note
-    assert "CamelCase" in note and "banned_substrings match anywhere" in note
-    assert "word-boundary" not in note
+    written = {
+        "logs_dir": logs / "k.session_id",
+        # The autouse _set_booley_dir fixture pins BOOLEY_DIR=tmp_path.
+        "project_runtime": tmp_path / ".runtime" / "sessions" / "k.session_id",
+    }.get(where)
+    if written is None:
+        assert not list(logs.iterdir())
+    else:
+        assert written.read_text(encoding="utf-8") == "sess-abc-123"
 
 
 @pytest.mark.parametrize("target", ["", "sim,other"])

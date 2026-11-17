@@ -125,6 +125,7 @@ class _Env:
             async def call(self, params, *, on_event=None, on_start=None):
                 return env.respond(params)
 
+        # The one seam that swaps the real Agent CLI backend for the fake.
         monkeypatch.setattr(agent_config, "_make_backend", lambda _cli, _auth: FakeBackend())
         agent_config.set_backend_config(
             agent_config.configure_backend(AgentSettings(default_cli="claude", clis=("claude",)))
@@ -184,8 +185,9 @@ class _HoldsMemory(MeasuredSpecialist):
     def _run(self) -> McpToolResult:
         held = b"x" * (128 * _MIB)
         subprocess.run([sys.executable, "-c", _ALLOCATE_AND_EXIT], check=True)
+        # _run is the hook a Specialist overrides to make its agent calls.
         super()._run()
-        result = super()._run()
+        result = super()._run()  # the second agent call
         assert len(held) == 128 * _MIB
         return result
 
@@ -201,8 +203,10 @@ def test_record_measures_only_the_agent_call_tree(env: _Env) -> None:
 def test_unmeasurable_values_are_recorded_absent(env: _Env, monkeypatch) -> None:
     env.respond = lambda _params: AgentResult(structured={"approved": True})
     monkeypatch.setattr(job_resources, "process_tree", lambda *_a, **_k: None)
+    # The two probes below are the measurement sources this test makes unavailable.
     monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
     monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: None)
+    # Private probes: the only way to make this measurement unavailable.
     monkeypatch.setattr(job_resources, "_container_memory_bytes", lambda: None)
 
     assert env.run(MeasuredSpecialist()).exit_code == EXIT_SUCCESS
@@ -249,7 +253,9 @@ def test_failed_measurement_never_changes_the_specialist_result(
     # The monitor cannot finish: the run is still recorded, with nothing measured.
     with monkeypatch.context() as patched:
         patched.setattr(
-            job_resources.JobResourceMonitor, "_count_descendant_kills", fail(OSError("gone"))
+            job_resources.JobResourceMonitor,
+            "_count_descendant_kills",  # the step that runs when the monitor finishes
+            fail(OSError("gone")),
         )
         outcome = env.run(MeasuredSpecialist())
     assert (outcome.exit_code, outcome.report_text) == (expected.exit_code, expected.report_text)
@@ -271,8 +277,8 @@ def test_run_that_raises_is_recorded_and_still_raises(env: _Env) -> None:
         pass
 
     class Raises(MeasuredSpecialist):
-        def _run(self) -> McpToolResult:
-            super()._run()
+        def _run(self) -> McpToolResult:  # the hook a Specialist overrides
+            super()._run()  # make the agent call first
             raise BoomError("boom")
 
     env.respond = lambda _params: AgentResult(structured={"approved": True})
@@ -281,9 +287,10 @@ def test_run_that_raises_is_recorded_and_still_raises(env: _Env) -> None:
     outcome = env.run(endpoint)
     assert outcome.exit_code == 2 and "BoomError: boom" in outcome.report_text
     assert [(r["outcome"], r["returncode"]) for r in env.records()] == [("error", None)]
-    # ... because the measured run raises it again, unchanged.
+    # ... because the measured run raises it again, unchanged; the endpoint runner above
+    # catches it, so only the measured run itself shows it.
     with pytest.raises(BoomError, match="boom"):
-        endpoint._measured_run()
+        endpoint._measured_run()  # the run the endpoint runner wraps
 
     assert len(env.records()) == 2
 
@@ -296,12 +303,14 @@ def test_a_failed_monitor_start_does_not_leave_later_windows_counted_as_busy(
     def no_thread() -> None:
         raise RuntimeError("can't start new thread")
 
+    # The sampler thread's start is the call that fails; nothing public starts it alone.
     monkeypatch.setattr(monitor._thread, "start", no_thread)
     with pytest.raises(RuntimeError, match="new thread"):
         monitor.start(os.getpid(), descendants_only=True)
 
+    # The process-wide busy counter has no public reader.
     assert job_resources._IN_PROCESS.enter() is not None  # nothing else is active
-    job_resources._IN_PROCESS.leave(None)
+    job_resources._IN_PROCESS.leave(None)  # the busy counter has no public reader
 
 
 def test_a_second_run_of_one_instance_records_only_its_own_calls(env: _Env) -> None:
@@ -319,6 +328,6 @@ def test_a_second_run_of_one_instance_records_only_its_own_calls(env: _Env) -> N
     assert len(env.records()) == 1
 
     endpoint.refuse = True
-    assert endpoint._measured_run().exit_code == EXIT_FAILURE
+    assert env.run(endpoint).exit_code == EXIT_FAILURE
 
     assert len(env.records()) == 1  # no agent call, so no stale record
