@@ -16,6 +16,9 @@ _EXPLICIT = 'banned_words = ["quokka"]\nbanned_substrings = ["zorb"]\n'
 def _worktree(tmp_path: Path, stealth: str) -> Path:
     """A linked worktree of a Stealth Project whose policy is *stealth*, with one new file."""
     repo = repository(tmp_path / "repo")
+    # commit_scope runs plain git, so the identity must live in the repository config (CI has none).
+    git(repo, "config", "user.name", "Goal Test")
+    git(repo, "config", "user.email", "goal@test.invalid")
     (repo / "init.txt").write_bytes(b"init\n")
     git(repo, "add", "init.txt")
     git(repo, "commit", "-q", "-m", "init")
