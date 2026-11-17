@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from booley.bwave.contract import (
     BEYOND_RANGE_MARKER,
@@ -197,3 +198,45 @@ def test_native_open_ended_range_includes_tail_clock_events(
     assert result.returncode == EXIT_OK, result.stderr
     times = [match["time"] for match in json.loads(result.stdout)["data"]["matches"]]
     assert times == [175, 185, 195]
+
+
+RESET_VCD = (
+    "$timescale 1ns $end\n$scope module tb $end\n"
+    '$var wire 1 ! clk $end\n$var wire 1 " rst_n $end\n$var wire 1 # flag $end\n'
+    "$upscope $end\n$enddefinitions $end\n"
+    '#0\n0!\n0"\n0#\n#5\n1!\n#10\n0!\n1#\n#15\n1!\n#20\n0!\n0#\n'
+    '#25\n1!\n1"\n#30\n0!\n#35\n1!\n#40\n0!\n'
+)
+NO_RESET_VCD = (
+    RESET_VCD.replace('$var wire 1 " rst_n $end\n', "").replace('0"\n', "").replace('1"\n', "")
+)
+
+
+def test_reset_object_validates_against_published_schema(tmp_path: Path) -> None:
+    schema = json.loads(
+        (BOOLEY_ROOT / "crates" / "bwave" / "schema" / "bwave.json").read_text(encoding="utf-8")
+    )
+    validator = Draft202012Validator(schema)
+    with_reset = tmp_path / "with_reset.vcd"
+    with_reset.write_bytes(RESET_VCD.encode())
+    without_reset = tmp_path / "without_reset.vcd"
+    without_reset.write_bytes(NO_RESET_VCD.encode())
+    stores = {
+        "with": _build_store(with_reset, tmp_path / "with_reset.fst"),
+        "without": _build_store(without_reset, tmp_path / "without_reset.fst"),
+    }
+    cases = [
+        (stores["with"], ["find", "flag", "'b1"], 2, False),
+        (stores["with"], ["overview"], 2, False),
+        (stores["with"], ["find", "flag", "'b1", "--with-reset"], 0, True),
+        (stores["without"], ["overview"], 0, False),
+    ]
+    for path, command, skipped, with_flag in cases:
+        result = _run(command[0], str(path), *command[1:], "--format", "json")
+        assert result.returncode == EXIT_OK, result.stderr
+        payload = json.loads(result.stdout)
+        assert list(validator.iter_errors(payload)) == []
+        reset = payload["reset"]
+        assert reset["skipped_cycles"] == skipped
+        assert reset["with_reset"] is with_flag
+        assert (reset["signal"] is None) == (path == stores["without"])
