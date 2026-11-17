@@ -246,7 +246,7 @@ sees it.
 
 Your rules are compared with the Booley Directory's own repository, including
 rules committed in its local `main` but not yet pushed. `--base` moves only the
-Base of your RTL.
+Base of your RTL. See [Stealth Mode](STEALTH.md).
 
 </details>
 
@@ -266,7 +266,7 @@ has no Base; name an earlier commit with `--base`.
 
 The base run is the latest run of the Base's tree measured under the same
 rules as your rules comparison. When no run was, the latest run of that tree is
-used and the report says "its rules differ".
+used and the report says "its rules differ". See [Stealth Mode](STEALTH.md).
 
 </details>
 
