@@ -786,9 +786,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     def _lint_plan_inspection(self, target: TargetHandle) -> Any | None:
         """Inspect a Target, tolerating only the supported legacy no-top shape."""
-        catalog = getattr(self, "_target_catalog", None)
         try:
-            return (catalog or TargetCatalog.build(target.project_root)).inspect(target)
+            return TargetCatalog.build(target.project_root).inspect(target)
         except fusesoc_registry.FuseSocError as exc:
             if not isinstance(exc, MissingTargetToplevelError) and not target.doctor_private:
                 raise
@@ -846,10 +845,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             work_root_for(self.args.work_dir, "lint", selector),
         )
         if prepared is None:
-            prepared_units, errors = self._prepare_lint_targets((target,))
-            if errors:
-                return errors[0]
-            prepared = prepared_units[target.identity]
+            prepared = self._prepare_lint_targets((target,))[0][target.identity]
         result = prepared.result
         self.record_eda_tool(selector, prepared.resolved.configured_eda_tool)
         cmd = prepared.command
@@ -870,9 +866,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # lint regression had nothing on disk to act on.
         result.log_path = self._persist_lint_output(selector, combined)
         evidence_log = self.args.work_dir / result.log_path if result.log_path else None
-        if proc.timed_out:
-            result.error = f"Timed out after {self._get_timeout()}s"
-            result.error_is_eda_tool_failure = True
+        if stopped := self._linter_stop_reason(proc):
+            result.error, result.error_is_eda_tool_failure = stopped, True
             return result
         if family == "verible":
             result.warnings = parse_verible_warnings(combined, selector)
@@ -888,6 +883,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 pointer = posix_relpath(evidence_log, self.args.work_dir)
                 result.error += f" (full log: {pointer})"
         return result
+
+    def _linter_stop_reason(self, proc: SubprocessResult) -> str:
+        """Why the linter stopped before its output could be judged, or ``""`` when it ran."""
+        if proc.timed_out:
+            return f"Timed out after {self._get_timeout()}s"
+        if proc.oom_blamed:
+            return "the linter was killed for running out of memory"
+        return ""
 
     def _prepare_lint_targets(
         self,
