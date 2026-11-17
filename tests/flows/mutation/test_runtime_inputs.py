@@ -64,6 +64,7 @@ def _copyto_run(
     *,
     launch: Any = None,
     staged_before: str | None = None,
+    staged_inode: list[int] | None = None,
 ) -> tuple[EndpointOutcome, Path]:
     """Run a whole one-Mutant campaign whose Target ``copyto``s ``vectors.hex`` (issue #2061).
 
@@ -100,6 +101,8 @@ def _copyto_run(
     run_dir.mkdir()
     if staged_before is not None:
         (run_dir / "vectors.hex").write_text(staged_before, encoding="utf-8")
+        if staged_inode is not None:
+            staged_inode.append((run_dir / "vectors.hex").stat().st_ino)
     if launch is not None:
         original = subprocess.run
 
@@ -211,16 +214,23 @@ def test_conflicting_destination_is_inconclusive_setup_failure(
 def test_identical_existing_destination_is_left_untouched(tmp_path: Path, monkeypatch) -> None:
     run_dir = tmp_path / "run"
     inode: list[int] = []
+    created: list[int] = []
 
     def _stat_and_pass(_cmd):
         inode.append((run_dir / "vectors.hex").stat().st_ino)
         return _fake_proc(rc=0, stdout="passed")
 
     # Create the destination before the campaign; the launch sees the same file.
-    result, _ = _copyto_run(tmp_path, monkeypatch, staged_before=_PAYLOAD, launch=_stat_and_pass)
+    result, _ = _copyto_run(
+        tmp_path,
+        monkeypatch,
+        staged_before=_PAYLOAD,
+        staged_inode=created,
+        launch=_stat_and_pass,
+    )
 
     staged = run_dir / "vectors.hex"
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert staged.is_file() and not staged.is_symlink()
     assert staged.read_text(encoding="utf-8") == _PAYLOAD
-    assert set(inode) == {staged.stat().st_ino}
+    assert set(inode) == {created[0]} == {staged.stat().st_ino}

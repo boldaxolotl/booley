@@ -198,7 +198,6 @@ def test_builds_and_simulations_hold_a_reservation_sized_from_the_target_history
 
     _admitted_run(tmp_path, monkeypatch, managed.context())
 
-    # The baseline and the Mutant each build, then simulate.
     assert len(seen) == 4
     for observed in seen:
         assert [pid for pid, _claim in _items(observed)] == [os.getpid()]
@@ -259,7 +258,6 @@ def test_a_job_queued_behind_a_build_or_simulation_names_the_mutation_job(
         "needs 900 MiB; 750 MiB free of the 1,000 MiB Memory Budget; "
         "largest holders: run-7 (mutation, default, <default>) 250 MiB"
     )
-    # The baseline, then the Mutant: each builds, then simulates.
     assert said == [build, simulation, build, simulation]
 
 
@@ -383,7 +381,6 @@ def test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result(
     )
     invocation = endpoint.prepare_endpoint_invocation()
 
-    # The Flow's public invocation attaches the warning to the campaign result.
     outcome = endpoint.invoke_endpoint(
         PreparedExecution(None, None, False, False, invocation),
         admission=context,

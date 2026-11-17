@@ -35,6 +35,7 @@ from tests.flows.mutation.test_flow import (
     _patch_fake_simulation,
     _prepare_scope_files,
     _results_markdown,
+    _wrap_preparer,
     _write_tests_toml,
 )
 
@@ -172,7 +173,6 @@ def test_sweep_builds_one_exact_replacement_at_a_time(
             )
             if got != was
         ]
-        # Exactly this Mutant's line differs, and it holds the Mutant's replacement.
         assert [number for number, _, _ in changed] == [mutant.line]
         assert mutant.mutated_code in changed[0][1]
     assert source.read_text(encoding="utf-8") == pristine
@@ -336,6 +336,7 @@ def test_generated_direct_source_rejected_before_fusesoc_setup(
         )
     )
     fake = _patch_fake_simulation(monkeypatch)
+    prepares = _wrap_preparer(monkeypatch)
     build = TargetCatalog.build
     monkeypatch.setattr(
         TargetCatalog,
@@ -349,6 +350,8 @@ def test_generated_direct_source_rejected_before_fusesoc_setup(
     assert result.exit_code == EXIT_ERROR
     assert "candidate Mutant did not build and was replaced" in result.report_text
     assert fake.builds == [None]  # no Mutant build reached `make`
+    # Only the pristine baseline was prepared: FuseSoC never ran generators for a Mutant.
+    assert [kwargs["build_root"].name.startswith("mutant_") for _, kwargs in prepares] == [False]
     assert (tmp_path / _SCOPE).read_bytes() == pristine
 
 
@@ -411,7 +414,6 @@ def test_cocotb_detected_snippet_comes_from_the_detecting_batch(
         '{"name":"test_done","module":"mixed_cases","status":"pass",'
         '"failure":"","elapsed_s":0.1}]}'
     )
-    # Two Default Variants with different environments make two batches (launches).
     toml = (
         '[lite]\ntests = ["test_bad", "test_done"]\n'
         '[lite.variants.test_bad]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'

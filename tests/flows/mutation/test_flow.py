@@ -1546,7 +1546,6 @@ def test_mutant_timeout_scales_with_the_tests_baseline_duration(
     # The baseline keeps the 300 s cap; the Mutant's limit is max(10 x baseline, 30 s), capped.
     assert fake.run_limits == [300, limit]
     assert fake.run_timeouts == [305, hard_kill]  # the hard kill waits 5 s past the limit
-    # The artifacts show each test's baseline duration and the time limit it was given.
     manifest = json.loads(
         (tmp_path / result.detail["artifacts"]["manifest"]).read_text(encoding="utf-8")
     )
@@ -1555,6 +1554,7 @@ def test_mutant_timeout_scales_with_the_tests_baseline_duration(
         {"run": name, "duration_s": baseline_seconds, "time_limit_s": limit}
     ]
     markdown = _results_markdown(tmp_path, result)
+    assert "## Time limits" in markdown
     assert "| Test run | Baseline | Limit |" in markdown
     assert f"| `{name}` | {baseline_seconds:.2f} s | {limit} s |" in markdown
 
@@ -2577,7 +2577,6 @@ def test_icarus_target_simulates_every_mutant_without_comparing(
     assert [row["id"] for row in result.detail["classified"]] == [m.id for m in ranked[:4]]
     assert result.detail["equivalent_dropped"] == []
     assert "verilator_version" not in result.detail["identity"]
-    # No build failed: no replacement is named.
     assert "did not build" not in result.report_text
     assert result.detail["invalid_dropped"] == [] and "invalid" not in result.detail
     assert "  4 detected (0 timeout), 0 not detected" in result.report_text
