@@ -192,9 +192,7 @@ class FpgaMetrics:
         )
 
 
-def _metrics_detail(
-    metrics: FpgaMetrics | None, *, baseline: bool = False
-) -> dict[str, Any] | None:
+def _metrics_detail(metrics: FpgaMetrics, *, baseline: bool = False) -> dict[str, Any]:
     """Detail dict for one run's metrics; *baseline* suppresses the pointers.
 
     A ``--baseline`` run happens inside a throwaway git worktree that is
@@ -208,8 +206,6 @@ def _metrics_detail(
     this reason; ``dirs`` is not, so the artifact block is suppressed here
     instead of being filtered key by key.
     """
-    if metrics is None:
-        return None
     pointers: dict[str, Any] = (
         {}
         if baseline
