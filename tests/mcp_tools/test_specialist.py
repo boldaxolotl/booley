@@ -242,16 +242,19 @@ def test_specialist_launch_runs_on_its_models_cli(tmp_path: Path, per_cli_backen
     assert built == [("claude", "subscription"), ("codex", "api_key")]
 
 
+@pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "built_in"])
 def test_refused_model_raises_refusal_and_tries_no_other_model(
-    tmp_path: Path, per_cli_backends
+    tmp_path: Path, per_cli_backends, pinned: bool
 ) -> None:
     from booley.config.agent import AgentSettings
     from booley.runtime.agent_errors import model_unavailable_error
 
+    refused = "gpt-6-luna" if pinned else "gpt-built-in"  # no `[models]` key selects the latter
+
     def refuse(params: AgentCallParams):
         # Built as the Codex backend builds it: inside the call, from the live settings.
         raise model_unavailable_error(
-            params.model, "codex", '{"status":400,"error":{"code":"model_not_found"}}'
+            refused, "codex", '{"status":400,"error":{"code":"model_not_found"}}'
         )
 
     _built, calls = per_cli_backends(
@@ -267,9 +270,12 @@ def test_refused_model_raises_refusal_and_tries_no_other_model(
     assert result.exit_code == 2
     report = result.report_text
     assert report.startswith("reviewer failed: ModelUnavailableError: ")
-    assert "'gpt-6-luna'" in report
-    assert "`[models] reviewer`" in report
-    assert "Protected Input" in report
+    assert f"'{refused}'" in report
+    if pinned:
+        assert "`[models] reviewer`" in report
+        assert "Protected Input" in report
+    else:
+        assert "`[agent] default`" in report
     assert "model_not_found" not in report
 
 
