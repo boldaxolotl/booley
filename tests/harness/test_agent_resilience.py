@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from booley.runtime.agent_errors import UsageLimitError
+
 # Import from the scripts directory (one level up from unit/)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -194,54 +196,79 @@ class TestTranscriptPathForAttempt:
 class TestHandleRateLimitEvent:
     """Verify rate limit event handling -- sleep + raise behavior."""
 
+    @staticmethod
+    def _rejected(resets_at):
+        info = _MockRateLimitInfo(
+            status="rejected", resets_at=resets_at, rate_limit_type="seven_day"
+        )
+        return _sdk.RateLimitEvent(rate_limit_info=info)
+
     @pytest.mark.asyncio
-    async def test_rejected_with_resets_at(self):
-        """Rejected status with resets_at should sleep then raise TransientAPIError."""
+    async def test_reset_inside_the_budget_sleeps_then_retries(self):
+        """A reset that fits the call's remaining time sleeps to reset + buffer, then retries."""
+        import anyio
+
         from booley.runtime.agent_backend import _handle_rate_limit_event
 
-        future_ts = 1005
-        info = _MockRateLimitInfo(
-            status="rejected",
-            resets_at=future_ts,
-            rate_limit_type="five_hour",
-        )
-        event = _sdk.RateLimitEvent(rate_limit_info=info)
-
         with (
-            patch("booley.runtime._claude_backend.anyio") as mock_anyio,
             patch("booley.runtime._claude_backend.wall_clock", return_value=1000),
+            patch.object(anyio, "sleep", AsyncMock()) as sleep,
+            anyio.fail_after(300),
+            pytest.raises(TransientAPIError) as exc_info,
         ):
-            mock_anyio.sleep = AsyncMock()
+            await _handle_rate_limit_event(self._rejected(1200))
 
-            with pytest.raises(TransientAPIError) as exc_info:
-                await _handle_rate_limit_event(event)
-
-            # Should have slept (5s + 60s buffer = ~65s)
-            mock_anyio.sleep.assert_awaited_once()
-            sleep_arg = mock_anyio.sleep.call_args[0][0]
-            assert sleep_arg == 65
-
-            # retry_after=0 because we already slept
-            assert exc_info.value.retry_after == 0
+        sleep.assert_awaited_once_with(260)
+        # retry_after=0 because we already slept
+        assert exc_info.value.retry_after == 0
 
     @pytest.mark.asyncio
-    async def test_rejected_without_resets_at(self):
-        """Rejected without resets_at should use fallback backoff."""
+    async def test_reset_beyond_the_budget_raises_usage_limit_without_sleeping(self):
+        """A reset past the call's remaining time raises at once, naming limit and reset."""
+        import anyio
+
+        from booley.runtime.agent_backend import _handle_rate_limit_event
+
+        with (
+            patch("booley.runtime._claude_backend.wall_clock", return_value=1_800_000_000),
+            patch.object(anyio, "sleep", AsyncMock()) as sleep,
+            anyio.fail_after(300),
+            pytest.raises(UsageLimitError) as exc_info,
+        ):
+            # 250 s away plus the 60 s buffer is 310 s, more than the ~299 s left.
+            await _handle_rate_limit_event(self._rejected(1_800_000_250))
+
+        assert str(exc_info.value) == (
+            "Claude usage limit reached (seven_day); resets at 2027-01-15T08:04:10Z,"
+            " too late to wait within this call's timeout"
+        )
+        sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("budget", [None, 120])
+    async def test_fallback_backoff_stays_inside_the_budget(self, budget):
+        """Without a reset time the fallback wait ends before the call's budget does."""
+        import contextlib
+
+        import anyio
+
         from booley.runtime._retry import RATE_LIMIT_FALLBACK_BACKOFF_S
         from booley.runtime.agent_backend import _handle_rate_limit_event
 
-        info = _MockRateLimitInfo(status="rejected", resets_at=None, rate_limit_type="seven_day")
-        event = _sdk.RateLimitEvent(rate_limit_info=info)
-
+        scope = anyio.fail_after(budget) if budget else contextlib.nullcontext()
         with (
-            patch("booley.runtime._claude_backend.anyio") as mock_anyio,
+            patch.object(anyio, "sleep", AsyncMock()) as sleep,
+            scope,
+            pytest.raises(TransientAPIError),
         ):
-            mock_anyio.sleep = AsyncMock()
+            await _handle_rate_limit_event(self._rejected(None))
 
-            with pytest.raises(TransientAPIError):
-                await _handle_rate_limit_event(event)
-
-            mock_anyio.sleep.assert_awaited_once_with(RATE_LIMIT_FALLBACK_BACKOFF_S)
+        sleep.assert_awaited_once()
+        waited = sleep.call_args[0][0]
+        if budget is None:
+            assert waited == RATE_LIMIT_FALLBACK_BACKOFF_S
+        else:
+            assert budget - 2 < waited < budget - 0.99
 
     @pytest.mark.asyncio
     async def test_allowed_warning_logs_only(self):
