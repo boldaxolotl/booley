@@ -69,6 +69,7 @@ def test_real_typed_receiver(tmp_path, value, frontend):
         frontend=frontend,
         timing=StaTimingConfig(mode="logical"),
     )
+    # No public entry runs only the frontend script; the test stops before tech mapping.
     pipeline._write_yosys_script(spec, tmp_path)
     script = tmp_path / "synth.ys"
     lines = script.read_text().splitlines()  # run only the frontend, before tech mapping
@@ -129,6 +130,8 @@ targets:
     sim.parse_args(["--project", str(tmp_path), "--target", "sim", "--mode", "elab-only"])
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     build_root = tmp_path / "sim-build"
+    # Each step below drives one Flow stage against the real tool without the rest of the
+    # run (no public entry stops after the build, and the full run needs the seat caps).
     prepared = sim._prepare_elab_only_target(
         "sim", time.monotonic(), handle=handle, build_root=build_root
     )
