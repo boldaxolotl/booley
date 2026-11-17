@@ -1122,6 +1122,7 @@ fn run_signal(args: SignalArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",
@@ -1152,6 +1153,7 @@ fn run_wave(args: WaveArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         marker_tokens,
@@ -1190,6 +1192,14 @@ fn run_value(args: ValueArgs) {
     query_bwave(&args.bwave, cfg);
 }
 
+/// Name the time-window flag the user typed. clap does not report which alias
+/// matched, so a `--time` process argument means `--time`, else `-t`.
+fn time_flag(time: &Option<String>) -> Option<String> {
+    let value = time.as_ref()?;
+    let long = std::env::args().any(|arg| arg == "--time" || arg.starts_with("--time="));
+    Some(format!("{} {value}", if long { "--time" } else { "-t" }))
+}
+
 struct ResolvedMatchModifiers {
     first_match: bool,
     last_match: bool,
@@ -1197,6 +1207,7 @@ struct ResolvedMatchModifiers {
     time_min: i64,
     time_max: Option<i64>,
     time_str: Option<String>,
+    window_flag: Option<String>,
 }
 
 impl MatchModifiers {
@@ -1226,13 +1237,15 @@ impl MatchModifiers {
         // --before/--after take bare i64 (cycle in sync, tick in async).
         // They are bounds rather than time tokens, so the Phase-4 grammar
         // does not apply here.
-        let (first_match, last_match, time_min, time_max, time_str) = if let Some(n) = self.before {
-            (false, true, 0, Some(n), None)
-        } else if let Some(n) = self.after {
-            (true, false, n, None, None)
-        } else {
-            (self.first, self.last, 0, None, self.time)
-        };
+        let window_flag = time_flag(&self.time);
+        let (first_match, last_match, time_min, time_max, time_str, window_flag) =
+            if let Some(n) = self.before {
+                (false, true, 0, Some(n), None, Some(format!("--before {n}")))
+            } else if let Some(n) = self.after {
+                (true, false, n, None, None, Some(format!("--after {n}")))
+            } else {
+                (self.first, self.last, 0, None, self.time, window_flag)
+            };
 
         ResolvedMatchModifiers {
             first_match,
@@ -1241,6 +1254,7 @@ impl MatchModifiers {
             time_min,
             time_max,
             time_str,
+            window_flag,
         }
     }
 }
@@ -1269,6 +1283,7 @@ fn run_find(args: FindArgs) {
         with_reset: g.with_reset,
         time_min: modifiers.time_min,
         time_max: modifiers.time_max,
+        window_flag: modifiers.window_flag,
         time_str: modifiers.time_str,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1305,6 +1320,7 @@ fn run_sample(args: SampleArgs) {
         with_reset: g.with_reset,
         time_min: modifiers.time_min,
         time_max: modifiers.time_max,
+        window_flag: modifiers.window_flag,
         time_str: modifiers.time_str,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1370,6 +1386,7 @@ fn run_distance(args: DistanceArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1395,6 +1412,7 @@ fn run_stats(args: StatsArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",
