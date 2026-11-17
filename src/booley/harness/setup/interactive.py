@@ -1,4 +1,4 @@
-"""Plan and apply Interactive Mode Project Initialization reconciliation."""
+"""Plan and apply Sandbox Project Initialization reconciliation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     remove_relay,
     resources_for_session,
 )
-from booley.runtime import dashboard_tasks, interactive_docker, session_issuance, session_runtime
+from booley.runtime import dashboard_tasks, host_docker, session_issuance, session_runtime
 from booley.runtime.git import add_git_excludes, git_excludes_pending, stealth_exclude_names
 
 
@@ -23,7 +23,7 @@ def exclude_names(root: Path) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class InteractiveInitRequest:
-    """Inputs needed to prepare one immutable Interactive Mode plan."""
+    """Inputs needed to prepare one immutable Sandbox plan."""
 
     project_root: Path
     build_spec: session_issuance.SpecBuilder
@@ -33,7 +33,7 @@ class InteractiveInitRequest:
 
 @dataclass(frozen=True, slots=True)
 class InteractiveInitPlan:
-    """One shared desired-versus-actual Interactive Mode decision."""
+    """One shared desired-versus-actual Sandbox decision."""
 
     request: InteractiveInitRequest
     prepared: session_issuance.PreparedSessionSpec
@@ -87,7 +87,7 @@ class InteractiveInitChanges:
 
 
 def inspect(request: InteractiveInitRequest) -> InteractiveInitPlan:
-    """Prepare desired state and compare every managed Interactive Mode output."""
+    """Prepare desired state and compare every managed Sandbox output."""
     prepared = session_issuance.preview(
         request.project_root,
         request.build_spec,
@@ -172,9 +172,9 @@ def _inspect_issuance(
 def _unlicensed_relay_pending(project_root: Path) -> bool:
     resources = resources_for_session(str(project_root.resolve()))
     return (
-        interactive_docker.container_exists(resources.relay_container)
-        or interactive_docker.network_exists(resources.private_network)
-        or interactive_docker.network_exists(resources.outbound_network)
+        host_docker.container_exists(resources.relay_container)
+        or host_docker.network_exists(resources.private_network)
+        or host_docker.network_exists(resources.outbound_network)
     )
 
 
@@ -183,6 +183,6 @@ def _remove_unlicensed_relay(project_root: Path) -> bool:
         return False
     remove_relay(
         resources_for_session(str(project_root.resolve())),
-        runner=interactive_docker.relay_docker,
+        runner=host_docker.relay_docker,
     )
     return True

@@ -143,7 +143,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
         assert f"| `{category}` | `{focus}` |" in rendered
     # Mutation testing is a Flow now: no Specialist table, no Specialist section.
     assert "mutation_tester" not in rendered
-    assert "| Campaign | Goal arguments | Interactive Mode arguments |" not in rendered
+    assert "Goal arguments" not in rendered
 
 
 def test_mutation_flow_page_documents_simulation_record_controls() -> None:

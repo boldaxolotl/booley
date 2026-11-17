@@ -725,14 +725,14 @@ def _seed_doctor_init_state(root: Path) -> None:
     from booley.harness.setup.guidance_links import ensure_guidance_links
     from booley.runtime import devcontainer as dc
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-    from tests.harness.test_doctor import _seed_interactive
+    from tests.harness.test_doctor import _seed_sandbox_files
 
     booley_dir = root / ".booley"
     (booley_dir / "FUSESOC_IGNORE").touch()
     (booley_dir / ".gitignore").write_text(PROJECT_GITIGNORE)
     (booley_dir / "AGENTS.md").write_text("Run Booley Flows inside the Sandbox.\n")
     ensure_guidance_links(root, booley_dir)
-    _seed_interactive(root)
+    _seed_sandbox_files(root)
     dc.write_devcontainer(
         root, build_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
     )

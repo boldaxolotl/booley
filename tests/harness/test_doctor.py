@@ -211,7 +211,7 @@ tests = ["full"]
     if write_tickets:
         _write_tickets_tree(booley_dir)
     if seed_interactive:
-        _seed_interactive(root)
+        _seed_sandbox_files(root)
     return booley_dir
 
 
@@ -223,7 +223,7 @@ def _write_tickets_tree(booley_dir: Path) -> None:
     (tickets_dir / "locks").mkdir(parents=True, exist_ok=True)
 
 
-def _seed_interactive(root: Path) -> None:
+def _seed_sandbox_files(root: Path) -> None:
     """Seed the ADR-0018 artifacts a healthy interactive setup has: an untracked
     devcontainer spec and the git info/exclude entries."""
     from booley.runtime import devcontainer as dc
@@ -292,7 +292,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     monkeypatch.setattr(
         doctor,
         # Private: the real call builds an image spec through `init_cmd`; a full run cannot supply a host image.
-        "_expected_interactive_spec",
+        "_expected_sandbox_spec",
         lambda project_root: (
             lambda _image: json.loads(
                 dc.devcontainer_path(project_root).read_text(encoding="utf-8")

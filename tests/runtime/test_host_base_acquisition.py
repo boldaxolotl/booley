@@ -15,7 +15,7 @@ from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import host_base_acquisition as owner
-from booley.runtime import interactive_docker
+from booley.runtime import host_docker
 from booley.runtime.docker_build import DockerBuildResult
 from booley.runtime.image_identity import ImageMetadata
 from booley.runtime.image_provenance import (
@@ -183,7 +183,7 @@ def _inspect_response(monkeypatch, *, returncode=0, stdout="", stderr=""):
     def answer(*_args, **_kwargs):
         return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
 
-    monkeypatch.setattr(interactive_docker, "_run_docker", answer)
+    monkeypatch.setattr(host_docker, "_run_docker", answer)
     monkeypatch.setattr(owner.subprocess, "run", answer)
 
 
@@ -453,7 +453,7 @@ class FakeDocker:
 
     def install(self, monkeypatch: pytest.MonkeyPatch, *build_owners: object) -> None:
         """Route inspection and every named module's ``run_docker_build`` here."""
-        monkeypatch.setattr(interactive_docker, "_run_docker", self._run_docker)
+        monkeypatch.setattr(host_docker, "_run_docker", self._run_docker)
         for build_owner in build_owners:
             monkeypatch.setattr(build_owner, "run_docker_build", self._run_docker_build)
 

@@ -19,11 +19,11 @@ from booley.runtime.docker_capacity import (
     DockerCapacityError,
     _plan_from_file,
 )
+from booley.runtime.host_docker import inspect_image_metadata
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.image_identity import ImageMetadata
 from booley.runtime.image_lifecycle import _prepared_provenance, _source_graph_base
 from booley.runtime.image_provenance import LABEL_RUNTIME_BASE_CONTRACT
-from booley.runtime.interactive_docker import inspect_image_metadata
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.timefmt import utc_now_rfc3339

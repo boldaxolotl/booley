@@ -320,12 +320,12 @@ def test_ssh_mount_point_is_host_authority(mounted_runtime, monkeypatch, tmp_pat
 def test_retained_resources_separate_current_project_from_other_project_keepers(
     tmp_path, monkeypatch
 ):
-    from booley.runtime import interactive_docker, session_issuance
+    from booley.runtime import host_docker, session_issuance
 
     mine = session_issuance.keeper_image(tmp_path)
     other = session_issuance.keeper_image(tmp_path / "old-project")
-    monkeypatch.setattr(interactive_docker, "state_volumes", lambda: [])
-    monkeypatch.setattr(interactive_docker, "issued_image_tags", lambda: [mine, other])
+    monkeypatch.setattr(host_docker, "state_volumes", lambda: [])
+    monkeypatch.setattr(host_docker, "issued_image_tags", lambda: [mine, other])
     report = inspection.inspect_retained_resources(tmp_path, "docker")
     assert any(
         f.severity is Severity.PASS and "retained for this Project" in f.message
@@ -339,10 +339,10 @@ def test_retained_resources_separate_current_project_from_other_project_keepers(
 
 def test_keeper_listing_failure_is_a_doctor_finding(tmp_path, monkeypatch):
     """A Docker failure while listing keepers is a FAIL, never "no retained keepers"."""
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
     monkeypatch.setattr(
-        interactive_docker,
+        host_docker,
         "_run_docker",
         lambda args, **_kwargs: subprocess.CompletedProcess(
             args, 1, "", "Cannot connect to the Docker daemon"

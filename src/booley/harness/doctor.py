@@ -136,7 +136,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import (
     handles as handle_maps,
 )
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.agent_errors import ModelUnavailableError
 from booley.runtime.booley_dir import (
@@ -2801,7 +2801,7 @@ def _check_riscv_toolchain(
             _fail(finding.message, finding.fix)
 
 
-def _expected_interactive_spec(project_root: Path) -> Callable[[str | None], dict] | None:
+def _expected_sandbox_spec(project_root: Path) -> Callable[[str | None], dict] | None:
     """How inspection rebuilds the spec ``booley init`` would write; ``None`` in the Sandbox.
 
     Inside the Sandbox the host inputs init reads are invisible, so inspection
@@ -2820,13 +2820,13 @@ def _run_mcp_checks(
     image: str,
     reporter: _Reporter,
 ) -> None:
-    """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
+    """Validate the Sandbox: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
-    _section("Interactive Mode checks")
+    _section("Sandbox setup checks")
     if runtime_context.inside_session_runtime():
         _check_sandbox_mcp_server(reporter)
     if project is None:
-        reporter.skip_("Interactive Mode checks skipped - project config invalid")
+        reporter.skip_("Sandbox setup checks skipped - project config invalid")
         return
 
     request = inspection.RuntimeInspectionRequest(
@@ -2838,7 +2838,7 @@ def _run_mcp_checks(
         eda=project.eda,
         fpga_enabled=_flow_enabled(project, "fpga"),
         booley_dir=project.booley_dir,
-        expected_spec=_expected_interactive_spec(project.project_root),
+        expected_spec=_expected_sandbox_spec(project.project_root),
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     reporter.diagnostics(
@@ -3205,7 +3205,7 @@ def _declared_provider(project: ProjectAudit | None) -> str | None:
 
     Deliberately NOT env-aware: this exists to drift-check the on-disk devcontainer
     spec, so it must mirror exactly what re-seeding would decide --
-    ``init_cmd._select_interactive_app`` consults booley.toml and nothing else.
+    ``init_cmd._select_agent_app`` consults booley.toml and nothing else.
     An undeclared default means the seeder falls back to host detection, which no
     on-disk value can be compared against, so the caller skips the check.
     """

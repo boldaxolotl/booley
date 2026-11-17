@@ -1,4 +1,4 @@
-"""Machine-readable health probe for the Interactive Mode MCP catalog."""
+"""Machine-readable health probe for the Sandbox MCP catalog."""
 
 from __future__ import annotations
 

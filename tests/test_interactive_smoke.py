@@ -1,8 +1,8 @@
-"""Interactive Mode smoke tests — Phase 1.3 of ADR 0012.
+"""Developer Agent session smoke tests — Phase 1.3 of ADR 0012.
 
 These tests exercise Booley Flows and MCP server entry points from a "no ticket"
 context: no ``BOOLEY_SLUG``, no ``BOOLEY_STATE_FILE``, no development
-state file on disk.  They protect the Interactive Mode happy path from
+state file on disk.  They protect the Developer Agent session happy path from
 regressions caused by future state-file assumptions slipping into Flow
 code paths.
 
@@ -45,9 +45,9 @@ _BOOLEY_ENV_VARS = (
 
 @pytest.fixture(autouse=True)
 def _clear_ticket_env() -> None:
-    """Strip ticket-mode env vars so each test runs in a clean Interactive
-    Mode context — the harness sets these in Ticket Mode; their presence
-    would silently re-enable state-file gating and defeat the test.
+    """Strip ticket-mode env vars so each test runs in a clean
+    Developer Agent session context — the harness sets these in Ticket Mode;
+    their presence would silently re-enable state-file gating and defeat the test.
 
     Uses a manual save/restore (rather than ``monkeypatch.delenv``) because
     a couple of the tests below intentionally mutate ``os.environ`` via
@@ -71,7 +71,7 @@ def _clear_ticket_env() -> None:
         reset_cache()
 
 
-def _interactive_project(
+def _project_with_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets: dict[str, list[str]]
 ) -> None:
     """Create a no-ticket Project with the sim *targets* and chdir into it.
@@ -102,7 +102,7 @@ class TestRequiredArgsValidation:
     def test_missing_config_returns_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _interactive_project(tmp_path, monkeypatch, {"lite": [], "full": []})
+        _project_with_targets(tmp_path, monkeypatch, {"lite": [], "full": []})
         result = _execute(tmp_path)
         assert result.exit_code == EXIT_ERROR
         assert "--target is required" in result.outcome.report_text
@@ -121,7 +121,7 @@ class TestNoTicketDryRun:
     def test_dry_run_succeeds_without_state_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _interactive_project(tmp_path, monkeypatch, {"lite": ["smoke", "stress"]})
+        _project_with_targets(tmp_path, monkeypatch, {"lite": ["smoke", "stress"]})
         result = _execute(tmp_path, target="lite", dry_run=True)
 
         assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
@@ -194,14 +194,14 @@ class TestInteractiveLogsDir:
 
 
 # ---------------------------------------------------------------------------
-# asic_synthesize: --baseline is rejected in Interactive Mode
+# asic_synthesize: --baseline works in a Developer Agent session
 # ---------------------------------------------------------------------------
 
 
 class TestAsicSynthesizeBaselineInteractive:
     """`--baseline` compares against a past git ref. It materializes that ref in
     a throwaway ``git worktree`` (never an in-place checkout), so it works in
-    Interactive Mode (no ``BOOLEY_SLUG``) WITHOUT disturbing the user's tree."""
+    a Developer Agent session (no ``BOOLEY_SLUG``) WITHOUT disturbing the user's tree."""
 
     def test_baseline_uses_worktree_and_leaves_tree_untouched(
         self,
@@ -371,7 +371,7 @@ class TestBwaveRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# booley init: Interactive Mode devcontainer seeding (ADR 0018)
+# booley init: Sandbox devcontainer seeding (ADR 0018)
 # ---------------------------------------------------------------------------
 
 
@@ -434,7 +434,7 @@ def _stub_full_init_dependencies(
 
 
 class TestInitInteractive:
-    """`_step_interactive` writes the untracked devcontainer spec, excludes
+    """`_step_sandbox` writes the untracked devcontainer spec, excludes
     Booley files, and (when docker is present) creates the long-lived objects.
     Host MCP registration (ADR 0012) was removed."""
 
@@ -458,12 +458,8 @@ class TestInitInteractive:
             lambda *_args: SimpleNamespace(pending=False),
         )
         # No Unlicensed relay exists; do not ask the Docker CLI.
-        monkeypatch.setattr(
-            interactive_init.interactive_docker, "container_exists", lambda _n: False
-        )
-        monkeypatch.setattr(
-            interactive_init.interactive_docker, "network_exists", lambda *_a: False
-        )
+        monkeypatch.setattr(interactive_init.host_docker, "container_exists", lambda _n: False)
+        monkeypatch.setattr(interactive_init.host_docker, "network_exists", lambda *_a: False)
 
     def _ctx(self, root):
         from booley.harness import init_cmd
@@ -484,10 +480,10 @@ class TestInitInteractive:
 
         # No docker; isolate from host app detection / creds.
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
 
         ctx = self._ctx(tmp_path)
-        init_cmd._step_interactive(ctx)
+        init_cmd._step_sandbox(ctx)
 
         spec = tmp_path / ".devcontainer" / "devcontainer.json"
         assert spec.is_file()
@@ -514,9 +510,9 @@ class TestInitInteractive:
         pdk = tmp_path / "host-cache" / "pdk"
         pdk.mkdir(parents=True)
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
 
-        init_cmd._step_interactive(self._ctx(tmp_path), nangate_pdk_root=pdk)
+        init_cmd._step_sandbox(self._ctx(tmp_path), nangate_pdk_root=pdk)
 
         spec = json.loads(
             (tmp_path / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
@@ -546,10 +542,10 @@ class TestInitInteractive:
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
         (tmp_path / ".booley").mkdir()
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
         monkeypatch.setattr(runtime_spec, "preview", preview)
 
-        init_cmd._step_interactive(self._ctx(tmp_path))
+        init_cmd._step_sandbox(self._ctx(tmp_path))
 
         spec = json.loads(
             (tmp_path / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
@@ -568,7 +564,7 @@ class TestInitInteractive:
         monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
         monkeypatch.setattr(
             init_cmd,
-            "_step_interactive",
+            "_step_sandbox",
             lambda _ctx, *, nangate_pdk_root, runtime_image_id=None: seen.append(
                 (nangate_pdk_root, runtime_image_id)
             ),
@@ -596,9 +592,9 @@ class TestInitInteractive:
         )
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
 
-        init_cmd._step_interactive(self._ctx(tmp_path))
+        init_cmd._step_sandbox(self._ctx(tmp_path))
 
         empty = tmp_path / "xdg" / "booley" / "empty-mask"
         assert empty.is_dir() and not any(empty.iterdir())
@@ -626,9 +622,9 @@ class TestInitInteractive:
         )
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
 
-        init_cmd._step_interactive(self._ctx(tmp_path))
+        init_cmd._step_sandbox(self._ctx(tmp_path))
 
         out = capsys.readouterr().out
         assert "mask_paths" in out and "no paths will be masked" in out
@@ -664,7 +660,7 @@ class TestInitInteractive:
 
         ctx = self._ctx(tmp_path)
         ctx.check_only = check_only
-        init_cmd._step_interactive(ctx)
+        init_cmd._step_sandbox(ctx)
         statuses = {r.name: r.status for r in ctx.results}
         assert statuses.get("interactive") == "err"
 
@@ -678,7 +674,7 @@ class TestInitInteractive:
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
         monkeypatch.setattr(
             runtime_spec,
             "issue_prepared",
@@ -686,7 +682,7 @@ class TestInitInteractive:
         )
 
         ctx = self._ctx(tmp_path)
-        init_cmd._step_interactive(ctx, agent_app="none")
+        init_cmd._step_sandbox(ctx, agent_app="none")
 
         assert ctx.results[-1].status == "current"
         assert ctx.results[-1].detail == "current"
@@ -698,11 +694,11 @@ class TestInitInteractive:
         booley_dir = init_cmd.booley_dir_for_init(tmp_path)
         booley_dir.mkdir()
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
         ctx = init_cmd.InitContext(
             project_root=tmp_path, check_only=True, force=False, verbose=False, interactive=False
         )
-        init_cmd._step_interactive(ctx)
+        init_cmd._step_sandbox(ctx)
         assert not (tmp_path / ".devcontainer").exists()
         statuses = {r.name: r.status for r in ctx.results}
         assert statuses.get("interactive") == "warn"
@@ -859,7 +855,7 @@ class TestInitInteractive:
         )
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
-        init_cmd._step_interactive(
+        init_cmd._step_sandbox(
             ctx,
             nangate_pdk_root=tmp_path / "pdk",
             init_will_create_booley_dir=True,
@@ -879,8 +875,8 @@ class TestInitInteractive:
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
-        init_cmd._step_interactive(self._ctx(tmp_path))
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
+        init_cmd._step_sandbox(self._ctx(tmp_path))
         before = {
             path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mode)
             for path in tmp_path.rglob("*")
@@ -894,7 +890,7 @@ class TestInitInteractive:
             verbose=False,
             interactive=False,
         )
-        init_cmd._step_interactive(ctx)
+        init_cmd._step_sandbox(ctx)
 
         assert ctx.results[-1].status == "current"
         assert ctx.results[-1].detail == "current"
@@ -916,7 +912,7 @@ class TestInitInteractive:
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
         spec = tmp_path / ".devcontainer" / "devcontainer.json"
         if state == "missing":
             spec.unlink()
@@ -926,7 +922,7 @@ class TestInitInteractive:
             expected = b"{}\n"
 
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_interactive(ctx, agent_app="none")
+        init_cmd._step_sandbox(ctx, agent_app="none")
 
         assert ctx.results[-1].status == "warn"
         assert "specification/issuance" in ctx.results[-1].detail
@@ -943,13 +939,13 @@ class TestInitInteractive:
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
         exclude = tmp_path / ".git" / "info" / "exclude"
         body = exclude.read_text(encoding="utf-8").replace("/.claude\n", "")
         exclude.write_text(body, encoding="utf-8")
 
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_interactive(ctx, agent_app="none")
+        init_cmd._step_sandbox(ctx, agent_app="none")
 
         assert ctx.results[-1].status == "warn"
         assert "Git exclusions" in ctx.results[-1].detail
@@ -967,7 +963,7 @@ class TestInitInteractive:
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
         monkeypatch.setattr(
             interactive_init.session_runtime,
             "plan_stopped_headless_runtime_reconciliation",
@@ -981,7 +977,7 @@ class TestInitInteractive:
         )
 
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_interactive(ctx, agent_app="none")
+        init_cmd._step_sandbox(ctx, agent_app="none")
 
         assert ctx.results[-1].status == "warn"
         assert "stopped Sandbox resources" in ctx.results[-1].detail
@@ -997,7 +993,7 @@ class TestInitInteractive:
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
         monkeypatch.setattr(
             init_cmd.shutil, "which", lambda name: "/bin/docker" if name == "docker" else None
         )
@@ -1009,7 +1005,7 @@ class TestInitInteractive:
         )
 
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_interactive(ctx, agent_app="none")
+        init_cmd._step_sandbox(ctx, agent_app="none")
 
         assert ctx.results[-1].status == "warn"
         assert "orphaned license relay" in ctx.results[-1].detail
@@ -1031,7 +1027,7 @@ class TestInitInteractive:
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
 
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_interactive(ctx, agent_app="none")
+        init_cmd._step_sandbox(ctx, agent_app="none")
 
         assert ctx.results[-1].status == "warn"
         assert not (tmp_path / "xdg" / "booley" / "empty-mask").exists()
@@ -1040,9 +1036,9 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
-        assert init_cmd._select_interactive_app() == "none"
+        assert init_cmd._select_agent_app() == "none"
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _name: None)
-        assert init_cmd._select_interactive_app() == "none"
+        assert init_cmd._select_agent_app() == "none"
 
     def test_app_selection_honors_project_provider(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
@@ -1055,7 +1051,7 @@ class TestInitInteractive:
         )
         monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
 
-        assert init_cmd._select_interactive_app(tmp_path) == "codex"
+        assert init_cmd._select_agent_app(tmp_path) == "codex"
 
     def test_seed_only_fails_closed_without_private_project_state(self, tmp_path, monkeypatch):
         """`--seed` cannot invent the writable host Booley Directory authority."""
@@ -1066,7 +1062,7 @@ class TestInitInteractive:
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
 
         args = argparse.Namespace(
             seed=True,

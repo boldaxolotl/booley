@@ -1,4 +1,4 @@
-"""Idle reaper for Interactive Mode Sandboxes.
+"""Idle reaper for Sandboxes.
 
 ADR 0018 makes this mandatory: VS Code's stop-on-close is unreliable, and an
 orphaned Sandbox is an orphaned copy of the repo with forwarded git
