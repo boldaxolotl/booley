@@ -4248,7 +4248,7 @@ fn issue_4767_scope_depth_note() {
     let (_dir, fst) = issue_4767_store();
     let note = |pattern: &str| {
         format!(
-            "# NOTE: '{pattern}' matches 4 signals at different scope depths: tb.o_data, tb.dut.o_data, tb.a.o_data (+1 more); pass the full path to pick one\n"
+            "# NOTE: '{pattern}' matches 4 signals in different scopes: tb.o_data, tb.dut.o_data, tb.a.o_data (+1 more); pass the full path to pick one\n"
         )
     };
     let (_, err, code) = run(&issue_4767_query(
@@ -4291,7 +4291,7 @@ fn issue_4767_scope_depth_note() {
     assert_eq!(code, 0, "{err}");
     assert!(!err.contains("NOTE"), "{err}");
     let (out, _, _) = run(&["list", &fst, "-s", "o_data", "--format", "json"]);
-    assert!(!out.contains("scope depths"), "{out}");
+    assert!(!out.contains("different scopes"), "{out}");
 }
 
 #[test]

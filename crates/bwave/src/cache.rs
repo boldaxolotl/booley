@@ -780,7 +780,7 @@ fn scope_depth_note(pattern: &str, matched: &[&str]) -> Option<String> {
         n => format!(" (+{n} more)"),
     };
     Some(format!(
-        "'{pattern}' matches {} signals at different scope depths: {shown}{more}; pass the full path to pick one",
+        "'{pattern}' matches {} signals in different scopes: {shown}{more}; pass the full path to pick one",
         matched.len()
     ))
 }

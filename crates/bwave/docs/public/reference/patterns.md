@@ -15,7 +15,7 @@ name, as if it started with `*`. Matching is case-sensitive.
   `tb.dut.state_bit`.
 - A bare name matches at every depth, so `o_data` returns both `o_data` and
   `tb.dut.o_data`. Anchor it (`tb.dut.o_data`) when you know the scope. When a
-  bare name matches at two or more scope depths, the query prints a `# NOTE:`
+  bare name matches in two or more scopes, the query prints a `# NOTE:`
   listing up to three of them (JSON: `warnings`).
 - A trailing bit range is optional: `counter` matches `counter[7:0]`.
 
