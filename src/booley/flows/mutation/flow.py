@@ -895,10 +895,12 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
     def _scope_files(self) -> list[str]:
         """The scope's canonical paths, each once, at its first position."""
+        scope = self.args.scope
+        assert scope is not None, "_apply_campaign_defaults sets the scope first"
         return list(
             dict.fromkeys(
                 fusesoc_registry.canonical_project_path(self.args.work_dir, raw)
-                for value in self.args.scope.split(",")
+                for value in scope.split(",")
                 if (raw := value.strip())
             )
         )
@@ -1116,6 +1118,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             auto_mode = True
         else:
             count = self.args.count
+            assert isinstance(count, int), "the parser and campaign defaults leave an int"
             source_size_budget = None
             formula_count = count
             budget_cap = count
@@ -1178,10 +1181,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             scope_files,
             work_dir,
         )
-        explicit_min_detected = self.args.min_detected is not None
-        min_detected = (
-            self.args.min_detected if explicit_min_detected else default_min_detected(count)
-        )
+        min_detected = self.args.min_detected
+        explicit_min_detected = min_detected is not None
+        if min_detected is None:
+            min_detected = default_min_detected(count)
         if count_error := self._validate_count(count, min_detected, self.args.seed):
             return count_error
         plan = MutationRunPlan(
@@ -1761,7 +1764,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         catalog = TargetCatalog.build(work_dir)
         handle = catalog.select(target, for_flow="sim")
         mirror_root: Path | None = None
-        private_library: dict[str, fusesoc_registry.CoreLibraryPlan] = {}
+        core_library: fusesoc_registry.CoreLibraryPlan | None = None
         if mutation is not None:
             validate_mutation_closure(catalog.core_closure((handle,)) or frozenset())
             # The shared isolated registry names every source absolutely, so a
@@ -1769,13 +1772,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             # (The pristine baseline gets its mirror from the simulation build.)
             mirror_plan = fusesoc_registry.build_library_plan(handle.project_root, build_path)
             if mirror_plan is not None:
-                private_library["core_library"] = mirror_plan
+                core_library = mirror_plan
                 mirror_root = build_path / "core-mirror"
         prepared = prepare_simulation_build(
             handle,
             build_root=build_path,
             lane_kind="unreserved",
-            **private_library,
+            core_library=core_library,
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
             environment=_target_environment(work_dir, handle.identity),
@@ -2246,14 +2249,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         if early is not None:
             return early
+        assert run.process is not None
         parsed = parse_results_line(run.output)
         if parsed is not None:
-            return MutationFlow._classify_cocotb_run(run, parsed)
+            return MutationFlow._classify_cocotb_run(run.test_name, run.process.returncode, parsed)
         if run.requires_cocotb_results:
             return VariantSuiteVerdict(
                 inconclusive_reason=f"{run.test_name}: cocotb result line is missing or malformed"
             )
-        assert run.process is not None
         return VariantSuiteVerdict(
             detected=run.process.returncode != 0,
             first_killing_test=run.test_name if run.process.returncode != 0 else "",
@@ -2300,10 +2303,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
     @staticmethod
     def _classify_cocotb_run(
-        run: MutationTestRun,
+        test_name: str,
+        returncode: int,
         parsed: CocotbResults,
     ) -> VariantSuiteVerdict:
-        prefix = f"{run.test_name}: "
+        prefix = f"{test_name}: "
         if parsed.state != STATE_OK:
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + f"cocotb result state is {parsed.state}"
@@ -2321,7 +2325,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         if failed:
             return VariantSuiteVerdict(detected=True, first_killing_test=failed)
-        if run.process.returncode != 0:
+        if returncode != 0:
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + "runner exited non-zero without a failing test"
             )

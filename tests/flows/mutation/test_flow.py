@@ -744,7 +744,7 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
     result = endpoint._run_elab("default", tmp_path, build_dir)
 
     prepare.assert_called_once_with(
-        handle, build_root=build_dir, lane_kind="unreserved", environment={}
+        handle, build_root=build_dir, lane_kind="unreserved", core_library=None, environment={}
     )
     assert captured == [["custom-build", "--exact-command"]]
     assert result.returncode == 0

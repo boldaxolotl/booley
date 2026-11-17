@@ -30,7 +30,7 @@ def add_project_root_alias(
         "--project-root",
         *(("-p",) if short else ()),
         dest=dest,
-        type=str if short else None,
+        type=str,
         action=SelectionAction,
         default=argparse.SUPPRESS,
         help=argparse.SUPPRESS,
