@@ -206,6 +206,31 @@ fn is_signal_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'*'
 }
 
+/// Lex one Verilog literal starting at `start`; `pos` is at its tick on entry
+/// and just past the literal on return. The token keeps any further `'`, so
+/// `'hF'd15` is one (invalid) literal, and a radix followed by whitespace and a
+/// digit run (`'h F`) is one literal too, so the parser's error names it whole.
+fn lex_literal(bytes: &[u8], start: usize, pos: &mut usize) -> Result<Token, String> {
+    *pos += 1;
+    if *pos >= bytes.len() {
+        return Err("unexpected end after '".into());
+    }
+    *pos += 1;
+    let mut digits = *pos;
+    while digits < bytes.len() && bytes[digits].is_ascii_whitespace() {
+        digits += 1;
+    }
+    if digits > *pos && digits < bytes.len() && is_signal_char(bytes[digits]) {
+        *pos = digits; // whitespace between the radix and the digits
+    }
+    while *pos < bytes.len() && (is_signal_char(bytes[*pos]) || bytes[*pos] == b'\'') {
+        *pos += 1;
+    }
+    let lit_str =
+        std::str::from_utf8(&bytes[start..*pos]).map_err(|_| "invalid UTF-8 in literal")?;
+    Ok(Token::Literal(parse_verilog_literal(lit_str)?))
+}
+
 /// Parse a `[M:N]` or `[N]` bit-slice suffix from `input` at position `pos`.
 /// `pos` must point at `[`. Advances `pos` past `]`.
 fn tokenize_slice(input: &[u8], pos: &mut usize) -> Result<SliceSpec, String> {
@@ -332,20 +357,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             b'\'' => {
                 // Verilog literal starting with ' (no width prefix)
                 let start = pos;
-                pos += 1; // skip '
-                if pos >= bytes.len() {
-                    return Err("unexpected end after '".into());
-                }
-                // radix char
-                pos += 1;
-                // digits
-                while pos < bytes.len() && is_signal_char(bytes[pos]) {
-                    pos += 1;
-                }
-                let lit_str = std::str::from_utf8(&bytes[start..pos])
-                    .map_err(|_| "invalid UTF-8 in literal")?;
-                let hex = parse_verilog_literal(lit_str)?;
-                tokens.push(Token::Literal(hex));
+                tokens.push(lex_literal(bytes, start, &mut pos)?);
             }
             b if b.is_ascii_digit() => {
                 // Could be a width-prefixed literal (8'd255) or signal name starting with digit
@@ -355,18 +367,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 }
                 if pos < bytes.len() && bytes[pos] == b'\'' {
                     // Width-prefixed Verilog literal
-                    pos += 1; // skip '
-                    if pos >= bytes.len() {
-                        return Err("unexpected end after width'".into());
-                    }
-                    pos += 1; // radix char
-                    while pos < bytes.len() && is_signal_char(bytes[pos]) {
-                        pos += 1;
-                    }
-                    let lit_str = std::str::from_utf8(&bytes[start..pos])
-                        .map_err(|_| "invalid UTF-8 in literal")?;
-                    let hex = parse_verilog_literal(lit_str)?;
-                    tokens.push(Token::Literal(hex));
+                    tokens.push(lex_literal(bytes, start, &mut pos)?);
                 } else {
                     // Signal name starting with digits (uncommon but possible)
                     while pos < bytes.len() && is_signal_char(bytes[pos]) {
