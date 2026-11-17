@@ -39,7 +39,9 @@ does not count toward a run-alone claim's wait, the first other claim starts
 when only companions hold, and a companion that does not fit never becomes the
 front. An entry whose claim cannot be read
 counts as not fitting and ends jumping. A holder may lower its own reservation
-as its phases finish (``shrink_reservation``), never raise it. A claim may also hold
+as its phases finish (``shrink_reservation``), never raise it. A claim may take
+over a holder's reservation and queue place (``submit(succeeds=...)``): it queues at
+the holder's place and the holder drops to zero in one promotion-gate hold. A claim may also hold
 a **seat** of a licensed EDA tool, judged against the tool's Seat Cap: it
 starts only while fewer seats of that tool are held than the cap, and keeps the
 cap it was created with, so a cap changed while Jobs wait applies to new claims
@@ -180,6 +182,13 @@ class ClaimLostError(RuntimeError):
     guards never reap a live, argv-matching waiter. Raised by ``acquire`` so
     a cancelled child exits instead of silently re-joining the queue —
     re-submitting would undo the cancellation.
+    """
+
+
+class TakeoverBusyError(RuntimeError):
+    """The class promotion gate stayed busy, so a takeover submitted and dropped nothing.
+
+    Raised by ``submit`` with ``succeeds``; ``acquire`` retries it each poll.
     """
 
 
@@ -644,6 +653,7 @@ class _WaiterRequest:
     memory: MemoryClaim | None = None
     queue_reason: str | None = None
     job: JobLabel | None = None
+    seq: int | None = None  # a place taken over from a holder (else the next sequence)
 
 
 def project_slots_dir(booley_dir: Path) -> Path:
@@ -834,6 +844,7 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
+        succeeds: SlotToken | None = None,
     ) -> SlotToken:
         """Join *job_class* admission; the claim waits in queue order until admitted or withdrawn.
 
@@ -842,6 +853,14 @@ class SlotStore:
         the entry so the caller can read it while the Job waits or runs.
         A claim that opens as zero is refused (only a holder reaches zero),
         except a companion claim, which may reserve nothing.
+
+        *succeeds* is a holder of this process whose reservation the claim takes
+        over. While it still reserves memory, the claim queues at its place (its
+        priority and sequence) and the holder then drops to zero, so a claim
+        submitted after the holder cannot start first. A holder that reserves
+        nothing passes no place. ``TakeoverBusyError`` means the promotion gate
+        stayed busy: nothing was submitted or dropped. ``ClaimLostError`` means
+        the holder's lease is no longer this process's: nothing is left queued.
         """
         if memory is None or job_class != CLASS_MEMORY:
             raise ValueError(f"only the {CLASS_MEMORY} class admits, with a memory claim")
@@ -854,22 +873,39 @@ class SlotStore:
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
         created = self._now()
         linked_execution = self._linked_execution(execution_id, pid)
-        token = self._create_entry(
-            _WaiterRequest(
-                cls_dir=cls_dir,
-                priority=priority,
-                pid=pid,
-                argv=argv or [],
-                role=role,
-                timeout_s=timeout_s,
-                created=created,
-                execution_id=linked_execution,
-                memory=memory,
-                queue_reason=queue_reason,
-                job=job,
-            )
+        request = _WaiterRequest(
+            cls_dir=cls_dir,
+            priority=priority,
+            pid=pid,
+            argv=argv or [],
+            role=role,
+            timeout_s=timeout_s,
+            created=created,
+            execution_id=linked_execution,
+            memory=memory,
+            queue_reason=queue_reason,
+            job=job,
         )
-        return token
+        if succeeds is None or succeeds.memory is None or not _reserves(succeeds.memory):
+            return self._create_entry(request)
+        return self._take_over(
+            succeeds, replace(request, priority=succeeds.priority, seq=succeeds.seq)
+        )
+
+    def _take_over(self, holder: SlotToken, request: _WaiterRequest) -> SlotToken:
+        """Queue *request* at *holder*'s place and drop *holder* to zero, in one promotion-gate hold.
+
+        Every ranking runs inside the gate, so none lists the entries before the
+        claim exists and reads the holder after its drop.
+        """
+        with self._promotion_gate(holder) as acquired:
+            if not acquired:
+                raise TakeoverBusyError("the promotion gate stayed busy during a takeover")
+            token = self._create_entry(request)
+            if self.shrink_reservation(holder, 0):
+                return token
+        self.release(token)
+        raise ClaimLostError(f"the claim it succeeds is no longer held: {holder.path.name}")
 
     def _linked_execution(
         self, execution_id: str | ExecutionId | None, pid: int
@@ -940,7 +976,7 @@ class SlotStore:
         lease_id = uuid.uuid4().hex
         payload_base = self._new_waiter_payload(request, lease_id, owner_identity)
         for _attempt in range(_ENTRY_CREATE_ATTEMPTS):
-            seq = self._next_seq(request.cls_dir)
+            seq = request.seq if request.seq is not None else self._next_seq(request.cls_dir)
             # A lease owns its filename across waiter/holder transitions and
             # cancellation. Independent stores must never recycle that name.
             entry_number = int(lease_id, 16)
@@ -1232,22 +1268,30 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
+        succeeds: SlotToken | None = None,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
         Queue narration repeats when its interval elapses. ``should_abort``
         lets signal handlers end a wait without leaking the caller's entry.
+        A *succeeds* takeover (see ``submit``) retries each poll while the
+        promotion gate is busy, until ``should_abort`` fires.
         """
-        token = self.submit(
-            job_class,
-            pid=pid,
-            argv=argv,
-            role=role,
-            timeout_s=timeout_s,
-            execution_id=execution_id,
-            memory=memory,
-            queue_reason=queue_reason,
-            job=job,
+        token = self._submit_until_free(
+            lambda: self.submit(
+                job_class,
+                pid=pid,
+                argv=argv,
+                role=role,
+                timeout_s=timeout_s,
+                execution_id=execution_id,
+                memory=memory,
+                queue_reason=queue_reason,
+                job=job,
+                succeeds=succeeds,
+            ),
+            should_abort,
+            poll_interval,
         )
         if on_submitted is not None:
             on_submitted(token)
@@ -1262,6 +1306,23 @@ class SlotStore:
         except BaseException:
             self.release(token)  # idempotent; no-op on the LOST path
             raise
+
+    def _submit_until_free(
+        self,
+        submit: Callable[[], SlotToken],
+        should_abort: Callable[[], bool] | None,
+        poll_interval: float,
+    ) -> SlotToken:
+        """``submit()``, retried each poll while a takeover finds the promotion gate busy."""
+        while True:
+            try:
+                return submit()
+            except TakeoverBusyError:
+                if should_abort is not None and should_abort():
+                    raise ClaimAbortedError(
+                        "aborted while waiting for a memory slot (shutdown requested)"
+                    ) from None
+                self._sleep(poll_interval)
 
     def _wait_for_promotion(
         self,
