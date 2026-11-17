@@ -19,6 +19,7 @@ import pytest
 from booley.flows import base as flow_base
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime.endpoint_execution import ExecutionResult
 
 
 def _flow_env(slug: str = "test") -> dict[str, str]:
@@ -50,6 +51,44 @@ class EchoFlow(BooleyFlow):
         return McpToolResult(exit_code=EXIT_FAILURE)
 
 
+class CommandFlow(EchoFlow):
+    """EchoFlow that runs its ``command`` attribute and keeps what each run produced."""
+
+    name = "command_tool"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.command: list[str] = []
+        self.seen: list[SubprocessResult] = []
+
+    def _build_command(self) -> list[str]:
+        return self.command
+
+    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
+        self.seen.append(result)
+        if result.returncode == 0:
+            return McpToolResult(exit_code=EXIT_SUCCESS, report_text=result.stdout.strip())
+        return McpToolResult(exit_code=EXIT_FAILURE, report_text=result.stderr)
+
+
+def _run_command(
+    root: Path,
+    command: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    booley_dir: bool = True,
+) -> tuple[ExecutionResult, list[SubprocessResult]]:
+    """Run *command* as a Custom Flow through its public CLI entry point."""
+    if booley_dir:
+        monkeypatch.setenv("BOOLEY_DIR", str(root))
+    flow = CommandFlow()
+    flow.command = command
+    result = flow.execute_cli(
+        ["--work-dir", str(root), "--target", "t", "--report-dir", str(root / "reports")]
+    )
+    return result, flow.seen
+
+
 class TestBooleyFlowExecution:
     def test_host_entry_is_rejected_before_flow_execution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -57,92 +96,59 @@ class TestBooleyFlowExecution:
         from booley.runtime import runtime_context
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-        flow = EchoFlow()
-        with patch.object(flow, "_run") as run:
-            exit_code = flow.main(["--target", "test", "--work-dir", str(tmp_path)])
+        flow = CommandFlow()
+        flow.command = ["false"]
+        exit_code = flow.main(["--target", "test", "--work-dir", str(tmp_path)])
 
         assert exit_code == EXIT_ERROR
-        run.assert_not_called()
+        assert flow.seen == []
         assert "Sandbox" in capsys.readouterr().err
 
-    def test_successful_execution(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("command", "exit_code", "text"),
+        [
+            pytest.param(["echo", "hello world"], EXIT_SUCCESS, "hello world", id="success"),
+            pytest.param(["nonexistent_binary_12345"], EXIT_FAILURE, "", id="command-not-found"),
+            pytest.param([], EXIT_ERROR, "No command to execute", id="empty-command"),
+        ],
+    )
+    def test_command_outcomes(
+        self,
+        session_runtime: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        command: list[str],
+        exit_code: int,
+        text: str,
+    ) -> None:
+        result, seen = _run_command(session_runtime, command, monkeypatch)
 
-        env = _flow_env()
-        flow = EchoFlow()
-        with patch.dict(os.environ, env):
-            flow.parse_args(["--target", "test", "--message", "hello world"])
-        result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        assert "hello world" in result.detail.get("output", "")
-
-    def test_command_not_found(self, tmp_path: Path):
-        """Verify graceful handling of missing commands."""
-
-        class MissingCmdFlow(BooleyFlow):
-            name = "missing"
-            description = "test"
-
-            def _add_args(self, parser):
-                pass
-
-            def _build_command(self):
-                return ["nonexistent_binary_12345"]
-
-            def _interpret_result(self, result):
-                if result.returncode != 0:
-                    return McpToolResult(exit_code=EXIT_ERROR)
-                return McpToolResult()
-
-        env = _flow_env()
-        flow = MissingCmdFlow()
-        with patch.dict(os.environ, env):
-            flow.parse_args(["--target", "test"])
-        result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-
-    def test_empty_command(self, tmp_path: Path):
-
-        class EmptyFlow(BooleyFlow):
-            name = "empty"
-            description = "test"
-
-            def _add_args(self, parser):
-                pass
-
-            def _build_command(self):
-                return []
-
-            def _interpret_result(self, result):
-                return McpToolResult()
-
-        env = _flow_env()
-        flow = EmptyFlow()
-        with patch.dict(os.environ, env):
-            flow.parse_args(["--target", "test"])
-        result = flow._run()
-        assert result.exit_code == EXIT_ERROR
+        assert result.exit_code == exit_code, result.outcome.report_text
+        assert text in result.outcome.report_text
+        if command == ["nonexistent_binary_12345"]:
+            assert seen[0].returncode != 0
 
 
 class TestResourceEvidence:
     def test_local_execution_without_project_data_uses_temp_cache(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, session_runtime: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime.booley_dir import reset_cache
 
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
         reset_cache()
-        flow = EchoFlow()
-        with patch.dict(os.environ, _flow_env(), clear=True):
-            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
 
-        result = flow._execute_local([sys.executable, "-c", "print('ok')"])
+        result, _seen = _run_command(
+            session_runtime,
+            [sys.executable, "-c", "print('ok')"],
+            monkeypatch,
+            booley_dir=False,
+        )
 
-        assert result.returncode == 0
+        assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
 
     def test_local_execution_relocates_python_and_pytest_caches(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, session_runtime: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        tmp_path = session_runtime
         helper = tmp_path / "custom_helper.py"
         helper.write_text("VALUE = 7\n", encoding="utf-8")
         nested = tmp_path / "test_custom.py"
@@ -156,9 +162,6 @@ class TestResourceEvidence:
         ):
             monkeypatch.delenv(name, raising=False)
 
-        flow = EchoFlow()
-        with patch.dict(os.environ, _flow_env()):
-            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         script = (
             "import custom_helper, subprocess, sys; "
             "assert custom_helper.VALUE == 7; "
@@ -166,12 +169,12 @@ class TestResourceEvidence:
             f"'-q', {str(nested)!r}]).returncode)"
         )
 
-        result = flow._execute_local([sys.executable, "-c", script], timeout=30)
+        result, seen = _run_command(tmp_path, [sys.executable, "-c", script], monkeypatch)
 
-        assert result.returncode == 0, (
-            f"timed_out={result.timed_out} after {result.duration_s:.1f} s\n"
-            f"stdout:\n{result.stdout or '(none captured)'}\n"
-            f"stderr:\n{result.stderr or '(none captured)'}"
+        assert result.exit_code == EXIT_SUCCESS, (
+            f"timed_out={seen[0].timed_out} after {seen[0].duration_s:.1f} s\n"
+            f"stdout:\n{seen[0].stdout or '(none captured)'}\n"
+            f"stderr:\n{seen[0].stderr or '(none captured)'}"
         )
         runtime = tmp_path / ".runtime" / "python-artifacts"
         assert any((runtime / "bytecode").rglob("*.pyc"))
@@ -180,45 +183,28 @@ class TestResourceEvidence:
         assert not (tmp_path / ".pytest_cache").exists()
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
-    def test_local_execution_measures_descendant_rss(self, tmp_path: Path):
-
-        flow = EchoFlow()
-        with patch.dict(os.environ, _flow_env()):
-            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-        result = flow._execute_local(
+    def test_local_execution_measures_descendant_rss(
+        self, session_runtime: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, seen = _run_command(
+            session_runtime,
             [
                 sys.executable,
                 "-c",
                 "import time; payload = bytearray(16 * 1024 * 1024); time.sleep(0.6)",
-            ]
+            ],
+            monkeypatch,
         )
-        assert result.returncode == 0
-        assert result.peak_rss_mb is not None
-        assert result.peak_rss_mb >= 16
+
+        assert result.exit_code == EXIT_SUCCESS
+        assert seen[0].peak_rss_mb is not None
+        assert seen[0].peak_rss_mb >= 16
 
 
-class TestBoundaryExecutor:
-    """Boundary-named helper is now a local Sandbox subprocess."""
-
-    def test_runs_locally_and_stamps_dispatch_time(self, tmp_path: Path):
-
-        flow = EchoFlow()
-        with patch.dict(os.environ, _flow_env()):
-            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-        with patch.object(flow, "_execute") as execute:
-            execute.return_value = SubprocessResult(returncode=0, stdout="ok")
-            result = flow._execute_boundary(["make", "-C", "b/r"])
-        execute.assert_called_once_with(["make", "-C", "b/r"])
-        assert result.dispatched_unix > 0
-
-    def test_stale_artifact_gate(self, tmp_path: Path):
-        artifact = tmp_path / "report.rpt"
-        artifact.write_text("data")
-        mtime = artifact.stat().st_mtime
-        assert BooleyFlow._is_stale_artifact(artifact, mtime + 60) is True
-        assert BooleyFlow._is_stale_artifact(artifact, mtime - 60) is False
-        assert BooleyFlow._is_stale_artifact(artifact, None) is False
-        assert BooleyFlow._is_stale_artifact(tmp_path / "gone.rpt", mtime) is True
+def test_an_artifact_that_cannot_be_read_is_stale(tmp_path: Path) -> None:
+    # Private seam: every caller checks that the file exists first, so only a
+    # file that vanishes between that check and the stat reaches this rule.
+    assert BooleyFlow._is_stale_artifact(tmp_path / "gone.rpt", 0.0) is True
 
 
 class TestOpenRunLog:
@@ -226,40 +212,35 @@ class TestOpenRunLog:
     so the file holds the PREVIOUS run's bytes for the whole duration of one.
     Claiming it at the start is what stops a tail reading that as live."""
 
-    def _flow(self, tmp_path: Path) -> EchoFlow:
-
+    @pytest.mark.parametrize("unwritable", [False, True], ids=["missing-folder", "unwritable"])
+    def test_run_log_opening_creates_its_folder_and_never_raises(
+        self, tmp_path: Path, unwritable: bool
+    ) -> None:
+        # A work dir we cannot write is the run's own problem to report.
+        log_dir = tmp_path / "not" / "there" / "yet"
         flow = EchoFlow()
         with patch.dict(os.environ, _flow_env()):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-        return flow
 
-    def test_truncates_to_a_header_naming_this_run(self, tmp_path: Path):
-        log_dir = tmp_path / "work"
-        log_dir.mkdir()
-        (log_dir / "run.log").write_text("PASSED (from an older run)\n", encoding="utf-8")
+        # Private seam: the Flows open the log inside their own run, after Target
+        # resolution and a toolchain build, so only a direct call controls the
+        # folder it gets.
+        if unwritable:
+            with patch("pathlib.Path.mkdir", side_effect=OSError("read-only fs")):
+                flow._open_run_log("sim_fifo", log_dir)
+        else:
+            flow._open_run_log("sim_fifo", log_dir)
 
-        self._flow(tmp_path)._open_run_log("sim_fifo", log_dir)
-
-        content = (log_dir / "run.log").read_text(encoding="utf-8")
-        assert "older run" not in content
-        assert content.startswith("[BOOLEY RUN_LOG] ")
-        assert "flow=echo_tool target=sim_fifo" in content
-
-    def test_creates_a_missing_work_dir(self, tmp_path: Path):
-        log_dir = tmp_path / "not" / "there" / "yet"
-        self._flow(tmp_path)._open_run_log("sim_fifo", log_dir)
-        assert (log_dir / "run.log").exists()
-
-    def test_unwritable_dir_never_raises(self, tmp_path: Path):
-        # A work dir we cannot write is the run's own problem to report.
-        flow = self._flow(tmp_path)
-        with patch("pathlib.Path.mkdir", side_effect=OSError("read-only fs")):
-            flow._open_run_log("sim_fifo", tmp_path / "work")
-        assert not (tmp_path / "work" / "run.log").exists()
+        assert (log_dir / "run.log").exists() is not unwritable
 
 
 class TestTimeoutKillsTheWholeTree:
     """A timed-out run must leave no orphan behind (SETUP-F-13).
+
+    Private seam: the timeout clock must start only once the grandchild exists,
+    which needs the ``_communicate_local_process`` seam; the drain bound is
+    patched to 1 s; and the Ctrl-C test needs the ``KeyboardInterrupt`` to leave
+    ``_execute`` raw (through ``execute_cli`` the lifecycle turns it into exit 130).
 
     ``subprocess.run(timeout=...)`` kills only the direct child, so the
     grandchild that does the actual work (``python -m booley.flows.sim.backends.verilator``

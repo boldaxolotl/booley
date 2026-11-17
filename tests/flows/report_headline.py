@@ -15,6 +15,8 @@ def assert_paired_headline(report_dir: Path, endpoint: str) -> dict:
     The persisted side is the newest numbered ``<endpoint>/<N>/report.json``. The MCP
     side is the report ``_latest_report`` selects from disk, passed through the encoder.
     """
+    # Private seam: the MCP projection's report selection has no public function,
+    # and the MCP tool that calls it needs a running job registry.
     numbered = report_dir.glob(f"{endpoint}/*/report.json")
     persisted = json.loads(max(numbered, key=lambda path: int(path.parent.name)).read_text())
     payload = ReportEncoder.structured_report(_latest_report(endpoint, report_dirs=(report_dir,)))
