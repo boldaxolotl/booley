@@ -130,7 +130,7 @@ struct GlobalOpts {
     #[arg(long, value_parser = ["post-edge", "pre-edge"], conflicts_with = "async_mode")]
     sample_mode: Option<String>,
 
-    /// Reset signal pattern for sync mode (default: auto *rst*)
+    /// Reset signal pattern for sync mode (default: auto *rst* or *reset*)
     #[arg(long)]
     reset: Option<String>,
 
@@ -937,6 +937,15 @@ fn load_store_or_exit(store_path: &str) -> ColumnCache {
     })
 }
 
+/// Apply `--reset PATTERN` to the store; an unusable pattern is caller input,
+/// so it exits 2 naming the pattern.
+fn select_reset_or_exit(cache: &mut ColumnCache, pattern: Option<&str>) {
+    if let Some(error) = pattern.and_then(|p| cache.select_reset(p).err()) {
+        eprintln!("ERROR: {error}");
+        process::exit(2);
+    }
+}
+
 /// Run a query through ColumnCache (loads the store file directly).
 fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
     let mut cache = load_store_or_exit(bwave_path);
@@ -949,6 +958,7 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
         eprintln!("ERROR: {}", bwave::cache::no_signals_in_store_message());
         process::exit(2);
     }
+    select_reset_or_exit(&mut cache, cfg.reset_pattern.as_deref());
     if let Some(ref clk_pat) = cfg.clock_pattern {
         match cache.detect_clock_from_pattern(clk_pat) {
             Ok((period, first_rise, name)) => {
@@ -1012,6 +1022,7 @@ fn run_overview(args: OverviewArgs) {
     reject_sample_mode("overview", &g);
     require_bwave(&args.bwave, "bwave overview");
     let mut cache = load_store_or_exit(&args.bwave);
+    select_reset_or_exit(&mut cache, g.reset.as_deref());
     if let Some(pattern) = g.clock {
         let (period, first, name) = cache
             .detect_clock_from_pattern(&pattern)
@@ -1030,6 +1041,7 @@ fn run_overview(args: OverviewArgs) {
             ..Default::default()
         },
     );
+    let reset = bwave::cache::reset_report(&cache, g.with_reset);
     if g.format == "json" {
         bwave::output::emit_clock_json(
             "overview",
@@ -1042,9 +1054,13 @@ fn run_overview(args: OverviewArgs) {
             bwave::output::merge_warnings(cfg.warnings, &g.wrapper_warning),
             cfg.clock_regularity,
             cfg.clock_stopped,
+            Some(reset),
         );
-    } else if let Some(verdict) = cfg.clock_regularity {
-        println!("{}", bwave::clock::verdict_text(&verdict));
+    } else {
+        if let Some(verdict) = cfg.clock_regularity {
+            println!("{}", bwave::clock::verdict_text(&verdict));
+        }
+        println!("{}", reset.text());
     }
 }
 
@@ -1059,6 +1075,7 @@ fn run_list(args: ListArgs) {
     }
     require_bwave(&args.bwave, "bwave list");
     let mut cache = load_store_or_exit(&args.bwave);
+    select_reset_or_exit(&mut cache, g.reset.as_deref());
     if let Some(ref clock) = g.clock {
         match cache.detect_clock_from_pattern(clock) {
             Ok((period, rise, name)) => {
@@ -1100,6 +1117,7 @@ fn run_signal(args: SignalArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",
@@ -1130,6 +1148,7 @@ fn run_wave(args: WaveArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         marker_tokens,
@@ -1168,6 +1187,17 @@ fn run_value(args: ValueArgs) {
     query_bwave(&args.bwave, cfg);
 }
 
+/// Name the time-window flag the user typed. clap does not report which alias
+/// matched, so a `--time` process argument before any `--` means `--time`,
+/// else `-t`.
+fn time_flag(time: &Option<String>) -> Option<String> {
+    let value = time.as_ref()?;
+    let long = std::env::args()
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--time" || arg.starts_with("--time="));
+    Some(format!("{} {value}", if long { "--time" } else { "-t" }))
+}
+
 struct ResolvedMatchModifiers {
     first_match: bool,
     last_match: bool,
@@ -1175,6 +1205,7 @@ struct ResolvedMatchModifiers {
     time_min: i64,
     time_max: Option<i64>,
     time_str: Option<String>,
+    window_flag: Option<String>,
 }
 
 impl MatchModifiers {
@@ -1204,13 +1235,15 @@ impl MatchModifiers {
         // --before/--after take bare i64 (cycle in sync, tick in async).
         // They are bounds rather than time tokens, so the Phase-4 grammar
         // does not apply here.
-        let (first_match, last_match, time_min, time_max, time_str) = if let Some(n) = self.before {
-            (false, true, 0, Some(n), None)
-        } else if let Some(n) = self.after {
-            (true, false, n, None, None)
-        } else {
-            (self.first, self.last, 0, None, self.time)
-        };
+        let window_flag = time_flag(&self.time);
+        let (first_match, last_match, time_min, time_max, time_str, window_flag) =
+            if let Some(n) = self.before {
+                (false, true, 0, Some(n), None, Some(format!("--before {n}")))
+            } else if let Some(n) = self.after {
+                (true, false, n, None, None, Some(format!("--after {n}")))
+            } else {
+                (self.first, self.last, 0, None, self.time, window_flag)
+            };
 
         ResolvedMatchModifiers {
             first_match,
@@ -1219,6 +1252,7 @@ impl MatchModifiers {
             time_min,
             time_max,
             time_str,
+            window_flag,
         }
     }
 }
@@ -1252,6 +1286,7 @@ fn run_find(args: FindArgs) {
         with_reset: g.with_reset,
         time_min: modifiers.time_min,
         time_max: modifiers.time_max,
+        window_flag: modifiers.window_flag,
         time_str: modifiers.time_str,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1293,6 +1328,7 @@ fn run_sample(args: SampleArgs) {
         with_reset: g.with_reset,
         time_min: modifiers.time_min,
         time_max: modifiers.time_max,
+        window_flag: modifiers.window_flag,
         time_str: modifiers.time_str,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1362,6 +1398,7 @@ fn run_distance(args: DistanceArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1387,6 +1424,7 @@ fn run_stats(args: StatsArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",

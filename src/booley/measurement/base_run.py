@@ -15,8 +15,9 @@ checkout (``test_run`` set), else they read "no base value".
 a drop appears both in :attr:`BaseRunView.worsened` and in
 :attr:`BaseRunView.tests_dropped`; the renderer (#3505) may merge the two.
 
-A base run is the latest stored run of the Base's project tree, whatever its rules tree
-or status, so an unmet, errored or stopped base run still gives Δ and warnings.
+A base run is the latest stored run of the Base's project tree measured under the rules
+Base's tree, else the latest whatever its rules tree (``rules_differ``), and whatever its
+status, so an unmet, errored or stopped base run still gives Δ and warnings.
 """
 
 from __future__ import annotations
@@ -93,6 +94,7 @@ class BaseRunView:
     worsened: tuple[Worsened, ...]
     tests_dropped: tuple[TestsDropped, ...]
     toolchain_changes: tuple[str, ...]  # differing fingerprint fields; empty = same toolchain
+    rules_differ: bool = False  # the base run was measured under another rules tree than preferred
 
 
 @dataclass(frozen=True)
@@ -253,8 +255,28 @@ def _compare(head: Mapping[str, Any], base: Mapping[str, Any]) -> BaseRunView:
     )
 
 
+def _no_base_run(
+    head: Mapping[str, Any], base: str, command: str | None, problem: str | None
+) -> BaseRunView:
+    """The view of a Base with no usable run: every Δ reads "no base run"."""
+    return BaseRunView(
+        base=base,
+        base_run_id=None,
+        command=command,
+        problem=problem,
+        deltas=_without_base_run(head, NoDelta.NO_BASE_RUN),
+        worsened=(),
+        tests_dropped=(),
+        toolchain_changes=(),
+    )
+
+
 def base_run_view(
-    repository: Path, store: MeasurementStore, head: Mapping[str, Any], base: Base
+    repository: Path,
+    store: MeasurementStore,
+    head: Mapping[str, Any],
+    base: Base,
+    rules_tree: str | None,
 ) -> BaseRunView:
     """The Δ and base-run warnings of the *head* run document against the Base's run.
 
@@ -262,6 +284,8 @@ def base_run_view(
     of: every Δ reads "no base run" and ``command`` would create it (never started here).
     An unreadable stored document: ``problem`` carries the store's message, every Δ reads
     "no base run" and there is no command, because a new run would not heal the lookup.
+    *rules_tree* is the Booley Directory tree a base run should have been measured under
+    (``None``: no preference); a base run under another tree sets ``rules_differ``.
     """
     if base.commit is None:
         return BaseRunView(
@@ -276,31 +300,15 @@ def base_run_view(
         )
     tree = raw_git(repository, "rev-parse", "--verify", f"{base.commit}^{{tree}}")
     try:
-        run = store.base_run(tree.decode("ascii").strip())
+        run = store.base_run(tree.decode("ascii").strip(), rules_tree)
     except MeasurementStoreError as error:
-        deltas = _without_base_run(head, NoDelta.NO_BASE_RUN)
-        return BaseRunView(
-            base=base.commit,
-            base_run_id=None,
-            command=None,
-            problem=str(error),
-            deltas=deltas,
-            worsened=(),
-            tests_dropped=(),
-            toolchain_changes=(),
-        )
+        return _no_base_run(head, base.commit, None, str(error))
     if run is None:
-        deltas = _without_base_run(head, NoDelta.NO_BASE_RUN)
-        command = f"booley measure --all {base.commit}"
-        return BaseRunView(
-            base=base.commit,
-            base_run_id=None,
-            command=command,
-            problem=None,
-            deltas=deltas,
-            worsened=(),
-            tests_dropped=(),
-            toolchain_changes=(),
-        )
+        return _no_base_run(head, base.commit, f"booley measure --all {base.commit}", None)
     compared = _compare(head, run.document)
-    return replace(compared, base=base.commit, base_run_id=run.run_id)
+    return replace(
+        compared,
+        base=base.commit,
+        base_run_id=run.run_id,
+        rules_differ=rules_tree is not None and run.key.booley_tree != rules_tree,
+    )

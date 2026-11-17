@@ -32,6 +32,7 @@ from tests.flows.sim.test_verilator_coverage_execution import (
     _execution_fixture,
     _run_request,
 )
+from tests.time_budget import hang_guard_s
 
 # The imported fake-Verilator Project is POSIX-only, like its home module.
 pytestmark = pytest.mark.skipif(
@@ -58,7 +59,7 @@ def _run(project: Path, reports: Path, selector: str) -> None:
             work_dir=project,
             report_dir=reports,
             test=(selector,),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
@@ -126,7 +127,7 @@ def test_request_maps_to_recorded_keys(
             target="sim",
             work_dir=flow_project,
             report_dir=tmp_path / "reports",
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
             **selection,
         )
     )
@@ -190,10 +191,13 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
     # ``_execute_boundary`` is the ``invoke`` callback ``SimulationExecution`` takes; no public
     # Flow method hands it out.
     flow._args = SimRequest(
-        target="sim", work_dir=flow_project, report_dir=tmp_path / "reports", timeout_ms=30_000
+        target="sim",
+        work_dir=flow_project,
+        report_dir=tmp_path / "reports",
+        timeout_ms=hang_guard_s() * 1000,
     )
     execution = SimulationExecution(
-        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=30_000)
+        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
     )
 
     with (

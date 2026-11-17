@@ -28,7 +28,7 @@ from booley.measurement.base import (
     ChangedFiles,
     changed_files,
     protected_edits,
-    resolve_base,
+    resolve_rules_base,
 )
 from booley.measurement.metrics_file import (
     METRICS_FILE,
@@ -359,8 +359,9 @@ def rules_diff(repository: Path, keyed: KeyedCommit, base: str | None) -> RulesD
     *base* is the RTL Base commit (``None``: no base). When ``keyed.booley_commit`` is
     ``None`` the rules are in the measured tree and the two commits of *repository* are
     compared, each at the Booley Directory placement it configures. Otherwise they come
-    from the Versioned Booley Directory: its own Base (merge-base with its default
-    branch, kept on the result) is compared with ``keyed.booley_commit`` and *base* is
+    from the Versioned Booley Directory: its own rules Base (merge-base with local ``main``
+    when that holds commits ``origin/HEAD`` lacks, else as the RTL default Base; kept on
+    the result) is compared with ``keyed.booley_commit`` and *base* is
     not used. A missing file declares nothing; an unreadable one is reported in
     ``unreadable`` and nothing else is compared. No Base means no changes.
 
@@ -373,11 +374,31 @@ def rules_diff(repository: Path, keyed: KeyedCommit, base: str | None) -> RulesD
             return RulesDiff((), None, None, None)
         return _compare(repository, base, keyed.commit, booley_dir_at)
     paired = _paired_repository(repository)
-    paired_base = resolve_base(paired, keyed.booley_commit)
+    paired_base = resolve_rules_base(paired, keyed.booley_commit)
     if paired_base.commit is None:
         return RulesDiff((), None, None, paired_base)
     diff = _compare(paired, paired_base.commit, keyed.booley_commit, _at_root)
     return replace(diff, paired_base=paired_base)
+
+
+def rules_base_tree(repository: Path, keyed: KeyedCommit, diff: RulesDiff) -> str | None:
+    """The Booley Directory tree a base run should have been measured under, if any.
+
+    ``None`` when the rules are in the measured tree (no preference). Otherwise the tree
+    of the rules Base, or of the measured Booley Directory commit when it has no rules
+    Base (it is its own Base, or none exists).
+    """
+    if keyed.booley_commit is None:
+        return None
+    if diff.paired_base is None or diff.paired_base.commit is None:
+        return keyed.key.booley_tree
+    tree = raw_git(
+        _paired_repository(repository),
+        "rev-parse",
+        "--verify",
+        f"{diff.paired_base.commit}^{{tree}}",
+    )
+    return tree.decode("ascii").strip()
 
 
 def _under(place: PurePosixPath, changed: ChangedFiles) -> ChangedFiles:

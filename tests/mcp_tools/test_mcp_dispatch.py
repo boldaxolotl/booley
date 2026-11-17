@@ -323,7 +323,7 @@ class TestOutputCapEnvKnobs:
     def test_stdout_cap_override_applies(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "100")
         result = _format_mcp_tool_result(0, "x" * 300, "")
-        assert "truncated, showing last 100 bytes" in result
+        assert "truncated: at least 200 earlier bytes dropped, showing last 100 bytes" in result
 
     def test_stderr_cap_override_applies(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "100")

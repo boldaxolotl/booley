@@ -18,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.adapter_transport import (
     AdapterTransportIdentity,
@@ -505,11 +506,11 @@ def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch)
             image=False,
             work_dir=evidence,
             run_cwd=cwd,
-            timeout=30,
+            timeout=hang_guard_s(),
             sim_time_grace_s=0,
         )
         try:
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + hang_guard_s()
             while (
                 "RuntimeError: live failure" not in log.read_text() and time.monotonic() < deadline
             ):
@@ -521,7 +522,7 @@ def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch)
             assert not (cwd / "run.log").exists()
         finally:
             release.write_text("go")
-            future.result(timeout=20)
+            future.result(timeout=hang_guard_s())
     assert "final diagnostic" in log.read_text()
 
 

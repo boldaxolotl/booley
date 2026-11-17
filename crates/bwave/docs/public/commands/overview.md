@@ -97,10 +97,10 @@ with a `bwave build` hint. Only `build` reads VCD input.
 ## The `overview` command
 
 `bwave overview STORE_FILE` prints the selected clock, its regularity
-verdict, and the clock-stop summary without scanning the data signals. Run it
-before trusting cycle numbers; `reference/sync-vs-async` explains the
-verdict.
+verdict, the clock-stop summary, and the `# reset:` line without scanning the
+data signals. Run it before trusting cycle numbers; `reference/sync-vs-async`
+explains the verdict and the reset line.
 
 - Accepts `--clock`, `--reset`, and `--with-reset`; rejects `--sample-mode`.
 - `--format json` puts trace metadata in `data` and the verdict in
-  `clock_regularity`.
+  `clock_regularity` and the reset facts in `reset`.

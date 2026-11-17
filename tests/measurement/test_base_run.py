@@ -152,7 +152,7 @@ class World:
     def view_against(self, head: dict[str, Any], base: Base) -> BaseRunView:
         from booley.measurement.base_run import base_run_view
 
-        return base_run_view(self.repository, self.store, head, base)
+        return base_run_view(self.repository, self.store, head, base, None)
 
 
 @pytest.fixture
@@ -231,6 +231,7 @@ def test_delta_for_every_reported_metric_with_a_value_in_both_runs(world: World)
     head = world.head_document("head", head_tables, minute=1)
 
     view = world.view(head)
+    assert view.rules_differ is False
 
     expected: dict[tuple[str, str], tuple[Any, Any]] = {
         ("synth", "cell_count_max"): (-10, None),

@@ -6,6 +6,7 @@ from typing import cast
 
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.targets.domain import TargetHandle
+from tests.time_budget import hang_guard_s
 
 
 def _project(root: Path, marker: str) -> TargetHandle:
@@ -33,7 +34,7 @@ def test_each_target_handle_resolves_its_own_project_configuration(tmp_path: Pat
             test_names=("smoke",),
             build_root=handle.project_root / "build",
             eda_tool="icarus",
-            timeout_s=5,
+            timeout_s=hang_guard_s(),
         )
         assert outcome is not None
         assert outcome.status == "passed"

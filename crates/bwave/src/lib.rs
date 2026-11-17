@@ -6,6 +6,7 @@ pub mod fst;
 pub mod output;
 pub mod parser;
 mod profile;
+pub mod reset;
 pub mod signal;
 pub mod vcd_chunk;
 pub mod virtual_signal;
@@ -25,7 +26,11 @@ pub struct ExtractConfig {
     pub clock_regularity: Option<clock::ClockVerdict>,
     pub clock_stopped: Vec<clock::StoppedRange>,
     pub clock_pattern: Option<String>,
+    /// `--reset` pattern. The CLI applies it to the store through
+    /// `ColumnCache::select_reset` before any query runs.
     pub reset_pattern: Option<String>,
+    /// The reset report of a sync query, set by the query's config resolution.
+    pub reset_report: Option<reset::ResetReport>,
     pub with_reset: bool,
     pub at_time: Option<i64>,
     pub at_time_is_cycle: bool,
@@ -66,6 +71,9 @@ pub struct ExtractConfig {
     /// cache's timescale in `resolve_time_tokens()` to populate `time_min` /
     /// `time_max`.
     pub time_str: Option<String>,
+    /// The query window flag as typed (`-t 5:9`, `--after 100`); `None` when
+    /// the query has no window.
+    pub window_flag: Option<String>,
     /// Raw `--at` argument; e.g. `"100"` (sync), `"500ns"` (async). Parsed in
     /// `resolve_time_tokens()` to populate `at_time`.
     pub at_str: Option<String>,
@@ -87,6 +95,7 @@ impl Default for ExtractConfig {
             clock_stopped: Vec::new(),
             clock_pattern: None,
             reset_pattern: None,
+            reset_report: None,
             with_reset: false,
             at_time: None,
             at_time_is_cycle: false,
@@ -114,6 +123,7 @@ impl Default for ExtractConfig {
             virtual_defs: Vec::new(),
             json_format: false,
             time_str: None,
+            window_flag: None,
             at_str: None,
             diff_strs: None,
         }
@@ -136,7 +146,6 @@ impl ExtractConfig {
         let policy = ExtractConfig {
             async_mode: self.async_mode,
             with_reset: self.with_reset,
-            reset_pattern: self.reset_pattern.clone(),
             ..Default::default()
         };
         let resolve = |tok: &TimeToken| cache::resolve_time_token(cache, &policy, tok);

@@ -53,6 +53,7 @@ from tests.flows.sim.simulation_record_test_support import (
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
+from tests.time_budget import hang_guard_s
 
 _DURABLE_BOUNDARIES = (
     "manifest_commit",
@@ -446,7 +447,7 @@ def _run_killed(run, trace: Path) -> None:
                 os._exit(4)
         finally:
             os._exit(3)
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + hang_guard_s()
     while True:
         done, status = os.waitpid(pid, os.WNOHANG)
         if done:

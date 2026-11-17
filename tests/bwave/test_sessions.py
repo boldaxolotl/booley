@@ -275,6 +275,34 @@ def test_missing_trace_error():
     assert "no longer exists" in r.stderr.lower()
 
 
+def test_register_dir_names_stray_vcd_dump(tmp_path):
+    from booley.bwave import cli as bwave
+
+    dump = tmp_path / "sim.vcd"
+    dump.write_bytes(b"")
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_register(argparse.Namespace(sim_dir=str(tmp_path), alias="dut"))
+    assert str(exc.value) == (
+        f"ERROR: No trace file found in {tmp_path}\n"
+        "VCD dumps here that are not named trace.vcd: sim.vcd\n"
+        "Declare the dump in [flows.sim].trace_files and re-run the sim, "
+        "or pass the file directly (a raw VCD needs --build to register):\n"
+        f'  bwave register "{dump}" --as ALIAS --build\n'
+        f'  bwave gui "{dump}"'
+    )
+
+
+def test_register_lists_five_stray_vcds_and_counts_the_rest(tmp_path):
+    from booley.bwave import cli as bwave
+
+    for name in "gfedcba":
+        (tmp_path / f"{name}.vcd").write_bytes(b"")
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_register(argparse.Namespace(sim_dir=str(tmp_path), alias="dut"))
+    assert "a.vcd, b.vcd, c.vcd, d.vcd, e.vcd and 2 more" in str(exc.value)
+    assert "f.vcd" not in str(exc.value)
+
+
 def test_register_missing_trace_includes_incident(tmp_path):
     from booley.bwave import cli as bwave
 

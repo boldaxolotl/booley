@@ -13,6 +13,7 @@ import pytest
 
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.targets.domain import TargetHandle
+from tests.time_budget import hang_guard_s
 
 
 def _handle(root: Path) -> TargetHandle:
@@ -278,7 +279,7 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
         test_names=("smoke",),
         build_root=tmp_path / "build",
         eda_tool="icarus",
-        timeout_s=30,
+        timeout_s=hang_guard_s(),
         commands=(
             f'"{sys.executable}" -c "import project_helper; assert project_helper.VALUE == 42"',
             f'"{sys.executable}" -m pytest --lf -q "{nested}"',
@@ -373,7 +374,7 @@ def test_actual_hook_normalizes_invalid_utf8_output(tmp_path: Path) -> None:
         test_names=("smoke",),
         build_root=tmp_path / "build",
         eda_tool="icarus",
-        timeout_s=5,
+        timeout_s=hang_guard_s(),
         commands=("printf '\\377hook-out\\n'; printf '\\376hook-err\\n' >&2",),
     )
     assert evidence is not None and evidence.returncode == 0
@@ -396,7 +397,7 @@ def test_pre_sim_commands_do_not_run_after_the_jobs_oom_kill(tmp_path: Path) -> 
             test_names=("smoke",),
             build_root=tmp_path / "build",
             eda_tool="icarus",
-            timeout_s=30,
+            timeout_s=hang_guard_s(),
             commands=(touch,),
         )
 

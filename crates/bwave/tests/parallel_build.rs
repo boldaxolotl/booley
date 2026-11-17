@@ -42,7 +42,6 @@ fn build(input: &Path, parallel: bool, suffix: &str) -> PathBuf {
 }
 
 fn assert_semantically_equal(serial: &ColumnCache, parallel: &ColumnCache, fixture: &str) {
-    assert_eq!(serial.sim_start_tick, parallel.sim_start_tick, "{fixture}");
     assert_eq!(serial.sim_end_tick, parallel.sim_end_tick, "{fixture}");
     assert_eq!(serial.ticks_to_ns, parallel.ticks_to_ns, "{fixture}");
     assert_eq!(

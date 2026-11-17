@@ -23,6 +23,7 @@ from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_simulation_record_characterization import _AdapterAbortExecution, _plan
+from tests.time_budget import hang_guard_s
 
 
 def _refresh_hook_workload_identity(document):
@@ -1097,7 +1098,7 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
     # Publication tests must allow for Git for Windows shell startup under CI load.
     execution = SimulationExecution(
         invoke=_subprocess_invoker(project),
-        options=SimulationOptions(timeout_ms=60_000 if os.name == "nt" else 5000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
     monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
     return project, flow

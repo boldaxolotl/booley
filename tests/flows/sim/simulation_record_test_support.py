@@ -95,6 +95,7 @@ from tests.flows.sim.test_simulation_record_manifest_codec import (
     _selection_test_runs,
     _sha,
 )
+from tests.time_budget import hang_guard_s
 
 
 def _recovery_status(tmp_path: Path) -> SimulationRecordRecoveryStatus:
@@ -1056,7 +1057,7 @@ def _managed(store: SlotStore, outer, *, holders: int = 2, **overrides: Any) -> 
         outer,
         "interactive",
         "a" * 32,
-        5.0,
+        _PARALLEL_SYNC_TIMEOUT_S,
         lambda: False,
         memory_sizing=_FixedSizing(_holder_claim(holders)),  # type: ignore[arg-type]
         **overrides,
@@ -1133,16 +1134,16 @@ def _three_item_manifest(execution_id: str = ""):
     return finalize_manifest(document)
 
 
-def _wait_until(predicate, timeout: float = 2.0) -> None:
+_PARALLEL_SYNC_TIMEOUT_S = hang_guard_s()
+
+
+def _wait_until(predicate, timeout: float = _PARALLEL_SYNC_TIMEOUT_S) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.01)
     raise AssertionError("condition did not become true before the deadline")
-
-
-_PARALLEL_SYNC_TIMEOUT_S = 20.0
 
 
 def _remove_slot_entry(slots: SlotStore, token: SlotToken) -> None:

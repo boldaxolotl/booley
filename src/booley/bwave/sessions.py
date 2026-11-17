@@ -377,10 +377,7 @@ def cmd_register(args: argparse.Namespace) -> None:
     elif target.is_dir():
         trace = bwave.find_trace(target)
         if not trace:
-            msg = f"ERROR: No trace file found in {target}"
-            msg += _headeronly_store_note(target)
-            msg += bwave._trace_diagnostics(target)
-            sys.exit(msg)
+            sys.exit(bwave._no_trace_found_message(target, _headeronly_store_note(target)))
         # Only read if the search lands on a raw VCD (below) — that means the
         # directory's own VCD→FST conversion failed, and the manifest says why.
         # A header-only .fst find_trace skipped is part of that story too:

@@ -69,8 +69,8 @@ keyword.
 ## Common errors
 
 - **Zero matches when you expected some**: the reset
-  phase may hide them. Try `--with-reset`
-  (`troubleshooting/reset-skipping`).
+  phase may hide them. When cycles were skipped, the no-match line says how
+  many; try `--with-reset` (`reference/sync-vs-async`).
 
 ## Examples
 

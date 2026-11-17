@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
@@ -299,7 +300,9 @@ def test_run_verilated_binary_writes_run_log_end_to_end(tmp_path: Path, capsys):
     exe.chmod(0o755)
 
     work_dir = tmp_path / "work"
-    vr.run_verilated_binary(top_module="tb_top", bin_dir=bin_dir, work_dir=work_dir, timeout=30)
+    vr.run_verilated_binary(
+        top_module="tb_top", bin_dir=bin_dir, work_dir=work_dir, timeout=hang_guard_s()
+    )
 
     log = (work_dir / "run.log").read_text(encoding="utf-8")
     assert "TB chatter" in log

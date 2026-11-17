@@ -241,6 +241,15 @@ The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer
 sees it.
 
+<details markdown>
+<summary>In stealth mode</summary>
+
+Your rules are compared with the Booley Directory's own repository, including
+rules committed in its local `main` but not yet pushed. `--base` moves only the
+Base of your RTL. See [Stealth Mode](STEALTH.md).
+
+</details>
+
 ## Base runs
 
 The Base is the merge-base of your commit with the default branch; `--base`
@@ -251,6 +260,15 @@ exists, the report adds the Δ column and warns where a metric got worse.
 Without one, the report prints the command to create it:
 `booley measure --all <base>`. A commit on the default branch's own history
 has no Base; name an earlier commit with `--base`.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The base run is the latest run of the Base's tree measured under the same
+rules as your rules comparison. When no run was, the latest run of that tree is
+used and the report says "its rules differ". See [Stealth Mode](STEALTH.md).
+
+</details>
 
 ## Limits
 
