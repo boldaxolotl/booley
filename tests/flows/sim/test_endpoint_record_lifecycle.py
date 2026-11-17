@@ -736,25 +736,6 @@ def _public_cycle_simulation_record(tmp_path, monkeypatch):
         )
 
 
-def _cycle_ticket(tmp_path, *, target="acme:lib:dut:1#sim", selector="sim", test="smoke"):
-    from booley.criteria.state import DevelopmentState
-
-    path = tmp_path / "state.json"
-    state = DevelopmentState.load(path)
-    state.slug, state.ticket_type = "ticket", "implementation"
-    key = f"sim_pass_{selector}_{test}"
-    params = {
-        "target": target,
-        "_target_selector": selector,
-        "test_selector": test,
-        "required_tests": [test],
-        "minimum_total": 1,
-    }
-    state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
-    state.save()
-    return path, state, key
-
-
 def _public_cycle_flow(simulation_record, monkeypatch):
     from contextlib import nullcontext
 
@@ -837,8 +818,6 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
 )
 def test_public_cycle_metadata_survives_publication_faults(tmp_path, monkeypatch, failure):
     simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
-    path, _state, _key = _cycle_ticket(tmp_path)
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = _public_cycle_flow(simulation_record, monkeypatch)
     writes = _cycle_publication_fault(flow, monkeypatch, failure)
     reports = tmp_path / "reports"
@@ -866,7 +845,7 @@ def test_public_cycle_metadata_survives_publication_faults(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeypatch, cancelled):
-    """The first Target's counts reach the report; nothing publishes and no ticket state moves."""
+    """The first Target's counts reach the report; nothing publishes."""
     from booley.flows.sim.record.coordinator import (
         SimulationRecord,
         SimulationRecordCancellationError,
@@ -875,11 +854,8 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
     (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
-    path = tmp_path / "state.json"
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     original_run = SimulationRecord.run
     returned = []
-    before = []
 
     def run(simulation_record, request):
         if returned:
@@ -887,14 +863,6 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
             raise error("second target stopped")
         outcome = original_run(simulation_record, request)
         returned.append(outcome)
-        # The ticket asks for the Target that finished, so publishing it would move the state.
-        ticket = _cycle_ticket(
-            tmp_path,
-            target=f"{outcome.target['vlnv']}#{outcome.target['name']}",
-            selector="sim_a",
-            test="a",
-        )[0]
-        before.append(ticket.read_bytes())
         return outcome
 
     monkeypatch.setattr(SimulationRecord, "run", run)
@@ -907,7 +875,6 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
     report = json.loads((tmp_path / "reports/sim.json").read_text())
     assert list(report["cycle_counts"]) == ["sim_a"]
     assert not list((tmp_path / "reports").glob("sim/*/targets/*/simulation.json"))
-    assert path.read_bytes() == before[0]
 
 
 @pytest.mark.parametrize("unnamed", [False, True])

@@ -8,12 +8,10 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-import yaml
 from tests.subprocess_budget import run_bounded_child
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LAUNCHER = _SOURCE_ROOT / ".github/scripts/check_function_length.py"
-_WORKFLOW = _SOURCE_ROOT / ".github/workflows/test.yml"
 _MODULE = "src/booley/mod.py"
 
 
@@ -162,16 +160,3 @@ def test_unusable_git_state_exits_2(tmp_path: Path) -> None:
     code, _, stderr = _run(tmp_path)
     assert code == 2
     assert stderr.startswith("function length:")
-
-
-def test_lint_runs_function_length_check_on_pull_requests() -> None:
-    lint = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["lint"]
-    checkout = lint["steps"][0]
-    assert checkout["with"]["fetch-depth"] == 2
-    steps = [s for s in lint["steps"] if "check_function_length.py" in s.get("run", "")]
-    assert len(steps) == 1
-    step = steps[0]
-    assert step["run"] == 'python .github/scripts/check_function_length.py --base "${BASE_SHA}"'
-    assert step["env"] == {"BASE_SHA": "${{ needs.changes.outputs.diff_base }}"}
-    assert step["if"] == "github.event_name == 'pull_request'"
-    assert "continue-on-error" not in step

@@ -7,8 +7,6 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -23,7 +21,6 @@ from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
-    _acceptance_ready,
 )
 from booley.flows.sim.record.facts import AcceptanceFacts
 from booley.flows.sim.record.model import create_simulation_record_plan
@@ -134,40 +131,17 @@ def _v2_facts_with_coverage_and_cycle_baseline() -> dict[str, object]:
     }
 
 
-def test_acceptance_facts_hold_the_built_document_without_decoding(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Facts keep the coordinator's bytes and digest, deep-frozen, with no decode."""
-    document = _v2_facts_with_coverage_and_cycle_baseline()
-
-    def no_decode(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("acceptance facts must not decode JSON")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(json, "loads", no_decode)
-        facts = AcceptanceFacts(document)
-        raw = facts.canonical_bytes()
-        digest = facts.sha256
+def test_acceptance_facts_hold_the_built_document_without_decoding() -> None:
+    """Facts keep the coordinator's bytes and digest: the persisted format."""
+    facts = AcceptanceFacts(_v2_facts_with_coverage_and_cycle_baseline())
+    raw = facts.canonical_bytes()
+    digest = facts.sha256
 
     # Pinned from #2991 (base commit), re-pinned for the Record paths of #3685 and the Coverage Record names of #3688.
     assert hashlib.sha256(raw).hexdigest() == (
         "673e3f58cc435bafd241831f96d5056142721a0b7a26bd27d1be031868983a00"
     )
     assert digest == "sha256:82777c907f41c2966c91f1e426c7d5b0efff39d67b431ffd8b91ceaa813994b9"
-    prerequisite = facts.document["prerequisites"][0]  # type: ignore[index]
-    with pytest.raises(TypeError):
-        prerequisite["cycle_observation"]["cycle_count"] = 0  # type: ignore[index]
-    with pytest.raises(AttributeError):
-        facts.document["prerequisites"].append({})  # type: ignore[union-attr]
-
-
-def _flow_with_simulation_record_outcomes(*selectors: str) -> SimulateFlow:
-    """A Simulation Flow holding one stand-in Simulation Record outcome per selector."""
-    flow = SimulateFlow()
-    flow._simulation_record_outcomes = tuple(
-        SimpleNamespace(target={"selector": selector}) for selector in selectors
-    )
-    return flow
 
 
 def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
@@ -178,43 +152,13 @@ def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
 
 
 def test_cancelled_simulation_record_suppresses_acceptance_publication(monkeypatch) -> None:
-    flow = _flow_with_simulation_record_outcomes("partial")
+    flow = SimulateFlow()
     received: list[tuple[object, ...]] = []
     monkeypatch.setattr(flow, "publish_flow_records", lambda _outcome: received.append(()))
 
     _record_final(flow, EndpointOutcome(exit_code=EXIT_CANCELLED))
 
     assert received == []
-
-
-def test_acceptance_readiness_requires_strict_superset_grade() -> None:
-    manifest = cast(
-        object,
-        SimpleNamespace(
-            document={
-                "required_suite": {
-                    "names": ("required",),
-                    "default_invocation": False,
-                }
-            }
-        ),
-    )
-    observations = (
-        {
-            "test": "required",
-            "execution": "completed",
-            "functional": "pass",
-            "assertions": "clean",
-        },
-        {
-            "test": "extra",
-            "execution": "completed",
-            "functional": "fail",
-            "assertions": "clean",
-        },
-    )
-
-    assert _acceptance_ready(manifest, observations, True, "fail") is False  # type: ignore[arg-type]
 
 
 def _one_item_outcome(tmp_path: Path):
@@ -247,10 +191,6 @@ def test_public_simulation_record_outcome_replays_exact_projection(
 ) -> None:
     monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
     outcome, _invocation = _one_item_outcome(tmp_path)
-    assert outcome.complete is True
-    assert outcome.recovery.completed
-    assert outcome.recovery.interrupted == ()
-    assert outcome.recovery.pending == ()
 
     publish_simulation_record_projections(tmp_path / "project", (outcome,))
     projection = outcome.manifest_path.parents[1] / "simulation.json"

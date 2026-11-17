@@ -206,7 +206,7 @@ _Avoid_: workspace allowlist, project enrollment, inherited repository access; t
 **Target**:
 A named FuseSoC `.core` build target, the single source of truth for one
 design-description: filesets, typed parameters with their values, defines, and
-top module. Booley's tests (`tests.toml`) and Criteria bind to a Target, and a
+top module. Booley's tests (`tests.toml`) bind to a Target, and a
 Booley Flow selects it by name ([naming](user/TARGETS.md#target-authoring),
 [selection](user/FLOW_REFERENCE.md#choosing-targets)).
 _Avoid_: Design Configuration, build config, profile, named config

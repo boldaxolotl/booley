@@ -3540,9 +3540,7 @@ def _run_project_checks(
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
-    _check_custom_endpoints_and_criteria(
-        project.project_root, reporter.pass_, reporter.warn_, reporter.fail_
-    )
+    _check_custom_endpoints(project.project_root, reporter.pass_, reporter.warn_, reporter.fail_)
     _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
@@ -3845,29 +3843,21 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _pass("no Booley scaffolding files tracked in the repo")
 
 
-def _check_custom_endpoints_and_criteria(
-    project_root: Path, _pass: Check, _warn: Warn, _fail: Fail
-) -> None:
+def _check_custom_endpoints(project_root: Path, _pass: Check, _warn: Warn, _fail: Fail) -> None:
     try:
-        from booley.mcp.endpoint_validation import (
-            EndpointValidationError,
-            validate_custom_endpoints_and_criteria,
-        )
+        from booley.mcp.endpoint_validation import validate_custom_endpoints
 
-        skipped = validate_custom_endpoints_and_criteria(project_root)
-    except EndpointValidationError as exc:
-        _fail("custom endpoint/Criteria validation failed", exc.failures[0])
-        return
+        skipped = validate_custom_endpoints(project_root)
     except SourceCheckoutProjectError as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
+            f"custom endpoint validation failed: {exc}",
             "run Doctor from the Project's workspace, not a Booley source checkout",
         )
         return
     except (ImportError, OSError, ValueError) as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
-            "fix .booley/mcp_tools and Criteria configuration",
+            f"custom endpoint validation failed: {exc}",
+            "fix .booley/mcp_tools and the [flows]/[specialists] tables in booley.toml",
         )
         return
     for item in skipped:
@@ -3875,7 +3865,7 @@ def _check_custom_endpoints_and_criteria(
             f"custom endpoint {item.file} skipped: {item.reason}", item.fix
         )
     if not skipped:
-        _pass("custom endpoints and Criteria validated")
+        _pass("custom endpoints validated")
 
 
 def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:
@@ -4314,10 +4304,10 @@ def _check_target_sources(
         audit.fail,
         _note=audit.note,
         selected_targets=set(_project_target_matrix(audit.project).seed_targets) or None,
-        _inputs=inputs,
+        inputs=inputs,
     )
-    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
-    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
+    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
     _check_sim_copyto_collisions(audit.root, refs, inputs, audit.warn)
 
 
@@ -4838,7 +4828,7 @@ def _check_icarus_sv_language_mode(
     *,
     _note: Check | None = None,
     selected_targets: set[str] | None = None,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Flag Icarus Targets whose SystemVerilog sources lack an SV flag."""
     icarus_targets = [
@@ -4848,7 +4838,6 @@ def _check_icarus_sv_language_mode(
     ]
     if not icarus_targets:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in icarus_targets:
         try:
             sources = inputs.sources_for(name)
@@ -4967,7 +4956,7 @@ def _check_sim_dump_declared(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when an owned C++ main's hardcoded dump is not in ``trace_files``.
 
@@ -4984,7 +4973,6 @@ def _check_sim_dump_declared(
     candidates = _owned_main_verilator_sims(refs)
     if not candidates:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     patterns = resolve_trace_files(root)
     run_cwd = resolve_run_cwd(root)
     is_template = bool(_safe_run_cwd_fields(run_cwd))
@@ -5132,10 +5120,9 @@ def _check_toplevel_interface_ports(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when a lint/synth toplevel cannot elaborate without interfaces."""
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in sorted(refs.items()):
         if ref.flow == "sim":
             continue
@@ -6267,7 +6254,6 @@ def _flow_argv(
         report_dir,
         "--target",
         target,
-        "--diagnostic",
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout-ms", "30000"])

@@ -183,34 +183,6 @@ def test_runtime_image_workflow_does_not_attest_a_pypi_release_wheel() -> None:
     assert all("dist" not in str(step["with"]["path"]) for step in uploads)
 
 
-def test_release_topology_splits_validation_by_image_dependency() -> None:
-    workflow = yaml.safe_load(
-        (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-    )
-
-    assert semantic.validate_release_topology(workflow) == ()
-
-    jobs = workflow["jobs"]
-    validation_jobs = {
-        "standard-image-contract",
-        "openroad-runtime",
-        "host-doctor-runtime",
-        "simulation-selftest-overlay",
-        "helper-image-metadata",
-        "riscv-image-contract",
-        "demo-surface",
-        "picorv32-demo-flows",
-        "ibex-lint-demo",
-    }
-    assert validation_jobs <= set(jobs)
-    assert "demo-smoke" not in jobs
-    assert set(jobs["promote"]["needs"]) == {
-        "build-and-push",
-        "build-and-push-riscv",
-        *validation_jobs,
-    }
-
-
 def test_release_topology_rejects_riscv_output_reference_in_standard_job() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")

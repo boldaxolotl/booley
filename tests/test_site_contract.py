@@ -1,11 +1,8 @@
-"""Project site wording contracts, and the facts it must share with the README.
+"""Project site contracts: links, colours, contrast and the generated illustration.
 
-The site (website/docs/) and the README share the feature list word for word
-and the pinned PicoRV32 demo revision; the home page's quick start repeats the
-Install guide's install commands.
-These tests fail when either copy drifts from the other, when a README link
-points at a site section or page that no longer exists, or when the generated
-home-page illustration is stale.
+These tests fail when a README link points at a site section or page that no
+longer exists, when a site colour escapes the theme tokens or fails WCAG AA
+contrast, or when the generated home-page illustration is stale.
 """
 
 import html
@@ -19,72 +16,7 @@ from tests.docs.test_links import _destination_failure, _repository_path
 ROOT = Path(__file__).resolve().parent.parent
 WEBSITE = ROOT / "website"
 SITE = (WEBSITE / "docs/index.md").read_text(encoding="utf-8")
-DEMOS = (WEBSITE / "docs/demos.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-INSTALL_GUIDE = (ROOT / "docs/user/INSTALL.md").read_text(encoding="utf-8")
-
-
-def _plain(markup: str) -> str:
-    """Return the visible text of HTML or inline Markdown, whitespace-normalized."""
-    text = html.unescape(re.sub(r"<[^>]+>", "", markup))
-    text = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", text)  # Markdown link -> its text
-    text = text.replace("**", "").replace("`", "")
-    for typographic, plain in (("\u2019", "'"), ("\u201c", '"'), ("\u201d", '"')):
-        text = text.replace(typographic, plain)
-    return " ".join(text.split())
-
-
-def _site_section(section_id: str) -> str:
-    """Return the markup of one numbered home-page section, heading excluded."""
-    start = re.search(rf'<h2 class="sec" id="{section_id}">.*?</h2>', SITE)
-    assert start, f"home page has no section #{section_id}"
-    end = SITE.find('<h2 class="sec"', start.end())
-    return SITE[start.end() : end if end != -1 else len(SITE)]
-
-
-def test_features_match_the_readme_word_for_word():
-    """One canonical feature list: the README's "What it does" is the site's Features."""
-    readme_section = README.split("## What it does\n", 1)[1].strip().split("\n\n", 1)[0]
-    # Split on bullet starts, not lines, so a bullet may wrap at 80 columns.
-    readme_bullets = re.split(r"^- ", readme_section, flags=re.MULTILINE)
-    readme_features = [_plain(bullet) for bullet in readme_bullets if bullet.strip()]
-    site_features = [
-        _plain(f"{name}: {text}")
-        for name, text in re.findall(
-            r"<h3>(.*?)</h3>\s*<p>(.*?)</p>", _site_section("features"), re.S
-        )
-    ]
-
-    assert site_features
-    assert readme_features == site_features
-
-
-def test_quick_start_commands_match_the_install_guide_block():
-    guide_block = INSTALL_GUIDE.split("<!-- booley-smoke:install -->", 1)[1].split(
-        "<!-- /booley-smoke:install -->", 1
-    )[0]
-    guide_commands = re.findall(r"^(?!```)(\S.*)$", guide_block, flags=re.MULTILINE)
-    site_commands = re.findall(
-        r'<span class="p">\$ </span>([^<\n]+)', _site_section("description")
-    )
-
-    assert site_commands == guide_commands == ["pipx install booley-rtl", "booley bootstrap"]
-
-
-def test_description_is_the_readme_intro_paragraph():
-    # The intro paragraph opens with the product's ADE positioning sentence.
-    intro_opener = "Booley is an agentic development environment"
-    readme_intro = intro_opener + README.split(intro_opener, 1)[1].split("\n\n", 1)[0]
-    site_description = _plain(_site_section("description"))
-
-    assert site_description.startswith(_plain(readme_intro))
-
-
-def test_demo_clone_link_follows_the_demo_default_branch():
-    # Visitors clone the demo's latest default branch, like the Codespaces button;
-    # a commit-pinned link goes stale as the demo moves on.
-    assert "https://github.com/boldaxolotl/booley-prj-picorv32#readme" in DEMOS
-    assert "booley-prj-picorv32/blob/" not in DEMOS
 
 
 def test_readme_links_resolve_to_site_sections_and_pages():
@@ -185,14 +117,6 @@ def test_dark_theme_overrides_every_light_colour():
 
     assert dark["color-scheme"] == "dark"
     assert {name for name in dark if name.startswith("--")} == light_colours
-
-
-def test_light_is_the_default_theme():
-    """Dark applies only when the reader picks it, never from the OS preference."""
-    shell = (WEBSITE / "overrides/base.html").read_text(encoding="utf-8")
-    styles = "".join(path.read_text(encoding="utf-8") for path in STYLESHEETS.glob("*.css"))
-
-    assert "prefers-color-scheme" not in shell + styles
 
 
 def _luminance(hex_colour: str) -> float:

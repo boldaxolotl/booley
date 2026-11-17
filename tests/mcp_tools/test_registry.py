@@ -519,34 +519,45 @@ class TestPerMcpToolAvailability:
 def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
     source = tmp_path / "lint.py"
     source.write_text(
-        f"class LintFlow({base}):\n"
-        '    name = "lint"\n'
-        '    description = "Run lint"\n'
-        '    satisfies = ["lint_clean"]\n'
+        f'class LintFlow({base}):\n    name = "lint"\n    description = "Run lint"\n'
     )
     info = extract_mcp_tool_info(source, builtin=True, package="flows/lint")
     assert info is not None
-    assert (info.name, info.kind, info.satisfies) == ("lint", "flow", ("lint_clean",))
+    assert (info.name, info.kind) == ("lint", "flow")
 
 
-def test_project_endpoint_satisfies_is_not_read(tmp_path):
-    source = tmp_path / "custom.py"
-    source.write_text(
-        "class Custom(McpTool):\n"
-        '    name = "custom"\n'
-        '    description = "Check"\n'
-        '    satisfies = ["x"]\n'
-        '    satisfies_args = {"x": "custom --target {target}"}\n'
-    )
-    info = extract_mcp_tool_info(source, builtin=False)
-    assert info is not None
-    assert (info.name, info.satisfies, info.satisfies_args) == ("custom", (), None)
+def test_endpoints_declare_and_carry_no_criterion_claims():
+    """Neither McpToolInfo nor a built-in endpoint class holds a Criteria catalog claim."""
+    import dataclasses
+
+    from booley.flows.fpga.flow import FpgaImplFlow
+    from booley.flows.lint.flow import LintFlow
+    from booley.flows.mutation.flow import MutationFlow
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.specialists.reviewer import ReviewerSpecialist
+
+    names = {field.name for field in dataclasses.fields(McpToolInfo)}
+    assert not names & {"satisfies", "satisfies_args"}
+    for info in discover_mcp_tools():
+        assert not hasattr(info, "satisfies")
+        assert not hasattr(info, "satisfies_args")
+    for cls in (
+        LintFlow,
+        MutationFlow,
+        FpgaImplFlow,
+        SimulateFlow,
+        AsicSynthesizeFlow,
+        ReviewerSpecialist,
+    ):
+        assert not hasattr(cls, "satisfies")
+        assert not hasattr(cls, "satisfies_args")
 
 
 def test_mutation_is_a_builtin_flow():
     assert "mutation" in BUILTIN_FLOW_PACKAGES
     info = next(item for item in discover_mcp_tools() if item.name == "mutation")
-    assert (info.kind, info.satisfies) == ("flow", ("mutation_score",))
+    assert info.kind == "flow"
     assert info.path == "flows/mutation/flow.py"
 
 

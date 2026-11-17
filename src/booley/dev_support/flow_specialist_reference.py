@@ -88,35 +88,34 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
 }
 
 
-# Reviewer focus names and invocations come from the registry. These blurbs are
-# the human explanation that registry metadata intentionally does not carry.
-# A test requires every reviewer criterion to have one, so a new focus cannot
-# silently appear as an unexplained row.
-_REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
-    "review_rtl_bugs": (
+# Reviewer focus rows: the human explanation that registry metadata intentionally
+# does not carry, keyed by (category, focus). A test ties the keys to the Reviewer's
+# focus sets, so a new focus cannot silently appear as an unexplained row.
+_REVIEW_FOCUS_DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("rtl", "bugs"): (
         "Functional bug patterns, synthesis hazards, reset/overflow/signing mistakes, "
         "and ifdef consistency across built Targets"
     ),
-    "review_rtl_protocol": (
+    ("rtl", "protocol"): (
         "Bus/protocol rule compliance, handshake behavior, ordering, and "
         "clock-domain crossings (CDC)"
     ),
-    "review_rtl_spec": (
+    ("rtl", "spec"): (
         "Spec compliance: the RTL implements what the change request/spec requires, no more and no less"
     ),
-    "review_rtl_code_style": (
+    ("rtl", "code_style"): (
         "Comments, naming, readability, maintainability, magic values, and "
         "assertion/cover-point quality"
     ),
-    "review_rtl_optimization": (
+    ("rtl", "optimization"): (
         "Functionally dead RTL and strict power/performance/area improvements with no "
         "functional or engineering trade-off"
     ),
-    "review_rtl_security": (
+    ("rtl", "security"): (
         "Fault-injection resistance, simple power/timing leakage, secret "
         "exposure, and unsafe failure behavior"
     ),
-    "review_tb_quality": (
+    ("tb", "quality"): (
         "False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, "
         "timing/sampling mistakes, and TB code quality"
     ),
@@ -195,9 +194,8 @@ def render_flow_reference(
     return "\n".join(lines)
 
 
-def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[str]:
+def _render_reviewer_reference() -> list[str]:
     """Render every registry-declared reviewer focus and its human meaning."""
-    commands = satisfies_args or {}
     lines = [
         "#### `reviewer`",
         "",
@@ -222,13 +220,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "| Category | Focus | What it checks |",
         "|----------|-------|----------------|",
     ]
-    for criterion, description in _REVIEW_FOCUS_DESCRIPTIONS.items():
-        invocation = commands.get(criterion)
-        if invocation is None:
-            continue
-        parts = invocation.split()
-        category = parts[parts.index("--category") + 1]
-        focus = parts[parts.index("--focus") + 1]
+    for (category, focus), description in _REVIEW_FOCUS_DESCRIPTIONS.items():
         lines.append(f"| `{category}` | `{focus}` | {description} |")
     lines.extend(
         [
@@ -290,7 +282,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "",
         "For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. "
         "Common options are `-C/--project PATH`, `--report-dir`, "
-        "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
+        "and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
         "A CLI run is a Standalone Job: it shows in "
@@ -309,7 +301,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
     if coverage_analyst is not None:
         lines.extend(["", *_render_coverage_analyst_reference()])
     if reviewer is not None:
-        lines.extend(["", *_render_reviewer_reference(reviewer.satisfies_args)])
+        lines.extend(["", *_render_reviewer_reference()])
     return "\n".join(lines)
 
 

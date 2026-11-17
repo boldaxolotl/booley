@@ -43,11 +43,11 @@ def test_standalone_cli_wires_utc_formatter(monkeypatch):
     assert handler.format(record) == "2026-09-25T13:07:17Z [booley.flow] INFO: event"
 
 
-@pytest.mark.parametrize("flow_type", FLOWS)
-def test_complete_builtin_schema_is_compatible(flow_type):
+def test_complete_builtin_schema_is_compatible():
     expected = json.loads((Path(__file__).parent / "fixtures/builtin_schemas.json").read_text())
-    flow = flow_type()
-    assert flow_schema(flow) == expected[flow.name]
+    for flow_type in FLOWS:
+        flow = flow_type()
+        assert flow_schema(flow) == expected[flow.name], flow.name
 
 
 @pytest.fixture
@@ -68,17 +68,25 @@ def runtime(monkeypatch, tmp_path):
     return tmp_path
 
 
+def test_cli_rejects_the_retired_diagnostic_option(capsys):
+    from booley.flows.builtin_cli import build_parser
+
+    for flow_type in (*FLOWS, MutationFlow):
+        parser = build_parser(flow_type(), human=True)
+        with pytest.raises(SystemExit) as error:
+            parser.parse_args(["--target", "demo", "--diagnostic"])
+        assert error.value.code == 2
+        assert "error: unrecognized arguments: --diagnostic" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("flow_type", FLOWS)
-@pytest.mark.parametrize("diagnostic", (False, True))
-def test_typed_request_executes_without_constructing_a_parser(
-    flow_type, diagnostic, runtime, monkeypatch
-):
+def test_typed_request_executes_without_constructing_a_parser(flow_type, runtime, monkeypatch):
     import argparse
 
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     flow = flow_type()
-    request = flow.request_type(target="demo", work_dir=runtime, diagnostic=diagnostic)
+    request = flow.request_type(target="demo", work_dir=runtime)
     monkeypatch.setattr(
         argparse, "ArgumentParser", lambda **kwargs: pytest.fail("parser constructed")
     )
@@ -86,7 +94,7 @@ def test_typed_request_executes_without_constructing_a_parser(
     result = flow.execute(request)
     assert result.exit_code == 0
     assert result.outcome.detail["evidence"] == "same"
-    assert result.outcome.detail.get("acceptance_effect") == ("diagnostic" if diagnostic else None)
+    assert "acceptance_effect" not in result.outcome.detail
     assert not hasattr(flow, "_cli_parser")
     assert request.report_dir is None
     report_root = runtime / "flow-reports"
@@ -157,13 +165,10 @@ def test_uninitialized_flow_fails_before_execution(runtime, monkeypatch):
 
 def test_hand_set_state_file_neither_refuses_nor_records(runtime, monkeypatch):
     """A state file naming only another Target is neither read, refused on, nor written."""
-    from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria({"lint_clean_other": True}, strict=True)
-    state.save()
+    path.write_bytes(b'{"opaque": true}\n')
     before = path.read_bytes()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))

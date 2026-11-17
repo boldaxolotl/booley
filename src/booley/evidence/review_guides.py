@@ -1,7 +1,6 @@
 """Declare the packaged review guides each Reviewer focus runs, and digest them.
 
-Receipt freshness (``booley.criteria``) may not import ``booley.specialists``, so the
-declaration lives here, where both the Reviewer and the receipt contract can read it.
+The declaration lives here, where both the Reviewer and the receipt contract read it.
 
 The shared Reviewer prompt owns the disposition and output instructions; a guide
 holds only its review checklist, so every category reports in the same shape.

@@ -13,7 +13,7 @@ import pytest
 
 from booley.harness import booley as booley_cli
 from booley.mcp import catalog
-from booley.mcp.registry import criterion_endpoint_relationships, discover_mcp_tools
+from booley.mcp.registry import discover_mcp_tools
 from booley.runtime.endpoint_execution import EXIT_ERROR
 
 
@@ -132,10 +132,6 @@ def test_specialist_command_no_longer_runs_mutation_tester(capsys) -> None:
     assert "Use booley flow mutation." in capsys.readouterr().err
 
 
-def test_mutation_score_is_produced_by_the_mutation_flow() -> None:
-    relationships = criterion_endpoint_relationships(discover_mcp_tools())
-
-    producers = [row.command for row in relationships if "mutation_score" in row.satisfies]
-    assert producers == ["mutation"]
+def test_mutation_is_discovered_as_a_flow() -> None:
     kinds = {info.name: info.kind for info in discover_mcp_tools()}
     assert kinds["mutation"] == "flow"

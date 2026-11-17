@@ -22,9 +22,8 @@ from tests.flows.mutation.test_flow import (
     _VERILATED,
     _campaign,
     _detects_every_mutant,
-    _env_with_state,
+    _flow_env,
     _make_endpoint,
-    _make_state,
     _mutant_keys,
     _prepare_scope_files,
     _run_count_preview,
@@ -69,8 +68,7 @@ def _main(
     """
     root = tmp_path / "project"
     reports = tmp_path / "reports"
-    state_file = _make_state(tmp_path)
-    for key, value in _env_with_state(state_file, tmp_path / "logs").items():
+    for key, value in _flow_env(tmp_path / "logs").items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     reached = EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="reached generation")

@@ -598,18 +598,6 @@ class SimulateFlow(
             resources.callback(worktrees.pop, revision)
         return worktrees[revision]
 
-    satisfies: ClassVar[list[str]] = [
-        "elab_pass",
-        "elaborate_standalone",
-        "sim_pass",
-        "cycle_count",
-        "coverage",
-    ]
-    satisfies_args: ClassVar[dict[str, str]] = {
-        "coverage": "--coverage",
-        "elab_pass": "--mode elab-only",
-        "elaborate_standalone": "--mode elab-only-standalone",
-    }
     # The MCP server computes mode-aware build, hook, execution, and finalization
     # headroom. This class default is only its defensive floor.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + TRACE_CLEANUP_MARGIN_S
@@ -834,7 +822,6 @@ class SimulateFlow(
                     test_runs=self._coverage_test_runs(selection.handles),
                     trace=self.args.trace,
                     no_waivers=self.args.no_waivers,
-                    diagnostic=self.args.diagnostic,
                 ),
                 context,
                 selection=selection,
@@ -1544,7 +1531,6 @@ class SimulateFlow(
             timeout_seconds=self._effective_timeout_ms() / 1000,
             build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
-            diagnostic=self.args.diagnostic,
             result_verbosity=self.args.result_verbosity,
         )
 

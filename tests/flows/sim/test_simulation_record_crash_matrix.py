@@ -46,8 +46,6 @@ from booley.flows.sim.record.resume import (
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
-from tests.criteria import ledger_support as acceptance_ledger
-from tests.criteria.test_evidence_ledger import _simulation_record_facts, _transaction_state
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _coverage_simulation_record_plan,
@@ -774,65 +772,10 @@ def test_pre_sim_evidence_killed_mid_write_resumes(
     )
 
 
-def _acceptance_transaction(tmp_path: Path):
-    """The transaction state and a ``record(checkpoint)`` call that publishes it."""
-    log_dir, state, changes = _transaction_state(tmp_path)
-    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-
-    def record(checkpoint):
-        return acceptance_ledger.record_or_verify_transaction(
-            log_dir,
-            state,
-            changes,
-            acceptance_facts=_simulation_record_facts(),
-            identity=identity,
-            publication_checkpoint=checkpoint,
-        )
-
-    return log_dir, state, changes, record
-
-
 def _write_projection(path: Path, checkpoint) -> None:
     write_compatibility_projection(
         path, {"target": "sim"}, acceptance_committed=True, publication_checkpoint=checkpoint
     )
-
-
-_JOURNAL_STAGING_LEFTOVER = pytest.mark.xfail(
-    strict=True,
-    raises=acceptance_ledger.AcceptanceLedgerError,
-    reason="#4280: the staged file a kill leaves makes the retry refuse the transactions directory",
-)
-
-
-@_needs_fork
-@pytest.mark.parametrize(
-    ("boundary", "killed_in"),
-    [
-        ("acceptance_intent", "acceptance/intents/."),
-        ("acceptance_record", "acceptance/evidence/.tmp.acceptance"),
-        pytest.param(
-            "acceptance_commit", "acceptance/transactions/.", marks=_JOURNAL_STAGING_LEFTOVER
-        ),
-        ("acceptance_state", ".runtime/booley_state.tmp"),
-    ],
-)
-def test_acceptance_journal_killed_mid_write_retries_idempotently(
-    tmp_path: Path, boundary: str, killed_in: str
-) -> None:
-    """Guard: the Acceptance Journal stages each write, so a kill mid-write leaves nothing trusted."""
-    log_dir, _state, changes, record = _acceptance_transaction(tmp_path)
-    side_file = tmp_path / "side.txt"
-    kill = _KillAtWrite(boundary, "mid-write", side_file, hook_path_opens=True)
-
-    _run_killed(lambda: record(kill), tmp_path / "trace.txt")
-    killed_path = Path(side_file.read_text(encoding="utf-8"))
-    assert killed_path.is_relative_to(tmp_path)
-    assert killed_in in killed_path.relative_to(tmp_path).as_posix(), killed_path
-    transaction = record(kill)
-
-    assert len(list((log_dir / "acceptance" / "transactions").glob("*.json"))) == 1
-    assert len(transaction.evidence) == len(changes)
 
 
 @_needs_fork
@@ -848,31 +791,6 @@ def test_compatibility_projection_killed_mid_write_is_retryable(tmp_path: Path) 
     _write_projection(path, kill)
 
     assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
-
-
-@pytest.mark.parametrize(
-    "crash_point",
-    [
-        f"{side}:acceptance_{publication}"
-        for publication in ("intent", "record", "commit", "state")
-        for side in ("before", "after")
-    ],
-)
-def test_acceptance_publication_boundary_retry_is_idempotent(
-    tmp_path: Path,
-    crash_point: str,
-) -> None:
-    log_dir, state, changes, record = _acceptance_transaction(tmp_path)
-    crash = _CrashOnce(crash_point)
-
-    with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        record(crash)
-
-    transaction = record(crash)
-    assert state.acceptance_transactions == [transaction.transaction_id]
-    assert len(list((log_dir / "acceptance" / "transactions").glob("*.json"))) == 1
-    assert len(transaction.evidence) == len(changes)
-    assert crash.tripped is True
 
 
 def test_compatibility_projection_boundary_is_retryable(tmp_path: Path) -> None:

@@ -115,14 +115,8 @@ def _defined_names(tree: ast.AST) -> list[tuple[int, str, str]]:
 
 # Coverage Record names kept on purpose: shared QA helpers (#2911 owns QA mission assets) and the
 # persisted waiver keys (#2909 keeps the waiver candidate identity and path fields and the
-# Coverage reference kind in waivers), and the wording guard's test of the campaign grep, whose
-# name states the rule it enforces.
+# Coverage reference kind in waivers).
 _COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
-    "tests/architecture/test_coverage_record_wording.py": frozenset(
-        {
-            "test_campaign_is_said_only_for_kept_names",
-        }
-    ),
     "qa/shared/coverage/evaluator/measurements.py": frozenset(
         {
             "CAMPAIGN_SCHEMA",
@@ -147,12 +141,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
     "src/booley/agent_workspace/isolation.py": frozenset(
         {
             "_campaign_roots",
-        }
-    ),
-    "src/booley/criteria/templates.py": frozenset(
-        {
-            "TARGET_CAMPAIGN_CRITERIA",
-            "_TARGET_CAMPAIGN_PARAM_REGISTRY",
         }
     ),
     "src/booley/flows/mutation/flow.py": frozenset(
@@ -184,16 +172,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "all_campaign_results_match",
             "describe_target_campaign",
             "resolve_target_campaign",
-        }
-    ),
-    "tests/criteria/test_campaign_templates.py": frozenset(
-        {
-            "campaign",
-            "test_coverage_campaign_expands_shared_policy_per_target",
-            "test_coverage_campaign_rejects_duplicate_target_ownership",
-            "test_coverage_campaign_rejects_invalid_authoring",
-            "test_mutation_campaign_expands_target_and_parameters",
-            "test_mutation_campaign_rejects_incoherent_counts",
         }
     ),
     "tests/flows/mutation/test_flow.py": frozenset(

@@ -257,19 +257,12 @@ def _gated_context(tmp_path: Path) -> CoverageProjectContext:
     )
 
 
-def test_no_waivers_with_criterion_is_refused_without_diagnostic(tmp_path: Path) -> None:
-    result = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True), _gated_context(tmp_path)
-    )
-    assert result.plan is None
-    assert [finding.code for finding in result.findings] == ["COV_NO_WAIVERS_CRITERION"]
-
-
-def test_no_waivers_diagnostic_keeps_criterion_and_drops_waiver_config(tmp_path: Path) -> None:
+def test_no_waivers_with_criterion_drops_waiver_config(tmp_path: Path) -> None:
     context = _gated_context(tmp_path)
     result = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True, diagnostic=True), context
+        CoverageInvocationRequest(("sim_0",), no_waivers=True), context
     )
+    assert result.findings == ()
     target = result.plan.targets[0]
     assert target.criterion is not None
     assert target.waiver_config is None
