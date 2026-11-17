@@ -1088,7 +1088,7 @@ def test_not_a_git_repository_skips_the_step(tmp_path, monkeypatch):
 
 def test_separate_project_data_repository_is_normalized(tmp_path, monkeypatch):
     global_config = tmp_path / "global.gitconfig"
-    global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+    global_config.write_bytes(b"[core]\n\tautocrlf = true\n")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     _repo(tmp_path, None)
@@ -1502,7 +1502,9 @@ def test_release_warns_when_inspection_fails(tmp_path, monkeypatch, capsys):
 
     _init(tmp_path, monkeypatch)
 
-    assert "could not release guidance hardlinks" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "could not release guidance hardlinks" in out
+    assert "released guidance hardlink" not in out
     assert (tmp_path / "AGENTS.md").exists()
 
 
@@ -1684,7 +1686,8 @@ def test_init_writes_no_attributes_file(tmp_path, monkeypatch, capsys, stealth):
         results = _initialize(tmp_path, monkeypatch, check_only=check_only)
 
         assert results["line_endings"].status == ("warn" if check_only else "ok")
-        assert "text=auto" not in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "text=auto" not in out and "added '" not in out
         assert git_hooks.read_local_config(tmp_path, "core.autocrlf") == autocrlf
         assert not any(path.exists() for path in attribute_files)
 
@@ -1739,11 +1742,12 @@ _SUMMARY_CASES = [
         pytest.param(
             _UNSAFE,
             (Observation(code, detail="raw detail sentinel"),),
-            (_PIN_DONE,),
+            pin,
             _UNSAFE_DETAILS[code],
-            id=code.value,
+            id=f"{code.value}-{name}",
         )
         for code in ObservationCode
+        for name, pin in (("no-pin", ()), ("pin-done", (_PIN_DONE,)))
     ),
     pytest.param(
         _UNSAFE,
@@ -1755,8 +1759,13 @@ _SUMMARY_CASES = [
     pytest.param(
         _UNSAFE,
         (),
-        (_refused(LineEndingRefusalReason.NOT_LINE_ENDING_ONLY, "changes of its own kind"),),
-        "changes of its own kind",
+        (
+            _refused(
+                LineEndingRefusalReason.NOT_LINE_ENDING_ONLY,
+                "working tree has changes of its own kind",
+            ),
+        ),
+        "working tree has changes of its own kind",
         id="own-refusal-detail",
     ),
     pytest.param(
