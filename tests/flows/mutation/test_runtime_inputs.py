@@ -56,7 +56,7 @@ _ADAPTERS = ("verilator", "icarus", "cocotb")
 _LAUNCH_MARK = "booley.flows.sim.backends."
 
 
-def _copyto_campaign(
+def _copyto_run(
     tmp_path: Path,
     monkeypatch,
     adapter: str = "verilator",
@@ -127,11 +127,11 @@ def _overlays(root: Path) -> list[Path]:
     return list(root.rglob(".booley-runtime-inputs"))
 
 
-def test_a_campaign_stages_the_copyto_input_for_baseline_and_mutant(
+def test_a_run_stages_the_copyto_input_for_baseline_and_mutant(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Both the baseline and the Mutant see ``vectors.hex``; nothing is left behind."""
-    result, run_dir = _copyto_campaign(tmp_path, monkeypatch)
+    result, run_dir = _copyto_run(tmp_path, monkeypatch)
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert [row["status"] for row in result.detail["classified"]] == ["not_detected"]
@@ -157,7 +157,7 @@ def test_pinned_runs_stage_inputs_for_every_adapter(
         seen.append((launched_work(cmd).runtime_inputs, text))
         return _fake_proc(rc=0, stdout=passing_line if adapter == "cocotb" else "passed")
 
-    result, _ = _copyto_campaign(tmp_path, monkeypatch, adapter, launch=_launch)
+    result, _ = _copyto_run(tmp_path, monkeypatch, adapter, launch=_launch)
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert seen == [(("vectors.hex",), _PAYLOAD)] * 2  # the baseline and the Mutant
@@ -173,7 +173,7 @@ def test_staged_input_is_removed_after_timeout(tmp_path: Path, monkeypatch) -> N
         visible.append((run_dir / "vectors.hex").is_file())
         raise subprocess.TimeoutExpired(cmd, 1)
 
-    result, _ = _copyto_campaign(tmp_path, monkeypatch, launch=_hang)
+    result, _ = _copyto_run(tmp_path, monkeypatch, launch=_hang)
 
     assert result.exit_code == EXIT_ERROR
     assert "RESULT: ERROR (baseline:" in result.report_text
@@ -182,7 +182,7 @@ def test_staged_input_is_removed_after_timeout(tmp_path: Path, monkeypatch) -> N
 
 
 def test_declared_unstaged_readmemh_input_is_inconclusive(tmp_path: Path, monkeypatch) -> None:
-    result, _ = _copyto_campaign(tmp_path, monkeypatch, binary=_MISSING_READMEMH_BINARY)
+    result, _ = _copyto_run(tmp_path, monkeypatch, binary=_MISSING_READMEMH_BINARY)
 
     assert result.exit_code == EXIT_ERROR
     assert "declared runtime input 'vectors.hex' was not staged" in result.report_text
@@ -192,7 +192,7 @@ def test_conflicting_destination_is_inconclusive_setup_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
     launches: list[object] = []
-    result, run_dir = _copyto_campaign(
+    result, run_dir = _copyto_run(
         tmp_path,
         monkeypatch,
         staged_before="project data\n",
@@ -217,9 +217,7 @@ def test_identical_existing_destination_is_left_untouched(tmp_path: Path, monkey
         return _fake_proc(rc=0, stdout="passed")
 
     # Create the destination before the campaign; the launch sees the same file.
-    result, _ = _copyto_campaign(
-        tmp_path, monkeypatch, staged_before=_PAYLOAD, launch=_stat_and_pass
-    )
+    result, _ = _copyto_run(tmp_path, monkeypatch, staged_before=_PAYLOAD, launch=_stat_and_pass)
 
     staged = run_dir / "vectors.hex"
     assert result.exit_code == EXIT_SUCCESS, result.report_text

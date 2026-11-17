@@ -122,7 +122,6 @@ from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
     all_campaign_results_match,
-    describe_target_campaign,
     resolve_target_campaign,
 )
 from booley.flows.target_parameters import sv_byte_string_literal, vlogparam_specs
@@ -1936,13 +1935,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         except (NoRunnableTestsError, TargetSectionConflictError) as exc:
             raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
-    def _campaign_for_target(self, target: str) -> TargetCampaign:
-        """Return the resolved campaign or a suite-only compatibility view."""
-        campaign = getattr(self, "_target_campaign", None)
-        if campaign is not None and campaign.target == target:
-            return campaign
-        return describe_target_campaign(target, **self._registered_tests(target))
-
     def _default_test_plan(
         self, target: str, work_dir: Path, adapter: str
     ) -> tuple[TargetTestPlan, Mapping[str, Any]]:
@@ -2143,7 +2135,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         ``timeouts`` maps a test's display name to its wall-clock limit in
         seconds; the baseline passes none and gets the cap for every test.
         """
-        campaign = self._campaign_for_target(target)
+        campaign = self._target_campaign
         batched = self.cocotb_target(target, work_dir) is not None
         batches = self._cocotb_suite_batches(target, work_dir, campaign) if batched else None
 
@@ -2602,7 +2594,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         detail.update(
             {
                 "target": target,
-                "tests": list(self._campaign_for_target(target).suite.display_names),
+                "tests": list(self._target_campaign.suite.display_names),
                 "seed": plan.seed,
                 "identity": inputs.identity,
                 "detected_timeout": summary.detected_timeout_count,

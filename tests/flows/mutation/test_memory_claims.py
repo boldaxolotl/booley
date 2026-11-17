@@ -156,7 +156,7 @@ def _watch(
     return seen
 
 
-def _admitted_campaign(
+def _admitted_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context: AdmissionContext | None
 ) -> EndpointOutcome:
     """Run a whole one-Mutant campaign through the invocation the endpoint prepared and admitted.
@@ -196,7 +196,7 @@ def test_builds_and_simulations_hold_a_reservation_sized_from_the_target_history
     managed.record_history()
     seen = _watch(monkeypatch, managed, inert_oom_proc)
 
-    _admitted_campaign(tmp_path, monkeypatch, managed.context())
+    _admitted_run(tmp_path, monkeypatch, managed.context())
 
     # The baseline and the Mutant each build, then simulate.
     assert len(seen) == 4
@@ -216,7 +216,7 @@ def test_unsized_build_and_simulation_run_alone(
 ) -> None:
     seen = _watch(monkeypatch, managed, inert_oom_proc)  # no Resource History
 
-    _admitted_campaign(tmp_path, monkeypatch, managed.context())
+    _admitted_run(tmp_path, monkeypatch, managed.context())
 
     assert len(seen) == 4
     for observed in seen:
@@ -249,7 +249,7 @@ def test_a_job_queued_behind_a_build_or_simulation_names_the_mutation_job(
     monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", run)
     job = job_slots.JobLabel("run-7", "mutation", _TARGET)
 
-    _admitted_campaign(tmp_path, monkeypatch, managed.context(job))
+    _admitted_run(tmp_path, monkeypatch, managed.context(job))
 
     build = (
         "needs 900 MiB; 500 MiB free of the 1,000 MiB Memory Budget; "
@@ -273,7 +273,7 @@ def test_campaign_processes_rank_as_the_held_claim(
     inert_oom_proc.add(os.getpid(), value=0)
     seen = _watch(monkeypatch, managed, inert_oom_proc)
 
-    _admitted_campaign(tmp_path, monkeypatch, managed.context())
+    _admitted_run(tmp_path, monkeypatch, managed.context())
 
     # The only claim is the newest of none: the first tool level, the coordinator just below.
     assert seen[0].oom_adj == tool_adj(0) - COORDINATOR_GAP
@@ -281,7 +281,7 @@ def test_campaign_processes_rank_as_the_held_claim(
 
 
 @pytest.mark.parametrize("withdrawn_by", ["cancellation", "booley_cancel"])
-def test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled_or_removed(
+def test_queued_claim_is_withdrawn_when_the_run_is_cancelled_or_removed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
@@ -302,7 +302,7 @@ def test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled_or_removed(
 
     managed.cancellation = cancel
 
-    outcome = _admitted_campaign(tmp_path, monkeypatch, context)
+    outcome = _admitted_run(tmp_path, monkeypatch, context)
 
     assert outcome.exit_code == EXIT_ERROR
     assert "RESULT: ERROR (cancelled: " in outcome.report_text
