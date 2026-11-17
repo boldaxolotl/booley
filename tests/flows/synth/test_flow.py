@@ -560,8 +560,8 @@ def _write_syn_demo_project(work_dir: Path) -> None:
     (work_dir / "syn_demo.core").write_text(_SYN_CORE_TEXT, encoding="utf-8")
 
 
-# The Target-handle entry points the lenient catalog adapter replaces per test
-# (it drops the build's library plan); the AC4 test needs the genuine ones.
+# The Target-handle entry points that fixtures here replace per test; the AC4
+# test needs the genuine ones.
 _REAL_RESOLVE_HANDLE = fusesoc_registry.resolve_target_handle
 _REAL_SETUP_HANDLE = fusesoc_registry.setup_command_for_handle
 

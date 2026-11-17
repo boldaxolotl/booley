@@ -1094,8 +1094,8 @@ class TestFpgaResolution:
         build_p, cfg_p, run_p = _patch_edam_build(captured)
         seen: dict = {}
 
-        def fake_resolve(handle, *, build_root, **_kw):
-            seen.update(handle=handle, build_root=build_root)
+        def fake_resolve(got, *, build_root, **_kw):
+            seen.update(handle=got, build_root=build_root)
             return _fake_fpga_resolved(tmp_path, config="default")
 
         with (
