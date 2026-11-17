@@ -7,6 +7,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +29,7 @@ from tests.sharing_error_support import (
     no_retry_delay,
     sharing_error,
 )
+from tests.time_budget import hang_guard_s
 
 
 def test_normal_completion_publishes_once() -> None:
@@ -194,19 +196,27 @@ def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
     path = tmp_path / "sim" / "1" / "progress.json"
     _write_progress(path)
     supersede_at_replace = threading.Event()
-    repair_at_replace = threading.Event()
+    repair_waiting = threading.Event()
     allow_supersede = threading.Event()
     original_replace = Path.replace
 
     def controlled_replace(source: Path, destination: Path) -> Path:
         if threading.current_thread().name == "supersede":
             supersede_at_replace.set()
-            assert allow_supersede.wait(timeout=5)
-        elif threading.current_thread().name == "repair":
-            repair_at_replace.set()
+            assert allow_supersede.wait(timeout=hang_guard_s())
         return original_replace(source, destination)
 
     monkeypatch.setattr(Path, "replace", controlled_replace)
+    real_wait_for_file_lock = progress_module.wait_for_file_lock
+
+    def announcing_wait_for_file_lock(*args: Any, **kwargs: Any) -> Any:
+        # The repair thread has read the stale document and now waits for the lock
+        # the paused supersede holds.
+        if threading.current_thread().name == "repair":
+            repair_waiting.set()
+        return real_wait_for_file_lock(*args, **kwargs)
+
+    monkeypatch.setattr(progress_module, "wait_for_file_lock", announcing_wait_for_file_lock)
     results: dict[str, bool] = {}
     supersede = threading.Thread(
         name="supersede",
@@ -222,12 +232,12 @@ def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
     )
 
     supersede.start()
-    assert supersede_at_replace.wait(timeout=5)
+    assert supersede_at_replace.wait(timeout=hang_guard_s())
     repair.start()
-    repair_at_replace.wait(timeout=0.5)
+    assert repair_waiting.wait(timeout=hang_guard_s())
     allow_supersede.set()
-    supersede.join(timeout=5)
-    repair.join(timeout=5)
+    supersede.join(timeout=hang_guard_s())
+    repair.join(timeout=hang_guard_s())
 
     assert results == {"supersede": True, "repair": False}
     assert json.loads(path.read_text())["phase"] == "superseded"

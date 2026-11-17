@@ -33,17 +33,18 @@ from booley.flows.edam import (
 from booley.flows.target_parameters import ParameterValue
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 
 def _hold_work_root(path: str, acquired, release) -> None:
-    with work_root_lease(path, timeout_s=5.0):
+    with work_root_lease(path, timeout_s=hang_guard_s()):
         acquired.set()
-        if not release.wait(5.0):
+        if not release.wait(hang_guard_s()):
             raise TimeoutError("test did not release held work root")
 
 
 def _wait_for_work_root(path: str, waiting, acquired) -> None:
-    with work_root_lease(path, timeout_s=5.0, on_wait=waiting.set):
+    with work_root_lease(path, timeout_s=hang_guard_s(), on_wait=waiting.set):
         acquired.set()
 
 
@@ -317,10 +318,9 @@ class TestWorkRootLease:
             "ctx.__exit__(None, None, None)"
         )
 
-        with work_root_lease(work_root, timeout_s=1.0):
+        with work_root_lease(work_root, timeout_s=hang_guard_s()):
             result = run_bounded_child(
                 [sys.executable, "-c", probe, str(work_root)],
-                timeout=5,
                 check=True,
                 env=env,
             )
@@ -332,7 +332,7 @@ class TestWorkRootLease:
         second = tmp_path / "synth" / "second"
 
         with (
-            work_root_lease(first, timeout_s=1.0),
+            work_root_lease(first, timeout_s=hang_guard_s()),
             try_work_root_lease(second) as leased,
         ):
             assert leased == second.resolve()
@@ -343,7 +343,7 @@ class TestWorkRootLease:
         assert slash == colon
 
         with (
-            work_root_lease(slash, timeout_s=1.0),
+            work_root_lease(slash, timeout_s=hang_guard_s()),
             try_work_root_lease(colon) as leased,
         ):
             assert leased is None
@@ -365,22 +365,22 @@ class TestWorkRootLease:
         )
         holder.start()
         try:
-            assert holder_acquired.wait(5.0)
+            assert holder_acquired.wait(hang_guard_s())
             waiter.start()
-            assert waiter_blocked.wait(5.0)
+            assert waiter_blocked.wait(hang_guard_s())
             assert not waiter_acquired.is_set()
             release_holder.set()
-            assert waiter_acquired.wait(5.0)
+            assert waiter_acquired.wait(hang_guard_s())
         finally:
             release_holder.set()
-            holder.join(5.0)
-            waiter.join(5.0)
+            holder.join(hang_guard_s())
+            waiter.join(hang_guard_s())
             if holder.is_alive():
                 holder.terminate()
-                holder.join(5.0)
+                holder.join(hang_guard_s())
             if waiter.is_alive():
                 waiter.terminate()
-                waiter.join(5.0)
+                waiter.join(hang_guard_s())
 
         assert holder.exitcode == 0
         assert waiter.exitcode == 0
@@ -395,12 +395,12 @@ class TestWorkRootLease:
             args=(str(work_root), acquired, never_release),
         )
         holder.start()
-        assert acquired.wait(5.0)
+        assert acquired.wait(hang_guard_s())
         holder.terminate()
-        holder.join(5.0)
+        holder.join(hang_guard_s())
         assert not holder.is_alive()
 
-        with work_root_lease(work_root, timeout_s=1.0) as leased:
+        with work_root_lease(work_root, timeout_s=hang_guard_s()) as leased:
             assert leased == work_root.resolve()
 
     def test_body_exception_releases_lease(self, tmp_path: Path):
@@ -408,7 +408,7 @@ class TestWorkRootLease:
 
         with (
             pytest.raises(RuntimeError, match="body failed"),
-            work_root_lease(work_root, timeout_s=1.0),
+            work_root_lease(work_root, timeout_s=hang_guard_s()),
         ):
             raise RuntimeError("body failed")
 

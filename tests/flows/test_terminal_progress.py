@@ -31,17 +31,10 @@ from booley.flows.terminal_progress import (
 )
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 BUILTINS = (AsicSynthesizeFlow, FpgaImplFlow, SimulateFlow, LintFlow)
 LINT_TARGETS = ("lint_a", "lint_b")
-
-# Hang guard for trivial Python children run through ``_execute_boundary``.
-# The boundary relocates PYTHONPYCACHEPREFIX under each test's fresh work dir,
-# so every child recompiles its startup bytecode; under CI coverage
-# (``patch = ["subprocess"]``) that includes coverage.py itself (~0.4 s cold vs
-# ~0.01 s plain). On a loaded xdist runner this overran a 3 s budget. The bound
-# exists only to fail a hung child, so keep it well below pytest's 60 s limit.
-BOUNDARY_HANG_GUARD_S = 30
 
 
 class Screen(io.StringIO):
@@ -87,7 +80,7 @@ def boundary(flow, command, **options):
     return flow._execute_boundary(command, **options)
 
 
-def run_observed(sink, script, *, timeout=3, encoding=None, **popen):
+def run_observed(sink, script, *, timeout=SUBPROCESS_TIMEOUT_S, encoding=None, **popen):
     """Run a Python child through ``communicate_observed``; returns its capture and process."""
     sink.begin_command()
     with subprocess.Popen(
@@ -236,7 +229,7 @@ def test_two_target_lint_progress_log_ownership(tmp_path, lint_pair, capsys):
         assert (tmp_path / artifact).is_file()
 
 
-def wait_until(predicate, *, timeout=4):
+def wait_until(predicate, *, timeout=SUBPROCESS_TIMEOUT_S):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -278,7 +271,9 @@ def test_live_output_and_transcript_visible_before_exit(tmp_path, source):
             start_new_session=True,
         )
         thread = threading.Thread(
-            target=lambda: results.append(communicate_observed(process, sink, timeout=5))
+            target=lambda: results.append(
+                communicate_observed(process, sink, timeout=SUBPROCESS_TIMEOUT_S)
+            )
         )
         thread.start()
         try:
@@ -289,7 +284,7 @@ def test_live_output_and_transcript_visible_before_exit(tmp_path, source):
             assert line.encode() in sink.log_path.read_bytes()
         finally:
             release.touch()
-            thread.join(timeout=6)
+            thread.join(timeout=hang_guard_s())
             process.stdout.close()
             process.stderr.close()
     assert not thread.is_alive()
@@ -339,7 +334,11 @@ def test_invalid_capture_bytes_raise_and_reap(tmp_path):
     with sink.installed():
         sink.begin_command()
         with subprocess.Popen(
-            [sys.executable, "-c", "import os,time; os.write(1,b'\\xff'); time.sleep(30)"],
+            [
+                sys.executable,
+                "-c",
+                f"import os,time; os.write(1,b'\\xff'); time.sleep({scaled(30):g})",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -347,7 +346,7 @@ def test_invalid_capture_bytes_raise_and_reap(tmp_path):
             start_new_session=True,
         ) as process:
             with pytest.raises(UnicodeDecodeError):
-                communicate_observed(process, sink, timeout=3)
+                communicate_observed(process, sink, timeout=scaled(3))
             assert process.poll() is not None
 
 
@@ -370,27 +369,33 @@ def test_timeout_preserves_partial_output_and_reaps(tmp_path, startup_delay):
             start_new_session=True,
         ) as process:
             try:
-                wait_until(ready.exists, timeout=10)
-                stdout, stderr, timed_out = communicate_observed(process, sink, timeout=0.3)
+                wait_until(ready.exists)
+                stdout, stderr, timed_out = communicate_observed(
+                    process, sink, timeout=scaled(0.3)
+                )
                 assert process.poll() is not None
             finally:
                 if process.poll() is None:
                     process.kill()
-                    process.wait(timeout=3)
+                    process.wait(timeout=SUBPROCESS_TIMEOUT_S)
     assert (stdout, stderr, timed_out) == ("partial", "", True)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX inherited pipe descriptor test")
 def test_descendant_held_pipe_does_not_wait_forever(tmp_path):
     sink = observer(tmp_path)
-    script = "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); print('parent done',flush=True)"
+    script = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable,'-c','import time; time.sleep({scaled(30):g})']); "
+        "print('parent done',flush=True)"
+    )
     started = time.monotonic()
     with sink.installed():
         # Generous timeout: a loaded CI runner can take over 0.3 s just to start
         # the interpreter. The held descendant sleeps 30 s, so the bound below
         # still proves the call does not wait for it.
-        (stdout, _, timed_out), _ = run_observed(sink, script, timeout=3)
-    assert time.monotonic() - started < 15
+        (stdout, _, timed_out), _ = run_observed(sink, script, timeout=scaled(3))
+    assert time.monotonic() - started < scaled(15)
     assert stdout == "parent done\n"
     assert timed_out
 
@@ -526,7 +531,7 @@ def test_all_builtin_boundary_commands_are_actually_observed(tmp_path, flow_type
         result = boundary(
             flow,
             [sys.executable, "-c", "print('observed boundary')"],
-            timeout=BOUNDARY_HANG_GUARD_S,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
     assert result.returncode == 0
     assert result.stdout == "observed boundary\n"
@@ -541,7 +546,6 @@ def test_module_entry_help_contains_cli_presentation_options(tmp_path, flow_type
     result = run_bounded_child(
         [sys.executable, "-m", f"booley.flows.{flow_type.name}", "--help"],
         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")},
-        timeout=5,
     )
     assert result.returncode == 0
     assert "--quiet" in result.stdout
@@ -559,7 +563,7 @@ def test_pre_sim_observed_without_changing_evidence(tmp_path):
             test_names=("smoke",),
             build_root=tmp_path / "build",
             eda_tool="icarus",
-            timeout_s=30,
+            timeout_s=SUBPROCESS_TIMEOUT_S,
             commands=("printf 'hook out\\n'; printf 'hook err\\n' >&2",),
         )
         assert evidence is not None
@@ -798,13 +802,14 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
     class SlowLog:
         def write(self, data):
             entered.set()
-            release.wait(timeout=6)
+            release.wait(timeout=hang_guard_s())
             real_log.write(data)
 
         def close(self):
             real_log.close()
 
     sink.log = SlowLog()
+    deadline_s = scaled(3)
     started = time.monotonic()
     try:
         with subprocess.Popen(
@@ -814,18 +819,18 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
             text=True,
             start_new_session=True,
         ) as process:
-            assert communicate_observed(process, sink, timeout=3) == (
+            assert communicate_observed(process, sink, timeout=deadline_s) == (
                 "complete capture\n",
                 "",
                 False,
             )
         assert entered.is_set()
-        assert time.monotonic() - started < 3
+        assert time.monotonic() - started < deadline_s
         assert sink.log_path is None
         assert "incomplete/unavailable" in sink.stream.getvalue()
     finally:
         release.set()
-        sink.worker.join(timeout=2)
+        sink.worker.join(timeout=hang_guard_s())
         sink.close()
     assert not sink.worker.is_alive()
     assert not (sink.directory / "active").exists()
@@ -836,7 +841,7 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
     release = tmp_path / "release"
     script = (
         "import pathlib,time; print('second ready',flush=True); "
-        f"p=pathlib.Path({str(release)!r}); deadline=time.monotonic()+5; "
+        f"p=pathlib.Path({str(release)!r}); deadline=time.monotonic()+{SUBPROCESS_TIMEOUT_S}; "
         "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)'); "
         "print('second still live',flush=True); "
         f"p=pathlib.Path({str(release.with_name('done'))!r}); "
@@ -853,7 +858,9 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
         )
         result = []
         thread = threading.Thread(
-            target=lambda: result.append(communicate_observed(second, sink, timeout=6))
+            target=lambda: result.append(
+                communicate_observed(second, sink, timeout=SUBPROCESS_TIMEOUT_S)
+            )
         )
         thread.start()
         try:
@@ -866,14 +873,17 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
                 text=True,
                 start_new_session=True,
             ) as first:
-                assert communicate_observed(first, sink, timeout=3)[0] == "first done\n"
+                assert (
+                    communicate_observed(first, sink, timeout=SUBPROCESS_TIMEOUT_S)[0]
+                    == "first done\n"
+                )
             release.touch()
             wait_until(lambda: "second still live" in sink.stream.getvalue())
             assert second.poll() is None
         finally:
             release.with_name("done").touch()  # let the second command exit
             release.touch()
-            thread.join(timeout=7)
+            thread.join(timeout=hang_guard_s())
             second.stdout.close()
             second.stderr.close()
     assert not thread.is_alive()
@@ -948,7 +958,7 @@ def test_real_fast_tool_keeps_complete_transcript(tmp_path):
     # the advisory worker shutdown deadline and loaded-runner disk throughput.
     with frozen_worker(sink):
         (stdout, stderr, timed_out), _ = run_observed(
-            sink, "import os; os.write(1,b'line\\n'*6000000)", timeout=BOUNDARY_HANG_GUARD_S
+            sink, "import os; os.write(1,b'line\\n'*6000000)", timeout=SUBPROCESS_TIMEOUT_S
         )
     assert stderr == ""
     assert not timed_out
@@ -1233,7 +1243,7 @@ def test_tty_sim_attempt_leaves_compact_summary(tmp_path):
     identity = AdapterTransportIdentity(
         "cocotb", TOKEN_40, "sim_demo", ("reset",), tmp_path / f"adapter-{TOKEN_40}.json"
     )
-    request = AdapterAttemptRequest(("tool",), 30, identity, tmp_path)
+    request = AdapterAttemptRequest(("tool",), SUBPROCESS_TIMEOUT_S, identity, tmp_path)
     code = (
         "print('ALL TESTS PASSED.');"
         f"print('BOOLEY_EDA_FAILURE token={TOKEN_40} detail');"
@@ -1267,7 +1277,7 @@ def test_tty_crlf_child_output_leaves_no_blank_tail_rows(tmp_path):
     sink = observer(tmp_path, tty=True)
     code = "import sys; sys.stdout.buffer.write(b'one\\r\\n\\r\\ntwo\\r\\n'); sys.stdout.flush()"
     with sink.installed():
-        run_observed(sink, code, timeout=30)
+        run_observed(sink, code)
     sink.footer()
 
     assert settled_lines(sink.stream.getvalue())[1:3] == ["    one", "    two"]
@@ -1290,9 +1300,7 @@ def test_tty_two_target_lint_leaves_compact_output(tmp_path, monkeypatch, lint_p
     from booley.flows.base import SubprocessResult
 
     def run_observed_child(_command):
-        (out, err, _), process = run_observed(
-            current_progress(), "print('lint tool ran')", timeout=30
-        )
+        (out, err, _), process = run_observed(current_progress(), "print('lint tool ran')")
         return SubprocessResult(process.returncode, out, err)
 
     flow = lint_pair(run_observed_child)
@@ -1363,10 +1371,14 @@ def test_transcript_bytes_do_not_depend_on_terminal(tmp_path):
 @pytest.mark.parametrize(
     ("script", "timeout", "status"),
     [
-        ("print('ok')", 10, "done"),
-        ("import sys; sys.exit(3)", 10, "exit 3"),
-        ("import time; time.sleep(30)", 0.3, "timed out"),
-        ("import os,time; os.write(1,b'\\xff'); time.sleep(30)", 10, "stopped"),
+        ("print('ok')", SUBPROCESS_TIMEOUT_S, "done"),
+        ("import sys; sys.exit(3)", SUBPROCESS_TIMEOUT_S, "exit 3"),
+        ("import time; time.sleep(30)", scaled(0.3), "timed out"),
+        (
+            f"import os,time; os.write(1,b'\\xff'); time.sleep({scaled(30):g})",
+            scaled(10),
+            "stopped",
+        ),
     ],
     ids=["done", "exit", "timeout", "capture-error"],
 )
