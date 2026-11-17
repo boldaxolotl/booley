@@ -332,3 +332,19 @@ def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
         labels["alpha"]: ["alpha out"],
         labels["beta"]: ["beta one", "beta two"],
     }
+
+
+def test_silent_heartbeat_reports_the_output_lines_it_has_not_shown_yet(tmp_path: Path) -> None:
+    """A redirected record that stays quiet still shows its new output at each heartbeat."""
+    now = [100.0]
+    console = Screen()
+    sink = TerminalProgress("sim", "sim_demo", tmp_path, stream=console, clock=lambda: now[0])
+    sink.stage_changed("simulation")
+    sink.observe("stdout", b"line 0\n")
+
+    now[0] += 5
+    sink.end_command()
+
+    shown = console.getvalue()
+    assert "heartbeat" in shown
+    assert "output: line 0" in shown
