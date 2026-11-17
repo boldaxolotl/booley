@@ -14,7 +14,9 @@ name, as if it started with `*`. Matching is case-sensitive.
 - The suffix need not start at a scope boundary: `bit` matches
   `tb.dut.state_bit`.
 - A bare name matches at every depth, so `o_data` returns both `o_data` and
-  `tb.dut.o_data`. Anchor it (`tb.dut.o_data`) when you know the scope.
+  `tb.dut.o_data`. Anchor it (`tb.dut.o_data`) when you know the scope. When a
+  bare name matches at two or more scope depths, the query prints a `# NOTE:`
+  listing up to three of them (JSON: `warnings`).
 - A trailing bit range is optional: `counter` matches `counter[7:0]`.
 
 ## Globs match a whole path
@@ -44,9 +46,10 @@ it. Any other suffix exits 2.
 ## Misses
 
 - Every `-s` pattern matches nothing: exit 2 with
-  `ERROR: no signals match pattern(s) ...`.
+  `ERROR: no signals match pattern(s) ...`; a bare name adds a reminder that
+  it matches only the end of the full path.
 - Some match, some don't: the query runs, and each miss prints
   `# WARNING: no signals match '<pat>' — filter dropped`. That signal's
   rows are missing from the result. If `bwave list` cannot find it either,
   the simulator never dumped it; unpacked arrays and memories are often
-  absent.
+  absent. One more line says rows for these patterns are missing.
