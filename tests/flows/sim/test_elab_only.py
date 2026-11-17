@@ -5,50 +5,167 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 import booley.flows.sim.build as build_module
+from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import (
-    BuildOutcome,
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
 )
-from booley.flows.sim.elab_only import ElabOnlyTargetResult
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
+from booley.flows.sim.request import SimRequest
+from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
+from booley.runtime.booley_dir import reset_cache
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+
+_DEPRECATION = "--elab-only, --build-only, and --standalone are deprecated; use --mode"
+_SOURCES = {"dut.sv": b"module dut; endmodule\n", "tb.sv": b"module tb; endmodule\n"}
+_BUILD_TOKEN = re.compile(r"token=([0-9a-f]+)")
+BuildLog = list[tuple[list[str], float, "job_resources.ResourceLabel | None"]]
 
 
 def _result(output: str, *, rc: int = 0, **kwargs: object) -> SubprocessResult:
     return SubprocessResult(returncode=rc, stdout=output, **kwargs)
 
 
-def _flow_with_state(tmp_path: Path, targets: list[str]) -> SimulateFlow:
-    target_entries = "".join(
-        f"  {target}:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n"
+def _write_core(tmp_path: Path, targets: list[str]) -> None:
+    entries = "".join(
+        f"  {target}:\n    flow: sim\n    flow_options: {{tool: verilator}}\n"
         "    toplevel: tb_demo\n"
         for target in targets
     )
-    (tmp_path / "sim.core").write_text(
-        "CAPI=2:\nname: ::sim:0\ntargets:\n" + target_entries,
-        encoding="utf-8",
-    )
-    env = os.environ.copy()
-    env.update(
-        BOOLEY_SLUG="elab-only-test",
-    )
+    body = "CAPI=2:\nname: ::sim:0\ntargets:\n" + entries
+    (tmp_path / "sim.core").write_text(body, encoding="utf-8")
+
+
+def _write_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets: list[str], files: dict[str, str]
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    _write_core(tmp_path, targets)
+    for name, data in _SOURCES.items():
+        (tmp_path / name).write_bytes(data)
+    for relative, text in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+    if (tmp_path / ".booley").is_dir():
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+        reset_cache()
+
+
+def elab_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    builds: dict[str, SubprocessResult | Exception],
+    *argv: str,
+    files: dict[str, str] | None = None,
+    mode: str | None = "elab-only",
+    on_build: Callable[[list[str]], None] | None = None,
+) -> tuple[Any, BuildLog]:
+    """Run ``SimulateFlow.execute_cli`` over one Target per key of *builds*.
+
+    An exception value makes that Target's build preparation raise it; a
+    ``SubprocessResult`` is what the build process answers, with its authenticated
+    ``BOOLEY_BUILD_STAGE`` record. Returns the result and every build command seen as
+    ``(command, timeout, resource label)``.
+    """
+    _write_project(tmp_path, monkeypatch, list(builds), files or {})
+    seen: BuildLog = []
+    current: list[str] = []
+
+    def prepare(handle: Any, *, build_root: Path, **_kwargs: Any) -> PreparedSimulationBuild:
+        build = builds[handle.selector]
+        if isinstance(build, Exception):
+            raise build
+        current[:] = [handle.selector]
+        inner = build_root / "inner"
+        inner.mkdir(parents=True)
+        image = inner / "Vtb_demo"
+        image.write_bytes(b"image")
+        image.chmod(0o755)
+        resolved = SimpleNamespace(
+            build_root=tmp_path,
+            cocotb_module="",
+            files=tuple(ResolvedFile(name, "systemVerilogSource") for name in _SOURCES),
+        )
+        return PreparedSimulationBuild(
+            handle.selector,
+            handle.identity,
+            resolved,  # pyright: ignore[reportArgumentType]
+            build_root,
+            inner,
+            "verilator",
+            "tb_demo",
+            ("make", "-C", "cache"),
+            {"SIM_MODE": "build"},
+            {},
+        )
+
+    def boundary(self: SimulateFlow, command: list[str], *, timeout: float, **_kwargs: Any) -> Any:
+        del self
+        seen.append((command, timeout, job_resources.current_label()))
+        if on_build is not None:
+            on_build(command)
+        build = builds[current[0]]
+        assert isinstance(build, SubprocessResult)
+        token = _BUILD_TOKEN.search(command[2])
+        assert token is not None
+        record = f"BOOLEY_BUILD_STAGE token={token.group(1)} rc={build.returncode}\n"
+        return SubprocessResult(
+            returncode=build.returncode, stdout=build.stdout + record, stderr=build.stderr
+        )
+
+    # Private seam: the build process boundary has no public injection point.
+    monkeypatch.setattr(SimulateFlow, "_execute_boundary", boundary)
+    monkeypatch.setattr("booley.flows.sim.elab_only.prepare_simulation_build", prepare)
+    job_resources.clear_label()
+    argv_all = [
+        "--work-dir",
+        str(tmp_path),
+        "--report-dir",
+        str(tmp_path / "reports"),
+        "--target",
+        ",".join(builds),
+        *(["--mode", mode] if mode else []),
+        *argv,
+    ]
+    try:
+        return SimulateFlow().execute_cli(argv_all), seen
+    finally:
+        job_resources.clear_label()
+
+
+_PASS = SubprocessResult(returncode=0, stdout="complete compiler output\n")
+_DESIGN_FAIL = SubprocessResult(returncode=1, stdout="%Error: rtl/top.sv:1: syntax error\n")
+_SETUP_ERROR = SimulationBuildPreparationError("current setup exploded")
+_MISSING_VERILATOR = SubprocessResult(
+    returncode=2,
+    stdout="/bin/sh: 1: verilator: not found\nmake: *** [Makefile:8: Vtop.mk] Error 127\n",
+)
+
+
+def _report(tmp_path: Path) -> Path:
+    return (tmp_path / "reports/sim/1/report.json").resolve()
+
+
+def _flow_with_state(tmp_path: Path, targets: list[str]) -> SimulateFlow:
+    _write_core(tmp_path, targets)
     flow = SimulateFlow()
-    with patch.dict(os.environ, env):
+    with patch.dict(os.environ, {"BOOLEY_SLUG": "elab-only-test"}):
         flow.parse_args(
             [
                 "--work-dir",
@@ -70,55 +187,38 @@ def _flow_with_state(tmp_path: Path, targets: list[str]) -> SimulateFlow:
         ("simulate", SimulationMode.SIMULATE),
         ("elab-only", SimulationMode.ELAB_ONLY),
         ("elab_only_standalone", SimulationMode.ELAB_ONLY_STANDALONE),
+        ("invalid", None),
     ],
 )
-def test_canonical_modes_parse(
-    tmp_path: Path,
-    spelling: str,
-    expected: SimulationMode,
-) -> None:
+def test_mode_spellings(tmp_path: Path, spelling: str, expected: SimulationMode | None) -> None:
     flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", spelling])
+    argv = ["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", spelling]
 
-    assert flow.args.mode is expected
-
-
-def test_invalid_mode_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit):
-        SimulateFlow().parse_args(
-            ["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "invalid"]
-        )
+    if expected is None:
+        with pytest.raises(SystemExit):
+            flow.parse_args(argv)
+    else:
+        flow.parse_args(argv)
+        assert flow.args.mode is expected
 
 
-@pytest.mark.parametrize("alias", ["--elab-only", "--build-only"])
+@pytest.mark.parametrize(
+    ("flags", "mode"),
+    [
+        (["--elab-only"], SimulationMode.ELAB_ONLY),
+        (["--build-only"], SimulationMode.ELAB_ONLY),
+        (["--elab-only", "--standalone"], SimulationMode.ELAB_ONLY_STANDALONE),
+        (["--build-only", "--standalone"], SimulationMode.ELAB_ONLY_STANDALONE),
+    ],
+)
 def test_legacy_elaboration_aliases_normalize(
-    tmp_path: Path,
-    alias: str,
-    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, flags: list[str], mode: SimulationMode
 ) -> None:
     flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", alias])
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", *flags])
 
-    assert flow.args.mode is SimulationMode.ELAB_ONLY
-    assert caplog.messages == [
-        "--elab-only, --build-only, and --standalone are deprecated; use --mode"
-    ]
-
-
-def test_legacy_standalone_combination_normalizes(tmp_path: Path) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(
-        [
-            "--work-dir",
-            str(tmp_path),
-            "--target",
-            "sim_dut",
-            "--elab-only",
-            "--standalone",
-        ]
-    )
-
-    assert flow.args.mode is SimulationMode.ELAB_ONLY_STANDALONE
+    assert flow.args.mode is mode
+    assert caplog.messages == [_DEPRECATION]
 
 
 def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
@@ -150,43 +250,18 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
     ],
 )
 def test_elab_only_rejects_run_stage_arguments(
-    tmp_path: Path,
-    mode: str,
-    extra: list[str],
-    argument: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, extra: list[str], argument: str
 ) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", mode, *extra])
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, *extra, mode=mode)
 
-    with flow.publication_resources:
-        result = flow._run()
-
-    assert result is not None
     assert result.exit_code == EXIT_ERROR
-    assert result.detail["mode"] == mode.replace("-", "_")
-    assert argument in result.report_text
-    assert "use --mode simulate" in result.report_text
+    assert result.outcome.detail["mode"] == mode.replace("-", "_")
+    assert argument in result.outcome.report_text
+    assert "use --mode simulate" in result.outcome.report_text
 
 
 def test_standalone_requires_elab_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    (tmp_path / "sim.core").write_text(
-        "CAPI=2:\nname: ::sim:0\ntargets:\n  sim_dut:\n    flow: sim\n"
-        "    flow_options: {tool: verilator}\n    toplevel: tb_demo\n",
-        encoding="utf-8",
-    )
-
-    result = SimulateFlow().execute_cli(
-        [
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-            "--target",
-            "sim_dut",
-            "--standalone",
-        ]
-    )
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, "--standalone", mode=None)
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["mode"] == "simulate"
@@ -197,45 +272,33 @@ def test_standalone_requires_elab_only(tmp_path: Path, monkeypatch: pytest.Monke
 def test_coverage_requires_simulation_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    (tmp_path / "sim.core").write_text(
-        "CAPI=2:\nname: ::sim:0\ntargets:\n  sim_dut:\n    flow: sim\n"
-        "    flow_options: {tool: verilator}\n    toplevel: tb_demo\n",
-        encoding="utf-8",
-    )
-
-    result = SimulateFlow().execute_cli(
-        [
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-            "--target",
-            "sim_dut",
-            "--mode",
-            "elab-only",
-            "--coverage",
-        ]
-    )
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, "--coverage")
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "Coverage requires simulation mode"
     assert result.outcome.detail["mode"] == "elab_only"
 
 
-def test_elab_only_disabled_result_keeps_mode(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_early_elab_error_names_available_report_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
 ) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "elab-only"])
-    monkeypatch.setattr(flow, "_flow_enabled", lambda: False)
+    result, seen = elab_cli(
+        tmp_path,
+        monkeypatch,
+        {"sim_dut": _PASS},
+        *(["--dry-run"] if dry_run else []),
+        files={".booley/booley.toml": "[flows.sim]\nenabled = false\n"},
+    )
 
-    with flow.publication_resources:
-        result = flow._run()
-
+    expected = "sim is disabled ([flows.sim].enabled = false)."
+    if not dry_run:
+        expected += f"\n  report: {_report(tmp_path)}"
     assert result.exit_code == EXIT_ERROR
-    assert result.detail["mode"] == "elab_only"
+    assert result.outcome.detail["mode"] == "elab_only"
+    assert result.outcome.report_text == expected
+    assert "manifest:" not in result.outcome.report_text
+    assert seen == []
 
 
 def test_elab_only_target_resolution_error_keeps_mode(
@@ -244,7 +307,7 @@ def test_elab_only_target_resolution_error_keeps_mode(
 ) -> None:
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "elab-only"])
-    monkeypatch.setattr(flow, "_flow_enabled", lambda: True)
+    # Private seam: the endpoint refuses an unknown Target before the elaboration preflight, so only a stubbed resolver reaches its error branch.
     monkeypatch.setattr(
         flow,
         "_resolve_requested_targets",
@@ -273,43 +336,44 @@ def test_explicit_mode_conflicts_with_legacy_flags(tmp_path: Path) -> None:
         )
 
 
+# A Target with one RTL module, so the standalone sweep has something to probe.
+_RTL_CORE = (
+    "CAPI=2:\nname: ::sim:0\nfilesets:\n  rtl:\n    files: [dut.sv]\n"
+    "    file_type: systemVerilogSource\ntargets:\n  sim_dut:\n    flow: sim\n"
+    "    flow_options: {tool: verilator}\n    filesets: [rtl]\n    toplevel: tb_demo\n"
+)
+
+
+@pytest.fixture
+def probes(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Every standalone probe command, answered as a clean compile."""
+    seen: list[list[str]] = []
+
+    def probe(_self: SimulateFlow, command: list[str], **_kwargs: Any) -> SubprocessResult:
+        seen.append(command)
+        return SubprocessResult(returncode=0)
+
+    # Private seam: the sweep's probe compile needs a real toolchain; no public input replaces it.
+    monkeypatch.setattr(SimulateFlow, "_execute", probe)
+    return seen
+
+
 def test_standalone_mode_runs_target_elaboration_before_sweep(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[list[str]]
 ) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    flow.args.mode = SimulationMode.ELAB_ONLY_STANDALONE
-    events: list[str] = []
-    results = [
-        ElabOnlyTargetResult(
-            target="sim_dut",
-            outcome=BuildOutcome(True, "pass", None),
-        )
-    ]
-    monkeypatch.setattr(flow, "_elab_only_preflight", lambda: ["sim_dut"])
-
-    def simulation_record(_targets: list[str]) -> list[ElabOnlyTargetResult]:
-        events.append("target-elaboration")
-        return results
-
-    def standalone(_targets: list[str], actual: list[ElabOnlyTargetResult]):
-        assert actual is results
-        events.append("standalone-sweep")
-        return EXIT_SUCCESS, None
-
-    monkeypatch.setattr(flow, "_run_elab_only_simulation_record", simulation_record)
-    monkeypatch.setattr(flow, "_run_optional_standalone", standalone)
-    monkeypatch.setattr(
-        flow,
-        "_elab_only_result",
-        lambda *_args: McpToolResult(exit_code=EXIT_SUCCESS),
+    result, seen = elab_cli(
+        tmp_path,
+        monkeypatch,
+        {"sim_dut": _PASS},
+        files={"sim.core": _RTL_CORE},
+        mode="elab-only-standalone",
     )
 
-    with flow.publication_resources:
-        result = flow._run_elab_only()
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert events == ["target-elaboration", "standalone-sweep"]
+    assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+    assert len(seen) == 1
+    assert len(probes) == 1
+    assert "dut" in probes[0]
+    assert "standalone" in result.outcome.detail
 
 
 def test_build_stage_script_emits_record_before_run_half() -> None:
@@ -342,420 +406,192 @@ def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> Non
     )
 
 
-def test_classifier_accepts_one_matching_success_record() -> None:
-    outcome = classify_build_outcome(
-        _result("compiler output\nBOOLEY_BUILD_STAGE token=abc123 rc=0\nruntime failed", rc=1),
-        "abc123",
-    )
+_BUILD_RECORD = "BOOLEY_BUILD_STAGE token=abc123"
+_DESIGN_ERROR = "%Error: rtl/top.sv:4: syntax error\n"
 
-    assert outcome.passed
-    assert outcome.failure_kind is None
+
+@pytest.mark.parametrize(
+    ("stdout", "rc", "extra", "verdict", "kind"),
+    [
+        (f"compiler output\n{_BUILD_RECORD} rc=0\nruntime failed", 1, {}, "pass", None),
+        ("BOOLEY_BUILD_STAGE token=wrong rc=0\n", 0, {}, None, "infrastructure"),
+        (f"{_BUILD_RECORD} rc=0\n{_BUILD_RECORD} rc=0\n", 0, {}, None, "infrastructure"),
+        (f"{_DESIGN_ERROR}{_BUILD_RECORD} rc=1", 1, {}, "fail", "design"),
+        (f"make stopped\n{_BUILD_RECORD} rc=1", 1, {}, None, "infrastructure"),
+        (f"{_BUILD_RECORD} rc=1\n", 1, {"stderr": _DESIGN_ERROR}, "fail", "design"),
+        (f"{_DESIGN_ERROR}{_BUILD_RECORD} rc=139", 139, {}, None, "infrastructure"),
+        ("still compiling", -1, {"timed_out": True}, None, "infrastructure"),
+        (f"{_BUILD_RECORD} rc=0\nruntime still active", -1, {"timed_out": True}, "pass", None),
+    ],
+    ids=[
+        "success",
+        "spoofed",
+        "duplicate",
+        "design",
+        "ambiguous",
+        "stderr-design",
+        "signal-139",
+        "timeout",
+        "late-timeout",
+    ],
+)
+def test_classifier_grades_the_authenticated_build_record(
+    stdout: str, rc: int, extra: dict[str, Any], verdict: str | None, kind: str | None
+) -> None:
+    outcome = classify_build_outcome(_result(stdout, rc=rc, **extra), "abc123", timeout_s=7)
+
+    assert outcome.passed is (verdict == "pass")
+    assert outcome.verdict == verdict
+    assert outcome.failure_kind == kind
 
 
 def test_classifier_uses_authenticated_build_duration() -> None:
     outcome = classify_build_outcome(
-        _result(
-            "compiler output\nBOOLEY_BUILD_STAGE token=abc123 rc=0 duration_ms=17\nruntime output",
-            rc=0,
-            duration_s=4.0,
-        ),
-        "abc123",
+        _result(f"output\n{_BUILD_RECORD} rc=0 duration_ms=17\nruntime", duration_s=4.0), "abc123"
     )
 
     assert outcome.elapsed_s == 0.017
 
 
-def test_classifier_rejects_spoofed_or_duplicate_records() -> None:
-    spoofed = classify_build_outcome(
-        _result("BOOLEY_BUILD_STAGE token=wrong rc=0\n", rc=0),
-        "abc123",
-    )
-    duplicate = classify_build_outcome(
-        _result(
-            "BOOLEY_BUILD_STAGE token=abc123 rc=0\nBOOLEY_BUILD_STAGE token=abc123 rc=0\n",
-            rc=0,
-        ),
-        "abc123",
-    )
-
-    assert spoofed.verdict is None
-    assert duplicate.verdict is None
-    assert spoofed.failure_kind == duplicate.failure_kind == "infrastructure"
-
-
-def test_classifier_distinguishes_design_rejection_from_ambiguous_exit() -> None:
-    design = classify_build_outcome(
-        _result("%Error: rtl/top.sv:4: syntax error\nBOOLEY_BUILD_STAGE token=abc123 rc=1", rc=1),
-        "abc123",
-    )
-    ambiguous = classify_build_outcome(
-        _result("make stopped\nBOOLEY_BUILD_STAGE token=abc123 rc=1", rc=1),
-        "abc123",
-    )
-
-    assert design.design_failed
-    assert ambiguous.verdict is None
-    assert ambiguous.failure_kind == "infrastructure"
-
-
-def test_classifier_reads_design_diagnostics_from_stderr() -> None:
+def test_timeout_before_terminal_record_names_the_budget() -> None:
     outcome = classify_build_outcome(
-        _result(
-            "BOOLEY_BUILD_STAGE token=abc123 rc=1\n",
-            rc=1,
-            stderr="%Error: rtl/top.sv:4: syntax error\n",
-        ),
-        "abc123",
+        _result("still compiling", rc=-1, timed_out=True), "abc123", timeout_s=7
     )
 
-    assert outcome.design_failed
-    assert outcome.failure_kind == "design"
-
-
-def test_timeout_before_terminal_record_has_no_verdict() -> None:
-    outcome = classify_build_outcome(
-        _result("still compiling", rc=-1, timed_out=True),
-        "abc123",
-        timeout_s=7,
-    )
-
-    assert outcome.verdict is None
-    assert outcome.failure_kind == "infrastructure"
-    assert outcome.reason == ("build timed out after 7 s (raise [flows.sim].build_timeout_ms)")
+    assert outcome.reason == "build timed out after 7 s (raise [flows.sim].build_timeout_ms)"
     assert outcome.output == "still compiling"
     assert build_module.build_failure_report(outcome).splitlines()[0] == outcome.reason
 
 
-def test_signal_style_build_exit_has_no_design_verdict() -> None:
-    outcome = classify_build_outcome(
-        _result(
-            "%Error: rtl/top.sv:4: syntax error\nBOOLEY_BUILD_STAGE token=abc123 rc=139",
-            rc=139,
-        ),
-        "abc123",
-    )
-
-    assert outcome.verdict is None
-    assert outcome.failure_kind == "infrastructure"
-
-
-def test_timeout_after_success_record_preserves_build_pass() -> None:
-    outcome = classify_build_outcome(
-        _result(
-            "BOOLEY_BUILD_STAGE token=abc123 rc=0\nruntime still active",
-            rc=-1,
-            timed_out=True,
-        ),
-        "abc123",
-    )
-
-    assert outcome.passed
-
-
-def test_simulation_record_continues_and_applies_error_fail_pass_precedence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_simulation_record_runs_every_target_and_reports_the_worst_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    targets = ["clean", "broken", "infra"]
-    flow = _flow_with_state(tmp_path, targets)
-    calls: list[str] = []
-    outcomes = {
-        "clean": BuildOutcome(True, "pass", None, output="ok"),
-        "broken": BuildOutcome(
-            True,
-            "fail",
-            "design",
-            output="%Error: rtl/top.sv:1: syntax error",
-            reason="compiler rejected design",
-        ),
-        "infra": BuildOutcome(
-            False,
-            None,
-            "infrastructure",
-            output="spawn failed",
-            reason="setup failed",
-        ),
+    builds: dict[str, SubprocessResult | Exception] = {
+        "clean": _PASS,
+        "broken": _DESIGN_FAIL,
+        "infra": _SETUP_ERROR,
     }
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: targets)
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda selected: None)
-    monkeypatch.setattr(flow, "_standalone_requested", lambda: False)
+    result, seen = elab_cli(tmp_path, monkeypatch, builds)
 
-    def run_one(target: str) -> ElabOnlyTargetResult:
-        calls.append(target)
-        return ElabOnlyTargetResult(target=target, outcome=outcomes[target])
-
-    monkeypatch.setattr(flow, "_run_one_elab_only", run_one)
-
-    with flow.publication_resources:
-        result = flow._run_elab_only()
-
+    outcome = result.outcome
     assert result.exit_code == EXIT_ERROR
-    assert f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}" in result.report_text
-    assert "manifest:" not in result.report_text
-    assert calls == targets
-    assert result.detail["mode"] == "elab_only"
-    assert [entry["failure_class"] for entry in result.detail["targets"]] == [
+    assert f"  report: {_report(tmp_path)}" in outcome.report_text
+    assert "manifest:" not in outcome.report_text
+    assert len(seen) == 2
+    assert outcome.detail["mode"] == "elab_only"
+    assert [entry["failure_class"] for entry in outcome.detail["targets"]] == [
         None,
         "design",
         "infrastructure",
     ]
-    progress = next((tmp_path / "reports" / "sim").glob("*/progress.json"))
-    assert '"mode": "elab_only"' in progress.read_text(encoding="utf-8")
-    assert '"complete": true' in progress.read_text(encoding="utf-8")
-    for target in targets:
-        report = tmp_path / "reports" / f"sim/1/targets/{target}/simulation.json"
+    progress = (tmp_path / "reports/sim/1/progress.json").read_text(encoding="utf-8")
+    assert '"mode": "elab_only"' in progress
+    assert '"complete": true' in progress
+    for target in builds:
+        report = tmp_path / f"reports/sim/1/targets/{target}/simulation.json"
         assert '"mode": "elab_only"' in report.read_text(encoding="utf-8")
 
 
-def test_missing_executable_is_typed_in_elab_only_result(
+@pytest.mark.parametrize(
+    ("build", "expected"),
+    [(_PASS, EXIT_SUCCESS), (_DESIGN_FAIL, EXIT_FAILURE), (_SETUP_ERROR, EXIT_ERROR)],
+    ids=["pass", "design-failure", "setup-error"],
+)
+def test_simulation_record_exit_precedence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    build: SubprocessResult | Exception,
+    expected: int,
 ) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim_dut"])
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda selected: None)
-    monkeypatch.setattr(flow, "_standalone_requested", lambda: False)
-    monkeypatch.setattr(
-        flow,
-        "_run_one_elab_only",
-        lambda target: ElabOnlyTargetResult(
-            target=target,
-            outcome=BuildOutcome(
-                False,
-                None,
-                "infrastructure",
-                output=(
-                    "/bin/sh: 1: verilator: not found\nmake: *** [Makefile:8: Vtop.mk] Error 127\n"
-                ),
-                reason="nonzero build exit without a recognized design diagnostic",
-            ),
-        ),
-    )
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": build})
 
-    with flow.publication_resources:
-        result = flow._run_elab_only()
+    assert result.exit_code == expected
 
+
+def test_missing_executable_is_typed_in_elab_only_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _MISSING_VERILATOR})
+
+    outcome = result.outcome
     assert result.exit_code == EXIT_ERROR
-    assert result.detail["mode"] == "elab_only"
-    assert result.detail["eda_tool_error"] == "missing_executable"
-    assert result.detail["missing_executable"] == "verilator"
-    assert "required executable 'verilator'" in result.report_text
-    assert f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}" in result.report_text
-    assert "manifest:" not in result.report_text
+    assert outcome.detail["mode"] == "elab_only"
+    assert outcome.detail["eda_tool_error"] == "missing_executable"
+    assert outcome.detail["missing_executable"] == "verilator"
+    assert "required executable 'verilator'" in outcome.report_text
+    assert f"  report: {_report(tmp_path)}" in outcome.report_text
+    assert "manifest:" not in outcome.report_text
 
 
 def test_elab_only_terminalizes_after_later_target_crash(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    targets = ["sim_a", "sim_b"]
-    flow = _flow_with_state(tmp_path, targets)
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: targets)
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda selected: None)
-    calls = 0
+    crash = RuntimeError("simulated elaboration interruption")
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_a": _PASS, "sim_b": crash})
 
-    def run_one(target: str) -> ElabOnlyTargetResult:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise RuntimeError("simulated elaboration interruption")
-        return ElabOnlyTargetResult(target=target, outcome=BuildOutcome(True, "pass", None))
-
-    monkeypatch.setattr(flow, "_run_one_elab_only", run_one)
-
-    with (
-        pytest.raises(RuntimeError, match="elaboration interruption"),
-        flow.publication_resources,
-    ):
-        flow._run_elab_only()
-
-    progress_path = next((tmp_path / "reports/sim").glob("*/progress.json"))
-    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert result.exit_code == EXIT_ERROR
+    assert "elaboration interruption" in result.outcome.report_text
+    progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text(encoding="utf-8"))
     assert progress["complete"] is True
     assert progress["phase"] == "aborted"
     assert progress["completed_targets"] == ["sim_a"]
     assert progress["pending_targets"] == ["sim_b"]
 
 
-@pytest.mark.parametrize(
-    ("outcomes", "expected"),
-    [
-        ([BuildOutcome(True, "pass", None)], EXIT_SUCCESS),
-        ([BuildOutcome(True, "fail", "design")], EXIT_FAILURE),
-        (
-            [
-                BuildOutcome(True, "fail", "design"),
-                BuildOutcome(False, None, "infrastructure"),
-            ],
-            EXIT_ERROR,
-        ),
-    ],
-)
-def test_simulation_record_exit_precedence(
-    outcomes: list[BuildOutcome],
-    expected: int,
+def test_one_target_executes_only_authenticated_make_and_resolves_its_build_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    results = [
-        ElabOnlyTargetResult(target=str(index), outcome=outcome)
-        for index, outcome in enumerate(outcomes)
-    ]
-
-    assert SimulateFlow._elab_only_exit_code(results) == expected
-
-
-def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-
-    def fake_prepare(
-        *_args: object, build_root: Path, **_kwargs: object
-    ) -> PreparedSimulationBuild:
-        """Prepare in the leased generation the flow allocates, with a built image."""
-        prepared = PreparedSimulationBuild(
-            target="sim_dut",
-            target_identity="::dut:0#sim_dut",
-            resolved=MagicMock(cocotb_module=""),
-            work_root=build_root,
-            build_root=build_root / "inner",
-            eda_tool="verilator",
-            toplevel="tb_dut",
-            make_argv=("make", "-C", "cache"),
-            environment={"SIM_MODE": "build"},
-            fileset={"rtl": ("rtl/dut.sv",), "tb": ("tb/tb_dut.sv",)},
-        )
-        prepared.build_root.mkdir(parents=True)
-        image = prepared.build_root / "Vtb_dut"
-        image.write_bytes(b"image")
-        image.chmod(0o755)
-        return prepared
-
-    monkeypatch.setattr("booley.flows.sim.elab_only.prepare_simulation_build", fake_prepare)
-    monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
-    monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 3_600_000)
-    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
-    captured: list[list[str]] = []
-
-    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
-        captured.append(command)
-        assert timeout == 7
-        token = re.search(r"token=([0-9a-f]+)", command[2])
-        assert token is not None
-        output = f"complete compiler output\nBOOLEY_BUILD_STAGE token={token.group(1)} rc=0\n"
-        return SubprocessResult(returncode=0, stdout=output)
-
-    monkeypatch.setattr(flow, "_execute_boundary", execute)
-
-    with flow.publication_resources:
-        result = flow._run_one_elab_only("sim_dut")
-
-    assert result.outcome.passed
-    assert captured[0][:2] == ["sh", "-c"]
-    script = captured[0][2]
-    assert "make -C cache" in script
-    assert "SIM_MODE" in script
-    assert "cocotb" not in script.lower()
-    assert "pre_run" not in script.lower()
-    assert result.log_path
-    log = tmp_path / result.log_path
-    assert log.read_text(encoding="utf-8") == result.outcome.output
-
-
-def test_elab_only_build_label_carries_source_bytes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from types import SimpleNamespace
-
-    from booley.flows import job_resources
-    from booley.fusesoc.fusesoc_registry import ResolvedFile
-
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    (tmp_path / "dut.sv").write_bytes(b"module dut; endmodule\n")
-    (tmp_path / "tb.sv").write_bytes(b"module tb; endmodule\n")
-    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.sv"))
-    prepared = PreparedSimulationBuild(
-        target="sim_dut",
-        target_identity="::dut:0#sim_dut",
-        resolved=SimpleNamespace(
-            build_root=tmp_path,
-            files=(
-                ResolvedFile("dut.sv", "systemVerilogSource"),
-                ResolvedFile("tb.sv", "systemVerilogSource"),
-            ),
-        ),
-        work_root=tmp_path,
-        build_root=tmp_path / "inner",
-        eda_tool="verilator",
-        toplevel="tb_dut",
-        make_argv=("make",),
-        environment={},
-        fileset={},
+    result, seen = elab_cli(
+        tmp_path,
+        monkeypatch,
+        {"sim_dut": _PASS},
+        files={".booley/booley.toml": "[flows.sim]\nbuild_timeout_ms = 7000\n"},
     )
-    seen: list[job_resources.ResourceLabel | None] = []
 
-    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
-        seen.append(job_resources.current_label())
-        return SubprocessResult(returncode=0)
-
-    monkeypatch.setattr(flow, "_execute_boundary", execute)
-    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
-    monkeypatch.setattr(flow, "_persist_elab_only_log", lambda *_args: "")
-    job_resources.clear_label()
-
-    flow._execute_elab_only_build("sim_dut", prepared)
-    job_resources.clear_label()
-
-    assert seen == [
-        job_resources.ResourceLabel("sim_dut", "sim_build", source_bytes=expected_bytes)
-    ]
-    assert expected_bytes > 0
+    assert result.exit_code == EXIT_SUCCESS
+    ((command, timeout, label),) = seen
+    assert command[:2] == ["sh", "-c"]
+    assert "make -C cache" in command[2]
+    assert "SIM_MODE" in command[2]
+    assert "cocotb" not in command[2].lower()
+    assert "pre_run" not in command[2].lower()
+    assert timeout == 7
+    assert label == job_resources.ResourceLabel("sim_dut", "sim_build", source_bytes=43)
+    log = tmp_path / "reports/sim/1/artifacts/sim_sim_dut/run.log"
+    assert log.read_text(encoding="utf-8").startswith("complete compiler output")
 
 
 def test_elaboration_plan_discloses_build_budget_as_its_timeout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 3_600_000)
-    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
-    monkeypatch.setattr(flow, "_elab_only_dry_command", lambda _target: ["make"])
-    monkeypatch.setattr(flow, "_target_sim_env", lambda _target: {})
-
-    unit = flow._elaboration_work_unit("sim_dut")
-
-    assert unit.timeout_ms == 7000
-    assert unit.recipe["build_timeout_ms"] == 7000
-
-
-def test_elaboration_resolves_build_budget_from_project_config(tmp_path: Path) -> None:
-    config_dir = tmp_path / ".booley"
-    config_dir.mkdir()
-    (config_dir / "booley.toml").write_text(
-        "[flows.sim]\nbuild_timeout_ms = 7000\n",
-        encoding="utf-8",
+    elab_cli(
+        tmp_path,
+        monkeypatch,
+        {"sim_dut": _PASS},
+        "--dry-run",
+        files={".booley/booley.toml": "[flows.sim]\nbuild_timeout_ms = 7000\n"},
     )
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
 
-    assert flow._effective_build_timeout_ms() == 7000
+    plan = json.loads((tmp_path / "reports/sim/flow_plan.json").read_text(encoding="utf-8"))
+    (unit,) = plan["work_units"]
+    assert unit["timeout_ms"] == 7000
+    assert unit["recipe"]["build_timeout_ms"] == 7000
 
 
 def test_setup_failure_archives_current_error_without_reusing_old_log(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = _flow_with_state(tmp_path, ["sim_dut"])
     old = tmp_path / "reports/sim/1/artifacts/sim_sim_dut/run.log"
     old.parent.mkdir(parents=True)
     old.write_text("old passing output", encoding="utf-8")
-    monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
 
-    def fail_setup(*args: object, **kwargs: object) -> PreparedSimulationBuild:
-        raise SimulationBuildPreparationError("current setup exploded")
+    def fail_setup(*_args: object, **_kwargs: object) -> PreparedSimulationBuild:
+        raise _SETUP_ERROR
 
     monkeypatch.setattr("booley.flows.sim.elab_only.prepare_simulation_build", fail_setup)
 
+    # Private seam: the stale log sits in the invocation directory only an in-flight attempt reuses; the CLI always reserves a fresh one.
     with flow.publication_resources:
         result = flow._run_one_elab_only("sim_dut")
 
@@ -767,9 +603,81 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
     assert "old passing output" not in current
 
 
+def test_plan_keeps_non_shell_commands_unchanged(tmp_path: Path) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    command = ("make", "-C", ".booley_work/sim")
+
+    # Private seam: the plan renders only shell commands through it; no public Target has another kind.
+    assert flow._redact_plan_environment("sim_dut", command) == command
+
+
+@pytest.mark.parametrize(
+    ("build", "expected"), [(_DESIGN_FAIL, EXIT_FAILURE), (_MISSING_VERILATOR, EXIT_ERROR)]
+)
+def test_a_log_that_cannot_be_archived_leaves_its_pointer_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, build: SubprocessResult, expected: int
+) -> None:
+    def block_archive(_command: list[str]) -> None:
+        (tmp_path / "reports/sim/1/artifacts").write_text("not a directory", encoding="utf-8")
+
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": build}, on_build=block_archive)
+
+    assert result.exit_code == expected
+    assert "artifacts" not in result.outcome.detail
+    assert "(log:" not in result.outcome.report_text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a symlinked report root")
+def test_early_elab_error_keeps_diagnosis_when_report_root_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+    result, _seen = elab_cli(
+        tmp_path,
+        monkeypatch,
+        {"sim_dut": _PASS},
+        "--report-dir",
+        str(tmp_path / "linked"),
+        files={".booley/booley.toml": "[flows.sim]\nenabled = false\n"},
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text.startswith("sim is disabled ([flows.sim].enabled = false).")
+    assert "  report:" not in result.outcome.report_text
+
+
+def test_target_report_write_retries_sharing_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "reports/sim/1/targets/sim_dut/simulation.json"
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS})
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert json.loads(path.read_text(encoding="utf-8"))["mode"] == "elab_only"
+    assert attempts[path] == 2
+
+
+def test_target_report_write_fails_after_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "reports/sim/1/targets/sim_dut/simulation.json"
+    attempts = hold_replaces(monkeypatch, {path: 100})
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS})
+
+    assert result.exit_code == EXIT_ERROR
+    assert attempts[path] > 1
+
+
 def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(
     tmp_path: Path,
 ) -> None:
+    # Private seam: the sweep log is written only by a real probe compile; no public path runs one probe without a toolchain.
     flow = _flow_with_state(tmp_path, ["standalone"])
 
     with flow.publication_resources:
@@ -783,202 +691,75 @@ def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(
 
 
 def test_elab_only_dry_run_renders_setup_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    monkeypatch.setattr(
-        flow,
-        "_target_handle",
-        lambda _target: MagicMock(),
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.elab_only.simulation_setup_command",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            SimulationBuildPreparationError("cgroup denied")
-        ),
-    )
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise SimulationBuildPreparationError("cgroup denied")
 
-    assert flow._elab_only_dry_command("sim_dut") == [
-        "ERROR: sim elab-only dry-run: cgroup denied"
-    ]
+    monkeypatch.setattr("booley.flows.sim.elab_only.simulation_setup_command", refuse)
+    result, seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, "--dry-run")
+
+    assert result.exit_code == EXIT_ERROR
+    assert "sim_dut: ERROR: sim elab-only dry-run: cgroup denied" in result.outcome.report_text
+    assert seen == []
 
 
 def test_elab_only_branch_skips_test_and_cocotb_discovery(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim_dut"])
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda selected: None)
-    monkeypatch.setattr(flow, "_standalone_requested", lambda: False)
-    monkeypatch.setattr(
-        flow,
-        "_run_one_elab_only",
-        lambda target: ElabOnlyTargetResult(
-            target=target,
-            outcome=BuildOutcome(True, "pass", None),
-        ),
-    )
-    # Guard every module that looks the name up, so discovery is caught wherever it runs.
+    # Private seam: a test that discovery never runs can only fail the run if discovery is replaced.
     for module in ("booley.flows.sim.flow", "booley.flows.sim.test_selection"):
         monkeypatch.setattr(
             f"{module}._get_test_names",
             lambda *_args, **_kwargs: pytest.fail("test discovery ran in elab-only mode"),
         )
     monkeypatch.setattr(
-        flow,
+        SimulateFlow,
         "_validate_cocotb_targets",
-        lambda targets: pytest.fail("Cocotb validation ran in elab-only mode"),
+        lambda *_args: pytest.fail("Cocotb validation ran in elab-only mode"),
     )
 
-    with flow.publication_resources:
-        result = flow._run()
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS})
 
     assert result.exit_code == EXIT_SUCCESS
 
 
 @pytest.mark.parametrize("mode", ["elab-only", "elab-only-standalone"])
 def test_elab_cli_card_has_one_report_pointer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    probes: list[list[str]],
+    mode: str,
 ) -> None:
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    (tmp_path / "sim.core").write_text(
-        "CAPI=2:\nname: ::sim:0\ntargets:\n  sim_dut:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb_demo\n"
+    result, _seen = elab_cli(
+        tmp_path, monkeypatch, {"sim_dut": _PASS}, files={"sim.core": _RTL_CORE}, mode=mode
     )
-    flow = SimulateFlow()
-    monkeypatch.setattr(
-        flow,
-        "_run_one_elab_only",
-        lambda target: ElabOnlyTargetResult(
-            target=target, outcome=BuildOutcome(True, "pass", None)
-        ),
-    )
-    monkeypatch.setattr(flow, "_standalone_requested", lambda: False)
-    result = flow.execute_cli(
-        [
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-            "--target",
-            "sim_dut",
-            "--mode",
-            mode,
-        ]
-    )
+
     output = capsys.readouterr()
     assert result.exit_code == 0
-    report = (tmp_path / "reports/sim/1/report.json").resolve()
-    assert output.out.count(f"  report: {report}") == 1
-    assert report.is_file()
+    assert output.out.count(f"  report: {_report(tmp_path)}") == 1
+    assert _report(tmp_path).is_file()
     assert output.out.count("RESULT: PASS") == 1
     assert "manifest:" not in output.out + output.err
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_early_elab_error_names_available_report_destination(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
-) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    flow.args.dry_run = dry_run
-    monkeypatch.setattr(
-        flow,
-        "_elab_only_preflight",
-        lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="build preflight failed"),
-    )
-    with flow.publication_resources:
-        result = flow._run_elab_only()
-    expected = "build preflight failed"
-    if not dry_run:
-        expected += f"\n  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}"
-    assert result.report_text == expected
-    assert "manifest:" not in result.report_text
-
-
-def test_early_elab_error_keeps_diagnosis_when_report_root_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    monkeypatch.setattr(
-        flow,
-        "_elab_only_preflight",
-        lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="build preflight failed"),
-    )
-
-    def refuse(*_args: object) -> Path:
-        raise ValueError("report root crosses a symlinked entry")
-
-    monkeypatch.setattr(flow, "_next_invocation_dir", refuse)
-    with flow.publication_resources:
-        result = flow._run_elab_only()
-    assert result.report_text == "build preflight failed"
-
-
-@pytest.mark.parametrize(
-    ("flags", "mode"),
-    [
-        (["--build-only", "--standalone"], SimulationMode.ELAB_ONLY_STANDALONE),
-        (["--standalone"], None),
-    ],
-)
-def test_documented_mode_aliases_name_replacement(tmp_path, caplog, flags, mode):
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", *flags])
-    assert flow.args.mode is mode
-    if flags == ["--standalone"]:
-        outcome = flow._validate_mode_args()
-        assert outcome.exit_code == 2
-        assert "--standalone alone is invalid" in outcome.report_text
-        assert "--mode elab-only-standalone" in outcome.report_text
-    assert any(
-        "--build-only" in message and "--standalone" in message and "use --mode" in message
-        for message in caplog.messages
-    )
 
 
 def test_build_only_live_checkpoint_is_building_before_invoker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.flows.sim.live_progress import LiveProgressSink, attempt_scope, install_progress
+    observed: list[dict[str, Any]] = []
 
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    invocation = flow.reserve_invocation_dir()
-    assert invocation is not None
-    prepared = PreparedSimulationBuild(
-        target="sim_dut",
-        target_identity="::dut:0#sim_dut",
-        resolved=MagicMock(),
-        work_root=tmp_path / "build",
-        build_root=tmp_path / "build",
-        eda_tool="verilator",
-        toplevel="tb_dut",
-        make_argv=("make",),
-        environment={},
-        fileset={},
-    )
-    observed = []
-
-    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
-        payload = json.loads((invocation / "progress.json").read_text())
+    def check(_command: list[str]) -> None:
+        payload = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
         observed.append(payload)
-        assert payload["phase"] == "starting"
-        assert payload["complete"] is False
-        assert {entry["stage"] for entry in payload["active"]} == {"building"}
-        token = re.search(r"token=([0-9a-f]+)", command[2])
-        assert token is not None
-        return _result(f"BOOLEY_BUILD_STAGE token={token.group(1)} rc=0\n")
 
-    monkeypatch.setattr(flow, "_execute_boundary", execute)
-    sink = LiveProgressSink(
-        invocation / "progress.json", tmp_path, os.environ.get("BOOLEY_RUN_ID", "")
-    )
-    with flow.publication_resources, install_progress(sink):
-        flow._write_elab_only_progress(["sim_dut"], [], phase="starting")
-        with attempt_scope("sim_dut", operation="elaboration"):
-            result = flow._execute_elab_only_build("sim_dut", prepared)
-    assert result.outcome.passed
-    assert len(observed) == 1
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, on_build=check)
+
+    assert result.exit_code == EXIT_SUCCESS
+    (payload,) = observed
+    assert payload["phase"] == "starting"
+    assert payload["complete"] is False
+    assert {entry["stage"] for entry in payload["active"]} == {"building"}
 
 
 def test_standalone_live_probe_has_module_and_build_only_stage(
@@ -987,6 +768,7 @@ def test_standalone_live_probe_has_module_and_build_only_stage(
     from booley.flows.sim.live_progress import LiveProgressSink, install_progress
     from booley.flows.sim.standalone import _StandaloneProbe
 
+    # Private seam: the live probe stage is written only by a real probe compile; no public path runs one probe without a toolchain.
     flow = _flow_with_state(tmp_path, ["sim_dut"])
     invocation = flow.reserve_invocation_dir()
     assert invocation is not None
@@ -1017,7 +799,6 @@ def test_elab_only_dry_run_writes_flow_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The Elaboration Check keeps printing its elaboration FlowPlan (ordinary runs have none)."""
-    from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_endpoint_record_lifecycle import _ordinary_public_hook_fixture
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)

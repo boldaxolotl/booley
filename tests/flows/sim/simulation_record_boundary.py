@@ -115,6 +115,7 @@ def run_simulation_record_sim(
     build: SubprocessResult | None = None,
     report_dir: Path | None = _DEFAULT_REPORT_DIR,
     project_data: Path | None = None,
+    flow: SimulateFlow | None = None,
     **request: Any,
 ) -> SimulationRecordSimRun:
     """Run ``SimulateFlow.execute`` for *targets* with only the process edge faked.
@@ -126,7 +127,7 @@ def run_simulation_record_sim(
     paths under *tmp_path* to text written after the default project (it adds
     or overrides ``.core`` files, ``.booley/tests.toml``, ``.booley/booley.toml``).
     ``report_dir=None`` keeps the endpoint default report root; *project_data*
-    places ``.booley`` outside *tmp_path*.
+    places ``.booley`` outside *tmp_path*; *flow* reuses one Flow object across requests.
     """
     from booley.runtime.booley_dir import reset_cache
 
@@ -151,7 +152,7 @@ def run_simulation_record_sim(
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
     launches: list[Launch] = []
-    flow = SimulateFlow()
+    flow = flow or SimulateFlow()
     if report_dir is _DEFAULT_REPORT_DIR:
         report_dir = tmp_path / "reports"
     # Undo the fakes before returning: an autouse fixture may have patched the same

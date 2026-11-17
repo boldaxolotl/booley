@@ -210,6 +210,7 @@ def _coverage_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution
             target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
         )
     )
+    # Private seam: the outcome is read before the Flow publishes it; the public result carries only the rendered report.
     (outcome,) = flow._simulation_record_outcomes
     return outcome
 

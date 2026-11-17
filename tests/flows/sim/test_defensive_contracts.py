@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows import endpoint_admission
+
+# Private seam: admission claims and the cancellation cause need a live slot store and supervisor.
 from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
@@ -15,6 +17,8 @@ from booley.flows.endpoint_admission import (
 )
 from booley.flows.sim.config import parse_run_cwd_template
 from booley.flows.sim.mode import SimulationMode
+
+# Private seam: the freeze rule has no public caller that feeds it a non-JSON-shaped value.
 from booley.flows.sim.record.model import _freeze_json
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import ExecutionResult, execute_endpoint
@@ -102,6 +106,7 @@ def test_admission_context_rejects_malformed_runtime_identity() -> None:
 def test_malformed_runtime_identity_rejects_before_slot_acquisition(
     monkeypatch: pytest.MonkeyPatch, managed: bool
 ) -> None:
+    # Private seam: admission claims and the cancellation cause need a live slot store and supervisor.
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
     acquisitions = 0
 
@@ -132,6 +137,7 @@ def test_malformed_runtime_identity_rejects_before_slot_acquisition(
 def test_simulation_admission_reports_malformed_runtime_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Private seam: admission claims and the cancellation cause need a live slot store and supervisor.
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
 
     def acquire(*_args, **_kwargs):

@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 from booley.config.project_config import normalize_tests_toml
-from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
+from booley.flows.sim.execution import DefaultSelection
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.request import SimRequest
 from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.flows.target_test_plan import build_target_test_plan
-from booley.flows.test_runs import UnseededTargetError
 from booley.runtime.endpoint_execution import EXIT_ERROR
+from tests.flows.sim.leased_session import canned_build_session
+from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 from tests.target_test_support import write_two_core_sim_project
 
 _TESTS = {
@@ -26,6 +28,7 @@ _MAP = {"sim": ["reset", "stress"]}
 
 
 def _flow(tmp_path: Path, monkeypatch, *argv: str, adapter: str = "verilator") -> SimulateFlow:
+    # Private seam: importers resolve Test Runs without a project, so the plan and skips are stubbed.
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim", *argv])
     plan = build_target_test_plan("sim", normalize_tests_toml(_TESTS)["sim"], adapter=adapter)
@@ -34,67 +37,89 @@ def _flow(tmp_path: Path, monkeypatch, *argv: str, adapter: str = "verilator") -
     return flow
 
 
-def _names(flow: SimulateFlow) -> list[str]:
-    return [run.name for run in flow._resolve_test_runs("sim", _MAP)]
+_TESTS_TOML = (
+    '[sim]\ntests = ["reset", "stress"]\nskip = ["reset"]\n[sim.variants.stress]\n'
+    'default = "short"\nshort = []\nsoak = ["+iters=9"]\n'
+)
+
+
+def _launched(tmp_path: Path, monkeypatch, *, files=None, **request):
+    """Run the record path over ``sim``; return its result and the launched ``(name, args)``."""
+    with canned_build_session():
+        run = run_simulation_record_sim(
+            tmp_path,
+            monkeypatch,
+            {"sim": ["reset", "stress"]},
+            PASS_PROCESS,
+            files={".booley/tests.toml": _TESTS_TOML, **(files or {})},
+            target="sim",
+            **request,
+        )
+    runs = [(r.name, r.args) for launch in run.launches for r in launch.work.test_runs]
+    return run.result, runs
 
 
 def test_default_request_runs_default_variants_at_the_default_seed(tmp_path, monkeypatch):
-    flow = _flow(tmp_path, monkeypatch)
-    assert _names(flow) == ["stress+short@1"]
-    assert flow._resolve_tests_to_run("sim", _MAP) == ["stress"]
+    _result, runs = _launched(tmp_path, monkeypatch)
+    assert runs == [("stress+short@1", ())]
 
 
 def test_selectors_keep_order_and_override_skip(tmp_path, monkeypatch):
-    flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9", "--test", "reset")
-    assert _names(flow) == ["stress+soak@9", "reset@1"]
-    selection = flow._test_run_selection("sim", _MAP)
-    assert isinstance(selection, SelectedTestRuns)
-    assert [run.args for run in selection.runs] == [("+iters=9",), ()]
+    _result, runs = _launched(tmp_path, monkeypatch, test=("stress+soak@9", "reset"))
+    assert runs == [("stress+soak@9", ("+iters=9",)), ("reset@1", ())]
 
 
 def test_random_seeds_are_drawn_once_per_invocation(tmp_path, monkeypatch):
-    flow = _flow(tmp_path, monkeypatch, "--seed", "random", "--test", "stress", "--test", "reset")
-    first = _names(flow)
-    assert _names(flow) == first
-    assert flow._test_run_selection("sim", _MAP).runs == flow._resolve_test_runs("sim", _MAP)
-    seeds = [run.seed for run in flow._resolve_test_runs("sim", _MAP)]
-    assert all(seed is not None and seed >= 1 for seed in seeds)
+    _result, runs = _launched(tmp_path, monkeypatch, seed="random", test=("stress", "reset"))
+    seeds = [int(name.rsplit("@", 1)[1]) for name, _args in runs]
+    assert len(seeds) == 2
+    assert all(seed >= 1 for seed in seeds)
 
 
 def test_count_selector_resolves_to_distinct_seeds(tmp_path, monkeypatch):
-    flow = _flow(tmp_path, monkeypatch, "--test", "stress@x4")
-    runs = flow._resolve_test_runs("sim", _MAP)
-    assert len({run.seed for run in runs}) == 4
-    assert {run.variant for run in runs} == {"short"}
-    # The repeated Test is named once where only Test names are wanted.
-    assert flow._resolve_tests_to_run("sim", _MAP) == ["stress"]
+    _result, runs = _launched(tmp_path, monkeypatch, test=("stress@x4",))
+    assert len({name for name, _args in runs}) == 4
+    assert {name.split("@")[0] for name, _args in runs} == {"stress+short"}
 
 
-def test_unseeded_target_refuses_a_seed_before_anything_runs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tests_toml", [_TESTS_TOML, ""], ids=["registered-tests", "no-tests"])
+def test_unseeded_target_refuses_a_seed_before_anything_runs(tmp_path, monkeypatch, tests_toml):
+    core = (
+        "CAPI=2:\nname: ::sim:0\ntargets:\n  sim:\n    flow: sim\n"
+        "    flow_options: {tool: icarus}\n    toplevel: tb\n"
+    )
+    files = {"sim.core": core, ".booley/tests.toml": tests_toml}
+    result, runs = _launched(tmp_path, monkeypatch, files=files, seed=3)
+    assert result.exit_code == EXIT_ERROR
+    assert "is unseeded" in result.outcome.report_text
+    assert runs == []
+
+
+def test_plan_validation_discovers_the_registered_tests_itself(tmp_path, monkeypatch):
+    # Private seam: every production caller passes the registry map; only the default discovers it.
     flow = _flow(tmp_path, monkeypatch, "--seed", "3", adapter="icarus")
-    with pytest.raises(UnseededTargetError):
-        flow._resolve_test_runs("sim", _MAP)
     outcome = flow._validate_test_plans(["sim"])
     assert outcome is not None and "is unseeded" in outcome.report_text
 
 
 def test_all_skipped_suite_resolves_to_no_runs(tmp_path, monkeypatch):
+    # Private seam: no public request reaches the empty-runs DefaultSelection branch; a Target without a catalog resolves to one unnamed run and the endpoint refuses an all-skipped Target first.
     flow = _flow(tmp_path, monkeypatch)
     monkeypatch.setattr(flow, "_effective_skips", lambda _target: {"reset", "stress"})
     assert flow._resolve_test_runs("sim", _MAP) == ()
     assert isinstance(flow._test_run_selection("sim", _MAP), DefaultSelection)
 
 
-def test_two_keys_for_one_target_refuse_the_run_naming_both(tmp_path):
+def test_two_keys_for_one_target_refuse_the_run_naming_both(tmp_path, monkeypatch):
     write_two_core_sim_project(
         tmp_path, '["y#sim"]\ntests = ["one"]\n["vendor:b:y#sim"]\ntests = ["two"]\n'
     )
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "y#sim"])
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    result = SimulateFlow().execute(
+        SimRequest(work_dir=tmp_path, report_dir=tmp_path / "reports", target="y#sim")
+    )
 
-    refusal = flow._validate_test_plans(["y#sim"])
-
-    assert refusal is not None and refusal.exit_code == EXIT_ERROR
-    assert "[vendor:b:y#sim] and [y#sim]" in refusal.report_text
+    assert result.exit_code == EXIT_ERROR
+    assert "[vendor:b:y#sim] and [y#sim]" in result.outcome.report_text
     # The watchdog sizing preflight must not raise: the child Flow reports the refusal.
     assert resolve_simulation_record_work_units(tmp_path, "y#sim") == 1

@@ -2,6 +2,7 @@
 
 import pytest
 
+# Private seam: the scanner is the lexical rule; the sweep only reports its result.
 from booley.flows.sim.standalone import _scan_hdl_declarations
 
 
