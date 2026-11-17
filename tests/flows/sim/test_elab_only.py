@@ -361,16 +361,19 @@ def probes(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 def test_standalone_mode_runs_target_elaboration_before_sweep(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probes: list[list[str]]
 ) -> None:
+    probes_before_build: list[int] = []
     result, seen = elab_cli(
         tmp_path,
         monkeypatch,
         {"sim_dut": _PASS},
         files={"sim.core": _RTL_CORE},
         mode="elab-only-standalone",
+        on_build=lambda _command: probes_before_build.append(len(probes)),
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
     assert len(seen) == 1
+    assert probes_before_build == [0]  # the Target build ran before the sweep's first probe
     assert len(probes) == 1
     assert "dut" in probes[0]
     assert "standalone" in result.outcome.detail

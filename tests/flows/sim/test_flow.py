@@ -14,6 +14,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable
 from booley.flows.sim.build import SimulationBuildPreparationError
 from booley.flows.sim.execution import SimulationExecution
+from booley.flows.sim.execution.engine import TRACE_CLEANUP_MARGIN_S
 from booley.flows.sim.execution.telemetry import (
     parse_build_seconds,
     parse_run_seconds,
@@ -148,6 +149,31 @@ def test_display_label_of_a_target_no_core_declares(
         patch("booley.flows.sim.test_selection._get_test_skips", return_value=skips),
     ):
         assert flow._resolve_display_label() == expected
+
+
+def test_simulation_record_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
+    # Private seam: the Target catalog and skip list need a real FuseSoC resolve; no public input
+    # replaces them.
+    with (
+        patch(
+            "booley.flows.sim.watchdog_sizing._target_is_cocotb",
+            side_effect=lambda _root, target: target == "cocotb",
+        ),
+        patch(
+            "booley.flows.sim.watchdog_sizing._get_test_names",
+            return_value={
+                "native": ["smoke", "stress", "known_hang"],
+                "cocotb": ["one", "two", "three"],
+            },
+        ),
+        patch(
+            "booley.flows.sim.watchdog_sizing._get_test_skips",
+            return_value={"native": ["known_hang"]},
+        ),
+    ):
+        units = resolve_simulation_record_work_units(tmp_path, "native,cocotb")
+
+    assert units == 3  # two native processes plus one cocotb batch, summed over both Targets
 
 
 @pytest.mark.parametrize(
@@ -649,6 +675,15 @@ def test_default_report_root_uses_project_data(tmp_path: Path, monkeypatch):
 
 
 class TestTimeout:
+    def test_mcp_default_timeout_allows_trace_retry(self, tmp_path: Path):
+        flow = SimulateFlow()
+        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite"])
+        # Private seam: the wrapper timeout is read only by the MCP watchdog, not by a result.
+        default_run_s = flow._get_timeout()  # pyright: ignore[reportPrivateUsage]
+        retry_allowance = 2 * default_run_s + TRACE_CLEANUP_MARGIN_S
+
+        assert SimulateFlow.default_timeout >= retry_allowance
+
     def test_custom_timeout(self, tmp_path: Path):
         flow = SimulateFlow()
         flow.parse_args(
