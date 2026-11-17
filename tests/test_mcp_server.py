@@ -1811,6 +1811,16 @@ class TestBuiltinDiscoveryGate:
         assert errors == []
         assert {r["name"] for r in results} == {endpoint.name for endpoint in discovered}
 
+    def test_implementation_flows_are_discovered_as_flows(self):
+        # Synth and FPGA derive from ImplementationFlow, not BuiltinFlow directly:
+        # the import-free scan must still list them, or their CLI and MCP tools vanish.
+        from booley.mcp.registry import discover_mcp_tools
+
+        kinds = {info.name: info.kind for info in discover_mcp_tools()}
+
+        assert kinds["synth"] == "flow"
+        assert kinds["fpga"] == "flow"
+
 
 # ---------------------------------------------------------------------------
 # main() — proxy env self-heal

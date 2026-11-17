@@ -1,5 +1,6 @@
 """MCP schema and legacy extension adaptation for deterministic Flows."""
 
+from collections.abc import Callable
 from typing import Any
 
 from booley.flows.base import BuiltinFlow
@@ -7,10 +8,13 @@ from booley.flows.builtin_cli import build_parser
 from booley.flows.test_runs import MAX_SEED, SEED_REQUEST_RANDOM
 from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS, extract_schema, negative_flags
 
+# Any: a JSON Schema's values are arbitrary JSON.
+_SchemaHook = Callable[[], dict[str, Any]]
+
 
 def _specialist_schema(endpoint: Any) -> dict[str, Any]:
     """Keep Specialist runtime controls private, including custom schema hooks."""
-    hook = getattr(endpoint, "mcp_schema", None)
+    hook: _SchemaHook | None = getattr(endpoint, "mcp_schema", None)
     extracted = extract_schema(endpoint._parser)
     if not callable(hook):
         return extracted
@@ -39,7 +43,7 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
     if getattr(endpoint, "endpoint_kind", None) == "specialist":
         return _specialist_schema(endpoint)
     if not isinstance(endpoint, BuiltinFlow):
-        hook = getattr(endpoint, "mcp_schema", None)
+        hook: _SchemaHook | None = getattr(endpoint, "mcp_schema", None)
         return hook() if callable(hook) else extract_schema(endpoint._parser)
     schema = extract_schema(build_parser(endpoint))
     schema["additionalProperties"] = False

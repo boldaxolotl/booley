@@ -19,7 +19,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
 from booley.evidence.acceptance import PairedProjectBaseline
@@ -238,6 +238,16 @@ class FlowMechanics:
     endpoint_kind = "flow"
     report_schema = "booley.flow-report/v1"
     target_required = True
+
+    if TYPE_CHECKING:
+        # The EndpointState every concrete Flow also inherits defines these; they are
+        # declared for the checker only, so they cannot shadow the real ones at runtime.
+        name: str
+
+        @property
+        def args(self) -> Any: ...  # Any: mirrors EndpointState.args, whose type varies
+
+        def _requested_targets(self) -> list[str]: ...
 
     def _resolve_display_label(self) -> str | None:
         """Describe the requested Target scope without resolving it."""

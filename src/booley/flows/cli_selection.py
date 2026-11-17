@@ -138,7 +138,7 @@ def add_project_option(parser: argparse.ArgumentParser, dest: str, *, cheat: boo
         action=CheatSelectionAction if cheat else SelectionAction,
         default=argparse.SUPPRESS,
         metavar="PATH",
-        **({"nargs": "?"} if cheat else {}),
+        nargs="?" if cheat else None,
         help="Select the Project Root",
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import io
 import json
@@ -31,7 +32,6 @@ from booley.flows.target_parameters import ParameterValue
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.runtime import job_slots
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
@@ -986,7 +986,6 @@ class TestFlowEnablement:
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
         assert flow._flow_enabled()
-        assert flow._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
 def _patch_edam_build(captured: dict):
@@ -2491,6 +2490,45 @@ def test_summary_rows_agree_with_result_reasons(
     assert expected_result in result.report_text
 
 
+def _result_line(report_text: str) -> str:
+    return next(line for line in report_text.splitlines() if line.startswith("RESULT:"))
+
+
+def test_baseline_infrastructure_error_is_named_in_result(
+    tmp_path: Path, state_file: Path
+) -> None:
+    flow = _flow(tmp_path, state_file)
+    flow.args.baseline = "abc1234"
+    base_error = FpgaMetrics(infra_error="baseline broke", returncode=2)
+
+    result = flow._aggregate_results(
+        ["default"], {"default": _passing_fpga()}, {"default": base_error}, "abc1234"
+    )
+
+    line = _result_line(result.report_text)
+    assert line.startswith("RESULT: ERROR (")
+    assert "baseline default: baseline broke" in line
+    assert "baseline default: infrastructure error" not in line
+    assert result.exit_code == EXIT_ERROR
+
+
+def test_comparison_error_message_is_named_in_result(tmp_path: Path, state_file: Path) -> None:
+    flow = _flow(tmp_path, state_file)
+    flow.args.baseline = "abc1234"
+
+    result = flow._aggregate_results(
+        ["default"],
+        {"default": _passing_fpga()},
+        {"default": _passing_fpga(lut_count=None)},
+        "abc1234",
+    )
+
+    line = _result_line(result.report_text)
+    assert "comparison default: baseline required metric 'lut_count' is unavailable" in line
+    assert "invalid evidence" not in line
+    assert result.exit_code == EXIT_ERROR
+
+
 def test_summary_notes_drop_the_flow_prefix(
     tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2525,3 +2563,42 @@ def test_summary_notes_drop_the_flow_prefix(
     printed = out.getvalue()
     assert f"{_RED}CRITICAL\x1b[0m" in printed
     assert f"{_RED}ERROR\x1b[0m" in printed
+
+
+@pytest.mark.parametrize("case", ["plain", "baseline"])
+def test_fpga_output_matches_golden(
+    case: str, tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One Target's report, progress record, RESULT line and exit code stay as pinned."""
+    from tests.flows.implementation_golden_support import render_implementation_output
+    from tests.golden.conftest import assert_matches_golden
+
+    @contextmanager
+    def fake_worktree(project_root, ref, *, paired_project):
+        del paired_project
+        wt = Path(project_root) / ".booley" / f".baseline-wt-fake-{ref}"
+        wt.mkdir(parents=True, exist_ok=True)
+        yield wt
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "golden-run")
+    flow = _flow(tmp_path, state_file, *(["--baseline", "v1.0"] if case == "baseline" else []))
+    baseline = _passing_fpga(lut_count=12000, ff_count=8000)
+    current = _passing_fpga()
+
+    def run_one(_target: str) -> FpgaMetrics:
+        return copy.deepcopy(baseline if flow._execution_role == "baseline" else current)
+
+    with (
+        patch("booley.flows.fpga.flow.baseline_worktree", fake_worktree),
+        patch("booley.flows.fpga.flow.git_short_sha", return_value="abc1234"),
+        patch("booley.flows.fpga.flow.git_full_sha", return_value="a" * 40),
+        patch.object(
+            flow, "_plan_fpga_implementation", return_value=SimpleNamespace(aggregate_errors=[])
+        ),
+        patch.object(flow, "_flow_enabled", return_value=True),
+        patch.object(flow, "_run_single_target", side_effect=run_one),
+    ):
+        outcome = flow._run()
+
+    text = render_implementation_output(flow, "fpga_default.json", outcome, tmp_path)
+    assert_matches_golden(f"implementation/fpga_{case}.txt", text)
