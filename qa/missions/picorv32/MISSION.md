@@ -66,8 +66,6 @@ Try:
   the report prints the command to create it. Then run
   `booley flow synth --target <t> --baseline <base>` against that measured
   base: the stored Measurement Run is reused instead of synthesizing again.
-- Round trip: the demo README's `booley measure` journey, end to end, as
-  written.
 - Developer Agent: start a child per the child rules and send
   `prompts/continuity.md` (Dhrystone): its `"dhry.cycle_count_max"` bound,
   the approval it asks for, and the Measured Commit it reports.
@@ -91,8 +89,6 @@ Try:
 - Doctor checks every CLI in `clis`: a missing credential fails for the
   default CLI and for one a `[models]` entry needs, and warns for any other.
   Missing or `"auto"` `auth` fails naming the value `booley init` would record.
-- With both CLIs logged in, the documented way to allow every logged-in CLI
-  allows exactly those.
 - Concurrent sessions: a second `booley chat` while the first runs lands in
   worktree `s<N>` with the banner; tab title, Dashboard row and worktree name
   match. `--here` and `--new-worktree` behave as documented.
@@ -112,8 +108,7 @@ Try:
 - Old records: in a run-owned venv, install the published 0.4.0 wheel and
   write one Simulation Campaign run with it. The candidate reports that run
   directory as written by an older Booley, never as corrupt, and names the
-  directory to delete, for `--resume-from` and for `booley flow sim` with
-  retention.
+  directory to delete, for `--resume-from`.
 Look for: leftover Campaign names, a resume that redoes finished work, and a
 refusal that doesn't say what to delete.
 
