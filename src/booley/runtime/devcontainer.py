@@ -904,7 +904,7 @@ def build_devcontainer_spec(
     egress: str = "proxy",
     legacy_clis: frozenset[str] = frozenset(),
 ) -> dict:
-    """Build the ``devcontainer.json`` dict for a Sandbox session.
+    """Build the ``devcontainer.json`` dict for a Sandbox.
 
     Args:
         app: one of :data:`SUPPORTED_APPS`: the default Agent CLI, which the in-container
