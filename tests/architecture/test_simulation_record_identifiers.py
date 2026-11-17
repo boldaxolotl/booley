@@ -148,7 +148,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "_apply_campaign_defaults",
             "_attach_campaign_artifacts",
             "_attach_campaign_directories",
-            "_campaign_for_target",
             "_campaign_manifest",
             "_copy_campaign_dir",
             "_copy_campaign_file",
@@ -178,23 +177,16 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
         {
             "_assert_durable_campaign",
             "_campaign",
-            "_target_campaign",
             "campaign",
             "campaign_dir",
-            "test_campaign_artifacts_show_each_tests_baseline_duration_and_time_limit",
             "test_campaign_report_gives_the_typed_mutation_metrics",
-            "test_campaign_without_build_failures_names_no_replacement",
-            "test_campaign_runs_the_baseline_then_each_mutant",
             "test_happy_path_publishes_campaign_artifacts",
         }
     ),
     "tests/flows/mutation/test_memory_claims.py": frozenset(
         {
-            "_campaign",
             "test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result",
             "test_campaign_processes_rank_as_the_held_claim",
-            "test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled",
-            "test_queued_simulation_claim_is_withdrawn_when_the_campaign_is_cancelled",
         }
     ),
     "tests/flows/test_target_campaign.py": frozenset(

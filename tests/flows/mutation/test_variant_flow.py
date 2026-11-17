@@ -1,286 +1,81 @@
-"""Behavioral tests for compiler-isolated mutation variants."""
+"""Behavioral tests for compiler-isolated mutation variants.
+
+Each test runs a whole campaign on the fake Target of ``test_flow``: the Mutants' builds and
+launches are answered per Mutant, and the assertions read the classified rows of the result.
+"""
 
 from __future__ import annotations
 
-import os
 import subprocess
-import types
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
-from booley.flows.mutation.build_sources import materialize_build_mutation
-from booley.flows.mutation.flow import (
-    Baseline,
-    GeneratedMutants,
-    MutationFlow,
-    MutationResult,
-    MutationRunPlan,
-    MutationSpec,
-    MutationSummary,
-    MutationTestRun,
-    UnsupportedSimTargetError,
-    VariantSuiteVerdict,
-    VariantSweep,
-    compute_source_size_budget,
-    generate_results_markdown,
-)
-from booley.flows.mutation.generator import Mutant
-from booley.flows.mutation.variants import MutationVariantPlan
+from booley.flows.mutation.flow import UnsupportedSimTargetError, compute_source_size_budget
+from booley.flows.mutation.memory_claims import CampaignClaims
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     work_transport_identity,
     write_adapter_result,
 )
+from booley.flows.sim.backends import cocotb_results as cr
 from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
-from tests.flows.mutation.test_runtime_inputs import _make_project
-from tests.flows.sim.launched_work import launched_work
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from booley.targets.catalog import TargetCatalog
+from tests.flows.mutation.test_flow import (
+    _SCOPE,
+    _campaign,
+    _candidates,
+    _fake_proc,
+    _make_endpoint,
+    _patch_fake_simulation,
+    _prepare_scope_files,
+    _results_markdown,
+    _wrap_preparer,
+    _write_tests_toml,
+)
+
+_TESTS_TOML = '[lite]\ntests = ["full", "smoke"]\nselect = "+test={name}"\n'
+_COCOTB_PASS = COCOTB_RESULTS_PREFIX + (
+    '{"state":"ok","detail":"","tests":['
+    '{"name":"reset","module":"tb","status":"pass","failure":"","elapsed_s":0.1}]}'
+)
 
 
-def _process(returncode: int, output: str = "") -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess([], returncode, stdout=output, stderr="")
+def _test_name(work: PreparedSimulationWork) -> str:
+    """The test a launch selects: ``select = "+test={name}"`` puts ``test=<name>`` in the plusargs."""
+    return next(arg.removeprefix("test=") for arg in work.plusargs if arg.startswith("test="))
 
 
-def _endpoint(tmp_path: Path) -> MutationFlow:
-    endpoint = MutationFlow()
-    endpoint._args = types.SimpleNamespace(work_dir=tmp_path, tb_top="tb")
-    endpoint.emit_progress = lambda _line: None
-    return endpoint
-
-
-def _plan(tmp_path: Path, scope: str) -> MutationRunPlan:
-    return MutationRunPlan(
-        scope_files=[scope],
-        scope_hashes={},
-        work_dir=tmp_path,
-        target="sim",
-        tb_top="tb",
-        report_dir=None,
-        min_detected=1,
-        count=2,
-        auto_mode=False,
-        formula_count=2,
-        source_size_budget=None,
-    )
-
-
-def _sweep(
-    endpoint: MutationFlow,
-    plan: MutationRunPlan,
-    specs: list[MutationSpec],
-    variants: MutationVariantPlan,
-) -> VariantSweep:
-    """Sweep ``specs`` as the ranked candidates of a run that compares no builds."""
-    ranked = tuple(
-        Mutant(
-            spec.mutant_id,
-            spec.category,
-            spec.file,
-            spec.line,
-            spec.original_code,
-            spec.mutated_code,
-            0,
-            0,
-        )
-        for spec in specs
-    )
-    generated = GeneratedMutants(plan, variants, {}, ranked)
-    return endpoint._run_variant_sweep(plan, generated, Baseline({}))
-
-
-def test_sweep_builds_one_exact_replacement_at_a_time(
+def _mutant_rows(
     tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-    scope = "rtl/dut.sv"
-    source = tmp_path / scope
-    source.parent.mkdir(parents=True)
-    pristine = "assign x = a + b;\nassign y = c & d;\n"
-    source.write_text(pristine, encoding="utf-8")
-    specs = [
-        MutationSpec(1, "operator", scope, 1, "a + b", "a - b"),
-        MutationSpec(2, "operator", scope, 2, "c & d", "c | d"),
-    ]
-    variants = MutationVariantPlan.resolve(specs, tmp_path, [scope])
-    endpoint = _endpoint(tmp_path)
-    built_sources: list[str] = []
-    build_dirs: list[Path] = []
+    monkeypatch: pytest.MonkeyPatch,
+    mutants: list[Callable[[PreparedSimulationWork], subprocess.CompletedProcess[str]]],
+    *,
+    cocotb: bool = False,
+    tests_toml: str = _TESTS_TOML,
+) -> tuple[EndpointOutcome, list[dict[str, Any]], Any]:
+    """Run one campaign of ``len(mutants)`` Mutants; Mutant ``i`` answers each launch by
+    ``mutants[i - 1](work)``, the baseline passes. Returns the result, its rows, the fake."""
+    _write_tests_toml(tmp_path, tests_toml)
 
-    def elaborate(_target: str, _work_dir: Path, build_dir: Path, mutation):
-        assert source.read_text(encoding="utf-8") == pristine
-        core_file = tmp_path / "dut.core"
-        core_file.write_text(
-            "CAPI=2:\n"
-            + yaml.safe_dump(
-                {
-                    "name": "acme:test:dut:1",
-                    "filesets": {"rtl": {"files": [scope]}},
-                }
-            )
-        )
-        staged = build_dir / "src/acme_test_dut_1" / scope
-        staged.parent.mkdir(parents=True)
-        staged.write_bytes(source.read_bytes())
-        name = str(staged.relative_to(build_dir))
-        edam_path = build_dir / "dut.eda.yml"
-        entry = {"name": name, "core": "acme:test:dut:1", "file_type": "systemVerilogSource"}
-        edam_path.write_text(
-            yaml.safe_dump(
-                {
-                    "cores": {"acme:test:dut:1": {"core_file": str(core_file)}},
-                    "files": [entry],
-                }
-            )
-        )
-        resolved = types.SimpleNamespace(build_root=build_dir, edam_path=edam_path)
-        materialize_build_mutation(mutation[0], mutation[1], tmp_path, resolved)
-        built_sources.append(staged.read_text(encoding="utf-8"))
-        build_dirs.append(build_dir)
-        return _process(0)
+    def answer(index: int | None, work: PreparedSimulationWork):
+        if index is None:
+            return _fake_proc(0, _COCOTB_PASS if cocotb else "[sim] ok")
+        return mutants[index - 1](work)
 
-    def run_suite(*_args, **_kwargs):
-        assert source.read_text(encoding="utf-8") == pristine
-        text = (build_dirs[-1] / "src/acme_test_dut_1" / scope).read_text(encoding="utf-8")
-        return [MutationTestRun("suite", process=_process(1 if "a - b" in text else 0))]
-
-    endpoint._run_elab = elaborate
-    endpoint._run_target_test_suite = run_suite
-    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
-
-    assert sweep.inconclusive == ""
-    assert [result.detected for result in sweep.results] == [True, False]
-    assert built_sources == [
-        "assign x = a - b;\nassign y = c & d;\n",
-        "assign x = a + b;\nassign y = c | d;\n",
-    ]
-    assert build_dirs[0] != build_dirs[1]
-    assert source.read_text(encoding="utf-8") == pristine
-
-
-def test_cocotb_missing_results_are_inconclusive_not_a_kill(tmp_path: Path) -> None:
-    endpoint = _endpoint(tmp_path)
-    output = COCOTB_RESULTS_PREFIX + '{"state":"missing","detail":"no xml","tests":[]}'
-    runs = [MutationTestRun("suite", process=_process(1), output=output)]
-
-    verdict = endpoint._classify_variant_suite(runs)
-    assert "state is missing" in verdict.inconclusive_reason
-    assert verdict.detected is False
-    assert verdict.first_killing_test == ""
-
-
-@pytest.mark.parametrize("output", ["", COCOTB_RESULTS_PREFIX + "{broken"])
-def test_cocotb_absent_or_malformed_results_are_inconclusive(
-    tmp_path: Path,
-    output: str,
-) -> None:
-    scope = "rtl/dut.sv"
-    source = tmp_path / scope
-    source.parent.mkdir(parents=True)
-    source.write_text("assign x = a + b;\n", encoding="utf-8")
-    specs = [MutationSpec(1, "operator", scope, 1, "a + b", "a - b")]
-    variants = MutationVariantPlan.resolve(specs, tmp_path, [scope])
-    endpoint = _endpoint(tmp_path)
-    endpoint._run_elab = lambda *_args, **_kwargs: _process(0)
-
-    def run_suite(*_args, **_kwargs):
-        return [
-            MutationTestRun(
-                "<cocotb-suite>",
-                process=_process(1),
-                output=output,
-                requires_cocotb_results=True,
-            )
-        ]
-
-    endpoint._run_target_test_suite = run_suite
-
-    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
-    results = sweep.results
-
-    assert "cocotb result line is missing or malformed" in sweep.inconclusive
-    assert len(results) == 1
-    assert results[0].inconclusive_reason
-    assert results[0].detected is False
-    assert results[0].first_killing_test == ""
-
-
-def test_sweep_classifies_every_variant_after_inconclusive_result(tmp_path: Path) -> None:
-    scope = "rtl/dut.sv"
-    source = tmp_path / scope
-    source.parent.mkdir(parents=True)
-    source.write_text("assign x = a + b;\nassign y = c & d;\n", encoding="utf-8")
-    specs = [
-        MutationSpec(1, "operator", scope, 1, "a + b", "a - b"),
-        MutationSpec(2, "operator", scope, 2, "c & d", "c | d"),
-    ]
-    variants = MutationVariantPlan.resolve(specs, tmp_path, [scope])
-    endpoint = _endpoint(tmp_path)
-    endpoint._run_elab = lambda *_args, **_kwargs: _process(0)
-
-    def run_suite(*_args, **_kwargs):
-        if _args[2].name == "mutant_1":
-            output = COCOTB_RESULTS_PREFIX + '{"state":"missing","tests":[]}'
-        else:
-            output = COCOTB_RESULTS_PREFIX + (
-                '{"state":"ok","tests":[{"name":"corner","module":"tb",'
-                '"status":"fail","failure":"mismatch","elapsed_s":0.1}]}'
-            )
-        return [
-            MutationTestRun(
-                "<cocotb-suite>",
-                process=_process(1),
-                output=output,
-                requires_cocotb_results=True,
-            )
-        ]
-
-    endpoint._run_target_test_suite = run_suite
-
-    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
-    results = sweep.results
-
-    assert "state is missing" in sweep.inconclusive
-    assert len(results) == 2
-    assert results[0].inconclusive_reason
-    assert results[1].detected is True
-    assert results[1].first_killing_test == "corner"
-
-
-def test_cocotb_all_pass_does_not_fabricate_a_killing_suite(tmp_path: Path) -> None:
-    endpoint = _endpoint(tmp_path)
-    output = COCOTB_RESULTS_PREFIX + (
-        '{"state":"ok","detail":"","tests":['
-        '{"name":"reset","module":"tb","status":"pass",'
-        '"failure":"","elapsed_s":0.1}]}'
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=len(mutants),
+        min_detected=0,
+        simulation={"run_work": answer, "cocotb_module": "tb.test_x" if cocotb else None},
     )
-    runs = [MutationTestRun("<cocotb-suite>", process=_process(1), output=output)]
-
-    verdict = endpoint._classify_variant_suite(runs)
-    assert verdict.detected is False
-    assert "without a failing test" in verdict.inconclusive_reason
-    assert verdict.first_killing_test == ""
-
-
-def test_zero_match_compact_cocotb_suite_remains_inconclusive(tmp_path: Path) -> None:
-    from booley.flows.sim.backends import cocotb_results as cr
-
-    endpoint = _endpoint(tmp_path)
-    results = cr.CocotbResults(
-        state=cr.STATE_OK,
-        tests=(cr.CocotbTest("run_test/ifg=12", "tb", "skipped"),),
-    )
-    output = cr.format_results_line(cr.results_payload(cr.compact_results(results, ["run_test"])))
-    runs = [
-        MutationTestRun(
-            "<cocotb-suite>", process=_process(1), output=output, requires_cocotb_results=True
-        )
-    ]
-    verdict = endpoint._classify_variant_suite(runs)
-    assert verdict.detected is False
-    assert verdict.first_killing_test == ""
-    assert "without a failing test" in verdict.inconclusive_reason
+    return result, result.detail["classified"], fake
 
 
 def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> None:
@@ -311,85 +106,6 @@ def test_auto_budget_fails_when_scope_file_is_unreadable(tmp_path: Path) -> None
         compute_source_size_budget(["rtl/missing.sv"], tmp_path)
 
 
-def test_missing_variant_marker_cannot_restage_pristine_build(tmp_path, monkeypatch):
-    endpoint = _endpoint(tmp_path)
-    build_path = tmp_path / "mutant_1"
-    build_path.mkdir()
-    monkeypatch.setattr(
-        endpoint, "_resolve_elab_target", lambda *_args: pytest.fail("restaged source")
-    )
-    with pytest.raises(UnsupportedSimTargetError, match="mutation build marker missing"):
-        endpoint._pinned_build("sim", tmp_path, build_path)
-
-
-def test_variant_that_does_not_build_is_dropped_before_suite(tmp_path):
-    source = tmp_path / "rtl/dut.sv"
-    source.parent.mkdir()
-    source.write_text("assign x = a + b;\nassign y = c & d;\n")
-    specs = [
-        MutationSpec(1, "operator", "rtl/dut.sv", 1, "a + b", "a - b", "id-a"),
-        MutationSpec(2, "operator", "rtl/dut.sv", 2, "c & d", "c | d", "id-b"),
-    ]
-    variants = MutationVariantPlan.resolve(specs, tmp_path, ["rtl/dut.sv"])
-    endpoint = _endpoint(tmp_path)
-    builds: list[int] = []
-
-    def elab(_target, _work_dir, _build_path, mutation):
-        builds.append(mutation[1])
-        if len(builds) == 1:
-            return _process(1, "unsupported generated/imperative source closure")
-        return _process(0)
-
-    endpoint._run_elab = elab
-    endpoint._run_target_test_suite = lambda *_args, **_kwargs: [
-        MutationTestRun("suite", process=_process(1), output="FAIL")
-    ]
-    sweep = _sweep(endpoint, _plan(tmp_path, "rtl/dut.sv"), specs, variants)
-
-    # The first candidate does not build; the second takes number 1 and is scored.
-    assert [(spec.index, spec.mutant_id) for spec in sweep.specs] == [(1, specs[1].mutant_id)]
-    assert sweep.invalid_dropped == [specs[0].mutant_id]
-    assert sweep.equivalent_dropped == []
-    assert [result.detected for result in sweep.results] == [True]
-    assert sweep.inconclusive == ""
-    assert builds == [1, 1]  # the replacement reuses the number and build directory
-    assert "a + b" in source.read_text()
-
-
-def test_generated_direct_source_rejected_before_fusesoc_setup(tmp_path, monkeypatch):
-    source = tmp_path / "rtl/dut.sv"
-    source.parent.mkdir()
-    source.write_text("assign x = a + b;\n")
-    core = tmp_path / "dut.core"
-    core.write_text(
-        "CAPI=2:\n"
-        + yaml.safe_dump(
-            {
-                "name": "acme:test:dut:1",
-                "filesets": {"rtl": {"files": ["rtl/dut.sv", "generated/derivative.sv"]}},
-                "generators": {"derivative": {"command": "generate"}},
-                "targets": {"sim": {"filesets": ["rtl"], "generate": ["derivative"]}},
-            }
-        )
-    )
-    catalog = types.SimpleNamespace(
-        select=lambda *_args, **_kwargs: object(),
-        core_closure=lambda _handles: frozenset([core]),
-    )
-    monkeypatch.setattr("booley.flows.mutation.flow.TargetCatalog.build", lambda _root: catalog)
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.prepare_simulation_build",
-        lambda *_args, **_kwargs: pytest.fail("generated pristine derivative"),
-    )
-    endpoint = _endpoint(tmp_path)
-    specs = [MutationSpec(1, "operator", "rtl/dut.sv", 1, "a + b", "a - b")]
-    variants = MutationVariantPlan.resolve(specs, tmp_path, ["rtl/dut.sv"])
-    result = endpoint._run_elab("sim", tmp_path, tmp_path / "build", (variants, 1))
-    assert result.returncode == 1
-    assert "unsupported generated/imperative" in result.stderr
-    assert source.read_text() == "assign x = a + b;\n"
-
-
 def _timeout_results_line(progress: str, selected: list[str]) -> str:
     """Build the results line the cocotb run-half prints after a timeout."""
     from booley.flows.sim.backends import cocotb_results as cr
@@ -398,140 +114,288 @@ def _timeout_results_line(progress: str, selected: list[str]) -> str:
     return cr.format_results_line(cr.results_payload(results))
 
 
-def test_cocotb_run_half_timeout_names_the_running_test(tmp_path: Path) -> None:
-    scope = "rtl/dut.sv"
-    source = tmp_path / scope
-    source.parent.mkdir(parents=True)
-    source.write_text("assign x = a + b;\n", encoding="utf-8")
-    specs = [MutationSpec(1, "operator", scope, 1, "a + b", "a - b")]
-    variants = MutationVariantPlan.resolve(specs, tmp_path, [scope])
-    line = _timeout_results_line(
-        "0.00ns INFO cocotb.regression running tb.full (1/2)\n", ["full", "smoke"]
-    )
-    endpoint = _endpoint(tmp_path)
-    endpoint._run_elab = lambda *_args, **_kwargs: _process(0)
-    endpoint._run_target_test_suite = lambda *_args, **_kwargs: [
-        MutationTestRun(
-            "<cocotb-suite>",
-            process=_process(1),
-            output="ERROR: cocotb simulation timed out (5s)\n" + line,
-            requires_cocotb_results=True,
+def _simulator_killed(
+    work: PreparedSimulationWork, signal_number: int, adapter_status: int = 1
+) -> subprocess.CompletedProcess[str]:
+    """What an adapter leaves when its simulator was killed: its authenticated result."""
+    identity = work_transport_identity(work)
+    if identity is not None:  # without transport the run carries no evidence of the kill
+        write_adapter_result(
+            identity,
+            AdapterResult(
+                passed=False,
+                inconclusive=False,
+                sva_errors=0,
+                tests=identity.selected_tests,
+                simulator_returncode=-signal_number,
+                termination="completed",
+            ),
         )
-    ]
-
-    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
-    results = sweep.results
-
-    assert results[0].detected is True
-    assert results[0].timed_out is True
-    assert results[0].first_killing_test == "full"
+    return _fake_proc(adapter_status, "ordinary failure output")
 
 
-def test_cocotb_outer_timeout_names_the_running_test(tmp_path: Path) -> None:
-    endpoint = _endpoint(tmp_path)
-    line = _timeout_results_line(
-        "0.00ns INFO cocotb.regression running tb.full (1/2)\n", ["full", "smoke"]
+def test_sweep_builds_one_exact_replacement_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    source = tmp_path / _SCOPE
+    pristine = source.read_text(encoding="utf-8")
+    picked = _candidates(tmp_path)[:2]
+    staged: list[tuple[Path, str]] = []
+
+    def record_staged_copy(build_root: Path) -> None:
+        assert source.read_text(encoding="utf-8") == pristine
+        copy = next(build_root.glob("src/**/mod_a.sv"))
+        staged.append((build_root, copy.read_text(encoding="utf-8")))
+
+    def run(index: int | None) -> subprocess.CompletedProcess[str]:
+        assert source.read_text(encoding="utf-8") == pristine
+        return _fake_proc(rc=0)
+
+    _, _, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=2,
+        min_detected=0,
+        run=run,
+        simulation={"verilate": record_staged_copy},
     )
-    runs = [
-        MutationTestRun(
-            "<cocotb-suite>", timed_out=True, output=line, requires_cocotb_results=True
+
+    assert fake.builds == [None, 1, 2]
+    (_, baseline_copy), *mutant_copies = staged
+    assert baseline_copy == pristine
+    assert len({root for root, _ in staged}) == 3
+    for (_, text), mutant in zip(mutant_copies, picked, strict=True):
+        changed = [
+            (number, got, was)
+            for number, (got, was) in enumerate(
+                zip(text.splitlines(), pristine.splitlines(), strict=True), start=1
+            )
+            if got != was
+        ]
+        assert [number for number, _, _ in changed] == [mutant.line]
+        assert mutant.mutated_code in changed[0][1]
+    assert source.read_text(encoding="utf-8") == pristine
+
+
+_MISSING = COCOTB_RESULTS_PREFIX + '{"state":"missing","detail":"no xml","tests":[]}'
+_ZERO_MATCH = cr.format_results_line(
+    cr.results_payload(
+        cr.compact_results(
+            cr.CocotbResults(
+                state=cr.STATE_OK, tests=(cr.CocotbTest("run_test/ifg=12", "tb", "skipped"),)
+            ),
+            ["run_test"],
         )
-    ]
-
-    verdict = endpoint._classify_variant_suite(runs)
-    assert verdict.detected is True
-    assert verdict.timed_out is True
-    assert verdict.inconclusive_reason == ""
-    assert verdict.first_killing_test == "full"
-
-
-def test_cocotb_timeout_after_earlier_failure_names_the_running_test(tmp_path: Path) -> None:
-    endpoint = _endpoint(tmp_path)
-    progress = (
-        "0.00ns INFO cocotb.regression running tb.smoke (1/2)\n"
-        "1.00ns INFO cocotb.regression tb.smoke failed\n"
-        "1.00ns INFO cocotb.regression running tb.full (2/2)\n"
     )
-    line = _timeout_results_line(progress, ["smoke", "full"])
-    runs = [
-        MutationTestRun(
-            "<cocotb-suite>", timed_out=True, output=line, requires_cocotb_results=True
+)
+
+
+@pytest.mark.parametrize(
+    ("output", "status", "reason"),
+    [
+        pytest.param(_MISSING, 1, "state is missing", id="state-missing"),
+        pytest.param("", 1, "cocotb result line is missing or malformed", id="no-line"),
+        pytest.param(
+            COCOTB_RESULTS_PREFIX + "{broken",
+            1,
+            "cocotb result line is missing or malformed",
+            id="malformed",
+        ),
+        pytest.param(_COCOTB_PASS, 1, "without a failing test", id="all-pass-but-failed"),
+        pytest.param(_ZERO_MATCH, 1, "without a failing test", id="zero-match-compact"),
+    ],
+)
+def test_cocotb_results_that_prove_no_failing_test_are_inconclusive_not_a_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str, status: int, reason: str
+) -> None:
+    _, (row,), _ = _mutant_rows(
+        tmp_path, monkeypatch, [lambda _work: _fake_proc(status, output)], cocotb=True
+    )
+
+    assert row["status"] == "inconclusive"
+    assert reason in row["sim_output_snippet"]
+    assert row["first_killing_test"] is None
+
+
+def test_sweep_classifies_every_variant_after_inconclusive_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corner_fails = COCOTB_RESULTS_PREFIX + (
+        '{"state":"ok","tests":[{"name":"corner","module":"tb",'
+        '"status":"fail","failure":"mismatch","elapsed_s":0.1}]}'
+    )
+    _, rows, _ = _mutant_rows(
+        tmp_path,
+        monkeypatch,
+        [lambda _work: _fake_proc(1, _MISSING), lambda _work: _fake_proc(1, corner_fails)],
+        cocotb=True,
+    )
+
+    assert [row["status"] for row in rows] == ["inconclusive", "detected"]
+    assert rows[1]["first_killing_test"] == "corner"
+
+
+def _timed_out(output: str) -> Callable[[PreparedSimulationWork], subprocess.CompletedProcess]:
+    def run(work: PreparedSimulationWork) -> subprocess.CompletedProcess:
+        raise subprocess.TimeoutExpired(["sim"], 5, output=output)
+
+    return run
+
+
+_RUNNING_FULL = "0.00ns INFO cocotb.regression running tb.full (1/2)\n"
+_AFTER_FAILURE = (
+    "0.00ns INFO cocotb.regression running tb.smoke (1/2)\n"
+    "1.00ns INFO cocotb.regression tb.smoke failed\n"
+    "1.00ns INFO cocotb.regression running tb.full (2/2)\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("mutant", "killing"),
+    [
+        pytest.param(
+            lambda _work: _fake_proc(
+                1,
+                "ERROR: cocotb simulation timed out (5s)\n"
+                + _timeout_results_line(_RUNNING_FULL, ["full", "smoke"]),
+            ),
+            "full",
+            id="run-half-timeout",
+        ),
+        pytest.param(
+            _timed_out(_timeout_results_line(_RUNNING_FULL, ["full", "smoke"])), "full", id="outer"
+        ),
+        pytest.param(
+            _timed_out(_timeout_results_line(_AFTER_FAILURE, ["smoke", "full"])),
+            "full",
+            id="after-earlier-failure",
+        ),
+        pytest.param(_timed_out(""), "<cocotb-suite>", id="no-results-line"),
+    ],
+)
+def test_cocotb_timeout_is_a_kill_that_names_the_running_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutant: Any, killing: str
+) -> None:
+    _, (row,), _ = _mutant_rows(tmp_path, monkeypatch, [mutant], cocotb=True)
+
+    assert (row["status"], row["timed_out"]) == ("detected", True)
+    assert row["first_killing_test"] == killing
+
+
+def test_variant_that_does_not_build_is_never_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Mutant build that leaves no marker cannot be run: its build is not restaged pristine."""
+    _prepare_scope_files(tmp_path, [_SCOPE])
+
+    def drop_marker(build_root: Path) -> None:
+        if build_root.name.startswith("mutant_"):
+            for marker in build_root.glob(".booley_*"):
+                marker.unlink()
+
+    fake = _patch_fake_simulation(monkeypatch, verilate=drop_marker)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=1, min_detected=0)
+
+    with pytest.raises(UnsupportedSimTargetError, match="mutation build marker missing"):
+        endpoint.run_with_claims(CampaignClaims())
+
+    assert fake.runs == [None]
+    assert fake.builds == [None, 1]
+
+
+class _CatalogWithClosure:
+    """The fake catalog, but its ``core_closure`` names the Project's ``.core`` files."""
+
+    def __init__(self, catalog: Any, cores: frozenset[Path]) -> None:
+        self._catalog = catalog
+        self._cores = cores
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._catalog, name)
+
+    def core_closure(self, _handles: Any) -> frozenset[Path]:
+        return self._cores
+
+
+def test_generated_direct_source_rejected_before_fusesoc_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    pristine = (tmp_path / _SCOPE).read_bytes()
+    core = tmp_path / "dut.core"
+    core.write_text(
+        "CAPI=2:\n"
+        + yaml.safe_dump(
+            {
+                "name": "acme:test:dut:1",
+                "filesets": {"rtl": {"files": [_SCOPE, "generated/derivative.sv"]}},
+                "generators": {"derivative": {"command": "generate"}},
+                "targets": {"sim": {"filesets": ["rtl"], "generate": ["derivative"]}},
+            }
         )
-    ]
+    )
+    fake = _patch_fake_simulation(monkeypatch)
+    prepares = _wrap_preparer(monkeypatch)
+    build = TargetCatalog.build
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        classmethod(lambda _cls, root: _CatalogWithClosure(build(root), frozenset([core]))),
+    )
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=1, min_detected=0)
 
-    verdict = endpoint._classify_variant_suite(runs)
-    assert verdict.first_killing_test == "full"
-    assert verdict.timed_out is True
+    result = endpoint.run_with_claims(CampaignClaims())
 
-
-def test_cocotb_timeout_without_results_line_names_the_unit(tmp_path: Path) -> None:
-    endpoint = _endpoint(tmp_path)
-    runs = [
-        MutationTestRun("<cocotb-suite>", timed_out=True, output="", requires_cocotb_results=True)
-    ]
-
-    verdict = endpoint._classify_variant_suite(runs)
-    assert verdict.detected is True
-    assert verdict.timed_out is True
-    assert verdict.first_killing_test == "<cocotb-suite>"
-
-
-def _sweep_suites(
-    tmp_path: Path,
-    suites: list[list[MutationTestRun]],
-) -> tuple[VariantSweep, str]:
-    """Sweep one Mutant per entry of ``suites`` and render the results table."""
-    scope = "rtl/dut.sv"
-    source = tmp_path / scope
-    source.parent.mkdir(parents=True)
-    source.write_text("assign x = a + b;\nassign y = c & d;\n", encoding="utf-8")
-    specs = [
-        MutationSpec(1, "operator", scope, 1, "a + b", "a - b"),
-        MutationSpec(2, "operator", scope, 2, "c & d", "c | d"),
-    ][: len(suites)]
-    variants = MutationVariantPlan.resolve(specs, tmp_path, [scope])
-    endpoint = _endpoint(tmp_path)
-    endpoint._run_elab = lambda *_args, **_kwargs: _process(0)
-    endpoint._run_target_test_suite = lambda *args, **_kwargs: suites[
-        int(args[2].name.removeprefix("mutant_")) - 1
-    ]
-    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
-    summary = MutationSummary(specs=sweep.specs, results=sweep.results)
-    return sweep, generate_results_markdown(summary, 1)
+    assert result.exit_code == EXIT_ERROR
+    assert "candidate Mutant did not build and was replaced" in result.report_text
+    assert fake.builds == [None]  # no Mutant build reached `make`
+    # Only the pristine baseline was prepared: FuseSoC never ran generators for a Mutant.
+    assert [kwargs["build_root"].name.startswith("mutant_") for _, kwargs in prepares] == [False]
+    assert (tmp_path / _SCOPE).read_bytes() == pristine
 
 
-def test_detected_snippet_starts_at_the_killing_tests_failure_line(tmp_path: Path) -> None:
+def _two_mutants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: Any, second: Any
+) -> tuple[EndpointOutcome, list[dict[str, Any]]]:
+    result, rows, _ = _mutant_rows(tmp_path, monkeypatch, [first, second])
+    return result, rows
+
+
+def _by_test(**answers: subprocess.CompletedProcess) -> Callable[..., Any]:
+    """A Mutant answering each launch by the test it selects (unlisted tests pass)."""
+    return lambda work: answers.get(
+        _test_name(work), _fake_proc(0, "iverilog sim PASSED (rc=0)\n")
+    )
+
+
+def test_detected_snippet_starts_at_the_killing_tests_failure_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     header = (
         "CWD: /work/error-correction/rtl\n"
         "CMD: iverilog -g2012 -o sim /work/error-correction/rtl/dut.sv\n"
     )
     failure = "FATAL: tb/mutation_tb.sv:30: mismatch: alu lt"
-    full = MutationTestRun(
-        "full",
-        process=_process(1),
-        output=f"{header}{failure}\n$finish called at 40\n",
+    result, (killed, survived) = _two_mutants(
+        tmp_path,
+        monkeypatch,
+        _by_test(full=_fake_proc(1, f"{header}{failure}\n$finish called at 40\n")),
+        _by_test(full=_fake_proc(0, "ran full\niverilog sim PASSED (rc=0)\n")),
     )
-    smoke_output = '[SIM_SUMMARY] {"passed":true,"sva_errors":0}\niverilog sim PASSED (rc=0)\n'
-    smoke = MutationTestRun("smoke", process=_process(0), output=smoke_output)
-    survivor_output = "ran full\niverilog sim PASSED (rc=0)\n"
-    survivor = [
-        MutationTestRun("full", process=_process(0), output=survivor_output),
-        MutationTestRun("smoke", process=_process(0), output=smoke_output),
-    ]
 
-    sweep, markdown = _sweep_suites(tmp_path, [[full, smoke], survivor])
-
-    killed, survived = sweep.results
-    assert killed.detected
-    assert killed.sim_output_snippet.startswith(failure)
-    assert "PASSED" not in killed.sim_output_snippet
-    assert f"| {failure} " in markdown
+    assert killed["status"] == "detected"
+    assert killed["sim_output_snippet"].startswith(failure)
+    assert "PASSED" not in killed["sim_output_snippet"]
+    assert f"| {failure} " in _results_markdown(tmp_path, result)
     # A survivor keeps the tail of the joined suite output.
-    assert not survived.detected
-    assert survived.sim_output_snippet.endswith("iverilog sim PASSED (rc=0)")
+    assert survived["status"] == "not_detected"
+    assert survived["sim_output_snippet"].endswith("iverilog sim PASSED (rc=0)")
 
 
-def test_cocotb_detected_snippet_comes_from_the_detecting_batch(tmp_path: Path) -> None:
+def test_cocotb_detected_snippet_comes_from_the_detecting_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     header = "CWD: /work/error-correction\nCMD: make\nFILTER: test_bad|test_done\n"
     failed_line = (
         "    60.00ns WARNING  cocotb.regression                  mixed_cases.test_bad failed\n"
@@ -550,66 +414,72 @@ def test_cocotb_detected_snippet_comes_from_the_detecting_batch(tmp_path: Path) 
         '{"name":"test_done","module":"mixed_cases","status":"pass",'
         '"failure":"","elapsed_s":0.1}]}'
     )
-    suites = [
-        [
-            MutationTestRun(
-                "<cocotb-suite 1/2>",
-                process=_process(1),
-                output=header + failed_line + traceback + first_results,
-                requires_cocotb_results=True,
-            ),
-            MutationTestRun(
-                "<cocotb-suite 2/2>",
-                process=_process(0),
-                output="batch two ran\n    30.00ns INFO test_done passed\n" + second_results,
-                requires_cocotb_results=True,
-            ),
-        ]
-    ]
+    toml = (
+        '[lite]\ntests = ["test_bad", "test_done"]\n'
+        '[lite.variants.test_bad]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
+        '[lite.variants.test_done]\ndefault = "y"\ny = { env = { MODE = "B" } }\n'
+    )
 
-    sweep, markdown = _sweep_suites(tmp_path, suites)
+    def batches(work: PreparedSimulationWork) -> subprocess.CompletedProcess[str]:
+        if work.tests == ("test_bad",):
+            return _fake_proc(1, header + failed_line + traceback + first_results)
+        return _fake_proc(0, "batch two ran\n    30.00ns INFO test_done passed\n" + second_results)
 
-    (result,) = sweep.results
-    assert result.first_killing_test == "test_bad"
+    result, (row), _ = _mutant_rows(
+        tmp_path, monkeypatch, [batches], cocotb=True, tests_toml=toml
+    )  # fmt: skip
+    (row,) = row
+
+    assert row["first_killing_test"] == "test_bad"
     expected = "60.00ns WARNING cocotb.regression mixed_cases.test_bad failed"
-    assert result.sim_output_snippet.startswith(expected)
-    assert "batch two" not in result.sim_output_snippet
-    assert f"| test_bad | {expected[:60]} |" in markdown
+    assert row["sim_output_snippet"].startswith(expected)
+    assert "batch two" not in row["sim_output_snippet"]
+    assert f"| test_bad | {expected[:60]} |" in _results_markdown(tmp_path, result)
 
 
-def test_timeout_detection_snippet_shows_the_timeout_message(tmp_path: Path) -> None:
-    smoke = MutationTestRun("smoke", process=_process(0), output="iverilog sim PASSED (rc=0)\n")
-    printed = MutationTestRun(
-        "full",
-        process=_process(1),
-        output="CWD: /work/error-correction\nERROR: iverilog simulation timed out (25s)\n",
+def test_timeout_detection_snippet_shows_the_timeout_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def killed(work: PreparedSimulationWork) -> subprocess.CompletedProcess:
+        if _test_name(work) == "full":
+            raise subprocess.TimeoutExpired(["sim"], 1, output="[sim] running full\n")
+        return _fake_proc(0, "iverilog sim PASSED (rc=0)\n")
+
+    printed = _by_test(
+        full=_fake_proc(
+            1, "CWD: /work/error-correction\nERROR: iverilog simulation timed out (25s)\n"
+        )
     )
-    killed = MutationTestRun("full", timed_out=True, output="[sim] running full\n")
+    _, (by_printed, by_kill) = _two_mutants(tmp_path, monkeypatch, printed, killed)
 
-    sweep, _markdown = _sweep_suites(tmp_path, [[printed, smoke], [killed, smoke]])
-
-    by_printed, by_kill = sweep.results
-    assert by_printed.timed_out and by_kill.timed_out
-    assert by_printed.sim_output_snippet.startswith("ERROR: iverilog simulation timed out (25s)")
-    assert by_kill.sim_output_snippet.startswith("full: ran past its time limit and was stopped")
-    assert "[sim] running full" in by_kill.sim_output_snippet
-
-
-def test_failing_run_outranks_a_timed_out_run_in_the_snippet(tmp_path: Path) -> None:
-    timed_out = MutationTestRun("full", timed_out=True, output="[sim] running full\n")
-    failed = MutationTestRun(
-        "smoke", process=_process(1), output="FATAL: tb/smoke_tb.sv:7: mismatch\n"
+    assert by_printed["timed_out"] and by_kill["timed_out"]
+    assert by_printed["sim_output_snippet"].startswith(
+        "ERROR: iverilog simulation timed out (25s)"
     )
-
-    sweep, _markdown = _sweep_suites(tmp_path, [[timed_out, failed]])
-
-    (result,) = sweep.results
-    assert result.detected and not result.timed_out
-    assert result.sim_output_snippet.startswith("FATAL: tb/smoke_tb.sv:7: mismatch")
-    assert "ran past its time limit" not in result.sim_output_snippet
+    assert by_kill["sim_output_snippet"].startswith(
+        "full: ran past its time limit and was stopped"
+    )
+    assert "[sim] running full" in by_kill["sim_output_snippet"]
 
 
-def test_cocotb_snippet_anchors_on_the_killing_test_not_an_earlier_test(tmp_path: Path) -> None:
+def test_failing_run_outranks_a_timed_out_run_in_the_snippet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def mutant(work: PreparedSimulationWork) -> subprocess.CompletedProcess:
+        if _test_name(work) == "full":
+            raise subprocess.TimeoutExpired(["sim"], 1, output="[sim] running full\n")
+        return _fake_proc(1, "FATAL: tb/smoke_tb.sv:7: mismatch\n")
+
+    _, (row,), _ = _mutant_rows(tmp_path, monkeypatch, [mutant])
+
+    assert row["status"] == "detected" and not row["timed_out"]
+    assert row["sim_output_snippet"].startswith("FATAL: tb/smoke_tb.sv:7: mismatch")
+    assert "ran past its time limit" not in row["sim_output_snippet"]
+
+
+def test_cocotb_snippet_anchors_on_the_killing_test_not_an_earlier_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     output = (
         (
             "    10.00ns INFO  cocotb.regression  test_done: error flag cleared\n"
@@ -622,131 +492,63 @@ def test_cocotb_snippet_anchors_on_the_killing_test_not_an_earlier_test(tmp_path
             '{"name":"test_bad","module":"mixed_cases","status":"fail","failure":"x","elapsed_s":0.1}]}'
         )
     )
-    batch = MutationTestRun(
-        "<cocotb-suite>", process=_process(1), output=output, requires_cocotb_results=True
+
+    _, (row,), _ = _mutant_rows(
+        tmp_path, monkeypatch, [lambda _work: _fake_proc(1, output)], cocotb=True
     )
 
-    sweep, _markdown = _sweep_suites(tmp_path, [[batch]])
-
-    (result,) = sweep.results
-    assert result.first_killing_test == "test_bad"
-    assert result.sim_output_snippet.startswith(
+    assert row["first_killing_test"] == "test_bad"
+    assert row["sim_output_snippet"].startswith(
         "60.00ns WARNING cocotb.regression mixed_cases.test_bad"
     )
 
 
-def _score(
-    endpoint: MutationFlow, runs: list[MutationTestRun]
-) -> tuple[VariantSuiteVerdict, MutationSummary]:
-    """The Mutant's verdict from *runs*, and the summary a campaign would score it in."""
-    verdict = endpoint._classify_variant_suite(runs)
-    result = MutationResult(
-        index=1, inconclusive_reason=verdict.inconclusive_reason, detected=verdict.detected
-    )
-    return verdict, MutationSummary(results=[result])
+_ONE_TEST = '[lite]\ntests = ["full"]\nselect = "+test={name}"\n'
 
 
-def _simulator_killed(
-    command: list[str], signal_number: int, adapter_status: int = 1
-) -> subprocess.CompletedProcess[str]:
-    """What an adapter leaves when its simulator was killed: its authenticated result."""
-    identity = work_transport_identity(launched_work(command))
-    if identity is not None:  # without transport the run carries no evidence of the kill
-        write_adapter_result(
-            identity,
-            AdapterResult(
-                passed=False,
-                inconclusive=False,
-                sva_errors=0,
-                tests=identity.selected_tests,
-                simulator_returncode=-signal_number,
-                termination="completed",
-            ),
-        )
-    return _process(adapter_status, "ordinary failure output")
+def _run_signal_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launch: Callable[..., Any]
+) -> tuple[EndpointOutcome, dict[str, Any]]:
+    result, (row,), _ = _mutant_rows(tmp_path, monkeypatch, [launch], tests_toml=_ONE_TEST)
+    assert list(tmp_path.rglob("*adapter-*")) == []  # the result files are removed
+    return result, row
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
-def test_signal_killed_mutant_run_is_inconclusive_not_a_kill(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _check_signal_kill(tmp_path, monkeypatch, False, 9, "SIGKILL")
-
-
-@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
 @pytest.mark.parametrize(
-    ("signal_number", "name"),
-    [pytest.param(9, "SIGKILL", id="simulator-killed"), pytest.param(99, "99", id="unnamed")],
+    ("launch", "name"),
+    [
+        pytest.param(lambda _work: _fake_proc(-9), "SIGKILL", id="adapter-killed"),
+        pytest.param(lambda _work: _fake_proc(-99), "99", id="adapter-unnamed-signal"),
+        pytest.param(lambda work: _simulator_killed(work, 9), "SIGKILL", id="simulator-killed"),
+        # The adapter reports the pass its sentinel printed (exit 0), whatever killed the simulator.
+        pytest.param(
+            lambda work: _simulator_killed(work, 9, adapter_status=0),
+            "SIGKILL",
+            id="simulator-killed-after-pass",
+        ),
+        # A shell reports a child's death by a signal as 128 + n; the adapter's own handler too.
+        pytest.param(lambda _work: _fake_proc(137), "SIGKILL", id="exit-137"),
+        pytest.param(lambda _work: _fake_proc(143), "SIGTERM", id="exit-143"),
+    ],
 )
-def test_signal_killed_simulator_is_inconclusive_not_a_kill(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal_number: int, name: str
+def test_signal_killed_run_is_inconclusive_not_a_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launch: Callable[..., Any], name: str
 ) -> None:
-    # Only SIGKILL (the out-of-memory killer's mark) counts for the simulator; any
-    # signal counts for the adapter itself, by its own death.
-    _check_signal_kill(tmp_path, monkeypatch, signal_number == 9, signal_number, name)
+    result, row = _run_signal_case(tmp_path, monkeypatch, launch)
 
-
-@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
-def test_simulator_killed_after_its_pass_verdict_is_inconclusive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The adapter reports the pass its sentinel printed (exit 0), whatever killed the simulator.
-    _check_signal_kill(tmp_path, monkeypatch, True, 9, "SIGKILL", adapter_status=0)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
-@pytest.mark.parametrize(
-    ("status", "name"),
-    [pytest.param(137, "SIGKILL", id="kill"), pytest.param(143, "SIGTERM", id="term")],
-)
-def test_adapter_exit_status_of_a_signal_death_is_inconclusive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, name: str
-) -> None:
-    # A shell reports a child's death by a signal as 128 + n; the adapter's own handler too.
-    _check_signal_kill(tmp_path, monkeypatch, False, 0, name, adapter_status=status)
-
-
-def _check_signal_kill(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    simulator_killed: bool,
-    signal_number: int,
-    name: str,
-    adapter_status: int | None = None,
-) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    project.elab()
-
-    def launch(command, *_args, **_kwargs):
-        if simulator_killed:
-            return _simulator_killed(
-                command, signal_number, 1 if adapter_status is None else adapter_status
-            )
-        return _process(-signal_number if adapter_status is None else adapter_status)
-
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", launch)
-
-    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
-    verdict, summary = _score(project.endpoint, runs)
-
-    assert f"killed by signal {name}" in verdict.inconclusive_reason
-    assert not verdict.detected and verdict.first_killing_test == ""
+    assert f"killed by signal {name}" in row["sim_output_snippet"]
+    assert (row["status"], row["first_killing_test"]) == ("inconclusive", None)
     # The score counts neither a detection nor a survivor.
-    assert (summary.detected_count, summary.not_detected_count) == (0, 0)
-    assert list(project.build.glob("*adapter-*")) == []  # the result files are removed
+    assert (result.detail["detected"], result.detail["not_detected"]) == (0, 0)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
-@pytest.mark.parametrize("result", ["missing", "guard-killed", "self-aborted"])
+@pytest.mark.parametrize("evidence", ["missing", "guard-killed", "self-aborted"])
 def test_a_failing_run_without_signal_evidence_still_detects_the_mutant(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str
 ) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    project.elab()
-
-    def launch(command, *_args, **_kwargs):
-        if result != "missing":  # a timeout is Booley's own kill; SIGABRT is `$fatal` aborting
-            identity = work_transport_identity(launched_work(command))
+    def launch(work: PreparedSimulationWork) -> subprocess.CompletedProcess[str]:
+        if evidence != "missing":  # a timeout is Booley's own kill; SIGABRT is `$fatal` aborting
+            identity = work_transport_identity(work)
             assert identity is not None
             write_adapter_result(
                 identity,
@@ -755,35 +557,25 @@ def test_a_failing_run_without_signal_evidence_still_detects_the_mutant(
                     inconclusive=False,
                     sva_errors=0,
                     tests=identity.selected_tests,
-                    simulator_returncode=-9 if result == "guard-killed" else -6,
-                    termination="timeout" if result == "guard-killed" else "completed",
+                    simulator_returncode=-9 if evidence == "guard-killed" else -6,
+                    termination="timeout" if evidence == "guard-killed" else "completed",
                 ),
             )
-        return _process(1, "test failed")
+        return _fake_proc(1, "test failed")
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", launch)
+    result, row = _run_signal_case(tmp_path, monkeypatch, launch)
 
-    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
-    verdict, summary = _score(project.endpoint, runs)
-
-    assert verdict.detected and not verdict.inconclusive_reason
-    assert summary.detected_count == 1
+    assert row["status"] == "detected"
+    assert result.detail["detected"] == 1
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
 def test_a_timed_out_run_leaves_no_adapter_result_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _make_project(tmp_path, monkeypatch)
-    project.elab()
+    def launch(work: PreparedSimulationWork) -> subprocess.CompletedProcess[str]:
+        _simulator_killed(work, 9)  # leaves the adapter's result behind
+        raise subprocess.TimeoutExpired(["sim"], 1)
 
-    def launch(command, *_args, **_kwargs):
-        _simulator_killed(command, 9)  # leaves the adapter's result behind
-        raise subprocess.TimeoutExpired(command, 1)
+    _, row = _run_signal_case(tmp_path, monkeypatch, launch)
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", launch)
-
-    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
-
-    assert all(run.timed_out for run in runs)
-    assert list(project.build.glob("*adapter-*")) == []
+    assert row["timed_out"] is True

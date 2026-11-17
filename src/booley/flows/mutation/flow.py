@@ -42,7 +42,7 @@ from urllib.parse import quote
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.boundary import BoundaryError
 from booley.flows import artifacts as _artifacts
-from booley.flows.base import BuiltinFlow, SubprocessResult
+from booley.flows.base import BuiltinFlow
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
@@ -122,7 +122,6 @@ from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
     all_campaign_results_match,
-    describe_target_campaign,
     resolve_target_campaign,
 )
 from booley.flows.target_parameters import sv_byte_string_literal, vlogparam_specs
@@ -877,18 +876,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     _scope_defaulted: bool = False
     #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
     _claims: CampaignClaims = CampaignClaims()
-
-    # ------------------------------------------------------------------
-    # Command-backed Flow hooks — _run() drives the campaign directly.
-    # ------------------------------------------------------------------
-
-    def _build_command(self) -> list[str]:
-        """Not used — MutationFlow overrides _run()."""
-        return []
-
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
-        """Not used — MutationFlow overrides _run()."""
-        return EndpointOutcome()
 
     # ------------------------------------------------------------------
     # Scope / DUT helpers
@@ -1948,13 +1935,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         except (NoRunnableTestsError, TargetSectionConflictError) as exc:
             raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
-    def _campaign_for_target(self, target: str) -> TargetCampaign:
-        """Return the resolved campaign or a suite-only compatibility view."""
-        campaign = getattr(self, "_target_campaign", None)
-        if campaign is not None and campaign.target == target:
-            return campaign
-        return describe_target_campaign(target, **self._registered_tests(target))
-
     def _default_test_plan(
         self, target: str, work_dir: Path, adapter: str
     ) -> tuple[TargetTestPlan, Mapping[str, Any]]:
@@ -2155,7 +2135,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         ``timeouts`` maps a test's display name to its wall-clock limit in
         seconds; the baseline passes none and gets the cap for every test.
         """
-        campaign = self._campaign_for_target(target)
+        campaign = self._target_campaign
         batched = self.cocotb_target(target, work_dir) is not None
         batches = self._cocotb_suite_batches(target, work_dir, campaign) if batched else None
 
@@ -2614,7 +2594,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         detail.update(
             {
                 "target": target,
-                "tests": list(self._campaign_for_target(target).suite.display_names),
+                "tests": list(self._target_campaign.suite.display_names),
                 "seed": plan.seed,
                 "identity": inputs.identity,
                 "detected_timeout": summary.detected_timeout_count,
