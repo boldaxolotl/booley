@@ -201,65 +201,95 @@ pub fn parse_radix_suffix(s: &str) -> Result<(String, Radix), String> {
 }
 
 /// Parse a Verilog-style literal: "'d255" → "FF", "'b11111111" → "FF", "'hFF" → "FF".
-/// Optional width prefix: "8'd255" also accepted.
+/// Optional decimal width prefix: "8'd255" also accepted.
 /// Also accepts a bare decimal integer: "0", "1", "255" → "0", "1", "FF".
 /// Bare hex-looking strings (e.g. "FF", "C1C") are rejected with a hint.
-/// Returns normalized uppercase hex.
+/// Digits per base: hex `0-9 a-f x z`, binary `0 1 x z`, decimal `0-9` or a
+/// single `x`/`z`. `_` may follow the first digit and is ignored. Any other
+/// character is an error naming the literal as typed.
+/// Returns normalized uppercase hex (X/Z kept as `X`/`Z`).
 pub fn parse_verilog_literal(s: &str) -> Result<String, String> {
-    let tick_pos = match s.find('\'') {
-        Some(p) => p,
-        None => {
-            // No tick: accept bare decimal integer (digits only).
-            if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
-                return Ok(decimal_to_hex(s));
+    let Some(tick_pos) = s.find('\'') else {
+        // No tick: accept bare decimal integer (digits only).
+        if s.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            if let Ok(digits) = literal_digits(s, s) {
+                if digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Ok(decimal_to_hex(&digits));
+                }
             }
-            return Err(format!(
-                "bare value '{}' is decimal-only; use 'hXX for hex, 'bNN for binary, or 'dNNN for decimal",
-                s
-            ));
         }
+        return Err(format!(
+            "bare value '{}' is decimal-only; use 'hXX for hex, 'bNN for binary, or 'dNNN for decimal",
+            s
+        ));
     };
+    let invalid = |reason: String| format!("invalid Verilog literal '{s}': {reason}");
 
     let width_prefix = &s[..tick_pos];
-    if !width_prefix.is_empty() && !width_prefix.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("invalid width prefix in literal: {}", s));
+    if !width_prefix.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid("invalid width prefix".into()));
     }
-
-    if tick_pos + 1 >= s.len() {
-        return Err(format!("missing radix character after ': {}", s));
-    }
-
-    let radix = s.as_bytes()[tick_pos + 1];
-    let digits = &s[tick_pos + 2..];
-
-    if digits.is_empty() {
-        return Err(format!("missing value digits in literal: {}", s));
-    }
-
+    let Some(&radix) = s.as_bytes().get(tick_pos + 1) else {
+        return Err(invalid("missing radix character after '".into()));
+    };
+    let digits = literal_digits(s, &s[tick_pos + 2..])?;
     match radix {
-        b'd' | b'D' => Ok(decimal_to_hex(digits)),
-        b'h' | b'H' => {
-            if digits.eq_ignore_ascii_case("x") {
-                return Ok("X".into());
-            }
-            if digits.eq_ignore_ascii_case("z") {
-                return Ok("Z".into());
-            }
-            Ok(digits.to_uppercase())
-        }
-        b'b' | b'B' => {
-            if digits.eq_ignore_ascii_case("x") {
-                return Ok("X".into());
-            }
-            if digits.eq_ignore_ascii_case("z") {
-                return Ok("Z".into());
-            }
-            bin_to_hex(digits).ok_or_else(|| format!("invalid binary value: {}", digits))
-        }
-        _ => Err(format!(
-            "invalid radix '{}' in literal: must be 'd, 'h, or 'b",
+        b'd' | b'D' => decimal_digits_to_hex(&digits).map_err(invalid),
+        b'h' | b'H' => match digits.bytes().find(|b| !is_hex_or_xz(*b)) {
+            Some(b) => Err(invalid(format!("'{}' is not a hex digit", b as char))),
+            None => Ok(digits.to_uppercase()),
+        },
+        b'b' | b'B' => binary_digits_to_hex(&digits).map_err(invalid),
+        _ => Err(invalid(format!(
+            "invalid radix '{}' (use 'd, 'h or 'b)",
             radix as char
-        )),
+        ))),
+    }
+}
+
+fn is_hex_or_xz(b: u8) -> bool {
+    b.is_ascii_hexdigit() || matches!(b, b'x' | b'X' | b'z' | b'Z')
+}
+
+/// Digits of a literal with `_` removed. Errors when there are none or when
+/// `_` comes first. `literal` is the whole literal, for the message.
+fn literal_digits(literal: &str, raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err(format!(
+            "invalid Verilog literal '{literal}': missing digits"
+        ));
+    }
+    if raw.starts_with('_') {
+        return Err(format!(
+            "invalid Verilog literal '{literal}': '_' cannot come first"
+        ));
+    }
+    Ok(raw.replace('_', ""))
+}
+
+/// Decimal digits (`0-9`), or exactly one `x`/`z`, as normalized hex.
+fn decimal_digits_to_hex(digits: &str) -> Result<String, String> {
+    if digits.eq_ignore_ascii_case("x") || digits.eq_ignore_ascii_case("z") {
+        return Ok(digits.to_uppercase());
+    }
+    if digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(decimal_to_hex(digits));
+    }
+    Err("decimal digits are 0-9 or a single x or z".into())
+}
+
+/// Binary digits (`0 1 x z`) as normalized hex. A value with X/Z digits is
+/// reduced like a stored value (`minimal_xz`), so `8'b0000001x` is `1X`.
+fn binary_digits_to_hex(digits: &str) -> Result<String, String> {
+    if let Some(b) = digits
+        .bytes()
+        .find(|b| !matches!(b, b'0' | b'1' | b'x' | b'X' | b'z' | b'Z'))
+    {
+        return Err(format!("'{}' is not a binary digit", b as char));
+    }
+    match bin_to_hex(digits) {
+        Some(hex) => Ok(hex),
+        None => Ok(crate::cache::minimal_xz(digits.to_lowercase()).to_uppercase()),
     }
 }
 
@@ -338,9 +368,6 @@ fn decimal_to_hex(dec: &str) -> String {
     let dec = dec.trim_start_matches('0');
     if dec.is_empty() {
         return "0".to_string();
-    }
-    if !dec.bytes().all(|b| b.is_ascii_digit()) {
-        return dec.to_string(); // not valid decimal
     }
     // Build big-integer as Vec<u8> of hex nibbles (LSB first).
     let mut nibbles: Vec<u8> = vec![0];
@@ -1144,6 +1171,13 @@ mod tests {
         assert_eq!(parse_verilog_literal("8'd255").unwrap(), "FF");
         assert_eq!(parse_verilog_literal("'hx").unwrap(), "X");
         assert_eq!(parse_verilog_literal("'hz").unwrap(), "Z");
+        for bad in ["'h_F", "'dxx"] {
+            let err = parse_verilog_literal(bad).unwrap_err();
+            assert!(
+                err.contains(&format!("invalid Verilog literal '{bad}'")),
+                "{err}"
+            );
+        }
     }
 
     // ---- Bare-literal grammar (issue 2) ----

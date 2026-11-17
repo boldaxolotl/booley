@@ -588,32 +588,7 @@ fn normalize_stuck_value(value: &str) -> String {
         eprintln!("ERROR: stuck requires a constant Verilog literal, not an edge keyword");
         process::exit(2);
     }
-    let literal = value.replace('_', "");
-    if let Some((_, tail)) = literal.split_once('\'') {
-        let valid = match tail.as_bytes().split_first() {
-            Some((b'h' | b'H', digits)) => {
-                !digits.is_empty()
-                    && digits
-                        .iter()
-                        .all(|b| b.is_ascii_hexdigit() || matches!(b, b'x' | b'X' | b'z' | b'Z'))
-            }
-            Some((b'b' | b'B', digits)) => {
-                !digits.is_empty()
-                    && digits
-                        .iter()
-                        .all(|b| matches!(b, b'0' | b'1' | b'x' | b'X' | b'z' | b'Z'))
-            }
-            Some((b'd' | b'D', digits)) => {
-                !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
-            }
-            _ => false,
-        };
-        if !valid {
-            eprintln!("ERROR: invalid constant Verilog literal: {value}");
-            process::exit(2);
-        }
-    }
-    normalize_value(&literal)
+    normalize_value(value)
 }
 
 /// Parse repeatable `--marker NAME TIME` pairs before touching the store.

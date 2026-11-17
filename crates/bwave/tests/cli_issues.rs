@@ -4782,3 +4782,120 @@ fn issue_3648_truncated_store_names_cause_and_rebuild_hint() {
     assert!(!err.contains("truncated"), "{err}");
     let _ = std::fs::remove_file(store);
 }
+
+// -- Issue 4703: one validating Verilog-literal parser ---------------
+
+fn issue_4703_store(label: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("bwave-4703-{}-{label}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcd = dir.join("input.vcd");
+    let fst = dir.join("input.fst");
+    std::fs::write(&vcd, "$timescale 1ns $end\n$scope module tb $end\n$var wire 8 ! data $end\n$var wire 8 \" hi $end\n$var wire 8 # lo $end\n$upscope $end\n$enddefinitions $end\n#0\nb00001111 !\nb11111111 \"\nb11110000 #\n#10\nb11111111 !\n#20\nb11110000 !\n#30\nb0000001x !\n#40\nbzzzzzzzz !\n#50\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst)
+}
+
+/// Every command that takes a value literal, with `lit` as that literal.
+fn issue_4703_runs(p: &str, lit: &str) -> Vec<(&'static str, (String, String, i32))> {
+    let def = format!("v = *data == {lit}");
+    vec![
+        ("find", run(&["find", p, "data", lit, "--async", "--first"])),
+        ("sample", run(&["sample", p, "data", lit, "--async"])),
+        (
+            "distance",
+            run(&["distance", p, "data", lit, "--to", "data", "'hF", "--async"]),
+        ),
+        (
+            "distance --to",
+            run(&["distance", p, "data", "'hF", "--to", "data", lit, "--async"]),
+        ),
+        ("stuck", run(&["stuck", p, lit, "--async"])),
+        (
+            "--virtual",
+            run(&[
+                "find",
+                p,
+                "v",
+                "'h1",
+                "--virtual",
+                &def,
+                "--async",
+                "--first",
+            ]),
+        ),
+    ]
+}
+
+#[test]
+fn issue_4703_malformed_literals_exit_2_naming_the_literal() {
+    let (dir, fst) = issue_4703_store("malformed");
+    let p = fst.to_str().unwrap();
+    for lit in ["'h F", "'hF'd15", "'hG", "'d1x"] {
+        for (name, (_, err, code)) in issue_4703_runs(p, lit) {
+            assert_eq!(code, 2, "{name} {lit}: {err}");
+            assert!(
+                err.contains(&format!("invalid Verilog literal '{lit}'")),
+                "{name} {lit}: {err}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4703_valid_literals_match() {
+    let (dir, fst) = issue_4703_store("valid");
+    let p = fst.to_str().unwrap();
+    for (lit, time) in [
+        ("'hF", "0"),
+        ("'hff", "10"),
+        ("8'd255", "10"),
+        ("255", "10"),
+        ("'hx", "30"),
+        ("'h1x", "30"),
+        ("'bx", "30"),
+        ("'b1x", "30"),
+        ("'dx", "30"),
+        ("8'b0000001x", "30"),
+        ("'dz", "40"),
+    ] {
+        let (out, err, code) = run(&["find", p, "data", lit, "--async", "--first"]);
+        assert_eq!(code, 0, "{lit}: {err}");
+        assert!(
+            out.starts_with(&format!("{time} data ")),
+            "{lit}: expected a first match at {time}, got {out}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4703_underscores_are_ignored_in_every_command() {
+    let (dir, fst) = issue_4703_store("underscores");
+    let p = fst.to_str().unwrap();
+    for (with, without, time, stuck) in [
+        ("'hF_F", "'hFF", "10", "hi  8-bit  stuck at FF"),
+        (
+            "8'b1111_0000",
+            "8'b11110000",
+            "20",
+            "lo  8-bit  stuck at F0",
+        ),
+    ] {
+        let plain = issue_4703_runs(p, without);
+        for ((name, (out, err, code)), (_, (expected, _, _))) in
+            issue_4703_runs(p, with).into_iter().zip(plain)
+        {
+            assert_eq!(code, 0, "{name} {with}: {err}");
+            assert_eq!(out, expected, "{name} {with}");
+            if name == "find" {
+                assert!(out.starts_with(&format!("{time} data ")), "{with}: {out}");
+            }
+            if name == "stuck" {
+                assert!(out.contains(stuck), "{with}: {out}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
