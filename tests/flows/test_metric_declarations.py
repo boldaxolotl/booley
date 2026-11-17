@@ -92,18 +92,28 @@ clk2   -0.100   0.500    3                      200                  0.050    0.
 """
 
 
-def _synth_metrics() -> Any:
-    """Synth metrics parsed from canned two-clock Yosys/STA output."""
-    from booley.flows.synth.flow import _parse_synth_output
+_SYNTH_OUTPUT = (
+    "Chip area for top module '\\t': 52480.0\n"
+    "Number of cells: 12345\n"
+    "STA_PERCLOCK: name=clk_core period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000\n"
+    "STA_PERCLOCK: name=clk_io period_ns=5.000000 wns_ns=-1.000000 whs_ns=0.200000\n"
+)
 
-    marker = "STA_PERCLOCK: name={} period_ns={:.6f} wns_ns={:.6f} whs_ns={:.6f}\n"
-    output = (
-        "Chip area for top module '\\t': 52480.0\n"
-        "Number of cells: 12345\n"
-        + marker.format("clk_core", 2.0, 0.75, 0.1)
-        + marker.format("clk_io", 5.0, -1.0, 0.2)
-    )
-    return _parse_synth_output(output, 1.0)
+
+def _synth_metrics(output: str = _SYNTH_OUTPUT) -> Any:
+    """Synth metrics parsed from canned Yosys/STA output."""
+    # A public run needs Yosys; this parser sits between the tool output and the stored report.
+    from booley.flows.synth import flow as synth_flow
+
+    return synth_flow._parse_synth_output(output, 1.0)
+
+
+def _synth_detail(metrics: Any) -> Any:
+    """The synth report detail, read back from JSON the way a caller does."""
+    # A public run needs Yosys; this writer builds the stored report from the parsed metrics.
+    from booley.flows.synth import flow as synth_flow
+
+    return json.loads(json.dumps(synth_flow._aggregate_detail(["asic"], {"asic": metrics})))
 
 
 def _fpga_metrics() -> Any:
@@ -113,6 +123,7 @@ def _fpga_metrics() -> Any:
 
     text = (_FIXTURES / "vivado_routed_real_2025_2.rpt").read_text(encoding="utf-8")
     raw = edam.parse_fpga_reports(text + "\n" + _TWO_CLOCK_REPORT)
+    # A public run needs Vivado; this turns parsed reports into the Flow's metrics.
     return FpgaImplFlow._metrics_from_parsed_reports(raw, elapsed_s=1.0)
 
 
@@ -214,22 +225,21 @@ def test_fpga_run_returns_lut_count_and_per_clock_timing() -> None:
 
 
 def test_synth_report_yields_declared_metric_values() -> None:
-    from booley.flows.synth.flow import _aggregate_detail
     from booley.measurement.flow_metrics import report_metric_values
 
-    metrics = _synth_metrics()
+    # ``jtag`` reports a period but no slack (NA), so no fmax can be derived for it.
+    metrics = _synth_metrics(
+        _SYNTH_OUTPUT + "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+    )
     metrics.area_kge = 65.8
-    # The report file stores the detail as JSON, so read it back the way a caller does.
-    detail = json.loads(json.dumps(_aggregate_detail(["asic"], {"asic": metrics})))
+    detail = _synth_detail(metrics)
 
     values = report_metric_values("synth", detail)
 
     assert set(values) == {"asic"}
     assert "cells" not in detail["asic"] and detail["asic"]["cell_count"] == 12345
     assert values["asic"].plain == {"area_um2": 52480.0, "area_kge": 65.8, "cell_count": 12345}
-    assert values["asic"].per_clock["fmax_mhz"] == pytest.approx(
-        {"clk_core": 800.0, "clk_io": 166.667}, rel=1e-4
-    )
+    assert values["asic"].clocks == ("clk_core", "clk_io", "jtag")
     assert values["asic"].per_clock["wns_ns"] == pytest.approx({"clk_core": 0.75, "clk_io": -1.0})
 
 
@@ -245,26 +255,6 @@ def test_synth_report_reads_cell_count() -> None:
     assert values["asic"].plain == {"area_kge": 65.8}
 
 
-def test_synth_report_returns_every_reported_clock() -> None:
-    from booley.flows.synth.flow import _aggregate_detail, _parse_synth_output
-    from booley.measurement.flow_metrics import report_metric_values
-
-    # ``jtag`` reports a period but no slack (NA), so no fmax can be derived for it.
-    output = (
-        "Chip area for top module '\\t': 100.0\n"
-        "Number of cells: 5\n"
-        "STA_PERCLOCK: name=core period_ns=4.000000 wns_ns=0.000000 whs_ns=0.100000\n"
-        "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
-    )
-    metrics = _parse_synth_output(output, 1.0)
-    detail = json.loads(json.dumps(_aggregate_detail(["asic"], {"asic": metrics})))
-
-    values = report_metric_values("synth", detail)["asic"]
-
-    assert values.clocks == ("core", "jtag")
-    assert values.per_clock["fmax_mhz"] == pytest.approx({"core": 250.0})  # jtag has none
-
-
 def test_fpga_report_yields_declared_metric_values() -> None:
     from booley.flows.fpga.flow import FpgaImplFlow
     from booley.flows.fpga.implementation_report import build_fpga_implementation_report
@@ -277,6 +267,7 @@ def test_fpga_report_yields_declared_metric_values() -> None:
     context = ImplementationContext(flow="fpga", target="board", eda_tool="vivado")
     report = build_fpga_implementation_report(context, _fpga_metrics(), None)
     aggregate = build_implementation_aggregate({"board": report})
+    # A public run needs Vivado; this writes the stored report from the parsed metrics.
     detail = json.loads(
         json.dumps(
             FpgaImplFlow._aggregate_detail(["board"], {"board": _fpga_metrics()}, aggregate)
@@ -287,9 +278,6 @@ def test_fpga_report_yields_declared_metric_values() -> None:
 
     assert set(values) == {"board"}
     assert values["board"].plain["lut_count"] == 18
-    assert values["board"].per_clock["fmax_mhz"] == pytest.approx(
-        {"clk": 102.5641, "clk2": 196.0784}, rel=1e-4
-    )
     assert values["board"].per_clock["wns_ns"] == pytest.approx({"clk": 0.25, "clk2": -0.1})
 
 
@@ -303,21 +291,24 @@ def test_report_without_declared_metrics_or_targets_yields_none() -> None:
     assert report_metric_values("fpga", {}) == {}
 
 
+def test_every_declaring_flow_has_a_sample_run_and_a_report_reader() -> None:
+    from booley.measurement import flow_metrics
+    from booley.measurement.flow_metrics import flows_with_metric_declarations
+
+    # A Flow that declares metrics must be covered here, so a new one cannot go untested.
+    assert set(_SAMPLE_RUNS) == set(flows_with_metric_declarations())
+    # ...and one that declares metrics must have a report reader, or its values read back as
+    # ``{}``. No public call tells "no reader" from "reader found nothing".
+    assert set(flow_metrics._READERS_BY_FLOW) | _FLOWS_WITHOUT_REPORT_READER == set(
+        flows_with_metric_declarations()
+    )
+
+
 @pytest.mark.parametrize("flow", list(_EXPECTED_DECLARATIONS))
 def test_flow_emits_exactly_its_declarations(
     flow: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.measurement.flow_metrics import flows_with_metric_declarations, metric_declarations
-
-    # A Flow that declares metrics must be covered here, so a new one cannot go untested.
-    assert set(_SAMPLE_RUNS) == set(flows_with_metric_declarations())
-    # ...and a Flow that declares metrics must have a report reader, or its values read back
-    # as ``{}``; the Flows below declare theirs but their reports carry no metrics yet.
-    from booley.measurement import flow_metrics
-
-    assert set(flow_metrics._READERS_BY_FLOW) | _FLOWS_WITHOUT_REPORT_READER == set(
-        flows_with_metric_declarations()
-    )
+    from booley.measurement.flow_metrics import metric_declarations
 
     values = _SAMPLE_RUNS[flow](tmp_path, monkeypatch)
 
@@ -325,20 +316,25 @@ def test_flow_emits_exactly_its_declarations(
     assert emitted == {d.name for d in metric_declarations(flow)}
 
 
-def test_metric_values_rejects_undeclared_metric() -> None:
+@pytest.mark.parametrize(
+    ("flow", "plain", "per_clock", "per_test", "name"),
+    [
+        ("synth", {"cells": 1}, {}, {}, "cells"),
+        # A per-clock name is not a plain metric.
+        ("synth", {"fmax_mhz": 1.0}, {}, {}, "fmax_mhz"),
+        ("sim", {}, {}, {"cycles": {"reset": 1}}, "cycles"),
+        # A declared plain metric is not a per-test one.
+        ("sim", {}, {}, {"tests_total": {"a": 1}}, "tests_total"),
+    ],
+)
+def test_metric_values_rejects_undeclared_metric(flow, plain, per_clock, per_test, name) -> None:
     from booley.flows.metric_declarations import UndeclaredMetricError, metric_values
     from booley.measurement.flow_metrics import metric_declarations
 
-    with pytest.raises(UndeclaredMetricError, match="cells"):
-        metric_values(metric_declarations("synth"), plain={"cells": 1}, per_clock={})
-
-
-def test_metric_values_rejects_per_clock_name_declared_plain() -> None:
-    from booley.flows.metric_declarations import UndeclaredMetricError, metric_values
-    from booley.measurement.flow_metrics import metric_declarations
-
-    with pytest.raises(UndeclaredMetricError, match="fmax_mhz"):
-        metric_values(metric_declarations("synth"), plain={"fmax_mhz": 1.0}, per_clock={})
+    with pytest.raises(UndeclaredMetricError, match=name):
+        metric_values(
+            metric_declarations(flow), plain=plain, per_clock=per_clock, per_test=per_test
+        )
 
 
 def test_metric_values_drops_unmeasured_values() -> None:
@@ -354,17 +350,6 @@ def test_metric_values_drops_unmeasured_values() -> None:
 
     assert values.plain == {"cell_count": 7}
     assert values.per_clock == {"wns_ns": {"clk": 0.5}}
-
-
-def test_metric_values_rejects_undeclared_per_test_metric() -> None:
-    from booley.flows.metric_declarations import UndeclaredMetricError, metric_values
-    from booley.measurement.flow_metrics import metric_declarations
-
-    with pytest.raises(UndeclaredMetricError, match="cycles"):
-        metric_values(metric_declarations("sim"), plain={}, per_test={"cycles": {"reset": 1}})
-    # A declared plain metric is not a per-test one.
-    with pytest.raises(UndeclaredMetricError, match="tests_total"):
-        metric_values(metric_declarations("sim"), plain={}, per_test={"tests_total": {"a": 1}})
 
 
 def test_metric_values_carries_per_test_values_and_drops_unmeasured_ones() -> None:

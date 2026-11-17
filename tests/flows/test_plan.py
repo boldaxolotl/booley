@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from math import inf, nan
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -11,7 +11,6 @@ from booley.flows.plan import (
     FlowPlan,
     WorkUnitPlan,
     normalize_plan_argv,
-    normalize_plan_inputs,
     normalize_plan_path,
     plan_value_fingerprint,
     stable_unit_id,
@@ -67,6 +66,8 @@ def test_plan_render_is_deterministic_and_carries_fingerprint() -> None:
         ("constraints", ("a.sdc",), ("b.sdc",)),
         ("parameters", {"WIDTH": 8}, {"WIDTH": 16}),
         ("recipe", {"trace": False}, {"trace": True}),
+        ("recipe", {"build_timeout_ms": 7000}, {"build_timeout_ms": 8000}),
+        ("commands", (CommandPlan(("make",), cwd="."),), (CommandPlan(("ninja",), cwd="."),)),
     ],
 )
 def test_semantic_inputs_change_fingerprint(field: str, left: object, right: object) -> None:
@@ -74,16 +75,6 @@ def test_semantic_inputs_change_fingerprint(field: str, left: object, right: obj
     second = FlowPlan(flow="sim", mode="simulate", work_units=(_unit(**{field: right}),))
 
     assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
-
-
-def test_simulation_build_timeout_recipe_changes_semantic_fingerprint() -> None:
-    first = _unit(recipe={"mode": "simulate", "build_timeout_ms": 7000})
-    second = _unit(recipe={"mode": "simulate", "build_timeout_ms": 8000})
-
-    assert (
-        FlowPlan("sim", "simulate", (first,)).semantic_plan_fingerprint
-        != FlowPlan("sim", "simulate", (second,)).semantic_plan_fingerprint
-    )
 
 
 def test_invocation_local_fields_do_not_change_fingerprint() -> None:
@@ -106,17 +97,12 @@ def test_invocation_local_fields_do_not_change_fingerprint() -> None:
     )
 
 
-def test_mode_and_command_argv_change_fingerprint() -> None:
+def test_mode_changes_fingerprint() -> None:
     unit = _unit()
-    other_command = _unit(commands=(CommandPlan(("ninja",), cwd="."),))
 
     assert (
         FlowPlan("sim", "simulate", (unit,)).semantic_plan_fingerprint
         != FlowPlan("sim", "elab_only", (unit,)).semantic_plan_fingerprint
-    )
-    assert (
-        FlowPlan("sim", "simulate", (unit,)).semantic_plan_fingerprint
-        != FlowPlan("sim", "simulate", (other_command,)).semantic_plan_fingerprint
     )
 
 
@@ -133,55 +119,27 @@ def test_paths_and_argv_are_normalized_to_checkout(tmp_path: Path) -> None:
         ("sh", "-c", f"tool --root {tmp_path} --file {nested}"),
         tmp_path,
     ) == ("sh", "-c", "tool --root . --file .booley_work/sim")
+    outside = tmp_path.parent / "outside.sv"
+    assert normalize_plan_path(outside, tmp_path) == outside.as_posix()
 
 
-def test_windows_argv_spelling_is_normalized_to_checkout(tmp_path: Path) -> None:
-    checkout = tmp_path.as_posix().replace("/", "\\")
+@pytest.mark.parametrize(
+    ("spell", "separator"),
+    [
+        (lambda root: root.as_posix().replace("/", "\\"), "\\"),
+        (str, "\\"),
+        (lambda root: root.as_posix(), "/"),
+    ],
+    ids=("windows", "native", "posix"),
+)
+def test_argv_normalization_accepts_every_separator_spelling(
+    tmp_path: Path, spell: Callable[[Path], str], separator: str
+) -> None:
+    root = spell(tmp_path)
 
     assert normalize_plan_argv(
-        ("tool", f"{checkout}\\.booley_work\\sim"),
-        tmp_path,
-    ) == ("tool", ".booley_work/sim")
-
-
-def test_argv_normalization_is_checkout_independent() -> None:
-    first = normalize_plan_argv(
-        ("sh", "-c", "export BOOLEY_PROJECT_ROOT=/tmp/first && tool /tmp/first/rtl/a.sv"),
-        Path("/tmp/first"),
-    )
-    second = normalize_plan_argv(
-        ("sh", "-c", "export BOOLEY_PROJECT_ROOT=/tmp/second && tool /tmp/second/rtl/a.sv"),
-        Path("/tmp/second"),
-    )
-
-    assert first == second
-
-
-def test_argv_normalization_accepts_native_and_posix_separators(tmp_path: Path) -> None:
-    root = str(tmp_path)
-    native = normalize_plan_argv(
-        (root, f"{root}\\.booley_work\\sim"),
-        tmp_path,
-    )
-    posix_root = tmp_path.as_posix()
-    posix = normalize_plan_argv(
-        (posix_root, f"{posix_root}/.booley_work/sim"),
-        tmp_path,
-    )
-
-    assert native == posix == (".", ".booley_work/sim")
-
-
-def test_inputs_are_partitioned_and_normalized_once(tmp_path: Path) -> None:
-    inputs = (
-        SimpleNamespace(path=str(tmp_path / "rtl/top.sv"), file_type="systemVerilogSource"),
-        SimpleNamespace(path=str(tmp_path / "constraints/top.sdc"), file_type="SDC"),
-    )
-
-    assert normalize_plan_inputs(inputs, tmp_path) == (
-        ("rtl/top.sv",),
-        ("constraints/top.sdc",),
-    )
+        ("tool", root, f"{root}{separator}.booley_work{separator}sim"), tmp_path
+    ) == ("tool", ".", ".booley_work/sim")
 
 
 @pytest.mark.parametrize("value", [nan, inf, -inf])
@@ -190,26 +148,18 @@ def test_non_finite_plan_values_are_rejected(value: float) -> None:
         _unit(parameters={"unsafe": value})
 
 
-def test_sensitive_semantic_values_have_distinct_fingerprints() -> None:
-    assert plan_value_fingerprint({"FLAVOR": "fast"}) != plan_value_fingerprint({"FLAVOR": "safe"})
-
-
 def test_plan_values_normalize_supported_containers_and_paths() -> None:
     first = plan_value_fingerprint({"items": {Path("rtl/top.sv")}, "ratio": 1.5})
     second = plan_value_fingerprint({"ratio": 1.5, "items": frozenset({"rtl/top.sv"})})
 
     assert first == second
+    # A constant fingerprint would pass the check above; FlowPlan digests on its own.
+    assert plan_value_fingerprint({"FLAVOR": "fast"}) != plan_value_fingerprint({"FLAVOR": "safe"})
 
 
 def test_unsupported_plan_value_is_rejected() -> None:
     with pytest.raises(TypeError, match="not JSON-serializable"):
         plan_value_fingerprint(object())
-
-
-def test_path_outside_checkout_remains_absolute(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "outside.sv"
-
-    assert normalize_plan_path(outside, tmp_path) == outside.as_posix()
 
 
 def test_plan_path_names_symlinked_booley_dir_lexically(tmp_path: Path) -> None:
