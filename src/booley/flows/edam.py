@@ -147,10 +147,6 @@ def _validate_flow_options(flow: str, flow_options: dict[str, Any]) -> dict[str,
             f"flow_options keys {sorted(bad)} not permitted for flow {flow!r}; "
             f"allowed: {sorted(allowed)}"
         )
-    if "tool" not in flow_options:
-        raise EdamSecurityError(
-            f"flow_options for flow {flow!r} must name the upstream Edalize 'tool' field"
-        )
     return dict(flow_options)
 
 
@@ -487,21 +483,11 @@ def relpath_for_make(work_root: Path | str, work_dir: Path | str) -> str:
     return posix_relpath(Path(work_root).resolve(), Path(work_dir).resolve())
 
 
-def make_command(
-    work_root: Path | str,
-    *,
-    target: str | None = None,
-    make_vars: dict[str, str] | None = None,
-) -> list[str]:
+def make_command(work_root: Path | str) -> list[str]:
     """Build the ``make`` command that drives an Edalize work dir.
 
     Edalize's ``configure()`` emits a Makefile whose default target builds and
     whose ``run`` target runs. Booley executes this command locally inside the
     Sandbox.
     """
-    cmd = ["make", "-C", str(work_root)]
-    if target:
-        cmd.append(target)
-    for key, value in (make_vars or {}).items():
-        cmd.append(f"{key}={value}")
-    return cmd
+    return ["make", "-C", str(work_root)]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,11 +27,11 @@ def test_payload_build_root_uses_the_checkout_booley_dir(
 
     def capture(_handle: object, *, build_root: Path) -> Any:
         captured["build_root"] = build_root
-        return object()
+        return SimpleNamespace(toplevel="tb_top")
 
     monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", capture)
 
-    assert flow_config._maybe_resolve("sim", project) is not None
+    assert flow_config.tb_top_for_target("sim", project) == "tb_top"
     assert (
         captured["build_root"] == project / directory / ".runtime" / "edalize" / "payload" / "sim"
     )
