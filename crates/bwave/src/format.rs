@@ -657,6 +657,9 @@ pub fn slice_bits(val: u128, msb: u32, lsb: u32) -> u128 {
     if width >= 128 {
         return val;
     }
+    if lsb >= 128 {
+        return 0;
+    }
     let mask = (1u128 << width) - 1;
     (val >> lsb) & mask
 }
@@ -988,6 +991,11 @@ pub fn values_match(actual: &str, target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn issue_4698_slice_above_bit_127_of_a_small_value_is_zero() {
+        assert_eq!(super::slice_bits(0, 255, 248), 0);
+    }
+
     #[test]
     fn issue_1100_trigger_classification_and_observation() {
         use super::TriggerMode;

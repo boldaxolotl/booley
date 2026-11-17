@@ -932,6 +932,7 @@ fn resolve_atom(
 
     if let Some((op, lit)) = atom_literal(atom) {
         let lhs = LiteralLhs {
+            parent: signal_names[lhs_idx].clone(),
             name: match lhs_resolved_slice {
                 Some((m, l)) if m == l => format!("{}[{m}]", signal_names[lhs_idx]),
                 Some((m, l)) => format!("{}[{m}:{l}]", signal_names[lhs_idx]),
@@ -968,6 +969,9 @@ fn atom_literal(atom: &Atom) -> Option<(&'static str, &VerilogLiteral)> {
 
 /// The left side of a literal comparison, as shown in a warning.
 struct LiteralLhs {
+    /// The whole signal: any X or Z bit in it, inside the slice or not, makes
+    /// a relational atom false.
+    parent: String,
     name: String,
     width: u32,
 }
@@ -1000,7 +1004,7 @@ fn literal_comparison_warning(
     let except = if on_unknown == on_zero {
         String::new()
     } else {
-        format!(", except while {} has X or Z bits", lhs.name)
+        format!(", except while {} has X or Z bits", lhs.parent)
     };
     let needs = lit.needs_and(&format!("{} is {}-bit", lhs.name, lhs.width))?;
     Some(format!(
@@ -1360,6 +1364,22 @@ fn value_at_tick_slice(transitions: &[(u64, String)], tick: u64) -> String {
 #[cfg(test)]
 mod virtual_tests {
     use super::*;
+
+    #[test]
+    fn issue_4698_slice_warning_blames_x_bits_anywhere_in_the_signal() {
+        let lhs = LiteralLhs {
+            parent: "tb.data".to_string(),
+            name: "tb.data[3:0]".to_string(),
+            width: 4,
+        };
+        let lit = parse_verilog_literal("'h1F").unwrap();
+        let warning = literal_comparison_warning("v", &lhs, "<", &lit, true, false).unwrap();
+        assert_eq!(
+            warning,
+            "virtual 'v': tb.data[3:0] < 'h1F is always true, except while tb.data has X or Z \
+             bits: 'h1F needs 5 bits and tb.data[3:0] is 4-bit"
+        );
+    }
 
     // ---- Parser tests: Verilog-subset syntax ----
 
