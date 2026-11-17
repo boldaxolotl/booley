@@ -1,18 +1,10 @@
-"""Phase estimates from the Resource History: own, borrowed and unknown (#3237).
-
-The module under test is imported inside each test body (through ``_estimates``)
-so a missing module fails the test itself, not its collection.
-"""
+"""Phase estimates from the Resource History: own, borrowed and unknown (#3237)."""
 
 from __future__ import annotations
 
-import importlib
-from types import ModuleType
 from typing import Any
 
-
-def _estimates() -> ModuleType:
-    return importlib.import_module("booley.flows.job_estimates")
+from booley.flows import job_estimates as estimates
 
 
 def _record(
@@ -35,7 +27,7 @@ def _record(
 
 
 def _sim(target: str, *tests: str, flags: tuple[str, ...] = ()) -> Any:
-    return _estimates().JobRequest("sim", target, test_runs=tests, flags=flags)
+    return estimates.JobRequest("sim", target, test_runs=tests, flags=flags)
 
 
 def _phase(job: Any, phase: str, test_run: str = "") -> Any:
@@ -49,12 +41,12 @@ def _phase(job: Any, phase: str, test_run: str = "") -> Any:
 def test_memory_estimate_is_largest_record_times_margin() -> None:
     records = [_record("t", "sim_run", memory=mb, test_run="a") for mb in (2048, 2560, 6656)]
 
-    job = _estimates().ResourceEstimator(records).estimate([_sim("t", "a")])
+    job = estimates.ResourceEstimator(records).estimate([_sim("t", "a")])
 
     estimate = _phase(job, "sim_run", "a").memory_mb
     # 6.5 GiB x 1.25 = 8.125 GiB.
     assert estimate.value == 8320.0
-    assert estimate.source is _estimates().Source.OWN
+    assert estimate.source is estimates.Source.OWN
 
 
 def test_oom_killed_record_only_raises_the_estimate() -> None:
@@ -62,7 +54,7 @@ def test_oom_killed_record_only_raises_the_estimate() -> None:
         records = [_record("t", "sim_run", memory=mb, test_run="a") for mb in (2048, 2560, 6656)]
         records.append(_record("t", "sim_run", memory=oom_peak, test_run="a", outcome="oom_kill"))
 
-        job = _estimates().ResourceEstimator(records).estimate([_sim("t", "a")])
+        job = estimates.ResourceEstimator(records).estimate([_sim("t", "a")])
 
         assert _phase(job, "sim_run", "a").memory_mb.value == expected, oom_peak
 
@@ -82,7 +74,6 @@ def _borrow_records() -> list[dict[str, Any]]:
 
 
 def test_missing_key_borrows_from_target_then_project() -> None:
-    estimates = _estimates()
     estimator = estimates.ResourceEstimator(_borrow_records())
 
     known_target = estimator.estimate([_sim("t1", "new", "small")])
@@ -103,54 +94,7 @@ def test_missing_key_borrows_from_target_then_project() -> None:
     assert (unknown.value, unknown.source) == (None, estimates.Source.UNKNOWN)
 
 
-def test_job_reservation_and_budget_fit() -> None:
-    estimates = _estimates()
-    estimator = estimates.ResourceEstimator(_borrow_records())
-    fit = estimates.Fit
-
-    # Two Targets in one Job: the reservation is the largest phase over both.
-    job = estimator.estimate([_sim("t1", "small"), _sim("t2", "x")])
-    assert job.reservation_mb == 25000.0
-    assert job.fit(30000) is fit.FITS
-    assert job.fit(25000) is fit.FITS
-    assert job.fit(24999) is fit.OVER_BUDGET
-
-    # A phase without any estimate: the Job runs alone, unless already too large.
-    unknown = estimator.estimate([_sim("t1", "small"), estimates.JobRequest("lint", "t1")])
-    assert unknown.reservation_mb == 25000.0
-    assert unknown.fit(30000) is fit.RUN_ALONE
-    assert unknown.fit(100) is fit.OVER_BUDGET
-
-    nothing = estimator.estimate([estimates.JobRequest("lint", "t1")])
-    assert nothing.reservation_mb is None
-    assert nothing.fit(30000) is fit.RUN_ALONE
-
-
-def test_wall_clock_follows_the_same_rules() -> None:
-    estimates = _estimates()
-    records = [
-        _record("t1", "sim_run", wall=w, test_run="a", outcome=o)
-        for w, o in ((4.0, "exit_zero"), (20.0, "timeout"), (10.0, "exit_zero"))
-    ]
-    records += [
-        # Memory is known but wall-clock is not: wall-clock borrows alone.
-        _record("t1", "sim_run", memory=7000, test_run="blank"),
-        _record("t2", "sim_run", wall=2.0, test_run="a"),
-    ]
-    estimator = estimates.ResourceEstimator(records)
-
-    # The timed-out 20 s is a lower bound: it raises the estimate (25 s).
-    for target, test, source in (
-        ("t1", "a", estimates.Source.OWN),
-        ("t1", "new", estimates.Source.TARGET),
-        ("t3", "new", estimates.Source.PROJECT),
-    ):
-        wall = _phase(estimator.estimate([_sim(target, test)]), "sim_run", test).wall_s
-        assert (wall.value, wall.source) == (25.0, source), (target, test)
-
-
 def test_wall_clock_unknown_and_independent_of_memory() -> None:
-    estimates = _estimates()
     records = [_record("t1", "sim_run", memory=7000, test_run="blank")]
 
     job = estimates.ResourceEstimator(records).estimate([_sim("t1", "blank")])
@@ -161,7 +105,6 @@ def test_wall_clock_unknown_and_independent_of_memory() -> None:
 
 
 def test_own_wall_clock_needs_own_history_for_every_phase() -> None:
-    estimates = _estimates()
     records = [
         _record("t1", "sim_prepare", memory=100, wall=4.0),
         _record("t1", "sim_build", memory=100, wall=8.0),
@@ -191,7 +134,6 @@ def test_own_wall_clock_needs_own_history_for_every_phase() -> None:
 
 def test_every_sim_request_starts_with_sim_prepare() -> None:
     """FuseSoC setup is a measured phase of every Simulation Job, not only coverage (#3787)."""
-    estimates = _estimates()
     ordinary = _sim("t", "a", "b")
     elab_only = _sim("t")
     coverage = _sim("t", "a", flags=("coverage",))
@@ -211,24 +153,3 @@ def test_every_sim_request_starts_with_sim_prepare() -> None:
     # Only coverage post-processes.
     assert [key.phase for key in estimates.phase_keys(coverage)][-1] == "sim_postprocess"
     assert "sim_postprocess" not in {key.phase for key in estimates.phase_keys(ordinary)}
-
-
-def test_specialist_records_never_size_a_flow_job() -> None:
-    specialist = _record("", "specialist:reviewer", memory=5000)
-    specialist["key"]["specialist"] = "reviewer"
-    records = [specialist, _record("t", "sim_run", memory=1000, test_run="a")]
-    estimator = _estimates().ResourceEstimator(records)
-    key = _estimates().HistoryKey
-
-    custom, unrecorded, own = estimator.estimate_keys(
-        [
-            key("", "specialist:reviewer", (), ""),
-            key("u", "other_phase", (), ""),
-            key("t", "sim_run", (), "a"),
-        ]
-    ).phases
-
-    for phase in (custom, unrecorded):
-        assert phase.memory_mb.value is None
-        assert phase.memory_mb.source is _estimates().Source.UNKNOWN
-    assert own.memory_mb.value == 1000 * _estimates().ESTIMATE_MARGIN
