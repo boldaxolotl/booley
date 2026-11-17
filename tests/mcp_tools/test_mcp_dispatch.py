@@ -3093,6 +3093,14 @@ def test_queued_handoff_says_queued_for_memory_not_started(monkeypatch):
     assert "slot" not in text
 
 
+def test_requeued_handoff_says_the_retry_has_not_started(monkeypatch):
+    phase = "QUEUED (position 1): waits to run alone; requeued after out-of-memory"
+    text = _handoff_text(monkeypatch, phase)
+    assert "is queued for memory and has not started yet (run_id=run-1)" in text
+    assert "the retry has not started" in text
+    assert "the run has not started" not in text
+
+
 def test_running_handoff_text_is_unchanged(monkeypatch):
     text = _handoff_text(monkeypatch, "RUNNING")
     assert text == (

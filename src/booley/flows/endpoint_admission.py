@@ -331,7 +331,7 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
 
     Direct Flow diagnostics run in-process without logging configured and
     without BOOLEY_LOGS_DIR, so stderr is the sink that keeps a queued run from
-    looking like a hang with no hint that another job held the slot (F-27).
+    looking like a hang with no hint that another job held the Memory Reservation (F-27).
     """
     logger.info("%s: %s", endpoint.name, line)
     print(f"[admission] {endpoint.name}: {line}", file=sys.stderr, flush=True)

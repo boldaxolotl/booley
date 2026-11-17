@@ -91,8 +91,8 @@ Try:
   `synth_ecc_top`, `lint_caliptra` and `sim_ecc` a few seconds apart. Sum the
   estimates against the budget; exactly the Jobs that do not fit wait. Each
   waiter reports memory needed, memory free of the budget, its position, and
-  the largest holders by run, Flow, Target and MiB. The CLI repeats a `[admission]`
-  line about every 30 seconds.
+  the largest holders by run, Flow, Target and MiB. The CLI repeats a
+  `[admission]` line about every 30 seconds.
 - `small-budget` below `sim_caliptra`'s estimate: it runs alone with the
   "exceeds the Memory Budget" warning in its result.
 - A long queue: submit more blocked Jobs than the old queue limit of 8; every
