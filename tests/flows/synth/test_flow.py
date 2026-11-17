@@ -2882,6 +2882,45 @@ def test_synthesis_run_records_no_criterion(
     assert measure_exit_code(item.verdict for item in judged) == verdict
 
 
+def test_timed_out_synthesis_returns_no_values_and_names_the_timeout_on_every_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.measurement.metrics_file import Bound, TableRules
+    from booley.measurement.verdicts import FlowFailed, evaluate_table
+    from tests.harness.test_checkout_flow_metrics import RUN_ID, checkout_result
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
+    outer = tmp_path / "out"
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    flow.args.report_dir = outer / "flow-reports"
+    timed_out = SubprocessResult(
+        returncode=-9, timed_out=True, stdout="Number of cells: 11954\n", duration_s=1.0
+    )
+    with patch.object(flow, "_execute", return_value=timed_out):
+        outcome = flow._run()
+    report = outer / "flow-reports" / "synth" / "1" / "report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {"run_id": RUN_ID, "detail": outcome.detail, "report_text": outcome.report_text}
+        ),
+        encoding="utf-8",
+    )
+    result = checkout_result(outer, "synth", outcome.exit_code)
+    assert result.metrics == {}
+    assert result.unavailable == {"lite": "synthesis execution timeout"}
+    assert result.excerpt is not None
+    bounds = tuple(
+        Bound(name, metric, "max", 99999, None, None, None)
+        for name, metric in (("cells", "cell_count"), ("area", "area_um2"))
+    )
+    rules = TableRules("t", "vlnv:x#t", "synth", bounds, ())
+    verdicts = evaluate_table(rules, FlowFailed(result.excerpt))
+    assert [v.verdict.value for v in verdicts] == ["error"] * 2
+    assert all(v.detail.startswith("lite: synthesis execution timeout") for v in verdicts)
+
+
 # ===========================================================================
 # Sandbox execution
 # ===========================================================================

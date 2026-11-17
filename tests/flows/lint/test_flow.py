@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from booley.flows import artifacts as flow_artifacts
+from booley.flows.base import SubprocessResult
 from booley.flows.lint.flow import (
     LintConfigResult,
     LintFlow,
@@ -126,9 +127,9 @@ def _stub_resolved(
 
 def _process(
     returncode: int = 0, stdout: str = "", stderr: str = "", timed_out: bool = False
-) -> MagicMock:
+) -> SubprocessResult:
     """A canned linter subprocess result."""
-    return MagicMock(
+    return SubprocessResult(
         returncode=returncode, stdout=stdout, stderr=stderr, timed_out=timed_out, duration_s=0.1
     )
 
@@ -151,7 +152,7 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
 
     def run(
-        *processes: MagicMock,
+        *processes: SubprocessResult,
         args: tuple[str, ...] = (),
         target: str = "lite",
         work_dir: Path | None = None,
@@ -161,7 +162,7 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
     ) -> tuple[ExecutionResult, list[list[str]]]:
         commands: list[list[str]] = []
 
-        def execute(_flow: LintFlow, cmd: list[str], **_kwargs: object) -> MagicMock:
+        def execute(_flow: LintFlow, cmd: list[str], **_kwargs: object) -> SubprocessResult:
             commands.append(cmd)
             return processes[min(len(commands), len(processes)) - 1]
 
@@ -810,7 +811,7 @@ def test_linter_outcome_grades_the_run(
     run_lint: _LintRun,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    process: MagicMock,
+    process: SubprocessResult,
     knob: bool,
     exit_code: int,
     report_fragment: str,
@@ -932,7 +933,7 @@ class TestFullRun:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_clean_run(self, mock_cmd, mock_exec, state_file: Path, capsys):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="",
             stderr="",
@@ -958,7 +959,7 @@ class TestFullRun:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_warnings_exit_1(self, mock_cmd, mock_exec, state_file: Path, capsys):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERILATOR_OUTPUT,
             stderr="",
@@ -1014,7 +1015,7 @@ class TestFullRun:
         capsys,
     ):
         """Same warning from two configs counts once."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-UNUSEDSIGNAL: f.sv:42:5: unused 'x'\n",
             stderr="",
@@ -1049,14 +1050,14 @@ class TestFullRun:
         tmp_path: Path,
     ):
         mock_exec.side_effect = [
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="%Warning-SHARED: rtl/top.sv:4:2: message\n",
                 stderr="",
                 timed_out=False,
                 duration_s=0.5,
             ),
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="rtl/top.sv:4:9: other [SHARED]\n",
                 stderr="",
@@ -1102,7 +1103,7 @@ class TestFullRun:
     )
     def test_scope_filtering_in_run(self, mock_cmd, mock_exec, state_file: Path, capsys):
         """--scope filters warnings to matching files."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=(
                 "%Warning-UNUSEDSIGNAL: rtl/mod_a.sv:42:5: unused\n"
@@ -1140,7 +1141,7 @@ class TestFullRun:
         self, mock_cmd, mock_exec, state_file: Path, capsys
     ):
         """Out-of-scope baseline warnings must not keep a scoped ticket dirty."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-WIDTH: rtl/baseline.sv:10:1: width mismatch\n",
             stderr="",
@@ -1170,8 +1171,8 @@ class TestUnmatchedScope:
         monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
 
     @staticmethod
-    def _lint_result() -> MagicMock:
-        return MagicMock(
+    def _lint_result() -> SubprocessResult:
+        return SubprocessResult(
             returncode=0,
             stdout=TestUnmatchedScope._STDOUT,
             stderr="",
@@ -1247,7 +1248,7 @@ class TestUnmatchedScope:
 
     def test_unmatched_scope_still_reports_design_failure(self, state_file: Path, capsys):
         """A scope typo must not hide a design FAIL: the errored Target is reported."""
-        failing = MagicMock(
+        failing = SubprocessResult(
             returncode=1,
             stdout="%Error: rtl/mod_a.sv:3:1: syntax error\n",
             stderr="",
@@ -1293,7 +1294,7 @@ class TestUnmatchedScope:
             patch.object(
                 LintFlow,
                 "_execute",
-                return_value=MagicMock(
+                return_value=SubprocessResult(
                     returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.5
                 ),
             ),
@@ -1321,14 +1322,14 @@ class TestStructuredReport:
     ) -> None:
         report_dir = tmp_path / "reports"
         mock_exec.side_effect = [
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="%Warning-WIDTH: first.sv:1:1: first run\n",
                 stderr="",
                 timed_out=False,
                 duration_s=1.0,
             ),
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="%Warning-WIDTH: second.sv:2:2: second run\n",
                 stderr="",
@@ -1375,7 +1376,7 @@ class TestStructuredReport:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_report_written(self, mock_cmd, mock_exec, state_file: Path, tmp_path: Path):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-UNUSEDSIGNAL: f.sv:1:1: unused\n",
             stderr="",
@@ -1477,7 +1478,7 @@ class TestStructuredReport:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_report_clean(self, mock_cmd, mock_exec, state_file: Path, tmp_path: Path):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="",
             stderr="",
@@ -1678,7 +1679,7 @@ class TestVeribleTargets:
     ):
         """--parse_fatal without --lint_fatal: findings arrive with rc 0 and
         must score WARN (ADR 0033 decision 5)."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERIBLE_OUTPUT,
             stderr="",
@@ -1704,7 +1705,7 @@ class TestVeribleTargets:
         tmp_path: Path,
         capsys,
     ):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="",
             stderr="",
@@ -1736,7 +1737,7 @@ class TestVeribleTargets:
         The linter ran and rejected the source, so this is a design FAIL, not
         a Flow ERROR — the same grading `elaborate` gives the identical source
         (F-29). What must never happen is a PASS."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=1,
             stdout="",
             stderr=SAMPLE_VERIBLE_PARSE_ERROR,
@@ -1767,7 +1768,7 @@ class TestVeribleTargets:
     ):
         """An image predating the Verible binary must name cause + fix
         (ADR 0033 decision 8), not a generic spawn failure."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=127,
             stdout="",
             stderr="make: verible-verilog-lint: No such file or directory\n",
@@ -1796,7 +1797,7 @@ class TestVeribleTargets:
         capsys,
     ):
         """The (rule, file, line) dedup key works unchanged for Verible rules."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="rtl/top.sv:4:11: Interface names. [interface-name-style]\n",
             stderr="",
@@ -1821,7 +1822,7 @@ class TestVeribleTargets:
         state_file: Path,
         tmp_path: Path,
     ):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERIBLE_OUTPUT,
             stderr="",
@@ -1935,7 +1936,7 @@ class TestLintObservability:
         tmp_path: Path,
         capsys,
     ):
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         report_dir = tmp_path / "reports"
         flow = LintFlow()
         flow.parse_args(["--target", "lite", "--report-dir", str(report_dir)])
@@ -1978,7 +1979,7 @@ class TestLintObservability:
             build_root=tmp_path,
             edam_path=tmp_path / "demo.eda.yml",
         )
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
         with patch.object(
@@ -2017,7 +2018,7 @@ class TestLintObservability:
             build_root=tmp_path,
             edam_path=tmp_path / "demo.eda.yml",
         )
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
         with patch.object(
@@ -2060,7 +2061,7 @@ class TestLintObservability:
             "    toplevel: top\n",
             encoding="utf-8",
         )
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "smoke_sim"])
         with pytest.raises(IncompatibleTargetError, match="cannot be driven"):
@@ -2096,7 +2097,7 @@ class TestLintObservability:
         from booley.flows.lint import flow as lint_mod
 
         monkeypatch.setattr(lint_mod, "_lint_warnings_as_errors", lambda _wd: False)
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-UNUSEDSIGNAL: f.sv:1:1: unused\n",
             stderr="",
@@ -2274,7 +2275,7 @@ def test_authored_verible_public_run(
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style"])
     execute = MagicMock(
-        return_value=MagicMock(
+        return_value=SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERIBLE_OUTPUT,
             stderr="",
@@ -2371,7 +2372,7 @@ def test_job_report_lint_findings_cap(tmp_path, state_file):
             patch.object(
                 LintFlow,
                 "_execute",
-                return_value=MagicMock(
+                return_value=SubprocessResult(
                     returncode=0,
                     stdout=output,
                     stderr="",
@@ -2458,7 +2459,7 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, target)
         patch.object(
             flow,
             "_execute",
-            return_value=MagicMock(
+            return_value=SubprocessResult(
                 returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.5
             ),
         ),
@@ -2547,7 +2548,7 @@ class TestFlowMetrics:
             patch.object(
                 LintFlow,
                 "_execute",
-                return_value=MagicMock(
+                return_value=SubprocessResult(
                     returncode=returncode,
                     stdout=stdout,
                     stderr="",
