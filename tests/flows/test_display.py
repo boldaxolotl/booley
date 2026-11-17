@@ -39,6 +39,9 @@ def test_short_target_name_preserves_unicode_and_strips_qualification():
         ("::lib:core:0#small,::lib:core:0#large", "2 targets"),
     ],
 )
+# Private seam: the label reaches only the `endpoint_start` display event, which a
+# built-in Flow publishes after its Target selection resolves, so a public run
+# needs a resolvable Target.
 def test_target_aware_flows_share_human_target_labels(flow_type, target, expected):
     flow = flow_type()
     flow.parse_args(["--target", target])

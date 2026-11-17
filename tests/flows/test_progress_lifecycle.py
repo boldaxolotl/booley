@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -15,9 +17,17 @@ from booley.flows.progress_lifecycle import (
     progress_document,
     read_progress_for_run,
     repair_progress_after_reap,
+    retire_progress_of_requeued_attempt,
     supersede_progress,
+    write_progress_json,
 )
 from tests.conftest import symlink_or_skip
+from tests.sharing_error_support import (
+    flaky,
+    hold_replaces,
+    no_retry_delay,
+    sharing_error,
+)
 
 
 def test_normal_completion_publishes_once() -> None:
@@ -78,25 +88,24 @@ def test_failed_aborted_publication_retries_without_masking_failure() -> None:
     assert phases == ["aborted", "aborted"]
 
 
-def test_persistent_cleanup_failure_does_not_mask_interrupt() -> None:
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [(KeyboardInterrupt(), KeyboardInterrupt), (None, ProgressPublicationError)],
+    ids=["interrupt", "no-original-error"],
+)
+def test_persistent_cleanup_failure_is_reported_without_masking(
+    raised: BaseException | None, expected: type[BaseException]
+) -> None:
     def publish(_phase: str) -> None:
         raise OSError("disk unavailable")
 
-    interrupt = KeyboardInterrupt()
-    with pytest.raises(KeyboardInterrupt) as raised, ProgressLifecycle(publish):
-        raise interrupt
-    assert raised.value is interrupt
-
-
-def test_persistent_cleanup_failure_without_original_error_is_reported() -> None:
-    def publish(_phase: str) -> None:
-        raise OSError("disk unavailable")
-
-    with (
-        pytest.raises(ProgressPublicationError, match="aborted retry failed"),
-        ProgressLifecycle(publish),
-    ):
-        pass
+    with pytest.raises(expected) as caught, ProgressLifecycle(publish):
+        if raised is not None:
+            raise raised
+    if raised is None:
+        assert "aborted retry failed" in str(caught.value)
+    else:
+        assert caught.value is raised
 
 
 def test_lifecycle_rejects_second_terminal_publication() -> None:
@@ -282,6 +291,8 @@ def test_supersede_ignores_nonresumable_phase_and_write_failure(
     def fail_replace(*_args: object, **_kwargs: object) -> None:
         raise OSError("disk unavailable")
 
+    # Private seam: a failed atomic replace cannot be provoked through the file
+    # system on every platform the suite runs on.
     monkeypatch.setattr(progress_module, "_replace_if_unchanged", fail_replace)
 
     assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
@@ -296,16 +307,19 @@ def test_progress_reader_rejects_oversize_and_nonobject_json(tmp_path: Path) -> 
     assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
 
 
-def test_containing_root_skips_unrelated_roots_and_rejects_outside_path(
-    tmp_path: Path,
-) -> None:
+def test_run_lookup_skips_unrelated_roots(tmp_path: Path) -> None:
     progress = tmp_path / "reports" / "sim" / "1" / "progress.json"
-    assert (
-        progress_module._containing_root(progress, (tmp_path / "unrelated", tmp_path / "reports"))
-        == tmp_path / "reports"
-    )
+    _write_progress(progress)
+    found = read_progress_for_run((tmp_path / "unrelated", tmp_path / "reports"), "sim", "run-1")
+    assert found is not None
+    assert found[0] == progress
 
+
+def test_containing_root_rejects_outside_path(tmp_path: Path) -> None:
+    progress = tmp_path / "reports" / "sim" / "1" / "progress.json"
     with pytest.raises(ValueError, match="outside configured report roots"):
+        # Private seam: every public caller derives the path from its roots, so
+        # a path outside them is unreachable from the public functions.
         progress_module._containing_root(progress, (tmp_path / "unrelated",))
 
 
@@ -342,70 +356,51 @@ def test_coverage_supersede_follows_only_the_booley_dir_entry(tmp_path: Path, li
     )
 
 
-def test_progress_write_survives_transient_replace_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("held", [1, 100])
+def test_progress_write_retries_replace_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: int
 ) -> None:
-    from booley.flows.progress_lifecycle import write_progress_json
-    from tests.sharing_error_support import hold_replaces
-
     path = tmp_path / "sim" / "1" / "progress.json"
     document = _write_progress(path)
-    attempts = hold_replaces(monkeypatch, {path: 1})
+    attempts = hold_replaces(monkeypatch, {path: held})
+    if held > 1:
+        with pytest.raises(PermissionError):
+            write_progress_json(path, document)
+        assert attempts[path] > 1
+        return
     write_progress_json(path, {**document, "phase": "complete", "complete": True})
     assert json.loads(path.read_text(encoding="utf-8"))["phase"] == "complete"
     assert attempts[path] == 2
 
 
-def test_progress_write_retries_before_raising_lasting_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.progress_lifecycle import write_progress_json
-    from tests.sharing_error_support import hold_replaces
-
-    path = tmp_path / "sim" / "1" / "progress.json"
-    document = _write_progress(path)
-    attempts = hold_replaces(monkeypatch, {path: 100})
-    with pytest.raises(PermissionError):
-        write_progress_json(path, document)
-    assert attempts[path] > 1
-
-
 def _flaky_progress_open(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[int]:
-    from tests.sharing_error_support import flaky, no_retry_delay
-
     no_retry_delay(monkeypatch)
     opener, calls = flaky(progress_module.open_regular_nofollow, failures)
     monkeypatch.setattr(progress_module, "open_regular_nofollow", opener)
     return calls
 
 
-def test_progress_read_survives_transient_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("failures", [1, 100])
+def test_progress_read_retries_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failures: int
 ) -> None:
     path = tmp_path / "sim" / "1" / "progress.json"
     _write_progress(path)
-    calls = _flaky_progress_open(monkeypatch, 1)
+    calls = _flaky_progress_open(monkeypatch, failures)
+    if failures > 1:
+        with pytest.raises(PermissionError):
+            read_progress_for_run((tmp_path,), "sim", "run-1")
+        assert calls[0] > 1
+        return
     found = read_progress_for_run((tmp_path,), "sim", "run-1")
     assert found is not None
     assert found[0] == path
     assert calls == [2]
 
 
-def test_progress_read_raises_lasting_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_progress(tmp_path / "sim" / "1" / "progress.json")
-    calls = _flaky_progress_open(monkeypatch, 100)
-    with pytest.raises(PermissionError):
-        read_progress_for_run((tmp_path,), "sim", "run-1")
-    assert calls[0] > 1
-
-
 def test_progress_read_keeps_posix_permission_error_as_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import errno
-
     _write_progress(tmp_path / "sim" / "1" / "progress.json")
     monkeypatch.setattr("sys.platform", "linux")
 
@@ -419,10 +414,6 @@ def test_progress_read_keeps_posix_permission_error_as_unreadable(
 def test_held_checkpoint_of_another_run_does_not_hide_this_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
-    from tests.sharing_error_support import no_retry_delay, sharing_error
-
     mine = tmp_path / "sim" / "1" / "progress.json"
     held = tmp_path / "sim" / "2" / "progress.json"
     _write_progress(mine)
@@ -443,8 +434,6 @@ def test_held_checkpoint_of_another_run_does_not_hide_this_run(
 
 
 def test_retired_progress_of_a_requeued_attempt_is_not_read_for_its_run(tmp_path: Path) -> None:
-    from booley.flows.progress_lifecycle import retire_progress_of_requeued_attempt
-
     killed = tmp_path / "sim" / "1" / "progress.json"
     original = _write_progress(killed)
     other_run = tmp_path / "sim" / "2" / "progress.json"

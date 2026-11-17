@@ -147,6 +147,7 @@ def test_baseline_and_comparison_errors_become_notes_and_reasons() -> None:
         MetricPolicy(("area",), ("lut_count",)),
     )
     errors = comparison_report.canonical["comparison"]["basis_errors"]
+    assert comparison_report.canonical["comparison"]["basis_valid"] is False
     assert errors[0] == "baseline infrastructure error: baseline broke"
 
     notes, failures = ImplementationFlow._baseline_error_notes(

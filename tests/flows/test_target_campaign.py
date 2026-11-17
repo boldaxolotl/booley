@@ -13,14 +13,18 @@ from booley.flows.target_campaign import (
 from booley.flows.target_test_suite import NoRunnableTestsError
 
 
-def test_resolves_scope_and_test_suite() -> None:
-    campaign = resolve_target_campaign(
+def _resolved(tests: list[str], skips: list[str] | None = None, scope: str = "rtl/dut.sv"):
+    return resolve_target_campaign(
         "sim",
-        "rtl/dut.sv, ,rtl/dut2.sv",
+        scope,
         identity="sim",
-        test_names={"sim": ["smoke", "corner"]},
-        test_skips={"sim": ["corner"]},
+        test_names={"sim": tests},
+        test_skips={"sim": skips or []},
     )
+
+
+def test_resolves_scope_and_test_suite() -> None:
+    campaign = _resolved(["smoke", "corner"], ["corner"], "rtl/dut.sv, ,rtl/dut2.sv")
 
     assert campaign.scope == ("rtl/dut.sv", "rtl/dut2.sv")
     assert campaign.suite.tests == ("smoke",)
@@ -28,13 +32,7 @@ def test_resolves_scope_and_test_suite() -> None:
 
 
 def test_executes_individual_units_through_injected_behavior() -> None:
-    campaign = resolve_target_campaign(
-        "sim",
-        "rtl/dut.sv",
-        identity="sim",
-        test_names={"sim": ["reset", "corner"]},
-        test_skips={},
-    )
+    campaign = _resolved(["reset", "corner"])
 
     results = campaign.execute(lambda unit: unit.display_name.upper())
 
@@ -43,13 +41,7 @@ def test_executes_individual_units_through_injected_behavior() -> None:
 
 
 def test_batched_unit_describes_all_selected_tests() -> None:
-    campaign = resolve_target_campaign(
-        "sim",
-        "rtl/dut.sv",
-        identity="sim",
-        test_names={"sim": ["reset", "corner"]},
-        test_skips={},
-    )
+    campaign = _resolved(["reset", "corner"])
 
     units = campaign.execution_units(batched=True)
 
@@ -61,13 +53,7 @@ def test_batched_unit_describes_all_selected_tests() -> None:
 
 def test_all_skipped_campaign_is_rejected() -> None:
     with pytest.raises(NoRunnableTestsError, match="every declared test is skipped"):
-        resolve_target_campaign(
-            "sim",
-            "rtl/dut.sv",
-            identity="sim",
-            test_names={"sim": ["reset", "corner"]},
-            test_skips={"sim": ["reset", "corner"]},
-        )
+        _resolved(["reset", "corner"], ["reset", "corner"])
 
 
 def test_campaign_aggregation_cannot_pass_vacuously() -> None:
