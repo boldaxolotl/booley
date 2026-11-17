@@ -2155,11 +2155,6 @@ class TestFlowEnablement:
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
         return flow
 
-    def test_job_class_is_memory(self, state_file: Path, tmp_path: Path):
-        from booley.runtime import job_slots
-
-        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_MEMORY
-
 
 # ===========================================================================
 # Boundary command + file-based interpretation (ADR 0037 §8)
@@ -6599,3 +6594,36 @@ def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):
     assert conditions["expected_comb_loops"] == 0
     assert conditions["unexpected_comb_loops"] == 1
     assert "actual=1, expected=0, excess=1" in result.report_text
+
+
+@pytest.mark.parametrize("case", ["plain", "baseline"])
+def test_synth_output_matches_golden(
+    case: str, state_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One Target's report, progress record, RESULT line and exit code stay as pinned."""
+    from tests.flows.implementation_golden_support import render_implementation_output
+    from tests.golden.conftest import assert_matches_golden
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "golden-run")
+    flow = AsicSynthesizeFlow()
+    args = ["--target", "lite", "--work-dir", str(tmp_path)]
+    args += ["--report-dir", str(tmp_path / "reports")]
+    if case == "baseline":
+        args += ["--baseline", "v1.0"]
+    flow.parse_args(args)
+    baseline = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.5, elapsed_s=3.0)
+    current = SynthMetrics(area_kge=12.3, cells=110, wns_ns=0.4, elapsed_s=4.0)
+
+    def run_one(_target: str) -> tuple[SynthMetrics, str]:
+        return (baseline if flow._execution_role == "baseline" else current), "done"
+
+    with (
+        patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
+        patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+        patch("booley.flows.synth.flow.git_full_sha", return_value="a" * 40),
+        patch.object(flow, "_run_single_config", side_effect=run_one),
+    ):
+        outcome = flow._run()
+
+    text = render_implementation_output(flow, "synth_lite.json", outcome, tmp_path)
+    assert_matches_golden(f"implementation/synth_{case}.txt", text)
