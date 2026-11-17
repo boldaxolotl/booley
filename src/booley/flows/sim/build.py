@@ -676,12 +676,3 @@ def build_failure_report(outcome: BuildOutcome) -> str:
     if not tail:
         return outcome.reason
     return f"{outcome.reason}\n--- output tail ---\n{tail}"
-
-
-class SimulationBuildInfrastructureError(RuntimeError):
-    """An authenticated build attempt ended without a design verdict."""
-
-    def __init__(self, target: str, outcome: BuildOutcome) -> None:
-        super().__init__(build_failure_report(outcome))
-        self.target = target
-        self.outcome = outcome

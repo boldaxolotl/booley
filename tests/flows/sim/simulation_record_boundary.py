@@ -215,6 +215,7 @@ def _install_fakes(
                 returncode=built.returncode,
                 stdout=built.stdout + record,
                 stderr=built.stderr,
+                timed_out=built.timed_out,
             )
         work = launched_work(script.splitlines()[-1])
         identity = work_transport_identity(work)
