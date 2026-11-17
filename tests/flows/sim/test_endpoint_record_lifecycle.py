@@ -1312,7 +1312,14 @@ def test_coverage_failure_without_a_prepared_target_reports_the_unmatched_target
     # call reaches a failed Target with no prepared Coverage plan.
     flow = SimulateFlow()
     flow._coverage_prepared = SimpleNamespace(targets=[])
-    document = {"target": {"selector": "sim_0", "vlnv": "acme:demo:target:1.0", "name": "sim_0"}}
+    target = {
+        "selector": "sim_0",
+        "vlnv": "acme:demo:target:1.0",
+        "name": "sim_0",
+        "role": "candidate",
+        "revision": "0" * 40,
+    }
+    document = {"target": target}
     request = SimpleNamespace(plan=SimpleNamespace(manifest=SimpleNamespace(document=document)))
     progress = SimpleNamespace(invocation_dir=tmp_path, checkpoint=lambda **_kwargs: None)
 
