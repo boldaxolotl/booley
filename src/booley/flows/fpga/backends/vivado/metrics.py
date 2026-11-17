@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import as_dict, as_float, as_int
+from booley.core.boundary import as_dict, as_float, as_int, as_str
 from booley.evidence.timing import ClockTiming, per_clock_from_json, per_clock_to_json
 from booley.flows.edam import EdamFile
 from booley.flows.metric_declarations import (
@@ -21,6 +21,7 @@ from booley.flows.metric_declarations import (
     FlowMetricValues,
     MetricDeclaration,
     MetricKind,
+    MetricsUnavailable,
     metric_values,
 )
 
@@ -42,18 +43,40 @@ FPGA_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
 )
 
 
-def report_metric_values(detail: dict[str, Any]) -> dict[str, FlowMetricValues]:
+def _incomplete_reason(entry: object) -> str | None:
+    """Why a Target's implementation run did not complete, or ``None`` when it did."""
+    status = as_dict((as_dict(entry) or {}).get("status")) or {}
+    reason = as_str(status.get("infra_error")) or None
+    if status.get("timed_out") is True:
+        text = "the FPGA implementation timed out"
+        return f"{text}: {reason}" if reason else text
+    if reason:
+        return reason
+    if (as_dict(status.get("completion")) or {}).get("route") is not True:
+        return "Vivado did not complete route_design"
+    return None
+
+
+def report_metric_values(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
     """Read each Target's :data:`FPGA_METRIC_DECLARATIONS` values from an aggregate *detail*.
 
     Reads the implementation block's per-Target ``metrics``, mirroring
-    :meth:`FpgaMetrics.flow_metrics`. A Target without that block is skipped.
+    :meth:`FpgaMetrics.flow_metrics`. A Target without that block is skipped; one that
+    timed out, hit an infrastructure error, or did not route is
+    :class:`MetricsUnavailable` with the reason.
     """
     implementation = as_dict(detail.get("implementation")) or {}
     results = as_dict(implementation.get("results")) or {}
-    values: dict[str, FlowMetricValues] = {}
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
     for target, entry in results.items():
         metrics = as_dict((as_dict(entry) or {}).get("metrics"))
         if metrics is None:
+            continue
+        reason = _incomplete_reason(entry)
+        if reason is not None:
+            values[str(target)] = MetricsUnavailable(reason)
             continue
         values[str(target)] = metric_values(
             FPGA_METRIC_DECLARATIONS,
