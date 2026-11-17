@@ -13,16 +13,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
-from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.simulation_record_boundary import (
     SimulationRecordSimRun,
     run_simulation_record_sim,
@@ -481,24 +479,6 @@ def test_cocotb_build_failure_blocks_every_test(
 
 
 class TestCocotbDryRun:
-    def test_dry_run_emits_one_batched_command(self, tmp_path: Path) -> None:
-        """The engine preview is one command whose document carries every Test."""
-        from tests.flows.sim.test_execution_engine import _handle, _inspection
-
-        engine = execution_engine
-        build = patch.object(engine.TargetCatalog, "build", return_value=_inspection(cocotb=True))
-        setup = patch.object(engine.fusesoc_registry, "setup_command_for_handle", return_value=[])
-        execution = engine.SimulationExecution(
-            invoke=MagicMock(), options=engine.SimulationOptions()
-        )
-        with build, setup:
-            preview = execution.preview(_handle(tmp_path), engine.NamedTests(("a", "b", "c")))
-
-        (command,) = preview.commands
-        work = launched_work(command[2])
-        assert (work.adapter, work.cocotb_module) == ("cocotb", "test_demo")
-        assert work.tests == ("a", "b", "c")
-
     def test_dry_run_batches_the_selected_cocotb_tests_into_one_work_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
