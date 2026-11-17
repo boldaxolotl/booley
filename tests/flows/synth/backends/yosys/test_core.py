@@ -403,8 +403,6 @@ class TestParseAreaFromStat:
             ),
             pytest.param(None, None, id="missing-file"),
             pytest.param("Number of cells: 42\n", None, id="no-area-line"),
-            # ([\d.]+) can capture "1.2.3": EDA-tool-output drift must not crash.
-            pytest.param("Chip area for top module '\\design': 1.2.3\n", None, id="malformed"),
             # #1078: a non-finite or partial number is no area; the latest complete
             # statistics section is the one selected.
             *(

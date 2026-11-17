@@ -1025,8 +1025,6 @@ def test_1095_false_pass_uses_offending_frontend_log(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", ["logical", "physical"])
 def test_structural_script_keeps_complete_frontend_assignment_commands(tmp_path, mode):
-    from booley.flows.target_parameters import ParameterValue
-
     spec = dataclasses.replace(
         _spec(tmp_path, mode=mode), params={"NAME": ParameterValue("str", "a; b"), "WIDTH": "8"}
     )
