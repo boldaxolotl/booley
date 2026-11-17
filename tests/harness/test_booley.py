@@ -82,6 +82,12 @@ def test_parser_reads_command_flags(argv, expected, monkeypatch):
     assert {key: args.get(key, "absent") for key in expected} == expected
 
 
+def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+    args = _parse_argv(monkeypatch)
+    assert (args.command, args.agent_args) == ("chat", [])
+
+
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
@@ -218,6 +224,7 @@ def host_main(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     reset_cache()
     monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
