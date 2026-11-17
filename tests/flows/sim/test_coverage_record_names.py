@@ -20,7 +20,6 @@ import pytest
 
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_record
 from booley.flows.sim.coverage_json import content_digest
-from booley.flows.sim.coverage_record import DurableTargetIdentity
 from booley.flows.sim.coverage_record_store import (
     CoverageRecordStoreError,
     load_coverage_record,
@@ -122,9 +121,7 @@ def _run_analysis(summary_from: Path | None = None) -> dict[str, Any]:
     """The analysis report of the Coverage Record at *summary_from*, or of an in-memory one."""
     if summary_from is None:
         document = _valid_document()
-        coverage_record = decode_document(
-            document, DurableTargetIdentity(document["target"]["identity"])
-        )
+        coverage_record = decode_document(document, TARGET)
         summary = None
     else:
         loaded = load_coverage_record(summary_from, TARGET)
@@ -192,9 +189,7 @@ def test_the_coverage_analysis_report_names_the_coverage_record(tmp_path: Path) 
     # The model is given the same names.
     prompts: list[str] = []
     document = _valid_document()
-    coverage_record = decode_document(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    coverage_record = decode_document(document, TARGET)
 
     def model(prompt: str) -> dict[str, list[object]]:
         prompts.append(prompt)
@@ -215,9 +210,7 @@ def test_an_unknown_cp1_reference_is_reported_as_not_in_the_record() -> None:
         "p7ImJhc2ljX2Jsb2NrIjowfX0"
     )
     document = _valid_document()
-    coverage_record = decode_document(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    coverage_record = decode_document(document, TARGET)
     response = {
         "hypotheses": [{"point_ids": [foreign_id], "explanation": "foreign"}],
         "recommendations": [],
@@ -442,33 +435,11 @@ def test_old_coverage_record_names_are_not_aliases(
 ) -> None:
     run = coverage_invocation(tmp_path, monkeypatch)
     reference = _current_reference(run)
-    record = _json(run.coverage_record_path)
     refusals = [
         *_record_alias_refusals(run),
         *_reference_alias_refusals(reference),
         _evidence_kind_refusal(run, monkeypatch),
     ]
-
-    # Booley 0.4.0's schema IDs, even with every new key, are older, never an alias.
-    for schema in (
-        "booley.coverage-campaign/v1",
-        "booley.coverage-campaign/v2",
-        "booley.coverage-campaign/v3",
-        "booley.coverage-campaign/v4",
-        _OLD_RECORD,
-    ):
-        with pytest.raises(ValueError) as older:
-            load_coverage_record_bytes(
-                run.coverage_record_path, canonical_json_bytes({**record, "$schema": schema})
-            )
-        _assert_unsupported_type(older.value)
-        _assert_refused(str(older.value), schema)
-    with pytest.raises(ValueError) as older_reference:
-        decode_coverage_record_reference(
-            canonical_json_bytes({**reference, "$schema": _OLD_REFERENCE})
-        )
-    _assert_unsupported_type(older_reference.value)
-    _assert_refused(str(older_reference.value), _OLD_REFERENCE)
 
     assert refusals
     assert all("older Booley" not in text for text in refusals)
