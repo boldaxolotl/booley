@@ -1762,6 +1762,24 @@ def _read_host_memory(
         return None, str(exc)
 
 
+def _swap_setting_problem(booley_toml: Mapping[str, object]) -> tuple[str, str] | None:
+    """The warning and fix for a ``[sandbox].swap`` that is not a parseable size string."""
+    raw = (as_dict(booley_toml.get("sandbox"), default={}) or {}).get("swap")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return (
+            f"[sandbox] swap = {raw!r} is not a string: the default swap limit applies",
+            'set [sandbox] swap to a quoted size such as "4g", or "0" for no swap',
+        )
+    if raw.strip() and resource_policy.parse_memory_limit(raw.strip()) is None:
+        return (
+            f"[sandbox] swap = {raw.strip()!r} is unparseable: the default swap limit applies",
+            'set [sandbox] swap to a size such as "4g", or "0" for no swap',
+        )
+    return None
+
+
 def _check_sandbox_swap(
     project: ProjectAudit | None,
     docker_exe: str | None,
@@ -1784,20 +1802,11 @@ def _check_sandbox_swap(
     if memory is None:
         _skip("sandbox swap skipped - no swap limit without a parseable [sandbox].memory")
         return
-    raw_swap = (as_dict(project.booley_toml.get("sandbox"), default={}) or {}).get("swap")
-    if raw_swap is not None and not isinstance(raw_swap, str):
-        _warn(
-            f"[sandbox] swap = {raw_swap!r} is not a string: the default swap limit applies",
-            'set [sandbox] swap to a quoted size such as "4g", or "0" for no swap',
-        )
+    problem = _swap_setting_problem(project.booley_toml)
+    if problem is not None:
+        _warn(*problem)
         return
     swap_str = resource_policy.configured_sandbox_swap(project.booley_toml)
-    if swap_str and resource_policy.parse_memory_limit(swap_str) is None:
-        _warn(
-            f"[sandbox] swap = {swap_str!r} is unparseable: the default swap limit applies",
-            'set [sandbox] swap to a size such as "4g", or "0" for no swap',
-        )
-        return
     host, why = _read_host_memory(docker_exe, sandbox_image)
     if host is None:
         _skip(f"sandbox swap skipped - the Docker host's swap is unknown: {why}")

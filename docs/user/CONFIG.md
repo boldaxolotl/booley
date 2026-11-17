@@ -128,8 +128,9 @@ measured makes the Job run alone. A Simulation Record runs independent tests
 in parallel while their reservations fit.
 
 If the kernel kills a Job for running out of memory (when the Sandbox has
-used `[sandbox].memory` plus its [swap](SANDBOX.md#project-settings-sandbox)), Booley runs it again once, alone. A
-second kill fails the Job.
+used `[sandbox].memory` plus its
+[swap](SANDBOX.md#project-settings-sandbox)), Booley runs it again once,
+alone. A second kill fails the Job.
 
 Limits apply to one Project.
 
