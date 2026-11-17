@@ -2661,7 +2661,7 @@ def _fake_baseline_worktree(project_root: Path, ref: str, *, paired_project):
 class TestBaselineFlow:
     """Baseline comparison synthesizes the ``--baseline`` ref in a throwaway git
     worktree — never the caller's tree — so it works in both Ticket and
-    Interactive Mode (see also test_interactive_smoke)."""
+    a Developer Agent session (see also test_interactive_smoke)."""
 
     def test_baseline_dual_run(self, state_file: Path, tmp_path: Path):
         flow = AsicSynthesizeFlow()

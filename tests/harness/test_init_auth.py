@@ -126,7 +126,7 @@ def test_issued_policy_uses_authorized_source_not_ambient_auth_handoff(
         (selected / "booley.toml").write_text((data / "booley.toml").read_text())
         (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="subscription"\n')
         monkeypatch.setenv("BOOLEY_DIR", str(selected))
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=data.parent), init_cmd._NANGATE_PDK_NOT_REQUESTED, "claude", None
     )
     assert sources.project_data_source == selected

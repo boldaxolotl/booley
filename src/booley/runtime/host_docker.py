@@ -1,4 +1,4 @@
-"""Host-side Docker probes and inventory for Interactive Mode (ADR 0018).
+"""Host-side Docker probes and inventory for Sandboxes (ADR 0018).
 
 This module shells out to ``docker`` to inspect networks, containers, images,
 issued-image keepers, and per-project state volumes, and creates the unproxied
@@ -385,7 +385,7 @@ def container_image_ids_strict() -> frozenset[str]:
 
 
 def state_volumes() -> list[str]:
-    """Return names of Interactive Mode persistent home-state volumes.
+    """Return names of Sandbox persistent home-state volumes.
 
     These survive container rebuilds by design (they hold the agent's plans,
     session transcripts, and todos); the idle reaper deliberately leaves them

@@ -13,8 +13,7 @@ field controls FuseSoC resolution inputs, not the implementation backend.
 
 ``--baseline <ref>`` re-implements the design at a past commit in a throwaway
 ``git worktree`` (see :mod:`booley.flows.baseline_worktree`) rather than checking the ref
-out in place, so it never disturbs the caller's tree and works in Interactive
-Mode (ADR 0012).
+out in place, so it never disturbs the caller's tree (ADR 0012).
 """
 
 from __future__ import annotations

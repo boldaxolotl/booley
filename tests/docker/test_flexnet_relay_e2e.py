@@ -24,7 +24,7 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     remove_relay,
     validate_relay,
 )
-from booley.runtime.interactive_docker import relay_docker
+from booley.runtime.host_docker import relay_docker
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:

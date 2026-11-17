@@ -137,10 +137,10 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:test-image")
     fake_docker_host(monkeypatch)
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.image_id",
+        "booley.runtime.host_docker.image_id",
         lambda _image: None,
     )
-    monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+    monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
     monkeypatch.setattr(
         interactive_init.session_runtime,
         "plan_stopped_headless_runtime_reconciliation",
@@ -378,7 +378,7 @@ class TestFullInitRerun:
                 return_value=type("Plan", (), {"pending": True})(),
             ),
         ):
-            init_cmd._step_interactive(
+            init_cmd._step_sandbox(
                 ctx,
                 nangate_pdk_root=repo.parent / "pdk",
                 agent_app="none",
@@ -402,7 +402,7 @@ class TestFullInitRerun:
             "plan_stopped_headless_runtime_reconciliation",
             side_effect=sr.SessionError("run `booley session refresh` on the host"),
         ):
-            init_cmd._step_interactive(
+            init_cmd._step_sandbox(
                 ctx,
                 nangate_pdk_root=repo.parent / "pdk",
                 agent_app="none",
@@ -1254,10 +1254,10 @@ def test_seed_image_inspection_preserves_sequential_headings(repo, monkeypatch, 
     monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", inspect)
 
     def interactive(ctx, **_kwargs):
-        ctx.step_banner("Interactive Mode")
+        ctx.step_banner("Sandbox")
         ctx.record("interactive", "skip", "current")
 
-    monkeypatch.setattr(init_cmd, "_step_interactive", interactive)
+    monkeypatch.setattr(init_cmd, "_step_sandbox", interactive)
     for force, check in ((False, False), (True, False), (False, True), (True, True)):
         ctx = InitContext(project_root=repo, force=force, check_only=check)
         init_cmd._run_seed(ctx, init_cmd.AgentSelection("claude", "subscription"))
@@ -1277,7 +1277,7 @@ def test_seed_relocated_booley_dir_passes_pdk_root(repo, monkeypatch):
         "_step_image_lifecycle",
         lambda *_a, **_k: SimpleNamespace(status=init_cmd.ImageLifecycleStatus.CURRENT),
     )
-    monkeypatch.setattr(init_cmd, "_step_interactive", lambda _ctx, **kwargs: seen.append(kwargs))
+    monkeypatch.setattr(init_cmd, "_step_sandbox", lambda _ctx, **kwargs: seen.append(kwargs))
     monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: repo.parent / "pdk")
 
@@ -1796,7 +1796,7 @@ EXPECTED_FRESH_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Interactive Mode (Reopen in Container)",
+        "Sandbox (Reopen in Container)",
         "Project Inventory",
         "post-setup advisories",
     ],
@@ -1830,7 +1830,7 @@ EXPECTED_RERUN_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Interactive Mode (Reopen in Container)",
+        "Sandbox (Reopen in Container)",
         "Project Inventory",
         "post-setup advisories",
     ],

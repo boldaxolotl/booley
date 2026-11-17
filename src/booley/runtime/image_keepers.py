@@ -17,7 +17,7 @@ from booley.projects.image_keepers import (
     PruneResult,
     PurgeResult,
 )
-from booley.runtime import interactive_docker as docker
+from booley.runtime import host_docker as docker
 from booley.runtime import project_resources, session_admission
 from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 from booley.runtime.lifecycle_lock import host_lifecycle_lock

@@ -3,7 +3,7 @@
 Both :mod:`asic_synthesize` and :mod:`fpga_impl` accept ``--baseline <git ref>``:
 re-run the Flow at a past commit and compare QoR metrics. This module creates
 a throwaway ``git worktree`` at the baseline ref and preserves the caller's
-working tree in Interactive Mode. The worktree lives under
+working tree. The worktree lives under
 ``<project>/.booley/`` — git-ignored (never pollutes ``git status``) and
 inside the Sandbox workspace. It is force-removed on context exit,
 even if the body raises.

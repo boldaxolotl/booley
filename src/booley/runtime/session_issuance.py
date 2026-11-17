@@ -46,7 +46,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.runtime import interactive_docker, mount_history
+from booley.runtime import host_docker, mount_history
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
@@ -481,7 +481,7 @@ def _issuance_requirements(
         vivado_enabled=flow_enabled("fpga", project_root),
         prior_eda=prior_eda,
     ) as leased:
-        yield eda_requirements.with_relay_identity(leased, runner=interactive_docker.relay_docker)
+        yield eda_requirements.with_relay_identity(leased, runner=host_docker.relay_docker)
 
 
 def _seal_with_requirements(
@@ -708,7 +708,7 @@ def issue_prepared(
             _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
                 leased,
-                runner=interactive_docker.relay_docker,
+                runner=host_docker.relay_docker,
                 force_relay=force_dependencies,
             )
             return _persist_prepared(
@@ -808,7 +808,7 @@ def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
 
 
 def _current_keeper_id(project: Path) -> str | None:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         return docker.image_id(keeper_image(project))
@@ -819,7 +819,7 @@ def _current_keeper_id(project: Path) -> str | None:
 
 
 def _restore_keeper(project: Path, image_id: str | None) -> None:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     keeper = keeper_image(project)
     try:
@@ -2048,7 +2048,7 @@ def _runtime_authority_error(spec: dict[str, Any], exc: Exception) -> RuntimeSpe
 
 
 def _resolve_image_id(image: str) -> str:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         value = docker.image_id(image)
@@ -2067,7 +2067,7 @@ def _keeper_image_id(keeper: str) -> str | None:
     naming the keeper, so callers cannot report a missing keeper or retag one
     because Docker was unreachable.
     """
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         return docker.image_id(keeper)
@@ -2084,7 +2084,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
     moves this one private tag to the newly approved immutable ID. Runtime specs
     and stamps continue to use the ID itself as their authority boundary.
     """
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     retained_id = _keeper_image_id(issuance.keeper_image)
     if retained_id == issuance.image_id:
@@ -2099,7 +2099,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
 
 def _validate_image_contract(image_id: str) -> None:
     """Inspect the fixed compatibility contract without executing image code."""
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     created = docker._run_docker(
         [
