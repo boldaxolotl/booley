@@ -1,73 +1,65 @@
 """Executable reproductions for GitHub #88, finding F-45.
 
-These regressions mock only the nondeterministic model response. Target
+These regressions script only the nondeterministic model response. Target
 metadata, prompt/filter behavior, persistence, freshness, and acceptance use
 production code.
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from typing import Any
 
-from booley.specialists.reviewer import ReviewerSpecialist
+import pytest
 
-
-def _agent_result(*issues: dict) -> MagicMock:
-    result = MagicMock()
-    result.output = json.dumps({"issues": list(issues)})
-    result.structured = None
-    return result
+from booley.runtime.booley_dir import reset_cache
+from booley.runtime.endpoint_execution import EndpointOutcome
+from tests.mcp_tools.reviewer_support import ScriptedAgent, install_agent, issue, run_review
 
 
-def _issue(category: str, file: str, summary: str) -> dict:
-    return {
-        "severity": "CRITICAL",
-        "confidence": "HIGH",
-        "category": category,
-        "kind": "code_defect",
-        "disposition": "current",
-        "ticket_clause": "Reviewed source must satisfy the current Ticket requirements.",
-        "file": file,
-        "line": 1,
-        "summary": summary,
-        "fix_suggestion": "Implement the missing behavior.",
-    }
+@pytest.fixture
+def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
+    return install_agent(monkeypatch)
 
 
-@contextlib.contextmanager
-def _passthrough_workspace(params, _access, _category=None, **_kwargs):
-    yield params, None
-
-
-def _project(tmp_path: Path, monkeypatch) -> None:
-    from booley.runtime.booley_dir import reset_cache
-
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A Booley project with a one-file RTL core and ``rtl/uart.sv``."""
     data = tmp_path / ".booley"
-    data.mkdir(exist_ok=True)
-    (data / "booley.toml").write_text('[project]\nname="f45"\n')
+    data.mkdir()
+    (data / "booley.toml").write_text('[project]\nname="f45"\n', encoding="utf-8")
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
-    if not list(tmp_path.glob("*.core")):
-        (tmp_path / "uart.core").write_text(
-            "CAPI=2:\nname: ::f45:0\nfilesets:\n  rtl: {files: [rtl/uart.sv]}\n"
-        )
-
-
-def _run_review(argv: list[str]):
-    reviewer = ReviewerSpecialist()
-    reviewer.parse_args(argv)
-    return reviewer._run()
-
-
-def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatch):
-    """Cocotb verdicts come from results.xml, never HDL sentinels."""
-    tb = tmp_path / "tb" / "test_uart.py"
-    tb.parent.mkdir()
-    tb.write_text("import cocotb\n@cocotb.test()\nasync def smoke(dut): assert True\n")
     (tmp_path / "uart.core").write_text(
+        "CAPI=2:\nname: ::f45:0\nfilesets:\n  rtl: {files: [rtl/uart.sv]}\n", encoding="utf-8"
+    )
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl/uart.sv").write_text("module uart; endmodule\n", encoding="utf-8")
+    return tmp_path
+
+
+def finding(category: str, file: str, summary: str, **overrides: Any) -> dict[str, Any]:
+    """A CRITICAL current finding."""
+    row = {"severity": "CRITICAL", "category": category, "file": file, "line": 1}
+    return issue(**{**row, "summary": summary, **overrides})
+
+
+def review(
+    project: Path, scope: str = "rtl/uart.sv", category: str = "rtl", focus: str = "bugs"
+) -> EndpointOutcome:
+    argv = ["--work-dir", str(project), "--scope", scope, "--category", category]
+    return run_review([*argv, "--focus", focus])[0]
+
+
+def test_cocotb_target_retains_agent_sim_result_requirement(
+    project: Path, agent: ScriptedAgent
+) -> None:
+    """Cocotb verdicts come from results.xml, never HDL sentinels."""
+    (project / "tb").mkdir()
+    (project / "tb/test_uart.py").write_text(
+        "import cocotb\n@cocotb.test()\nasync def smoke(dut): assert True\n", encoding="utf-8"
+    )
+    (project / "uart.core").write_text(
         "CAPI=2:\nname: acme:uart:uart:1\n"
         "filesets:\n"
         "  tb:\n"
@@ -81,99 +73,44 @@ def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatc
         "    flow: sim\n"
         "    flow_options:\n"
         "      tool: verilator\n"
-        "      cocotb_module: test_uart\n"
+        "      cocotb_module: test_uart\n",
+        encoding="utf-8",
     )
-    _project(tmp_path, monkeypatch)
-    false_finding = _issue(
+    false_finding = finding(
         "quality", "tb/test_uart.py", "Missing [SIM_RESULT] PASSED/FAILED sentinel"
     )
+    agent.answer({"issues": [false_finding]})
 
-    with (
-        patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\")),
-        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
-        patch(
-            "booley.specialists.specialist._call_agent_sync",
-            return_value=_agent_result(false_finding),
-        ),
-    ):
-        result = _run_review(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                "tb/test_uart.py",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
+    result = review(project, "tb/test_uart.py", "tb", "quality")
 
     assert result.detail["issues"] == 1, result.report_text
 
 
-def test_corrective_findings_do_not_complete_terminal_done_review(tmp_path, monkeypatch):
+def test_corrective_findings_do_not_complete_terminal_done_review(
+    project: Path, agent: ScriptedAgent
+) -> None:
     """Terminal _done is advisory; a CRITICAL correction must remain open."""
-    rtl = tmp_path / "rtl" / "uart.sv"
-    rtl.parent.mkdir()
-    rtl.write_text("module uart; endmodule\n")
-    _project(tmp_path, monkeypatch)
-    corrective = _issue("bugs", "rtl/uart.sv", "Reset behavior violates the Ticket contract")
+    summary = "Reset behavior violates the Ticket contract"
+    agent.answer({"issues": [finding("bugs", "rtl/uart.sv", summary)]})
 
-    with (
-        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
-        patch(
-            "booley.specialists.specialist._call_agent_sync",
-            return_value=_agent_result(corrective),
-        ),
-    ):
-        result = _run_review(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                "rtl/uart.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
+    result = review(project)
 
     assert result.exit_code == 0, result.report_text
 
 
-def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
+def test_interactive_discovery_replaces_done_findings(project: Path, agent: ScriptedAgent) -> None:
     """A Sandbox MCP server explicitly replaces findings on each discovery call."""
-    rtl = tmp_path / "rtl" / "uart.sv"
-    rtl.parent.mkdir()
-    rtl.write_text("module uart; endmodule\n")
-    _project(tmp_path, monkeypatch)
-    corrective = _issue("code_style", "rtl/uart.sv", "Reset behavior violates the Ticket contract")
+    summary = "Reset behavior violates the Ticket contract"
+    agent.answer([{"issues": [finding("code_style", "rtl/uart.sv", summary)]}, {"issues": []}])
 
-    with (
-        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
-        patch(
-            "booley.specialists.specialist._call_agent_sync",
-            side_effect=[_agent_result(corrective), _agent_result()],
-        ) as agent,
-    ):
-        argv = [
-            "--work-dir",
-            str(tmp_path),
-            "--scope",
-            "rtl/uart.sv",
-            "--category",
-            "rtl",
-            "--focus",
-            "code_style",
-        ]
-        _run_review(argv)
-        rtl.write_text("module uart; wire changed; endmodule\n")
-        second = _run_review(argv)
+    review(project, focus="code_style")
+    (project / "rtl/uart.sv").write_text(
+        "module uart; wire changed; endmodule\n", encoding="utf-8"
+    )
+    second = review(project, focus="code_style")
 
     detail = second.detail
-    assert agent.call_count == 2
+    assert len(agent.calls) == 2
     assert detail["issue_list"] == []
     assert detail["issues"] == 0
     assert detail["CRITICAL"] == 0
@@ -181,67 +118,29 @@ def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
     assert "NO FINDINGS" in second.report_text
 
 
-def test_explicit_advisory_done_observation_completes(tmp_path, monkeypatch):
+def test_explicit_advisory_done_observation_completes(project: Path, agent: ScriptedAgent) -> None:
     """An explicit advisory observation is reportable but not corrective."""
-    rtl = tmp_path / "rtl" / "uart.sv"
-    rtl.parent.mkdir()
-    rtl.write_text("module uart; endmodule\n")
-    _project(tmp_path, monkeypatch)
-    advisory = _issue("bugs", "rtl/uart.sv", "Consider a clearer local signal name")
-    advisory["severity"] = "MINOR"
-    advisory["disposition"] = "advisory"
-
-    with (
-        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
-        patch(
-            "booley.specialists.specialist._call_agent_sync",
-            return_value=_agent_result(advisory),
-        ),
-    ):
-        result = _run_review(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                "rtl/uart.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-
-    detail = result.detail
-    assert detail["issue_list"][0]["status"] == "advisory"
-
-
-def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
-    """A source edit forces a second real review."""
-    rtl = tmp_path / "rtl" / "uart.sv"
-    rtl.parent.mkdir()
-    rtl.write_text("module uart; endmodule\n")
-    _project(tmp_path, monkeypatch)
-    common = [
-        "--work-dir",
-        str(tmp_path),
-        "--scope",
+    advisory = finding(
+        "bugs",
         "rtl/uart.sv",
-        "--category",
-        "rtl",
-        "--focus",
-        "code_style",
-    ]
+        "Consider a clearer local signal name",
+        severity="MINOR",
+        disposition="advisory",
+    )
+    agent.answer({"issues": [advisory]})
 
-    with (
-        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
-        patch(
-            "booley.specialists.specialist._call_agent_sync",
-            return_value=_agent_result(),
-        ) as agent,
-    ):
-        _run_review(common)
-        rtl.write_text("module uart; wire changed; endmodule\n")
-        second = _run_review(common)
+    result = review(project)
 
-    assert agent.call_count == 2
+    assert result.detail["issue_list"][0]["status"] == "advisory"
+
+
+def test_source_edit_has_one_freshness_verdict(project: Path, agent: ScriptedAgent) -> None:
+    """A source edit forces a second real review."""
+    review(project, focus="code_style")
+    (project / "rtl/uart.sv").write_text(
+        "module uart; wire changed; endmodule\n", encoding="utf-8"
+    )
+    second = review(project, focus="code_style")
+
+    assert len(agent.calls) == 2
     assert "current source" not in second.report_text

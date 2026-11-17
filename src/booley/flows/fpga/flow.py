@@ -136,11 +136,6 @@ class _PreparedFpgaCommand:
     ppa_profile: VivadoProfile = VIVADO_PROFILES["balanced"]
     console_logs: tuple[Path, ...] = ()
 
-    def __iter__(self):
-        """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
-        yield self.run_cmd
-        yield self.work_root
-
 
 def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
     """Resolve the per-target FPGA implementation budget for MCP and Flow callers."""
@@ -368,12 +363,8 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
                     self._target_pairs,
                     worktree,
                 )
-                seen: set[str] = set()
                 for pair in self._target_pairs:
                     target = pair.baseline.selector
-                    if target in seen:
-                        continue
-                    seen.add(target)
                     try:
                         recipe = self._resolve_fpga_recipe(target)
                         units.append(

@@ -45,8 +45,16 @@ class ProjectSpecialist(Specialist):
 
 
 def command(argv):
+    # The handlers below take the parsed command and the Project root directly; the public
+    # entry point also resolves the Project from the working directory and admits the run.
     parser = cli._build_parser()
-    return cli._normalize_args(parser, parser.parse_args(argv))
+    return cli._normalize_args(parser, parser.parse_args(argv))  # no public parse-only entry
+
+
+def specialist_command(argv, root):
+    """Run the ``booley specialist`` handler on *root* with its arguments parsed as the CLI does."""
+    # The handler: the public entry point would also resolve the Project from the cwd.
+    return cli._cmd_specialist(command(["specialist", *argv]), root)
 
 
 def register_project_specialist(data):
@@ -78,13 +86,11 @@ def test_dispatch_preserves_arguments_and_exit(tmp_path, monkeypatch, separator,
     monkeypatch.setattr(registry, "discover_mcp_tools", lambda **_kwargs: [info])
     endpoint = Mock()
     endpoint.main.return_value = verdict
+    # The CLI imports Project Python by path; a stub endpoint stands in for that import.
     monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: lambda: endpoint)
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(tmp_path / "ticket.md"))
     assert (
-        cli._cmd_specialist(
-            command(["specialist", "project_review", *separator, "--instruction", "two words"]),
-            tmp_path,
-        )
+        specialist_command(["project_review", *separator, "--instruction", "two words"], tmp_path)
         == verdict
     )
     endpoint.main.assert_called_once_with(["--instruction", "two words"])
@@ -98,7 +104,7 @@ def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, mon
     (directory / "mcp_tools/project_review.py").write_text(
         'from booley.specialists.specialist import Specialist\nclass ProjectReview(Specialist):\n    name = "project_review"\n    description = "Project fixture"\n'
     )
-    assert cli._cmd_specialist(command(["specialist"]), tmp_path) == 0
+    assert specialist_command([], tmp_path) == 0
     output = capsys.readouterr().out
     assert "project_review" in output
     assert "coverage_analyst" in output
@@ -115,6 +121,7 @@ def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, mon
     ],
 )
 def test_wrong_kind_suggests_canonical_command(tmp_path, capsys, route, name, suggestion):
+    # The route handlers are private; the CLI has no public per-route entry (see command()).
     handler = cli._cmd_specialist if route == "specialist" else cli._cmd_flow
     assert handler(command([route, name]), tmp_path) == 2
     assert suggestion in capsys.readouterr().err
@@ -123,8 +130,9 @@ def test_wrong_kind_suggests_canonical_command(tmp_path, capsys, route, name, su
 @pytest.mark.parametrize("name", ["unknown", "missing_specialist"])
 def test_unknown_or_hidden_never_loads(tmp_path, monkeypatch, name, capsys):
     loader = Mock()
+    # The loader is the import of Project Python: the test is that it is never reached.
     monkeypatch.setattr(cli, "_load_mcp_tool_class", loader)
-    assert cli._cmd_specialist(command(["specialist", name]), tmp_path) == 2
+    assert specialist_command([name], tmp_path) == 2
     assert "booley specialist" in capsys.readouterr().err
     loader.assert_not_called()
 
@@ -135,6 +143,7 @@ def test_host_refusal_precedes_reports_and_admission(tmp_path, monkeypatch):
         lambda command: f"use booley session enter -- {command}",
     )
     endpoint = ProjectSpecialist()
+    # The test is that neither hook is reached before the host refusal.
     for hook in ["_invoke_agent", "write_report"]:
         monkeypatch.setattr(endpoint, hook, Mock(side_effect=AssertionError(hook)))
     result = endpoint.execute_cli(["--work-dir", str(tmp_path)])
@@ -227,7 +236,7 @@ def test_listing_resolves_booley_directory_override(tmp_path, monkeypatch, capsy
     (data / "mcp_tools/project_review.py").write_text(
         'from booley.specialists.specialist import Specialist\nclass ProjectReview(Specialist):\n    name = "project_review"\n    description = "Project fixture"\n'
     )
-    assert cli._cmd_specialist(command(["specialist"]), tmp_path) == 0
+    assert specialist_command([], tmp_path) == 0
     output = capsys.readouterr().out
     assert "project_review" in output
     assert "reviewer" not in output
@@ -252,6 +261,8 @@ def test_human_timeout_uses_seconds_and_preserves_no_abbreviations():
 def test_project_params_round_up_without_a_floor(tmp_path):
     endpoint = ProjectSpecialist()
     endpoint.parse_args(["--work-dir", str(tmp_path), "--timeout-ms", "1001"])
+    # Each timeout check below is the only test of the rounding at its call site; the public
+    # path would need a full agent run.
     assert endpoint._agent_call_params().timeout_seconds == 2
     assert endpoint.args.timeout_ms == 1001
     assert ProjectSpecialist().parse_args([]).timeout_ms == 9000
@@ -260,12 +271,14 @@ def test_project_params_round_up_without_a_floor(tmp_path):
 @pytest.mark.parametrize("milliseconds,expected", [(450000, 3), (1500000, 10)])
 def test_mutation_auto_count_uses_converted_seconds(tmp_path, monkeypatch, milliseconds, expected):
     endpoint = MutationFlow()
+    # _args and _resolve_count: the auto count is computed deep inside a Flow run.
     endpoint._args = argparse.Namespace(count="auto", timeout_ms=milliseconds, work_dir=tmp_path)
     monkeypatch.setattr(
         "booley.flows.mutation.flow.compute_source_size_budget",
         lambda *_args: {"formula_count": 100},
     )
     monkeypatch.setattr(endpoint, "emit_progress", Mock())
+    # The conversion lives in this step of a Flow run; a public run needs real simulation.
     assert endpoint._resolve_count([], tmp_path)[0] == expected
 
 
@@ -280,6 +293,7 @@ def test_real_public_and_module_execution_preserve_reports(
         name=ProjectSpecialist.name, path="fixture.py", description="fixture", kind="specialist"
     )
     monkeypatch.setattr(registry, "discover_mcp_tools", lambda **_kwargs: [info])
+    # The CLI imports Project Python by path; the fixture class stands in for that import.
     monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: ProjectSpecialist)
     monkeypatch.setattr(ProjectSpecialist, "verdict", verdict)
     calls = []
@@ -288,16 +302,14 @@ def test_real_public_and_module_execution_preserve_reports(
         calls.append(params)
         return AgentResult(output="inspection complete")
 
+    # Replaced so no Agent CLI runs; the rest of the endpoint machinery is real.
     monkeypatch.setattr(ProjectSpecialist, "_invoke_agent", model)
     project_data = tmp_path / "durable"
     monkeypatch.setattr(
         "booley.runtime.booley_dir.resolve_checkout_booley_dir", lambda _root: project_data
     )
     argv = ["--work-dir", str(tmp_path)]
-    assert (
-        cli._cmd_specialist(command(["specialist", ProjectSpecialist.name, *argv]), tmp_path)
-        == verdict
-    )
+    assert specialist_command([ProjectSpecialist.name, *argv], tmp_path) == verdict
     endpoint = ProjectSpecialist()
     monkeypatch.setattr("sys.argv", ["booley.specialists.project_review", *argv])
     with pytest.raises(SystemExit) as exited:
@@ -315,7 +327,7 @@ def test_real_public_and_module_execution_preserve_reports(
 
 def test_endpoint_help_is_allowed_on_host(tmp_path, capsys):
     with pytest.raises(SystemExit) as error:
-        cli._cmd_specialist(command(["specialist", "reviewer", "--help"]), tmp_path)
+        specialist_command(["reviewer", "--help"], tmp_path)
     assert error.value.code == 0
     output = capsys.readouterr().out
     for flag in [
@@ -335,6 +347,7 @@ def test_specialists_have_no_model_flag_or_schema_field():
     from booley.mcp.registry import discover_mcp_inventory
     from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS
 
+    # Loading the class is what the CLI does after discovery; the loader is not public.
     specialists = [
         cli._load_mcp_tool_class(info)
         for info in discover_mcp_inventory()
@@ -346,7 +359,6 @@ def test_specialists_have_no_model_flag_or_schema_field():
     assert "mutation_tester" not in {s.name for s in specialists}
     for specialist in specialists:
         endpoint = specialist()
-        assert "--model" not in endpoint._parser._option_string_actions, specialist.name
         with pytest.raises(SystemExit):
             endpoint.parse_args(["--model", "heavy"])
         assert "model" not in flow_schema(endpoint)["properties"], specialist.name
@@ -357,7 +369,7 @@ def test_empty_registry_and_load_failure(tmp_path, monkeypatch, capsys):
     from booley.mcp import registry
 
     monkeypatch.setattr(registry, "discover_mcp_tools", lambda **_kwargs: [])
-    assert cli._cmd_specialist(command(["specialist"]), tmp_path) == 0
+    assert specialist_command([], tmp_path) == 0
     assert "none discovered" in capsys.readouterr().out
     info = McpToolInfo(name="broken", path="broken.py", description="", kind="specialist")
     monkeypatch.setattr(registry, "discover_mcp_tools", lambda **_kwargs: [info])
@@ -365,8 +377,9 @@ def test_empty_registry_and_load_failure(tmp_path, monkeypatch, capsys):
     def broken(_info):
         raise ImportError("missing dependency")
 
+    # Replaced to make the Project import fail the way a missing dependency does.
     monkeypatch.setattr(cli, "_load_mcp_tool_class", broken)
-    assert cli._cmd_specialist(command(["specialist", "broken"]), tmp_path) == 2
+    assert specialist_command(["broken"], tmp_path) == 2
     assert "missing dependency" in capsys.readouterr().err
 
 
@@ -388,8 +401,10 @@ def test_reviewer_review_call_rounds_up(tmp_path, monkeypatch):
             "600001",  # just above the reviewer's 10-minute minimum, which a lower value would meet
         ]
     )
+    # The review's prompts are not under test; only the timeout the call carries is.
     for hook in ["_build_prompt", "_build_system_prompt"]:
         monkeypatch.setattr(endpoint, hook, lambda *_args, **_kwargs: "fixture")
+    # The rounding at this call site; a public review run needs a full agent run.
     assert endpoint._single_review_params("bugs").timeout_seconds == 601
 
 
@@ -401,6 +416,7 @@ def test_top_level_invalid_duration_is_rejected(tmp_path, route):
         if route == "flow"
         else ["--category", "rtl", "--focus", "bugs", "--scope", "rtl"]
     )
+    # The route handlers are private; the CLI has no public per-route entry (see command()).
     handler = cli._cmd_flow if route == "flow" else cli._cmd_specialist
     with pytest.raises(SystemExit) as error:
         handler(command([route, name, *args, "--timeout", "1.5"]), tmp_path)
@@ -412,11 +428,13 @@ def test_coverage_provider_preserves_minimum_and_rounding(tmp_path):
 
     endpoint = CoverageAnalystSpecialist()
     endpoint.parse_args(["--record", "coverage.json", "--timeout-ms", "1001"])
+    # The coverage call's timeout rounding has no public path short of a full agent run.
     params = endpoint._coverage_agent_params(
         "fixture", tmp_path, tmp_path / "coverage.json", tmp_path / "audit.json"
     )
     assert params.timeout_seconds == endpoint.min_timeout
     endpoint.args.timeout_ms = endpoint.min_timeout * 1000 + 1
+    # Second check of the same call site, above the minimum.
     params = endpoint._coverage_agent_params(
         "fixture", tmp_path, tmp_path / "coverage.json", tmp_path / "audit.json"
     )

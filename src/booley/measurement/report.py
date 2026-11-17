@@ -106,7 +106,7 @@ def _verdict_line(document: Mapping[str, Any]) -> _Text:
     counts = document["view"]["counts"]
     parts = [
         f"{counts['unmet']} unmet" if counts["unmet"] else "",
-        _count(counts["error"], "error") if counts["error"] else "",
+        _count(counts["enforced_error"], "error") if counts["enforced_error"] else "",
         f"{counts['not_evaluated']} not evaluated" if counts["not_evaluated"] else "",
     ]
     enforced = counts["enforced"]
@@ -116,6 +116,8 @@ def _verdict_line(document: Mapping[str, Any]) -> _Text:
         if failing
         else f"{enforced} of {enforced} enforced met"
     )
+    if counts["tracked_error"]:
+        text += f"; {_count(counts['tracked_error'], 'tracked error')}"
     return _Text(text, _tone(document))
 
 
