@@ -741,7 +741,9 @@ def test_holder_deadline_follows_the_slot_timeout(
     deadline: float | None,
 ) -> None:
     """The reaper's deadline is twice the exported budget, and an unparseable one is ignored."""
-    if value is not None:
+    if value is None:
+        monkeypatch.delenv("BOOLEY_SLOT_TIMEOUT_S", raising=False)
+    else:
         monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", value)
     flow = AsicSynthesizeFlow()
 

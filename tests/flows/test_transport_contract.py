@@ -299,7 +299,9 @@ def test_repeated_typed_calls_get_fresh_invocation_metadata(runtime, monkeypatch
     flow.execute(request)
 
     reports = runtime / "runtime/flow-reports/lint"
-    first, second = (json.loads((reports / f"{n}/report.json").read_text()) for n in (1, 2))
+    first, second = (
+        json.loads((reports / f"{n}/report.json").read_text(encoding="utf-8")) for n in (1, 2)
+    )
     assert first["argv"] == ["--target", "demo"]
     assert first["eda_tool"] == "verible"
     assert "argv" not in second
