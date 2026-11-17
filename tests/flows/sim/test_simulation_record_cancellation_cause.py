@@ -118,7 +118,11 @@ def _token_missing(simulation_record, monkeypatch):
         lambda token: withdrawn.is_set() or real_absent(token),
     )
     # A really missing file (released by the run) is still absent.
-    return withdrawn.set, "token missing", lambda: real_absent(simulation_record.outer) is True
+    return (
+        withdrawn.set,
+        "Memory Reservation missing",
+        lambda: real_absent(simulation_record.outer) is True,
+    )
 
 
 @pytest.mark.parametrize("scenario", [_lease_lost, _token_missing])
