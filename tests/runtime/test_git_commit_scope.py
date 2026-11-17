@@ -65,4 +65,4 @@ def test_a_stealth_project_lists_the_banned_phrases_it_enforces(tmp_path: Path) 
 
     wt = _worktree(tmp_path, _EXPLICIT)
 
-    assert banned_phrases(wt) == ["quokka"]
+    assert banned_phrases(wt) == ["quokka", "zorb"]  # words, then substrings
