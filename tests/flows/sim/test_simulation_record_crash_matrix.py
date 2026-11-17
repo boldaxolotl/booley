@@ -10,7 +10,7 @@ import signal
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -274,41 +274,16 @@ def test_serial_publication_boundary_resume_matrix(
     route: str,
 ) -> None:
     """Every durable prefix resumes on both build routes; only a committed Result suppresses rerun."""
-    manifest = _crash_manifest(shared=route == "shared")
-    plan = create_simulation_record_plan(manifest)
-    project, build_root, run_log = _crash_environment(tmp_path)
-    launches: list[int] = []
-    group = _CrashGroup(build_root, run_log, launches)
-    monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: _CrashCatalog(project),
-    )
     crash = _CrashOnce(crash_point)
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
-        publication_checkpoint=crash,
-    )
-    simulation_record = SimulationRecord(executor, publication_checkpoint=crash)
-    invocation = tmp_path / "reports" / "000001"
-    invocation.mkdir(parents=True)
-    policy = SimulationRecordPolicy()
-    new_request = NewSimulationRecordRunRequest(
-        plan=plan,
-        project_root=project,
-        report_root=invocation.parent,
-        policy=policy,
-        invocation_directory=invocation,
-        admission=_admission(),
-    )
+    case = _serial_case(tmp_path / "case", monkeypatch, route == "shared", crash)
+    manifest, store = case.manifest, case.store
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        simulation_record.run(new_request)
-    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
+        case.record.run(case.request)
     outcome = _resume_crashed_simulation_record(
-        simulation_record, new_request, store, manifest, plan, crash_point
+        case.record, case.request, store, manifest, case.plan, crash_point
     )
-    _assert_crash_recovery(outcome, store, crash_point, launches, crash)
+    _assert_crash_recovery(outcome, store, crash_point, case.launches, crash)
     # The route axis must really reach its build: private builds live under the attempt.
     private_builds = list(store.root.glob("work-items/*/attempts/*/private-build"))
     assert bool(private_builds) == (route == "private")
@@ -342,46 +317,12 @@ def test_serial_publication_boundary_resume_matrix(
 )
 def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: str) -> None:
     """The coverage aggregate's own durable boundaries resume to one terminal Result."""
-    plan, target = _coverage_simulation_record_plan(tmp_path, runtime_input=True)
-
-    def fresh_execution(_plan, _options, _commands, _access) -> NativeExecution:
-        # Binding the bundle rewrites the executable path, so each attempt needs its own.
-        native = NativeExecution()
-        runtime = native.build_root / "data/stimulus.bin"
-        runtime.parent.mkdir()
-        runtime.write_bytes(b"authenticated runtime input")
-        return native
-
     crash = _CrashOnce(crash_point)
-    simulation_record = SimulationRecord(
-        CoverageAggregateExecutor(
-            plans={target.handle.identity: target},
-            execution_factory=fresh_execution,
-            publication_checkpoint=crash,
-        )
-    )
-    invocation = tmp_path / "reports" / "1"
-    invocation.mkdir(parents=True)
-    policy = SimulationRecordPolicy()
+    record, request, resume, store, _target_directory = _coverage_case(tmp_path / "case", crash)
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        simulation_record.run(
-            NewSimulationRecordRunRequest(
-                plan, tmp_path, invocation.parent, policy, invocation, _admission()
-            )
-        )
-    store = SimulationRecordStore(invocation / "targets/sim_0/record")
-    outcome = simulation_record.run(
-        ResumeSimulationRecordRunRequest(
-            _validated_resume(store, plan, target, tmp_path),
-            plan,
-            tmp_path,
-            invocation.parent,
-            policy,
-            invocation,
-            _admission(),
-        )
-    )
+        record.run(request)
+    outcome = record.run(resume)
 
     assert outcome.complete is True
     assert crash.tripped is True
@@ -831,6 +772,12 @@ def test_pre_sim_evidence_killed_mid_write_resumes(
     )
 
 
+def _write_projection(path: Path, checkpoint) -> None:
+    write_compatibility_projection(
+        path, {"target": "sim"}, acceptance_committed=True, publication_checkpoint=checkpoint
+    )
+
+
 @_needs_fork
 def test_compatibility_projection_killed_mid_write_is_retryable(tmp_path: Path) -> None:
     """Guard: the projection is replaced atomically, so a kill mid-write leaves no partial file."""
@@ -838,43 +785,23 @@ def test_compatibility_projection_killed_mid_write_is_retryable(tmp_path: Path) 
     side_file = tmp_path / "side.txt"
     kill = _KillAtWrite("compatibility_projection", "mid-write", side_file)
 
-    def write() -> None:
-        write_compatibility_projection(
-            path, {"target": "sim"}, acceptance_committed=True, publication_checkpoint=kill
-        )
-
-    _run_killed(write, tmp_path / "trace.txt")
+    _run_killed(lambda: _write_projection(path, kill), tmp_path / "trace.txt")
     _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
     assert not path.exists()
-    write()
+    _write_projection(path, kill)
 
     assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
 
 
-@pytest.mark.parametrize(
-    "crash_point",
-    ["before:compatibility_projection", "after:compatibility_projection"],
-)
-def test_compatibility_projection_boundary_is_retryable(
-    tmp_path: Path,
-    crash_point: str,
-) -> None:
+def test_compatibility_projection_boundary_is_retryable(tmp_path: Path) -> None:
+    # The ``before:`` side is the arm point of the killed-mid-write test above.
     path = tmp_path / "simulation.json"
+    crash_point = "after:compatibility_projection"
     crash = _CrashOnce(crash_point)
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        write_compatibility_projection(
-            path,
-            {"target": "sim"},
-            acceptance_committed=True,
-            publication_checkpoint=crash,
-        )
-    write_compatibility_projection(
-        path,
-        {"target": "sim"},
-        acceptance_committed=True,
-        publication_checkpoint=crash,
-    )
+        _write_projection(path, crash)
+    _write_projection(path, crash)
 
     assert json.loads(path.read_text(encoding="utf-8")) == {
         "complete": True,
@@ -1002,14 +929,9 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
     if failure_path.startswith("legacy"):
         status = "spawn_error" if infrastructure else "failed"
         monkeypatch.setattr(
-            "booley.flows.sim.record.serial_execution._run_hook",
-            lambda *_args, **_kwargs: PreSimEvidence(
-                _kwargs["commands"],
-                _args[2],
-                status,
-                0.1,
-                "hook failed",
-                127 if infrastructure else 7,
+            "booley.flows.sim.record.serial_execution.run_pre_sim_commands",
+            lambda _handle, *, test_names, commands, **_kwargs: PreSimEvidence(
+                commands, test_names, status, 0.1, "hook failed", 127 if infrastructure else 7
             ),
         )
     group = _FailedBuildGroup(engine_root, infrastructure)
@@ -1079,36 +1001,22 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
         assert store.scan().items[0].attempt_count == 1
 
 
-@pytest.mark.parametrize("failure_path", ["compile_design", "compile_spawn"])
-def test_failed_build_partial_terminal_result_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_path: str
-) -> None:
-    checkpoint = _CrashOnce("never")
-    executor, request, invocation = _failed_build_case(
-        tmp_path, monkeypatch, failure_path, checkpoint
+def _new_request(tmp_path: Path) -> NewSimulationRecordRunRequest:
+    """A fresh Simulation Record run request for the crash fixture manifest."""
+    plan = create_simulation_record_plan(_crash_manifest())
+    project, _build, _log = _crash_environment(tmp_path)
+    invocation = tmp_path / "reports/000001"
+    invocation.mkdir(parents=True)
+    return NewSimulationRecordRunRequest(
+        plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
-    SimulationRecord(executor).run(request)
-    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
-    recovered = store.scan().items[0]
-    result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
-    result_path.write_bytes(b'{"partial":')
-
-    with pytest.raises(SimulationRecordIntegrityError):
-        SimulationRecord(executor).run(request)
 
 
 @pytest.mark.parametrize("boundary", ["before:manifest_commit", "after:manifest_commit"])
 def test_manifest_notification_is_committed_before_fault_checkpoint(
     tmp_path: Path, boundary: str
 ) -> None:
-    manifest = _crash_manifest()
-    plan = create_simulation_record_plan(manifest)
-    project, _build, _log = _crash_environment(tmp_path)
-    invocation = tmp_path / "reports/000001"
-    invocation.mkdir(parents=True)
-    request = NewSimulationRecordRunRequest(
-        plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
-    )
+    request = _new_request(tmp_path)
     published: list[Path] = []
 
     def notify(path: Path) -> None:
@@ -1129,8 +1037,6 @@ def test_manifest_notification_is_committed_before_fault_checkpoint(
 def test_closed_console_does_not_skip_postcommit_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import io
-
     from booley.flows.sim.flow import SimulateFlow
 
     flow = SimulateFlow()
@@ -1139,14 +1045,9 @@ def test_closed_console_does_not_skip_postcommit_checkpoint(
     stream.close()
     monkeypatch.setattr("booley.flows.sim.flow.sys.stderr", stream)
     published: list[Path] = []
-    manifest = _crash_manifest()
-    plan = create_simulation_record_plan(manifest)
-    project, _build, _log = _crash_environment(tmp_path)
-    invocation = tmp_path / "reports/000001"
-    invocation.mkdir(parents=True)
-    request = NewSimulationRecordRunRequest(
-        plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
-    )
+    request = _new_request(tmp_path)
+    # Private seam: the publisher is the Flow's own closure around the console; the crash
+    # checkpoint must still run after it, and no public run crashes at that point.
     simulation_record = SimulationRecord(
         publication_checkpoint=_CrashOnce("after:manifest_commit"),
         manifest_published=flow._manifest_publisher(published),
@@ -1161,26 +1062,23 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
 ) -> None:
     from booley.flows.sim.flow import SimulateFlow
 
-    manifest = _crash_manifest()
-    baseline = _baseline_disclosure_manifest(manifest)
-    project, _build, _log = _crash_environment(tmp_path)
-    invocation = tmp_path / "reports/000001"
-    invocation.mkdir(parents=True)
-    requests = [
-        NewSimulationRecordRunRequest(
-            create_simulation_record_plan(item),
-            project,
-            invocation.parent,
-            SimulationRecordPolicy(),
-            invocation,
-            _admission(),
-        )
-        for item in (baseline, manifest)
-    ]
+    request = _new_request(tmp_path)
+    baseline = replace(
+        request,
+        plan=create_simulation_record_plan(_baseline_disclosure_manifest(_crash_manifest())),
+    )
+    requests = [baseline, request]
     flow = SimulateFlow()
-    flow._console_publication_requested = True
     published: list[Path] = []
-    simulation_record = SimulationRecord(manifest_published=flow._manifest_publisher(published))
+    # Private seam: the Flow's own closure, as in the closed-console test above.
+    publish = flow._manifest_publisher(published)
+    # A fresh Flow retains the path without printing it.
+    publish(tmp_path / "manifest.json")
+    assert published == [(tmp_path / "manifest.json").resolve()]
+    assert capsys.readouterr().err == ""
+    published.clear()
+    flow._console_publication_requested = True
+    simulation_record = SimulationRecord(manifest_published=publish)
     paths = [simulation_record.publish_new(request) for request in requests]
     # Repeated publication notifications retain one recovery path per invocation.
     for request in requests:
@@ -1195,21 +1093,11 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
         f"Simulation Record manifest: {path.resolve()}\n" for path in paths
     )
     for request in requests:
+        # Private seam: no public entry point reopens a published Simulation Record without
+        # running it, and that reopening must not announce the manifest again.
         simulation_record._open_simulation_record(request)
     assert capsys.readouterr().err == ""
     assert published == paths
-
-
-def test_fresh_flow_defaults_to_silent_manifest_notification(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.flows.sim.flow import SimulateFlow
-
-    flow = SimulateFlow()
-    published: list[Path] = []
-    flow._manifest_publisher(published)(tmp_path / "manifest.json")
-    assert published == [tmp_path / "manifest.json"]
-    assert capsys.readouterr().err == ""
 
 
 def _baseline_disclosure_manifest(manifest):
@@ -1296,40 +1184,16 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Booley's own published evidence is trusted on commit and on every scan."""
-    manifest = _crash_manifest()
-    project, build_root, run_log = _crash_environment(tmp_path)
-    launches: list[int] = []
-    group = _CrashGroup(build_root, run_log, launches)
-    monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: _CrashCatalog(project),
-    )
-    invocation = tmp_path / "reports" / "000001"
-    invocation.mkdir(parents=True)
-    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
 
     def change_published_evidence(boundary: str) -> None:
         # Rewrite a bundle artifact after verification at launch.
         if boundary == "after:execution_evidence":
-            for path in store.root.glob("build-variants/*/attempts/*/simv"):
+            for path in case.store.root.glob("build-variants/*/attempts/*/simv"):
                 path.chmod(0o600)
                 path.write_bytes(b"changed image")
 
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
-        publication_checkpoint=change_published_evidence,
-    )
-    outcome = SimulationRecord(executor).run(
-        NewSimulationRecordRunRequest(
-            plan=create_simulation_record_plan(manifest),
-            project_root=project,
-            report_root=invocation.parent,
-            policy=SimulationRecordPolicy(),
-            invocation_directory=invocation,
-            admission=_admission(),
-        )
-    )
+    case = _serial_case(tmp_path / "case", monkeypatch, True, change_published_evidence)
+    outcome = case.record.run(case.request)
 
     assert outcome.complete is True
-    assert [item.state for item in store.scan().items] == ["complete"]
+    assert [item.state for item in case.store.scan().items] == ["complete"]

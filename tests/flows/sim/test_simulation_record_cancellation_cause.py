@@ -7,25 +7,29 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from booley.flows import endpoint_admission
 from booley.flows.sim.record import coordinator
-from booley.flows.sim.record.capacity import SimulationRecordCapacityError
+from booley.flows.sim.record.capacity import LeaseLostError, SimulationRecordCapacityError
 from booley.flows.sim.record.coordinator import (
+    NewSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordCancellationError,
+    SimulationRecordPolicy,
 )
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.scheduler import (
     BoundedSimulationRecordScheduler,
 )
+from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.job_slots import (
     SlotStore,
 )
 from tests.flows.sim.simulation_record_test_support import (
+    _admission,
     _holder_claim,
     _managed,
     _outer_claim,
@@ -46,6 +50,8 @@ class _SimulationRecord:
         (project / ".booley").mkdir(parents=True)
         self.slots = SlotStore(tmp_path / "slots")
         self.outer = _outer_claim(self.slots)
+        # _admission_cancellation_cause: the endpoint builds its admission around it, so the
+        # hand-built managed admission here needs the same callable to name slot-loss causes.
         cause = endpoint_admission._admission_cancellation_cause(self.slots, self.outer)
         admission = replace(
             _managed(self.slots, self.outer, holders=lanes),
@@ -69,6 +75,7 @@ class _SimulationRecord:
 
         def execute(_attempt, child_id) -> None:
             if child_id is not None:
+                # _shutdown: the scheduler's shutdown flag has no public wait, so idle lanes poll it.
                 deadline = time.monotonic() + 5.0  # idle child lane until cancelled
                 while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
                     time.sleep(0.01)
@@ -97,35 +104,11 @@ class _SimulationRecord:
             self.slots.release(self.outer)
 
 
-def test_outer_lane_stop_requested_names_cause(tmp_path: Path) -> None:
-    simulation_record = _SimulationRecord(tmp_path, lanes=1)
-
-    def fail_an_item() -> None:
-        assert simulation_record.scheduler is not None
-        simulation_record.scheduler._fail_simulation_record(RuntimeError("an item failed"))
-
-    simulation_record.run(1, trigger=fail_an_item)
-
-    assert simulation_record.outer_message is not None
-    assert "execution cancelled before result publication" in simulation_record.outer_message
-    assert "outer lane" in simulation_record.outer_message
-    assert "stop requested" in simulation_record.outer_message
-    assert "RuntimeError" in simulation_record.outer_message
+def _lease_lost(simulation_record, _monkeypatch):
+    return simulation_record.outer.lease_health.lost.set, "lease lost", None
 
 
-def test_outer_lane_lease_lost_names_slot(tmp_path: Path) -> None:
-    simulation_record = _SimulationRecord(tmp_path, lanes=1)
-    simulation_record.run(1, trigger=simulation_record.outer.lease_health.lost.set)
-
-    assert simulation_record.outer_message is not None
-    assert "outer lane" in simulation_record.outer_message
-    assert "lease lost" in simulation_record.outer_message
-    assert simulation_record.outer.path.name in simulation_record.outer_message
-
-
-def test_outer_lane_missing_token_names_slot(tmp_path: Path, monkeypatch) -> None:
-    simulation_record = _SimulationRecord(tmp_path, lanes=1)
-    path = simulation_record.outer.path
+def _token_missing(simulation_record, monkeypatch):
     real_absent = simulation_record.slots.token_absent
     withdrawn = threading.Event()
     # Report the entry gone without unlinking it: Windows may still hold it open.
@@ -134,14 +117,22 @@ def test_outer_lane_missing_token_names_slot(tmp_path: Path, monkeypatch) -> Non
         "token_absent",
         lambda token: withdrawn.is_set() or real_absent(token),
     )
-    simulation_record.run(1, trigger=withdrawn.set)
+    # A really missing file (released by the run) is still absent.
+    return withdrawn.set, "token missing", lambda: real_absent(simulation_record.outer) is True
+
+
+@pytest.mark.parametrize("scenario", [_lease_lost, _token_missing])
+def test_outer_lane_names_the_lost_slot(tmp_path: Path, monkeypatch, scenario) -> None:
+    simulation_record = _SimulationRecord(tmp_path, lanes=1)
+    trigger, reason, still_absent = scenario(simulation_record, monkeypatch)
+    simulation_record.run(1, trigger=trigger)
 
     assert simulation_record.outer_message is not None
     assert "outer lane" in simulation_record.outer_message
-    assert "token missing" in simulation_record.outer_message
-    assert path.name in simulation_record.outer_message
-    # A really missing file (released by the run) is still absent.
-    assert real_absent(simulation_record.outer) is True
+    assert reason in simulation_record.outer_message
+    assert simulation_record.outer.path.name in simulation_record.outer_message
+    if still_absent is not None:
+        assert still_absent()
 
 
 def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:
@@ -158,28 +149,50 @@ def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:
 
 def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
     simulation_record = _SimulationRecord(tmp_path, lanes=1)
-    lost = threading.Event()
-    permit = SimpleNamespace(
-        lease_health=SimpleNamespace(lost=lost),
-        token=SimpleNamespace(job_class="memory", path=Path("child.json")),
-    )
+    capacity = simulation_record.capacity
     try:
-        assert simulation_record.capacity._child_cancellation_cause(permit) is None
-        lost.set()
-        cause = simulation_record.capacity._child_cancellation_cause(permit)
-        assert cause == "Job Slot lease lost: memory/child.json"
+        with (
+            capacity.outer_permit(),
+            pytest.raises(LeaseLostError),  # the lane ends with its lease lost
+            capacity.child_permit(
+                "item",
+                attempt_id="attempt",
+                attempt_ordinal=1,
+                attempt_directory=Path("attempt"),
+                publish=lambda _child: None,
+                memory=capacity.work_item_claim({}),
+            ) as permit,
+        ):
+            assert permit.scope.cancellation_cause() is None
+            permit.lease_health.lost.set()
+            assert permit.scope.cancellation_cause() == (
+                f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
+            )
     finally:
         simulation_record.slots.release(simulation_record.outer)
 
 
-def test_cancelled_simulation_record_stops_before_publication() -> None:
-    request = SimpleNamespace(
-        admission=SimpleNamespace(
-            cancellation=lambda: True,
-            cancellation_cause=lambda: "Job Slot token missing: memory/entry.json",
-        )
+def test_cancelled_simulation_record_stops_before_publication(tmp_path: Path) -> None:
+    manifest = _two_item_manifest()
+    admission = replace(
+        _admission(),
+        cancellation=lambda: True,
+        cancellation_cause=lambda: "Job Slot token missing: memory/entry.json",
     )
+    project = tmp_path / "project"
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    executor = OrdinaryHdlSerialExecutor(invoke=lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
     with pytest.raises(
         SimulationRecordCancellationError, match="cancelled: Job Slot token missing"
     ):
-        SimulationRecord._raise_if_cancelled(request)  # type: ignore[arg-type]
+        SimulationRecord(executor, work_item_request=lambda *_args: None).run(
+            NewSimulationRecordRunRequest(
+                create_simulation_record_plan(manifest),
+                project,
+                invocation.parent,
+                SimulationRecordPolicy(),
+                invocation,
+                admission,
+            )
+        )

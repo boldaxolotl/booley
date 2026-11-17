@@ -204,11 +204,6 @@ def _target_dump_module_entry(
     return None
 
 
-def _target_includes_dump_module(core_doc: Mapping[str, Any], target: str) -> bool:
-    """True when *target*'s filesets carry the ``booley_vcd_dump.sv`` module."""
-    return _target_dump_module_entry(core_doc, target) is not None
-
-
 @dataclass(frozen=True)
 class TraceOverlay:
     """Handle to a written trace-overlay ``.core`` and the VLNV it declares.

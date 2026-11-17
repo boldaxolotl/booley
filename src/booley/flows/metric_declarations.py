@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+from typing import Any
 
 from booley.core.boundary import as_dict
 from booley.evidence.timing import ClockTiming
@@ -51,6 +52,16 @@ class MetricDeclaration:
     better: Better
     cost_tier: CostTier
     kind: MetricKind
+
+
+@dataclass(frozen=True)
+class FlowSetting:
+    """An integer a Flow's ``metrics.toml`` table sets, passed to the Flow as ``--<name>``."""
+
+    name: str
+    default: int
+    minimum: int
+    meaning: str
 
 
 @dataclass(frozen=True)
@@ -176,3 +187,15 @@ def metrics_from_document(raw: object) -> FlowMetricValues | MetricsUnavailable 
         per_test={name: dict(by_test) for name, by_test in document.get("per_test", {}).items()},
         clocks=tuple(document.get("clocks", ())),
     )
+
+
+def metrics_by_target(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
+    """Each Target's values from a report's ``detail.metrics`` map; the inverse of the writer."""
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
+    for target, raw in (as_dict(detail.get("metrics")) or {}).items():
+        entry = metrics_from_document(raw)
+        if entry is not None:
+            values[str(target)] = entry
+    return values

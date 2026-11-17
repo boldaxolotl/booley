@@ -182,6 +182,7 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "campaign",
             "campaign_dir",
             "test_campaign_artifacts_show_each_tests_baseline_duration_and_time_limit",
+            "test_campaign_report_gives_the_typed_mutation_metrics",
             "test_campaign_without_build_failures_names_no_replacement",
             "test_campaign_runs_the_baseline_then_each_mutant",
             "test_happy_path_publishes_campaign_artifacts",
@@ -203,6 +204,11 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "test_batched_campaign_launches_one_process_per_given_batch",
             "test_campaign_aggregation_cannot_pass_vacuously",
             "test_campaign_domain_does_not_import_presentation_layers",
+        }
+    ),
+    "tests/runtime/test_job_observation.py": frozenset(
+        {
+            "test_a_cli_campaign_waiting_for_an_item_claim_is_queued",
         }
     ),
 }

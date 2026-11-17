@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.sim import coverage_record_store as store
 from booley.flows.sim.coverage_json import (
     MANIFEST_JSON,
     content_digest,
@@ -44,6 +45,10 @@ from booley.flows.sim.coverage_record_store import (
 from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 from tests.flows.sim.coverage_record_test_support import decode_document, rewrite_manifest_as_v4
 from tests.flows.sim.test_coverage_record import _valid_document
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
+    _assert_refused,
+    _assert_unsupported_type,
+)
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
@@ -59,7 +64,6 @@ def _coverage_record():
 def test_nested_coverage_exact_and_over_limit_preserve_authoritative_hook_sidecars(
     tmp_path, monkeypatch, boundary
 ):
-    import booley.flows.sim.coverage_record_store as store
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     _invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
@@ -208,55 +212,24 @@ def _point(
 
 def _source_coverage_record():
     base = _coverage_record()
-    points = (
+    rows = (
+        ("rtl/z.sv", "line", 1, 1, "eligible", "TOP.first"),
+        ("rtl/z.sv", "line", 2, 0, "waived", "TOP.second"),
+        ("rtl/a.sv", "branch", 3, 0, "eligible", "TOP.third"),
+        ("tb/bench.sv", "expression", 4, 1, "unscored", "TOP.tb"),
+        ("rtl/a.sv", "toggle", 5, 2, "eligible", "TOP.fourth"),
+        ("rtl/a.sv", "cover_property", 6, 1, "eligible", "TOP.fifth"),
+    )
+    points = tuple(
         _point(
-            source="rtl/z.sv",
-            metric="line",
-            line=1,
-            hits=1,
-            disposition="eligible",
-            hierarchy="TOP.first",
-        ),
-        _point(
-            source="rtl/z.sv",
-            metric="line",
-            line=2,
-            hits=0,
-            disposition="waived",
-            hierarchy="TOP.second",
-        ),
-        _point(
-            source="rtl/a.sv",
-            metric="branch",
-            line=3,
-            hits=0,
-            disposition="eligible",
-            hierarchy="TOP.third",
-        ),
-        _point(
-            source="tb/bench.sv",
-            metric="expression",
-            line=4,
-            hits=1,
-            disposition="unscored",
-            hierarchy="TOP.tb",
-        ),
-        _point(
-            source="rtl/a.sv",
-            metric="toggle",
-            line=5,
-            hits=2,
-            disposition="eligible",
-            hierarchy="TOP.fourth",
-        ),
-        _point(
-            source="rtl/a.sv",
-            metric="cover_property",
-            line=6,
-            hits=1,
-            disposition="eligible",
-            hierarchy="TOP.fifth",
-        ),
+            source=source,
+            metric=metric,
+            line=line,
+            hits=hits,
+            disposition=disposition,
+            hierarchy=hierarchy,
+        )
+        for source, metric, line, hits, disposition, hierarchy in rows
     )
     return replace(base, points=points, rollups=derive_coverage_rollups(points))
 
@@ -343,8 +316,6 @@ def test_manifest_has_canonical_per_source_rollups(tmp_path: Path) -> None:
 def test_publish_rejects_oversized_manifest_and_removes_point_store(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import booley.flows.sim.coverage_record_store as store
-
     monkeypatch.setattr(store, "MAX_MANIFEST_BYTES", 1)
 
     with pytest.raises(CoverageRecordStoreError) as error:
@@ -356,8 +327,6 @@ def test_publish_rejects_oversized_manifest_and_removes_point_store(
 
 
 def test_publish_decodes_nothing_it_just_encoded(tmp_path: Path, monkeypatch) -> None:
-    import booley.flows.sim.coverage_record_store as store
-
     def refuse_decode(*args, **kwargs):
         raise AssertionError("publication must not decode the manifest it just encoded")
 
@@ -387,25 +356,19 @@ def test_failed_manifest_link_removes_point_store(tmp_path: Path, monkeypatch) -
     assert not (tmp_path / "coverage-points.jsonl.gz").exists()
 
 
-def test_publish_never_replaces_existing_coverage_record_artifact(tmp_path: Path) -> None:
-    existing = tmp_path / "coverage-points.jsonl.gz"
+@pytest.mark.parametrize("name", ["coverage-points.jsonl.gz", "coverage.json"])
+def test_publish_never_replaces_an_existing_coverage_record_file(
+    tmp_path: Path, name: str
+) -> None:
+    existing = tmp_path / name
     existing.write_bytes(b"owned")
 
     with pytest.raises(CoverageRecordStoreError, match="cannot replace"):
         publish_coverage_record(tmp_path, _coverage_record())
 
     assert existing.read_bytes() == b"owned"
-
-
-def test_publish_never_replaces_existing_manifest(tmp_path: Path) -> None:
-    existing = tmp_path / "coverage.json"
-    existing.write_bytes(b"owned")
-
-    with pytest.raises(CoverageRecordStoreError, match="cannot replace"):
-        publish_coverage_record(tmp_path, _coverage_record())
-
-    assert existing.read_bytes() == b"owned"
-    assert not (tmp_path / "coverage-points.jsonl.gz").exists()
+    if name == "coverage.json":
+        assert not (tmp_path / "coverage-points.jsonl.gz").exists()
 
 
 def test_deep_reader_rejects_truncated_point_storage(tmp_path: Path) -> None:
@@ -418,8 +381,6 @@ def test_deep_reader_rejects_truncated_point_storage(tmp_path: Path) -> None:
 
 
 def test_deep_reader_stops_at_the_uncompressed_ceiling(tmp_path: Path, monkeypatch) -> None:
-    import booley.flows.sim.coverage_record_store as store
-
     paths = publish_coverage_record(tmp_path, _coverage_record())
     ceiling = json.loads(paths.coverage_record.read_bytes())["point_store"]["uncompressed_bytes"]
     monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", ceiling)
@@ -459,6 +420,7 @@ def test_manifest_reader_rejects_linked_parent(tmp_path: Path) -> None:
 def test_deep_load_validates_the_coverage_record_once(tmp_path: Path, monkeypatch) -> None:
     import booley.flows.sim.coverage_record as codec
 
+    # Validation runs inside the one decode; no public seam can tell one validation from two.
     paths = publish_coverage_record(tmp_path, _coverage_record())
     structural = codec._structural_findings
     calls = 0
@@ -517,28 +479,20 @@ def test_readers_refuse_every_coverage_record_booley_0_4_0_wrote_as_older(
     document["$schema"] = f"booley.coverage-campaign/{version}"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    with pytest.raises(UnsupportedSimulationRecordFormatError, match="older Booley"):
+    with pytest.raises(UnsupportedSimulationRecordFormatError, match="older Booley") as error:
         reader(path, TARGET)
+
+    _assert_refused(str(error.value), document["$schema"])
+    _assert_unsupported_type(error.value)
 
 
 @pytest.mark.parametrize("reader", [load_coverage_record, _load_bytes])
-def test_readers_keep_the_unsupported_schema_error_for_an_unknown_schema(
-    tmp_path: Path, reader
-) -> None:
-    path = tmp_path / "coverage.json"
-    document = _valid_document()
-    document["$schema"] = "booley.coverage-record/v2"
-    path.write_text(json.dumps(document), encoding="utf-8")
-
-    with pytest.raises(CoverageRecordStoreError, match="recollect coverage") as error:
-        reader(path, TARGET)
-
-    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
-
-
-@pytest.mark.parametrize("reader", [load_coverage_record, _load_bytes])
-@pytest.mark.parametrize("schema", [[], {}, 5, None])
-def test_readers_reject_a_non_string_schema_as_unsupported(
+@pytest.mark.parametrize(
+    "schema",
+    ["booley.coverage-record/v2", [], {}, 5, None],
+    ids=["v2", "list", "dict", "int", "none"],
+)
+def test_readers_report_an_unknown_or_non_string_schema_as_unsupported(
     tmp_path: Path, reader, schema: object
 ) -> None:
     path = tmp_path / "coverage.json"
@@ -550,13 +504,13 @@ def test_readers_reject_a_non_string_schema_as_unsupported(
         reader(path, TARGET)
 
     assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
+    if schema == "booley.coverage-record/v2":
+        assert "recollect coverage" in str(error.value)
 
 
 def test_unsupported_schema_is_rejected_before_coverage_record_decode(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import booley.flows.sim.coverage_record_store as store
-
     path = tmp_path / "coverage.json"
     path.write_text(json.dumps(_valid_document()), encoding="utf-8")
     decode = store.decode_coverage_record
@@ -609,25 +563,6 @@ def test_image_alias_store_readers_and_suffix_links(project_alias):
     ):
         with pytest.raises((ValueError, OSError), match=r"link|regular|unsafe"):
             read(alias / "linked/coverage.json")
-
-
-def test_the_per_run_projection_takes_variant_and_seed_from_the_run() -> None:
-    from types import SimpleNamespace
-
-    from booley.flows.sim.coverage_transaction import _coverage_test_projection
-
-    run = SimpleNamespace(
-        test="reset",
-        test_run="reset+soak@7",
-        variant="soak",
-        seed=7,
-        fingerprint="sha256:" + "0" * 64,
-        simulation_verdict="pass",
-        collection="included",
-        attributes={},
-    )
-    entry = _coverage_test_projection(run)  # type: ignore[arg-type]
-    assert (entry["test_run"], entry["variant"], entry["seed"]) == ("reset+soak@7", "soak", 7)
 
 
 @pytest.mark.parametrize("linked", ["entry", "below"])

@@ -19,13 +19,10 @@ Mode (ADR 0012).
 
 from __future__ import annotations
 
-import copy
 import logging
-import os
 import re
-import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,7 +60,6 @@ from booley.flows.reservation_phases import report_phase_end
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
-    compose_result,
     note_line,
     status_cell,
 )
@@ -73,47 +69,33 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.presentation import colors
 from booley.presentation.terminal_table import render_table
-from booley.runtime import job_slots
-from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
-from booley.targets.domain import TargetHandle
 from booley.targets.parameter_integrity import validate_top_parameter_intent
 
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
-from ..base import BuiltinFlow, SubprocessResult
+from ..base import SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
     git_full_sha,
-    git_short_sha,
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
-    TargetPairPlan,
     baseline_execution_context,
-    candidate_execution_refs,
     resolve_target_execution_ref,
-    selected_target_handle,
-    target_pair_plans_for_handles,
-    target_plan_for_handle,
 )
+from ..implementation_flow import ImplementationFlow
 from ..implementation_publication import (
-    ImplementationProgress,
-    ImplementationProgressRun,
-    ImplementationPublisher,
-    target_report_path,
     target_report_slug,
 )
 from ..implementation_report import (
     ImplementationAggregate,
+    ImplementationContext,
     ImplementationReport,
-    build_implementation_aggregate,
-    implementation_context,
 )
 from ..invocation import resolve_timeout_ms
-from ..progress_lifecycle import ProgressPublicationError
 from .backends.vivado import cache as fpga_cache
 from .backends.vivado import edam as fpga_edam
 from .backends.vivado.edam import validate_vivado_parameter_types
@@ -176,7 +158,7 @@ def _int_metric(data: dict[str, Any], key: str) -> int | None:
     return as_int(data.get(key), None)
 
 
-class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
+class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
     """Run FPGA implementation for one or more Targets with optional baseline comparison.
 
     The description deliberately does not name Vivado: which EDA Flow backs a
@@ -208,11 +190,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     announce_success_report: bool = True
     conventional_families: ClassVar[frozenset[str]] = frozenset({"fpga_impl_ok"})
 
-    # FPGA implementation is memory-admitted as a Sandbox job.
-    def _resolve_job_class(self) -> str:
-        """FPGA implementation is a memory-admitted Sandbox workload."""
-        return job_slots.CLASS_MEMORY
-
     def _licensed_tools(self) -> tuple[str, ...]:
         """One Job runs its Vivado work units in series: one Vivado seat.
 
@@ -221,128 +198,48 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """
         return ("vivado",) if self._flow_enabled() else ()
 
-    def _build_command(self) -> list[str]:
-        return []
-
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
-        return EndpointOutcome()
-
-    def _run(self) -> EndpointOutcome:  # noqa: PLR0911 — linear aggregate orchestration
-        # The initially selected worktree, captured before any baseline run
-        # swaps ``self.args.work_dir`` to a throwaway worktree.  It distinguishes
-        # primary-run artifacts from temporary baseline artifacts.
-        self._project_root = Path(self.args.work_dir)
-        self._baseline_full_sha: str | None = None
-        handles = self._selected_target_handles()
-        self._target_handles = {handle.selector: handle for handle in handles}
-        targets = [handle.selector for handle in handles]
-        if not targets:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "fpga: no Target selected. Pass --target <name> "
-                    "(bare name if unambiguous, else vlnv#name)."
-                ),
-            )
-
-        comparison_error = self._prepare_target_pairs(handles)
-        if comparison_error is not None:
-            return comparison_error
-        if not self._flow_enabled():
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text="fpga is disabled ([flows.fpga].enabled = false).",
-            )
-        plan = self._plan_fpga_implementation(targets)
-        self._flow_plan = plan
-        if self.args.dry_run:
-            return self._dry_run_result(plan)
-        if plan.aggregate_errors:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "fpga: infrastructure error during planning: "
-                    + "; ".join(plan.aggregate_errors)
-                ),
-                detail={"plan": plan.as_dict()},
-            )
+    def _begin_run(self, targets: list[str], /) -> None:
+        """Record Vivado as each Target's EDA tool before the run."""
         for target in targets:
             self.record_eda_tool(target, "vivado")
-        self._execution_role = "candidate"
-        self._implementation_reports: dict[str, ImplementationReport] = {}
-        self.reserve_invocation_dir()
-        progress = ImplementationProgressRun(
-            self.name,
-            lambda current, baseline, phase, baseline_ref, complete: self._write_progress_report(
-                targets,
-                current,
-                baseline,
-                phase=phase,
-                baseline_ref=baseline_ref,
-                complete=complete,
-            ),
-        )
-        try:
-            with progress:
-                baseline_outcome, short_sha = self._run_baseline_configs(
-                    self._target_pairs, progress.baseline_results
-                )
-                if isinstance(baseline_outcome, EndpointOutcome):
-                    return baseline_outcome
-                progress.baseline_ref = short_sha
-                current_results = self._run_current_targets(
-                    targets,
-                    progress.baseline_results,
-                    short_sha,
-                    progress.current_results,
-                )
-                result = self._aggregate_results(
-                    targets, current_results, progress.baseline_results, short_sha
-                )
-                return progress.complete(result)
-        except ProgressPublicationError as exc:
-            return progress.publication_failure(exc)
 
-    def _run_current_targets(
+    def _run_target(self, target: str, publish: Callable[[FpgaMetrics], None], /) -> FpgaMetrics:
+        """Implement one Target and publish its outcome."""
+        metrics = self._run_single_target(target)
+        publish(metrics)
+        return metrics
+
+    def _result_text(
         self,
         targets: list[str],
-        baseline_results: dict[str, FpgaMetrics],
-        short_sha: str | None,
-        current_results: dict[str, FpgaMetrics] | None = None,
-    ) -> dict[str, FpgaMetrics]:
-        current_results = current_results if current_results is not None else {}
-        for tgt in targets:
-            metrics = self._run_single_target(tgt)
-            self._persist_target_outcome(
-                tgt,
-                metrics,
-                baseline_results.get(tgt),
-                short_sha,
-            )
-            current_results[tgt] = metrics
-            self._write_progress_report(
-                targets,
-                current_results,
-                baseline_results,
-                phase="current",
-                baseline_ref=short_sha,
-            )
-            if len(targets) > 1:
-                self.emit_completion(
-                    self._format_config_line(tgt, metrics, baseline_results.get(tgt), human=True)
-                )
-        return current_results
+        current: dict[str, FpgaMetrics],
+        baseline: dict[str, FpgaMetrics],
+        reports: dict[str, ImplementationReport],
+        aggregate: ImplementationAggregate,
+        /,
+    ) -> tuple[list[str], list[str], str]:
+        """Build the FPGA table, notes and ``RESULT:`` headline."""
+        notes, failures = self._baseline_error_notes(baseline, reports)
+        self._append_target_notes(notes, failures, targets, current)
+        verdict = {0: "PASS", 1: "FAIL", 2: "ERROR"}[aggregate.exit_code]
+        suffix = f" ({'; '.join(failures)})" if failures else ""
+        table = self._summary_table_lines(targets, current, baseline, reports)
+        return table, notes, f"RESULT: {verdict}{suffix}"
 
-    def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> EndpointOutcome | None:
-        comparison_error: str | None = None
-        try:
-            self._target_pairs = target_pair_plans_for_handles(handles, flow="fpga")
-            self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
-        except ImplementationComparisonError as exc:
-            comparison_error = f"fpga: {exc}"
-        if comparison_error is not None:
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=comparison_error)
-        return None
+    def _result_detail(
+        self,
+        targets: list[str],
+        current: dict[str, FpgaMetrics],
+        baseline: dict[str, FpgaMetrics],
+        short_sha: str | None,
+        reports: dict[str, ImplementationReport],
+        aggregate: ImplementationAggregate,
+        /,
+    ) -> dict[str, Any]:
+        return self._aggregate_detail(targets, current, aggregate)
+
+    def _display_lines(self, targets: list[str], current: dict[str, FpgaMetrics], /) -> list[str]:
+        return _first_valid_display(targets, current)
 
     def _fpga_work_unit(
         self,
@@ -402,7 +299,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         except ValueError:
             return normalize_plan_path(path, root)
 
-    def _plan_fpga_implementation(self, targets: list[str]) -> FlowPlan:
+    def _plan_implementation(self, targets: list[str]) -> FlowPlan:
         """Resolve candidate and baseline recipes before either revision runs."""
         candidate_units: list[WorkUnitPlan] = []
         baseline_units: list[WorkUnitPlan] = []
@@ -584,23 +481,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             handle,
             build_root=selected_root,
             library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
-        )
-
-    def _target_handle(self, target: str) -> TargetHandle:
-        """Return the selected handle, reselecting only in a baseline checkout."""
-        return selected_target_handle(
-            getattr(self, "_target_handles", {}),
-            self.args.work_dir,
-            target,
-            flow="fpga",
-        )
-
-    def _target_plan(self, target: str) -> TargetPairPlan:
-        """Look up the total pair plan by canonical candidate identity."""
-        return target_plan_for_handle(
-            getattr(self, "_target_pairs", ()),
-            self._target_handle(target),
-            flow="fpga",
         )
 
     def _prepare_fpga_command(
@@ -1185,206 +1065,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             metrics.returncode = exit_code
         return metrics
 
-    def _run_baseline_configs(
-        self,
-        pairs: tuple[TargetPairPlan, ...],
-        results: dict[str, FpgaMetrics] | None = None,
-    ) -> tuple[dict[str, FpgaMetrics] | EndpointOutcome, str | None]:
-        """Implement *configs* at ``--baseline`` in a throwaway worktree.
-
-        Returns ``(results_dict, short_sha)``, or ``(EndpointOutcome, None)`` when the
-        worktree could not be created. The baseline ref is materialized in an
-        ephemeral ``git worktree`` under the project (inside the Session
-        Runtime workspace) rather than checked out in
-        place, so the caller's tree is untouched and this works in Interactive
-        Mode too (ADR 0012). ``self.args.work_dir`` is pointed at the worktree
-        for the duration; ``self._project_root`` (set in :meth:`_run`) preserves
-        the initially selected checkout. Route reports and any failure tail are parsed
-        into the returned in-memory metrics before the worktree dies.
-        """
-        baseline_ref = self.args.baseline
-        if not baseline_ref:
-            return results or {}, None
-
-        project_root = Path(self.args.work_dir)
-        short_sha = git_short_sha(baseline_ref, project_root)
-        full_sha = git_full_sha(str(baseline_ref), project_root)
-        if full_sha is not None:
-            self._baseline_full_sha = full_sha
-        try:
-            with baseline_worktree(
-                project_root,
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as wt:
-                self.args.work_dir = wt
-                current_handles = self._target_handles
-                current_refs = getattr(self, "_target_execution_refs", {})
-                current_role = getattr(self, "_execution_role", "candidate")
-                self._target_handles, self._target_execution_refs = baseline_execution_context(
-                    pairs, wt
-                )
-                self._execution_role = "baseline"
-                try:
-                    baseline_results = self._execute_baseline_pairs(pairs, short_sha, results)
-                finally:
-                    self._target_handles = current_handles
-                    self._target_execution_refs = current_refs
-                    self._execution_role = current_role
-                    self.args.work_dir = project_root
-        except (BaselineWorktreeError, ImplementationComparisonError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"fpga: {exc}",
-            ), None
-
-        return baseline_results, short_sha
-
-    def _execute_baseline_pairs(
-        self,
-        pairs: tuple[TargetPairPlan, ...],
-        short_sha: str,
-        results: dict[str, FpgaMetrics] | None = None,
-    ) -> dict[str, FpgaMetrics]:
-        results = results if results is not None else {}
-        executed: dict[str, FpgaMetrics] = {}
-        targets = [plan.candidate.selector for plan in pairs]
-        for plan in pairs:
-            baseline = plan.baseline.selector
-            candidate = plan.candidate.selector
-            if baseline not in executed:
-                executed[baseline] = self._run_single_target(baseline)
-            results[candidate] = copy.deepcopy(executed[baseline])
-            self._write_progress_report(
-                targets, {}, results, phase="baseline", baseline_ref=short_sha
-            )
-        return results
-
-    def _implementation_report(
-        self,
-        target: str,
-        current: FpgaMetrics,
-        baseline: FpgaMetrics | None,
-        baseline_ref: str | None,
-    ) -> ImplementationReport:
-        """Adapt native FPGA evidence to the shared canonical schema."""
-        context = implementation_context(
-            self._target_plan(target),
-            target=target,
-            eda_tool=self._eda_tool,
-            baseline_ran=baseline is not None,
-            requested_baseline_ref=self.args.baseline,
-            resolved_baseline_ref=getattr(self, "_baseline_full_sha", None) or baseline_ref,
-        )
-        return build_fpga_implementation_report(context, current, baseline)
-
-    def _publisher(self) -> ImplementationPublisher:
-        return ImplementationPublisher(
-            work_dir=Path(self.args.work_dir),
-            report_dir=self.args.report_dir,
-            invocation_dir=self.reserve_invocation_dir(),
-        )
-
-    def _write_progress_report(
-        self,
-        targets: list[str],
-        current_results: dict[str, FpgaMetrics],
-        baseline_results: dict[str, FpgaMetrics],
-        *,
-        phase: str,
-        baseline_ref: str | None = None,
-        complete: bool = False,
-    ) -> None:
-        progress = ImplementationProgress(
-            flow=self.name,
-            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-            targets=tuple(targets),
-            completed_targets=tuple(current_results),
-            baseline_completed_targets=tuple(baseline_results),
-            phase=phase,
-            complete=complete,
-            baseline_ref=baseline_ref,
-            reports=getattr(self, "_implementation_reports", {}),
-        )
-        self._publisher().publish_progress(progress)
-
-    def _persist_target_outcome(
-        self,
-        target: str,
-        current: FpgaMetrics,
-        baseline: FpgaMetrics | None,
-        baseline_ref: str | None,
-    ) -> None:
-        implementation = self._implementation_report(target, current, baseline, baseline_ref)
-        implementation = self._write_target_report(
-            target, current, baseline, baseline_ref, implementation=implementation
-        )
-        self._implementation_reports[target] = implementation
-
-    @staticmethod
-    def _baseline_error_lines(
-        baseline_results: dict[str, FpgaMetrics],
-        reports: dict[str, ImplementationReport],
-    ) -> tuple[list[str], list[str]]:
-        lines: list[str] = []
-        failures: list[str] = []
-        for target, metrics in baseline_results.items():
-            if metrics.infra_error:
-                lines.append(note_line(f"baseline {target}", "ERROR", metrics.infra_error))
-                failures.append(f"baseline {target}: infrastructure error")
-        for target, report in reports.items():
-            comparison = report.canonical.get("comparison")
-            errors = comparison.get("basis_errors", []) if isinstance(comparison, dict) else []
-            for message in errors:
-                if str(message).startswith("baseline infrastructure error:"):
-                    continue
-                lines.append(note_line(f"comparison {target}", "ERROR", str(message)))
-                failures.append(f"comparison {target}: invalid evidence")
-        return lines, failures
-
-    def _aggregate_results(
-        self,
-        configs: list[str],
-        current_results: dict[str, FpgaMetrics],
-        baseline_results: dict[str, FpgaMetrics],
-        short_sha: str | None,
-    ) -> EndpointOutcome:
-        implementation_reports = {
-            target: getattr(self, "_implementation_reports", {}).get(target)
-            or self._implementation_report(
-                target,
-                current_results[target],
-                baseline_results.get(target),
-                short_sha,
-            )
-            for target in configs
-        }
-        implementation_aggregate = build_implementation_aggregate(
-            implementation_reports,
-            baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
-        )
-        notes, failures = self._baseline_error_lines(baseline_results, implementation_reports)
-        self._append_target_notes(notes, failures, configs, current_results)
-        verdict = {0: "PASS", 1: "FAIL", 2: "ERROR"}[implementation_aggregate.exit_code]
-        suffix = f" ({'; '.join(failures)})" if failures else ""
-        result = compose_result(
-            short_sha if self.args.baseline else None,
-            self._summary_table_lines(
-                configs, current_results, baseline_results, implementation_reports
-            ),
-            notes,
-            f"RESULT: {verdict}{suffix}",
-        )
-        if sys.stdout.isatty():
-            # Elsewhere the console publisher prints the plain record.
-            print(result.console, flush=True)
-        return EndpointOutcome(
-            exit_code=implementation_aggregate.exit_code,
-            report_text=result.record,
-            display_lines=_first_valid_display(configs, current_results),
-            detail=self._aggregate_detail(configs, current_results, implementation_aggregate),
-        )
-
     def _append_target_notes(
         self,
         lines: list[str],
@@ -1570,55 +1250,45 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             return f"{cfg}: critical conditions: {cur.critical_summary()}"
         return f"{cfg}: failed"
 
-    def _write_target_report(
+    def _build_implementation_report(
         self,
-        cfg: str,
-        cur: FpgaMetrics,
-        base: FpgaMetrics | None,
-        baseline_ref: str | None,
-        *,
-        implementation: ImplementationReport,
+        context: ImplementationContext,
+        current: FpgaMetrics,
+        baseline: FpgaMetrics | None,
     ) -> ImplementationReport:
-        report_dir = self.args.report_dir
-        if report_dir is None:
-            return implementation
-        report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = target_report_path(self.name, cfg, report_dir)
-        report = self._target_report_payload(cfg, cur, base, baseline_ref, report_path)
-        report["passed"] = implementation.passed
-        published = self._publisher().publish_report(implementation, report)
-        return ImplementationReport(published.payload["implementation"])
+        """Adapt native FPGA evidence to the shared canonical schema."""
+        return build_fpga_implementation_report(context, current, baseline)
 
     def _target_report_payload(
         self,
-        cfg: str,
-        cur: FpgaMetrics,
-        base: FpgaMetrics | None,
+        target: str,
+        current: FpgaMetrics,
+        baseline: FpgaMetrics | None,
         baseline_ref: str | None,
         report_path: Path,
     ) -> dict[str, Any]:
-        plan = self._target_plan(cfg)
+        plan = self._target_plan(target)
         report = {
             "flow": self.name,
-            "target": cfg,
+            "target": target,
             "eda_tool": "vivado",
             "timestamp": utc_now_rfc3339(),
-            "passed": cur.passed,
-            "returncode": cur.returncode,
-            "timed_out": cur.timed_out,
-            "infra_error": cur.infra_error,
-            "cached": cur.cached,
-            "cache_fingerprint": cur.cache_fingerprint or None,
-            "metrics": _metrics_detail(cur),
-            "recipe_fingerprint": cur.recipe_fingerprint or None,
-            "recipe_snapshot": cur.recipe_snapshot or None,
-            "run_evidence": cur.run_evidence or None,
-            "cache_consumer_run_id": cur.cache_consumer_run_id or None,
+            "passed": current.passed,
+            "returncode": current.returncode,
+            "timed_out": current.timed_out,
+            "infra_error": current.infra_error,
+            "cached": current.cached,
+            "cache_fingerprint": current.cache_fingerprint or None,
+            "metrics": _metrics_detail(current),
+            "recipe_fingerprint": current.recipe_fingerprint or None,
+            "recipe_snapshot": current.recipe_snapshot or None,
+            "run_evidence": current.run_evidence or None,
+            "cache_consumer_run_id": current.cache_consumer_run_id or None,
             "baseline_ref": baseline_ref,
-            "baseline_metrics": _metrics_detail(base, baseline=True) if base else None,
-            "baseline_recipe_fingerprint": base.recipe_fingerprint if base else None,
-            "baseline_recipe_snapshot": base.recipe_snapshot if base else None,
-            "baseline_run_evidence": base.run_evidence if base else None,
+            "baseline_metrics": _metrics_detail(baseline, baseline=True) if baseline else None,
+            "baseline_recipe_fingerprint": baseline.recipe_fingerprint if baseline else None,
+            "baseline_recipe_snapshot": baseline.recipe_snapshot if baseline else None,
+            "baseline_run_evidence": baseline.run_evidence if baseline else None,
             "baseline_target": plan.baseline.selector,
             "candidate_target": plan.candidate.selector,
             "baseline_target_identity": plan.baseline.identity,
@@ -1629,8 +1299,8 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # consumer holding only the report can find the log and the rest.
         report["artifacts"] = {
             "report": posix_relpath(report_path, self.args.work_dir),
-            **({"log": cur.log_path} if cur.log_path else {}),
-            **({"live_dirs": dict(cur.dirs)} if cur.dirs else {}),
+            **({"log": current.log_path} if current.log_path else {}),
+            **({"live_dirs": dict(current.dirs)} if current.dirs else {}),
         }
         return report
 

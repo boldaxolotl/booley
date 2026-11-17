@@ -169,7 +169,7 @@ def _install_fakes(
     launches: list[Launch],
 ) -> None:
     def prepare_build(self: SimulationExecution, handle: Any) -> Any:
-        assert self._build_session is not None
+        assert self._build_session is not None  # Private: the execution's own session
         work_root = self._build_session.new_generation()
         build_root = work_root / "build"
         build_root.mkdir()
@@ -232,6 +232,7 @@ def _install_fakes(
             write_adapter_result(identity, result)
         return canned
 
+    # Private seams: the process boundary and the build have no public injection point.
     monkeypatch.setattr(SimulationExecution, "_prepare_build", prepare_build)
     monkeypatch.setattr(SimulateFlow, "_execute_boundary", boundary)
     monkeypatch.setattr(SimulationBuildSession, "capture_inputs", lambda *_a, **_k: {})
@@ -246,7 +247,7 @@ def _install_fakes(
 def _cocotb_adapter_result(
     identity: AdapterTransportIdentity, process: SubprocessResult
 ) -> AdapterResult:
-    """The result the production Cocotb adapter publishes for *process*'s output.
+    """The result the production Cocotb adapter publishes for *process*'s output (private helpers: only the adapter's run method is public, and it needs a simulator).
 
     Composes the adapter's own verdict assessment and result builder: only the
     simulator run (which would have produced ``results.xml``) is replaced by the
