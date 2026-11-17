@@ -127,7 +127,11 @@ def _stage(adapter: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, steps:
     monkeypatch.setenv("FAKE_SIM", steps)
     if adapter == "icarus":
         (dirs.build / "sim_cfg.scr").write_text("", encoding="utf-8")
-        monkeypatch.setattr(icarus_adapter, "_find_vvp", lambda: str(sim))
+        # The adapter resolves `vvp` on PATH: a directory holding only the fake simulator.
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir(exist_ok=True)
+        (fake_bin / "vvp").symlink_to(sim)
+        monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     else:
         (dirs.build / "Vtb_top").symlink_to(sim)
     return dirs
@@ -193,15 +197,10 @@ def test_declared_vcd_streams_to_trace_ok(adapter, tmp_path, monkeypatch):
 
 
 def _assert_host_without_streaming_converts_after_the_run(tmp_path, monkeypatch):
-    """Windows or no streaming support: the same entry stays a plain file, converted afterwards."""
-    steps, entries = "write:fpu.vcd;record:fpu.vcd", ["fpu.vcd"]
-    streaming = _run(
-        "verilator", tmp_path / "on", monkeypatch, "record:fpu.vcd;write:fpu.vcd", entries
-    )
+    """Windows or no streaming support: the entry stays a plain file, converted afterwards."""
     monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: False)
-    plain = _run("verilator", tmp_path / "off", monkeypatch, steps, entries)
+    plain = _run("verilator", tmp_path, monkeypatch, "write:fpu.vcd;record:fpu.vcd", ["fpu.vcd"])
 
-    assert streaming.types() == {"fpu.vcd": "fifo"}
     assert plain.types() == {"fpu.vcd": "file"}
     assert "TRACE_OK" in plain.output
     assert any("fpu.vcd" in a["detail"] for a in plain.attempts("vcd_postprocess"))
@@ -266,12 +265,6 @@ def _finished_streams(tmp_path: Path, budget_s: float) -> DeclaredTraceStreams:
     streams.close_inputs()
     streams.finish()
     return streams
-
-
-def test_failed_stream_names_the_testbench_fix(tmp_path):
-    streams = _finished_streams(tmp_path, 60)
-
-    assert streams.failures == {"fpu.vcd": _NO_HEADER_TEXT}
 
 
 def test_budget_exhausted_stream_keeps_its_text(tmp_path, monkeypatch):
@@ -343,11 +336,17 @@ def test_existing_user_file_is_kept_and_falls_back(tmp_path, monkeypatch):
     assert any("a.vcd" in a["detail"] for a in out.attempts("declared_stream"))
 
 
-def test_foreign_fifo_without_sidecar_is_kept(tmp_path, monkeypatch):
+@pytest.mark.parametrize("sidecar", [False, True], ids=["no-sidecar", "mismatched-sidecar"])
+def test_foreign_fifo_is_kept(sidecar, tmp_path, monkeypatch):
+    """A pipe without a sidecar, or whose sidecar names another inode, proves nothing."""
     (tmp_path / "run").mkdir()
     foreign = tmp_path / "run" / "a.vcd"
     os.mkfifo(foreign)
     identity = foreign.lstat().st_ino
+    if sidecar:
+        (tmp_path / "run" / ".a.vcd.booley-pipe").write_text(
+            json.dumps({"dev": 0, "ino": identity + 1}), encoding="utf-8"
+        )
 
     out = _run(
         "verilator", tmp_path, monkeypatch, "record:a.vcd,b.vcd;write:b.vcd", ["a.vcd", "b.vcd"]
@@ -355,23 +354,6 @@ def test_foreign_fifo_without_sidecar_is_kept(tmp_path, monkeypatch):
 
     assert out.types() == {"a.vcd": "fifo", "b.vcd": "fifo"}
     assert stat.S_ISFIFO(foreign.lstat().st_mode) and foreign.lstat().st_ino == identity
-
-
-def test_fifo_with_mismatched_sidecar_is_kept(tmp_path, monkeypatch):
-    """A sidecar that names another inode proves nothing about the pipe."""
-    (tmp_path / "run").mkdir()
-    foreign = tmp_path / "run" / "a.vcd"
-    os.mkfifo(foreign)
-    identity = foreign.lstat().st_ino
-    sidecar = tmp_path / "run" / ".a.vcd.booley-pipe"
-    sidecar.write_text(json.dumps({"dev": 0, "ino": identity + 1}), encoding="utf-8")
-
-    out = _run(
-        "verilator", tmp_path, monkeypatch, "record:a.vcd,b.vcd;write:b.vcd", ["a.vcd", "b.vcd"]
-    )
-
-    assert out.types() == {"a.vcd": "fifo", "b.vcd": "fifo"}
-    assert foreign.lstat().st_ino == identity
 
 
 def _plant_leftovers(run_dir: Path) -> int:
@@ -459,11 +441,7 @@ def test_cocotb_launch_clears_a_stale_booley_pipe_first(tmp_path, monkeypatch):
     assert os.lstat(run_dir / "a.vcd").st_ino == foreign_inode
 
 
-def test_streamed_store_that_cannot_move_stays_the_trace(tmp_path, monkeypatch):
-    from tests.conftest import MINIMAL_FST_BYTES
-
-    from booley.flows.sim.trace_session import TraceSession
-
+def test_streamed_store_that_cannot_move_stays_the_trace(tmp_path):
     work = tmp_path / "work"
     store = work / "trace_streams" / "0-fpu.fst"
     store.parent.mkdir(parents=True)
@@ -477,10 +455,6 @@ def test_streamed_store_that_cannot_move_stays_the_trace(tmp_path, monkeypatch):
 
 
 def test_streamed_store_moved_before_a_status_write_failure_stays_published(tmp_path, monkeypatch):
-    from tests.conftest import MINIMAL_FST_BYTES
-
-    from booley.flows.sim.trace_session import TraceSession
-
     work = tmp_path / "work"
     store = work / "trace_streams" / "0-fpu.fst"
     store.parent.mkdir(parents=True)

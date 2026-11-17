@@ -21,6 +21,7 @@ from typing import Protocol
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
 
+from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
 from booley.flows.sim.trace_session import TraceSession
 from booley.runtime import platform_paths
 from booley.runtime.platform_paths import popen_new_group_kwargs
@@ -218,6 +219,10 @@ class TestStallKill:
             assert ts.stall_killed is True
             assert ts.stall_message is not None
             assert "stalled" in ts.stall_message
+            text = (tmp_path / "trace_incident.txt").read_text(encoding="utf-8")
+            assert "bwave trace pipeline stalled" in text
+            assert "cache_dir:" in text
+            assert "processes:" in text
         finally:
             _kill_all(sim_proc, bwave_proc)
             _stop_monitor_within(ts, _CLEANUP_STOP_S)
@@ -277,6 +282,8 @@ class TestStallKill:
             lambda _proc: pytest.fail("completed process must not be tree-killed"),
         )
 
+        # Private seam: the race needs the process to exit inside incident I/O at the kill
+        # decision, which `start_monitor` cannot schedule.
         session._kill_stalled_pipeline(0, 30.0, proc, Stream())
 
         assert session.stall_killed is False
@@ -286,6 +293,8 @@ class TestStallKill:
         """AC2: stopping does not wait out the poll interval."""
         session = TraceSession(tmp_path)
         monitors: list[threading.Thread] = []
+        # Private seam: the thread that `start_monitor` spawns is not exposed, so the test
+        # wraps `_monitor_stalls` to hold it.
         real_monitor = session._monitor_stalls
 
         def recording_monitor(*args):
@@ -332,6 +341,8 @@ class TestStallKill:
         bwave.kill = lambda: events.append("bwave_kill")  # type: ignore[method-assign]
         snapshot: dict[str, bool] = {}
         monitors: list[threading.Thread] = []
+        # Private seam: the thread that `start_monitor` spawns is not exposed, so the test
+        # wraps `_monitor_stalls` to hold it.
         real_monitor = session._monitor_stalls
 
         def recording_monitor(*args):
@@ -389,6 +400,7 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
     session = TraceSession(tmp_path / "work")
+    threads_before = set(threading.enumerate())
     try:
         session.start_monitor(
             conversion,
@@ -398,12 +410,19 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
             kill_after_stalls=2,
             spare_simulator=True,
         )
+        monitors = [t for t in threading.enumerate() if t not in threads_before]
+        assert monitors, "start_monitor spawned no thread"
         time.sleep(1.0)  # ten stall windows with nothing written
         assert conversion.poll() is None
         assert sim_proc.poll() is None
-    finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
+        # The monitor ends by itself once the simulator is gone, before any stop request.
+        for monitor in monitors:
+            monitor.join(timeout=5)
+        assert not any(monitor.is_alive() for monitor in monitors)
+    finally:
+        _kill_all(sim_proc)
         session.stop_monitor()
         conversion.kill()
         conversion.finish(timeout_s=5)
@@ -452,110 +471,89 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
 
 
 class TestTraceStatusManifest:
-    def test_inspection_records_queryable_trace_metadata(self, tmp_path, monkeypatch):
-        trace = tmp_path / "trace.fst"
-        trace.write_bytes(MINIMAL_FST_BYTES)
-        monkeypatch.setattr(
-            "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
-        )
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "data": {
-                            "scope_prefix": "tb.dut",
-                            "root_scopes": ["tb"],
-                            "signal_count": 42,
-                            "total_ticks": 900,
-                            "signals": [{"name": "clk"}],
-                        }
-                    }
-                ),
-                stderr="",
+    @pytest.mark.parametrize(
+        ("data", "scope", "usable", "top_scope", "signal_count", "reason", "total_ticks"),
+        [
+            (
+                {
+                    "scope_prefix": "tb.dut",
+                    "root_scopes": ["tb"],
+                    "signal_count": 42,
+                    "total_ticks": 900,
+                },
+                "",
+                True,
+                "tb.dut",
+                42,
+                "",
+                900,
             ),
-        )
-
-        inspection = TraceSession(tmp_path).inspect(trace)
-
-        assert inspection.usable is True
-        assert inspection.artifact is not None
-        assert inspection.artifact.top_scope == "tb.dut"
-        assert inspection.artifact.signal_count == 42
-        status = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
-        assert status["trace_metadata"]["total_ticks"] == 900
-
-    def test_inspection_accepts_queryable_trace_with_multiple_root_scopes(
-        self, tmp_path, monkeypatch
+            # Cocotb/Verilator exposes $rootio beside the DUT, so no common prefix exists.
+            (
+                {
+                    "scope_prefix": "",
+                    "root_scopes": ["$rootio", "uart16550"],
+                    "signal_count": 148,
+                    "total_ticks": 1705,
+                },
+                "",
+                True,
+                "$rootio, uart16550",
+                148,
+                "",
+                1705,
+            ),
+            (
+                {
+                    "scope_prefix": "other_dut",
+                    "root_scopes": ["other_dut"],
+                    "signal_count": 12,
+                    "total_ticks": 20,
+                },
+                "uart16550",
+                False,
+                None,
+                None,
+                "expected DUT scope 'uart16550'",
+                None,
+            ),
+        ],
+        ids=["metadata", "multiple-root-scopes", "different-dut-scope"],
+    )
+    def test_inspection_of_a_queryable_trace(
+        self,
+        tmp_path,
+        monkeypatch,
+        data,
+        scope,
+        usable,
+        top_scope,
+        signal_count,
+        reason,
+        total_ticks,
     ):
-        """Cocotb/Verilator exposes $rootio beside the DUT, so no common prefix exists."""
         trace = tmp_path / "trace.fst"
         trace.write_bytes(MINIMAL_FST_BYTES)
         monkeypatch.setattr(
             "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
         )
+        stdout = json.dumps({"data": {**data, "signals": [{"name": "clk"}]}})
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "data": {
-                            "scope_prefix": "",
-                            "root_scopes": ["$rootio", "uart16550"],
-                            "signal_count": 148,
-                            "total_ticks": 1705,
-                            "signals": [{"name": "$rootio.clk"}],
-                        }
-                    }
-                ),
-                stderr="",
-            ),
+            lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=stdout, stderr=""),
         )
 
-        inspection = TraceSession(tmp_path).inspect(trace)
+        inspection = TraceSession(tmp_path, trace_scope=scope).inspect(trace)
 
-        assert inspection.usable is True
-        assert inspection.artifact is not None
-        assert inspection.artifact.top_scope == "$rootio, uart16550"
-        assert inspection.artifact.signal_count == 148
-
-    def test_inspection_rejects_a_different_dut_scope(self, tmp_path, monkeypatch):
-        trace = tmp_path / "trace.fst"
-        trace.write_bytes(MINIMAL_FST_BYTES)
-        monkeypatch.setattr(
-            "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
-        )
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "data": {
-                            "scope_prefix": "other_dut",
-                            "root_scopes": ["other_dut"],
-                            "signal_count": 12,
-                            "total_ticks": 20,
-                            "signals": [{"name": "clk"}],
-                        }
-                    }
-                ),
-                stderr="",
-            ),
-        )
-
-        inspection = TraceSession(tmp_path, trace_scope="uart16550").inspect(trace)
-
-        assert inspection.usable is False
-        assert "expected DUT scope 'uart16550'" in inspection.failure_reason
+        assert inspection.usable is usable
+        assert reason in (inspection.failure_reason or "")
+        if usable:
+            assert inspection.artifact is not None
+            assert inspection.artifact.top_scope == top_scope
+            assert inspection.artifact.signal_count == signal_count
+            status = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
+            assert status["trace_metadata"]["total_ticks"] == total_ticks
 
     def test_postprocess_retries_unscoped_when_scoped_build_writes_no_cache(
         self,
@@ -624,13 +622,13 @@ class TestTraceStatusManifest:
             return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"boom")
 
         monkeypatch.setattr(waveform_store.subprocess, "run", fake_run)
-        return TraceSession(work_dir=tmp_path / "work", trace_scope="tb"), builds
-
-    def test_one_budget_covers_postprocess_and_find(self, tmp_path, monkeypatch):
-        session, builds = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
         vcd = tmp_path / "work" / "dump.vcd"
         vcd.parent.mkdir()
         vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+        return TraceSession(work_dir=tmp_path / "work", trace_scope="tb"), builds, vcd
+
+    def test_one_budget_covers_postprocess_and_find(self, tmp_path, monkeypatch):
+        session, builds, vcd = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
         session.start_conversion_budget(60)
 
         session.postprocess(vcd)  # scoped build consumes the whole 60 s; retry skipped
@@ -640,10 +638,7 @@ class TestTraceStatusManifest:
         assert found == tmp_path / "work" / "trace.vcd"
 
     def test_exhausted_budget_is_trace_incident(self, tmp_path, monkeypatch, capsys):
-        session, builds = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
-        vcd = tmp_path / "work" / "dump.vcd"
-        vcd.parent.mkdir()
-        vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+        session, builds, vcd = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
         session.start_conversion_budget(0)  # already spent
 
         session.postprocess(vcd)
@@ -654,11 +649,15 @@ class TestTraceStatusManifest:
         assert status["attempts"][-1]["status"] == "vcd_only"
         assert session.find() == tmp_path / "work" / "trace.vcd"  # raw VCD, never a waveform
 
-    def test_cleanup_fifo_publishes_bwave_to_work_dir(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("returncode", "published", "status"),
+        [(0, True, "success"), (7, False, "no_artifact")],
+        ids=["converted", "failed-conversion"],
+    )
+    def test_cleanup_fifo_publishes_only_a_successful_conversion(
+        self, tmp_path, returncode, published, status
+    ):
         ts = TraceSession(work_dir=tmp_path)
-
-        from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
-
         ts.bwave_path.parent.mkdir(parents=True, exist_ok=True)
         ts.bwave_path.write_bytes(MINIMAL_FST_BYTES)
 
@@ -666,46 +665,19 @@ class TestTraceStatusManifest:
             def finish(self):
                 return ConversionResult(
                     ts.bwave_path,
-                    attempts=(ConversionAttempt(None, 0),),
+                    attempts=(ConversionAttempt(None, returncode),),
                     inspection=inspect_store(ts.bwave_path, probe_reader=False),
                 )
 
         ts.cleanup_fifo(FakeConversion())
 
-        published = tmp_path / "trace.fst"
-        assert ts.bwave_path.exists()
-        assert published.exists()
-        assert published.read_bytes() == ts.bwave_path.read_bytes()
-
+        assert ts.work_bwave_path.exists() is published
+        if published:
+            assert ts.bwave_path.exists()
+            assert ts.work_bwave_path.read_bytes() == ts.bwave_path.read_bytes()
         data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
-        assert any(event["kind"] == "bwave_published" for event in data["events"])
-        assert data["attempts"][-1]["status"] == "success"
-
-    def test_cleanup_fifo_does_not_publish_failed_conversion(self, tmp_path, monkeypatch):
-        ts = TraceSession(work_dir=tmp_path)
-
-        from booley.bwave.waveform_store import (
-            ConversionAttempt,
-            ConversionResult,
-            inspect_store,
-        )
-
-        ts.bwave_path.parent.mkdir(parents=True, exist_ok=True)
-        ts.bwave_path.write_bytes(MINIMAL_FST_BYTES)
-
-        class FakeConversion:
-            def finish(self):
-                return ConversionResult(
-                    ts.bwave_path,
-                    attempts=(ConversionAttempt(None, 7),),
-                    inspection=inspect_store(ts.bwave_path, probe_reader=False),
-                )
-
-        ts.cleanup_fifo(FakeConversion())
-
-        assert not ts.work_bwave_path.exists()
-        data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
-        assert data["attempts"][-1]["status"] == "no_artifact"
+        assert any(e["kind"] == "bwave_published" for e in data["events"]) is published
+        assert data["attempts"][-1]["status"] == status
 
     def test_incident_manifest_records_failure_and_return_codes(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path)
@@ -723,29 +695,6 @@ class TestTraceStatusManifest:
         assert data["failure_reason"] == "no artifact"
         assert data["return_codes"]["sim"] == 7
         assert data["events"][-1]["kind"] == "incident"
-
-    def test_stall_writes_trace_incident(self, tmp_path):
-        ts = TraceSession(work_dir=tmp_path)
-        sim_proc = _spawn_sleeper()
-        bwave_proc = _spawn_sleeper()
-        try:
-            ts.start_monitor(
-                _StreamStub(bwave_proc, ts.bwave_path),
-                sim_proc,
-                stall_timeout=0.2,
-                poll_interval=0.05,
-                kill_after_stalls=1,
-            )
-            _await_monitor_kill(ts, sim_proc, bwave_proc)
-            incident = tmp_path / "trace_incident.txt"
-            assert incident.exists()
-            text = incident.read_text(encoding="utf-8")
-            assert "bwave trace pipeline stalled" in text
-            assert "cache_dir:" in text
-            assert "processes:" in text
-        finally:
-            _kill_all(sim_proc, bwave_proc)
-            _stop_monitor_within(ts, _CLEANUP_STOP_S)
 
     def test_no_kill_when_bwave_grows(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path)
