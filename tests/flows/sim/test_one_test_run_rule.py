@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.sim.record.test_run_binding import observation_test_runs
+
+# Private seam: the report row reader is reached only with a stored observation, which needs a finished run record.
 from booley.flows.sim.record.test_run_report import (
     TEST_RUN_GRADES,
     _observed_run,

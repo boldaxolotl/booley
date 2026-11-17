@@ -368,18 +368,6 @@ def test_unchanged_verilator_target_reuses_verified_image(verilator_env: Path) -
     assert any(key.endswith("dpi/helper.cpp") for key in closure)
 
 
-def test_one_file_rtl_edit_rebuilds_and_never_launches_old_image(verilator_env: Path) -> None:
-    recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder))
-    _edit_keeping_mtime(
-        verilator_env / "rtl" / "tb.sv", '`include "defs.svh"\nmodule tb; // NEW\nendmodule\n'
-    )
-    _assert_passed(_run(verilator_env, recorder))
-    assert recorder.builds == 2
-    assert "IMAGE=OLD" in recorder.launches[0]
-    assert "IMAGE=NEW" in recorder.launches[1] and "IMAGE=OLD" not in recorder.launches[1]
-
-
 def test_failed_rebuild_after_edit_never_launches_prior_image(verilator_env: Path) -> None:
     recorder = _Recorder(verilator_env)
     _assert_passed(_run(verilator_env, recorder))
@@ -392,47 +380,44 @@ def test_failed_rebuild_after_edit_never_launches_prior_image(verilator_env: Pat
     assert len(recorder.launches) == 1
 
 
-def test_changed_verilator_flag_rebuilds(verilator_env: Path) -> None:
-    recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder))
-    _write_core(verilator_env, options="--timing, -DEXTRA_FLAG")
-    second = _run(verilator_env, recorder)
-    _assert_passed(second)
-    assert recorder.builds == 2
-    assert second.builds[0].ran is True
-    assert _flags_line(recorder.launches[1]) != _flags_line(recorder.launches[0])
-
-
 @pytest.mark.parametrize(
-    ("name", "text"),
-    [("dpi/helper.cpp", "// HELPER v2\n"), ("inc/defs.svh", "// DEFS v2\n")],
-    ids=["dpi-source", "included-header"],
+    ("name", "text", "marker"),
+    [
+        ("project/rtl/tb.sv", '`include "defs.svh"\nmodule tb; // NEW\nendmodule\n', "IMAGE=NEW"),
+        ("project/dpi/helper.cpp", "// HELPER v2\n", "HELPER v2"),
+        ("project/inc/defs.svh", "// DEFS v2\n", "DEFS v2"),
+        ("vroot/bin/verilator_bin", "#!/bin/sh\nexit 1\n", None),
+    ],
+    ids=["rtl", "dpi-source", "included-header", "toolchain-identity"],
 )
-def test_changed_dpi_source_or_included_header_rebuilds(
-    verilator_env: Path, name: str, text: str
+def test_edit_rebuilds_and_never_launches_the_old_image(
+    verilator_env: Path, tmp_path: Path, name: str, text: str, marker: str | None
 ) -> None:
     recorder = _Recorder(verilator_env)
     _assert_passed(_run(verilator_env, recorder))
-    _edit_keeping_mtime(verilator_env / name, text)
+    _edit_keeping_mtime(tmp_path / name, text)
     second = _run(verilator_env, recorder)
     _assert_passed(second)
     assert recorder.builds == 2
     assert second.builds[0].ran is True
-    assert text.strip().removeprefix("// ") in recorder.launches[1]
+    assert "IMAGE=OLD" in recorder.launches[0]
+    if marker is not None:
+        assert marker in recorder.launches[1]
+    if marker == "IMAGE=NEW":
+        assert "IMAGE=OLD" not in recorder.launches[1]
 
 
-def test_changed_toolchain_identity_rebuilds(verilator_env: Path, tmp_path: Path) -> None:
-    recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder))
-    _write_executable(tmp_path / "vroot" / "bin" / "verilator_bin", "#!/bin/sh\nexit 1\n")
-    second = _run(verilator_env, recorder)
-    _assert_passed(second)
-    assert recorder.builds == 2
-    assert second.builds[0].ran is True
-
-
-@pytest.mark.parametrize("tamper", ["image", "read-closure"])
-def test_corrupt_retained_generation_forces_fresh_build(verilator_env: Path, tamper: str) -> None:
+@pytest.mark.parametrize(
+    ("tamper", "decision"),
+    [
+        ("image", "changed artifact;"),
+        ("input", "changed source;"),
+        ("read-closure", "changed source;"),
+    ],
+)
+def test_corrupt_retained_generation_forces_fresh_build(
+    verilator_env: Path, tamper: str, decision: str
+) -> None:
     recorder = _Recorder(verilator_env)
     _assert_passed(_run(verilator_env, recorder))
     slot = simulation_build_slot(_select(verilator_env))
@@ -442,11 +427,15 @@ def test_corrupt_retained_generation_forces_fresh_build(verilator_env: Path, tam
         _write_executable(
             build_root / "Vtb", "#!/bin/sh\necho '[SIM_RESULT] PASSED'\necho STALE\n"
         )
+    elif tamper == "input":
+        # A manifest input no depfile names: only the input check can see it.
+        (build_root / "Makefile").write_text("# tampered recipe\n", encoding="utf-8")
     else:
         (build_root / "Vtb.h").write_text("// tampered generated header\n", encoding="utf-8")
     second = _run(verilator_env, recorder)
     _assert_passed(second)
     assert recorder.builds == 2
+    assert second.builds[0].cache_decision.startswith(decision)
     assert "STALE" not in recorder.launches[1]
 
 

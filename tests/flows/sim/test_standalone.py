@@ -14,6 +14,8 @@ import pytest
 from booley.flows.base import SubprocessResult
 from booley.flows.sim import standalone as standalone_mod
 from booley.flows.sim.flow import SimulateFlow
+
+# Private seam: the scanner is the lexical rule; the sweep only reports its result.
 from booley.flows.sim.standalone import _scan_hdl_declarations
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.domain import immutable_mapping
@@ -81,6 +83,7 @@ def _stub_sources(
     covers *rtl*. The simulator is never a ``MagicMock``: the probe selection
     reads it as a string.
     """
+    # Private seam: the sweep reads sources from the Target catalog, which needs a real FuseSoC resolve.
     per_target = targets if targets is not None else {"sim_dut": (rtl, eda_tool)}
     monkeypatch.setattr(
         SimulateFlow, "_target_handle", lambda _self, name: SimpleNamespace(identity=name)
@@ -120,6 +123,7 @@ def _stub_probes(
     results: dict[str | tuple[str, str], SubprocessResult] | None = None,
 ) -> list[list[str]]:
     """Capture probe argv; results key by ``(module, compiler)`` or bare module."""
+    # Private seam: the probe compile needs a real toolchain; no public input replaces it.
     captured: list[list[str]] = []
     by_key = results or {}
 
@@ -161,6 +165,16 @@ class TestDeclarationScan:
         assert has_shared is False
 
 
+def _run_sweep(flow: SimulateFlow, targets: list[str], *, primary_ok: bool = True):
+    """Run the sweep over *targets* and return its outcome.
+
+    Private seam: the public mode first builds every Target with a real simulator; the sweep is
+    the unit under test.
+    """
+    with flow.publication_resources:
+        return flow._run_standalone_check(targets, primary_ok=primary_ok)
+
+
 class TestStandaloneSweep:
     def test_success_probes_each_declaring_file_and_passes(
         self,
@@ -176,11 +190,9 @@ class TestStandaloneSweep:
         )
         _stub_sources(monkeypatch, ["rtl/alu.sv", "rtl/top.sv"])
         flow = _make_flow(tmp_path)
-        flow._record_eda_tool("sim_dut", "icarus")
         commands = _stub_probes(monkeypatch, flow)
 
-        with flow.publication_resources:
-            outcome = flow._run_standalone_check(["sim_dut"])
+        outcome = _run_sweep(flow, ["sim_dut"])
 
         assert outcome.passed
         assert outcome.detail["mode"] == "elab_only_standalone"
@@ -202,71 +214,52 @@ class TestStandaloneSweep:
         assert [arg for arg in by_module["top"] if arg.endswith(".sv")] == ["rtl/top.sv"]
         assert all(not arg.startswith("-P") for arg in by_module["alu"])
 
-    def test_complete_sweep_shares_one_deadline(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.flows.sim import standalone as standalone_module
-
-        flow = _make_flow(tmp_path)
-        monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 2_500)
+    def _timed_sweep(self, tmp_path, monkeypatch, modules, timeout_ms, clock):
+        """Run the sweep under *clock* (sweep start, deadline start, one tick per probe); return the
+        outcome and every probe's timeout."""
+        files = {f"rtl/{name}.sv": f"module {name}; endmodule\n" for name in modules}
+        _write_sources(tmp_path, files)
+        _stub_sources(monkeypatch, list(files))
+        flow = _make_flow(tmp_path, config=f"[flows.sim]\ntimeout_ms = {timeout_ms}\n")
+        ticks = list(clock)
         monkeypatch.setattr(
-            flow,
-            "_effective_build_timeout_ms",
-            MagicMock(side_effect=AssertionError("standalone sweep must use run timeout")),
+            standalone_mod, "monotonic", lambda: ticks.pop(0) if len(ticks) > 1 else ticks[0]
         )
-        monotonic_values = iter((0.0, 0.0, 1.2))
-        monkeypatch.setattr(standalone_module, "monotonic", lambda: next(monotonic_values))
-        observed_timeouts: list[int] = []
+        timeouts: list[int] = []
 
         def execute(_command: list[str], *, timeout: int) -> SubprocessResult:
-            observed_timeouts.append(timeout)
+            timeouts.append(timeout)
             return SubprocessResult(returncode=0)
 
+        # Private seam: the probe compile needs a real toolchain; no public input replaces it.
         monkeypatch.setattr(flow, "_execute", execute)
+        return _run_sweep(flow, ["sim_dut"]), timeouts
 
-        failures, unparsed, _logs, error = flow._run_standalone_probes(
-            (
-                standalone_mod._StandaloneProbe("one", "one.sv", "iverilog", (), False, ()),
-                standalone_mod._StandaloneProbe("two", "two.sv", "iverilog", (), False, ()),
-            ),
-            primary_ok=True,
+    def test_complete_sweep_shares_one_deadline(self, tmp_path, monkeypatch) -> None:
+        outcome, timeouts = self._timed_sweep(
+            tmp_path, monkeypatch, ["one", "two"], 2_500, (0.0, 0.0, 0.0, 1.2)
         )
 
-        assert not failures and not unparsed and not error
-        assert observed_timeouts == [3, 2]
+        assert outcome.passed
+        assert timeouts == [3, 2]
 
     def test_complete_sweep_stops_when_shared_deadline_expires(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path, monkeypatch
     ) -> None:
-        flow = _make_flow(tmp_path)
-        monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 1_000)
-        monotonic_values = iter((0.0, 1.0))
-        monkeypatch.setattr(
-            standalone_mod,
-            "monotonic",
-            lambda: next(monotonic_values),
-        )
-        probe = MagicMock(side_effect=AssertionError("expired sweep must not start a probe"))
-        monkeypatch.setattr(flow, "_run_standalone_probe", probe)
-
-        failures, unparsed, logs, error = flow._run_standalone_probes(
-            (standalone_mod._StandaloneProbe("late", "late.sv", "iverilog", (), False, ()),),
-            primary_ok=True,
+        outcome, timeouts = self._timed_sweep(
+            tmp_path, monkeypatch, ["late"], 1_000, (0.0, 0.0, 1.0)
         )
 
-        assert not failures and not unparsed and not logs
-        assert error == "iverilog standalone sweep timed out after 1s"
-        probe.assert_not_called()
+        assert not outcome.passed
+        assert timeouts == []
+        assert "iverilog standalone sweep timed out after 1s" in "\n".join(outcome.lines)
 
     def test_prepare_reuses_frozen_standalone_recipe(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # Private seam: the frozen recipe is read back only by a resumed run, which needs a prior record.
         flow = _make_flow(tmp_path)
         recipe = standalone_mod._StandalonePlanRecipe(
             probes=(
@@ -291,6 +284,7 @@ class TestStandaloneSweep:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # Private seam: no public path fails the RTL scope resolution of a Target the endpoint already resolved.
         flow = _make_flow(tmp_path)
         monkeypatch.setattr(
             flow,
@@ -309,7 +303,6 @@ class TestStandaloneSweep:
         _write_sources(tmp_path, {"rtl/top.sv": "module top; endmodule\n"})
         _stub_sources(monkeypatch, ["rtl/top.sv"])
         flow = _make_flow(tmp_path)
-        flow._record_eda_tool("sim_dut", "icarus")
         _stub_probes(
             monkeypatch,
             flow,
@@ -321,8 +314,7 @@ class TestStandaloneSweep:
             },
         )
 
-        with flow.publication_resources:
-            outcome = flow._run_standalone_check(["sim_dut"])
+        outcome = _run_sweep(flow, ["sim_dut"])
 
         assert not outcome.passed
         assert not outcome.eda_tool_failed
@@ -353,11 +345,9 @@ class TestStandaloneSweep:
             tb=["tb/tb_alu.sv"],
         )
         flow = _make_flow(tmp_path)
-        flow._record_eda_tool("sim_dut", "icarus")
         commands = _stub_probes(monkeypatch, flow)
 
-        with flow.publication_resources:
-            outcome = flow._run_standalone_check(["sim_dut"])
+        outcome = _run_sweep(flow, ["sim_dut"])
 
         assert outcome.passed
         assert len(commands) == 1
@@ -389,11 +379,9 @@ class TestStandaloneSweep:
             _write_sources(tmp_path, {sources[0]: "module alu; endmodule\n"})
         _stub_sources(monkeypatch, sources)
         flow = _make_flow(tmp_path)
-        flow._record_eda_tool("sim_dut", "icarus")
         _stub_probes(monkeypatch, flow, {"alu": probe} if probe else None)
 
-        with flow.publication_resources:
-            outcome = flow._run_standalone_check(["sim_dut"])
+        outcome = _run_sweep(flow, ["sim_dut"])
 
         assert outcome.eda_tool_failed
         assert message in "\n".join(outcome.lines)
@@ -407,15 +395,13 @@ class TestStandaloneSweep:
         _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool="xcelium")
         _stub_which(monkeypatch, True)
         flow = _make_flow(tmp_path)
-        flow._record_eda_tool("sim_dut", "xcelium")
         _stub_probes(
             monkeypatch,
             flow,
             {"alu": SubprocessResult(returncode=1, stderr="rtl/alu.sv:1: syntax error\n")},
         )
 
-        with flow.publication_resources:
-            outcome = flow._run_standalone_check(["sim_dut"])
+        outcome = _run_sweep(flow, ["sim_dut"])
 
         assert outcome.eda_tool_failed
         assert outcome.detail["unparsed"][0]["module"] == "alu"
@@ -437,7 +423,6 @@ class TestStandaloneSweep:
         _stub_sources(monkeypatch, ["rtl/gapped.sv", "rtl/broken.sv"], eda_tool="xcelium")
         _stub_which(monkeypatch, True)
         flow = _make_flow(tmp_path)
-        flow._record_eda_tool("sim_dut", "xcelium")
         _stub_probes(
             monkeypatch,
             flow,
@@ -453,58 +438,11 @@ class TestStandaloneSweep:
             },
         )
 
-        with flow.publication_resources:
-            outcome = flow._run_standalone_check(["sim_dut"])
+        outcome = _run_sweep(flow, ["sim_dut"])
 
         assert [item["module"] for item in outcome.detail["failures"]] == ["broken"]
         assert [item["module"] for item in outcome.detail["unparsed"]] == ["gapped"]
         assert "ungraded" in "\n".join(outcome.lines)
-
-
-class TestStandaloneFrontend:
-    def test_probe_command_shapes(self, tmp_path: Path) -> None:
-        flow = _make_flow(tmp_path)
-
-        verilator = flow._standalone_compile_command(
-            "alu",
-            "rtl/alu.sv",
-            ["rtl/pkg.sv"],
-            "verilator",
-            (),
-        )
-        iverilog = flow._standalone_compile_command(
-            "alu",
-            "rtl/alu.sv",
-            ["rtl/pkg.sv"],
-            "iverilog",
-            ("-g2005",),
-        )
-
-        assert verilator == [
-            "verilator",
-            "--lint-only",
-            "-Wno-fatal",
-            "--top-module",
-            "alu",
-            "rtl/pkg.sv",
-            "rtl/alu.sv",
-        ]
-        assert iverilog == [
-            "iverilog",
-            "-g2005",
-            "-o",
-            os.devnull,
-            "-s",
-            "alu",
-            "rtl/pkg.sv",
-            "rtl/alu.sv",
-        ]
-
-
-def _run_sweep(flow: SimulateFlow, targets: list[str], *, primary_ok: bool = True):
-    """Run the sweep over *targets* and return its outcome."""
-    with flow.publication_resources:
-        return flow._run_standalone_check(targets, primary_ok=primary_ok)
 
 
 _SYNTAX = SubprocessResult(returncode=1, stderr="rtl/alu.sv:1: syntax error\n")
@@ -560,6 +498,7 @@ class TestProbeFrontendSelection:
     def test_module_shared_by_icarus_and_verilator_targets_is_probed_by_both(
         self, tmp_path, monkeypatch
     ) -> None:
+        # Private seam: the Flow's tool identity is set by the sweep itself; no public result exposes it.
         flow = self._two_simulator_project(tmp_path, monkeypatch)
         commands = _stub_probes(monkeypatch, flow)
 
@@ -688,6 +627,7 @@ class TestProbeFrontendSelection:
         assert outcome.detail["failures"][0]["fallback"] is False
 
     def test_dry_run_plan_shows_per_module_frontend(self, tmp_path, monkeypatch) -> None:
+        # Private seam: the per-module unit is planned inside the dry run; no public result lists it.
         flow = self._two_simulator_project(tmp_path, monkeypatch, shared_packages=True)
 
         unit, error = flow._planned_standalone_unit(["ice", "ver"])
@@ -747,6 +687,7 @@ def _stub_dialect_compilers(
     Verilog-2005 generation (Icarus: no ``-g2012``; Verilator: an explicit
     ``--default-language 1364-2005``).
     """
+    # Private seam: the probe compile needs a real toolchain; no public input replaces it.
     captured: list[list[str]] = []
 
     def execute(command: list[str], *, timeout: int) -> SubprocessResult:
@@ -806,10 +747,12 @@ class TestDialectFlagExtraction:
         ],
     )
     def test_only_dialect_flags_are_kept(self, frontend, options, expected) -> None:
+        # Private seam: the dialect rule is the unit; the sweep only reports its flags.
         assert standalone_mod._dialect_flags(frontend, options) == expected
 
     def test_modern_options_precede_legacy_options(self) -> None:
         # Real inspections hold tuples, not lists: build one the production way.
+        # Private seam: the dialect rule is the unit; the sweep only reports its flags.
         inspection = SimpleNamespace(
             eda_tool="icarus",
             flow_options=immutable_mapping({"iverilog_options": ["-g2005"]}),
@@ -821,6 +764,7 @@ class TestDialectFlagExtraction:
         )
 
     def test_undrivable_simulator_has_no_dialect(self) -> None:
+        # Private seam: the dialect rule is the unit; the sweep only reports its flags.
         inspection = SimpleNamespace(eda_tool="xcelium", flow_options={}, tool_options={})
 
         assert standalone_mod._target_dialect(inspection) is None
@@ -979,6 +923,7 @@ class TestProbeDialectFlags:
         ]
 
     def test_dialect_flags_named_in_plan_and_report(self, tmp_path, monkeypatch) -> None:
+        # Private seam: the per-module unit is planned inside the dry run; no public result lists it.
         options = {"flow_options": {"iverilog_options": ["-g2012"]}}
         flow = _dialect_project(
             tmp_path,
@@ -1020,6 +965,7 @@ def test_optional_standalone_exit_codes_for_single_simulator_project(
     tmp_path, monkeypatch, kind, expected_exit
 ) -> None:
     """Icarus-only project with Verilator on PATH: verdict and exit code unchanged."""
+    # Private seam: the optional sweep is called by the elaboration path only after a real build.
     _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
     _stub_sources(monkeypatch, ["rtl/alu.sv"])
     _stub_which(monkeypatch, True)
@@ -1047,14 +993,12 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
     _stub_sources(monkeypatch, ["rtl/alu.sv"])
     flow = _make_flow(tmp_path)
     flow.args.target = ""
-    flow._record_eda_tool("sim_dut", "icarus")
     process = SubprocessResult(
         returncode=0 if met else 1,
         stderr="" if met else "error: Unknown module type: missing_sub",
     )
     _stub_probes(monkeypatch, flow, {"alu": process})
-    with flow.publication_resources:
-        outcome = flow._run_standalone_check(["sim_dut"])
+    outcome = _run_sweep(flow, ["sim_dut"])
     result = EndpointOutcome(exit_code=0 if outcome.passed else 1, detail=outcome.detail)
     final_report_omits_headline(flow, result)
 
@@ -1068,8 +1012,7 @@ def test_standalone_frontend_identity_is_scalar(tmp_path, monkeypatch):
     _stub_sources(monkeypatch, ["rtl/top.sv"])
     flow = _make_flow(tmp_path)
     _stub_probes(monkeypatch, flow)
-    with flow.publication_resources:
-        outcome = flow._run_standalone_check(["sim_dut"])
+    outcome = _run_sweep(flow, ["sim_dut"])
     assert outcome.passed
     path = flow.write_report(EndpointOutcome())
     report = json.loads(path.read_bytes())

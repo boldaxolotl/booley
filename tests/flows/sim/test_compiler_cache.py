@@ -317,11 +317,8 @@ def test_make_options_override_operators_warn_per_assignment(
     assert len(warnings) == 4
     for assignment in ("OBJCACHE:=ccache", "OBJCACHE?=", "OBJCACHE =", "USER_CPPFLAGS+=-DX"):
         assert sum(assignment in message for message in warnings) == 1
-
-
-def test_make_options_without_overrides_log_no_new_warning(project, tmp_path, monkeypatch, caplog):
-    root, _data = project
-    monkeypatch.setenv(COMPILER_CACHE_ROOT_ENV, str(tmp_path / "cache"))
+    # Options that assign nothing Booley manages add no warning.
+    caplog.clear()
     with caplog.at_level("WARNING", logger="booley.flows.sim.compiler_cache"):
         _prepare_real_verilator_target(root, {"make_options": ["-j2", "OTHER=yes"]})
     assert not _make_option_warnings(caplog)
