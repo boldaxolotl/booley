@@ -112,11 +112,13 @@ booley flow sim --target sim_soc --test reset
 booley flow sim --help                       # every option of one Flow
 booley specialist                            # list the Specialists
 booley specialist reviewer --help            # a Specialist's arguments
+booley specialist reviewer --recheck <evidence.json>   # re-check an earlier review's findings
 ```
 
 Targets, options, exit codes, and results are in
 [Running Flows](FLOW_REFERENCE.md). Specialists are in
-[Specialists](SPECIALISTS.md), [Reviewer](REVIEWER.md), and
+[Specialists](SPECIALISTS.md), [Reviewer](REVIEWER.md) (including
+[checking your fixes](REVIEWER.md#checking-your-fixes)), and
 [Analyzing a Coverage Record](COVERAGE.md#analyzing-a-coverage-record). `booley cheat --flows`
 and `booley cheat --specialists` print both lists with their main options.
 

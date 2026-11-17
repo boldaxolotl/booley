@@ -66,7 +66,22 @@ against what the RTL happens to do.
    finding has an ID, a severity, and a location.
 3. Decide which findings to fix, and ask the agent to fix them.
 
-A new review replaces the findings of the previous one.
+### Checking your fixes
+
+Run one full review, then ask the agent to re-check its findings after each
+round of fixes: *"Re-check the review's findings."* The Reviewer looks only at
+the findings that are still open, against the current files, and reports each as
+`fixed`, `still open`, or `can't tell`. It reports no new findings, and it
+calls a finding `fixed` only when it points at the current code that shows
+the fix. Repeat until every finding is fixed.
+
+A re-check reads the report of the earlier review or re-check, and writes a
+report of its own for the next one. It takes the focus and the files from that
+report. A `can't tell` finding counts as open.
+
+A new full review replaces the findings of the previous one and can report
+problems the first did not. Run one on purpose, for example after a large
+rewrite, not as the check that ends this loop.
 
 ### Reviewing only a change
 
@@ -111,7 +126,8 @@ booley specialist reviewer --category rtl --focus spec --scope rtl/fifo.sv --spe
 | `--spec <path>` / `--spec-text "<text>"` | The specification to check against (one, not both). Required for `--focus spec`. |
 | `--steer "<text>"` | Extra context for the Reviewer. Repeatable. |
 | `--base <commit>` | [Review only the change](#reviewing-only-a-change) since the merge-base of `<commit>` and HEAD, uncommitted changes included. Pass every file of the category as `--scope` so the Reviewer also reads the files that use the changed ones. |
-| `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
+| `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. With `--recheck`, only `still open` and `can't tell` findings count. |
+| `--recheck <evidence file>` | [Re-check the open findings](#checking-your-fixes) of the saved review report at that path. It takes the category, focus and files from the report, so it refuses `--category`, `--focus`, `--scope`, `--base`, `--spec`, `--spec-text` and `--steer`. |
 | `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, `security`, `optimization` or testbench `quality` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
