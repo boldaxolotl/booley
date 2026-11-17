@@ -820,7 +820,7 @@ _PROBE_ROWS = [
     _git_row("git-unknown", "git version unknown", _ERROR, _NEWER_GIT),
     _git_row("git-foreign-line", "not git version 2.46.0", _ERROR, _NEWER_GIT),
     _row("git-missing", "git", _ERROR, (_NEWER_GIT,), missing=("git",)),
-    _row("git-rc1", "git", _ERROR, ("probe failed",), git=(1, "", "bad")),
+    _row("git-probe-nonzero", "git", _ERROR, ("probe failed",), git=(1, "", "bad")),
     _row("git-oserror", "git", _ERROR, ("cannot run Git",), git=OSError("denied")),
     _row("docker-missing", "docker", _ERROR, ("not on PATH",), missing=("docker",)),
     _row("docker-rc1", "docker", _ERROR, ("probe failed",), docker=(1, "", "bad")),
@@ -2023,7 +2023,8 @@ def test_current_and_skipped_render_differently(
     cli.result = bootstrap.BootstrapResult(Intent.ENSURE, (_current("proxy"),))
     bootstrap_cli.run_bootstrap(SimpleNamespace())
     common.skip("proxy: current")
-    bootstrap_row, skipped_row = capsys.readouterr().out.splitlines()[1:3]
+    lines = capsys.readouterr().out.splitlines()
+    bootstrap_row, skipped_row = lines[1], lines[-1]
     assert bootstrap_row[:5] != skipped_row[:5]
 
     current = getattr(common, "current", None)
