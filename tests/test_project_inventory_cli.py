@@ -411,11 +411,11 @@ class FakeDocker:
 
 @pytest.fixture
 def keeper_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     docker = FakeDocker()
-    monkeypatch.setattr(interactive_docker, "_run_docker", docker)
+    monkeypatch.setattr(host_docker, "_run_docker", docker)
     return docker
 
 
@@ -773,9 +773,9 @@ def test_apply_rechecks_before_deletion(
                     )
         return result
 
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
-    monkeypatch.setattr(interactive_docker, "_run_docker", mutate)
+    monkeypatch.setattr(host_docker, "_run_docker", mutate)
     status, result = _prune(capsys, preview["digest"])
     assert status == 0 and result["released"] == [] and result["retained"] == [tag]
     assert tag in keeper_host.tags
@@ -789,7 +789,7 @@ def _issued_project(
     Returns the Project, the prepared spec, its devcontainer path and the keeper image ID.
     """
     from booley.runtime import devcontainer as dc
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
     from booley.runtime import session_issuance as issuance
     from tests.session_issuance_support import fixed, install_trusted_validator
 
@@ -817,7 +817,7 @@ def _issued_project(
     monkeypatch.setattr(issuance, "_project_data_alias_capable", lambda _image: False)
     prepared = issuance.preview(project, fixed(spec))
     monkeypatch.setattr(
-        interactive_docker,
+        host_docker,
         "tag_image",
         lambda source, target: keeper_host.tags.update({target: source}),
     )
@@ -936,7 +936,7 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
 ) -> None:
     from types import SimpleNamespace
 
-    from booley.runtime import interactive_docker, session_admission, session_runtime
+    from booley.runtime import host_docker, session_admission, session_runtime
 
     project = _remember(tmp_path)
     tag = keeper_image(project)
@@ -951,7 +951,7 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
         lambda *args, **kwargs: (item,) if item.running else (),
     )
     monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda _root: False)
-    monkeypatch.setattr(interactive_docker, "container_exists", lambda _name: False)
+    monkeypatch.setattr(host_docker, "container_exists", lambda _name: False)
     monkeypatch.setattr(session_runtime, "_relay_objects_exist", lambda _relay: False)
     monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *args: None)
     commands = []
@@ -981,7 +981,7 @@ def test_forget_incomplete_observation_preserves_inventory(
 ) -> None:
     import subprocess
 
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
     project = _remember(tmp_path)
     _write_session_files(str(project.resolve()))
@@ -991,7 +991,7 @@ def test_forget_incomplete_observation_preserves_inventory(
         keeper_host.containers["bad-container"] = keeper_host.tags[tag]
     if failure == "daemon":
         monkeypatch.setattr(
-            interactive_docker,
+            host_docker,
             "_run_docker",
             lambda args, **kwargs: subprocess.CompletedProcess(args, 1, "", "daemon unavailable"),
         )

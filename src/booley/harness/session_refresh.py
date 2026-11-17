@@ -16,7 +16,7 @@ from booley.runtime.session_runtime import SessionError
 class _RuntimeImages:
     def __init__(self) -> None:
         self._spec: issuance.PreparedSessionSpec | None = None
-        self._sources: init_cmd._InteractiveSpecSources | None = None
+        self._sources: init_cmd._SandboxSpecSources | None = None
         self._image_id: str | None = None
 
     def inspect(self, project_root: Path) -> None:
@@ -39,8 +39,8 @@ class _RuntimeImages:
 
     def _current_sources(
         self, project_root: Path, image_id: str | None
-    ) -> init_cmd._InteractiveSpecSources:
-        return init_cmd._current_interactive_spec_sources(project_root, image_id)
+    ) -> init_cmd._SandboxSpecSources:
+        return init_cmd._current_sandbox_spec_sources(project_root, image_id)
 
     def prepare_spec(self, project_root: Path, image: runtime_refresh.RefreshImage) -> None:
         self._image_id = image.selected_id

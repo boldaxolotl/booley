@@ -1,4 +1,4 @@
-"""Tests for the Interactive Mode idle reaper (ADR 0018 WS2).
+"""Tests for the Sandbox idle reaper (ADR 0018 WS2).
 
 The reaper is self-contained; docker is mocked via the injected ``run`` callable.
 """

@@ -569,7 +569,7 @@ class SimulateFlow(
         requested = self._resolve_requested_targets()
         if isinstance(requested, EndpointOutcome):
             return requested
-        if (missing := self._validate_interactive_args(requested)) is not None:
+        if (missing := self._validate_call_args(requested)) is not None:
             return missing
         selected = [self._target_handle(target) for target in requested]
         return tuple(selected), None, tuple(requested), _get_test_names(self.args.work_dir)
@@ -694,11 +694,11 @@ class SimulateFlow(
         """True when *target* declares a ``cocotb_module`` (a Cocotb Target)."""
         return self._cocotb_module_for_target(target) is not None
 
-    def _validate_interactive_args(
+    def _validate_call_args(
         self,
         targets: list[str],
     ) -> EndpointOutcome | None:
-        """Interactive-Mode guard: a Target must be selected.
+        """Developer Agent session guard: a Target must be selected.
 
         ``tb_top`` left the surface (ADR 0021) — a sim Target's ``toplevel`` is
         its TB top, so it comes from the resolved Target (via

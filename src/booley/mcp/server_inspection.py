@@ -1,4 +1,4 @@
-"""Interactive Mode MCP server probe: the one owner of its rules (ADR 0018).
+"""Sandbox MCP server probe: the one owner of its rules (ADR 0018).
 
 Runs ``python -m booley.mcp.probe`` once in the Sandbox image and returns the
 complete observations as a :class:`DiagnosticReport`: the probe command and its

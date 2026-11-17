@@ -12,8 +12,8 @@ import pytest
 
 import booley
 from booley.harness import image_lifecycle as harness_lifecycle
+from booley.runtime import host_docker, project_image
 from booley.runtime import image_lifecycle as lifecycle
-from booley.runtime import interactive_docker, project_image
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildPlan,
@@ -250,7 +250,7 @@ def test_host_capacity_requests_reports_inspect_failure_as_lifecycle_error(
     # does not hide `docker` on Windows.
     monkeypatch.setattr(docker_image.subprocess, "run", docker_missing)
     # Private seam: the shared Docker CLI runner is the process boundary.
-    monkeypatch.setattr(interactive_docker, "_run_docker", docker_missing)
+    monkeypatch.setattr(host_docker, "_run_docker", docker_missing)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
         harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
@@ -2077,7 +2077,7 @@ def test_docker_image_id_daemon_failure_is_not_an_absent_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        lifecycle.interactive_docker,
+        lifecycle.host_docker,
         "_run_docker",
         lambda args, **_kwargs: subprocess.CompletedProcess(
             args, 125, stdout="", stderr="Cannot connect to the Docker daemon"
@@ -2092,7 +2092,7 @@ def test_docker_inspect_daemon_failure_is_not_an_absent_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        interactive_docker,
+        host_docker,
         "_run_docker",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
             [], 125, stdout="", stderr="Cannot connect to the Docker daemon"
@@ -2556,7 +2556,7 @@ def test_docker_cli_preserves_label_and_mutation_failures(
     cli = lifecycle._DockerCli()
 
     monkeypatch.setattr(
-        interactive_docker,
+        host_docker,
         "_run_docker",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
             [], 1, stdout="", stderr="No such image: absent"
@@ -2567,7 +2567,7 @@ def test_docker_cli_preserves_label_and_mutation_failures(
     def docker_unavailable(*_args: object, **_kwargs: object) -> None:
         raise OSError("docker unavailable")
 
-    monkeypatch.setattr(interactive_docker, "_run_docker", docker_unavailable)
+    monkeypatch.setattr(host_docker, "_run_docker", docker_unavailable)
     monkeypatch.setattr(lifecycle.subprocess, "run", docker_unavailable)
     with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
         cli.inspect("image")

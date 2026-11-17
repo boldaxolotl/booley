@@ -1,4 +1,4 @@
-"""Interactive Mode Git observations: info/exclude entries and tracked scratch logs."""
+"""Sandbox Git observations: info/exclude entries and tracked scratch logs."""
 
 from __future__ import annotations
 

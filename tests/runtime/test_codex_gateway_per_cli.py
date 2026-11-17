@@ -1,6 +1,6 @@
 """A Booley-issued Sandbox can put Codex alone on the gateway (#2897).
 
-Specs are built through the real init path (``_interactive_spec_sources``) against a
+Specs are built through the real init path (``_sandbox_spec_sources``) against a
 disposable host home holding a login for both Agent CLIs, as in ``test_multi_cli_sandbox``.
 """
 
@@ -67,7 +67,7 @@ def _host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, codex: str = "gateway
 
 def _issue(project: Path) -> dict:
     """The spec ``booley init`` would write for Claude (built, not sealed)."""
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, "claude", None
     )
     inputs = session_issuance.SessionSpecInputs(sources.project_data_source, (), (), None, None)

@@ -762,7 +762,7 @@
     "tests/harness/test_doctor_ticket_leftovers.py::test_unreadable_leftovers_warn_without_crashing[guidance]": 0.003,
     "tests/harness/test_git_utils.py::TestCommitScopeIntegration::test_stale_index_lock_is_removed_and_retried": 4.272,
     "tests/harness/test_image_build_contracts.py::test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access": 11.336943,
-    "tests/harness/test_init_agent_selection.py::test_full_init_passes_verified_runtime_image_id_to_interactive_mode": 10.100275,
+    "tests/harness/test_init_agent_selection.py::test_full_init_passes_verified_runtime_image_id_to_sandbox_step": 10.100275,
     "tests/harness/test_init_agent_selection.py::test_image_lifecycle_step_reports_cleanup_when_image_was_rebuilt": 8.118946,
     "tests/harness/test_init_agent_selection.py::test_nested_child_run_init_isolates_every_project_write[False-False]": 2.394952,
     "tests/harness/test_init_agent_selection.py::test_nested_child_run_init_isolates_every_project_write[False-True]": 2.298455,

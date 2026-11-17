@@ -713,7 +713,7 @@ NOT_A_KEY: dict[str, str] = {
         "leftover Goal record files, not configuration"
     ),
     "src/booley/harness/host_sidecars.py::_remove_egress": "reports a removed Docker resource",
-    "src/booley/harness/init_cmd.py::_interactive_precondition_failed": (
+    "src/booley/harness/init_cmd.py::_sandbox_precondition_failed": (
         "a repository precondition, not a retired key"
     ),
     "src/booley/harness/setup/scaffold.py::_cocotb_testbench": (

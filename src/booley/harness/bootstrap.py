@@ -464,7 +464,7 @@ def _vscode_finding() -> BootstrapFinding:
     return BootstrapFinding(
         "vscode",
         BootstrapState.ERROR,
-        "VS Code or a supported compatible editor is required for Interactive Mode",
+        "VS Code or a supported compatible editor is required to open the Sandbox",
     )
 
 

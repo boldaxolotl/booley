@@ -419,9 +419,7 @@ def test_issued_policy_matrix(clean_env, monkeypatch, app, policy, key, stored, 
         )
         path.write_text(json.dumps(payload))
     ctx = InitContext(project_root=root)
-    sources = init_cmd._interactive_spec_sources(
-        ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, app, None
-    )
+    sources = init_cmd._sandbox_spec_sources(ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, app, None)
     inputs = SessionSpecInputs(
         project_data_source=project_data,
         trusted_eda_mounts=(),
