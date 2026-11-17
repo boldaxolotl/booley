@@ -3441,11 +3441,12 @@ class TestFailPathSelfTest:
 
     def test_infra_error_on_bad_is_caught(self, tmp_path, monkeypatch, capsys):
         # QA-5: bad case exits 2 (contract_error) instead of a graded fail -> FAIL, and the
-        # tool's own output reaches the user.
-        reason = "contract_error: finding with an empty file\n"
+        # tool's own output reaches the user, its reason line after the first one included.
+        reason = "contract_error: finding with an empty file\nreason: the report has no verdict\n"
         rec = self._run(monkeypatch, self._audit(tmp_path), {"good": 0, "bad": 2}, stderr=reason)
         assert any("infra error" in m for m in rec.fails())
-        assert reason.strip() in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert all(line in out for line in reason.splitlines())
 
     def test_good_case_must_pass(self, tmp_path, monkeypatch):
         rec = self._run(monkeypatch, self._audit(tmp_path), {"good": 1, "bad": 1})
@@ -6512,6 +6513,16 @@ _LINT_DECLARATIONS = {
 }
 
 
+def _lint_style_project(tmp_path, monkeypatch, eda_tool, declaration, marker):
+    """A Project whose `lint.core` holds the lint Target `lint_style`; *marker* may be empty."""
+    text = _LINT_DECLARATIONS[declaration].format(tool=eda_tool, marker=marker)
+    core = (
+        "CAPI=2:\nname: acme:ip:lint:1.0\nfilesets:\n  rtl: {files: [rtl/dut.sv]}\ntargets:\n"
+        f"  lint_style:\n    {text}\n    filesets: [rtl]\n    toplevel: dut\n"
+    )
+    _core_project(tmp_path, monkeypatch, {"lint.core": core})
+
+
 _LINT_POLICY_ROWS = [
     ("verible", "lint", True, "verible-verilog-lint", True),
     ("veriblelint", "lint", True, "verible-verilog-lint", True),
@@ -6536,12 +6547,7 @@ def test_authored_lint_doctor_eda_tool_policy(
     tmp_path, monkeypatch, eda_tool, declaration, compatible, binary, verible
 ):
     """A marked lint Target selects Verible only through its Flow's EDA tool (f27325c2a)."""
-    text = _LINT_DECLARATIONS[declaration].format(tool=eda_tool, marker="booley: {doctor: [lint]}")
-    core = (
-        "CAPI=2:\nname: acme:ip:lint:1.0\nfilesets:\n  rtl: {files: [rtl/dut.sv]}\ntargets:\n"
-        f"  lint_style:\n    {text}\n    filesets: [rtl]\n    toplevel: dut\n"
-    )
-    _core_project(tmp_path, monkeypatch, {"lint.core": core})
+    _lint_style_project(tmp_path, monkeypatch, eda_tool, declaration, "booley: {doctor: [lint]}")
 
     result = _doctor_run(tmp_path)
 
@@ -6552,6 +6558,13 @@ def test_authored_lint_doctor_eda_tool_policy(
         # The probe owner answers for the Project Root; the Doctor run's fake is not its Sandbox.
         monkeypatch.setattr(doctor.subprocess, "run", _REAL_SUBPROCESS_RUN)
         assert _probed_binaries(tmp_path, "lint_style", "lint") == [binary]
+
+
+def test_unmarked_verible_lint_target_still_gets_the_container_row(tmp_path, monkeypatch):
+    """The Verible gate reads every lint Target, not only the ones marked for Doctor."""
+    _lint_style_project(tmp_path, monkeypatch, "verible", "lint", "")
+
+    assert _rows(_doctor_run(tmp_path), Severity.PASS, _VERIBLE_CONTAINER_ROW)
 
 
 def _line_endings_repo(
@@ -6874,12 +6887,16 @@ _NO_SEAT_CAP = "vivado has no Seat Cap: every licensed EDA tool the Project uses
 @pytest.mark.parametrize(
     ("toml", "rows"),
     [
-        pytest.param("\n[flows.fpga]\n", [_NO_SEAT_CAP], id="fpga-flow"),
+        pytest.param("\n[flows.fpga]\n", [(Severity.FAIL, _NO_SEAT_CAP)], id="fpga-flow"),
         pytest.param(
-            '\n[eda.vivado]\nprovisioning = "host"\n', [_NO_SEAT_CAP], id="vivado-declared"
+            '\n[eda.vivado]\nprovisioning = "host"\n',
+            [(Severity.FAIL, _NO_SEAT_CAP)],
+            id="vivado-declared",
         ),
         pytest.param(
-            "\n[flows.fpga]\n[jobs.seats]\nvivado = 2\n", ["Seat Cap: vivado = 2"], id="capped"
+            "\n[flows.fpga]\n[jobs.seats]\nvivado = 2\n",
+            [(Severity.PASS, "Seat Cap: vivado = 2")],
+            id="capped",
         ),
         # Vivado is declared but the FPGA Flow is off: Booley provisions none, no seat is owed.
         pytest.param(
@@ -6896,8 +6913,8 @@ def test_seat_cap_check(tmp_path, monkeypatch, toml, rows):
 
     result = _doctor_run(tmp_path)
 
-    assert [m for m in _messages(result) if "Seat Cap" in m] == rows
-    if rows == [_NO_SEAT_CAP]:
+    assert [(f.severity, f.message) for f in result.findings if "Seat Cap" in f.message] == rows
+    if rows and rows[0][0] is Severity.FAIL:
         (fix,) = _fixes(result, "Seat Cap")
         assert "[jobs.seats] vivado = <seats you own>" in fix
 
@@ -6916,7 +6933,7 @@ def test_seat_cap_check_leaves_malformed_seats_to_the_schema_audit(tmp_path):
 def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypatch):
     _history_git(tmp_path, "init", "-q")
     excludes = tmp_path / "global ignores"
-    excludes.write_text("# local policy\n.booley/booley.toml\n")
+    excludes.write_bytes(b"# local policy\n.booley/booley.toml\n")
     _history_git(tmp_path, "config", "core.excludesFile", str(excludes))
     # The fixture's `/.booley` exclude would hide every input and mask the selective rule.
     _core_project(
