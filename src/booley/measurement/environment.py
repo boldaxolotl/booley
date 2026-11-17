@@ -85,6 +85,7 @@ def measurement_environment(
     main_booley_dir: Path,
     home: Path,
     tmp: Path,
+    runtime: Path,
     git_refusal: Path,
 ) -> dict[str, str]:
     """Return the child environment: allow-listed *source* entries plus the run's own.
@@ -93,6 +94,8 @@ def measurement_environment(
     while the checkout's inputs resolve to its own Booley Directory. *home* and
     *tmp* are directories the caller created for this run, and
     ``PYTHONPYCACHEPREFIX`` keeps the bytecode of a Project Flow out of the checkout.
+    *runtime* is the run's own ``BOOLEY_RUNTIME_DIR``, so its scratch (a Mutation campaign's
+    builds) is never shared with another child or a live run.
     *git_refusal* is the directory :func:`write_git_refusal` filled; it leads ``PATH``.
     """
     environment = {
@@ -104,6 +107,7 @@ def measurement_environment(
         {
             "BOOLEY_DIR": str(main_booley_dir),
             "HOME": str(home),
+            "BOOLEY_RUNTIME_DIR": str(runtime),
             "TMPDIR": str(tmp),
             "TMP": str(tmp),
             "TEMP": str(tmp),
