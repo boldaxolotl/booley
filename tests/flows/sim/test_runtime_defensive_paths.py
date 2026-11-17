@@ -65,8 +65,9 @@ def test_supervised_pre_sim_process_propagates_identity_and_unregisters(
 
     evidence = _fire_supervised(tmp_path, monkeypatch, scope, popen)
 
-    # The child sees the supervising execution's identity.
+    # The child sees the caller's environment plus the supervising execution's identity.
     assert [env[RUNTIME_EXECUTION_ENV] for env in popen_envs] == ["e" * 32]
+    assert [env["BOOLEY_BUILD_ROOT"] for env in popen_envs] == [str(tmp_path / "build")]
     assert evidence is not None and evidence.status == "passed"
     assert (evidence.stdout_tail, evidence.stderr_tail) == ("out", "err")
     assert processes.registered == processes.unregistered == [process]

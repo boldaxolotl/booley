@@ -237,6 +237,7 @@ class TestCocotb:
         )
         assert preview.groups == (("test_a", "test_b", "test_c"),)
         work = launched_work(preview.commands[0])
+        assert work.cocotb_module == "test_demo"
         assert work.cocotb_seed == 1
         assert not any("seed" in plusarg for plusarg in work.plusargs)
 
