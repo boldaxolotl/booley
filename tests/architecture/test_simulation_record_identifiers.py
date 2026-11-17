@@ -143,12 +143,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "_campaign_roots",
         }
     ),
-    "src/booley/criteria/templates.py": frozenset(
-        {
-            "TARGET_CAMPAIGN_CRITERIA",
-            "_TARGET_CAMPAIGN_PARAM_REGISTRY",
-        }
-    ),
     "src/booley/flows/mutation/flow.py": frozenset(
         {
             "_apply_campaign_defaults",
@@ -180,16 +174,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "resolve_target_campaign",
         }
     ),
-    "tests/criteria/test_campaign_templates.py": frozenset(
-        {
-            "campaign",
-            "test_coverage_campaign_expands_shared_policy_per_target",
-            "test_coverage_campaign_rejects_duplicate_target_ownership",
-            "test_coverage_campaign_rejects_invalid_authoring",
-            "test_mutation_campaign_expands_target_and_parameters",
-            "test_mutation_campaign_rejects_incoherent_counts",
-        }
-    ),
     "tests/flows/mutation/test_flow.py": frozenset(
         {
             "_assert_durable_campaign",
@@ -219,6 +203,11 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "test_batched_campaign_launches_one_process_per_given_batch",
             "test_campaign_aggregation_cannot_pass_vacuously",
             "test_campaign_domain_does_not_import_presentation_layers",
+        }
+    ),
+    "tests/runtime/test_job_observation.py": frozenset(
+        {
+            "test_a_cli_campaign_waiting_for_an_item_claim_is_queued",
         }
     ),
 }

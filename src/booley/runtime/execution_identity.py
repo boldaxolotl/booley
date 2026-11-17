@@ -1,11 +1,10 @@
-"""Booley build identity and host facts: two key parts of the Result Cache.
+"""Booley build identity and host facts: two Measurement environment keys.
 
-ADR 0076 section 2 keys a cached result by, among other parts, the Booley code
-that produced it and the host that ran it. This module computes both as
-``sha256:<hex>`` strings and refuses (``IdentityError``) whenever it cannot
-account for every input, so a consumer reports "unavailable" instead of
-serving a result under a partial identity. Measurement environments
-reuse both.
+The Booley code that produced a result and the host that ran it identify a
+Measurement environment (``booley.measurement.toolchain`` reads both). This
+module computes both as ``sha256:<hex>`` strings and refuses (``IdentityError``)
+whenever it cannot account for every input, so a consumer reports "unavailable"
+instead of using a partial identity.
 
 ``booley_build_identity`` is the installed-content identity of the ``booley``,
 ``fusesoc`` and ``edalize`` distributions. It is not the image identity of
@@ -19,8 +18,8 @@ Contracts consumers must honour:
 
 - The identity hashes on-disk content at call time, not the bytes a long-lived
   process already loaded. A consumer captures it at process start and requires
-  the value to equal the one at both key snapshots (ADR 0076 section 1), so an
-  install replaced under a running process never stores or serves.
+  the value to equal the one at both key snapshots, so an
+  install replaced under a running process is detected.
 - It describes the calling interpreter's import view. A subprocess (``fusesoc``
   or ``python3`` from ``PATH``, a redirected bytecode prefix) is checked
   elsewhere, and so are modules imported from a Project directory that was

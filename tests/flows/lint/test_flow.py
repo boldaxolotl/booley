@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.lint.flow import (
     LintConfigResult,
     LintFlow,
@@ -98,15 +97,10 @@ Compiling mod_b.sv
 
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create a minimal state file and set env vars."""
-    sf = tmp_path / "state.json"
-    st = DevelopmentState.load(sf)
-    st.slug = "test-lint"
-    st.save()
+    """Set the slug env var and working directory; return the unused state path."""
     monkeypatch.setenv("BOOLEY_SLUG", "test-lint")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
     monkeypatch.chdir(tmp_path)
-    return sf
+    return tmp_path / "state.json"
 
 
 @pytest.fixture()

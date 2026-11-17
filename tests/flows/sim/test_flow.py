@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.artifacts import (
     artifact_path_component as _artifact_path_component,
@@ -216,18 +215,10 @@ def test_artifact_path_component_never_embeds_unsafe_test_names():
 # ---------------------------------------------------------------------------
 
 
-def _env_with_state(state_file: Path, slug: str = "test-ticket") -> dict[str, str]:
+def _flow_env(slug: str = "test-ticket") -> dict[str, str]:
     env = os.environ.copy()
     env["BOOLEY_SLUG"] = slug
-    env["BOOLEY_STATE_FILE"] = str(state_file)
     return env
-
-
-def _make_state(tmp_path: Path) -> Path:
-    """Create a fresh state file and return its path."""
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    return state_file
 
 
 def _make_flow(
@@ -238,7 +229,7 @@ def _make_flow(
     extra_args: list[str] | None = None,
     seed_core: bool = True,
 ) -> SimulateFlow:
-    """Build a SimulateFlow with parsed args and loaded state.
+    """Build a SimulateFlow with parsed args.
 
     tb_top left the CLI surface (ADR 0021); a sim Target's ``toplevel`` IS its
     TB top, so it comes from the resolved Target. ADR 0022 made the ``.core`` the
@@ -248,7 +239,6 @@ def _make_flow(
     performs (``fusesoc_registry.core_target_toplevel``). Only written for a
     single valid Target name (a comma-list / empty ``config`` is not a Target).
     """
-    state_file = _make_state(tmp_path)
     report_dir = tmp_path / "reports"
     # Seed tb_top via a co-located .core the no-resolve tb_top_for_target reads
     # (BOOLEY_DIR=tmp_path). Skip for multi/empty config (not a Target)
@@ -282,7 +272,7 @@ def _make_flow(
     ]
     if extra_args:
         argv.extend(extra_args)
-    env = _env_with_state(state_file)
+    env = _flow_env()
     booley_dir = tmp_path / ".booley"
     if booley_dir.exists():
         env["BOOLEY_DIR"] = str(booley_dir)
@@ -747,21 +737,7 @@ def test_simulation_run_records_no_criterion(
 def test_simulation_run_leaves_declared_criteria_untouched(tmp_path: Path, monkeypatch):
     """Criteria declared in a state file are neither evaluated, baselined nor recorded."""
     state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.slug, state.ticket_type = "ticket", "implementation"
-    state.init_criteria(
-        {"sim_pass_lite": True, "cycle_count_lite_smoke": True},
-        criterion_params={
-            "cycle_count_lite_smoke": {
-                "target": "lite",
-                "test": "smoke",
-                "cycle_count_increase_at_most": "50%",
-                "_baseline_ref": "f" * 40,
-            }
-        },
-        strict=True,
-    )
-    state.save()
+    state_path.write_bytes(b'{"opaque": true}\n')
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     before = state_path.read_bytes()
     run = run_simulation_record_sim(

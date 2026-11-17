@@ -18,7 +18,6 @@ from booley.runtime.project_repositories import is_git_worktree_root, run_git
 _SEEDS = (".gitignore", "booley.toml", "tests.toml", "FUSESOC_IGNORE")
 _OPTIONAL = (
     "AGENTS.md",
-    "criteria.toml",
     "doctor-waivers.toml",
     "SETUP-PLAN.md",
     "pipeline.toml",

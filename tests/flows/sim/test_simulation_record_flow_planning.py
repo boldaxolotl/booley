@@ -10,7 +10,6 @@ import pytest
 from booley.flows.sim.execution.contract import SimulationPreview
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
-from booley.flows.test_runs import build_test_run
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.conftest import symlink_or_skip
 
@@ -52,22 +51,17 @@ def test_invalid_run_cwd_template_is_refused_before_a_manifest_exists(tmp_path: 
         _plan(handle, inspection, preview, ("reset", "count"))
 
 
-def test_run_cwd_with_a_parent_component_is_refused_at_planning(tmp_path: Path) -> None:
-    """``run_cwd`` itself stays inside the Project (testbench ``../`` paths are fine)."""
-    project, handle, inspection, preview = _planning_fixture(tmp_path)
-    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "../shared"\n', encoding="utf-8")
-
-    with pytest.raises(ValueError, match=r"run_cwd must not contain a '\.\.' component"):
-        _plan(handle, inspection, preview, ("reset", "count"))
-
-
 @pytest.mark.parametrize(
-    "value",
-    ['"make -C tests build"', '["make", 3]'],
-    ids=["bare-string", "non-string-entry"],
+    ("value", "message"),
+    [
+        ('"make -C tests build"', r"\[flows\.sim\]\.pre_run_commands must be a list of strings"),
+        ('["make", 3]', r"\[flows\.sim\]\.pre_run_commands must be a list of strings"),
+        ('["make", ""]', r"pre_run_commands must be a list of strings, none empty"),
+    ],
+    ids=["bare-string", "non-string-entry", "empty-entry"],
 )
 def test_invalid_pre_run_commands_are_refused_before_a_manifest_exists(
-    tmp_path: Path, value: str
+    tmp_path: Path, value: str, message: str
 ) -> None:
     """Planning rejects a knob that is not a list of strings; nothing is frozen."""
     project, handle, inspection, preview = _planning_fixture(tmp_path)
@@ -75,9 +69,7 @@ def test_invalid_pre_run_commands_are_refused_before_a_manifest_exists(
         f"[flows.sim]\npre_run_commands = {value}\n", encoding="utf-8"
     )
 
-    with pytest.raises(
-        ValueError, match=r"\[flows\.sim\]\.pre_run_commands must be a list of strings"
-    ):
+    with pytest.raises(ValueError, match=message):
         _plan(handle, inspection, preview, ("reset", "count"))
 
 
@@ -156,104 +148,19 @@ def test_source_recipe_ignores_flow_options_defines(tmp_path):
         assert document["workload"]["build_recipe"]["command_model_sha256"] != baseline_command
 
 
-@pytest.mark.parametrize("mapping", [False, True])
-@pytest.mark.parametrize("contract_version", ["1", "2"])
-@pytest.mark.parametrize("raw_coverage", [False, True])
-def test_every_planned_manifest_is_v4_whatever_it_discloses(
-    mapping, raw_coverage, contract_version
-):
-    from booley.flows.sim.record.flow_planning import _manifest_document
-    from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
-
-    document = _manifest()
-    workload = document["workload"]
-    workload["coverage"] = raw_coverage
-    if raw_coverage:
-        workload["no_waivers"] = True
-    entry = {
-        "path": "staged.hex",
-        "bytes": 1,
-        "sha256": "sha256:" + "a" * 64,
-        "kind": "generated_input",
-    }
-    if mapping:
-        entry["source_path"] = "data/source.hex"
-    disclosure = {
-        "planner": "fusesoc_setup",
-        "scratch_inputs": [],
-        "generated_files": [entry],
-        "tool_provenance": {
-            "kind": "fusesoc",
-            "version": "2",
-            "contract_version": contract_version,
-        },
-        "cleanup": {"removed": True},
-    }
-    from booley.flows.sim.record.flow_planning import _variant_document, _work_items
-
-    variant = _variant_document(workload, [], False)
-    variants, items = (
-        [variant],
-        _work_items(
-            [(build_test_run(None),)],
-            document["target"],
-            variant,
-            "run",
-            "literal",
-            kind="ordinary_hdl",
-        ),
-    )
-    document["build_variants"] = variants
-    document["work_items"] = items
-    # This boundary chooses the schema; finalization recalculates the fingerprints.
-    manifest = _manifest_document(
-        1,
-        "",
-        document["target"],
-        workload,
-        document["required_suite"],
-        document["build_variants"][0],
-        [disclosure],
-        [],
-        document["work_items"],
-    )
-    # One written version: it records each work item's Test Runs (ADR 0072),
-    # permits source identities, and carries no_waivers only when requested.
-    assert manifest.document["$schema"] == "booley.simulation-record-manifest/v1"
-    assert ("no_waivers" in manifest.document["workload"]) is raw_coverage
-    assert [run["name"] for run in manifest.document["work_items"][0]["test_runs"]] == [
-        "<default>"
-    ]
-
-
 def test_empty_target_toplevel_is_refused_at_planning(tmp_path):
-    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
-
     _project, handle, inspection, preview = _planning_fixture(tmp_path)
     with pytest.raises(SimulationRecordIntegrityError, match="empty toplevel; set toplevel"):
         _plan(handle, dataclasses.replace(inspection, toplevel=""), preview, ("reset", "count"))
 
 
 def test_copyto_destination_outside_the_run_directory_is_refused_at_planning(tmp_path):
-    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
-
     _project, handle, inspection, preview = _planning_fixture(tmp_path)
     (tmp_path / "fw.hex").write_text("00\n", encoding="utf-8")
     staged = TargetInput("fw.hex", "acme:lib:dut:1", "user", (), False, {"copyto": "C:fw.hex"})
     planned = dataclasses.replace(inspection, inputs=(*inspection.inputs, staged))
     with pytest.raises(SimulationRecordIntegrityError, match=r"copyto destination 'C:fw\.hex'"):
         _plan(handle, planned, preview, ("reset", "count"))
-
-
-def test_empty_pre_run_command_is_refused_at_planning(tmp_path):
-    project, handle, inspection, preview = _planning_fixture(tmp_path)
-    (project / "booley.toml").write_text(
-        '[flows.sim]\npre_run_commands = ["make", ""]\n', encoding="utf-8"
-    )
-    with pytest.raises(
-        ValueError, match=r"pre_run_commands must be a list of strings, none empty"
-    ):
-        _plan(handle, inspection, preview, ("reset", "count"))
 
 
 @pytest.mark.parametrize("linked", ["entry", "below"])

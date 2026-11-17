@@ -1381,7 +1381,7 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         text = _METRICS_BLOCK.sub(_METRICS_PLACEHOLDER, text)
 
     # Narrow to the requested sections (after splicing, so a filtered view still
-    # shows live registry/criteria tables). --all keeps the whole sheet.
+    # shows live registry tables). --all keeps the whole sheet.
     text = cheatsheet.select(
         text,
         []

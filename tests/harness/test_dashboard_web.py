@@ -184,6 +184,12 @@ def _slot(world: World, kind: str, seq: int, pid: int, payload: dict) -> None:
     (directory / name).write_bytes(json.dumps({"created_at": STARTED, **payload}).encode())
 
 
+def _own(pid: int, run_id: str, **extra) -> dict:
+    """What Job admission writes for a Job's own claim: its owner and its run ID label."""
+    label = job_slots.JobLabel(run_id, "sim", "").to_payload()
+    return {"owner_identity": _identity(pid), "job": label, **extra}
+
+
 def _claim(mib: float, **kw) -> dict:
     return job_slots.MemoryClaim(6144.0, reservation_mb=mib, **kw).to_payload()
 
@@ -443,7 +449,7 @@ def test_now_lists_running_and_queued_jobs_with_queue_position(world, monkeypatc
     )
     for seq, pid, mib in ((1, 7101, 200.0), (2, 7102, 500.0)):
         _slot(world, "h", seq, pid, {"memory": _claim(mib)})
-    _slot(world, "w", 3, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+    _slot(world, "w", 3, 7002, _own(7002, "run-q", memory=_claim(400.0)))
 
     with _client(world, monkeypatch) as client:
         body = _snapshot(client, world.wt)
@@ -594,7 +600,7 @@ def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypat
         live=True,
     )
     _slot(world, "h", 1, 7101, {"memory": _claim(200.0)})
-    _slot(world, "w", 2, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+    _slot(world, "w", 2, 7002, _own(7002, "run-q", memory=_claim(400.0)))
     # The roots holding the unfinished Jobs are the oldest of all 66.
     for root in (world.booley / ".interactive_logs").glob("*/.runtime/jobs"):
         old = root.parent.parent.name in {"sess1", "standalone"}
@@ -614,6 +620,43 @@ def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypat
     assert (admission["running_jobs"], admission["queued_jobs"]) == (2, 1)
 
 
+def test_cli_jobs_waiting_for_memory_are_queued_and_counted(world, monkeypatch):
+    # `booley session enter` exports the execution ID, so a CLI Job's own claim is execution-owned.
+    execution = {"owner_kind": "execution", "execution_id": "b2" * 16}
+    for run_id, pid in (("run-h", 7030), ("run-w1", 7031), ("run-w2", 7032), ("run-rec", 7033)):
+        _job(
+            world,
+            run_id,
+            world.wt,
+            target=run_id,
+            session=None,
+            status="running",
+            ended=None,
+            pid=pid,
+            live=True,
+        )
+    _slot(world, "h", 1, 7030, _own(7030, "run-h", **execution, memory=_claim(200.0)))
+    _slot(world, "h", 2, 7033, _own(7033, "run-rec", **execution, memory=_claim(100.0)))
+    _slot(world, "w", 3, 7031, _own(7031, "run-w1", **execution, memory=_claim(6000.0)))
+    _slot(world, "w", 4, 7032, _own(7032, "run-w2", **execution, memory=_claim(6000.0)))
+    # A Simulation Record lane of run-rec: unlabelled, another execution, never the Job's state.
+    lane = {"owner_identity": _identity(7033), "owner_kind": "execution"}
+    _slot(world, "w", 5, 7033, {**lane, "execution_id": "c3" * 16, "memory": _claim(6000.0)})
+
+    with _client(world, monkeypatch) as client:
+        body = _snapshot(client, world.wt)
+
+    states = {row["target"]: (row["state"], row["queue_position"]) for row in body["now"]}
+    assert states == {
+        "run-h": ("running", None),
+        "run-rec": ("running", None),
+        "run-w1": ("queued", 1),
+        "run-w2": ("queued", 2),
+    }
+    admission = body["header"]["admission"]
+    assert (admission["running_jobs"], admission["queued_jobs"]) == (2, 2)
+
+
 def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatch):
     ticks = iter((100.0, 110.0))
     # One Job holding a companion claim and two work-item claims.
@@ -624,7 +667,11 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
             "h",
             seq,
             7010,
-            {"owner_identity": _identity(7010), "memory": _claim(mib, **extra)},
+            (
+                _own(7010, "run-a", memory=_claim(mib, **extra))
+                if extra
+                else {"owner_identity": _identity(7010), "memory": _claim(mib)}
+            ),
         )
     # A running Job whose child-lane claim waits is still running.
     _job(world, "run-c", world.main, status="running", ended=None, pid=7011, live=True)
@@ -637,7 +684,7 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
     )
     # A queued Job counts as queued, not reserved.
     _job(world, "run-b", world.other, status="running", ended=None, pid=7012, live=True)
-    _slot(world, "w", 5, 7012, {"owner_identity": _identity(7012), "memory": _claim(400.0)})
+    _slot(world, "w", 5, 7012, _own(7012, "run-b", memory=_claim(400.0)))
     # A stale holder of a dead owner reserves nothing.
     _slot(world, "h", 6, 7013, {"owner_identity": _identity(7013), "memory": _claim(1000.0)})
     before = sorted(path.name for path in (world.booley / "runtime/jobs/slots/memory").iterdir())
@@ -670,7 +717,7 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
 def test_run_alone_holder_is_reported_not_summed(world, monkeypatch):
     _job(world, "run-a", world.wt, status="running", ended=None, pid=7020, live=True)
     alone = job_slots.MemoryClaim(6144.0, run_alone=True).to_payload()
-    _slot(world, "h", 1, 7020, {"owner_identity": _identity(7020), "memory": alone})
+    _slot(world, "h", 1, 7020, _own(7020, "run-a", memory=alone))
 
     with _client(world, monkeypatch) as client:
         admission = _snapshot(client, world.wt)["header"]["admission"]
@@ -771,7 +818,7 @@ def _queued_world(world: World) -> None:
     )
     for seq, pid, mib in ((1, 7101, 200.0), (2, 7102, 500.0)):
         _slot(world, "h", seq, pid, {"memory": _claim(mib)})
-    _slot(world, "w", 3, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+    _slot(world, "w", 3, 7002, _own(7002, "run-q", memory=_claim(400.0)))
 
 
 def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):

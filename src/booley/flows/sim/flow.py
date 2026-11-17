@@ -598,18 +598,6 @@ class SimulateFlow(
             resources.callback(worktrees.pop, revision)
         return worktrees[revision]
 
-    satisfies: ClassVar[list[str]] = [
-        "elab_pass",
-        "elaborate_standalone",
-        "sim_pass",
-        "cycle_count",
-        "coverage",
-    ]
-    satisfies_args: ClassVar[dict[str, str]] = {
-        "coverage": "--coverage",
-        "elab_pass": "--mode elab-only",
-        "elaborate_standalone": "--mode elab-only-standalone",
-    }
     # The MCP server computes mode-aware build, hook, execution, and finalization
     # headroom. This class default is only its defensive floor.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + TRACE_CLEANUP_MARGIN_S

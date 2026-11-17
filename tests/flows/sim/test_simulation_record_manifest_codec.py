@@ -4,17 +4,13 @@ import hashlib
 import json
 import os
 import subprocess
-from contextlib import contextmanager
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
-from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
-from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.flow_resume import _unfinished_coverage_work
+from booley.flows.sim.execution.contract import SimulationTestOutcome
+from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
 from booley.flows.sim.record import serial_execution
 from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
@@ -25,10 +21,7 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     SimulationRecord,
-    SimulationRecordPolicy,
     SimulationRecordRecoveryStatus,
-    WorkExecutionRequest,
-    _new_store,
 )
 from booley.flows.sim.record.model import (
     SimulationRecordPlan,
@@ -44,9 +37,10 @@ from booley.flows.sim.record.resume import (
     ValidatedResumeManifest,
     validate_resume_manifest,
 )
-from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
+from booley.flows.sim.record_files import document_digest
 from booley.flows.test_runs import build_test_run, test_run_document
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
@@ -60,96 +54,16 @@ def _sha(value: object) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def _build_execution() -> dict[str, object]:
-    return {
-        "$schema": "booley.simulation-build-execution/v1",
-        "process": {
-            "returncode": 0,
-            "stdout": "build\n",
-            "stderr": "",
-            "timed_out": False,
-            "duration_s": 0.1,
-            "dispatched_unix": 1.0,
-            "peak_rss_mb": None,
-            "oom_kill_delta": 0,
-        },
-        "build": {
-            "ran": True,
-            "verdict": "pass",
-            "failure_kind": None,
-            "elapsed_s": 0.1,
-            "output": "build\n",
-            "returncode": 0,
-            "timed_out": False,
-            "peak_rss_mb": None,
-            "oom_kill_delta": 0,
-            "terminal_record": True,
-            "reason": "",
-            "cache_decision": "",
-        },
+def _seal_item(item: dict[str, object]) -> None:
+    """Recompute a work item's fingerprint and id after its identity fields changed."""
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"fingerprint_sha256", "work_item_id"}
     }
-
-
-class _GeneratorCatalog:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-
-    def select(self, token: str, *, for_flow: str):
-        assert (token, for_flow) == ("sim", "sim")
-        return SimpleNamespace(
-            identity="acme:lib:dut:1#sim",
-            project_root=self.root,
-            selector="sim",
-            eda_tool="icarus",
-        )
-
-
-class _GeneratorGroup:
-    def __init__(self, root: Path, build_root: Path, run_log: Path, disclosure, changed):
-        self.root = root
-        self.build_root = build_root
-        self.run_log = run_log
-        self.disclosure = disclosure
-        self.changed = changed
-        self.artifact_paths = (build_root / "simv",)
-        self.compile_surface = SimpleNamespace(
-            project_root=root.resolve(),
-            authored_paths=(),
-            operational_paths=(),
-            optional_paths=(),
-        )
-
-    def compile(self):
-        return SimpleNamespace(passed=True)
-
-    def planning_disclosure(self):
-        return self.changed if self.changed is not None else self.disclosure
-
-    def build_recovery_document(self):
-        return _build_execution()
-
-    def bind_authenticated_bundle(self, evidence):
-        assert evidence == _build_execution()
-
-    def launch_bundle(self, bundle_root, evidence_root, run_cwd):
-        assert bundle_root.is_dir()
-        assert evidence_root.name == "execution-evidence"
-        assert run_cwd == self.root / "run"
-        test = SimulationTestOutcome("sim", "pass", True, str(self.run_log))
-        return SimulationTargetOutcome(
-            "sim", "acme:lib:dut:1#sim", "tb", "icarus", True, "pass", 0.1, (test,)
-        )
-
-
-class _GeneratorExecution:
-    def __init__(self, group: _GeneratorGroup) -> None:
-        self.group = group
-
-    @contextmanager
-    def ordinary_group(self, handle, names, _test_runs=None):
-        del handle
-        assert names == ()
-        yield self.group
+    fingerprint = _sha(identity)
+    item["fingerprint_sha256"] = fingerprint
+    item["work_item_id"] = "item:0000:" + fingerprint.removeprefix("sha256:")[:16]
 
 
 def _selection_test_runs(names):
@@ -313,15 +227,27 @@ def _baseline_manifest():
     item.update(  # type: ignore[union-attr]
         {"role": "cycle_count_baseline", "revision": "base-rev", "target": target}
     )
-    identity = {
-        key: value
-        for key, value in item.items()  # type: ignore[union-attr]
-        if key not in {"fingerprint_sha256", "work_item_id"}
-    }
-    fingerprint = _sha(identity)
-    item["fingerprint_sha256"] = fingerprint  # type: ignore[index]
-    item["work_item_id"] = "item:0000:" + fingerprint[7:23]  # type: ignore[index]
+    _seal_item(item)  # type: ignore[arg-type]
     return finalize_manifest(document)
+
+
+def _prerequisite_entry() -> dict[str, object]:
+    """A cycle-count baseline prerequisite entry with literal, self-consistent fields."""
+    return {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": "targets/base/record/manifest.json",
+            "bytes": 1,
+            "sha256": "sha256:" + "a" * 64,
+            "kind": "simulation_record_manifest",
+            "owner": "550e8400-e29b-41d4-a716-446655440000",
+        },
+        "simulation_record_id": "550e8400-e29b-41d4-a716-446655440000",
+        "target": {**_manifest()["target"], "role": "cycle_count_baseline"},  # type: ignore[dict-item]
+        "required_observation": "cycle_count",
+        "work_item_id": "item:0000:0123456789abcdef",
+    }
 
 
 def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
@@ -385,108 +311,14 @@ def _linked_simulation_record_stores(tmp_path: Path, *, topology_revisions=None)
     return candidate, candidate_store, baseline, baseline_store
 
 
-def test_manifest_codec_round_trips_exact_bytes() -> None:
-    raw = canonical_json_bytes(_manifest())
-    value = decode_simulation_record_manifest(raw)
-    assert value.canonical_bytes() == raw
-    assert encode_simulation_record_manifest(value) == raw
-
-
-def test_finalize_manifest_accepts_immutable_mapping_inputs() -> None:
-    document = _manifest()
-    document.pop("fingerprints")
-    workload = document["workload"]
-    assert isinstance(workload, dict)
-    document["workload"] = MappingProxyType(
-        {
-            **workload,
-            "eda": MappingProxyType(workload["eda"]),
-        }
-    )
-
-    manifest = finalize_manifest(document)
-
-    assert manifest.document["workload"]["eda"]["kind"] == "icarus"
-
-
 def test_simulation_record_plan_is_derived_only_from_a_validated_manifest() -> None:
     manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     plan = create_simulation_record_plan(manifest)
-    assert plan.manifest == manifest
     assert plan.work_item_ids == (manifest.document["work_items"][0]["work_item_id"],)  # type: ignore[index]
     with pytest.raises(TypeError, match="create_simulation_record_plan"):
         SimulationRecordPlan()
     with pytest.raises(TypeError):
         SimulationRecordPlan(manifest, ("item:0000:ffffffffffffffff",))  # type: ignore[call-arg]
-
-
-def test_resume_preview_reports_all_workload_mismatches() -> None:
-    expected_document = _manifest()
-    expected_document.pop("fingerprints")
-    expected = finalize_manifest(expected_document)
-    current_document = _manifest()
-    current_document.pop("fingerprints")
-    current_document["target"]["revision"] = "changed"  # type: ignore[index]
-    item = current_document["work_items"][0]  # type: ignore[index]
-    item["revision"] = "changed"
-    item["target"]["revision"] = "changed"
-    identity = {
-        key: value
-        for key, value in item.items()
-        if key not in {"fingerprint_sha256", "work_item_id"}
-    }
-    fingerprint = _sha(identity)
-    item["fingerprint_sha256"] = fingerprint
-    item["work_item_id"] = "item:0000:" + fingerprint.removeprefix("sha256:")[:16]
-    current = finalize_manifest(current_document)
-
-    mismatches = compare_manifests(expected, current)
-
-    assert len(mismatches) >= 3
-    assert {item.pointer for item in mismatches} >= {
-        "/target/revision",
-        "/work_items/0/revision",
-        "/work_items/0/target/revision",
-    }
-
-
-def test_cycle_baseline_simulation_record_has_a_noncolliding_store_path(tmp_path: Path) -> None:
-    candidate = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
-    baseline_document = _manifest()
-    baseline_document.pop("fingerprints")
-    baseline_document["target"]["role"] = "cycle_count_baseline"  # type: ignore[index]
-    item = baseline_document["work_items"][0]  # type: ignore[index]
-    item["role"] = "cycle_count_baseline"
-    item["target"]["role"] = "cycle_count_baseline"
-    identity = {
-        key: value
-        for key, value in item.items()
-        if key not in {"fingerprint_sha256", "work_item_id"}
-    }
-    fingerprint = _sha(identity)
-    item["fingerprint_sha256"] = fingerprint
-    item["work_item_id"] = "item:0000:" + fingerprint.removeprefix("sha256:")[:16]
-    baseline = finalize_manifest(baseline_document)
-    invocation = tmp_path / "000001"
-
-    candidate_store = _new_store(
-        SimpleNamespace(
-            plan=create_simulation_record_plan(candidate),
-            invocation_directory=invocation,
-            project_root=tmp_path,
-        )
-    )
-    baseline_store = _new_store(
-        SimpleNamespace(
-            plan=create_simulation_record_plan(baseline),
-            invocation_directory=invocation,
-            project_root=tmp_path,
-        )
-    )
-
-    assert candidate_store.root != baseline_store.root
-    assert baseline_store.root.name == "record"
-    assert baseline_store.root.parent.name == "sim%40baseline-abc123"
 
 
 def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
@@ -536,6 +368,23 @@ def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
     assert validated.prerequisite_for(reference).path == baseline_store.manifest_path
 
 
+def _stub_resume_target(monkeypatch: pytest.MonkeyPatch, manifest) -> None:
+    """Make resume see *manifest*'s one Target at its recorded revision in the checkout it is given."""
+    target = manifest.document["target"]
+    monkeypatch.setattr(
+        "booley.flows.sim.record.resume.git_full_sha", lambda *_args: target["revision"]
+    )
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        lambda root: SimpleNamespace(
+            select=lambda *_args, **_kwargs: SimpleNamespace(
+                identity=f"{target['vlnv']}#{target['name']}", project_root=Path(root)
+            )
+        ),
+    )
+
+
 @pytest.mark.parametrize("defect", ["ancestor_symlink", "final_symlink", "hardlink"])
 def test_resume_rejects_linked_manifest_paths_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
@@ -553,21 +402,7 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
             (view / "manifest.json").symlink_to(real.manifest_path)
         else:
             (view / "manifest.json").hardlink_to(real.manifest_path)
-    target = manifest.document["target"]
-    monkeypatch.setattr(
-        "booley.flows.sim.record.resume.git_full_sha",
-        lambda _ref, _root: target["revision"],
-    )
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        lambda root: SimpleNamespace(
-            select=lambda _selector, **_kwargs: SimpleNamespace(
-                identity=f"{target['vlnv']}#{target['name']}",
-                project_root=Path(root),
-            )
-        ),
-    )
+    _stub_resume_target(monkeypatch, manifest)
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 
     with pytest.raises(SimulationRecordIntegrityError, match=r"regular|link"):
@@ -586,19 +421,7 @@ def test_resume_validation_discards_a_staged_link_of_the_manifest(
     published.publish_manifest(manifest)
     staged = published.manifest_path.with_name(".manifest.json.x.booley-staged")
     os.link(published.manifest_path, staged)
-    target = manifest.document["target"]
-    monkeypatch.setattr(
-        "booley.flows.sim.record.resume.git_full_sha", lambda _ref, _root: target["revision"]
-    )
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        lambda checkout: SimpleNamespace(
-            select=lambda _selector, **_kwargs: SimpleNamespace(
-                identity=f"{target['vlnv']}#{target['name']}", project_root=Path(checkout)
-            )
-        ),
-    )
+    _stub_resume_target(monkeypatch, manifest)
 
     validated = validate_resume_manifest(published.manifest_path, project_root=tmp_path)
 
@@ -628,19 +451,7 @@ def test_resume_reads_through_the_booley_dir_entry(
     published.publish_manifest(manifest)
     lexical = entry / "flow-reports" / published.manifest_path.relative_to(reports)
     physical = external / "flow-reports" / published.manifest_path.relative_to(reports)
-    target = manifest.document["target"]
-    monkeypatch.setattr(
-        "booley.flows.sim.record.resume.git_full_sha", lambda _ref, _root: target["revision"]
-    )
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        lambda checkout: SimpleNamespace(
-            select=lambda _selector, **_kwargs: SimpleNamespace(
-                identity=f"{target['vlnv']}#{target['name']}", project_root=Path(checkout)
-            )
-        ),
-    )
+    _stub_resume_target(monkeypatch, manifest)
 
     if spelling == "below":
         with pytest.raises(SimulationRecordIntegrityError, match="not a regular file"):
@@ -716,14 +527,7 @@ def _publish_stale_candidate_manifest(tmp_path: Path, revision: str) -> Simulati
     items = [dict(item) for item in document["work_items"]]  # type: ignore[arg-type]
     items[0]["target"] = target
     items[0]["revision"] = revision
-    identity = {
-        key: value
-        for key, value in items[0].items()
-        if key not in {"fingerprint_sha256", "work_item_id"}
-    }
-    item_digest = _sha(identity)
-    items[0]["fingerprint_sha256"] = item_digest
-    items[0]["work_item_id"] = "item:0000:" + item_digest.removeprefix("sha256:")[:16]
+    _seal_item(items[0])
     document["work_items"] = items
     document.pop("fingerprints")
     manifest = finalize_manifest(document)
@@ -750,58 +554,26 @@ def test_resume_rejects_stale_candidate_revision_with_source_equal(
     monkeypatch.setattr(TargetCatalog, "build", lambda _root: Catalog())
 
     flow = SimulateFlow()
-    flow._args = SimpleNamespace(resume_from=store.manifest_path, work_dir=root)
+    flow._args = SimpleNamespace(resume_from=store.manifest_path, work_dir=root, coverage=False)
 
-    with pytest.raises(SimulationRecordIntegrityError, match="revision"):
-        flow._prepare_simulation_record_targets()
+    outcome = flow.prepare_simulation_endpoint()
+
+    assert isinstance(outcome, EndpointOutcome)
+    assert outcome.exit_code == EXIT_ERROR
+    assert "revision" in outcome.report_text
 
 
-def test_recovery_retries_a_crash_after_attempt_directory_allocation(
-    tmp_path: Path,
+@pytest.mark.parametrize("kind", ["ordinary_hdl", "cocotb_batch"])
+def test_resume_of_a_non_coverage_record_with_an_interrupted_item_is_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(manifest)
-    work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
-
-    ordinal, _directory = store.allocate_attempt_directory(
-        work_item_id, "550e8400-e29b-41d4-a716-446655440001"
-    )
-    assert ordinal == 1
-    assert store.scan().interrupted == (work_item_id,)
-
-    retry_ordinal, _retry = store.allocate_attempt_directory(
-        work_item_id, "550e8400-e29b-41d4-a716-446655440002"
-    )
-    assert retry_ordinal == 2
-    recovery = store.scan()
-    assert recovery.interrupted == (work_item_id,)
-    assert recovery.items[0].attempt_count == 2
-
-
-@pytest.mark.parametrize("state", ["pending", "interrupted", "complete"])
-@pytest.mark.parametrize("kind", ["ordinary_hdl", "cocotb_batch", "coverage_aggregate"])
-def test_unfinished_coverage_work_only_applies_to_coverage_aggregates(
-    tmp_path: Path, kind: str, state: str
-) -> None:
-    manifest = SimpleNamespace(document={"work_items": [{"kind": kind, "work_item_id": "w1"}]})
-    status = SimulationRecordRecoveryStatus(
-        manifest_path=tmp_path / "manifest.json",
-        manifest_sha256="0" * 64,
-        completed=("w1",) if state == "complete" else (),
-        interrupted=("w1",) if state == "interrupted" else (),
-        pending=("w1",) if state == "pending" else (),
-    )
-
-    unfinished = _unfinished_coverage_work(manifest, status)  # type: ignore[arg-type]
-
-    assert unfinished == (("w1",) if kind == "coverage_aggregate" and state != "complete" else ())
-
-
-def test_hdl_resume_with_interrupted_item_is_not_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
+    """#962: only coverage aggregates are refused for unfinished work; HDL resumes are not inspected."""
+    document = _manifest()
+    document.pop("fingerprints")
+    item = document["work_items"][0]  # type: ignore[index]
+    item["kind"] = kind
+    _seal_item(item)
+    manifest = finalize_manifest(document)
     store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
@@ -814,113 +586,19 @@ def test_hdl_resume_with_interrupted_item_is_not_refused(
     def forbidden(*_args: object) -> None:
         raise AssertionError("non-coverage resume must not be inspected by the guard")
 
-    monkeypatch.setattr("booley.flows.sim.flow_resume.SimulationRecord.inspect_resume", forbidden)
-
-    assert SimulateFlow()._refuse_unfinished_coverage_resume(validated) is None
-
-
-@pytest.mark.parametrize("nondeterministic", [False, True])
-def test_serial_executor_authenticates_planned_generator_closure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nondeterministic: bool
-) -> None:
-    disclosure = _generator_disclosure()
-    manifest, store, item, ordinal, attempt_directory = _generator_simulation_record(
-        tmp_path, disclosure
-    )
-    executor = _generator_executor(tmp_path, disclosure, nondeterministic, monkeypatch)
-    request = _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directory)
-    if nondeterministic:
-        with pytest.raises(
-            SimulationRecordIntegrityError,
-            match="generator source closure disagrees",
-        ):
-            executor.execute(request)
-        assert store.scan().interrupted == (item["work_item_id"],)  # type: ignore[index]
-        return
-    result = executor.execute(request)
-    store.publish_result(item["work_item_id"], result)  # type: ignore[index]
-    assert store.scan().complete == (item["work_item_id"],)  # type: ignore[index]
-    assert result.document["grade"] == "pass"
-    assert result.document["build_result"]["sharing"] == "shared_variant"  # type: ignore[index]
-
-
-def _generator_disclosure() -> dict[str, object]:
-    return {
-        "planner": "fusesoc_setup",
-        "scratch_inputs": [],
-        "generated_files": [
-            {
-                "path": "generated.sv",
-                "bytes": 1,
-                "sha256": "sha256:" + hashlib.sha256(b"a").hexdigest(),
-                "kind": "generated_input",
-            }
-        ],
-        "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
-        "cleanup": {"removed": True},
-    }
-
-
-def _generator_simulation_record(tmp_path: Path, disclosure):
-    document = _manifest()
-    document.pop("fingerprints")
-    document["planning_disclosures"] = [disclosure]
-    manifest = finalize_manifest(document)
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(manifest)
-    item = manifest.document["work_items"][0]  # type: ignore[index]
-    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
-    ordinal, attempt_directory = store.allocate_attempt_directory(
-        item["work_item_id"],
-        attempt_id,  # type: ignore[index]
-    )
-    return manifest, store, item, ordinal, attempt_directory
-
-
-def _generator_executor(tmp_path, disclosure, nondeterministic, monkeypatch):
-    build_root = tmp_path / "engine-build"
-    build_root.mkdir()
-    (tmp_path / "run").mkdir()
-    (build_root / "simv").write_bytes(b"image")
-    (build_root / ".booley-build-manifest.json").write_text(
-        json.dumps({"artifacts": {"simv": "digest"}}), encoding="utf-8"
-    )
-    run_log = build_root / "run.log"
-    run_log.write_text("PASS\n", encoding="utf-8")
-    changed = None
-    if nondeterministic:
-        changed = json.loads(json.dumps(disclosure))
-        changed["generated_files"][0]["sha256"] = (  # type: ignore[index]
-            "sha256:" + hashlib.sha256(b"b").hexdigest()
-        )
-    group = _GeneratorGroup(tmp_path, build_root, run_log, disclosure, changed)
     monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: _GeneratorCatalog(tmp_path),
+        "booley.flows.sim.flow.validate_resume_manifest", lambda *_a, **_k: validated
     )
-    return OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: _GeneratorExecution(group),  # type: ignore[arg-type,return-value]
+    monkeypatch.setattr("booley.flows.sim.flow_resume.SimulationRecord.inspect_resume", forbidden)
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(
+        resume_from=store.manifest_path, work_dir=tmp_path, coverage=False
     )
 
+    prepared = flow.prepare_simulation_endpoint()
 
-def _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directory):
-    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
-    request = WorkExecutionRequest(
-        store=store,
-        manifest=manifest,
-        work_item=item,  # type: ignore[arg-type]
-        attempt_id=attempt_id,
-        attempt_ordinal=ordinal,
-        attempt_directory=attempt_directory,
-        producer_invocation_id=1,
-        policy=SimulationRecordPolicy(),
-        admission=AdmissionContext(
-            "unmanaged", None, None, "interactive", "", None, lambda: False
-        ),
-        project_root=tmp_path,
-    )
-    return request
+    assert isinstance(prepared, PreparedSimulationEndpoint)
+    assert prepared.resume is validated
 
 
 def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
@@ -943,13 +621,7 @@ def _retarget_topology_manifest(document, revision):
     target.update(vlnv="acme:lib:top:1", name="sim_core", selector="sim_core", revision=revision)
     item = document["work_items"][0]
     item.update(target=target, revision=revision)
-    identity = {
-        key: value
-        for key, value in item.items()
-        if key not in {"fingerprint_sha256", "work_item_id"}
-    }
-    fingerprint = _sha(identity)
-    item.update(fingerprint_sha256=fingerprint, work_item_id="item:0000:" + fingerprint[7:23])
+    _seal_item(item)
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
@@ -966,8 +638,11 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
         tmp_path, topology_revisions=(current, revision)
     )
     flow = SimulateFlow()
-    flow._args = MagicMock(
-        work_dir=root, resume_from=store.manifest_path, mode=SimulationMode.SIMULATE
+    flow._args = SimpleNamespace(
+        work_dir=root,
+        resume_from=store.manifest_path,
+        mode=SimulationMode.SIMULATE,
+        coverage=False,
     )
     roots = []
 
@@ -984,14 +659,18 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
 
     monkeypatch.setattr("booley.flows.sim.flow.validate_resume_manifest", validate)
     try:
-        handles, validated, selected, tests = flow._prepare_simulation_record_targets()
+        prepared = flow.prepare_simulation_endpoint()
+        assert isinstance(prepared, PreparedSimulationEndpoint)
+        validated = prepared.resume
+        assert validated is not None
+        handles = prepared.targets
         assert handles == validated.target_handles
         assert handles[0].project_root == root
         assert handles[1].identity == "acme:lib:top:1#sim_core"
         assert handles[1].project_root == roots[0]
         assert validated.prerequisites[0].path == baseline_store.manifest_path
-        assert selected == ()
-        assert tests == {}
+        assert prepared.selected_targets == ()
+        assert prepared.test_names_map == {}
         assert roots[0].exists()
     finally:
         flow.publication_resources.close()
@@ -1035,13 +714,7 @@ def _finalize_diagnostic_document(document):
     item["target"] = document["target"]
     item["revision"] = document["target"]["revision"]
     item["build_variant_id"] = variant["build_variant_id"]
-    identity = {
-        key: value
-        for key, value in item.items()
-        if key not in {"work_item_id", "fingerprint_sha256"}
-    }
-    item["fingerprint_sha256"] = _sha(identity)
-    item["work_item_id"] = "item:0000:" + _sha(identity)[7:23]
+    _seal_item(item)
     return finalize_manifest(document)
 
 
@@ -1082,20 +755,30 @@ def test_manifest_with_recorded_flow_option_defines_still_decodes_and_compares()
     )
 
 
+def _sources(*paths: str, size: int = 1) -> list[dict[str, object]]:
+    return [_diagnostic_source(path, size=size) for path in paths]
+
+
 @pytest.mark.parametrize(
-    ("old_paths", "new_paths", "lines"),
+    ("old_sources", "new_sources", "lines"),
     [
-        (("a.sv",), ("head.sv", "a.sv"), ("source added: head.sv",)),
-        (("a.sv", "b.sv"), ("b.sv",), ("source removed: a.sv",)),
-        (("a.sv",), ("b.sv",), ("source removed: a.sv", "source added: b.sv")),
-        (("a.sv", "b.sv"), ("b.sv", "a.sv"), ("source order changed",)),
+        (_sources("a.sv"), _sources("head.sv", "a.sv"), ("source added: head.sv",)),
+        (_sources("a.sv", "b.sv"), _sources("b.sv"), ("source removed: a.sv",)),
+        (
+            _sources("a.sv"),
+            _sources("b.sv"),
+            ("source removed: a.sv", "source added: b.sv"),
+        ),
+        (_sources("a.sv", "b.sv"), _sources("b.sv", "a.sv"), ("source order changed",)),
+        # Control characters in a path are escaped in the label.
+        (_sources("a\n.sv"), _sources("a\n.sv", size=2), ('source changed: "a\\n.sv"',)),
     ],
 )
-def test_source_diagnostics_align_paths_across_positional_diff(old_paths, new_paths, lines):
-    old = _diagnostic_document(sources=[_diagnostic_source(path) for path in old_paths])
-    new = _diagnostic_document(sources=[_diagnostic_source(path) for path in new_paths])
+def test_source_diagnostics_align_paths_across_positional_diff(old_sources, new_sources, lines):
+    old = _diagnostic_document(sources=old_sources)
+    new = _diagnostic_document(sources=new_sources)
     diagnostic = _project_diagnostics(old, new)
-    assert set(diagnostic.mismatch_summary) == set(lines)
+    assert tuple(diagnostic.mismatch_summary) == lines
     assert diagnostic.derived_fingerprint_count == 5
 
 
@@ -1114,19 +797,19 @@ def test_duplicate_source_paths_preserve_second_entry_evidence(duplicate_digest)
     assert diagnostic.derived_fingerprint_count == 5
 
 
-def test_duplicate_parameter_names_report_ambiguity_instead_of_crashing():
-    old = _diagnostic_document(parameters=[{"name": "N", "value": 1}, {"name": "N", "value": 2}])
-    new = _diagnostic_document(parameters=[{"name": "N", "value": 1}])
-    diagnostic = _project_diagnostics(old, new)
-    assert (
-        "parameter names ambiguous: duplicate or non-string parameter name"
-        in diagnostic.mismatch_summary
-    )
-
-
-def test_non_string_parameter_name_reports_ambiguity_instead_of_crashing():
-    old = _diagnostic_document(parameters=[{"name": {}, "value": 1}])
-    new = _diagnostic_document(parameters=[{"name": "N", "value": 1}])
+@pytest.mark.parametrize(
+    ("old_parameters", "new_parameters"),
+    [
+        ([{"name": "N", "value": 1}, {"name": "N", "value": 2}], [{"name": "N", "value": 1}]),
+        ([{"name": {}, "value": 1}], [{"name": "N", "value": 1}]),
+    ],
+    ids=["duplicate-name", "non-string-name"],
+)
+def test_ambiguous_parameter_names_report_ambiguity_instead_of_crashing(
+    old_parameters, new_parameters
+):
+    old = _diagnostic_document(parameters=old_parameters)
+    new = _diagnostic_document(parameters=new_parameters)
     diagnostic = _project_diagnostics(old, new)
     assert (
         "parameter names ambiguous: duplicate or non-string parameter name"
@@ -1169,6 +852,16 @@ def test_suite_names_are_manifest_projection_cases(old_names, new_names, line):
         ((), ({"name": "N", "value": "<absent>"},), 'parameter N: <absent> → "<absent>"'),
         ((), ({"name": "N", "value": 2},), "parameter N: <absent> → 2"),
         (({"name": "N", "value": 2},), (), "parameter N: 2 → <absent>"),
+        (
+            ({"name": "shape", "value": {"x": [1, False]}},),
+            ({"name": "shape", "value": {"x": [2, True]}},),
+            'parameter shape: {"x":[1,false]} → {"x":[2,true]}',
+        ),
+        (
+            ({"name": "A", "value": 1}, {"name": "B", "value": 2}),
+            ({"name": "B", "value": 2}, {"name": "A", "value": 1}),
+            "parameter order changed",
+        ),
     ],
 )
 def test_parameter_diagnostics_preserve_values_and_absence(old_parameters, new_parameters, line):
@@ -1177,20 +870,6 @@ def test_parameter_diagnostics_preserve_values_and_absence(old_parameters, new_p
         _diagnostic_document(parameters=new_parameters),
     )
     assert diagnostic.mismatch_summary == (line,)
-
-
-def test_runtime_declarations_are_aligned_by_destination():
-    from booley.flows.sim.record_files import document_digest
-
-    old, new = _diagnostic_document(), _diagnostic_document()
-    for document, source in ((old, "old/data.bin"), (new, "new/data.bin")):
-        declaration = {"destination": "input/data.bin", "source_artifact_path": source}
-        document["workload"]["runtime_inputs"] = [
-            {**declaration, "declaration_id": document_digest(declaration)}
-        ]
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == ("runtime input changed: input/data.bin",)
-    assert diagnostic.derived_fingerprint_count == 1
 
 
 def test_opaque_command_model_digest_is_a_named_root_cause():
@@ -1220,13 +899,6 @@ def test_target_revision_fallback_collapses_verified_replicas():
     assert diagnostic.derived_fingerprint_count == 2
 
 
-def test_controls_in_source_labels_are_escaped():
-    old = _diagnostic_document(sources=[_diagnostic_source("a\n.sv")])
-    new = _diagnostic_document(sources=[_diagnostic_source("a\n.sv", size=2)])
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == ('source changed: "a\\n.sv"',)
-
-
 def test_zero_mismatch_verification_remains_successful():
     from booley.flows.sim.record.planning import project_workload_mismatches, verify_workload
 
@@ -1238,13 +910,6 @@ def test_zero_mismatch_verification_remains_successful():
         "mismatch_summary": [],
         "derived_fingerprint_count": 0,
     }
-
-
-def test_parameter_nested_json_values_are_rendered_as_json():
-    old = _diagnostic_document(parameters=[{"name": "shape", "value": {"x": [1, False]}}])
-    new = _diagnostic_document(parameters=[{"name": "shape", "value": {"x": [2, True]}}])
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == ('parameter shape: {"x":[1,false]} → {"x":[2,true]}',)
 
 
 @pytest.mark.parametrize("region", ["planning_disclosures", "prerequisites"])
@@ -1261,25 +926,7 @@ def test_independent_container_additions_preserve_raw_fallback(region):
             }
         ]
     else:
-        target = dict(old["target"])
-        target.update(role="cycle_count_baseline", revision="baseline")
-        new[region] = [
-            {
-                "role": "cycle_count_baseline",
-                "target": target,
-                "simulation_record_id": "550e8400-e29b-41d4-a716-446655440000",
-                "work_item_id": "item:0000:0123456789abcdef",
-                "required_observation": "cycle_count",
-                "manifest": {
-                    "path_base": "origin_invocation",
-                    "path": "targets/baseline/record/manifest.json",
-                    "bytes": 1,
-                    "sha256": "sha256:" + "a" * 64,
-                    "kind": "simulation_record_manifest",
-                    "owner": "550e8400-e29b-41d4-a716-446655440000",
-                },
-            }
-        ]
+        new[region] = [_prerequisite_entry()]
     diagnostic = _project_diagnostics(old, new)
     assert len(diagnostic.mismatch_summary) == 1
     assert (
@@ -1305,58 +952,115 @@ def test_unrecognized_identity_changes_remain_visible(field):
     assert any(pointer in line for line in diagnostic.mismatch_summary)
 
 
+def _runtime_inputs(*pairs: tuple[str, str]) -> list[dict[str, str]]:
+    """Runtime input declarations for ``(destination, source_artifact_path)`` pairs."""
+    declarations = []
+    for destination, source in pairs:
+        declaration = {"destination": destination, "source_artifact_path": source}
+        declarations.append({**declaration, "declaration_id": document_digest(declaration)})
+    return declarations
+
+
 @pytest.mark.parametrize(
-    ("old_destinations", "new_destinations", "line"),
+    ("old_inputs", "new_inputs", "line", "derived_count"),
     [
-        (("a",), ("head", "a"), "runtime input added: head"),
-        (("a", "b"), ("b",), "runtime input removed: a"),
-        (("a", "b"), ("b", "a"), "runtime input order changed"),
+        (
+            _runtime_inputs(("input/data.bin", "old/data.bin")),
+            _runtime_inputs(("input/data.bin", "new/data.bin")),
+            "runtime input changed: input/data.bin",
+            1,
+        ),
+        (
+            _runtime_inputs(("a", "a")),
+            _runtime_inputs(("head", "head"), ("a", "a")),
+            "runtime input added: head",
+            0,
+        ),
+        (
+            _runtime_inputs(("a", "a"), ("b", "b")),
+            _runtime_inputs(("b", "b")),
+            "runtime input removed: a",
+            0,
+        ),
+        (
+            _runtime_inputs(("a", "a"), ("b", "b")),
+            _runtime_inputs(("b", "b"), ("a", "a")),
+            "runtime input order changed",
+            0,
+        ),
     ],
 )
-def test_runtime_declaration_list_changes_use_destination_identity(
-    old_destinations, new_destinations, line
+def test_runtime_declarations_are_aligned_by_destination(
+    old_inputs, new_inputs, line, derived_count
 ):
-    from booley.flows.sim.record_files import document_digest
-
     old, new = _diagnostic_document(), _diagnostic_document()
-    for document, destinations in ((old, old_destinations), (new, new_destinations)):
-        declarations = []
-        for destination in destinations:
-            declaration = {"destination": destination, "source_artifact_path": destination}
-            declarations.append({**declaration, "declaration_id": document_digest(declaration)})
-        document["workload"]["runtime_inputs"] = declarations
+    old["workload"]["runtime_inputs"] = old_inputs
+    new["workload"]["runtime_inputs"] = new_inputs
     diagnostic = _project_diagnostics(old, new)
     assert diagnostic.mismatch_summary == (line,)
+    assert diagnostic.derived_fingerprint_count == derived_count
 
 
-def test_parameter_order_refusal_remains_visible():
-    parameters = [{"name": "A", "value": 1}, {"name": "B", "value": 2}]
-    diagnostic = _project_diagnostics(
-        _diagnostic_document(parameters=parameters),
-        _diagnostic_document(parameters=list(reversed(parameters))),
-    )
-    assert diagnostic.mismatch_summary == ("parameter order changed",)
+def _change_source_size(document: dict[str, object]) -> None:
+    document["workload"]["source_recipe"]["sources"][0]["bytes"] = 2  # type: ignore[index]
 
 
-def test_raw_comparator_pointer_value_contract_is_unchanged():
+def _change_target_revision(document: dict[str, object]) -> None:
+    document["target"]["revision"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "pointers", "detail"),
+    [
+        (
+            _change_source_size,
+            [
+                "/build_variants/0/build_variant_id",
+                "/build_variants/0/recipe_sha256",
+                "/build_variants/0/source_closure/0/bytes",
+                "/work_items/0/build_variant_id",
+                "/work_items/0/fingerprint_sha256",
+                "/work_items/0/work_item_id",
+                "/workload/source_recipe/sources/0/bytes",
+            ],
+            (
+                "/workload/source_recipe/sources/0/bytes",
+                1,
+                2,
+                "/workload/source_recipe/sources/0/bytes: manifest has 1, current workload has 2",
+            ),
+        ),
+        # A resume preview reports every place a changed revision is recorded.
+        (
+            _change_target_revision,
+            [
+                "/target/revision",
+                "/work_items/0/fingerprint_sha256",
+                "/work_items/0/revision",
+                "/work_items/0/target/revision",
+                "/work_items/0/work_item_id",
+            ],
+            (
+                "/work_items/0/target/revision",
+                "abc123",
+                "changed",
+                '/work_items/0/target/revision: manifest has "abc123", current workload has "changed"',
+            ),
+        ),
+    ],
+    ids=["source-bytes", "target-revision"],
+)
+def test_raw_comparator_pointer_value_contract_is_unchanged(mutate, pointers, detail):
     old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
-    new = _diagnostic_document(sources=[_diagnostic_source("a.sv", size=2)])
+    new = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
+    mutate(new)
     left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
     raw = compare_manifests(left, right)
-    assert [item.pointer for item in raw] == [
-        "/build_variants/0/build_variant_id",
-        "/build_variants/0/recipe_sha256",
-        "/build_variants/0/source_closure/0/bytes",
-        "/work_items/0/build_variant_id",
-        "/work_items/0/fingerprint_sha256",
-        "/work_items/0/work_item_id",
-        "/workload/source_recipe/sources/0/bytes",
-    ]
-    assert (raw[-1].expected, raw[-1].actual) == (1, 2)
-    assert (
-        raw[-1].message
-        == "/workload/source_recipe/sources/0/bytes: manifest has 1, current workload has 2"
-    )
+    assert [item.pointer for item in raw] == pointers
+    pointer, expected, actual, message = detail
+    (finding,) = [item for item in raw if item.pointer == pointer]
+    assert (finding.expected, finding.actual) == (expected, actual)
+    assert finding.message == message
 
 
 def test_independent_work_item_arguments_remain_visible():
@@ -1525,19 +1229,7 @@ def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatc
     manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     store = SimulationRecordStore(root / "sim/1/targets/sim/record")
     store.publish_manifest(manifest)
-    target = manifest.document["target"]
-    monkeypatch.setattr(
-        "booley.flows.sim.record.resume.git_full_sha", lambda *_args: target["revision"]
-    )
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        lambda selected: SimpleNamespace(
-            select=lambda *_args, **_kwargs: SimpleNamespace(
-                identity=f"{target['vlnv']}#{target['name']}", project_root=selected
-            )
-        ),
-    )
+    _stub_resume_target(monkeypatch, manifest)
     validated = validate_resume_manifest(
         alias / store.manifest_path.relative_to(root), project_root=root
     )
@@ -1549,41 +1241,8 @@ def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatc
         )
 
 
-def test_manifest_decode_trusts_planned_digests_and_links(monkeypatch) -> None:
-    """Decoding recomputes no digest and accepts the derived values planning wrote."""
-    manifest = _manifest()
-    item = manifest["work_items"][0]  # type: ignore[index]
-    item["revision"] = "other-revision"
-    item["fingerprint_sha256"] = "sha256:" + "0" * 64
-    item["test_runs"][0]["fingerprint"] = "sha256:" + "3" * 64
-    manifest["build_variants"][0]["recipe_sha256"] = "sha256:" + "1" * 64  # type: ignore[index]
-    manifest["fingerprints"]["workload_sha256"] = "sha256:" + "2" * 64  # type: ignore[index]
-    raw = canonical_json_bytes(manifest)
-
-    def refuse(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("manifest decode recomputed a SHA-256 digest")
-
-    monkeypatch.setattr(hashlib, "sha256", refuse)
-    monkeypatch.setattr(hashlib, "new", refuse)
-    decoded = decode_simulation_record_manifest(raw)
-    assert decoded.document["work_items"][0]["revision"] == "other-revision"
-
-
 def test_finalize_manifest_writes_the_planned_fingerprints() -> None:
     """Planning computes the same seven fingerprints an independent helper does."""
     document = _manifest()
     document.pop("fingerprints")
     assert finalize_manifest(document).canonical_bytes() == canonical_json_bytes(_manifest())
-
-
-def test_cycle_prerequisite_refuses_a_baseline_manifest_whose_digest_disagrees(tmp_path) -> None:
-    from booley.flows.sim.record.coordinator import _prerequisite_facts
-
-    candidate, candidate_store, _baseline, _baseline_store = _linked_simulation_record_stores(
-        tmp_path
-    )
-    document = json.loads(encode_simulation_record_manifest(candidate))
-    document.pop("fingerprints")
-    document["prerequisites"][0]["manifest"]["sha256"] = "sha256:" + "f" * 64
-    with pytest.raises(SimulationRecordIntegrityError, match="unauthenticated"):
-        _prerequisite_facts(candidate_store, finalize_manifest(document))

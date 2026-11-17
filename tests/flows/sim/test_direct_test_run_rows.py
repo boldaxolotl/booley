@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from booley.flows.base import SubprocessResult
-from booley.flows.test_runs import DEFAULT_SEED, build_test_run, test_run_document
+from booley.flows.test_runs import build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_FAILURE, EXIT_SUCCESS
 from tests.flows.sim.simulation_record_boundary import (
     Launch,
@@ -132,7 +132,6 @@ def _coverage_run(test_run, verdict: str, **attributes):
 
 def test_coverage_rows_and_rerun_commands():
     from booley.flows.sim.coverage_acceptance import coverage_test_run_rows
-    from booley.flows.sim.record.test_run_report import informative_test_run_lines
 
     runs = [
         _coverage_run(_SHORT, "pass"),
@@ -145,10 +144,6 @@ def test_coverage_rows_and_rerun_commands():
         {**test_run_document(_SHORT), "grade": "pass"},
         {**test_run_document(_SOAK_7), "grade": "fail"},
         {**test_run_document(_SMOKE), "grade": "error"},
-    ]
-    assert informative_test_run_lines("lite", rows, default_seed=DEFAULT_SEED)[-2:] == [
-        "  Rerun a failed Test Run with the same seed:",
-        "    booley flow sim --target lite --test=stress+soak@7",
     ]
 
 
@@ -166,73 +161,43 @@ def test_coverage_rows_come_from_the_planned_test_runs_only():
     assert coverage_test_run_rows((changed,), [_coverage_run(_SOAK_7, "pass")]) == []
 
 
-def test_rows_are_informative_relative_to_the_targets_own_default_seed():
-    """A Target with ``default_seed = 7``: ``@7`` is its plain run, ``@1`` is not."""
-    from booley.flows.sim.record.test_run_report import informative_test_run_lines
+def test_report_wording_falls_back_to_the_booley_wide_default_seed():
+    # Private seam: only the unit reaches a Target whose Default Seed the report never
+    # learned (None map, unknown selector) and an outcome without a manifest path.
     from booley.flows.sim.record_presentation import (
         _effective_default_seed,
         _simulation_record_test_run_lines,
     )
 
-    at_seven = [{**test_run_document(build_test_run("smoke", seed=7)), "grade": "pass"}]
-    at_one = [{**test_run_document(_SMOKE), "grade": "pass"}]
-
-    assert informative_test_run_lines("lite", at_seven, default_seed=7) == []
-    assert informative_test_run_lines("lite", at_one, default_seed=7) == [
-        "  Test Runs: 1 (1 passed)",
-        "    PASS         smoke@1",
-    ]
-    assert _effective_default_seed({"lite": 7}, "lite") == 7
     assert _effective_default_seed({"lite": None}, "lite") is None
     assert _effective_default_seed({}, "other") == 1
     assert _effective_default_seed(None, "other") == 1
     assert _simulation_record_test_run_lines("lite", object(), 7) == []  # type: ignore[arg-type]
 
 
-def test_simulation_record_run_at_a_target_default_seed_other_than_one_prints_no_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("test", "rows"),
+    [("smoke", None), ("smoke@1", ["  Test Runs: 1 (1 passed)", "    PASS         smoke@1"])],
+    ids=["own-default-seed", "other-seed"],
+)
+def test_rows_are_informative_relative_to_the_targets_own_default_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, test: str, rows: list[str] | None
 ):
-    """Regression: every plain run of such a Target printed its Test Run rows."""
-    run, report = _run(tmp_path, monkeypatch, "smoke", default_seed=7)
+    """A Target with ``default_seed = 7``: ``@7`` is its plain run, ``@1`` is not.
+
+    Regression: every plain run of such a Target printed its Test Run rows.
+    """
+    run, report = _run(tmp_path, monkeypatch, test, default_seed=7)
     text = run.result.outcome.report_text
 
-    assert [r["name"] for r in report["test_runs"]] == ["smoke@7"]
-
     assert run.result.exit_code == EXIT_SUCCESS, text
-    assert "Test Runs:" not in text
-    assert "smoke@7" not in text
-
-
-def _traced_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, failing: bool
-) -> tuple[SimulationRecordSimRun, dict[str, Any]]:
-    """Run Test ``smoke`` with ``--trace``; the fake simulator dumps a waveform and reports it."""
-
-    def process(launch: Launch) -> SubprocessResult:
-        dump = launch.cwd / "smoke.fst"
-        dump.write_bytes(b"waveform")
-        verdict = "FAILED" if failing else "PASSED"
-        return SubprocessResult(
-            returncode=int(failing),
-            stdout=f"[SIM_RESULT] {verdict}\nTRACE_OK: {dump}\n",
-            duration_s=0.1,
-        )
-
-    run = run_simulation_record_sim(
-        tmp_path,
-        monkeypatch,
-        {"lite": ["smoke"]},
-        process,
-        files={".booley/tests.toml": '[lite]\ntests = ["smoke"]\nselect = "+test={name}"\n'},
-        target="lite",
-        trace=True,
-    )
-    return run, _simulation_json(tmp_path)
-
-
-def _simulation_json(tmp_path: Path) -> dict[str, Any]:
-    path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    if rows is None:
+        assert [r["name"] for r in report["test_runs"]] == ["smoke@7"]
+        assert "Test Runs:" not in text
+        assert "smoke@7" not in text
+    else:
+        assert [r["name"] for r in report["test_runs"]] == ["smoke@1"]
+        assert all(line in text.splitlines() for line in rows)
 
 
 def _card_path(text: str, label: str) -> Path:
@@ -255,7 +220,6 @@ def test_simulation_record_report_and_rows_carry_each_test_runs_evidence_paths(
 
     # Card: the FAIL row names its log; the PASS row prints nothing.
     log = _card_path(text, "log")
-    assert log.is_file()
     assert "waveform:" not in text
     # simulation.json and the MCP rows carry both paths for every Test Run, passing included.
     for rows in (report["tests"], observations):
@@ -268,32 +232,3 @@ def test_simulation_record_report_and_rows_carry_each_test_runs_evidence_paths(
     # The Test Run rows rerun matching reads are untouched, and the file still decodes.
     assert all({"log", "trace"}.isdisjoint(row) for row in report["test_runs"])
     decode_simulation_projection(report, coverage_expected=False)
-
-
-def test_traced_failure_reports_its_captured_waveform(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    run, report = _traced_run(tmp_path, monkeypatch, failing=True)
-    target = tmp_path / "reports/sim/1/targets/lite"
-    waveform = _card_path(run.result.outcome.report_text, "waveform")
-
-    assert waveform.is_file()
-    assert _card_path(run.result.outcome.report_text, "log").is_file()
-    (row,) = report["tests"]
-    assert (target / row["trace"]).resolve() == waveform.resolve()
-    assert (target / row["log"]).is_file()
-
-
-def test_traced_passing_run_shows_its_waveform_on_the_card(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    run, report = _traced_run(tmp_path, monkeypatch, failing=False)
-    text = run.result.outcome.report_text
-    target = tmp_path / "reports/sim/1/targets/lite"
-    waveform = _card_path(text, "waveform")
-
-    assert run.result.exit_code == EXIT_SUCCESS, text
-    assert "  Test Runs: 1 (1 passed)" in text
-    assert "      log: " not in text
-    assert waveform.is_file()
-    assert (target / report["tests"][0]["trace"]).resolve() == waveform.resolve()

@@ -61,7 +61,7 @@ from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
-from tests.conftest import add_git_command_config
+from tests.conftest import add_git_command_config, symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
@@ -74,7 +74,6 @@ from tests.docker_cli_guard import (
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
-from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
@@ -98,31 +97,30 @@ project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
 
 
-def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> None:
-    (tmp_path / "conditional.core").write_text(
-        "CAPI=2:\n"
-        "name: acme:ip:conditional:1.0\n"
-        "filesets:\n"
-        "  sources:\n"
-        "    files:\n"
+def test_doctor_inputs_use_condition_selected_target_sources(tmp_path, monkeypatch):
+    core = _core(
+        "conditional",
+        _target("sim_cond", filesets="sources", top="selected"),
+        "  sources:\n    files:\n"
         "      - tool_verilator ? (rtl/selected.sv)\n"
         "      - tool_icarus ? (rtl/inactive.sv)\n"
         "      - tool_verilator ? (tb/selected.sv): {tags: [tb]}\n"
-        "targets:\n"
-        "  sim:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n"
-        "    filesets: [sources]\n"
-        "    toplevel: selected\n",
-        encoding="utf-8",
+        "      - tool_icarus ? (tb/inactive.sv): {tags: [tb]}\n",
     )
-    catalog = TargetCatalog.build(tmp_path)
-    refs = {handle.name: handle for handle in catalog.list()}
+    _core_project(
+        tmp_path,
+        monkeypatch,
+        {
+            "conditional.core": core,
+            "rtl/selected.sv": "module selected; endmodule\n",
+            "rtl/inactive.sv": "module inactive; endmodule\n",
+            "tb/selected.sv": "module tb_selected; endmodule\n",
+            "tb/inactive.sv": 'module tb_inactive; initial $display("[SIM_RESULT] PASSED"); endmodule\n',
+        },
+    )
 
-    sources = doctor._CoreAuditInputs(catalog, refs).sources_for("sim")
-
-    assert sources.rtl_source_files == ("rtl/selected.sv",)
-    assert sources.tb_files == ("tb/selected.sv",)
+    # The Icarus-only testbench carries the sentinel; Doctor must read the Verilator-selected one.
+    assert list(_warnings(_doctor_run(tmp_path), "sim.pass-sentinel-missing")) == ["sim_cond"]
 
 
 def _write_project(
@@ -2152,147 +2150,257 @@ def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
 
 
 # ---------------------------------------------------------------------------
-# .core audit (ADR 0022 Phases 6-7) — _run_core_audit driven directly
+# .core audit (ADR 0022 Phases 6-7), driven through a whole Doctor run
 # ---------------------------------------------------------------------------
 
 
-def _audit(root: Path) -> _Rec:
-    pd = root / ".booley"
-    pd.mkdir(exist_ok=True)
-    project = doctor.ProjectAudit(
-        project_root=root,
-        booley_dir=pd,
-        booley_toml={},
-        configs_toml={"x": {}},
-        first_target="x",
-    )
-    rec = _Rec()
-    doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=rec.d)
-    return rec
+_RTL_TB = "  rtl: {files: [rtl/dut.sv]}\n  tb: {files: [tb/tb.sv], tags: [tb]}\n"
 
 
-_CLEAN_SIM_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-  tb: {files: [tb/tb_dut.sv], tags: [tb]}
-targets:
-  sim:
-    flow: sim
-    flow_options:
-      tool: verilator
-      booley: {doctor: [sim]}
-    filesets: [rtl, tb]
-    toplevel: tb_dut
-"""
+def _core_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str | None],
+    *,
+    sim: str = "",
+) -> Path:
+    """The `_write_project` fixture plus *files* (None deletes), patched for a run.
 
-_COCOTB_SIM_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-  tb: {files: [tb/test_dut.py], tags: [tb]}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator, cocotb_module: test_dut}
-    filesets: [rtl, tb]
-    toplevel: dut
-"""
-
-
-def _write_cocotb_project(root: Path, *, tb_body: str) -> None:
-    """A minimal project whose only sim Target is a Cocotb Target (ADR 0034).
-
-    *tb_body* is the Python testbench.
+    *sim* is TOML added to the fixture's `[flows.sim]` table.
     """
-    (root / "design.core").write_text(_COCOTB_SIM_CORE, encoding="utf-8")
-    (root / "rtl").mkdir(exist_ok=True)
-    (root / "tb").mkdir(exist_ok=True)
-    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    (root / "tb" / "test_dut.py").write_text(tb_body, encoding="utf-8")
-    (root / ".booley").mkdir(exist_ok=True)
+    booley_dir = _write_project(tmp_path)
+    toml = booley_dir / "booley.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace("[flows.sim]\n", f"[flows.sim]\n{sim}"),
+        encoding="utf-8",
+    )
+    for relative, text in files.items():
+        path = tmp_path / relative
+        if text is None:
+            path.unlink()
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    return booley_dir
+
+
+def _core(name: str, targets: str, filesets: str = _RTL_TB) -> str:
+    """CAPI2 text for core *name* with the given fileset and Target blocks."""
+    return f"CAPI=2:\nname: ::{name}:0\nfilesets:\n{filesets}targets:\n{targets}"
+
+
+def _target(
+    name: str,
+    flow: str = "sim",
+    options: str = "tool: verilator",
+    filesets: str = "rtl, tb",
+    top: str = "tb",
+    *,
+    doctor: bool = False,
+) -> str:
+    """A Target block; *doctor* marks it as the Doctor Target of its Flow."""
+    marker = f", booley: {{doctor: [{flow}]}}" if doctor else ""
+    return (
+        f"  {name}:\n    flow: {flow}\n    flow_options: {{{options}{marker}}}\n"
+        f"    filesets: [{filesets}]\n    toplevel: {top}\n"
+    )
+
+
+def _rows(result: doctor.DoctorRunResult, severity: Severity, text: str) -> list[str]:
+    """Messages of *severity* that contain *text* (a Target name in quotes, a phrase)."""
+    return [f.message for f in result.findings if f.severity is severity and text in f.message]
+
+
+def _warnings(result: doctor.DoctorRunResult, check_id: str) -> dict[str, str]:
+    """Subject to message of the active WARN rows with *check_id*."""
+    return {
+        str(f.subject): f.message
+        for f in result.findings
+        if f.severity is Severity.WARN and f.check_id == check_id
+    }
 
 
 class TestCoreAudit:
-    def test_no_cores_is_a_hard_fail(self, tmp_path: Path):
-        # ADR 0039: a resolvable .core Target is a precondition — a project
-        # without one is a setup failure, never a skip.
-        rec = _audit(tmp_path)
-        assert any("project has no .core" in m for m in rec.fails())
+    def test_project_without_a_core_fails(self, tmp_path, monkeypatch):
+        # ADR 0039: a resolvable .core Target is a precondition, so a Project
+        # without one is a setup failure, not a skip.
+        _core_project(tmp_path, monkeypatch, {"unit.core": None})
 
-    @pytest.mark.parametrize(
-        "shape",
-        ["{A: 1}", "[A, B=2]", "A", ""],
-        ids=["map", "list", "string", "null"],
-    )
-    def test_flow_options_defines_fails_with_vlogdefine_hint(self, tmp_path: Path, shape: str):
-        # No Flow applies Target `flow_options.defines`; the key must FAIL by
-        # presence (even null) and point at `vlogdefine` parameters.
-        core = _CLEAN_SIM_CORE.replace(
-            "      tool: verilator\n",
-            f"      tool: verilator\n      defines: {shape}\n",
+        assert _rows(_doctor_run(tmp_path), Severity.FAIL, "project has no .core")
+
+    def test_each_unusable_target_fails(self, tmp_path, monkeypatch):
+        all_fs = _RTL_TB + "  all: {files: [rtl/dut.sv, tb/tb.sv]}\n"
+        design = _core(
+            "design",
+            _target("sim_untagged", filesets="all") + _target("sim_empty", filesets=""),
+            all_fs,
+        )
+
+        def defines(label, shapes):
+            return _core(
+                f"defines_{label}",
+                "".join(
+                    _target(
+                        f"sim_{name}", options=f"tool: verilator, defines: {shape}", doctor=True
+                    )
+                    for name, shape in shapes
+                ),
+            )
+
+        _core_project(
+            tmp_path,
+            monkeypatch,
+            {
+                "design.core": design,
+                # No Flow applies `flow_options.defines`: the key fails by presence, even
+                # when null. A null value also fails CAPI2 validation, which makes FuseSoC
+                # ignore its whole core, so it needs a core of its own.
+                "defines.core": defines(
+                    "values", (("map", "{A: 1}"), ("list", "[A, B=2]"), ("string", "A"))
+                ),
+                "defines_null.core": defines("null", (("null", ""),)),
+                ".booley/tests.toml": '[sim_fast]\nselect = "not-a-plusarg with spaces"\n',
+            },
+        )
+
+        result = _doctor_run(tmp_path)
+
+        failures = {f.message: f.fix for f in result.findings if f.severity is Severity.FAIL}
+        assert _rows(
+            result, Severity.FAIL, "sim Target 'sim_untagged' has files but none tagged tags:[tb]"
+        )
+        assert _rows(result, Severity.FAIL, "sim Target 'sim_empty' stages zero files")
+        for name in ("map", "list", "string", "null"):
+            [fix] = [
+                fix
+                for message, fix in failures.items()
+                if f"#sim_{name}'" in message and "flow_options.defines" in message
+            ]
+            assert "vlogdefine" in fix
+        assert _rows(result, Severity.FAIL, "tests.toml invalid")
+
+    def test_sim_verdict_rows_name_the_right_remedy(self, tmp_path, monkeypatch):
+        fs = (
+            _RTL_TB
+            + "  tb_quiet: {files: [tb/quiet.sv], tags: [tb]}\n"
+            + "  tb_py: {files: [tb/test_dut.py], tags: [tb]}\n"
+            # Only the last of these testbench files carries the sentinel; the first is absent.
+            + "  tb_split: {files: [tb/absent.sv, tb/quiet.sv, tb/tb.sv], tags: [tb]}\n"
+        )
+        cocotb = "tool: verilator, cocotb_module: test_dut"
+        design = _core(
+            "design",
+            _target("sim_quiet", filesets="rtl, tb_quiet")
+            # F-8: a Python TB that has not declared its cocotb module yet.
+            + _target("sim_py", filesets="rtl, tb_py", top="dut")
+            + _target("sim_split", filesets="rtl, tb_split")
+            # B2: a cocotb TB gets its verdict from results.xml, never a sentinel.
+            + _target("sim_cocotb", options=cocotb, filesets="rtl, tb_py", top="dut")
+            + _target("lint_dup", flow="lint", filesets="rtl", top="dut"),
+            fs,
+        )
+        # ADR 0030: two distinct cores may declare the same bare Target name.
+        other = _core("other", _target("lint_dup", flow="lint", filesets="rtl", top="dut"))
+        _core_project(
+            tmp_path,
+            monkeypatch,
+            {
+                "design.core": design,
+                "other.core": other,
+                "tb/quiet.sv": "// a testbench with no verdict marker\n",
+                "tb/test_dut.py": "async def test_reset(dut): pass\n",
+            },
+        )
+
+        result = _doctor_run(tmp_path)
+
+        missing = _warnings(result, "sim.pass-sentinel-missing")
+        assert set(missing) == {"sim_quiet", "sim_py"}
+        assert "refs/sim_result_sentinel.sv" in missing["sim_quiet"]
+        assert "cocotb_module" not in missing["sim_quiet"]
+        assert "cocotb_module" in missing["sim_py"]
+        assert "refs/sim_result_sentinel.sv" not in missing["sim_py"]
+        assert not [m for m in _rows(result, Severity.PASS, "sim_cocotb") if "sentinel" in m]
+        for name in ("sim_fast", "sim_split"):
+            assert _rows(
+                result, Severity.PASS, f"sim Target '{name}' TB emits a recognized pass sentinel"
+            )
+        # A Verilator lint Target has no testbench to tag, and the duplicate name is no collision.
+        for text in ("lint_fast", "sim_py", "sim_cocotb", "collision"):
+            assert not _rows(result, Severity.FAIL, text)
+        assert _rows(result, Severity.PASS, ".core Targets enumerated: lint_dup,")
+
+    def test_configured_pass_sentinel_replaces_the_builtin_one(self, tmp_path, monkeypatch):
+        design = _core(
+            "design",
+            _target("sim_custom", filesets="rtl, tb_custom"),
+            _RTL_TB + "  tb_custom: {files: [tb/custom.sv], tags: [tb]}\n",
+        )
+        _core_project(
+            tmp_path,
+            monkeypatch,
+            {"design.core": design, "tb/custom.sv": "ALL TESTS PASSED.\n"},
+            sim='pass_sentinels = ["ALL TESTS PASSED."]\n',
+        )
+
+        result = _doctor_run(tmp_path)
+
+        assert _rows(
+            result, Severity.PASS, "sim Target 'sim_custom' TB emits a recognized pass sentinel"
+        )
+        assert _rows(result, Severity.NOTE, "uses explicitly configured pass sentinel(s)")
+
+    @pytest.mark.parametrize("waived", [False, True], ids=["warn", "waived"])
+    def test_selected_native_dependency_reaches_the_report(self, tmp_path, monkeypatch, waived):
+        fs = _RTL_TB + "  cpp: {files: [tb/harness.cc], file_type: cppSource}\n"
+        files = {
+            "design.core": _core(
+                "design", _target("sim_cpp", filesets="rtl, tb, cpp", doctor=True), fs
+            ),
+            "tb/harness.cc": "#include <libelf.h>\n",
+        }
+        if waived:
+            files[".booley/doctor-waivers.toml"] = (
+                "version = 1\n\n[[waiver]]\n"
+                'check = "sandbox.native-dependency-missing"\n'
+                'subject = "libelf-dev"\n'
+                'reason = "image built elsewhere"\n'
+                "permanent = true\n"
+            )
+        _core_project(tmp_path, monkeypatch, files)
+
+        result = _doctor_run(tmp_path)
+
+        rows = [f for f in result.findings if f.check_id == "sandbox.native-dependency-missing"]
+        assert [(f.severity, f.subject) for f in rows] == [
+            (Severity.WAIVED if waived else Severity.WARN, "libelf-dev")
+        ]
+        assert "tb/harness.cc" in rows[0].message
+        assert result.counts["waived"] == int(waived)
+        if waived:
+            messages = [f.message for f in result.findings]
+            assert messages[messages.index(rows[0].message) - 1].startswith("tests.toml not")
+
+    def test_each_root_target_partition_is_read_once(self, tmp_path, monkeypatch):
+        core = _core(
+            "design",
+            _target("sim", doctor=True) + _target("lint", flow="lint", filesets="rtl", top="dut"),
+        )
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "tb").mkdir()
+        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+        (tmp_path / "tb" / "tb.sv").write_text(
+            '$display("[SIM_RESULT] PASSED");\n', encoding="utf-8"
         )
         (tmp_path / "design.core").write_text(core, encoding="utf-8")
-        failures: list[tuple[str, str]] = []
+        (tmp_path / ".booley").mkdir()
         project = doctor.ProjectAudit(
             project_root=tmp_path,
             booley_dir=tmp_path / ".booley",
             booley_toml={},
             configs_toml={"x": {}},
             first_target="x",
-        )
-        (tmp_path / ".booley").mkdir()
-        rec = _Rec()
-        doctor._run_core_audit(
-            project,
-            rec.p,
-            rec.w,
-            rec.s,
-            lambda msg, fix="": failures.append((msg, fix)),
-            _diagnostics=rec.d,
-        )
-        # A bare ``defines:`` (null) is also a CAPI2 schema violation, so FuseSoC's
-        # own verdict adds one ``.core schema`` row; the Target-level row is the one
-        # that carries the vlogdefine advice.
-        matches = [
-            item
-            for item in failures
-            if "flow_options.defines" in item[0] and not item[0].startswith(".core schema")
-        ]
-        assert len(matches) == 1
-        message, fix = matches[0]
-        assert "::demo:0#sim" in message
-        assert "vlogdefine" in fix
-
-    def test_clean_core_passes(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        rec = _audit(tmp_path)
-        assert rec.fails() == []
-        assert any("TB fileset tagged" in m for lvl, m in rec.events if lvl == "pass")
-        assert any("security validation passed" in m for lvl, m in rec.events)
-
-    def test_each_root_target_partition_is_read_once(self, tmp_path: Path, monkeypatch):
-        core = _CLEAN_SIM_CORE.replace(
-            "targets:\n",
-            "targets:\n"
-            "  lint:\n"
-            "    flow: lint\n"
-            "    flow_options: {tool: verilator}\n"
-            "    filesets: [rtl]\n"
-            "    toplevel: dut\n",
-        )
-        (tmp_path / "design.core").write_text(core, encoding="utf-8")
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "tb").mkdir()
-        (tmp_path / "rtl" / "dut.sv").write_text(
-            "module dut; endmodule\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "tb" / "tb_dut.sv").write_text(
-            '$display("[SIM_RESULT] PASSED");\n',
-            encoding="utf-8",
         )
         original = doctor.TargetCatalog.inspect
         calls: list[str] = []
@@ -2303,338 +2411,18 @@ class TestCoreAudit:
             return result
 
         monkeypatch.setattr(doctor.TargetCatalog, "inspect", inspect)
+        rec = _Rec()
 
-        rec = _audit(tmp_path)
+        # Private: a whole Doctor run's Flow audit, design-size and native-dependency
+        # phases inspect the same Targets too, so only a direct core-audit call isolates
+        # the one-read-per-partition count.
+        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=rec.d)
 
         assert rec.fails() == []
         # The core audit reads each root partition once; the native-dependency
         # source collection runs last and reads the seed Target (sim) again.
         assert sorted(calls[:-1]) == ["lint", "sim"]
         assert calls[-1] == "sim"
-
-    def _cpp_target_project(self, tmp_path: Path, include_line: str) -> doctor.ProjectAudit:
-        (tmp_path / "design.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-  tb:
-    files: [tb/tb_dut.sv, tb/dpi_memutil.cc]
-    tags: [tb]
-  cpp: {files: [tb/harness.cc], file_type: cppSource}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-    filesets: [rtl, tb, cpp]
-    toplevel: tb_dut
-""",
-            encoding="utf-8",
-        )
-        (tmp_path / "tb").mkdir(exist_ok=True)
-        (tmp_path / "tb" / "harness.cc").write_text(include_line, encoding="utf-8")
-        pd = tmp_path / ".booley"
-        pd.mkdir(exist_ok=True)
-        return doctor.ProjectAudit(
-            project_root=tmp_path,
-            booley_dir=pd,
-            booley_toml={"flows": {"sim": {}}},
-            configs_toml={"sim": {}},
-            first_target="sim",
-        )
-
-    def test_core_audit_hands_native_dependency_report_to_diagnostics(self, tmp_path: Path):
-        """Doctor selects the Targets' sources and only forwards the owner's report.
-
-        The fixture's missing ``tb/dpi_memutil.cc`` also exercises the owner's
-        unreadable-file skip through the real Target path.
-        """
-        project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        rec = _Rec()
-        reports: list[DiagnosticReport] = []
-
-        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=reports.append)
-
-        owner_report = reports[-1]
-        assert [(f.severity, f.check_id, f.subject) for f in owner_report.findings] == [
-            (Severity.WARN, "sandbox.native-dependency-missing", "libelf-dev")
-        ]
-        assert "tb/harness.cc" in owner_report.findings[0].message
-        assert [m for lvl, m in rec.events if "libelf" in m] == []
-
-    def test_native_dependency_warning_renders_waived_after_tests_toml(self, tmp_path: Path):
-        project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        (tmp_path / "tb" / "tb_dut.sv").write_text(
-            '$display("[SIM_RESULT] PASSED");\n', encoding="utf-8"
-        )
-        (project.booley_dir / "doctor-waivers.toml").write_text(
-            "version = 1\n\n"
-            "[[waiver]]\n"
-            'check = "sandbox.native-dependency-missing"\n'
-            'subject = "libelf-dev"\n'
-            'reason = "image built elsewhere"\n'
-            "permanent = true\n",
-            encoding="utf-8",
-        )
-        reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
-
-        doctor._run_core_audit(
-            project,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            reporter.fail_,
-            _note=reporter.note_,
-            _diagnostics=reporter.diagnostics,
-        )
-
-        findings = reporter.result(0).findings
-        start = next(i for i, f in enumerate(findings) if f.message.startswith("tests.toml not"))
-        tail = findings[start:]
-        assert [f.severity for f in tail] == [Severity.SKIP, Severity.WAIVED]
-        assert (tail[1].check_id, tail[1].subject) == (
-            "sandbox.native-dependency-missing",
-            "libelf-dev",
-        )
-        assert "tb/harness.cc" in tail[1].message
-        assert reporter.counts["waived"] == 1
-        assert reporter.finish() == 0
-
-    def test_untagged_tb_sim_fails(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  all: {files: [rtl/dut.sv, tb/tb_dut.sv]}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator}
-    filesets: [all]
-    toplevel: tb_dut
-""",
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert any("tags:[tb]" in m for m in rec.fails())
-
-    def test_sim_target_staging_zero_files_fails(self, tmp_path: Path):
-        # The untagged-TB predicate needs RTL files to fire; a sim Target
-        # whose filesets stage NOTHING used to slip past it and die at run
-        # time with a toplevel-not-found error blamed on the design.
-        (tmp_path / "design.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-  tb: {files: [tb/tb_dut.sv], tags: [tb]}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator}
-    filesets: []
-    toplevel: tb_dut
-""",
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert any("stages zero files" in m for m in rec.fails())
-
-    def test_icarus_sim_core_missing_g2012_fails_full_audit(self, tmp_path: Path):
-        # Wiring check: the -g2012 language-mode audit runs as part of the
-        # core audit, not only when invoked directly.
-        (tmp_path / "design.core").write_text(
-            _CLEAN_SIM_CORE.replace("tool: verilator", "tool: icarus"),
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert any("-g2012" in m for m in rec.fails())
-
-    def test_icarus_sim_core_with_g2012_full_audit_clean(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(
-            _CLEAN_SIM_CORE.replace(
-                "      tool: verilator\n      booley: {doctor: [sim]}",
-                "      tool: icarus\n"
-                "      iverilog_options: [-g2012]\n"
-                "      booley: {doctor: [sim]}",
-            ),
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert rec.fails() == []
-        assert any("SV language flag" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_verilator_lint_target_not_flagged_for_missing_tb(self, tmp_path: Path):
-        # verilator backs both sim and lint; a flow:lint Target has no TB and
-        # must NOT trip the tagged-TB check (regression: gate on Flow, not EDA tool).
-        (tmp_path / "design.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-targets:
-  lint:
-    flow: lint
-    flow_options: {tool: verilator}
-    filesets: [rtl]
-    toplevel: dut
-""",
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert rec.fails() == []
-
-    def _write_tb(self, root: Path, body: str, *, dump: bool = False) -> None:
-        (root / "rtl").mkdir(exist_ok=True)
-        (root / "tb").mkdir(exist_ok=True)
-        (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        (root / "tb" / "tb_dut.sv").write_text(body, encoding="utf-8")
-        if dump:
-            (root / "tb" / "booley_vcd_dump.sv").write_text(
-                "module booley_vcd_dump; endmodule\n", encoding="utf-8"
-            )
-
-    def test_missing_pass_sentinel_warns(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        self._write_tb(tmp_path, "// a testbench with no verdict marker\n")
-        rec = _audit(tmp_path)
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("no configured pass sentinel" in m for m in warns)
-        # A missing dump module is NOT flagged: the trace overlay supplies it
-        # from refs/, so it need not sit in the tracked fileset (Stealth Mode).
-        assert not any("trace module" in m for m in warns)
-        assert rec.fails() == []
-
-    def test_builtin_sentinel_and_trace_module_pass(self, tmp_path: Path):
-        core = _CLEAN_SIM_CORE.replace(
-            "tb: {files: [tb/tb_dut.sv], tags: [tb]}",
-            "tb: {files: [tb/tb_dut.sv, tb/booley_vcd_dump.sv], tags: [tb]}",
-        )
-        (tmp_path / "design.core").write_text(core, encoding="utf-8")
-        self._write_tb(tmp_path, '$display("[SIM_RESULT] PASSED");\n', dump=True)
-        rec = _audit(tmp_path)
-        assert any(
-            "emits a recognized pass sentinel" in m for lvl, m in rec.events if lvl == "pass"
-        )
-        assert not any(
-            "pass sentinel" in m or "trace module" in m for lvl, m in rec.events if lvl == "warn"
-        )
-
-    def test_configured_sentinel_honored(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        self._write_tb(tmp_path, "ALL TESTS PASSED.\n")
-        pd = tmp_path / ".booley"
-        pd.mkdir(exist_ok=True)
-        project = doctor.ProjectAudit(
-            project_root=tmp_path,
-            booley_dir=pd,
-            booley_toml={"flows": {"sim": {"pass_sentinels": ["ALL TESTS PASSED."]}}},
-            configs_toml={"x": {}},
-            first_target="x",
-        )
-        rec = _Rec()
-        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=rec.d)
-        assert any(
-            "emits a recognized pass sentinel" in m for lvl, m in rec.events if lvl == "pass"
-        )
-
-    def test_cocotb_target_is_exempt_from_the_sentinel_check(self, tmp_path: Path):
-        # B2: a cocotb Target's verdict comes from results.xml — sentinel
-        # scanning is bypassed outright (ADR 0034 dec 6) — and its TB is Python,
-        # so it *cannot* carry a $display sentinel. Warning "a passing run will
-        # read as INCONCLUSIVE" is false (taxi scored 14/14 PASS with no
-        # sentinel) and its fix hint is unfollowable. Check must not fire.
-        _write_cocotb_project(tmp_path, tb_body="async def test_reset(dut): pass\n")
-        rec = _audit(tmp_path)
-        assert not any("pass sentinel" in m for lvl, m in rec.events)
-        assert rec.fails() == []
-
-    def test_non_cocotb_sim_target_still_gets_the_sentinel_check(self, tmp_path: Path):
-        # The exemption is keyed on cocotb_module, so a plain SV sim Target in
-        # the same project must still be audited.
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        self._write_tb(tmp_path, "// a testbench with no verdict marker\n")
-        rec = _audit(tmp_path)
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("no configured pass sentinel" in m for m in warns)
-        # The SV remedy is the right hint here — no cocotb noise for an SV TB.
-        assert any("refs/sim_result_sentinel.sv" in m for m in warns)
-        assert not any("cocotb_module" in m for m in warns)
-
-    def test_python_tb_without_cocotb_module_hints_cocotb_module(self, tmp_path: Path):
-        # F-8: a .py TB fileset without cocotb_module is a cocotb TB that has
-        # not declared its module yet. The sentinel warning must name the real
-        # remedy (declare cocotb_module, ADR 0034) — "add a $display sentinel"
-        # is unfollowable advice for a Python testbench.
-        core = _COCOTB_SIM_CORE.replace(", cocotb_module: test_dut", "")
-        (tmp_path / "design.core").write_text(core, encoding="utf-8")
-        (tmp_path / "rtl").mkdir(exist_ok=True)
-        (tmp_path / "tb").mkdir(exist_ok=True)
-        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        (tmp_path / "tb" / "test_dut.py").write_text(
-            "async def test_reset(dut): pass\n", encoding="utf-8"
-        )
-        rec = _audit(tmp_path)
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("no configured pass sentinel" in m and "cocotb_module" in m for m in warns)
-        # The SV-only fix hint must not be the advice for a Python TB.
-        assert not any("refs/sim_result_sentinel.sv" in m for m in warns)
-        assert rec.fails() == []
-
-    def test_duplicate_name_across_distinct_cores_is_legal(self, tmp_path: Path):
-        # ADR 0030: identity is per-(VLNV, name); two distinct cores sharing a
-        # bare Target name is legal FuseSoC (ibex: 'lint' on 54 cores), so the
-        # audit must NOT fail with a collision — enumerate_targets exposes a
-        # first-wins view instead of raising.
-        lint_core = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-targets:
-  lint:
-    flow: lint
-    flow_options: {tool: verilator}
-    filesets: [rtl]
-    toplevel: dut
-"""
-        (tmp_path / "a.core").write_text(lint_core, encoding="utf-8")
-        (tmp_path / "b.core").write_text(
-            lint_core.replace("::demo:0", "::demo2:0"), encoding="utf-8"
-        )
-        rec = _audit(tmp_path)
-        assert not any("collision" in m for m in rec.fails())
-        assert any(".core Targets enumerated" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_bad_tests_toml_fails(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        pd = tmp_path / ".booley"
-        pd.mkdir(exist_ok=True)
-        (pd / "tests.toml").write_text(
-            '[sim]\nselect = "not-a-plusarg with spaces"\n', encoding="utf-8"
-        )
-        rec = _audit(tmp_path)
-        assert any("tests.toml invalid" in m for m in rec.fails())
-
-
-# =============================================================
-
-
-# Interactive Mode persistent state-volume note
-# =============================================================
-
-
-# =============================================================
-
-
-# Stale devcontainer.json detection (predates the home-state persistence fix)
-# =============================================================
 
 
 # ---------------------------------------------------------------------------
@@ -2671,372 +2459,187 @@ class _Collector:
         self.failed.append((msg, fix))
 
 
-_GOOD_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  lint: {flow: lint, flow_options: {tool: verilator}, filesets: [rtl], toplevel: dut}
-"""
-
-
 def _write_core(root: Path, text: str, name: str = "design.core") -> Path:
     core = root / name
     core.write_text(text, encoding="utf-8")
     return core
 
 
-def _verilator_sim_ref(core, name="sim_x", vlnv="::demo:0"):
-    from booley.fusesoc import fusesoc_registry as fr
+def test_target_metadata_warnings_name_each_offending_target(tmp_path, monkeypatch):
+    fs = _RTL_TB + "  cpp: {files: [sim/main.cpp], file_type: cppSource, tags: [tb]}\n"
+    design = _core(
+        "design",
+        # `--main` and `--binary` are Verilator's tracer-less auto main.
+        _target(
+            "sim_auto",
+            options="tool: verilator, verilator_options: [--main]",
+            filesets="rtl",
+            top="dut",
+        )
+        + _target(
+            "sim_bin",
+            options="tool: verilator, verilator_options: [--binary]",
+            filesets="rtl",
+            top="dut",
+        )
+        # No `--main`: the Target owns a cppSource `--exe` main, so it can trace.
+        + _target("sim_exe", filesets="rtl, cpp", top="dut")
+        + _target("sim_ic", options="tool: icarus, iverilog_options: [-g2012]", filesets="rtl, tb")
+        + _target(
+            "lint_main",
+            flow="lint",
+            options="tool: verilator, verilator_options: [--main]",
+            filesets="rtl",
+            top="dut",
+        )
+        + _target(
+            "synth_noarch", flow="generic", options="tool: yosys", filesets="rtl", top="dut"
+        ),
+        fs,
+    )
+    _core_project(
+        tmp_path,
+        monkeypatch,
+        {"design.core": design, "sim/main.cpp": "int main() { return 0; }\n"},
+    )
 
-    return {
-        name: fr.TargetRef(name=name, vlnv=vlnv, core_file=core, eda_tool="verilator", flow="sim")
+    result = _doctor_run(tmp_path)
+
+    [trace] = [f for f in result.findings if f.check_id == "sim.trace-unavailable"]
+    assert trace.severity is Severity.WARN
+    assert trace.subject == "sim_auto, sim_bin"
+    assert "inconclusive (exit 1)" in trace.message
+    assert " passes" not in trace.message
+    assert "+trace and +tracefile=<file>" in trace.message
+    assert "[flows.sim].trace_args" in trace.message
+    assert _rows(result, Severity.PASS, "2 Verilator sim Target(s) trace-capable")
+    arch = [f for f in result.findings if f.check_id == "core.yosys-arch-missing"]
+    assert [f.subject for f in arch] == ["synth_noarch"]
+    assert "flow_options.arch" in arch[0].message and "requires" in arch[0].message
+    assert _rows(
+        result, Severity.PASS, "synth Target 'synth_fast' (yosys) declares flow_options.arch"
+    )
+
+
+def test_trace_warning_without_any_trace_capable_target(tmp_path, monkeypatch):
+    core = _core(
+        "design",
+        _target(
+            "sim_auto",
+            options="tool: verilator, verilator_options: [--main]",
+            filesets="missing",
+            top="dut",
+        ),
+        "  missing: {files: [nowhere/dut.sv]}\n",
+    )
+    # No Target owns a main and no referenced file exists, so no trace-capable row appears.
+    _core_project(tmp_path, monkeypatch, {"unit.core": None, "design.core": core})
+
+    result = _doctor_run(tmp_path)
+
+    assert list(_warnings(result, "sim.trace-unavailable")) == ["sim_auto"]
+    assert not _rows(result, Severity.PASS, "trace-capable")
+
+
+def test_icarus_sv_language_mode_by_selection_and_flow(tmp_path, monkeypatch):
+    sv = "tool: icarus"
+    fs = _RTL_TB + "  rtl_v: {files: [rtl/dut.v], file_type: verilogSource}\n"
+    design = _core(
+        "design",
+        # A sim Target's verdict source is dead without -g2012, so it fails.
+        _target("sim_ic_bare", options=sv, doctor=True)
+        # A lint Target's SV-mode gate is advisory, so it warns.
+        + _target("lint_ic_bare", flow="lint", options=sv, filesets="rtl", top="dut", doctor=True)
+        + _target("lint_ic_unsel", flow="lint", options=sv, filesets="rtl", top="dut")
+        + _target("sim_ic_2012", options="tool: icarus, iverilog_options: [-g2012]")
+        # -g2005-sv also enables SV, so a working .core is not nagged to churn.
+        + _target("sim_ic_2005sv", options="tool: icarus, iverilog_options: [-g2005-sv]")
+        # A .v-only Icarus Target keeps the right default generation.
+        + _target("sim_ic_v", options=sv, filesets="rtl_v", top="dut"),
+        fs,
+    )
+    _core_project(
+        tmp_path, monkeypatch, {"design.core": design, "rtl/dut.v": "module dut; endmodule\n"}
+    )
+
+    result = _doctor_run(tmp_path)
+
+    sv_rows = [
+        f for f in result.findings if "-g2012" in f.message or "SV language flag" in f.message
+    ]
+    names = (
+        "sim_ic_bare",
+        "lint_ic_bare",
+        "lint_ic_unsel",
+        "sim_ic_2012",
+        "sim_ic_2005sv",
+        "sim_ic_v",
+    )
+    assert {n for n in names if any(f"'{n}'" in f.message for f in sv_rows)} == set(names) - {
+        "sim_ic_v"
+    }
+    [fail] = [f for f in sv_rows if f.severity is Severity.FAIL]
+    assert "'sim_ic_bare'" in fail.message and "design.core" in fail.fix and "-g2012" in fail.fix
+    assert [f.subject for f in sv_rows if f.severity is Severity.WARN] == ["lint_ic_bare"]
+    [note] = [f for f in sv_rows if f.severity is Severity.NOTE]
+    assert "'lint_ic_unsel'" in note.message and "not selected" in note.message
+    assert {f.message.split("'")[1] for f in sv_rows if f.severity is Severity.PASS} == {
+        "sim_ic_2012",
+        "sim_ic_2005sv",
     }
 
 
-def test_verilator_sim_with_auto_main_cannot_trace_warns(tmp_path):
-    # The classic trap: `--main` = Verilator's auto main = no tracer.
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  sim_x:
-    flow: sim
-    flow_options: {tool: verilator, verilator_options: [--main, --timing, -Wno-fatal]}
-    filesets: [rtl]
-    toplevel: dut_tb
-""",
+def test_toplevel_interface_ports_warn_only_for_non_sim_toplevels(tmp_path, monkeypatch):
+    # F-7: a toplevel with interface ports cannot elaborate standalone; a sim Target's
+    # testbench instantiates the interfaces itself.
+    iface = (
+        "module eth_mac (\n    input wire logic clk,\n"
+        "    taxi_axis_if.snk s_axis_tx,\n    taxi_axis_if.src m_axis_rx\n);\nendmodule\n"
     )
-    c = _Collector()
-    doctor._check_sim_traceable(tmp_path, _verilator_sim_ref(core), c._pass, c._warn)
-    [message] = c.warned
-    assert "cannot trace" in message and "sim_x" in message
-    assert (message.check_id, message.subject) == ("sim.trace-unavailable", "sim_x")
-    # The Simulation Flow reports a zero-signal traced run as inconclusive; the
-    # WARN must not promise a silent pass.
-    assert " passes" not in message.lower()
-    assert "inconclusive (exit 1)" in message
-    # The remedy names the trace arguments the owned main must honor.
-    assert "+trace and +tracefile=<file>" in message
-    assert "[flows.sim].trace_args" in message
-    assert not c.passed
-
-
-def test_verilator_sim_with_binary_flag_cannot_trace_warns(tmp_path):
-    # `--binary` is `--main --exe --build` — same tracerless auto main.
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  sim_x:
-    flow: sim
-    flow_options: {tool: verilator, verilator_options: [--binary, --timing]}
-    filesets: [rtl]
-    toplevel: dut_tb
-""",
+    commented = (
+        "module eth_commented (\n    input wire logic clk\n"
+        "    // taxi_axis_if.snk s_axis_tx,   <- supplied by the wrapper below\n);\nendmodule\n"
     )
-    c = _Collector()
-    doctor._check_sim_traceable(tmp_path, _verilator_sim_ref(core), c._pass, c._warn)
-    assert any("cannot trace" in m for m in c.warned)
-
-
-def test_verilator_sim_with_exe_main_is_trace_capable(tmp_path):
-    # No --main/--binary → the Target owns a cppSource --exe main → traceable.
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-  tb_cpp: {files: [sim/main.cpp: {file_type: cppSource}], tags: [tb]}
-targets:
-  sim_x:
-    flow: sim
-    flow_options: {tool: verilator, verilator_options: [--timing, -Wno-fatal]}
-    filesets: [rtl, tb_cpp]
-    toplevel: dut_tb
-""",
+    typed = (
+        "module eth_typed (\n    input wire logic clk,\n"
+        "    input my_cfg_t cfg,\n    output wire logic done\n);\nendmodule\n"
     )
-    c = _Collector()
-    doctor._check_sim_traceable(tmp_path, _verilator_sim_ref(core), c._pass, c._warn)
-    assert not c.warned
-    assert any("trace-capable" in m for m in c.passed)
-
-
-def test_sim_traceable_check_ignores_non_verilator_and_non_sim(tmp_path):
-    # Icarus/xcelium/vcs self-heal (overlay supplies the dump module); lint
-    # Targets have no TB. Neither should be flagged.
-    from booley.fusesoc import fusesoc_registry as fr
-
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  sim_ic: {flow: sim, flow_options: {tool: icarus}, filesets: [rtl], toplevel: dut_tb}
-  lint: {flow: lint, flow_options: {tool: verilator, verilator_options: [--main]}, filesets: [rtl], toplevel: dut}
-""",
+    fs = _RTL_TB + "".join(
+        f"  {n}: {{files: [rtl/{n}.sv]}}\n" for n in ("iface", "commented", "typed")
     )
-    refs = {
-        "sim_ic": fr.TargetRef(
-            name="sim_ic", vlnv="::demo:0", core_file=core, eda_tool="icarus", flow="sim"
-        ),
-        "lint": fr.TargetRef(
-            name="lint", vlnv="::demo:0", core_file=core, eda_tool="verilator", flow="lint"
-        ),
+    design = _core(
+        "design",
+        _target("lint_iface", flow="lint", filesets="iface", top="eth_mac")
+        + _target("sim_iface", filesets="iface, tb", top="eth_mac")
+        + _target("lint_commented", flow="lint", filesets="commented", top="eth_commented")
+        + _target("lint_typed", flow="lint", filesets="typed", top="eth_typed")
+        + _target("lint_missing", flow="lint", filesets="typed", top="not_in_the_files"),
+        fs,
+    )
+    _core_project(
+        tmp_path,
+        monkeypatch,
+        {
+            "design.core": design,
+            "rtl/iface.sv": iface,
+            "rtl/commented.sv": commented,
+            "rtl/typed.sv": typed,
+        },
+    )
+
+    result = _doctor_run(tmp_path)
+
+    assert _warnings(result, "core.interface-toplevel").keys() == {"lint_iface"}
+    message = _warnings(result, "core.interface-toplevel")["lint_iface"]
+    assert "taxi_axis_if.snk s_axis_tx" in message
+    assert "cannot be elaborated standalone" in message
+    # A commented-out interface port and a plain user-typed port are not interfaces.
+    standalone = {
+        f.message.split("'")[1]
+        for f in result.findings
+        if f.severity is Severity.PASS and "elaborates standalone" in f.message
     }
-    c = _Collector()
-    doctor._check_sim_traceable(tmp_path, refs, c._pass, c._warn)
-    assert not c.warned
-    assert not c.passed  # no Verilator *sim* Target at all → silent
-
-
-class TestIcarusSvLanguageMode:
-    """Icarus + .sv sources without -g2012: iverilog defaults to Verilog-2005,
-    so every compile dies on the first `logic`/`always_ff` with a syntax error
-    that points at healthy RTL. FAIL for sim Targets (the verdict source is
-    guaranteed dead), WARN for lint/elaborate shapes (advisory gates)."""
-
-    _SV_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {{files: [rtl/dut.sv: {{file_type: systemVerilogSource}}]}}
-  tb: {{files: [tb/tb_dut.sv: {{file_type: systemVerilogSource}}], tags: [tb]}}
-targets:
-  {name}:
-    flow: {flow}
-    flow_options: {flow_options}
-    filesets: [rtl, tb]
-    toplevel: tb_dut
-"""
-
-    def _refs(self, core, name, flow):
-        catalog = TargetCatalog.build(core.parent)
-        return {name: catalog.select(name)}
-
-    def test_sim_target_missing_g2012_fails(self, tmp_path):
-        core = _write_core(
-            tmp_path,
-            self._SV_CORE.format(name="sim_x", flow="sim", flow_options="{tool: icarus}"),
-        )
-        c = _Collector()
-        doctor._check_icarus_sv_language_mode(
-            tmp_path, self._refs(core, "sim_x", "sim"), c._pass, c._warn, c._fail
-        )
-        assert len(c.failed) == 1
-        msg, fix = c.failed[0]
-        assert "sim_x" in msg and "-g2012" in msg
-        assert "-g2012" in fix and core.name in fix  # actionable: names the file
-        assert not c.warned
-
-    def test_lint_target_missing_g2012_warns_not_fails(self, tmp_path):
-        core = _write_core(
-            tmp_path,
-            self._SV_CORE.format(name="lint_x", flow="lint", flow_options="{tool: icarus}"),
-        )
-        c = _Collector()
-        doctor._check_icarus_sv_language_mode(
-            tmp_path, self._refs(core, "lint_x", "lint"), c._pass, c._warn, c._fail
-        )
-        assert not c.failed
-        assert any("lint_x" in m and "-g2012" in m for m in c.warned)
-
-    def test_unselected_target_missing_g2012_is_a_note(self, tmp_path):
-        core = _write_core(
-            tmp_path,
-            self._SV_CORE.format(name="lint_x", flow="lint", flow_options="{tool: icarus}"),
-        )
-        c = _Collector()
-        notes = []
-
-        doctor._check_icarus_sv_language_mode(
-            tmp_path,
-            self._refs(core, "lint_x", "lint"),
-            c._pass,
-            c._warn,
-            c._fail,
-            _note=notes.append,
-            selected_targets={"::other:0#lint_other"},
-        )
-
-        assert not c.failed and not c.warned
-        assert any("not selected" in msg and "lint_x" in msg for msg in notes)
-
-    def test_sim_target_with_g2012_passes(self, tmp_path):
-        core = _write_core(
-            tmp_path,
-            self._SV_CORE.format(
-                name="sim_x",
-                flow="sim",
-                flow_options="{tool: icarus, iverilog_options: [-g2012]}",
-            ),
-        )
-        c = _Collector()
-        doctor._check_icarus_sv_language_mode(
-            tmp_path, self._refs(core, "sim_x", "sim"), c._pass, c._warn, c._fail
-        )
-        assert not c.failed and not c.warned
-        assert any("SV language flag" in m for m in c.passed)
-
-    def test_older_sv_spellings_accepted(self, tmp_path):
-        # -g2005-sv / -g2009 also enable SV — a working .core is not nagged
-        # into churn just because it predates the -g2012 recommendation.
-        core = _write_core(
-            tmp_path,
-            self._SV_CORE.format(
-                name="sim_x",
-                flow="sim",
-                flow_options="{tool: icarus, iverilog_options: [-g2005-sv]}",
-            ),
-        )
-        c = _Collector()
-        doctor._check_icarus_sv_language_mode(
-            tmp_path, self._refs(core, "sim_x", "sim"), c._pass, c._warn, c._fail
-        )
-        assert not c.failed and not c.warned
-
-    def test_plain_verilog_and_non_icarus_targets_are_silent(self, tmp_path):
-        core = _write_core(
-            tmp_path,
-            """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl_v: {files: [rtl/dut.v: {file_type: verilogSource}]}
-  rtl_sv: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  sim_v: {flow: sim, flow_options: {tool: icarus}, filesets: [rtl_v], toplevel: dut}
-  sim_ver: {flow: sim, flow_options: {tool: verilator}, filesets: [rtl_sv], toplevel: dut}
-""",
-        )
-        catalog = TargetCatalog.build(core.parent)
-        refs = {handle.name: handle for handle in catalog.list()}
-        c = _Collector()
-        doctor._check_icarus_sv_language_mode(tmp_path, refs, c._pass, c._warn, c._fail)
-        # .v-only icarus target: the default generation is correct; verilator
-        # targets are out of scope entirely.
-        assert not c.failed and not c.warned and not c.passed
-
-
-class TestToplevelInterfacePorts:
-    """F-7: a toplevel with SV interface ports cannot elaborate standalone, so
-    lint and synth die on an interface parameter mismatch that reads like a bug
-    in the IP. Statically detectable from the port list."""
-
-    _IFACE_DUT = """\
-`default_nettype none
-module eth_mac #(
-    parameter DATA_W = 64
-)
-(
-    input  wire logic  clk,
-    input  wire logic  rst,
-    taxi_axis_if.snk   s_axis_tx,
-    taxi_axis_if.src   m_axis_rx
-);
-  localparam KEEP_W = s_axis_tx.KEEP_W;
-endmodule
-"""
-
-    _FLAT_DUT = """\
-module eth_mac_wrap (
-    input  wire logic        clk,
-    input  wire logic [63:0] tx_data,
-    output wire logic [63:0] rx_data
-);
-endmodule
-"""
-
-    def _project(self, tmp_path: Path, rtl: str, toplevel: str, flow: str = "lint"):
-        (tmp_path / "rtl").mkdir(exist_ok=True)
-        (tmp_path / "rtl" / "dut.sv").write_text(rtl, encoding="utf-8")
-        core = _write_core(
-            tmp_path,
-            f"""\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {{files: [rtl/dut.sv: {{file_type: systemVerilogSource}}]}}
-targets:
-  {flow}: {{flow: {flow}, flow_options: {{tool: verilator}}, filesets: [rtl], \
-toplevel: {toplevel}}}
-""",
-        )
-        catalog = TargetCatalog.build(core.parent)
-        return {flow: catalog.select(flow)}
-
-    def test_interface_ports_on_lint_toplevel_warn(self, tmp_path: Path):
-        refs = self._project(tmp_path, self._IFACE_DUT, "eth_mac")
-        rec = _Rec()
-        doctor._check_toplevel_interface_ports(tmp_path, refs, rec.p, rec.w)
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert len(warns) == 1
-        # Names the offending ports, and says what to do about it.
-        assert "taxi_axis_if.snk s_axis_tx" in warns[0]
-        assert "cannot be elaborated standalone" in warns[0]
-
-    def test_flat_port_toplevel_passes(self, tmp_path: Path):
-        refs = self._project(tmp_path, self._FLAT_DUT, "eth_mac_wrap")
-        rec = _Rec()
-        doctor._check_toplevel_interface_ports(tmp_path, refs, rec.p, rec.w)
-        assert rec.kinds() == {"pass"}
-
-    def test_sim_target_is_exempt(self, tmp_path: Path):
-        """A cocotb/HDL TB instantiates the interfaces itself — not a finding."""
-        refs = self._project(tmp_path, self._IFACE_DUT, "eth_mac", flow="sim")
-        rec = _Rec()
-        doctor._check_toplevel_interface_ports(tmp_path, refs, rec.p, rec.w)
-        assert rec.events == []
-
-    def test_commented_out_port_is_not_a_finding(self, tmp_path: Path):
-        rtl = """\
-module eth_mac_wrap (
-    input wire logic clk
-    // taxi_axis_if.snk s_axis_tx,   <- supplied by the wrapper below
-);
-endmodule
-"""
-        refs = self._project(tmp_path, rtl, "eth_mac_wrap")
-        rec = _Rec()
-        doctor._check_toplevel_interface_ports(tmp_path, refs, rec.p, rec.w)
-        assert rec.kinds() == {"pass"}
-
-    def test_plain_typed_port_is_not_mistaken_for_an_interface(self, tmp_path: Path):
-        """`my_cfg_t cfg` is an ordinary user-typed port, not an interface —
-        crying wolf on every typed port would be worse than no check at all."""
-        rtl = """\
-module eth_mac_wrap (
-    input  wire logic clk,
-    input  my_cfg_t   cfg,
-    output wire logic done
-);
-endmodule
-"""
-        refs = self._project(tmp_path, rtl, "eth_mac_wrap")
-        rec = _Rec()
-        doctor._check_toplevel_interface_ports(tmp_path, refs, rec.p, rec.w)
-        assert rec.kinds() == {"pass"}
-
-    def test_missing_toplevel_source_says_nothing(self, tmp_path: Path):
-        """The toplevel isn't among the Target's files — nothing to assert."""
-        refs = self._project(tmp_path, self._FLAT_DUT, "some_other_module")
-        rec = _Rec()
-        doctor._check_toplevel_interface_ports(tmp_path, refs, rec.p, rec.w)
-        assert rec.events == []
+    assert standalone == {"lint_fast", "synth_fast", "lint_commented", "lint_typed"}
 
 
 _BAD_DEPEND_CORE = """\
@@ -3162,55 +2765,6 @@ def test_no_doctor_target_skip_is_limited_to_flows_the_misplaced_marker_names(tm
     assert targets == []
     assert skipped == []
     assert any("synth has no Doctor Target" in message for message in rec.fails())
-
-
-def test_yosys_target_without_arch_warns(tmp_path):
-    from booley.fusesoc import fusesoc_registry as fr
-
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  synth: {flow: generic, flow_options: {tool: yosys}, filesets: [rtl], toplevel: dut}
-""",
-    )
-    refs = {
-        "synth": fr.TargetRef(
-            name="synth", vlnv="::demo:0", core_file=core, eda_tool="yosys", flow="generic"
-        )
-    }
-    c = _Collector()
-    doctor._check_yosys_targets_have_arch(tmp_path, refs, c._pass, c._warn)
-    assert any("flow_options.arch" in m and "requires" in m for m in c.warned)
-
-
-def test_yosys_target_with_arch_passes(tmp_path):
-    from booley.fusesoc import fusesoc_registry as fr
-
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  synth: {flow: generic, flow_options: {tool: yosys, arch: xilinx}, filesets: [rtl], toplevel: dut}
-""",
-    )
-    refs = {
-        "synth": fr.TargetRef(
-            name="synth", vlnv="::demo:0", core_file=core, eda_tool="yosys", flow="generic"
-        )
-    }
-    c = _Collector()
-    doctor._check_yosys_targets_have_arch(tmp_path, refs, c._pass, c._warn)
-    assert not c.warned
-    assert any("declares flow_options.arch" in m for m in c.passed)
 
 
 def test_repo_footprint_scaffolding_warns(tmp_path):
@@ -5105,386 +4659,138 @@ class TestCheckDoctorTargets:
 
 
 # =============================================================
-
-
-# Legacy tools-section .core targets (F-6)
-# =============================================================
-
-
-class TestCheckLegacyCoreTargets:
-    _LEGACY_CORE = """\
-CAPI=2:
-name: ::oc_i2c:0
-filesets:
-  rtl: {files: [i2c.v], file_type: verilogSource}
-targets:
-  sim:
-    filesets: [rtl]
-    default_tool: icarus
-    tools: {icarus: {iverilog_options: []}}
-"""
-
-    def _run(self, tmp_path: Path, text: str, booley_toml=None):
-        (tmp_path / "i2c.v").write_text("module i2c; endmodule\n", encoding="utf-8")
-        (tmp_path / "design.core").write_text(text, encoding="utf-8")
-        refs = {handle.name: handle for handle in TargetCatalog.build(tmp_path).list()}
-        project = _schema_audit(tmp_path, booley_toml)
-        passes, warns, notes = [], [], []
-        doctor._check_legacy_core_targets(
-            project,
-            tmp_path,
-            refs,
-            passes.append,
-            warns.append,
-            _note=notes.append,
+def test_legacy_tools_section_targets_by_ownership(tmp_path, monkeypatch):
+    def legacy(name, tool, marked=False):
+        marker = "    flow_options: {booley: {doctor: [sim]}}\n" if marked else ""
+        return (
+            f"  {name}:\n    filesets: [rtl]\n{marker}    default_tool: {tool}\n"
+            f"    tools: {{{tool}: {{}}}}\n"
         )
-        return passes, warns, notes
 
-    def test_legacy_target_warns_with_the_rewrite(self, tmp_path):
-        # The core hosts a configured Target → it's the project's own; the
-        # warning names the rewrite.
-        selected = self._LEGACY_CORE.replace(
-            "    default_tool: icarus",
-            "    flow_options: {booley: {doctor: [sim]}}\n    default_tool: icarus",
-        )
-        passes, warns, notes = self._run(tmp_path, selected, {"flows": {"sim": {}}})
-        assert not passes
-        assert not notes
-        assert len(warns) == 1
-        assert "legacy FuseSoC tools-section target" in warns[0]
-        assert "flow_options: {tool: icarus}" in warns[0]  # upstream EDA-tool field
-        assert "CORE_TEMPLATE.yaml" in warns[0]
+    def legacy_core(name, targets):
+        return _core(name, targets, "  rtl: {files: [rtl/dut.sv], file_type: verilogSource}\n")
 
-    def test_legacy_target_in_vendored_core_states_consequence_only(self, tmp_path):
-        """No configured Target selects the core → it's vendored upstream
-        content; 'rewrite the .core' is unfollowable there (ADR 0036 keeps the
-        host repo byte-identical to upstream), so the warning just states the
-        consequence."""
-        passes, warns, notes = self._run(tmp_path, self._LEGACY_CORE)
-        assert not passes
-        assert not warns
-        assert len(notes) == 1
-        assert "legacy FuseSoC tools-section target" in notes[0]
-        assert "not selected by this project" in notes[0]
-        assert "CORE_TEMPLATE.yaml" not in notes[0]
-
-    def test_vendored_legacy_targets_roll_up_to_one_line(self, tmp_path):
-        # F-10: a vendored core with several legacy Targets must not spam one
-        # WARN per Target (picorv32.core cost 4) — they roll up to a single line
-        # that lists every offending name.
-        multi = """\
-CAPI=2:
-name: ::oc_i2c:0
-filesets:
-  rtl: {files: [i2c.v], file_type: verilogSource}
-targets:
-  sim:
-    filesets: [rtl]
-    default_tool: icarus
-    tools: {icarus: {iverilog_options: []}}
-  lint:
-    filesets: [rtl]
-    default_tool: verilator
-    tools: {verilator: {verilator_options: []}}
-  synth:
-    filesets: [rtl]
-    default_tool: yosys
-    tools: {yosys: {yosys_options: []}}
-"""
-        passes, warns, notes = self._run(tmp_path, multi)
-        assert not passes
-        assert not warns
-        assert len(notes) == 1  # one rolled-up line, not three
-        assert "3 legacy FuseSoC tools-section targets" in notes[0]
-        for name in ("sim", "lint", "synth"):
-            assert name in notes[0]
-        assert "not selected by this project" in notes[0]
-
-    def test_only_selected_target_in_native_core_warns(self, tmp_path):
-        """Selecting one Target does not make every sibling an active finding."""
-        multi = """\
-CAPI=2:
-name: ::oc_i2c:0
-filesets:
-  rtl: {files: [i2c.v], file_type: verilogSource}
-targets:
-  sim_old:
-    filesets: [rtl]
-    default_tool: icarus
-    tools: {icarus: {iverilog_options: []}}
-  lint_old:
-    filesets: [rtl]
-    default_tool: verilator
-    tools: {verilator: {verilator_options: []}}
-"""
-        _passes, warns, notes = self._run(
-            tmp_path,
-            multi.replace(
-                "  sim_old:\n    filesets: [rtl]",
-                "  sim_old:\n    flow_options: {booley: {doctor: [sim]}}\n    filesets: [rtl]",
+    _core_project(
+        tmp_path,
+        monkeypatch,
+        {
+            # The core hosts a selected Target, so it is the Project's own.
+            "legacy_a.core": legacy_core(
+                "legacy_a",
+                legacy("sim_old", "icarus", marked=True) + legacy("lint_old", "verilator"),
             ),
-            {"flows": {"sim": {}}},
-        )
-        assert len(warns) == 1
-        assert "Target 'sim_old'" in warns[0]
-        assert len(notes) == 1
-        assert "lint_old" in notes[0]
-        assert "sim_old" not in notes[0]
-
-    def test_duplicate_bare_names_in_distinct_cores_are_both_audited(self, tmp_path):
-        second = tmp_path / "second.core"
-        second.write_text(self._LEGACY_CORE.replace("::oc_i2c:0", "::other:0"), encoding="utf-8")
-        _passes, warns, notes = self._run(tmp_path, self._LEGACY_CORE)
-        assert not warns
-        assert len(notes) == 2
-        assert all("sim" in note for note in notes)
-
-    def test_flow_api_core_passes(self, tmp_path):
-        text = """\
-CAPI=2:
-name: ::x:0
-filesets:
-  rtl: {files: [i2c.v], file_type: verilogSource}
-targets:
-  sim:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: icarus}
-    toplevel: tb
-"""
-        passes, warns, notes = self._run(tmp_path, text)
-        assert passes and not warns and not notes
-
-
-class TestCheckTargetNaming:
-    """The <axis>_<subject> convention: a note, and only on cores the project owns."""
-
-    _CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [dut.v], file_type: verilogSource}
-targets:
-  {targets}
-"""
-
-    def _run(self, tmp_path: Path, target_block: str, booley_toml=None):
-        (tmp_path / "dut.v").write_text("module dut; endmodule\n", encoding="utf-8")
-        (tmp_path / "design.core").write_text(
-            self._CORE.replace("{targets}", target_block), encoding="utf-8"
-        )
-        refs = {handle.name: handle for handle in TargetCatalog.build(tmp_path).list()}
-        project = _schema_audit(tmp_path, booley_toml)
-        passes, warns = [], []
-        doctor._check_target_naming(project, tmp_path, refs, passes.append, warns.append)
-        return passes, warns
-
-    _MISNAMED = """\
-soc_sim:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: verilator}
-    toplevel: tb
-"""
-
-    def test_owned_core_with_legacy_suffix_warns_and_names_the_rename(self, tmp_path):
-        selected = self._MISNAMED.replace(
-            "flow_options: {tool: verilator}",
-            "flow_options: {tool: verilator, booley: {doctor: [sim]}}",
-        )
-        passes, warns = self._run(tmp_path, selected, {"flows": {"sim": {}}})
-        assert not passes
-        assert len(warns) == 1
-        assert "no axis prefix" in warns[0]
-        assert "rename it 'sim_soc'" in warns[0]
-        # The rename is never a one-file edit; the warning has to say so.
-        assert "tests.toml" in warns[0]
-
-    def test_vendored_core_is_left_alone(self, tmp_path):
-        """Renaming an upstream Target is unfollowable — ADR 0036 keeps the host
-        repo byte-identical to upstream, so a name it never selects is not ours."""
-        passes, warns = self._run(tmp_path, self._MISNAMED)
-        assert warns == []
-        assert passes
-
-    def test_conformant_names_pass(self, tmp_path):
-        block = """\
-sim_soc:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-    toplevel: tb
-"""
-        passes, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
-        assert warns == []
-        assert any("<axis>_<subject>" in m for m in passes)
-
-    def test_doctor_metadata_beats_the_legacy_suffix(self, tmp_path):
-        """Doctor metadata owns the naming axis, whatever the Target is called."""
-        block = """\
-soc_sim:
-    filesets: [rtl]
-    flow: generic
-    flow_options: {tool: yosys, booley: {doctor: [synth]}}
-    toplevel: dut
-"""
-        _, warns = self._run(tmp_path, block, {"flows": {"synth": {}}})
-        assert "rename it 'synth_soc'" in warns[0]
-
-    def test_legacy_asic_prefix_is_renamed_to_synth(self, tmp_path):
-        block = """\
-asic_core:
-    filesets: [rtl]
-    flow: generic
-    flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
-    toplevel: dut
-"""
-        _, warns = self._run(tmp_path, block, {"flows": {"synth": {}}})
-        assert "rename it 'synth_core'" in warns[0]
-
-    def test_selected_bare_name_uses_flow_wiring_for_rename(self, tmp_path):
-        block = """\
-sim_ok:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: verilator}
-    toplevel: tb
-  soc:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-    toplevel: tb
-"""
-        _, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
-        assert len(warns) == 1
-        assert "Target 'soc'" in warns[0]
-        assert "rename it 'sim_soc'" in warns[0]
-
-    @pytest.mark.parametrize(
-        ("axis", "flow", "tool"),
-        [
-            ("sim", "sim", "verilator"),
-            ("lint", "lint", "verilator"),
-            ("synth", "generic", "yosys"),
-            ("fpga", "generic", "vivado"),
-        ],
+            # F-10: unselected legacy Targets of a vendored core roll up to one line.
+            "legacy_b.core": legacy_core(
+                "legacy_b",
+                legacy("sim_b", "icarus")
+                + legacy("lint_b", "verilator")
+                + legacy("synth_b", "yosys"),
+            ),
+            # A bare name repeated in a distinct core is still audited.
+            "legacy_c.core": legacy_core("legacy_c", legacy("sim_b", "icarus")),
+        },
     )
-    def test_bare_axis_target_notes_core_name_rename(self, tmp_path, axis, flow, tool):
-        """A bare axis says nothing about the design; the note suggests <axis>_<core name>."""
-        block = f"""\
-{axis}:
-    filesets: [rtl]
-    flow: {flow}
-    flow_options: {{tool: {tool}, booley: {{doctor: [{axis}]}}}}
-    toplevel: dut
-"""
-        passes, warns = self._run(tmp_path, block, {"flows": {axis: {}}})
-        assert not passes
-        assert len(warns) == 1
-        assert "bare axis; add a subject" in warns[0]
-        assert f"rename it '{axis}_demo'" in warns[0]
+    result = _doctor_run(tmp_path)
 
-    def test_bare_axis_note_skips_vendored_core(self, tmp_path):
-        """Only the selected, owned core's bare Target is noted; an unselected one stays exempt."""
-        (tmp_path / "vendor.core").write_text(
-            "CAPI=2:\nname: ::upstream:0\nfilesets:\n"
-            "  rtl: {files: [dut.v], file_type: verilogSource}\n"
-            "targets:\n  lint:\n    filesets: [rtl]\n    flow: lint\n"
-            "    flow_options: {tool: verilator}\n    toplevel: dut\n",
-            encoding="utf-8",
+    legacy_rows = [f for f in result.findings if f.check_id == "core.legacy-target"]
+    assert [f.subject for f in legacy_rows] == ["sim_old"]
+    assert "flow_options: {tool: icarus}" in legacy_rows[0].message
+    assert "CORE_TEMPLATE.yaml" in legacy_rows[0].message
+    notes = _rows(result, Severity.NOTE, "legacy FuseSoC tools-section target")
+    assert sorted(note.split(" — ")[0] for note in notes) == [
+        "legacy_a.core: 1 legacy FuseSoC tools-section target (lint_old)",
+        "legacy_b.core: 3 legacy FuseSoC tools-section targets (lint_b, sim_b, synth_b)",
+        "legacy_c.core: 1 legacy FuseSoC tools-section target (sim_b)",
+    ]
+    assert all("not selected by this project" in note for note in notes)
+    assert not any("CORE_TEMPLATE.yaml" in note for note in notes)
+
+
+def _naming_project(tmp_path, monkeypatch):
+    def target(name, flow="sim", tool="verilator", marked=True, extra=""):
+        axis = "synth" if tool == "yosys" else flow
+        marker = f", booley: {{doctor: [{axis}]}}" if marked else ""
+        flow_name = "generic" if tool == "yosys" else flow
+        return (
+            f"  {name}:\n    filesets: [rtl]\n    flow: {flow_name}\n"
+            f"    flow_options: {{tool: {tool}{extra}{marker}}}\n    toplevel: dut\n"
         )
-        block = """\
-sim:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-    toplevel: tb
-"""
-        passes, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
-        assert not passes
-        assert len(warns) == 1
-        assert "Target 'sim' in design.core" in warns[0]
-        assert "lint" not in warns[0]
+
+    fs = "  rtl: {files: [rtl/dut.sv], file_type: systemVerilogSource}\n"
+    yosys = {"tool": "yosys", "extra": ", arch: xilinx"}
+    owned = (
+        target("soc_sim")
+        + target("soc")
+        + target("sim")
+        + target("lint", flow="lint")
+        + target("synth", **yosys)
+        + target("sim_ok", marked=False)
+    )
+    meta = target("meta_sim", **yosys) + target("asic_core", **yosys)
+    vendor = target("soc_sim2", marked=False) + target("fpga", flow="lint", marked=False)
+    _core_project(
+        tmp_path,
+        monkeypatch,
+        {
+            "owned.core": _core("demo", owned, fs),
+            "meta.core": _core("meta", meta, fs),
+            "vendor.core": _core("upstream", vendor, fs),
+        },
+    )
 
 
-class TestCheckStrayDefaultTargets:
-    """`default:` is dependency plumbing — dead weight on a core with no dependents."""
+def test_target_naming_notes_only_selected_or_state_targets(tmp_path, monkeypatch):
+    _naming_project(tmp_path, monkeypatch)
+    result = _doctor_run(tmp_path)
 
-    _STANDALONE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [dut.v], file_type: verilogSource}
-targets:
-  default:
-    filesets: [rtl]
-  sim_x:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: verilator}
-    toplevel: tb
-"""
+    # Doctor metadata beats the legacy suffix (`meta_sim` is a synth Target); an
+    # unselected Target, a conformant name and a vendored core's names are left alone.
+    notes = {
+        message.split("'")[1]: message
+        for message in _rows(result, Severity.NOTE, "' in ")
+        if "axis" in message
+    }
+    renames = {
+        "soc_sim": "sim_soc",
+        "soc": "sim_soc",
+        "meta_sim": "synth_meta",
+        "asic_core": "synth_core",
+    }
+    for name, rename in renames.items():
+        assert f"no axis prefix (sim/lint/synth/fpga) — rename it '{rename}'" in notes[name]
+    assert "tests.toml" in notes["soc_sim"]
+    for axis in ("sim", "lint", "synth"):
+        assert f"bare axis; add a subject — rename it '{axis}_demo'" in notes[axis]
+    assert notes.keys() == set(renames) | {"sim", "lint", "synth"}
+    assert _rows(result, Severity.PASS, "<axis>_<subject>") == []
 
-    def _state_core(self, tmp_path: Path, name: str, text: str) -> None:
-        """Write into `.booley/cores/` — always Booley-authored (ADR 0036)."""
-        cores = tmp_path / ".booley" / "cores"
-        cores.mkdir(parents=True, exist_ok=True)
-        (cores / name).write_text(text, encoding="utf-8")
 
-    def _run(self, tmp_path: Path):
-        (tmp_path / "dut.v").write_text("module dut; endmodule\n", encoding="utf-8")
-        project = _schema_audit(tmp_path)
-        passes, warns = [], []
-        doctor._check_stray_default_targets(project, tmp_path, passes.append, warns.append)
-        return passes, warns
-
-    def test_default_on_a_core_with_no_dependents_warns(self, tmp_path):
-        self._state_core(tmp_path, "demo.core", self._STANDALONE)
-        passes, warns = self._run(tmp_path)
-        assert not passes
-        assert len(warns) == 1
-        assert "declares a 'default:' Target" in warns[0]
-        assert "no other .core depends on it" in warns[0]
-
-    def test_default_on_a_depended_on_core_is_left_alone(self, tmp_path):
-        """FuseSoC builds a dependency core through `default`; without one it
-        contributes ZERO filesets, silently. That `default` is load-bearing."""
-        self._state_core(tmp_path, "demo.core", self._STANDALONE)
-        self._state_core(
-            tmp_path,
-            "top.core",
-            """\
-CAPI=2:
-name: ::top:0
-filesets:
-  rtl: {files: [dut.v], file_type: verilogSource, depend: ["::demo"]}
-targets:
-  sim_top:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: verilator}
-    toplevel: tb
-""",
+def test_stray_default_target_warns_only_without_dependents(tmp_path, monkeypatch):
+    def core(name, depend="", default="  default:\n    filesets: [rtl]\n"):
+        return _core(
+            name,
+            default + _target(f"lint_{name}", flow="lint", filesets="rtl", top="dut"),
+            f"  rtl: {{files: [rtl/dut.sv], file_type: systemVerilogSource{depend}}}\n",
         )
-        passes, warns = self._run(tmp_path)
-        assert warns == []
-        assert passes
 
-    def test_core_without_a_default_passes(self, tmp_path):
-        self._state_core(
-            tmp_path,
-            "demo.core",
-            self._STANDALONE.replace("  default:\n    filesets: [rtl]\n", ""),
-        )
-        passes, warns = self._run(tmp_path)
-        assert warns == []
-        assert passes
+    _core_project(
+        tmp_path,
+        monkeypatch,
+        {
+            ".booley/cores/demo.core": core("demo"),
+            # FuseSoC builds a dependency core through `default`, so it is load-bearing.
+            ".booley/cores/lib.core": core("lib"),
+            ".booley/cores/top.core": core("top", ', depend: ["::lib"]', default=""),
+            # Outside the state zone and unselected: not the Project's to edit.
+            "vendor.core": core("upstream"),
+        },
+    )
 
-    def test_vendored_core_is_exempt(self, tmp_path):
-        """Same core, outside the state zone and unwired → not the project's to edit."""
-        (tmp_path / "demo.core").write_text(self._STANDALONE, encoding="utf-8")
-        _, warns = self._run(tmp_path)
-        assert warns == []
+    result = _doctor_run(tmp_path)
+
+    stray = _rows(result, Severity.WARN, "declares a 'default:' Target")
+    assert len(stray) == 1
+    assert stray[0].startswith("demo.core declares") and "no other .core depends on it" in stray[0]
 
 
 class TestVeribleLintGate:
@@ -6338,6 +5644,9 @@ def test_doctor_reuses_one_target_source_inspector(
     monkeypatch.setattr(target_inspection, "CoreManager", counting_manager)
     monkeypatch.setattr(real_manager, "get_depends", counting_get_depends)
 
+    # Private: it counts CoreManager instances and dependency resolutions per
+    # `_CoreAuditInputs`; a whole run also builds the Flow audit's and the native
+    # dependency owner's catalogs and inspectors, so the count is not observable there.
     inputs = doctor._CoreAuditInputs(catalog, refs)
     for name in target_names:
         assert inputs.sources_for(name).rtl_source_files == ("rtl/dut.sv",)
@@ -6524,22 +5833,7 @@ def test_agent_usage_summary_edge_cases(calls, expected) -> None:
     assert doctor._agent_usage_summary(calls) == expected
 
 
-class _FixCollector(_Collector):
-    """Collector that keeps each WARN's ``fix`` hint next to its message."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.fixes: list[str] = []
-
-    def _warn(self, msg: str, fix: str = "") -> None:
-        super()._warn(msg, fix)
-        self.fixes.append(fix)
-
-
-class TestSimDumpDeclared:
-    """#884: an owned C++ main's hardcoded dump must be declared in trace_files."""
-
-    _MAIN = """\
+_MAIN = """\
 #include "verilated_vcd_c.h"
 int main(int argc, char** argv) {{
   VerilatedVcdC* tfp = new VerilatedVcdC;
@@ -6547,138 +5841,103 @@ int main(int argc, char** argv) {{
 }}
 """
 
-    def _check(
-        self,
-        tmp_path: Path,
-        body: str,
-        *,
-        trace_config: str = "",
-        options: str = "[--timing, --exe]",
-        tool: str = "verilator",
-        cpp: str | None = None,
-        run_cwd: str = ".",
-    ) -> _FixCollector:
-        from booley.runtime.booley_dir import reset_cache
 
-        reset_cache()
-        (tmp_path / "sim").mkdir(exist_ok=True)
-        (tmp_path / "sim" / "main.cpp").write_text(
-            cpp if cpp is not None else self._MAIN.format(body=body), encoding="utf-8"
+def _dump_project(tmp_path, monkeypatch, opens, *, sim):
+    """A Project whose Targets each own the C++ main in *opens*: name to (text, options, tool)."""
+    fs = _RTL_TB
+    targets = ""
+    files = {}
+    for name, (text, options, tool) in opens.items():
+        fs += f"  {name}_cpp: {{files: [sim/{name}.cpp], file_type: cppSource, tags: [tb]}}\n"
+        targets += _target(
+            f"sim_{name}",
+            options=f"tool: {tool}, verilator_options: {options}",
+            filesets=f"rtl, {name}_cpp",
+            top="dut",
         )
-        (tmp_path / "rtl").mkdir(exist_ok=True)
-        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        project = tmp_path / ".booley"
-        project.mkdir(exist_ok=True)
-        (project / "booley.toml").write_text(
-            f'[flows.sim]\nrun_cwd = "{run_cwd}"\n{trace_config}', encoding="utf-8"
+        files[f"sim/{name}.cpp"] = text
+    files["design.core"] = _core("design", targets, fs)
+    _core_project(tmp_path, monkeypatch, files, sim=sim)
+
+
+def _open(path, options="[--timing, --exe]", tool="verilator"):
+    return (_MAIN.format(body=f'tfp->open("{path}");'), options, tool)
+
+
+@pytest.mark.parametrize(
+    ("sim", "opens", "dumps", "fix"),
+    [
+        pytest.param(
+            'run_cwd = "."\n',
+            {"undeclared": _open("sim.vcd")},
+            "sim_undeclared opens sim.vcd",
+            '["sim.vcd"]',
+            id="unconfigured",
+        ),
+        pytest.param(
+            'run_cwd = "."\ntrace_files = ["declared.vcd", "*.fst", "/unrelated/sim.vcd"]\n',
+            {
+                "undeclared": _open("sim.vcd"),
+                "declared": _open("declared.vcd"),
+                "wave": _open("wave.fst"),
+                # `*` does not cross a directory separator.
+                "nested": _open("nested/deep.fst"),
+                "dynamic": (_MAIN.format(body="tfp->open(dump.c_str());"), "[--exe]", "verilator"),
+                "line_comment": (
+                    _MAIN.format(body='// tfp->open("sim.vcd");'),
+                    "[--exe]",
+                    "verilator",
+                ),
+                "block_comment": (
+                    _MAIN.format(body='/* tfp->open("sim.vcd"); */'),
+                    "[--exe]",
+                    "verilator",
+                ),
+                # `--main` Targets are left to the trace-unavailable check.
+                "auto_main": _open("sim.vcd", options="[--main, --timing]"),
+                "no_tracer": (
+                    'int main() { std::ifstream f; f.open("fixture.vcd"); }\n',
+                    "[--exe]",
+                    "verilator",
+                ),
+                "icarus": _open("sim.vcd", options="[]", tool="icarus"),
+            },
+            "sim_nested opens nested/deep.fst; sim_undeclared opens sim.vcd",
+            # The existing entries stay; the two undeclared literals follow, sorted.
+            '["declared.vcd", "*.fst", "/unrelated/sim.vcd", "nested/deep.fst", "sim.vcd"]',
+            id="literal",
+        ),
+        pytest.param(
+            'run_cwd = "/sim_home"\ntrace_files = ["sim.vcd", "**/*.vcd"]\n',
+            {"absolute": _open("/sim_home/sim.vcd"), "nested": _open("nested/sim.vcd")},
+            None,
+            None,
+            id="absolute-cwd",
+        ),
+        pytest.param(
+            'run_cwd = "runs/{attempt}"\ntrace_files = ["a.vcd", "../b.vcd", "*.fst"]\n',
+            {"a": _open("a.vcd"), "b": _open("b.vcd"), "c": _open("c.fst")},
+            "sim_b opens b.vcd",
+            '["a.vcd", "../b.vcd", "*.fst", "b.vcd"]',
+            id="templated",
+        ),
+    ],
+)
+def test_owned_main_dump_declaration(tmp_path, monkeypatch, sim, opens, dumps, fix):
+    _dump_project(tmp_path, monkeypatch, opens, sim=sim)
+
+    result = _doctor_run(tmp_path)
+
+    undeclared = [f for f in result.findings if f.check_id == "sim.trace-dump-undeclared"]
+    if dumps is None:
+        assert undeclared == []
+        assert _rows(
+            result, Severity.PASS, "2 Verilator sim Target(s) declare their C++ main's dump"
         )
-        core = _write_core(
-            tmp_path,
-            f"""\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {{files: [rtl/dut.sv: {{file_type: systemVerilogSource}}]}}
-  tb_cpp: {{files: [sim/main.cpp: {{file_type: cppSource}}]}}
-targets:
-  sim_x:
-    flow: sim
-    flow_options: {{tool: {tool}, verilator_options: {options}}}
-    filesets: [rtl, tb_cpp]
-    toplevel: dut
-""",
-        )
-        refs = {"sim_x": TargetCatalog.build(core.parent).select("sim_x")}
-        collector = _FixCollector()
-        doctor._check_sim_dump_declared(tmp_path, refs, collector._pass, collector._warn)
-        return collector
-
-    def test_undeclared_dump_warns_with_exact_fix(self, tmp_path: Path):
-        c = self._check(tmp_path, 'tfp->open("sim.vcd");')
-        assert len(c.warned) == 1
-        assert "sim.vcd" in c.warned[0] and "sim_x" in c.warned[0]
-        assert c.fixes == ['add to [flows.sim] in booley.toml: trace_files = ["sim.vcd"]']
-        assert not c.passed
-
-    @pytest.mark.parametrize("declared", ['["sim.vcd"]', '["*.vcd"]'])
-    def test_declared_dump_passes(self, tmp_path: Path, declared: str):
-        c = self._check(
-            tmp_path, 'tfp->open("sim.vcd");', trace_config=f"trace_files = {declared}\n"
-        )
-        assert not c.warned
-        assert len(c.passed) == 1
-
-    @pytest.mark.parametrize(
-        "body",
-        ["tfp->open(dump.c_str());", '// tfp->open("sim.vcd");', '/* tfp->open("sim.vcd"); */'],
-    )
-    def test_non_literal_or_commented_open_is_silent(self, tmp_path: Path, body: str):
-        c = self._check(tmp_path, body)
-        assert not c.warned and not c.passed
-
-    def test_existing_entries_are_preserved_in_fix(self, tmp_path: Path):
-        c = self._check(
-            tmp_path, 'tfp->open("wave.fst");', trace_config='trace_files = ["other.vcd"]\n'
-        )
-        assert c.fixes == [
-            'add to [flows.sim] in booley.toml: trace_files = ["other.vcd", "wave.fst"]'
-        ]
-
-    def test_star_does_not_cross_directories(self, tmp_path: Path):
-        c = self._check(
-            tmp_path, 'tfp->open("nested/sim.vcd");', trace_config='trace_files = ["*.vcd"]\n'
-        )
-        assert len(c.warned) == 1
-        c = self._check(
-            tmp_path, 'tfp->open("nested/sim.vcd");', trace_config='trace_files = ["**/*.vcd"]\n'
-        )
-        assert not c.warned and len(c.passed) == 1
-
-    def test_unrelated_absolute_pattern_does_not_cover(self, tmp_path: Path):
-        c = self._check(
-            tmp_path,
-            'tfp->open("sim.vcd");',
-            trace_config='trace_files = ["/unrelated/sim.vcd"]\n',
-        )
-        assert len(c.warned) == 1
-
-    def test_relative_pattern_covers_absolute_literal_under_run_cwd(self, tmp_path: Path):
-        # A POSIX-absolute run_cwd keeps the literal absolute on every platform.
-        c = self._check(
-            tmp_path,
-            'tfp->open("/sim_home/sim.vcd");',
-            trace_config='trace_files = ["sim.vcd"]\n',
-            run_cwd="/sim_home",
-        )
-        assert not c.warned and len(c.passed) == 1
-
-    @pytest.mark.parametrize(
-        ("pattern", "covered"), [("sim.vcd", True), ("../sim.vcd", False), ("*.vcd", True)]
-    )
-    def test_templated_run_cwd_is_decided_with_one_placeholder_segment(
-        self, tmp_path: Path, pattern: str, covered: bool
-    ):
-        c = self._check(
-            tmp_path,
-            'tfp->open("sim.vcd");',
-            trace_config=f'trace_files = ["{pattern}"]\n',
-            run_cwd="runs/{attempt}",
-        )
-        assert bool(c.passed) is covered
-        assert bool(c.warned) is not covered
-
-    def test_auto_main_target_is_left_to_trace_unavailable(self, tmp_path: Path):
-        c = self._check(tmp_path, 'tfp->open("sim.vcd");', options="[--main, --timing]")
-        assert not c.warned and not c.passed
-
-    def test_open_without_a_verilator_tracer_is_ignored(self, tmp_path: Path):
-        cpp = 'int main() { std::ifstream f; f.open("fixture.vcd"); }\n'
-        c = self._check(tmp_path, "", cpp=cpp)
-        assert not c.warned and not c.passed
-
-    def test_icarus_target_is_ignored(self, tmp_path: Path):
-        c = self._check(tmp_path, 'tfp->open("sim.vcd");', tool="icarus", options="[]")
-        assert not c.warned and not c.passed
+        return
+    [finding] = undeclared
+    assert f"({dumps})" in finding.message
+    assert finding.fix == f"add to [flows.sim] in booley.toml: trace_files = {fix}"
 
 
 def test_doctor_emits_no_attributes_policy_check_ids(tmp_path):
@@ -7001,6 +6260,36 @@ def test_doctor_renders_synthesis_target_migration(
     assert replacement in output
 
 
+def test_project_checks_run_custom_endpoint_checks_and_no_criteria_check(tmp_path, monkeypatch):
+    project = tmp_path / ".booley"
+    (project / "mcp_tools").mkdir(parents=True)
+    (project / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    (project / "criteria.toml").write_bytes(b'[lint_clean]\ndescription = "x"\n')
+    (project / "mcp_tools" / "lint.py").write_bytes(
+        b"class Lint(McpTool):\n    name = 'lint'\n    description = 'x'\n"
+    )
+    for name in (
+        "_check_ticket_leftovers",
+        "_check_handle_map_size",
+        "_check_project_gitignore",
+        "_check_project_trackability",
+        "_check_git_state",
+        "_check_repo_footprint",
+        "_check_disabled_endpoints",
+        "_check_agent_backend_health",
+    ):
+        monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+    reporter = doctor._Reporter.create()
+    doctor._run_project_checks(doctor.ProjectAudit(tmp_path, project, {}, {}, None), reporter)
+    findings = reporter.findings or []
+    assert [f for f in findings if f.severity == "fail"] == []
+    skipped = [f for f in findings if f.severity == "warn"]
+    assert [(f.check_id, f.subject) for f in skipped] == [
+        ("project.custom-endpoint-skipped", "lint.py")
+    ]
+    assert not any(re.search(r"(?i)criteri", f"{f.message} {f.fix}") for f in findings)
+
+
 def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypatch):
     _history_git(tmp_path, "init", "-q")
     project = tmp_path / ".booley"
@@ -7014,7 +6303,7 @@ def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypa
         "_check_project_gitignore",
         "_check_git_state",
         "_check_repo_footprint",
-        "_check_custom_endpoints_and_criteria",
+        "_check_custom_endpoints",
         "_check_agent_backend_health",
     ):
         monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
@@ -7252,9 +6541,12 @@ def test_doctor_flags_missing_specialist_ignores_without_mutating(tmp_path):
 
 @pytest.mark.parametrize("tagged", [False, True])
 @pytest.mark.parametrize("legacy", [False, True])
-def test_inferred_cpp_harness_does_not_mask_explicit_tb_tag_audit(tmp_path, tagged, legacy):
+def test_inferred_cpp_harness_does_not_mask_explicit_tb_tag_audit(
+    tmp_path, monkeypatch, tagged, legacy
+):
     from tests.test_target_catalog import _category_sim_core
 
+    _core_project(tmp_path, monkeypatch, {})
     _category_sim_core(tmp_path)
     core = tmp_path / "design.core"
     text = core.read_text().replace(
@@ -7267,36 +6559,45 @@ def test_inferred_cpp_harness_does_not_mask_explicit_tb_tag_audit(tmp_path, tagg
     if not tagged:
         text = text.replace(", tags: [tb]", "")
     core.write_text(text)
-    rec = _audit(tmp_path)
-    warnings = [message for level, message in rec.events if level == "warn"]
-    assert any("shared/main.cpp" in message and "tags:[tb]" in message for message in warnings)
-    assert any("none tagged tags:[tb]" in message for message in rec.fails()) == (
+
+    result = _doctor_run(tmp_path)
+
+    harness = _warnings(result, "sim.harness-untagged")
+    assert any(
+        "shared/main.cpp" in message and "tags:[tb]" in message for message in harness.values()
+    )
+    assert bool(_rows(result, Severity.FAIL, "none tagged tags:[tb]")) == (
         not tagged and not legacy
     )
 
 
-def test_conditional_dependency_tb_tags_do_not_report_untagged_harness(tmp_path):
-    (tmp_path / "dut.sv").write_text("module dut; endmodule\n")
-    (tmp_path / "tb.sv").write_text('module tb; initial $display("PASS"); endmodule\n')
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: ::conditional_top:0\nfilesets:\n"
-        '  rtl: {files: [dut.sv], file_type: systemVerilogSource, depend: ["::conditional_tb:0"]}\n'
-        "targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
-        "    filesets: [rtl]\n    toplevel: tb\n"
+def test_conditional_dependency_tb_tags_do_not_report_untagged_harness(tmp_path, monkeypatch):
+    _core_project(
+        tmp_path,
+        monkeypatch,
+        {
+            "dut.sv": "module dut; endmodule\n",
+            "tb.sv": 'module tb; initial $display("PASS"); endmodule\n',
+            "design.core": "CAPI=2:\nname: ::conditional_top:0\nfilesets:\n"
+            '  rtl: {files: [dut.sv], file_type: systemVerilogSource, depend: ["::conditional_tb:0"]}\n'
+            "targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+            "    filesets: [rtl]\n    toplevel: tb\n",
+            "dependency.core": "CAPI=2:\nname: ::conditional_tb:0\nfilesets:\n"
+            "  tb: {files: [tb.sv], file_type: systemVerilogSource, tags: [tb]}\n"
+            'targets:\n  default: {filesets: ["tool_verilator ? (tb)"]}\n',
+        },
     )
-    (tmp_path / "dependency.core").write_text(
-        "CAPI=2:\nname: ::conditional_tb:0\nfilesets:\n"
-        "  tb: {files: [tb.sv], file_type: systemVerilogSource, tags: [tb]}\n"
-        'targets:\n  default: {filesets: ["tool_verilator ? (tb)"]}\n'
-    )
-    rec = _audit(tmp_path)
-    assert not any("none tagged tags:[tb]" in message for message in rec.fails())
-    assert not any("untagged C/C++ harness" in message for _, message in rec.events)
+
+    result = _doctor_run(tmp_path)
+
+    assert not _rows(result, Severity.FAIL, "none tagged tags:[tb]")
+    assert not _warnings(result, "sim.harness-untagged")
 
 
-def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path):
+def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path, monkeypatch):
     from tests.test_target_catalog import _category_sim_core
 
+    _core_project(tmp_path, monkeypatch, {})
     _category_sim_core(tmp_path)
     core = tmp_path / "design.core"
     text = (
@@ -7309,155 +6610,131 @@ def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path
         "    filesets: [rtl, harness]\n    toplevel: tb\n"
     )
     core.write_text(text)
-    rec = _audit(tmp_path)
-    warnings = [m for level, m in rec.events if level == "warn" and "untagged C/C++ harness" in m]
-    assert warnings and any("shared/main.cpp" in m for m in warnings)
-    assert all("shared/tb.sv" not in m for m in warnings)
+
+    harness = _warnings(_doctor_run(tmp_path), "sim.harness-untagged").values()
+
+    assert any("shared/main.cpp" in message for message in harness)
+    assert all("shared/tb.sv" not in message for message in harness)
 
 
-@pytest.fixture
-def copyto_audit(tmp_path, monkeypatch):
-    core = tmp_path / "ip"
-    core.mkdir()
-    source = core / "payload.mem"
-    source.write_bytes(b"source bytes")
-    (core / "input.core").write_text(
-        "CAPI=2:\nname: acme:ip:input:1.0\nfilesets:\n"
-        "  data:\n    file_type: user\n"
-        "    files:\n      - payload.mem: {copyto: runtime.mem}\n"
-        "targets:\n  default:\n    filesets: [data]\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: acme:ip:design:1.0\nfilesets:\n"
-        "  data:\n    depend: [acme:ip:input:1.0]\n"
-        "targets:\n  sim:\n    flow: sim\n"
-        "    flow_options: {tool: verilator}\n    filesets: [data]\n    toplevel: dut\n"
-        "  lint:\n    flow: lint\n    flow_options: {tool: verilator}\n"
-        "    filesets: [data]\n    toplevel: dut\n",
-        encoding="utf-8",
-    )
-    destination = tmp_path / "runtime.mem"
-    destination.write_bytes(b"other bytes")
-    configured = ["."]
-    monkeypatch.setattr(doctor, "resolve_run_cwd", lambda root: configured[0])
+def test_explicitly_tagged_cpp_harness_is_not_reported_untagged(tmp_path, monkeypatch):
+    from tests.test_target_catalog import _category_sim_core
 
-    def check():
-        catalog = TargetCatalog.build(tmp_path)
-        refs = {handle.name: handle for handle in catalog.list()}
-        warnings = []
-
-        def noop(*args):
-            return None
-
-        audit = doctor._CoreAuditContext(
-            _run_cwd_project(tmp_path, configured[0]),
-            noop,
-            lambda finding, fix="": warnings.append((finding, fix)),
-            noop,
-            noop,
-            noop,
+    _core_project(tmp_path, monkeypatch, {})
+    _category_sim_core(tmp_path)
+    (tmp_path / "shared" / "tagged.cpp").write_text("// source\n")
+    core = tmp_path / "design.core"
+    core.write_text(
+        core.read_text()
+        .replace(
+            "  harness:\n",
+            "  tagged: {files: [shared/tagged.cpp], file_type: cppSource, tags: [tb]}\n  harness:\n",
         )
-        doctor._check_target_sources(audit, refs, doctor._CoreAuditInputs(catalog, refs))
-        return [
-            (finding, fix)
-            for finding, fix in warnings
-            if getattr(finding, "check_id", None) == "sim.runtime-input-collision"
-        ]
+        .replace("filesets: [rtl, tb, harness]", "filesets: [rtl, tb, harness, tagged]")
+    )
 
-    return source, destination, configured, check
+    harness = _warnings(_doctor_run(tmp_path), "sim.harness-untagged").values()
 
-
-def test_sim_copyto_collision_warns_with_paths_and_remedies(copyto_audit):
-    source, destination, _, check = copyto_audit
-    findings = check()
-    assert findings, "missing copyto collision warning"
-    assert len(findings) == 1
-    finding, fix = findings[0]
-    message = str(finding)
-    assert "sim" in message and "lint" not in message
-    assert str(source) in message and str(destination) in message
-    assert "rename" in fix.lower() and "remove" in fix.lower() and "run_cwd" in fix
+    assert any("shared/main.cpp" in message for message in harness)
+    assert all("shared/tagged.cpp" not in message for message in harness)
 
 
-def test_sim_copyto_identical_collision_is_silent(copyto_audit):
-    source, destination, _, check = copyto_audit
-    assert check(), "missing copyto collision warning"
-    destination.write_bytes(source.read_bytes())
-    assert check() == []
+def _copyto_project(tmp_path, monkeypatch, inputs, *, run_cwd):
+    """`ip/input.core` copying each of *inputs* (destination -> source bytes) to its
+    `copyto` destination, and a Verilator sim and lint Target that depend on it."""
+    files = {}
+    entries = ""
+    for index, (destination, content) in enumerate(inputs.items()):
+        files[f"ip/payload{index}.mem"] = content
+        entries += f"      - payload{index}.mem: {{copyto: {destination}}}\n"
+    files["ip/input.core"] = (
+        "CAPI=2:\nname: acme:ip:input:1.0\nfilesets:\n"
+        f"  data:\n    file_type: user\n    files:\n{entries}"
+        "targets:\n  default:\n    filesets: [data]\n"
+    )
+    files["design.core"] = (
+        "CAPI=2:\nname: acme:ip:design:1.0\nfilesets:\n  data:\n    depend: [acme:ip:input:1.0]\n"
+        "targets:\n"
+        + _target("sim_copy", filesets="data", top="dut")
+        + _target("lint_copy", flow="lint", filesets="data", top="dut")
+    )
+    return _core_project(tmp_path, monkeypatch, files, sim=f'run_cwd = "{run_cwd}"\n')
 
 
-def test_sim_copyto_absent_and_templated_destinations_are_silent(copyto_audit):
-    _, destination, configured, check = copyto_audit
-    assert check(), "missing copyto collision warning"
-    destination.unlink()
-    assert check() == []
-    configured[0] = "runs/{attempt}"
-    lookalike = destination.parent / configured[0]
-    lookalike.mkdir(parents=True)
-    (lookalike / destination.name).write_bytes(b"collision")
-    assert check() == []
+def test_sim_copyto_collision_warns_with_paths_and_remedies(tmp_path, monkeypatch):
+    # One input per destination: differing bytes, identical bytes, an absent file, a
+    # parent that is a symlink or a file or missing, and an invalid `copyto`.
+    _copyto_project(
+        tmp_path,
+        monkeypatch,
+        dict.fromkeys(
+            (
+                "collide.mem",
+                "same.mem",
+                "absent.mem",
+                "link/x.mem",
+                "file/x.mem",
+                "missing/x.mem",
+                "../escape.mem",
+            ),
+            "source",
+        ),
+        run_cwd=".",
+    )
+    (tmp_path / "collide.mem").write_text("other", encoding="utf-8")
+    (tmp_path / "same.mem").write_text("source", encoding="utf-8")
+    (tmp_path / "file").write_text("obstruction", encoding="utf-8")
+    (tmp_path / "elsewhere").mkdir()
+    flagged = ["collide.mem", "file/x.mem"]
+    try:  # A host that forbids symlinks (Windows without Developer Mode) loses only this row.
+        (tmp_path / "link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+        flagged.append("link/x.mem")
+    except OSError:
+        pass
 
+    result = _doctor_run(tmp_path)
 
-def test_sim_copyto_literal_cwd_controls_collision(copyto_audit):
-    source, destination, configured, check = copyto_audit
-    run = destination.parent / "runs"
-    run.mkdir()
-    literal = run / destination.name
-    literal.write_bytes(b"collision")
-    for cwd in ("runs", str(run)):
-        configured[0] = cwd
-        assert check(), "missing copyto collision warning"
-        literal.write_bytes(source.read_bytes())
-        assert check() == []
-        literal.unlink()
-        assert check() == []
-        literal.write_bytes(b"collision")
-
-
-@pytest.mark.parametrize("kind", ["symlink", "file", "missing"])
-def test_sim_copyto_blocked_parent_warns(copyto_audit, kind):
-    source, destination, _, check = copyto_audit
-    core = source.parent / "input.core"
-    core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: nested/runtime.mem"))
-    parent = destination.parent / "nested"
-    if kind == "symlink":
-        parent.symlink_to(source.parent, target_is_directory=True)
-    elif kind == "file":
-        parent.write_bytes(b"obstruction")
-    assert len(check()) == (0 if kind == "missing" else 1)
-
-
-def test_sim_copyto_escaped_literal_directory_warns(copyto_audit):
-    _, destination, configured, check = copyto_audit
-    configured[0] = "{{escaped}}"
-    escaped = destination.parent / configured[0]
-    escaped.mkdir()
-    (escaped / destination.name).write_bytes(b"collision")
-    assert len(check()) == 1
+    collisions = {
+        f.subject: f for f in result.findings if f.check_id == "sim.runtime-input-collision"
+    }
+    assert collisions.keys() == {f"sim_copy:{tmp_path / name}" for name in flagged}
+    finding = collisions[f"sim_copy:{tmp_path / 'collide.mem'}"]
+    assert "lint_copy" not in finding.message
+    assert str(tmp_path / "ip" / "payload0.mem") in finding.message
+    assert str(tmp_path / "collide.mem") in finding.message
+    assert all(word in finding.fix.lower() for word in ("rename", "remove", "run_cwd"))
 
 
 @pytest.mark.parametrize(
-    "kind", ["invalid-template", "blocked-cwd", "invalid-copyto", "unreadable"]
+    ("run_cwd", "setup", "collides"),
+    [
+        ("runs", "runs/runtime.mem", True),
+        # `{{` is a literal brace in a run_cwd template.
+        ("{{escaped}}", "{{escaped}}/runtime.mem", True),
+        # A template resolves per run, so a lookalike at the literal path is no collision.
+        ("runs/{attempt}", "runs/{attempt}/runtime.mem", False),
+        ("{unknown_placeholder}", "runtime.mem", False),
+        # The configured cwd is a file; the run-cwd check owns that failure.
+        ("runtime.mem", "runtime.mem", False),
+        (".", "runtime.mem", False),
+    ],
+    ids=["literal", "escaped", "template", "unknown-placeholder", "cwd-is-file", "unreadable"],
 )
-def test_sim_copyto_uninspectable_configuration_is_owned_by_other_checks(
-    copyto_audit, monkeypatch, kind
-):
-    source, destination, configured, check = copyto_audit
-    if kind == "invalid-template":
-        configured[0] = "{unknown_placeholder}"
-    elif kind == "blocked-cwd":
-        configured[0] = str(destination)
-    elif kind == "invalid-copyto":
-        core = source.parent / "input.core"
-        core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: ../runtime.mem"))
-    else:
+def test_sim_copyto_run_cwd_decides_the_collision(tmp_path, monkeypatch, run_cwd, setup, collides):
+    _copyto_project(tmp_path, monkeypatch, {"runtime.mem": "source"}, run_cwd=run_cwd)
+    destination = tmp_path / setup
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("collision", encoding="utf-8")
+    if run_cwd == ".":
 
         def unreadable(*_args, **_kwargs):
             raise PermissionError("unreadable input")
 
         monkeypatch.setattr("booley.flows.sim.runtime_inputs.filecmp.cmp", unreadable)
-    assert check() == []
+
+    result = _doctor_run(tmp_path)
+
+    assert bool(_warnings(result, "sim.runtime-input-collision")) is collides
 
 
 def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
@@ -7543,61 +6820,48 @@ def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
     assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""
 
 
-# =============================================================
-# #2157: Doctor ownership through a symlinked Booley Directory
-# =============================================================
-
-
-def _symlinked_state_core(tmp_path: Path, text: str) -> Path:
-    """A Project whose `.booley` entry links to an external directory with one core."""
+def test_symlinked_booley_directory_cores_are_owned(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
-    external = symlinked_booley_dir(project, tmp_path / "external-booley")
-    (project / "dut.v").write_text("module dut; endmodule\n", encoding="utf-8")
-    (external / "cores" / "demo.core").write_text(text, encoding="utf-8")
-    return project
+    booley_dir = _write_project(project)
+    external = tmp_path / "external-booley"
+    booley_dir.rename(external)
+    symlink_or_skip(booley_dir, external, target_is_directory=True)
+    fs = "  rtl: {files: [rtl/dut.sv], file_type: systemVerilogSource}\n"
+    targets = (
+        "  default:\n    filesets: [rtl]\n"
+        "  legacy_x:\n    filesets: [rtl]\n    default_tool: icarus\n    tools: {icarus: {}}\n"
+        "  soc_sim:\n    filesets: [rtl]\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: dut\n"
+        "  sim_ok:\n    filesets: [rtl]\n    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n    toplevel: dut\n"
+    )
+    (external / "cores").mkdir()
+    (external / "cores" / "demo.core").write_text(_core("demo", targets, fs), encoding="utf-8")
+    _patch_environment(monkeypatch, project, booley_dir)
+    other_commands = doctor.subprocess.run
 
+    def run(cmd, **kwargs):
+        # The external directory is its own Git checkout; the fake answers the Project Root.
+        cwd = kwargs.get("cwd")
+        if "--show-toplevel" in cmd and cwd is not None and Path(cwd) == external:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{external}\n", stderr="")
+        return other_commands(cmd, **kwargs)
 
-class TestSymlinkedBooleyDirectoryOwnership:
-    def test_legacy_api_audit_treats_stealth_core_as_owned(self, tmp_path):
-        project = _symlinked_state_core(
-            tmp_path, TestCheckLegacyCoreTargets._LEGACY_CORE.replace("i2c.v", "dut.v")
-        )
-        refs = {handle.name: handle for handle in TargetCatalog.build(project).list()}
-        passes, warns, notes = [], [], []
-        doctor._check_legacy_core_targets(
-            _schema_audit(project), project, refs, passes.append, warns.append, _note=notes.append
-        )
-        assert len(warns) == 1
-        assert "legacy FuseSoC tools-section target" in warns[0]
-        assert not notes
+    monkeypatch.setattr(doctor.subprocess, "run", run)
 
-    def test_target_naming_audit_notes_stealth_core(self, tmp_path):
-        project = _symlinked_state_core(
-            tmp_path,
-            TestCheckTargetNaming._CORE.replace("{targets}", TestCheckTargetNaming._MISNAMED),
-        )
-        refs = {handle.name: handle for handle in TargetCatalog.build(project).list()}
-        passes, notes = [], []
-        doctor._check_target_naming(
-            _schema_audit(project), project, refs, passes.append, notes.append
-        )
-        assert len(notes) == 1
-        assert "rename it 'sim_soc'" in notes[0]
+    result = _doctor_run(project)
 
-    def test_stray_default_audit_reports_selected_stealth_core_once(self, tmp_path):
-        selected = TestCheckStrayDefaultTargets._STANDALONE.replace(
-            "flow_options: {tool: verilator}",
-            "flow_options: {tool: verilator, booley: {doctor: [sim]}}",
-        )
-        project = _symlinked_state_core(tmp_path, selected)
-        passes, warns = [], []
-        doctor._check_stray_default_targets(
-            _schema_audit(project, {"flows": {"sim": {}}}), project, passes.append, warns.append
-        )
-        assert len(warns) == 1
-        assert "declares a 'default:' Target" in warns[0]
-        assert passes == []
+    # Only `sim_ok` is selected, so the legacy WARN and the naming NOTE rest on the
+    # symlink-aware state-core ownership alone; the stray `default:` check sees the core
+    # both as selected and as a state core, and reports it once.
+    assert [f.subject for f in result.findings if f.check_id == "core.legacy-target"] == [
+        "legacy_x"
+    ]
+    assert _rows(result, Severity.NOTE, "Target 'soc_sim' in demo.core") != []
+    assert (
+        "rename it 'sim_soc'" in _rows(result, Severity.NOTE, "Target 'soc_sim' in demo.core")[0]
+    )
+    assert len(_rows(result, Severity.WARN, "declares a 'default:' Target")) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason="directory symlink requires privilege")
@@ -7701,7 +6965,7 @@ class TestDoctorCommonStateFromWorktree:
             "_check_project_trackability",
             "_check_git_state",
             "_check_repo_footprint",
-            "_check_custom_endpoints_and_criteria",
+            "_check_custom_endpoints",
         ):
             monkeypatch.setattr(doctor, name, lambda *_args, **_kwargs: None)
         reporter = doctor._Reporter.create()
