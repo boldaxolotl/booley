@@ -987,7 +987,7 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(tmp_path, monkeypatch, c
 
     _script_flow(monkeypatch, "synth", warn_verdict)
 
-    result = _doctor_run(tmp_path, deep=True, verbose=waived)
+    result = _doctor_run(tmp_path, deep=True, verbose=waived, record_clean=True)
 
     output = colors.strip_ansi(capsys.readouterr().out)
     warn_message = "synth deep check [synth_fast] returned a WARN verdict"
@@ -1359,7 +1359,8 @@ _BARE_TIMEOUTS = ("1h 20m", "5m 00s", "33m 00s", "2h 03m")
     ("sim", "lint_ms", "synth_ms", "fpga_ms", "expected"),
     [
         ("", None, None, None, _BARE_TIMEOUTS),
-        # A raised Flow timeout is honored (plus finalization headroom), a lower sim one is not.
+        # A raised Flow timeout is honored (plus finalization headroom); a lower sim one shortens
+        # the budget but never below the floor.
         (
             "timeout_ms = 60000\n",
             3_600_000,
@@ -1717,7 +1718,7 @@ def test_doctor_fails_on_container_uid_mismatch(tmp_path, monkeypatch, capsys):
     ],
     ids=["tb-top-runtime", "tb-top-configured"],
 )
-def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
+def test_doctor_sim_dry_run_follows_tb_top_resolution(
     tmp_path, monkeypatch, tb_top, severity, message, exit_code
 ):
     configs_text = f'[lint_fast]\ndefines = []\ntop_module = "dut"\n{tb_top}tests = ["smoke"]\n'
@@ -3427,12 +3428,13 @@ class TestDeveloperProbe:
         """The probe reads agent settings of a Project that has no config file yet."""
         from booley.config import agent as agent_settings
 
-        saved = agent_settings.get_agent_settings()
+        agent_settings.set_agent_settings(None)
         try:
             loaded = agent_settings.load_agent_settings(tmp_path, booley_dir=tmp_path / ".booley")
         finally:
-            agent_settings.set_agent_settings(saved)
-        assert loaded == agent_settings.settings_from_data({}, lazy=False)
+            agent_settings.set_agent_settings(None)
+        assert loaded.sandbox == agent_settings.SandboxConfig()
+        assert dict(loaded.specialist_models) == {}
 
     @pytest.mark.parametrize("outcome", ["accepted", "refused", "timeout"])
     def test_probe_model_access_grades_the_provider_answer(self, tmp_path, monkeypatch, outcome):
@@ -3955,7 +3957,10 @@ _SYNTH_EVIDENCE_REPORTS: dict[str, dict | str | None] = {
     "s_malformed": "[",
     "s_missing": None,
 }
-_NO_TIMING = "produced incomplete synthesis evidence: no completed constrained-clock timing result"
+
+
+def _incomplete(reason):
+    return (Severity.FAIL, f"produced incomplete synthesis evidence: {reason}")
 
 
 def test_deep_synthesis_evidence_is_graded_per_target(tmp_path, monkeypatch, capsys):
@@ -3987,25 +3992,27 @@ def test_deep_synthesis_evidence_is_graded_per_target(tmp_path, monkeypatch, cap
     result = _doctor_run(tmp_path, deep=True)
 
     graded = {
-        match[1]: match[2]
+        match[1]: (f.severity, match[2].split(" (")[0])
         for f in result.findings
         if (match := re.fullmatch(r"synth deep check \[(s_\w+)\] (.*)", f.message, re.S))
     }
     dry_runs = [f.severity for f in result.findings if "synth dry-run [s_" in f.message]
     assert dry_runs == [Severity.PASS] * len(_SYNTH_EVIDENCE_REPORTS)
-    unreadable = "produced incomplete synthesis evidence: report is unreadable"
-    assert {name: message.split(" (")[0] for name, message in graded.items()} == {
-        "s_logical": "passed",
-        "s_no_ppa": "produced incomplete synthesis evidence: ppa_complete is not true",
-        "s_unfinished": "produced incomplete synthesis evidence: logical synthesis did not complete",
-        "s_unmapped": "produced incomplete synthesis evidence: no completed Yosys mapped-area result",
-        "s_unknown_mode": "produced incomplete synthesis evidence: unknown synthesis mode 'unknown'",
-        "s_physical_untimed": _NO_TIMING,
-        "s_physical_no_clock": _NO_TIMING,
-        "s_physical": "passed",
-        "s_legacy": "passed",
-        "s_legacy_untimed": _NO_TIMING,
-        "s_not_object": "produced incomplete synthesis evidence: report is not a JSON object",
+    passed = (Severity.PASS, "passed")
+    unreadable = _incomplete("report is unreadable")
+    no_timing = _incomplete("no completed constrained-clock timing result")
+    assert graded == {
+        "s_logical": passed,
+        "s_no_ppa": _incomplete("ppa_complete is not true"),
+        "s_unfinished": _incomplete("logical synthesis did not complete"),
+        "s_unmapped": _incomplete("no completed Yosys mapped-area result"),
+        "s_unknown_mode": _incomplete("unknown synthesis mode 'unknown'"),
+        "s_physical_untimed": no_timing,
+        "s_physical_no_clock": no_timing,
+        "s_physical": passed,
+        "s_legacy": passed,
+        "s_legacy_untimed": no_timing,
+        "s_not_object": _incomplete("report is not a JSON object"),
         "s_malformed": unreadable,
         "s_missing": unreadable,
     }
@@ -4045,7 +4052,7 @@ def test_deep_fpga_check_runs_each_marked_target(tmp_path, monkeypatch, capsys):
         toml="\n[flows.fpga]\n",
     )
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert [
         (f.severity, f.message) for f in result.findings if f.message.startswith("fpga deep check")
     ] == [
