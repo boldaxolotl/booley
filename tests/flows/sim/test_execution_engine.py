@@ -430,6 +430,7 @@ def _write_partial_timeout_transport(
     prepared,
     *,
     modified_ns: int | None = None,
+    partial: bool = True,
 ) -> None:
     identity = AdapterTransportIdentity(
         "cocotb",
@@ -465,10 +466,10 @@ def _write_partial_timeout_transport(
             ),
         ),
     )
-    partial_identity = partial_result_identity(identity)
-    write_adapter_result(partial_identity, result)
+    written = partial_result_identity(identity) if partial else identity
+    write_adapter_result(written, result)
     if modified_ns is not None:
-        os.utime(partial_identity.result_path, ns=(modified_ns, modified_ns))
+        os.utime(written.result_path, ns=(modified_ns, modified_ns))
 
 
 def _passing_result() -> AdapterResult:
@@ -613,50 +614,13 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)
-    token = "abc123"
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
-        identity = AdapterTransportIdentity(
-            "cocotb",
-            token,
-            handle.identity,
-            ("done", "active", "later"),
-            _evidence_path(handle),
-        )
-        write_adapter_result(
-            identity,
-            AdapterResult(
-                passed=False,
-                inconclusive=False,
-                sva_errors=0,
-                tests=identity.selected_tests,
-                simulator_returncode=-9,
-                termination="timeout",
-                failure_kind="timeout",
-                detail="cocotb simulation timed out",
-                test_results=(
-                    AdapterTestResult("done", "pass", elapsed_s=0.1),
-                    AdapterTestResult(
-                        "active",
-                        "timeout",
-                        detail="timed out while running",
-                        termination="timeout",
-                        failure_kind="timeout",
-                    ),
-                    AdapterTestResult(
-                        "later",
-                        "timeout",
-                        detail="did not run before timeout",
-                        termination="timeout",
-                        failure_kind="timeout",
-                    ),
-                ),
-            ),
-        )
+        _write_partial_timeout_transport(handle, prepared, partial=False)
         return SubprocessResult(
             returncode=-9,
-            stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0\n",
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
             timed_out=True,
             duration_s=10.0,
         )

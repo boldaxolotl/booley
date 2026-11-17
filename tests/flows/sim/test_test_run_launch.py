@@ -174,21 +174,27 @@ class TestVerilatorNativeSeed:
 
 
 class TestIcarus:
-    def test_without_a_template_the_run_is_unseeded(self, tmp_path: Path):
-        root = _project(tmp_path, '[sim]\ntests = ["reset"]\n')
-        preview = _preview(root, _inspection("icarus"), NamedTests(("reset",)))
-        assert _plusargs(preview.commands[0]) == ["test_id=0"]
-        assert [[run.name for run in group] for group in preview.run_groups] == [["reset"]]
-
-    def test_iverilog_spelling_is_the_same_family(self, tmp_path: Path):
-        root = _project(tmp_path, '[sim]\ntests = ["reset"]\nseed = "+seed={seed}"\n')
-        preview = _preview(root, _inspection("iverilog"), NamedTests(("reset",)))
-        assert _plusargs(preview.commands[0]) == ["test_id=0", "seed=1"]
-
-    def test_getopt_seed_template_is_forwarded_verbatim(self, tmp_path: Path):
-        root = _project(tmp_path, '[sim]\ntests = ["reset"]\nseed = "--seed={seed}"\n')
-        work = _work(root, _inspection("icarus"), ("reset",))
-        assert work.plusargs == ("test_id=0", "--seed=1")
+    @pytest.mark.parametrize(
+        ("adapter", "template", "plusargs"),
+        [
+            pytest.param("icarus", "", ["test_id=0"], id="without-a-template-the-run-is-unseeded"),
+            pytest.param(
+                "iverilog", "+seed={seed}", ["test_id=0", "seed=1"], id="iverilog-spelling"
+            ),
+            pytest.param(
+                "icarus", "--seed={seed}", ["test_id=0", "--seed=1"], id="getopt-template-verbatim"
+            ),
+        ],
+    )
+    def test_seed_template_reaches_the_plusargs_verbatim_or_not_at_all(
+        self, tmp_path: Path, adapter: str, template: str, plusargs: list[str]
+    ):
+        seed = f'seed = "{template}"\n' if template else ""
+        root = _project(tmp_path, f'[sim]\ntests = ["reset"]\n{seed}')
+        preview = _preview(root, _inspection(adapter), NamedTests(("reset",)))
+        assert _plusargs(preview.commands[0]) == plusargs
+        if not template:
+            assert [[run.name for run in group] for group in preview.run_groups] == [["reset"]]
 
 
 class TestVariantEnvironment:
