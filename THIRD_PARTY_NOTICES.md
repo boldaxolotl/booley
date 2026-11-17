@@ -187,12 +187,12 @@ Apache-2.0 terms are in the repository's `LICENSE` file.
 - `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.18`, and `crossbeam-utils 0.8.21`
 - `fastrand 2.4.1`, `getrandom 0.4.2`, `libc 0.2.191`, `once_cell 1.21.4`, and `tempfile 3.27.0`
 - `rustix 1.1.4` and `linux-raw-sys 0.12.1`
+- `dyn-clone 1.0.20`, `ref-cast 1.0.27`, `ref-cast-impl 1.0.27`, and `serde_derive_internals 0.30.0`
 - `either 1.15.0`, `equivalent 1.0.2`, `hashbrown 0.17.1`, `heck 0.5.0`, and `indexmap 2.14.0`
 - `itoa 1.0.18`, `log 0.4.29`, `miniz_oxide 0.8.9`, and `miniz_oxide 0.9.1`
 - `num_enum 0.7.6`, `num_enum_derive 0.7.6`, `proc-macro-crate 3.5.0`, `proc-macro2 1.0.106`, `quote 1.0.45`, `syn 2.0.117`, and `syn 3.0.10`
 - `rayon 1.12.0` and `rayon-core 1.13.0`
 - `regex-automata 0.4.18`, `regex-syntax 0.8.10`, `rustc-hash 2.1.3`, and `rustversion 1.0.22`
-- `dyn-clone 1.0.20`, `ref-cast 1.0.27`, `ref-cast-impl 1.0.27`, and `serde_derive_internals 0.30.0`
 - `serde 1.0.229`, `serde_core 1.0.229`, `serde_derive 1.0.229`, and `serde_json 1.0.154`
 - `thiserror 2.0.18` and `thiserror-impl 2.0.18`
 - `toml_datetime 1.1.1+spec-1.1.0`, `toml_edit 0.25.12+spec-1.1.0`, and `toml_parser 1.1.2+spec-1.1.0`
