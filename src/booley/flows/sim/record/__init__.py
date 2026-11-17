@@ -50,6 +50,7 @@ from .inspection import (
     collect_pre_sim_firings,
     read_durable_results,
 )
+from .manifest_view import ManifestTarget, SimulationRecordManifestView
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
@@ -75,6 +76,7 @@ __all__ = [
     "ArtifactReferenceError",
     "BundleBuildAttempt",
     "BundleBuildResult",
+    "ManifestTarget",
     "NewSimulationRecordPreview",
     "NewSimulationRecordPreviewRequest",
     "NewSimulationRecordRunRequest",
@@ -89,6 +91,7 @@ __all__ = [
     "SimulationRecordCancellationError",
     "SimulationRecordIntegrityError",
     "SimulationRecordManifest",
+    "SimulationRecordManifestView",
     "SimulationRecordOutcome",
     "SimulationRecordPlan",
     "SimulationRecordPolicy",

@@ -85,7 +85,6 @@ from ..baseline_worktree import (
 )
 from ..invocation import default_timeout_ms
 from .build import (
-    SimulationBuildInfrastructureError,
     SimulationBuildPreparationError,
 )
 from .elab_only import ElabOnlyMixin
@@ -105,6 +104,7 @@ from .record import (
     SimulationRecordCancellationError,
     SimulationRecordIntegrityError,
     SimulationRecordManifest,
+    SimulationRecordManifestView,
     SimulationRecordOutcome,
     SimulationRecordPlan,
     SimulationRecordPolicy,
@@ -122,7 +122,6 @@ from .record.flow_planning import (
 from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import (
     _append_missing_report_lines,
-    _build_infrastructure_detail,
     _coverage_compatibility_targets,
     _coverage_failed_target,
     _coverage_failure_outcome,
@@ -1065,8 +1064,7 @@ class SimulateFlow(
         """Preserve nested evaluation or derive policy before an outcome exists."""
         if isinstance(error, _CoverageAggregateError):
             return cast(str, error.detail["evaluation"])
-        target = _coverage_request_target(request)
-        identity = f"{target['vlnv']}#{target['name']}"
+        identity = _coverage_request_target(request).identity
         matches = [
             plan for plan in self._coverage_prepared.targets if plan.handle.identity == identity
         ]
@@ -1317,8 +1315,6 @@ class SimulateFlow(
         detail: dict[str, object] = (
             {"records": _simulation_record_structured_details(outcomes)} if outcomes else {}
         )
-        if isinstance(error, SimulationBuildInfrastructureError):
-            detail.update(_build_infrastructure_detail(error))
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             detail=detail,
@@ -1520,11 +1516,8 @@ class SimulateFlow(
 
     def _record_simulation_record_tool(self, manifest: SimulationRecordManifest) -> None:
         """Use the frozen execution recipe, including when execution later fails."""
-        document = manifest.document
-        target = cast(Mapping[str, str], document["target"])
-        workload = cast(Mapping[str, object], document["workload"])
-        eda = cast(Mapping[str, str], workload["eda"])
-        self._record_eda_tool(str(target["selector"]), str(eda["kind"]))
+        view = SimulationRecordManifestView(manifest)
+        self._record_eda_tool(view.target.selector, view.eda_tool_kind)
 
     def _simulation_record_policy(self) -> SimulationRecordPolicy:
         return SimulationRecordPolicy(

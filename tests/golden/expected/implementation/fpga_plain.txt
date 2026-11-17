@@ -1,0 +1,225 @@
+== fpga_default.json ==
+{
+  "flow": "fpga",
+  "target": "default",
+  "eda_tool": "vivado",
+  "timestamp": "<TIME>",
+  "passed": true,
+  "returncode": 0,
+  "timed_out": false,
+  "infra_error": "",
+  "cached": false,
+  "cache_fingerprint": null,
+  "metrics": {
+    "lut_count": 12034,
+    "ff_count": 8100,
+    "bram_count": 4,
+    "dsp_count": 2,
+    "wns_ns": 0.123,
+    "whs_ns": 0.01,
+    "per_clock": {
+      "clk": {
+        "period_ns": 6.0,
+        "wns_ns": 0.123,
+        "whs_ns": 0.01,
+        "critical_path_ps": 5877.0,
+        "fmax_mhz": 170.15484090522375
+      }
+    },
+    "latches": 0,
+    "comb_loops": 0,
+    "multi_driven": 0,
+    "elapsed_s": 125.0,
+    "cached": false,
+    "cache_fingerprint": null,
+    "failure_output": "",
+    "log_path": "",
+    "artifacts": {}
+  },
+  "recipe_fingerprint": null,
+  "recipe_snapshot": null,
+  "run_evidence": null,
+  "cache_consumer_run_id": null,
+  "baseline_ref": null,
+  "baseline_metrics": null,
+  "baseline_recipe_fingerprint": null,
+  "baseline_recipe_snapshot": null,
+  "baseline_run_evidence": null,
+  "baseline_target": "default",
+  "candidate_target": "default",
+  "baseline_target_identity": "::test:0#default",
+  "candidate_target_identity": "::test:0#default",
+  "artifacts": {
+    "report": "reports/fpga/1/targets/default.json"
+  },
+  "implementation": {
+    "schema_version": 1,
+    "identity": {
+      "flow": "fpga",
+      "target": "default",
+      "target_identity": "::test:0#default",
+      "eda_tool": "vivado",
+      "invocation_run_id": "golden-run",
+      "timestamp": "<TIME>"
+    },
+    "status": {
+      "grade": "pass",
+      "passed": true,
+      "tool_returncode": 0,
+      "timed_out": false,
+      "infra_error": null,
+      "elapsed_s": 125.0,
+      "termination": null,
+      "warning_reasons": [],
+      "failure_reasons": [],
+      "completion": {
+        "primary_metrics": true,
+        "timing": true,
+        "route": false
+      },
+      "resources": {},
+      "diagnostic_excerpt": null
+    },
+    "metrics": {
+      "lut_count": 12034,
+      "ff_count": 8100,
+      "bram_count": 4,
+      "dsp_count": 2,
+      "wns_ns": 0.123,
+      "whs_ns": 0.01,
+      "per_clock": {
+        "clk": {
+          "period_ns": 6.0,
+          "wns_ns": 0.123,
+          "whs_ns": 0.01,
+          "critical_path_ps": 5877.0,
+          "fmax_mhz": 170.15484090522375
+        }
+      }
+    },
+    "conditions": {
+      "has_critical": false,
+      "latches": 0,
+      "expected_latches": 0,
+      "unexpected_latches": 0,
+      "comb_loops": 0,
+      "expected_comb_loops": 0,
+      "unexpected_comb_loops": 0,
+      "multi_driven": 0
+    },
+    "recipe": {
+      "fingerprint": null,
+      "snapshot": null
+    },
+    "provenance": {
+      "producer": null,
+      "invocation_run_id": "golden-run",
+      "consumer_run_id": null
+    },
+    "comparison": null,
+    "cache": {
+      "cached": false,
+      "fingerprint": null
+    },
+    "artifacts": {
+      "report": "reports/fpga/1/targets/default.json"
+    }
+  }
+}
+== progress.json ==
+{
+  "baseline_completed_targets": [],
+  "complete": true,
+  "completed_targets": [
+    "default"
+  ],
+  "detail": {},
+  "flow": "fpga",
+  "implementation": {
+    "results": {
+      "default": {
+        "artifacts": {
+          "report": "reports/fpga/1/targets/default.json"
+        },
+        "cache": {
+          "cached": false,
+          "fingerprint": null
+        },
+        "comparison": null,
+        "conditions": {
+          "comb_loops": 0,
+          "expected_comb_loops": 0,
+          "expected_latches": 0,
+          "has_critical": false,
+          "latches": 0,
+          "multi_driven": 0,
+          "unexpected_comb_loops": 0,
+          "unexpected_latches": 0
+        },
+        "identity": {
+          "eda_tool": "vivado",
+          "flow": "fpga",
+          "invocation_run_id": "golden-run",
+          "target": "default",
+          "target_identity": "::test:0#default",
+          "timestamp": "<TIME>"
+        },
+        "metrics": {
+          "bram_count": 4,
+          "dsp_count": 2,
+          "ff_count": 8100,
+          "lut_count": 12034,
+          "per_clock": {
+            "clk": {
+              "critical_path_ps": 5877.0,
+              "fmax_mhz": 170.15484090522375,
+              "period_ns": 6.0,
+              "whs_ns": 0.01,
+              "wns_ns": 0.123
+            }
+          },
+          "whs_ns": 0.01,
+          "wns_ns": 0.123
+        },
+        "provenance": {
+          "consumer_run_id": null,
+          "invocation_run_id": "golden-run",
+          "producer": null
+        },
+        "recipe": {
+          "fingerprint": null
+        },
+        "schema_version": 1,
+        "status": {
+          "completion": {
+            "primary_metrics": true,
+            "route": false,
+            "timing": true
+          },
+          "elapsed_s": 125.0,
+          "failure_reasons": [],
+          "grade": "pass",
+          "infra_error": null,
+          "passed": true,
+          "resources": {},
+          "termination": null,
+          "timed_out": false,
+          "tool_returncode": 0,
+          "warning_reasons": []
+        }
+      }
+    },
+    "schema_version": 1
+  },
+  "pending_targets": [],
+  "phase": "complete",
+  "run_id": "golden-run",
+  "targets": [
+    "default"
+  ],
+  "timestamp": "<TIME>"
+}
+== RESULT ==
+RESULT: PASS
+== exit code ==
+0

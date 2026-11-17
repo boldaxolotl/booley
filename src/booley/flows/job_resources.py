@@ -504,6 +504,7 @@ class JobResourceMonitor:
         return len(text.splitlines())
 
     def _sample(self) -> None:
+        assert self._pid is not None, "sampling starts in start()"
         now = time.monotonic()
         procs = process_tree(self._pid, include_root=self._include_root)
         tmp = None if self.tmp_dir is None else directory_bytes(self.tmp_dir)

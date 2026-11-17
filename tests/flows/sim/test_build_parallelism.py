@@ -12,6 +12,7 @@ import pytest
 from booley.flows.memory_admission import JOB_THREADS_ENV
 from booley.flows.sim import build_parallelism
 from booley.flows.sim.build_parallelism import verilator_backend_arguments
+from booley.runtime.cpu_budget import available_cpu_count
 from booley.targets.domain import TargetHandle, TargetInspection
 
 
@@ -36,28 +37,30 @@ def _inspection(
     )
 
 
-def _reader(values: dict[str, str]):
-    return lambda path: values.get(path.as_posix())
-
-
+@pytest.mark.parametrize("error", [FileNotFoundError("absent"), PermissionError("denied")])
 def test_cgroup_reader_ignores_absent_files_but_surfaces_access_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error: OSError
 ) -> None:
-    missing = tmp_path / "missing"
-    assert build_parallelism._read_text(missing) is None
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        raise error
 
-    monkeypatch.setattr(
-        Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied"))
-    )
-    with pytest.raises(PermissionError, match="denied"):
-        build_parallelism._read_text(tmp_path / "denied")
+    monkeypatch.setattr(Path, "read_text", read_text)
+    if isinstance(error, FileNotFoundError):
+        assert available_cpu_count(lambda: 8) == 8
+    else:
+        with pytest.raises(PermissionError, match="denied"):
+            available_cpu_count(lambda: 8)
 
 
 def _cores(monkeypatch: pytest.MonkeyPatch, affinity: int, files: dict[str, str]) -> None:
-    """The container's cores: the affinity set, bounded by the cgroup files *files*."""
+    """The container's cores: the affinity set, bounded by the cgroup files *files*.
+
+    Private seam: verilator_backend_arguments passes these build_parallelism names to
+    available_cpu_count, so only they reach the build's -j (endpoint admission's
+    eight_cores fixture patches the same names).
+    """
     monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: affinity)
-    monkeypatch.setattr(build_parallelism, "_read_text", _reader(files))
+    monkeypatch.setattr(build_parallelism, "_read_text", lambda path: files.get(path.as_posix()))
 
 
 def _make_jobs(monkeypatch: pytest.MonkeyPatch) -> tuple[str, ...]:
@@ -65,52 +68,38 @@ def _make_jobs(monkeypatch: pytest.MonkeyPatch) -> tuple[str, ...]:
     return verilator_backend_arguments(_inspection())
 
 
-def test_affinity_and_v2_quota_bound_the_admitted_lane(monkeypatch: pytest.MonkeyPatch) -> None:
-    _cores(monkeypatch, 6, {"/sys/fs/cgroup/cpu.max": "350000 100000"})
-
-    assert _make_jobs(monkeypatch) == ("-j3", "VM_PARALLEL_BUILDS=1")
-
-
-def test_affinity_below_host_cpu_count_is_authoritative(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        os,
-        "sched_getaffinity",
-        lambda _pid: {0, 1, 2},
-        raising=False,
-    )
-    monkeypatch.setattr(os, "cpu_count", lambda: 32)
-
-    assert build_parallelism._affinity_cpu_count() == 3
-
-
-def test_affinity_falls_back_when_platform_has_no_affinity_api(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
-    monkeypatch.setattr(os, "cpu_count", lambda: 7)
-
-    assert build_parallelism._affinity_cpu_count() == 7
-
-
-def test_affinity_falls_back_when_platform_probe_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def unavailable(_pid: int) -> set[int]:
-        raise OSError("affinity unavailable")
-
-    monkeypatch.setattr(os, "sched_getaffinity", unavailable, raising=False)
-    monkeypatch.setattr(os, "cpu_count", lambda: None)
-
-    assert build_parallelism._affinity_cpu_count() == 1
+def _probe_fails(_pid: int) -> set[int]:
+    raise OSError("affinity unavailable")
 
 
 @pytest.mark.parametrize(
-    ("values", "expected"),
+    ("affinity", "host_cpus", "expected"),
     (
-        ({"/sys/fs/cgroup/cpu.max": "max 100000"}, 8),
+        (lambda _pid: {0, 1, 2}, 32, 3),
+        (None, 7, 7),
+        (_probe_fails, None, 1),
+    ),
+    ids=("affinity-below-host", "no-affinity-api", "probe-fails"),
+)
+def test_affinity_bounds_the_cpu_count(
+    monkeypatch: pytest.MonkeyPatch, affinity, host_cpus: int | None, expected: int
+) -> None:
+    if affinity is None:
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    else:
+        monkeypatch.setattr(os, "sched_getaffinity", affinity, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: host_cpus)
+
+    assert available_cpu_count(read_text=lambda _path: None) == expected
+
+
+@pytest.mark.parametrize(
+    ("affinity", "values", "expected"),
+    (
+        (6, {"/sys/fs/cgroup/cpu.max": "350000 100000"}, 3),
+        (8, {"/sys/fs/cgroup/cpu.max": "max 100000"}, 8),
         (
+            8,
             {
                 "/sys/fs/cgroup/cpu/cpu.cfs_quota_us": "250000",
                 "/sys/fs/cgroup/cpu/cpu.cfs_period_us": "100000",
@@ -118,6 +107,7 @@ def test_affinity_falls_back_when_platform_probe_fails(
             2,
         ),
         (
+            8,
             {
                 "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us": "-1",
                 "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us": "100000",
@@ -125,12 +115,12 @@ def test_affinity_falls_back_when_platform_probe_fails(
             8,
         ),
     ),
-    ids=("v2-unlimited", "v1-fractional", "v1-unlimited"),
+    ids=("v2-quota", "v2-unlimited", "v1-fractional", "v1-unlimited"),
 )
 def test_cgroup_cpu_variants(
-    monkeypatch: pytest.MonkeyPatch, values: dict[str, str], expected: int
+    monkeypatch: pytest.MonkeyPatch, affinity: int, values: dict[str, str], expected: int
 ) -> None:
-    _cores(monkeypatch, 8, values)
+    _cores(monkeypatch, affinity, values)
 
     assert _make_jobs(monkeypatch) == (f"-j{expected}", "VM_PARALLEL_BUILDS=1")
 
@@ -141,8 +131,7 @@ def test_unreserved_lane_stays_serial_and_does_not_probe_shared_resources(
     def unexpected(*_args: object) -> int:
         pytest.fail("unreserved lane probed shared resources")
 
-    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", unexpected)
-    monkeypatch.setattr(build_parallelism, "_read_text", unexpected)
+    monkeypatch.setattr(build_parallelism, "available_cpu_count", unexpected)
     monkeypatch.setenv(JOB_THREADS_ENV, "8")
 
     assert verilator_backend_arguments(_inspection(), lane_kind="unreserved") == (
@@ -192,7 +181,3 @@ def test_admitted_lane_uses_the_job_thread_count(monkeypatch: pytest.MonkeyPatch
     # The Job's count wins over the cores.
     monkeypatch.setenv(JOB_THREADS_ENV, "2")
     assert verilator_backend_arguments(inspection) == ("-j2", "VM_PARALLEL_BUILDS=1")
-    # Without a Job count the cores are bounded by the container's CPU quota.
-    monkeypatch.delenv(JOB_THREADS_ENV)
-    _cores(monkeypatch, 8, {"/sys/fs/cgroup/cpu.max": "400000 100000"})
-    assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")

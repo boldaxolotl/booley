@@ -34,10 +34,6 @@ from booley.runtime.endpoint_execution import (
 )
 
 from .. import output_budget
-from .build import (
-    BuildOutcome,
-    SimulationBuildInfrastructureError,
-)
 from .coverage_record_store import load_coverage_record
 from .coverage_reference import (
     MAX_REFERENCE_BYTES,
@@ -46,8 +42,10 @@ from .coverage_reference import (
 from .coverage_source_gaps import source_gap_report_lines
 from .metrics import coverage_record_path, simulation_flow_metrics
 from .record import (
+    ManifestTarget,
     NewSimulationRecordPreview,
     NewSimulationRecordRunRequest,
+    SimulationRecordManifestView,
     SimulationRecordOutcome,
     SimulationRecordRecoveryStatus,
     build_artifact_reference,
@@ -529,13 +527,13 @@ def _simulation_record_structured_details(
     }
 
 
-def _coverage_request_target(request: NewSimulationRecordRunRequest) -> Mapping[str, object]:
+def _coverage_request_target(request: NewSimulationRecordRunRequest) -> ManifestTarget:
     """Expose the typed Target projection from one immutable record request."""
-    return cast(Mapping[str, object], request.plan.manifest.document["target"])
+    return SimulationRecordManifestView(request.plan.manifest).target
 
 
 def _coverage_request_selector(request: NewSimulationRecordRunRequest) -> str:
-    return str(_coverage_request_target(request)["selector"])
+    return _coverage_request_target(request).selector
 
 
 def _simulation_record_report_detail(
@@ -1048,31 +1046,3 @@ def _retain_coverage_record(progress: CoverageProgress, outcome: SimulationRecor
             coverage_record.evaluation,
         )
     )
-
-
-def _build_outcome_entry(outcome: BuildOutcome | None) -> dict[str, Any] | None:
-    """JSON shape for one authenticated Simulation build attempt."""
-    if outcome is None:
-        return None
-    return {
-        "ran": outcome.ran,
-        "verdict": outcome.verdict,
-        "failure_class": outcome.failure_kind,
-        "returncode": outcome.returncode,
-        "elapsed_s": round(outcome.elapsed_s, 3),
-        "timed_out": outcome.timed_out,
-        "peak_rss_mb": outcome.peak_rss_mb,
-        "oom_kill_delta": outcome.oom_kill_delta,
-        "terminal_record": outcome.terminal_record,
-        "reason": outcome.reason,
-        "cache_decision": outcome.cache_decision,
-    }
-
-
-def _build_infrastructure_detail(error: SimulationBuildInfrastructureError) -> dict[str, Any]:
-    """Structured endpoint detail for a build that ended without a design verdict."""
-    return {
-        "eda_tool_error": "build_infrastructure",
-        "target": error.target,
-        "build_stage": _build_outcome_entry(error.outcome),
-    }

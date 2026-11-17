@@ -154,7 +154,7 @@ def _endpoint_progress_event(
     identity: DisplayIdentity | None = None,
 ) -> dict:
     """Build an endpoint_progress display event dict."""
-    event = {
+    event: dict[str, object] = {
         "type": "endpoint_progress",
         "endpoint": endpoint_name,
         "line": line,

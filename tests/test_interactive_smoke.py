@@ -277,6 +277,7 @@ targets:
         with patch.object(tool, "_run_single_config", side_effect=fake_single):
             handle = TargetCatalog.build(repo).select("synth_default", for_flow="synth")
             plans = target_pair_plans_for_handles((handle,), flow="synth")
+            tool._target_pairs = plans
             results, short_sha = tool._run_baseline_configs(plans)
 
         # It succeeded and resolved the baseline ref; retain actionable failures.

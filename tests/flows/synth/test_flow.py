@@ -1397,9 +1397,9 @@ class TestDryRun:
             "_resolve_target",
             side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
         ):
-            dry_plan = flow._plan_synth_implementation(["lite"])
+            dry_plan = flow._plan_implementation(["lite"])
             flow.args.dry_run = False
-            real_plan = flow._plan_synth_implementation(["lite"])
+            real_plan = flow._plan_implementation(["lite"])
 
         assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
 
@@ -1477,7 +1477,7 @@ class TestDryRun:
             result = flow._run()
             dry_plan = flow._flow_plan
             flow.args.dry_run = False
-            real_plan = flow._plan_synth_implementation(["syn"])
+            real_plan = flow._plan_implementation(["syn"])
 
         assert result.exit_code == EXIT_SUCCESS
         assert result.detail["work_units"][0]["selector"] == "syn"
@@ -1543,7 +1543,7 @@ class TestDryRun:
                 assert flow._run().exit_code == EXIT_SUCCESS
                 dry_plan = flow._flow_plan
                 flow.args.dry_run = False
-                real_plan = flow._plan_synth_implementation(["syn"])
+                real_plan = flow._plan_implementation(["syn"])
             return dry_plan, real_plan
 
         main_dry, main_real = plans(root)
@@ -2155,11 +2155,6 @@ class TestFlowEnablement:
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
         return flow
 
-    def test_job_class_is_memory(self, state_file: Path, tmp_path: Path):
-        from booley.runtime import job_slots
-
-        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_MEMORY
-
 
 # ===========================================================================
 # Boundary command + file-based interpretation (ADR 0037 §8)
@@ -2710,7 +2705,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+            patch("booley.flows.implementation_flow.baseline_worktree", _fake_baseline_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
             patch.object(flow, "_execute", side_effect=mock_execute),
         ):
             result = flow._run()
@@ -2799,7 +2795,7 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", boom),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="bogus"),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="bogus"),
         ):
             result = flow._run()
 
@@ -2847,7 +2843,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+            patch("booley.flows.implementation_flow.baseline_worktree", _fake_baseline_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
             patch.object(flow, "_run_single_config", side_effect=run_one),
         ):
             result = flow._run()
@@ -2914,7 +2911,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", vanishing_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+            patch("booley.flows.implementation_flow.baseline_worktree", vanishing_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
             patch.object(flow, "_run_single_config", side_effect=run_one),
         ):
             return flow._run()
@@ -3057,7 +3055,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", tracking_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="deadbeef"),
+            patch("booley.flows.implementation_flow.baseline_worktree", tracking_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="deadbeef"),
             patch.object(flow, "_execute", side_effect=RuntimeError("synthesis exploded")),
             pytest.raises(RuntimeError, match="synthesis exploded"),
         ):
@@ -3907,7 +3906,7 @@ class TestFlowConfigBoundary:
     def test_dry_run_surfaces_config_error(self, state_file: Path, tmp_path: Path):
         """Dry-run exists to vet the command — a config error must fail it."""
         flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
-        result = flow._dry_run_result(flow._plan_synth_implementation(["lite"]))
+        result = flow._dry_run_result(flow._plan_implementation(["lite"]))
         assert result.exit_code == EXIT_ERROR
         assert result.detail["work_units"] == []
         assert "synth_mode" in result.report_text
@@ -3944,7 +3943,7 @@ class TestTimingReportPaths:
         from booley.flows.synth.backends import configure
 
         flow = self._flow(tmp_path, "timing_report_paths = 3\n")
-        assert flow._resolve_run_policy(True) is None
+        assert flow._run_policy_error() is None
         cmd = list(self._resolve(flow, tmp_path).command)
         assert cmd[cmd.index("--timing-report-paths") + 1] == "3"
         args = configure.parse_configure_argv(cmd)
@@ -3953,7 +3952,7 @@ class TestTimingReportPaths:
 
     def test_unset_knob_leaves_the_argv_alone(self, state_file: Path, tmp_path: Path):
         flow = self._flow(tmp_path, "")
-        assert flow._resolve_run_policy(True) is None
+        assert flow._run_policy_error() is None
         assert "--timing-report-paths" not in self._resolve(flow, tmp_path).command
 
     @pytest.mark.parametrize("value", ["0", "-2", "true", "1.5"])
@@ -3961,7 +3960,7 @@ class TestTimingReportPaths:
         self, state_file: Path, tmp_path: Path, value: str
     ):
         flow = self._flow(tmp_path, f"timing_report_paths = {value}\n")
-        message = flow._resolve_run_policy(True)
+        message = flow._run_policy_error()
         assert message is not None
         assert message.startswith("synth: ")
         assert "timing_report_paths" in message
@@ -3971,7 +3970,7 @@ class TestTimingReportPaths:
         default = self._flow(tmp_path, "")
         self._resolve(default, tmp_path)
         custom = self._flow(tmp_path, "timing_report_paths = 3\n")
-        assert custom._resolve_run_policy(True) is None
+        assert custom._run_policy_error() is None
         self._resolve(custom, tmp_path)
         assert custom._recipe_evidence["lite"][:2] == default._recipe_evidence["lite"][:2]
 
@@ -6599,3 +6598,38 @@ def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):
     assert conditions["expected_comb_loops"] == 0
     assert conditions["unexpected_comb_loops"] == 1
     assert "actual=1, expected=0, excess=1" in result.report_text
+
+
+@pytest.mark.parametrize("case", ["plain", "baseline"])
+def test_synth_output_matches_golden(
+    case: str, state_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One Target's report, progress record, RESULT line and exit code stay as pinned."""
+    from tests.flows.implementation_golden_support import render_implementation_output
+    from tests.golden.conftest import assert_matches_golden
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "golden-run")
+    flow = AsicSynthesizeFlow()
+    args = ["--target", "lite", "--work-dir", str(tmp_path)]
+    args += ["--report-dir", str(tmp_path / "reports")]
+    if case == "baseline":
+        args += ["--baseline", "v1.0"]
+    flow.parse_args(args)
+    baseline = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.5, elapsed_s=3.0)
+    current = SynthMetrics(area_kge=12.3, cells=110, wns_ns=0.4, elapsed_s=4.0)
+
+    def run_one(_target: str) -> tuple[SynthMetrics, str]:
+        return (baseline if flow._execution_role == "baseline" else current), "done"
+
+    with (
+        patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
+        patch("booley.flows.implementation_flow.baseline_worktree", _fake_baseline_worktree),
+        patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
+        patch("booley.flows.synth.flow.git_full_sha", return_value="a" * 40),
+        patch("booley.flows.implementation_flow.git_full_sha", return_value="a" * 40),
+        patch.object(flow, "_run_single_config", side_effect=run_one),
+    ):
+        outcome = flow._run()
+
+    text = render_implementation_output(flow, "synth_lite.json", outcome, tmp_path)
+    assert_matches_golden(f"implementation/synth_{case}.txt", text)
