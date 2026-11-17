@@ -3491,6 +3491,33 @@ class TestDeveloperProbe:
                 "  ▸  provider-backed check: Specialist provider memory and authorization probe ("
             )
 
+    def test_usage_limit_row_names_the_limit_and_reset_without_auth_advice(
+        self, tmp_path, monkeypatch, probe_backend
+    ):
+        from booley.runtime.agent_errors import UsageLimitError
+        from tests.runtime.test_execution_ports import FAR_RESET_MESSAGE
+
+        async def limited(_params, **_kw):
+            raise UsageLimitError(FAR_RESET_MESSAGE, provider="claude")
+
+        probe_backend(limited)
+        _runtime_setup(tmp_path, monkeypatch, inside=True)
+        _deep_synth_writes_complete_report(monkeypatch, tmp_path / ".booley")
+
+        real = developer_probe.measure_developer_rss
+        _patch_developer_probe(monkeypatch, lambda root, **_: real(root, getrusage=_rusage(0, 0)))
+
+        result = _doctor_run(tmp_path, deep=True)
+
+        rows = [f for f in result.findings if "Specialist provider" in f.message]
+        assert [(f.severity, f.message) for f in rows] == [
+            (
+                Severity.SKIP,
+                f"Specialist provider memory probe skipped - probe agent failed: {FAR_RESET_MESSAGE}",
+            )
+        ]
+        assert "auth" not in f"{rows[0].message} {rows[0].fix}".lower()
+
     def test_long_check_announcement_flushes_stdout(self, monkeypatch):
         events: list[str] = []
 
