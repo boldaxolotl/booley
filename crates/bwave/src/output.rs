@@ -70,7 +70,8 @@ fn data_shapes(generator: &mut schemars::SchemaGenerator) -> [(&'static str, Sch
     ]
 }
 
-/// Drop `format` keywords and join wrapped doc-comment lines.
+/// Match the published schema: no `format` keywords, no `type` beside `const`,
+/// and each doc comment on one line.
 fn tidy(schema: &mut Schema) {
     schema.remove("format");
     if schema.get("const").is_some() {
