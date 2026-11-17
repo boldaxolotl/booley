@@ -132,10 +132,11 @@ def test_queued_memory_claim_stops_waiting_when_the_record_is_cancelled(tmp_path
     assert store.observe(CLASS_MEMORY)[1] == []
 
 
-def test_cancelling_a_waiter_whose_entry_is_unreadable_refuses_the_withdrawal(
-    tmp_path: Path,
+@pytest.mark.parametrize("damage", ["unreadable", "corrupt"])
+def test_cancelling_a_waiter_whose_entry_cannot_be_trusted_refuses_the_withdrawal(
+    tmp_path: Path, damage: str
 ) -> None:
-    """An entry that cannot be read is not withdrawn, and the waiter stays queued."""
+    """An entry that cannot be read, or reads as corrupt, is not withdrawn: the waiter stays."""
     store = SlotStore(tmp_path / "slots", sleep=lambda _seconds: None)
     claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=600.0)
     holder = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=claim)
@@ -143,10 +144,13 @@ def test_cancelling_a_waiter_whose_entry_is_unreadable_refuses_the_withdrawal(
     waiter = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=claim)
     entry = waiter.path
     entry.unlink()
-    entry.mkdir()  # same name, but reading it fails with an OSError other than "missing"
+    if damage == "unreadable":
+        entry.mkdir()  # same name, but reading it fails with an OSError other than "missing"
+    else:
+        entry.write_text("{", encoding="utf-8")
 
     assert store.cancel_waiter_token(waiter) is False
-    assert entry.is_dir()
+    assert entry.exists()
 
 
 def test_unreadable_process_environment_with_an_unreadable_stat_never_matches(
