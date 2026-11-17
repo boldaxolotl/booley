@@ -1702,7 +1702,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
         The build holds a Memory Reservation sized from the Target's history.
         """
-        with self._claims.hold(lambda: self._build_job_request(target, work_dir), build=True):
+        with self._claims.hold(
+            lambda: self._build_job_request(target, work_dir), build=True, target=target
+        ):
             return self._build_elab(target, work_dir, build_path, mutation)
 
     @staticmethod
@@ -2200,7 +2202,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 return self._unit_job_request(target, work_dir, build_path, unit, batched)
 
             # The wait for memory comes first, so it never counts in a duration or time limit.
-            with self._claims.hold(request, build=False):
+            with self._claims.hold(request, build=False, target=target, tests=unit.tests):
                 started = _monotonic()
                 run = _launch(unit)
                 run.duration_s = _monotonic() - started
