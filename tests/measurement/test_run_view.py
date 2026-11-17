@@ -15,7 +15,7 @@ from booley.measurement.run_document import RunStatus, Verdict
 from booley.measurement.run_store import FlowReport, MeasurementStore, StoredRun
 from booley.runtime.pinned_history import FileCommitError
 from tests.measurement.test_base_run import Entry, Table, build_run, values
-from tests.measurement.test_rules_diff import AREA, SYNTH, versioned_case
+from tests.measurement.test_rules_diff import AREA, SYNTH, push_origin, versioned_case
 from tests.measurement.test_run_store import (
     IDENTITY,
     fingerprint,
@@ -215,6 +215,60 @@ def test_versioned_booley_directory_names_the_rules_base(tmp_path: Path) -> None
     (gone,) = store.history(stored.key)
     with pytest.raises(FileCommitError):
         view_of(checkout, store, gone, git(checkout, "rev-parse", "HEAD"))
+
+
+def stealth_view(
+    root: Path, stored_under: dict[str, int], *, on_main: bool = False
+) -> tuple[dict[str, Any], str, str]:
+    """The view of a Stealth head against an RTL Base whose runs sit under other rules.
+
+    *stored_under* maps ``main`` or ``feature`` (the Booley Directory commit a base run
+    was measured under) to the minute it finished. Origin lags the local ``main``.
+    Returns the view, the Booley Directory ``main`` commit and the markdown report.
+    """
+    from booley.measurement.report import markdown_report
+    from booley.measurement.run_key import resolve_measurement_key
+
+    root.mkdir(parents=True, exist_ok=True)
+    checkout, booley = versioned_case(root, "standalone")
+    main = git(booley, "rev-parse", "main")
+    commits = {"main": main, "feature": git(booley, "rev-parse", "HEAD")}
+    push_origin(booley, f"{main}~1")
+    first = git(checkout, "rev-parse", "HEAD")
+    write(checkout / "rtl.v", "module b; endmodule\n")
+    head = commit_all(checkout, "rtl work")
+    if on_main:
+        git(booley, "checkout", "-q", "-f", "main")
+    store = MeasurementStore(booley)
+    for name, minute in stored_under.items():
+        keyed = resolve_measurement_key(checkout, first, booley_commit=commits[name])
+        store.write(make_run(keyed, f"under-{name}", minute=minute, flow="synth"), [])
+    stored = store.write(make_run(key_of(checkout, head), "head", minute=9, flow="synth"), [])
+    view = view_of(checkout, store, stored, head, base=first)["view"]
+    return view, main, markdown_report(view_of(checkout, store, stored, head, base=first))
+
+
+def test_stealth_rules_base_follows_unpushed_main_and_picks_its_base_run(tmp_path: Path) -> None:
+    view, main, _ = stealth_view(tmp_path / "a", {"main": 1, "feature": 2})
+    assert view["rules_base"]["commit"] == main
+    assert view["rules_base"]["choice"] == "merge-base with local main"
+    (change,) = view["rules_diff"]["changes"]
+    assert (change["kind"], change["old"], change["new"]) == ("maximum raised", 60, 80)
+    assert change["note"] == "(no note)"
+    assert view["amber"] == ["rules loosened"]
+    assert view["base_run"]["base_run_id"] == "under-main"
+    assert view["base_run"]["rules_differ"] is False
+
+    view, _, report = stealth_view(tmp_path / "b", {"feature": 2})
+    assert view["base_run"]["base_run_id"] == "under-feature"
+    assert view["base_run"]["rules_differ"] is True
+    assert "base run `under-feature` (its rules differ)" in report
+
+    # The measured Booley Directory commit is local main: its own rules Base.
+    view, _, _ = stealth_view(tmp_path / "c", {"main": 1, "feature": 2}, on_main=True)
+    assert view["rules_base"]["commit"] is None
+    assert view["base_run"]["base_run_id"] == "under-main"
+    assert view["base_run"]["rules_differ"] is False
 
 
 def test_commit_with_another_tree_is_refused(tmp_path: Path) -> None:
