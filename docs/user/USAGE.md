@@ -413,15 +413,18 @@ Booley session S3 resumes conversation <id> in worktree <path>.
 ```
 
 - By id: `booley chat --resume <id>` (also `--resume=<id>` and `-r <id>`) for
-  Claude, `booley chat resume <id>` for Codex. Put the id right after `resume`.
+  Claude, `booley chat resume <id>` or `booley chat exec resume <id>` for Codex
+  (Codex options may come before `resume` and between `resume` and the id).
 - The latest conversation: Claude's `-c`/`--continue` and Codex's
-  `resume --last` continue the most recent conversation (by the agent CLI's
-  own last-update time) among the main checkout and the worktrees whose
-  session is not running; a main checkout in use is skipped too. Booley then resumes that conversation by its id. If
+  `resume --last` (also after `exec`) continue the most recent conversation
+  (by the agent CLI's own last-update time) among the main checkout and the
+  worktrees whose session is not running; a main checkout in use is skipped
+  too. Booley then resumes that conversation by its id. If
   Booley cannot tell which is newest, the agent CLI picks from the main
-  checkout, as before. `resume --last --all` is left to Codex.
-- A conversation that ran in the main checkout, or that Booley has no record
-  of, resumes in the main checkout.
+  checkout, as before. `resume --last --all`, and a Codex resume that chooses
+  its own directory (`-C`/`--cd`, `--worktree`), are left to Codex.
+- A conversation that ran in the main checkout resumes in the main checkout.
+  So does one Booley has no record of; for Codex, a `NOTE` says so.
 - If the worktree has since been removed, the conversation resumes in the main
   checkout after a `NOTE`.
 - Resuming refuses a checkout that is in use, except the main checkout under

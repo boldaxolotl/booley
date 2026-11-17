@@ -23,11 +23,13 @@ class ResumeRequest:
     """A resume form in the agent arguments.
 
     *conversation_id* is set for the id form; ``None`` is the latest form (`-c`, `--last`),
-    whose deciding token sits at *index*.
+    whose deciding token sits at *index*. *subcommand* is where Codex's `resume` token sits
+    (Claude leaves it 0); the id of the id form, and the rewritten id, go right after it.
     """
 
     conversation_id: str | None
     index: int = 0
+    subcommand: int = 0
 
 
 @dataclass(frozen=True)
@@ -69,28 +71,95 @@ def _claude_request(args: list[str]) -> ResumeRequest | None:
     return None
 
 
-def _codex_request(args: list[str]) -> ResumeRequest | None:
-    """`resume <id>` or `resume --last`; `--all` lifts the directory filter, so it is left alone.
+# Codex options that take a separate value (`--opt=value` takes no extra token), from the help
+# of `codex`, `codex exec`, `codex resume` and `codex exec resume` (0.169.0). An option missing
+# here leaves its value looking like a positional, so that launch stays unrouted.
+_CODEX_VALUE_OPTIONS = frozenset(
+    {
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--remote",
+        "--remote-auth-token-env",
+        "-i",
+        "--image",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "-a",
+        "--ask-for-approval",
+        "--thread-source",
+        "--cyber-access-program",
+        "--output-schema",
+        "--color",
+        "-o",
+        "--output-last-message",
+    }
+)
 
-    With `--last` the first positional is the prompt, not an id.
+
+def _codex_positionals(args: list[str]) -> list[int]:
+    """The indexes of the positional tokens: not options, not option values; all after a `--`.
+
+    `-i`/`--image` takes several files, so its values run up to the next option or subcommand.
     """
-    if args[:1] != ["resume"]:
+    found: list[int] = []
+    skip = False
+    images = False
+    for index, token in enumerate(args):
+        if token == "--":
+            return [*found, *range(index + 1, len(args))]
+        if images and not token.startswith("-") and token not in ("exec", "e", "resume"):
+            continue
+        images = token in ("-i", "--image")
+        if skip:
+            skip = False
+        elif images:
+            continue
+        elif token in _CODEX_VALUE_OPTIONS:
+            skip = True
+        elif not token.startswith("-"):
+            found.append(index)
+    return found
+
+
+def _codex_request(args: list[str]) -> ResumeRequest | None:
+    """`[exec] resume <id>` or `[exec] resume --last`, after any Codex options.
+
+    `--last --all` lifts the directory filter, and `-C`/`--cd` or `--worktree` chooses Codex's
+    own directory, so Codex keeps those. With `--last` the first positional is the prompt.
+    """
+    positions = _codex_positionals(args)
+    if positions and args[positions[0]] in ("exec", "e"):
+        positions = positions[1:]
+    if not positions or args[positions[0]] != "resume":
         return None
-    rest = args[1:]
-    if "--last" in rest:
-        return None if "--all" in rest else ResumeRequest(None, rest.index("--last") + 1)
-    if rest and not rest[0].startswith("-"):
-        return ResumeRequest(rest[0])
-    return None
+    at = positions[0]
+    options = _before_separator(args)
+    if any(
+        token in ("-C", "--cd", "--worktree") or token.startswith(("--cd=", "-C"))
+        for token in options
+    ):
+        return None
+    if "--last" in options:
+        return None if "--all" in options else ResumeRequest(None, args.index("--last"), at)
+    return ResumeRequest(args[positions[1]], 0, at) if len(positions) > 1 else None
 
 
 def request(provider: str, agent_args: list[str]) -> ResumeRequest | None:
     """The resume form in *agent_args* for *provider*, else ``None`` (launch as before)."""
-    args = _before_separator(agent_args)
     if provider == "claude":
-        return _claude_request(args)
+        return _claude_request(_before_separator(agent_args))
     if provider == "codex":
-        return _codex_request(args)
+        return _codex_request(agent_args)
     return None
 
 
@@ -155,7 +224,13 @@ def _by_id(
     """The id form: the conversation's own worktree, else the main checkout."""
     record = conversation_records.find(common, provider, conversation_id)
     if record is None:
-        return _main(agent_args, conversation_id)
+        notice = (
+            f"NOTE: Booley has no record of where conversation {conversation_id} ran; "
+            "resuming in the main checkout."
+            if provider == "codex"
+            else None
+        )
+        return _main(agent_args, conversation_id, notice)
     if not conversation_records.is_live(common, record):
         return _main(
             agent_args,
@@ -181,7 +256,8 @@ def _rewritten(
             *agent_args[resume.index + 1 :],
         ]
     rest = [*agent_args[: resume.index], *agent_args[resume.index + 1 :]]
-    return [rest[0], conversation_id, *rest[1:]]
+    after = resume.subcommand + 1
+    return [*rest[:after], conversation_id, *rest[after:]]
 
 
 def _latest(
