@@ -154,18 +154,11 @@ logging.basicConfig(
     format="[mcp] %(levelname)s %(message)s",
 )
 
-# ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
-# detached background jobs (submit → poll) instead of holding the call open.
-# Everything else stays synchronous — it finishes inside the inline wait.
-# The Specialists (reviewer / coverage_analyst) and the mutation Flow joined
-# 2026-07-06 for the same reason: each runs a long loop with a
-# 20-30 min default_timeout, so an interactive call reliably outran the ~60s
-# client cap and came back as a bare timeout — no run_id, no poll, recoverable
-# only via booley_report. The Specialists are lightweight on memory (Read/Grep/Glob +
-# API calls), so single-flight admission is stricter than they need, but the
-# poll affordance is exactly what was missing. The mutation Flow builds and
-# simulates; it keeps its memory admission on purpose.
-_ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
+# ADR 0027 / ADR 0087: a Job that memory admission admits can wait in the queue
+# for as long as other Jobs hold the memory, so its MCP call runs as a detached
+# background Job (submit -> poll) and hands back a run_id once the inline wait
+# ends. The catalog derives each definition's ``memory_admitted`` from the
+# endpoint class; every other endpoint runs inline.
 
 # How long a submit (and each poll) blocks inline before handing back a run_id.
 # Must sit safely under the generic MCP client's ~60-90s call cap so the caller
@@ -1496,10 +1489,11 @@ async def _dispatch_booley_mcp_tool(
 ) -> McpToolContent:
     """Run a Booley Flow subprocess and return an MCP result.
 
-    Heavy, long-running endpoints (``_ASYNC_JOB_MCP_TOOLS``) go through the submit/poll
-    job model (ADR 0027): they can outlive the MCP client's call cap, so holding
-    the call open orphans the subprocess and BLOCKs the next call. Everything
-    else stays synchronous and returns its full result inline.
+    Memory-admitted endpoints (``memory_admitted`` in the definition) go through
+    the submit/poll job model (ADR 0027): admission can queue them past the MCP
+    client's call cap, so holding the call open orphans the subprocess and BLOCKs
+    the next call. Everything else stays synchronous and returns its full result
+    inline.
     """
     work_dir_error = _validate_work_dir(arguments.get("work_dir")) or _unroutable_endpoint_error(
         arguments, request_context
@@ -1520,7 +1514,7 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(f"ERROR: invalid Flow timeout: {exc}")
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
-    if name in _ASYNC_JOB_MCP_TOOLS:
+    if mcp_tool_def.get("memory_admitted"):
         return await _dispatch_async_job(
             name, cmd, mcp_tool_timeout, jobs, context=context, caller=caller
         )
