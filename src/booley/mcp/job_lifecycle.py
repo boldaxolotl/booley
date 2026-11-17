@@ -343,8 +343,6 @@ class JobLifecycle:
         overrides = {"BOOLEY_RUN_ID": rec.run_id, "BOOLEY_SLOT_TIMEOUT_S": str(rec.timeout_s)}
         if publish_display_identity:
             overrides["BOOLEY_DISPLAY_INVOCATION_ID"] = rec.run_id
-        stop_grace = stop_grace_seconds(rec.endpoint)
-        stop = {} if stop_grace is None else {"stop_grace": stop_grace}
         return await self._run_process(
             rec.argv,
             timeout=rec.timeout_s,
@@ -354,7 +352,7 @@ class JobLifecycle:
             is_requeued=lambda: self._child_requeued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
             log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
-            **stop,
+            stop_grace=stop_grace_seconds(rec.endpoint),
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
@@ -531,7 +529,12 @@ class JobLifecycle:
             )
         # Terminal-from-disk (server restarted): no captured stdout/stderr.
         exit_code = rec.exit_code if rec and rec.exit_code is not None else None
-        if exit_code is None and report_fresh and isinstance(report.get("exit_code"), int):
+        if (
+            exit_code is None
+            and report is not None
+            and report_fresh
+            and isinstance(report.get("exit_code"), int)
+        ):
             # Orphan rescue: the run itself finished and wrote this job's
             # report — only the server died before recording the outcome.
             # Trust the report's exit code over a blanket failure, so a

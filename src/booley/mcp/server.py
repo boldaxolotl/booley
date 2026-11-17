@@ -2069,7 +2069,7 @@ def _logs_dir_in_own_booley_dir(logs_dir: str) -> bool:
 
 
 def _sdk_tool_result(
-    payload: McpToolContent | McpInputRequired,
+    payload: McpToolPayload | McpInputRequired,
 ) -> CallToolResult | InputRequiredResult:
     """Project transport-neutral results at the SDK boundary."""
     if isinstance(payload, McpInputRequired):
@@ -2088,8 +2088,8 @@ def _sdk_tool_result(
         )
     return CallToolResult(
         content=[TextContent(type="text", text=block.text) for block in payload.content],
-        structuredContent=payload.structured_content,
-        isError=payload.is_error,
+        structured_content=payload.structured_content,
+        is_error=payload.is_error,
     )
 
 
@@ -2338,8 +2338,8 @@ def _sdk_tool(tool: McpToolDefinition) -> McpSdkTool:
     return McpSdkTool(
         name=tool.name,
         description=tool.description,
-        inputSchema=tool.input_schema,
-        outputSchema=tool.output_schema,
+        input_schema=tool.input_schema,
+        output_schema=tool.output_schema,
     )
 
 

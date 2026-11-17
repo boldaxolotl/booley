@@ -103,7 +103,7 @@ class _Claim:
     """
 
     store: job_slots.SlotStore | None
-    token: object | None
+    token: job_slots.SlotToken | None
     plan: MemoryAdmissionPlan | None = None
     threads: int | None = None
     sizing: MemorySizing | None = None
@@ -143,7 +143,7 @@ class AdmissionGate:
             raise RuntimeError("AdmissionGate may be entered exactly once")
         self._entered = True
         store: job_slots.SlotStore | None = None
-        token: object | None = None
+        token: job_slots.SlotToken | None = None
         try:
             execution_id = _runtime_execution_id()
             claim = self._claim()
@@ -342,10 +342,10 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
 
 def _memory_narrator(
     endpoint: EndpointState, store: job_slots.SlotStore, pid: int
-) -> Callable[[int], None]:
+) -> Callable[[int | None], None]:
     """Narrate a queued memory claim: its need, the free memory, its position and the holders."""
 
-    def narrate(_position: int) -> None:
+    def narrate(_position: int | None) -> None:
         wait = store.memory_wait(pid)
         if wait is not None:  # None: promoted since the tick, nothing left to wait for
             _narrate_line(
