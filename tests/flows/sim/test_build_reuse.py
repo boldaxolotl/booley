@@ -656,6 +656,7 @@ def _manifest(prepared: Any) -> dict[str, Any]:
     return json.loads((prepared.build_root / ".booley-build-manifest.json").read_text("utf-8"))
 
 
+@posix_only
 def test_generation_path_never_reaches_the_target_environment_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

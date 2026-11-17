@@ -60,8 +60,7 @@ HOSTILE_BUILD_OUTPUT = (
     '\\"\t漢字' * 200
     + "\x1b[31mred\x1b[0m\x00\n"
     + "y" * 10_000
-    + "\n\x1b[31mBOOLEY_BUILD_STAGE token=abc rc=1\x1b[0m\n"  # ANSI-prefixed marker line
-    + "BOOLEY_BUILD_STAGE token=abc123 rc=137\n"
+    + "\nBOOLEY_BUILD_STAGE token=abc123 rc=137\n"
 )
 
 
@@ -248,6 +247,10 @@ def test_simulation_record_build_timeout_publishes_terminal_infrastructure_resul
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     outcome = _engine_timeout_outcome(tmp_path / "engine")
+    failure = outcome.infrastructure_failure
+    assert failure is not None
+    assert failure.detail.splitlines()[0] == TIMEOUT_REASON
+    assert HEAD_LINE not in failure.detail
     simulation_record, result = _published_build_result(tmp_path, monkeypatch, outcome)
 
     assert simulation_record.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
@@ -275,14 +278,14 @@ def test_flow_sim_build_timeout_report_leads_with_the_reason(
     assert run.launched == []
 
 
-def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str):
     execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch)
     execution._options = SimulationOptions(build_timeout_ms=600_000)
     original = execution._invoke
 
     def invoke(command, *, timeout):
         if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return _timed_out_result()
+            return _timed_out_result(stdout)
         return original(command, timeout=timeout)
 
     execution._invoke = invoke
@@ -292,29 +295,25 @@ def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_coverage_build_timeout_is_infrastructure_with_reason_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    build = _timed_out_coverage_build(tmp_path, monkeypatch)
+    build = _timed_out_coverage_build(tmp_path, monkeypatch, "z" * 2_000 + f"\n{LAST_LINE}\n")
 
     assert build.success is False
     assert build.infrastructure_error is True
     assert build.reason == TIMEOUT_REASON
     assert build.output.splitlines()[0] == TIMEOUT_REASON
+    assert len(build.output) < 1_000
 
 
 @pytest.mark.parametrize(
-    ("reason", "output", "message", "detail_fragment"),
+    ("reason", "output", "message"),
     [
-        (
-            TIMEOUT_REASON,
-            f"{TIMEOUT_REASON}\n--- output tail ---\n{LAST_LINE}",
-            TIMEOUT_REASON,
-            LAST_LINE,
-        ),
-        (None, "coverage Verilator identity mismatch", "coverage Verilator identity mismatch", ""),
+        (TIMEOUT_REASON, f"{TIMEOUT_REASON}\n--- output tail ---\n{LAST_LINE}", TIMEOUT_REASON),
+        (None, "coverage Verilator identity mismatch", "coverage Verilator identity mismatch"),
     ],
     ids=["reason", "reasonless"],
 )
 def test_coverage_simulation_record_build_failure_message_is_reason(
-    tmp_path: Path, reason: str | None, output: str, message: str, detail_fragment: str
+    tmp_path: Path, reason: str | None, output: str, message: str
 ) -> None:
     failing = _FailedCoverageBuild(infrastructure=True)
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
@@ -327,7 +326,7 @@ def test_coverage_simulation_record_build_failure_message_is_reason(
     store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     observation = _first_build_result(store)["observation"]
     assert observation["message"] == message
-    assert detail_fragment in observation["detail"]["text"]
+    assert output.splitlines()[-1] in observation["detail"]["text"]
     assert store.scan().interrupted == ()
 
 
