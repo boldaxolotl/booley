@@ -189,7 +189,7 @@ def recheck_prompt(recheck: RecheckInput, spec_section: str, work_dir: Path) -> 
         '{"verdicts": [{"finding_id": "<id>", "verdict": "fixed" | "still_open" | "cant_tell", '
         '"evidence": {"file": "<path>", "line": <positive integer>, "reason": "<one sentence>"}}]}. '
         "``evidence`` is required for ``fixed`` and omitted otherwise. Prose outside the JSON "
-        "is ignored."
+        "does not count."
     )
     return "\n".join(sections)
 
