@@ -151,6 +151,45 @@ def _trace_diagnostics(target: Path) -> str:
     return ""
 
 
+_STRAY_VCDS_SHOWN = 5
+
+
+def _quote_path(path: Path) -> str:
+    """Quote a path as one literal argument: double quotes, or single when `$`/backtick would expand."""
+    text = str(path)
+    if ("$" in text or "`" in text) and "'" not in text:
+        return f"'{text}'"
+    return f'"{text}"'
+
+
+def _stray_vcd_hint(directory: Path) -> str:
+    """Name top-level VCD dumps discovery skipped (it reads only trace.vcd), or ""."""
+    stray = sorted(p.name for p in directory.glob("*.vcd") if p.is_file())
+    if not stray:
+        return ""
+    more = len(stray) - _STRAY_VCDS_SHOWN
+    names = ", ".join(stray[:_STRAY_VCDS_SHOWN]) + (f" and {more} more" if more > 0 else "")
+    example = _quote_path(directory / stray[0])
+    return (
+        f"\nVCD dumps here that are not named trace.vcd: {names}\n"
+        "Declare the dump in [flows.sim].trace_files and re-run the sim, "
+        "or pass the file directly (a raw VCD needs --build to register):\n"
+        f"  bwave register {example} --as ALIAS --build\n"
+        f"  bwave gui {example}"
+    )
+
+
+def _no_trace_found_message(directory: str | Path, note: str = "") -> str:
+    """The `register DIR` / `gui DIR` error when trace discovery finds nothing."""
+    path = Path(directory)
+    return (
+        f"ERROR: No trace file found in {directory}"
+        + _stray_vcd_hint(path)
+        + note
+        + _trace_diagnostics(path)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Trace-session + marker persistence (kept separate from the CLI, principle 8)
 # ---------------------------------------------------------------------------
@@ -762,10 +801,7 @@ def _resolve_gui_target(target: str | None) -> tuple[str, str]:
     if Path(trace_path).is_dir():
         found = find_trace(Path(trace_path))
         if found is None:
-            sys.exit(
-                f"ERROR: No trace file found in {trace_path}"
-                + _trace_diagnostics(Path(trace_path))
-            )
+            sys.exit(_no_trace_found_message(trace_path))
         trace_path = str(found)
     # .lower(): the host FS may be case-insensitive (TRACE.BWAVE resolves).
     # Exit 2 to match the Rust binary's own legacy-.bwave rejection.
