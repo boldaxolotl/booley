@@ -37,6 +37,7 @@ from booley.flows.mutation.flow import (
     generate_results_markdown,
     generate_specs_markdown,
 )
+from booley.flows.mutation.memory_claims import CampaignClaims
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
@@ -110,8 +111,6 @@ def _make_endpoint(
     count: int | str | None = 10,
     min_detected: int | None = None,
     seed: int | None = None,
-    dut_top_module: str = "design_top",
-    dut_files: tuple[str, ...] = ("rtl/design_top.sv",),
     extra_args: list[str] | None = None,
     state_file: bool = True,
 ) -> MutationFlow:
@@ -159,15 +158,11 @@ def _make_endpoint(
     endpoint = MutationFlow()
     with patch.dict(os.environ, env):
         endpoint.parse_args(argv)
-    # Most focused unit tests do not author a FuseSoC catalog. Preserve their
-    # isolation while production code derives both values from --target.
-    endpoint._dut_files = lambda: list(dut_files)  # type: ignore[method-assign]
     if monkeypatch is not None:
         monkeypatch.setattr(
             "booley.flows.mutation.flow.tb_top_for_target",
             lambda *_args, **_kwargs: tb_top,
         )
-    del dut_top_module
     return endpoint
 
 
@@ -264,59 +259,14 @@ class TestMutationSummary:
         assert c[1]["status"] == "untested"
 
 
-def test_dry_run_does_not_generate_or_build_anything(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    scope = "rtl/mod_a.sv"
-    _prepare_scope_files(tmp_path, [scope])
-    endpoint = _make_endpoint(
-        tmp_path,
-        monkeypatch,
-        scope=scope,
-        extra_args=["--dry-run"],
-    )
-    endpoint._target_campaign = SimpleNamespace(
-        execution_units=lambda: (),
-    )
-    with (
-        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
-        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
-        patch.object(endpoint, "_validate_target_runner"),
-        patch.object(endpoint, "cocotb_target"),
-        patch.object(endpoint, "_target_test_suite"),
-        patch("booley.flows.mutation.flow.subprocess.run") as build_or_run,
-    ):
-        result = endpoint._run()
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert result.detail["mode"] == "dry_run"
-    build_or_run.assert_not_called()
-
-
 def _run_count_preview(endpoint, monkeypatch):
-    """Use real count resolution while isolating Target discovery and execution."""
-    campaign = SimpleNamespace(
-        scope_arg=endpoint.args.scope,
-        execution_units=lambda: (),
-    )
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.resolve_target_campaign", lambda *a, **kw: campaign
-    )
-    with (
-        patch.object(endpoint, "_registered_tests", return_value={}),
-        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
-        patch.object(endpoint, "_validate_target_runner"),
-        patch.object(endpoint, "cocotb_target"),
-        patch.object(endpoint, "_target_test_suite"),
-        patch.object(endpoint, "emit_progress") as progress,
-        patch("booley.flows.mutation.flow.subprocess.run") as build_or_run,
-    ):
-        before = set(endpoint.args.work_dir.rglob("*"))
-        result = endpoint._run()
-        assert set(endpoint.args.work_dir.rglob("*")) == before
-    build_or_run.assert_not_called()
-    return result, progress
+    """Dry-run *endpoint* on the fake Target: it creates no file and runs no build or run."""
+    fake = _patch_fake_simulation(monkeypatch)
+    before = set(endpoint.args.work_dir.rglob("*"))
+    result = endpoint.run_with_claims(CampaignClaims())
+    assert set(endpoint.args.work_dir.rglob("*")) == before
+    assert fake.builds == fake.runs == []
+    return result, fake
 
 
 def _assert_preview_lines(result, count):
@@ -492,7 +442,11 @@ _VERILATOR_VERSION = "Verilator 5.052 2025-01-01 rev v5.052"
 
 
 def _patch_resolve_target(
-    monkeypatch, *, eda_tool: str | None = "verilator", verilator: str = _VERILATOR_VERSION
+    monkeypatch,
+    *,
+    eda_tool: str | None = "verilator",
+    verilator: str = _VERILATOR_VERSION,
+    cocotb_module: str | None = None,
 ):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
@@ -510,10 +464,10 @@ def _patch_resolve_target(
             vlnv=f"::{target}:0",
             project_root=Path(work_dir),
             eda_tool=eda_tool,
-            cocotb_module=None,
+            cocotb_module=cocotb_module,
         )
 
-    def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
+    def _fake_prepare(handle, *, build_root, lane_kind, environment=None, **kwargs):
         assert lane_kind == "unreserved"
         import yaml
 
@@ -570,6 +524,7 @@ def _patch_resolve_target(
             eda_tool=eda_tool or "verilator",
             toplevel="tb",
             make_argv=("make", "-C", str(build_root)),
+            environment=dict(environment or {}),
         )
 
     monkeypatch.setattr(
@@ -609,6 +564,8 @@ class FakeSimulation:
     runs: list[int | None] = field(default_factory=list)
     run_timeouts: list[float] = field(default_factory=list)  # the hard kill of each run
     run_limits: list[int] = field(default_factory=list)  # the limit the simulator was given
+    build_environments: list[dict[str, str]] = field(default_factory=list)  # each build's env
+    launches: list[tuple[PreparedSimulationWork, dict[str, str]]] = field(default_factory=list)
 
 
 def _mutant_index(text: str) -> int | None:
@@ -637,8 +594,11 @@ def _patch_fake_simulation(
     monkeypatch,
     *,
     run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+    run_work: Callable[[int | None, PreparedSimulationWork], subprocess.CompletedProcess]
+    | None = None,
     build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     eda_tool: str = "verilator",
+    cocotb_module: str | None = None,
     verilate: Callable[[Path], None] | None = None,
     verilator: str = _VERILATOR_VERSION,
 ) -> FakeSimulation:
@@ -646,11 +606,14 @@ def _patch_fake_simulation(
 
     ``run(index)`` and ``build(index)`` return the process for the baseline
     (``index`` is ``None``) or Mutant ``index``; by default everything passes.
-    A ``run`` may raise ``subprocess.TimeoutExpired``.  ``verilate(build_root)`` runs after
+    A ``run`` may raise ``subprocess.TimeoutExpired``; ``run_work(index, work)`` answers
+    with the launched work too (for a fake that answers per test).  ``verilate(build_root)`` runs after
     a build that passes, to leave what Verilator would (``_write_fake_verilation``);
     ``verilator`` is the version the baseline build reports.
     """
-    _patch_resolve_target(monkeypatch, eda_tool=eda_tool, verilator=verilator)
+    _patch_resolve_target(
+        monkeypatch, eda_tool=eda_tool, verilator=verilator, cocotb_module=cocotb_module
+    )
     fake = FakeSimulation()
     original = subprocess.run
 
@@ -658,15 +621,20 @@ def _patch_fake_simulation(
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
             index = _mutant_index(" ".join(cmd))
             fake.builds.append(index)
+            fake.build_environments.append(dict(kwargs.get("env") or {}))
             built = build(index) if build else _fake_proc(rc=0, stdout="[make] ok")
             if verilate and built.returncode == 0:
                 verilate(Path(cmd[2]))
             return built
-        if isinstance(cmd, list) and f"booley.flows.sim.backends.{eda_tool}" in " ".join(cmd):
-            index = _mutant_index(repr(launched_work(cmd)))
+        if isinstance(cmd, list) and "booley.flows.sim.backends." in " ".join(cmd):
+            work = launched_work(cmd)
+            index = _mutant_index(repr(work))
             fake.runs.append(index)
             fake.run_timeouts.append(kwargs["timeout"])
-            fake.run_limits.append(launched_work(cmd).timeout_s)
+            fake.run_limits.append(work.timeout_s)
+            fake.launches.append((work, dict(kwargs.get("env") or {})))
+            if run_work:
+                return run_work(index, work)
             return run(index) if run else _fake_proc(rc=0, stdout="[sim] ok")
         return original(cmd, *args, **kwargs)
 
@@ -1231,7 +1199,23 @@ def _campaign(
     _prepare_scope_files(tmp_path, (scope or _SCOPE).split(","))
     fake = _patch_fake_simulation(monkeypatch, run=run, build=build, **(simulation or {}))
     endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, **endpoint_args)
-    return endpoint, endpoint._run(), fake
+    return endpoint, endpoint.run_with_claims(CampaignClaims()), fake
+
+
+def _baseline_launches(
+    tmp_path: Path, monkeypatch, tests_toml: str | None = None, **simulation: Any
+) -> tuple[list[tuple[PreparedSimulationWork, dict[str, str]]], FakeSimulation]:
+    """Run a one-Mutant campaign of ``default``; return the baseline's launches and the fake.
+
+    ``tests_toml`` (a ``[default]`` section) is written first; each launch is the work the
+    simulator was given and the environment it ran under.
+    """
+    if tests_toml is not None:
+        _write_tests_toml(tmp_path, tests_toml)
+    _, _, fake = _campaign(
+        tmp_path, monkeypatch, target="default", count=1, min_detected=0, simulation=simulation
+    )
+    return [(work, env) for work, env in fake.launches if _mutant_index(repr(work)) is None], fake
 
 
 def _detects_every_mutant(index: int | None) -> subprocess.CompletedProcess:
