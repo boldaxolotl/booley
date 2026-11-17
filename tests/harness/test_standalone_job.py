@@ -25,6 +25,8 @@ JOBS_ROOT = STANDALONE_ROOT / ".runtime" / "jobs"
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
 CHILD_TIMEOUT_S = 60
+# Each wait on the child ends before pytest's 60 s timeout so a hang fails with the child's output.
+CHILD_WAIT_S = 20
 
 
 class StubEndpoint:
@@ -225,17 +227,26 @@ def run_child_until_signalled(project, tmp_path, signum, script=CHILD, extra_arg
             *extra_args,
         ],
         env=env,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     try:
-        deadline = time.monotonic() + CHILD_TIMEOUT_S
+        deadline = time.monotonic() + CHILD_WAIT_S
         while not marker.exists() and child.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert marker.exists(), "child never reached its run"
+        if not marker.exists():
+            child.kill()
+            out, err = child.communicate()
+            pytest.fail(f"child never reached its run (exit {child.returncode}):\n{out}\n{err}")
         child.send_signal(signum)
         # Kept on subprocess.Popen: test drives the process and signals it
-        _, stderr = child.communicate(timeout=CHILD_TIMEOUT_S)
+        try:
+            _, stderr = child.communicate(timeout=CHILD_WAIT_S)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            out, err = child.communicate()
+            pytest.fail(f"child did not exit {CHILD_WAIT_S}s after signal {signum}:\n{out}\n{err}")
         return child.returncode, stderr
     finally:
         if child.poll() is None:
