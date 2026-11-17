@@ -4945,6 +4945,163 @@ fn issue_3648_truncated_store_names_cause_and_rebuild_hint() {
     let _ = std::fs::remove_file(store);
 }
 
+// -- Query windows outside the trace ----------------------------------
+
+/// The six windowed commands with selectors that work on every fixture;
+/// `{}` marks where the store path goes.
+const WINDOW_COMMANDS: &[(&str, &[&str])] = &[
+    ("signal", &["signal", "{}", "-s", "*"]),
+    ("find", &["find", "{}", "*", "'h1"]),
+    ("wave", &["wave", "{}", "-s", "*"]),
+    ("sample", &["sample", "{}", "*", "rising", "-s", "*"]),
+    ("stats", &["stats", "{}"]),
+    ("distance", &["distance", "{}", "*", "'h1"]),
+];
+
+const ALL: &[&str] = &["signal", "find", "wave", "sample", "stats", "distance"];
+const BOUND_FLAGS: &[&str] = &["find", "sample"];
+const SYNC_PAST_END: &str = "lies outside the trace: counted cycles are 1..19 \
+     (counted after reset), and the trace ends at 200ns";
+const TICK_PAST_END: &str = "lies outside the trace: the trace ends at tick 200 (200ns)";
+
+/// (fixture, commands, window args, flag as typed when a warning is expected).
+type WindowRow = (
+    usize,
+    &'static [&'static str],
+    &'static [&'static str],
+    Option<&'static str>,
+);
+
+fn window_rows() -> Vec<WindowRow> {
+    vec![
+        (0, ALL, &["-t", "5000:6000"], Some("-t 5000:6000 ")),
+        (
+            0,
+            ALL,
+            &["-t", "5000t:6000t", "--async"],
+            Some("-t 5000t:6000t "),
+        ),
+        (1, ALL, &["-t", "5000:6000"], Some("-t 5000:6000 ")),
+        (0, ALL, &["-t", "0:999999"], None),
+        (0, ALL, &["-t", "0:5"], None),
+        (0, ALL, &["-t", "0t:999999t", "--async"], None),
+        (0, &["signal", "wave"], &["-t", "0:0"], Some("-t 0:0 ")),
+        (0, BOUND_FLAGS, &["--before", "0"], Some("--before 0 ")),
+        (0, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
+        (1, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
+        (
+            0,
+            &["signal"],
+            &["--time", "5000:6000"],
+            Some("--time 5000:6000 "),
+        ),
+        (
+            2,
+            &["signal"],
+            &["-t", "60000:70000"],
+            Some("-t 60000:70000 "),
+        ),
+        (2, &["wave"], &["-t", "60000:70000"], None),
+    ]
+}
+
+/// The warning each row expects: the flag as typed plus the trace's extent.
+fn window_expected(fixture: usize, window: &[&str], flag: &str) -> String {
+    let extent = match (fixture, window.contains(&"--async")) {
+        (0, false) => SYNC_PAST_END,
+        (2, _) => "lies outside the trace: the trace ends at tick 52962 (529620ns)",
+        _ => TICK_PAST_END,
+    };
+    format!("{flag}{extent}")
+}
+
+#[test]
+fn window_outside_trace_warning_by_command_and_mode() {
+    let stores = [
+        build_bwave("test_basic.vcd", "window_outside"),
+        build_bwave("test_no_clock.vcd", "window_outside"),
+        build_bwave("medium_async.vcd", "window_outside"),
+    ];
+    for (fixture, commands, window, flag) in window_rows() {
+        let store = stores[fixture].to_str().unwrap();
+        for (name, template) in WINDOW_COMMANDS.iter().filter(|(n, _)| commands.contains(n)) {
+            let mut args: Vec<&str> = template
+                .iter()
+                .map(|a| if *a == "{}" { store } else { *a })
+                .collect();
+            args.extend_from_slice(window);
+            let (_, stderr, code) = run(&args);
+            let context = format!("{name} {window:?} on fixture {fixture}: {stderr}");
+            assert_eq!(code, 0, "{context}");
+            match &flag {
+                Some(flag) => {
+                    let want = format!("# WARNING: {}", window_expected(fixture, window, flag));
+                    assert_eq!(stderr.lines().next(), Some(want.as_str()), "{context}");
+                    assert_eq!(stderr.matches("outside the trace").count(), 1, "{context}");
+                    if *name == "signal" && window.contains(&"--async") {
+                        assert!(
+                            stderr.contains(
+                                "# no transitions in range — showing held values at time 5000"
+                            ),
+                            "{context}"
+                        );
+                    }
+                }
+                None => assert!(!stderr.contains("outside the trace"), "{context}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn window_outside_trace_warning_in_json_envelope() {
+    let store = build_bwave("test_basic.vcd", "window_outside_json");
+    let want = format!("-t 5000:6000 {SYNC_PAST_END}");
+    for (name, template) in WINDOW_COMMANDS.iter().filter(|(n, _)| *n != "sample") {
+        let mut args: Vec<&str> = template
+            .iter()
+            .map(|a| {
+                if *a == "{}" {
+                    store.to_str().unwrap()
+                } else {
+                    *a
+                }
+            })
+            .collect();
+        args.extend_from_slice(&["-t", "5000:6000", "--format", "json"]);
+        let (stdout, stderr, code) = run(&args);
+        assert_eq!(code, 0, "{name}: {stderr}");
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|error| panic!("{name} stdout is not JSON ({error}): {stdout:?}"));
+        assert_eq!(json["warnings"], serde_json::json!([want]), "{name}");
+        assert!(!stderr.contains("outside the trace"), "{name}: {stderr}");
+    }
+}
+
+#[test]
+fn window_outside_trace_warning_names_typed_flag_beside_option_like_store_name() {
+    let store = build_bwave("test_basic.vcd", "window_outside_name");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(&store, dir.path().join("--time=trace.fst")).unwrap();
+    let out = Command::new(exe_path())
+        .current_dir(dir.path())
+        .args([
+            "signal",
+            "-s",
+            "*",
+            "-t",
+            "5000:6000",
+            "--",
+            "--time=trace.fst",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let want = format!("# WARNING: -t 5000:6000 {SYNC_PAST_END}");
+    assert_eq!(stderr.lines().next(), Some(want.as_str()), "{stderr}");
+}
+
 // -- Issue 4703: one validating Verilog-literal parser ---------------
 
 fn issue_4703_store(label: &str) -> (PathBuf, PathBuf) {
