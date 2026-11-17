@@ -100,24 +100,14 @@ def probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, f
     return seen
 
 
-def test_simulation_record_drops_to_run_estimate_after_build(
-    flow_project: Path,
-    tmp_path: Path,
-    probes: list[tuple[str, float | None]],
-) -> None:
-    reuse._assert_built(
-        reuse._flow_sim(flow_project, tmp_path / "reports", "first"), "missing provenance"
-    )
-    assert probes == [("building", 8192.0), ("executing", 50.0)]
-
-
 def test_reused_build_drops_reservation_without_building(
     flow_project: Path,
     tmp_path: Path,
     probes: list[tuple[str, float | None]],
 ) -> None:
     reports = tmp_path / "reports"
-    reuse._flow_sim(flow_project, reports, "first")
+    reuse._assert_built(reuse._flow_sim(flow_project, reports, "first"), "missing provenance")
+    assert probes == [("building", 8192.0), ("executing", 50.0)]
     probes.clear()
     reuse._assert_hit(reuse._flow_sim(flow_project, reports, "first"))
     # No build ran, and the build was counted out all the same.

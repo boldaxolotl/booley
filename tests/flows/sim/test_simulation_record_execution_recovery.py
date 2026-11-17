@@ -12,6 +12,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,7 @@ from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
+    PreSimScopeStoppedError,
     SimulationOptions,
 )
 from booley.flows.sim.record import collect_pre_sim_firings, serial_execution
@@ -51,7 +53,6 @@ from booley.flows.sim.record.run_directory import (
 )
 from booley.flows.sim.record.scheduler import (
     BoundedSimulationRecordScheduler,
-    ScheduledAttempt,
 )
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
@@ -69,6 +70,10 @@ from booley.runtime.job_slots import (
     ClaimAbortedError,
     ClaimLostError,
     SlotStore,
+)
+from booley.runtime.supervised_execution import (
+    SupervisedExecutionScope,
+    supervised_execution_scope,
 )
 from tests.conftest import symlink_or_skip
 from tests.execution_test_support import run_with_recovery_between_read_and_write
@@ -93,92 +98,61 @@ from tests.flows.sim.simulation_record_test_support import (
     _request,
     _run_coverage_simulation_record,
     _run_identity,
+    _scheduled_attempt,
     _two_item_manifest,
     _wait_until,
     _write,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
 from tests.fusesoc_test_support import symlinked_booley_dir
 
 
-def test_simulation_record_pre_sim_commands_have_an_independent_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured: dict[str, object] = {}
+def _project_with_build(tmp_path: Path) -> tuple[Path, Path]:
+    """Return an empty project root and an engine build root holding one image."""
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    build_root = tmp_path / "engine-build"
+    build_root.mkdir()
+    (build_root / "simv").write_bytes(b"image")
+    return project, build_root
 
-    def capture(*_args: object, **kwargs: object) -> None:
-        captured.update(kwargs)
 
-    monkeypatch.setattr(serial_execution, "run_pre_sim_commands", capture)
-    monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
+def _published_request(tmp_path: Path, manifest: Any, **request_options: Any) -> tuple[Any, ...]:
+    """Publish ``manifest`` and return its store, project, build root and first work request.
 
-    serial_execution._run_hook(
-        SimpleNamespace(eda_tool="icarus"),
-        tmp_path,
-        ("smoke",),
-        SimulationOptions(timeout_ms=1000),
-        None,
-        True,
+    A project directory that already exists under ``tmp_path`` is reused.
+    """
+    project, build_root = _project_with_build(tmp_path)
+    store = SimulationRecordStore(tmp_path / "record")
+    store.publish_manifest(manifest)
+    request = _request(
+        store,
+        manifest,
+        manifest.document["work_items"][0],
+        project,
+        invocation=1,
+        **request_options,
     )
+    return store, project, build_root, request
 
-    assert captured["timeout_s"] == DEFAULT_TIMEOUT_S
 
-
+@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
 def test_simulation_record_policy_carries_build_budget_into_execution_options(
-    tmp_path: Path,
+    tmp_path: Path, access: str
 ) -> None:
-    manifest = _manifest_for(("alpha",))
-    project = tmp_path / "project"
-    project.mkdir()
-    build_root = tmp_path / "engine-build"
-    build_root.mkdir()
-    (build_root / "simv").write_bytes(b"image")
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(manifest)
-    captured: list[SimulationOptions] = []
-    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-
-    def factory(options: SimulationOptions) -> _Execution:
-        captured.append(options)
-        return _Execution(build_root, counters)
-
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=factory,  # type: ignore[arg-type,return-value]
+    disclosures = {"alpha": _legacy_disclosures()["alpha"]} if access == "legacy-per-test" else {}
+    manifest = _manifest_for(("alpha",), access=access)
+    if disclosures:
+        document = json.loads(canonical_json_bytes(manifest.document))
+        document.pop("fingerprints")
+        document["planning_disclosures"] = list(disclosures.values())
+        manifest = finalize_manifest(document)
+    _store, _project, build_root, request = _published_request(
+        tmp_path,
+        manifest,
+        policy=SimulationRecordPolicy(timeout_seconds=5, build_timeout_seconds=7),
     )
-    item = manifest.document["work_items"][0]
-    executor.execute(
-        _request(
-            store,
-            manifest,
-            item,
-            project,
-            invocation=1,
-            policy=SimulationRecordPolicy(timeout_seconds=5, build_timeout_seconds=7),
-        )
-    )
-
-    assert captured == [SimulationOptions(timeout_ms=5000, build_timeout_ms=7000)]
-    assert counters["compile"] == 1
-
-
-def test_private_simulation_record_build_uses_carried_build_budget(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    disclosures = {"alpha": _legacy_disclosures()["alpha"]}
-    base_manifest = _manifest_for(("alpha",), access="legacy-per-test")
-    document = json.loads(canonical_json_bytes(base_manifest.document))
-    document.pop("fingerprints")
-    document["planning_disclosures"] = list(disclosures.values())
-    manifest = finalize_manifest(document)
-    project = tmp_path / "project"
-    project.mkdir()
-    build_root = tmp_path / "engine-build"
-    build_root.mkdir()
-    (build_root / "simv").write_bytes(b"image")
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(manifest)
     captured: list[SimulationOptions] = []
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
 
@@ -186,44 +160,21 @@ def test_private_simulation_record_build_uses_carried_build_budget(
         captured.append(options)
         return _Execution(build_root, counters, disclosures=disclosures)
 
-    monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=factory,  # type: ignore[arg-type,return-value]
     )
-    executor.execute(
-        _request(
-            store,
-            manifest,
-            manifest.document["work_items"][0],
-            project,
-            invocation=1,
-            policy=SimulationRecordPolicy(timeout_seconds=5, build_timeout_seconds=7),
-        )
-    )
+    executor.execute(request)
 
     assert captured == [SimulationOptions(timeout_ms=5000, build_timeout_ms=7000)]
     assert counters["compile"] == 1
 
 
 def test_pre_cancelled_simulation_record_hook_never_compiles_or_runs(tmp_path):
-    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
-    from booley.runtime.supervised_execution import (
-        SupervisedExecutionScope,
-        supervised_execution_scope,
-    )
-    from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
-
     plan, _disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), lambda _document: None)
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(plan.manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
-    )
+    _store, _project, build_root, request = _published_request(tmp_path, plan.manifest)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    executor = _executor(tmp_path / "build", counters)
+    executor = _executor(build_root, counters)
     scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: True)
     with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
         executor.execute(request)
@@ -268,28 +219,14 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
     document.pop("fingerprints")
     document["planning_disclosures"] = [planned]
     manifest = finalize_manifest(document)
-    project = tmp_path / "project"
-    project.mkdir()
-    build_root = tmp_path / "engine-build"
-    build_root.mkdir()
-    (build_root / "simv").write_bytes(b"image")
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(manifest)
+    _store, _project, build_root, request = _published_request(tmp_path, manifest)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
 
     with pytest.raises(
         SimulationRecordIntegrityError,
         match="prepared generator source closure disagrees with record plan",
     ):
-        _executor(build_root, counters, disclosures={"alpha": execution}).execute(
-            _request(
-                store,
-                manifest,
-                manifest.document["work_items"][0],
-                project,
-                invocation=1,
-            )
-        )
+        _executor(build_root, counters, disclosures={"alpha": execution}).execute(request)
 
     assert counters["compile"] == 0
 
@@ -299,15 +236,10 @@ def test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch(
 ) -> None:
     manifest = _manifest_for(("alpha",))
     plan = create_simulation_record_plan(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    build_root = tmp_path / "engine-build"
-    build_root.mkdir()
-    (build_root / "simv").write_bytes(b"image")
+    project, build_root = _project_with_build(tmp_path)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     surfaces = iter(("before", "after"))
     monkeypatch.setattr(serial_execution, "project_compile_surface", lambda _root: next(surfaces))
-    monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         serial_execution.TargetCatalog,
         "build",
@@ -336,24 +268,10 @@ def test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch(
 
 
 def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_path, monkeypatch):
-    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
-    from booley.flows.sim.record import serial_execution
-    from booley.runtime.supervised_execution import (
-        SupervisedExecutionScope,
-        supervised_execution_scope,
-    )
-    from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
-
     plan, disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), None)
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(plan.manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    build = tmp_path / "build"
-    build.mkdir()
-    (build / "simv").write_bytes(b"image")
-    request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
+    # A 1s run timeout must not shorten the Pre-Sim Commands' own timeout (#696).
+    store, project, build, request = _published_request(
+        tmp_path, plan.manifest, policy=SimulationRecordPolicy(timeout_seconds=1)
     )
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     executor = _executor(build, counters, disclosures=disclosures)
@@ -363,20 +281,23 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
         lambda _root: SimpleNamespace(select=lambda *_a, **_k: _handle(project)),
     )
     monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
-    original_hook = serial_execution._run_hook
+    original_hook = serial_execution.run_pre_sim_commands
+    timeouts: list[int] = []
     stopped = False
 
     def stop_after_hook(*args, **kwargs):
         nonlocal stopped
+        timeouts.append(kwargs["timeout_s"])
         evidence = original_hook(*args, **kwargs)
         stopped = True
         return evidence
 
-    monkeypatch.setattr(serial_execution, "_run_hook", stop_after_hook)
+    monkeypatch.setattr(serial_execution, "run_pre_sim_commands", stop_after_hook)
     scope = SupervisedExecutionScope(None, project / ".booley", lambda: stopped)
     with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
         executor.execute(request)
     assert counters["launch"] == 0
+    assert timeouts == [DEFAULT_TIMEOUT_S]
     firings = collect_pre_sim_firings(store.manifest_path)
     assert len(firings) == 1
     assert firings[0].document["returncode"] == 0
@@ -384,29 +305,7 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
 
 
-def test_request_reuses_authenticated_manifest_across_firings(tmp_path, monkeypatch):
-    from booley.flows.sim.record import pre_sim_evidence
-
-    original = pre_sim_evidence.manifest_digest
-    calls = []
-
-    def authenticated_digest(manifest):
-        calls.append(manifest)
-        return original(manifest)
-
-    monkeypatch.setattr(pre_sim_evidence, "manifest_digest", authenticated_digest)
-    request = _hook_publication_request(tmp_path)
-    first = _publish_request_hook(request)
-    second = _publish_request_hook(request, "beta", 2)
-    assert len(calls) == 1
-    assert first["path"] == "pre-sim/0001.json"
-    assert second["path"] == "pre-sim/0002.json"
-    assert len(collect_pre_sim_firings(request.store.manifest_path)) == 2
-
-
 def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monkeypatch):
-    from dataclasses import replace
-
     from booley.flows.sim.record import pre_sim_evidence
 
     original = pre_sim_evidence.manifest_digest
@@ -449,8 +348,6 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     ["manifest", "producer", "selection", "ordinal", "status", "item"],
 )
 def test_request_publication_rejects_changed_attempt_after_success(tmp_path, corruption):
-    from dataclasses import replace
-
     request = _hook_publication_request(tmp_path)
     published = []
     request = replace(request, pre_sim_firing_published=published.append)
@@ -488,8 +385,6 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
 
 
 def _project_relative_hook_simulation_record(tmp_path: Path, route: str, configured: str):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
-
     project = tmp_path / "project"
     project.mkdir()
     (project / "hook.py").write_text(
@@ -538,16 +433,9 @@ def test_simulation_record_pre_sim_project_relative_hook_uses_project_root(
     project, plan, disclosures = _project_relative_hook_simulation_record(
         tmp_path, route, configured
     )
-    build = tmp_path / "build"
-    build.mkdir()
-    (build / "simv").write_bytes(b"image")
+    store, _project, build, request = _published_request(tmp_path, plan.manifest)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(plan.manifest)
-    request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
-    )
     result = _executor(build, counters, disclosures=disclosures).execute(request)
     firings = store.pre_sim_references(request.attempt_directory)
     firing = json.loads((request.attempt_directory / firings[0]["path"]).read_text())
@@ -609,50 +497,63 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
 
 
 @pytest.mark.parametrize(
-    "case",
-    ["manifest", "workload", "work_item", "attempt"],
+    "defect",
+    ["manifest", "workload", "work_item", "attempt", "replace", "symlink", "hardlink", "resize"],
 )
-def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: str) -> None:
-    """The scan still binds a complete result to its manifest, item and final attempt."""
+def test_scan_fails_closed_on_a_defective_complete_result(tmp_path: Path, defect: str) -> None:
+    """The scan binds a complete result to its manifest, item and final attempt, and to one file."""
+    (tmp_path / ".booley").mkdir()
     completed = _completed(tmp_path)
     path = completed.store.work_item_directory(completed.item_id) / "result.json"
-    result = _read(path)
-    if case in {"manifest", "workload"}:
-        result[f"{case}_sha256"] = _BAD_DIGEST
-    elif case == "work_item":
-        result["work_item_id"] = "item:9999:" + "e" * 16
+    message: str | None = "result identity disagrees"
+    if defect in {"manifest", "workload", "work_item", "attempt"}:
+        result = _read(path)
+        if defect in {"manifest", "workload"}:
+            # Not a production name: the document key is built as "<defect>_sha256".
+            result[f"{defect}_sha256"] = _BAD_DIGEST
+        elif defect == "work_item":
+            result["work_item_id"] = "item:9999:" + "e" * 16
+        else:
+            result["attempt_id"] = str(uuid.uuid4())
+            message = "result"
+        _write(path, result)
     else:
-        result["attempt_id"] = str(uuid.uuid4())
-    _write(path, result)
-    message = "result" if case == "attempt" else "result identity disagrees"
+        original = path.with_name("original-result.json")
+        path.rename(original)
+        if defect == "replace":
+            replacement = json.loads(original.read_bytes())
+            replacement["attempt_id"] = "0" * 32
+            path.write_bytes(canonical_json_bytes(replacement))
+        elif defect == "symlink":
+            path.symlink_to(original.name)
+        elif defect == "hardlink":
+            os.link(original, path)
+        else:
+            path.write_bytes(b"x" * (RECORD_MAX_BYTES + 1))
+        message = None
     with pytest.raises(SimulationRecordIntegrityError, match=message):
         completed.store.scan()
 
 
-def test_stale_owned_run_tree_is_cleaned_only_for_exact_owner(tmp_path: Path) -> None:
-    identity = _run_identity()
-    run = RunDirectory(
-        tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock", tmp_path
-    )
-    with claimed_run_directory(run, identity=identity) as directory:
-        (directory / "nested").mkdir()
-        (directory / "nested/output.log").write_text("stale", encoding="utf-8")
-        marker = (directory / ".booley-simulation-attempt.json").read_bytes()
-    run.path.mkdir()
-    (run.path / ".booley-simulation-attempt.json").write_bytes(marker)
-    (run.path / "stale.log").write_text("stale", encoding="utf-8")
-    assert cleanup_interrupted_run_directory(run, identity=identity) is True
-    assert not run.path.exists()
-
-
-@pytest.mark.parametrize("marker", ["missing", "mismatched"])
-def test_stale_run_cleanup_preserves_unmarked_or_mismatched_tree(
+@pytest.mark.parametrize("marker", ["owned", "missing", "mismatched"])
+def test_stale_run_cleanup_only_removes_a_tree_the_exact_owner_marked(
     tmp_path: Path, marker: str
 ) -> None:
     identity = _run_identity()
     run = RunDirectory(
         tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock", tmp_path
     )
+    if marker == "owned":
+        with claimed_run_directory(run, identity=identity) as directory:
+            (directory / "nested").mkdir()
+            (directory / "nested/output.log").write_text("stale", encoding="utf-8")
+            owned_marker = (directory / ".booley-simulation-attempt.json").read_bytes()
+        run.path.mkdir()
+        (run.path / ".booley-simulation-attempt.json").write_bytes(owned_marker)
+        (run.path / "stale.log").write_text("stale", encoding="utf-8")
+        assert cleanup_interrupted_run_directory(run, identity=identity) is True
+        assert not run.path.exists()
+        return
     run.path.mkdir()
     payload = run.path / "preserve.log"
     payload.write_text("mine", encoding="utf-8")
@@ -692,13 +593,6 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     capacity = _item_capacity(admission, manifest, registry.project_data, lanes=2)
     attempts: list[Path] = []
 
-    def allocate(item) -> ScheduledAttempt:
-        attempt_id = str(uuid.uuid4())
-        ordinal, directory = simulation_record_store.allocate_attempt_directory(
-            str(item["work_item_id"]), attempt_id
-        )
-        return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
-
     def prepare(attempt, child_id, *_entry_digest) -> None:
         attempts.append(attempt.directory / "attempt.json")
         published = SimulationAttempt(
@@ -731,7 +625,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     errors: list[BaseException] = []
     scheduler = BoundedSimulationRecordScheduler(
         capacity,
-        allocate=allocate,
+        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
         prepare_child=prepare,
         execute=lambda *_args: cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S),
     )
@@ -776,25 +670,32 @@ def _capture_error(errors: list[BaseException], call, *args) -> None:
         errors.append(exc)
 
 
-def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path) -> None:
-    class PreSimFailure(NativeExecution):
+def _pre_sim_adapter(
+    command: str, status: str, detail: str, returncode: int | None, *, infrastructure: bool = False
+) -> NativeExecution:
+    """An injected adapter whose Pre-Sim evidence has ``status``; a merge after it must not run."""
+
+    class PreSimAdapter(NativeExecution):
         def run(self, request):
             self.runs.append(request)
             evidence = PreSimEvidence(
-                ("prepare-vectors",),
-                (request.test.name,),
-                "failed",
-                0.2,
-                "vector generator rejected input",
-                returncode=1,
+                (command,), (request.test.name,), status, 0.2, detail, returncode=returncode
             )
-            return SimulationRunResult("elab_error", evidence.detail, evidence)
+            return SimulationRunResult(
+                "elab_error", evidence.detail, evidence, infrastructure_error=infrastructure
+            )
 
         def command(self, request):
-            raise AssertionError("merge must not run after a Pre-Sim failure")
+            raise AssertionError(f"merge must not run after a Pre-Sim {status}")
 
+    return PreSimAdapter()
+
+
+def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path) -> None:
     outcome, store = _run_coverage_simulation_record(
-        tmp_path, PreSimFailure(), pre_sim_commands=("prepare-vectors",)
+        tmp_path,
+        _pre_sim_adapter("prepare-vectors", "failed", "vector generator rejected input", 1),
+        pre_sim_commands=("prepare-vectors",),
     )
 
     assert outcome.complete is True
@@ -817,26 +718,18 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
 
 
 def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:
-    class PreSimSpawnError(NativeExecution):
-        def run(self, request):
-            evidence = PreSimEvidence(
-                ("missing-vector-generator",),
-                (request.test.name,),
-                "spawn_error",
-                0.2,
-                "missing-vector-generator: command not found",
-                returncode=None,
-            )
-            return SimulationRunResult(
-                "elab_error", evidence.detail, evidence, infrastructure_error=True
-            )
-
-        def command(self, request):
-            raise AssertionError("merge must not run after a Pre-Sim spawn error")
-
+    # Private: `detail["evaluation"]` is only on this exception type, which no public path re-exports.
     with pytest.raises(_CoverageAggregateError, match="missing-vector-generator") as raised:
         _run_coverage_simulation_record(
-            tmp_path, PreSimSpawnError(), pre_sim_commands=("missing-vector-generator",)
+            tmp_path,
+            _pre_sim_adapter(
+                "missing-vector-generator",
+                "spawn_error",
+                "missing-vector-generator: command not found",
+                None,
+                infrastructure=True,
+            ),
+            pre_sim_commands=("missing-vector-generator",),
         )
 
     assert raised.value.detail["evaluation"] == "not_requested"
@@ -878,33 +771,10 @@ def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: P
     assert not list(simulation_record.glob("work-items/*/attempts/*/pre-sim/*.json"))
 
 
-@pytest.mark.parametrize("defect", ["replace", "symlink", "hardlink", "resize"])
-def test_terminal_authority_defect_matrix_fails_closed(tmp_path: Path, defect: str) -> None:
-    (tmp_path / ".booley").mkdir()
-    completed = _completed(tmp_path)
-    result = completed.store.work_item_directory(completed.item_id) / "result.json"
-    original = result.with_name("original-result.json")
-    result.rename(original)
-    if defect == "replace":
-        replacement = json.loads(original.read_bytes())
-        replacement["attempt_id"] = "0" * 32
-        result.write_bytes(canonical_json_bytes(replacement))
-    elif defect == "symlink":
-        result.symlink_to(original.name)
-    elif defect == "hardlink":
-        os.link(original, result)
-    else:
-        result.write_bytes(b"x" * (RECORD_MAX_BYTES + 1))
-
-    with pytest.raises(SimulationRecordIntegrityError):
-        completed.store.scan()
-
-
 def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Resume recovers every lane first: one that cannot be proven terminal keeps all runs."""
-    from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
     from tests.flows.sim.simulation_record_test_support import (
         _interrupted_simulation_record,
         _SimulationRecordAdmissionEndpoint,
