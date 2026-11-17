@@ -818,6 +818,7 @@ def test_prepare_refuses_inconsistent_build_output(
 ) -> None:
     planned = docker_builds.refresh_plan(_project(tmp_path))
     # A crafted plan reaches guards no real plan can: the wheel node names the change.
+    knobs = dict(knobs)  # parametrize objects are reused when CI repeats a test
     changes = {key: knobs.pop(key) for key in ("parent", "role") if key in knobs}
     if changes:
         planned = replace(
@@ -971,8 +972,8 @@ def _installed_project_graph(
 
 
 # Private seam: the next four checks call ``_planned_reason``, ``_inspect_nodes``,
-# ``_verify_prepared_image`` and ``_mutate`` directly. The first and last run only on
-# Project nodes in these tests; production passes them the host base node alone, and
+# ``_verify_prepared_image`` and ``_mutate`` directly. ``_inspect_nodes`` and ``_mutate``
+# run only on Project nodes in these tests; production passes them the host base node alone, and
 # the plan and prepare paths read the selected image more than once by design.
 def _check_planned_reason(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
     node = planned.nodes[-1]
@@ -1316,7 +1317,7 @@ def test_hybrid_project_selection_fingerprint_includes_release_flavor(
         (False, True, lifecycle.ArtifactPolicy.LOCAL_ONLY),
     ],
 )
-def test_official_release_default_project_requirements_use_standard_overlay(
+def test_official_release_artifact_policy_follows_embedding_and_overlay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     embedded: bool,
