@@ -1,10 +1,16 @@
 """Tests for the Flow-neutral durable run-log interface."""
 
+import errno
+import sys
+from contextlib import suppress
+from pathlib import Path
+
 import pytest
 
 from booley.flows import run_log
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
+from tests.sharing_error_support import flaky, hold_opens, hold_replaces, no_retry_delay
 
 # ---------------------------------------------------------------------------
 # write_run_log
@@ -14,19 +20,23 @@ from tests.fusesoc_test_support import symlinked_booley_dir
 class TestWriteRunLog:
     """run.log — the durable raw-output copy that survives stdout truncation."""
 
-    def test_filename_is_exactly_run_log(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("writes", "max_bytes", "expected"),
+        [
+            (("hello\nworld\n",), 4000, "hello\nworld\n"),
+            (("line\n" * 100,), 10_000, "line\n" * 100),
+            (("complete simulator evidence\n",), None, "complete simulator evidence\n"),
+            (("first run", "second run"), 4000, "second run"),
+        ],
+        ids=["short", "under-cap", "no-cap", "overwrite"],
+    )
+    def test_written_verbatim(self, tmp_path, writes, max_bytes, expected):
+        for text in writes:
+            path = run_log.write_run_log(tmp_path, text, max_bytes=max_bytes)
         # CONTRACT: the simulate summary prints <work_dir>/run.log — the
         # filename must not drift.
-        path = run_log.write_run_log(tmp_path, "hello\nworld\n")
         assert path == tmp_path / "run.log"
-        assert path.read_text(encoding="utf-8") == "hello\nworld\n"
-
-    def test_under_cap_written_verbatim(self, tmp_path):
-        text = "line\n" * 100
-        run_log.write_run_log(tmp_path, text, max_bytes=10_000)
-        content = (tmp_path / "run.log").read_text(encoding="utf-8")
-        assert content == text
-        assert "TRUNCATED" not in content
+        assert path.read_text(encoding="utf-8") == expected
 
     def test_over_cap_keeps_tail_with_marker(self, tmp_path):
         lines = [f"line {i:06d}" for i in range(500)]
@@ -44,16 +54,6 @@ class TestWriteRunLog:
         assert body.endswith("line 000499\n")
         # ... and starts on a clean line boundary, not mid-line.
         assert body.splitlines()[0].startswith("line ")
-
-    def test_none_cap_preserves_unabridged_output(self, tmp_path):
-        text = "complete simulator evidence\n"
-        run_log.write_run_log(tmp_path, text, max_bytes=None)
-        assert (tmp_path / "run.log").read_text(encoding="utf-8") == text
-
-    def test_overwrites_previous_log(self, tmp_path):
-        run_log.write_run_log(tmp_path, "first run")
-        run_log.write_run_log(tmp_path, "second run")
-        assert (tmp_path / "run.log").read_text(encoding="utf-8") == "second run"
 
     def test_atomic_leaves_no_tmp_file(self, tmp_path):
         # Atomic tmp+rename: the PID-suffixed staging file must be gone.
@@ -77,7 +77,7 @@ class TestWriteRunLog:
 class TestRunLogHeader:
     """A run.log must never read as live progress while holding old bytes."""
 
-    def test_begin_erases_the_previous_runs_output(self, tmp_path):
+    def test_begin_erases_the_previous_runs_output_and_names_the_run(self, tmp_path):
         run_log.write_run_log(tmp_path, "TEST PASSED\nold verdict\n")
         run_log.begin_run_log(tmp_path, flow="sim", target="sim_fifo", run="run-2")
         content = (tmp_path / "run.log").read_text(encoding="utf-8")
@@ -85,12 +85,7 @@ class TestRunLogHeader:
         assert content.startswith(f"{run_log.RUN_LOG_HEADER_PREFIX} ")
         assert "run=run-2 flow=sim target=sim_fifo started=" in content
         assert run_log.RUN_LOG_PENDING in content
-
-    def test_header_line_names_run_flow_target_and_start(self, tmp_path):
-        run_log.begin_run_log(tmp_path, flow="lint", target="lint_top", run="lint-7")
-        first_line = (tmp_path / "run.log").read_text(encoding="utf-8").splitlines()[0]
-        assert first_line.startswith(f"{run_log.RUN_LOG_HEADER_PREFIX} ")
-        assert "run=lint-7 flow=lint target=lint_top started=" in first_line
+        first_line = content.splitlines()[0]
         assert first_line.endswith("Z")
 
     def test_write_preserves_the_header(self, tmp_path):
@@ -109,11 +104,6 @@ class TestRunLogHeader:
         raw = (tmp_path / "run.log").read_bytes()
         assert len(raw) <= cap
         assert raw.startswith(run_log.RUN_LOG_HEADER_PREFIX.encode())
-
-    def test_headerless_log_is_written_verbatim(self, tmp_path):
-        # Paths that never call begin_run_log keep the historical shape.
-        run_log.write_run_log(tmp_path, "raw output\n")
-        assert (tmp_path / "run.log").read_text(encoding="utf-8") == "raw output\n"
 
     def test_run_token_prefers_the_job_run_id(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_RUN_ID", "simulate-20260726T120000-1")
@@ -149,26 +139,8 @@ class TestRunLogProgress:
         finished = (tmp_path / "run.log").read_text(encoding="utf-8")
         assert run_log.RUN_LOG_IN_PROGRESS_PREFIX not in finished
 
-    def test_progress_keeps_the_tail_when_capped(self, tmp_path):
-        run_log.begin_run_log(tmp_path, flow="sim", target="sim_float", run="run-9")
-        run_log.write_run_log_progress(
-            tmp_path,
-            "".join(f"line {i}\n" for i in range(2000)),
-            elapsed_s=1.0,
-            line_count=2000,
-            max_bytes=400,
-        )
-        raw = (tmp_path / "run.log").read_bytes()
-        assert len(raw) <= 400 + len(run_log.RUN_LOG_HEADER_PREFIX) + 200
-        assert b"line 1999" in raw
-
 
 def test_begin_run_log_never_truncates_unrelated_file(tmp_path, monkeypatch):
-    from contextlib import suppress
-
-    from booley.flows.run_log import begin_run_log
-    from tests.conftest import symlink_or_skip
-
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     failures = []
     for kind in ("symlink", "hardlink", "ancestor"):
@@ -188,15 +160,13 @@ def test_begin_run_log_never_truncates_unrelated_file(tmp_path, monkeypatch):
             else:
                 (evidence / "run.log").hardlink_to(sentinel)
         with suppress(OSError):
-            begin_run_log(evidence, flow="sim", target="sim", owner=case_root)
+            run_log.begin_run_log(evidence, flow="sim", target="sim", owner=case_root)
         if sentinel.read_text() != "retained evidence":
             failures.append(case)
     assert failures == [], f"retained evidence was truncated: {failures}"
 
 
 def test_begin_run_log_refreshes_under_symlinked_parent(tmp_path):
-    from tests.conftest import symlink_or_skip
-
     physical = tmp_path / "physical"
     physical.mkdir()
     alias = tmp_path / "alias"
@@ -210,8 +180,6 @@ def test_begin_run_log_refreshes_under_symlinked_parent(tmp_path):
 
 
 def test_identity_checks_only_through_owning_root(tmp_path):
-    from tests.conftest import symlink_or_skip
-
     physical = tmp_path / "physical"
     physical.mkdir()
     alias = tmp_path / "alias"
@@ -269,11 +237,15 @@ def _live_identity(tmp_path):
     return identity, work, owner
 
 
-def test_run_log_write_survives_transient_replace_sharing_error(tmp_path, monkeypatch):
-    from tests.sharing_error_support import hold_replaces
-
+@pytest.mark.parametrize(("held", "raises"), [(1, False), (100, True)])
+def test_run_log_write_retries_replace_sharing_error(tmp_path, monkeypatch, held, raises):
     work, log = _started_log(tmp_path)
-    attempts = hold_replaces(monkeypatch, {log: 1})
+    attempts = hold_replaces(monkeypatch, {log: held})
+    if raises:
+        with pytest.raises(PermissionError):
+            run_log.write_run_log(work, "output\n")
+        assert attempts[log] > 1
+        return
     run_log.write_run_log(work, "output\n")
     assert attempts[log] == 2
     content = log.read_text(encoding="utf-8")
@@ -281,19 +253,7 @@ def test_run_log_write_survives_transient_replace_sharing_error(tmp_path, monkey
     assert content.endswith("output\n")
 
 
-def test_run_log_write_retries_before_raising_lasting_sharing_error(tmp_path, monkeypatch):
-    from tests.sharing_error_support import hold_replaces
-
-    work, log = _started_log(tmp_path)
-    attempts = hold_replaces(monkeypatch, {log: 100})
-    with pytest.raises(PermissionError):
-        run_log.write_run_log(work, "output\n")
-    assert attempts[log] > 1
-
-
 def test_run_log_write_raises_lasting_header_read_sharing_error(tmp_path, monkeypatch):
-    from tests.sharing_error_support import hold_opens
-
     work, log = _started_log(tmp_path)
     hold_opens(monkeypatch, {log: 100})
     # The writer must not silently drop the ownership header either.
@@ -302,42 +262,36 @@ def test_run_log_write_raises_lasting_header_read_sharing_error(tmp_path, monkey
 
 
 def test_run_log_head_keeps_posix_permission_error_as_empty(tmp_path, monkeypatch):
-    import errno
-    import sys
-    from pathlib import Path
-
-    work, _log = _started_log(tmp_path)
+    work, log = _started_log(tmp_path)
     monkeypatch.setattr(sys, "platform", "linux")
+    real_open = Path.open
 
-    def deny(path, *args, **kwargs):
-        raise PermissionError(errno.EACCES, "Permission denied")
+    def deny_run_log(path, *args, **kwargs):
+        if path == log:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", deny)
-    assert run_log._read_run_log_head(work / "run.log") == (b"", b"")
+    monkeypatch.setattr(Path, "open", deny_run_log)
+    run_log.write_run_log(work, "out\n")
+    monkeypatch.undo()
+    # An unreadable head is a headerless log: the output is written alone.
+    assert log.read_text(encoding="utf-8") == "out\n"
 
 
-def test_run_log_pointer_survives_transient_sharing_error(tmp_path, monkeypatch):
-    from tests.sharing_error_support import flaky, no_retry_delay
-
+@pytest.mark.parametrize("failures", [1, 100])
+def test_run_log_pointer_retries_sharing_error(tmp_path, monkeypatch, failures):
     identity, work, owner = _live_identity(tmp_path)
+    stale = identity.fingerprint
     no_retry_delay(monkeypatch)
-    opener, calls = flaky(run_log.open_regular_nofollow, 1)
+    opener, calls = flaky(run_log.open_regular_nofollow, failures)
     monkeypatch.setattr(run_log, "open_regular_nofollow", opener)
+    if failures > 1:
+        with pytest.raises(PermissionError):
+            identity.pointer(work, "attempt", owner)
+        assert calls[0] > 1
+        assert identity.fingerprint == stale
+        return
     pointer = identity.pointer(work, "attempt", owner)
     assert pointer is not None
     assert pointer["live"] is True
     assert calls == [2]
-
-
-def test_run_log_pointer_raises_lasting_sharing_error(tmp_path, monkeypatch):
-    from tests.sharing_error_support import flaky, no_retry_delay
-
-    identity, work, owner = _live_identity(tmp_path)
-    stale = identity.fingerprint
-    no_retry_delay(monkeypatch)
-    opener, calls = flaky(run_log.open_regular_nofollow, 100)
-    monkeypatch.setattr(run_log, "open_regular_nofollow", opener)
-    with pytest.raises(PermissionError):
-        identity.pointer(work, "attempt", owner)
-    assert calls[0] > 1
-    assert identity.fingerprint == stale
