@@ -235,14 +235,9 @@ def test_omitted_target_rejects_cardinality(entry, name, count, project, execute
 def test_help_states_cardinality_rule(name):
     flow = FLOWS[name]()
     text = " ".join(build_cli_parser(flow).format_help().split())
-    assert all(
-        word in text for word in ("exactly one", "eligible", "announced", "zero", "multiple")
-    ), "help omits cardinality rule"
     description = flow_schema(flow)["properties"]["target"]["description"]
-    assert all(
-        word in description
-        for word in ("exactly one", "eligible", "announced", "zero", "multiple")
-    )
+    rule = ("exactly one", "eligible", "announced", "zero", "multiple")
+    assert all(word in text and word in description for word in rule), "help omits the rule"
     assert ("manifest" in text) == (name == "sim")
 
 
@@ -367,18 +362,25 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     assert captured.err.rstrip().endswith(notice)
 
 
-def test_selection_notice_survives_preparation_failure(project, executed, no_admission, capsys):
+@pytest.mark.parametrize(
+    ("argv", "typed"),
+    ((["--test", "nope"], {"test": ("nope",)}), (["--coverage"], {"coverage": True})),
+    ids=("unknown-test", "coverage"),
+)
+def test_selection_notice_survives_preparation_failure(
+    argv, typed, project, executed, no_admission, capsys
+):
     write_targets(project, "sim")
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()
-    # An unknown Test refuses publicly before any EDA tool runs; only the
-    # CLI transport sets `_cli_invocation`, and it spawns a process.
+    # Both refuse publicly before any EDA tool runs; only the CLI transport
+    # sets `_cli_invocation`, and it spawns a process.
     flow._cli_invocation = CliInvocation(transport=True)
-    result = flow.execute_cli(["--work-dir", str(project), "--test", "nope"])
+    result = flow.execute_cli(["--work-dir", str(project), *argv])
     captured = capsys.readouterr()
     assert result.exit_code == 2 and executed == []
     assert captured.err.count(notice) == 1 and captured.err.rstrip().endswith(notice)
-    SimulateFlow().execute(SimulateFlow.request_type(target="", work_dir=project, test=("nope",)))
+    SimulateFlow().execute(SimulateFlow.request_type(target="", work_dir=project, **typed))
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
 
@@ -446,16 +448,10 @@ def test_dry_run_notice_preserves_stdout_and_selection(project, executed, monkey
     monkeypatch.setattr(LintFlow, "_plan_lint", lambda self, targets: plan)
     outputs = []
     for explicit in (True, False):
+        target = ["--target", "chosen"] if explicit else []
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = LintFlow().execute_cli(
-                [
-                    "--work-dir",
-                    str(project),
-                    "--dry-run",
-                    *(["--target", "chosen"] if explicit else []),
-                ]
-            )
+            result = LintFlow().execute_cli(["--work-dir", str(project), "--dry-run", *target])
         assert result.exit_code == (2 if failed else 0)
         outputs.append(stdout.getvalue())
         assert ("--target omitted" in stderr.getvalue()) == (not explicit)
