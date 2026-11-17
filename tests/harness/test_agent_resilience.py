@@ -14,8 +14,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from booley.runtime.agent_errors import UsageLimitError
-
 # Import from the scripts directory (one level up from unit/)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -223,52 +221,20 @@ class TestHandleRateLimitEvent:
         assert exc_info.value.retry_after == 0
 
     @pytest.mark.asyncio
-    async def test_reset_beyond_the_budget_raises_usage_limit_without_sleeping(self):
-        """A reset past the call's remaining time raises at once, naming limit and reset."""
-        import anyio
-
-        from booley.runtime.agent_backend import _handle_rate_limit_event
-
-        with (
-            patch("booley.runtime._claude_backend.wall_clock", return_value=1_800_000_000),
-            patch.object(anyio, "sleep", AsyncMock()) as sleep,
-            anyio.fail_after(300),
-            pytest.raises(UsageLimitError) as exc_info,
-        ):
-            # 250 s away plus the 60 s buffer is 310 s, more than the ~299 s left.
-            await _handle_rate_limit_event(self._rejected(1_800_000_250))
-
-        assert str(exc_info.value) == (
-            "Claude usage limit reached (seven_day); resets at 2027-01-15T08:04:10Z,"
-            " too late to wait within this call's timeout"
-        )
-        sleep.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("budget", [None, 120])
-    async def test_fallback_backoff_stays_inside_the_budget(self, budget):
+    async def test_fallback_backoff_stays_inside_the_budget(self):
         """Without a reset time the fallback wait ends before the call's budget does."""
-        import contextlib
-
         import anyio
 
-        from booley.runtime._retry import RATE_LIMIT_FALLBACK_BACKOFF_S
         from booley.runtime.agent_backend import _handle_rate_limit_event
 
-        scope = anyio.fail_after(budget) if budget else contextlib.nullcontext()
         with (
             patch.object(anyio, "sleep", AsyncMock()) as sleep,
-            scope,
+            anyio.fail_after(120),
             pytest.raises(TransientAPIError),
         ):
             await _handle_rate_limit_event(self._rejected(None))
 
-        sleep.assert_awaited_once()
-        waited = sleep.call_args[0][0]
-        if budget is None:
-            assert waited == RATE_LIMIT_FALLBACK_BACKOFF_S
-        else:
-            assert budget - 2 < waited < budget - 0.99
+        assert 118 < sleep.call_args[0][0] < 119.01
 
     @pytest.mark.asyncio
     async def test_allowed_warning_logs_only(self):

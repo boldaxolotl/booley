@@ -60,7 +60,7 @@ def _successful_result():
 
 
 _NOW = 1_800_000_000
-_FAR_RESET = 1_800_108_000  # 30 hours after _NOW
+_FAR_RESET = 1_800_108_000
 FAR_RESET_MESSAGE = (
     "Claude usage limit reached (seven_day); resets at 2027-01-16T14:00:00Z,"
     " too late to wait within this call's timeout"
@@ -68,9 +68,8 @@ FAR_RESET_MESSAGE = (
 
 
 def rejected_seven_day(resets_at):
-    return _RateLimit(
-        SimpleNamespace(status="rejected", resets_at=resets_at, rate_limit_type="seven_day")
-    )
+    info = SimpleNamespace(status="rejected", resets_at=resets_at, rate_limit_type="seven_day")
+    return _RateLimit(info)
 
 
 def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
@@ -120,7 +119,7 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
 
 def fake_limit_query(monkeypatch, resets_at):
     """Make every Claude query yield one rejected limit event; return (queries, sleep mock)."""
-    queries = []
+    queries: list[str] = []
 
     async def query(*, prompt, options):
         queries.append(prompt)
@@ -142,10 +141,9 @@ def _limit_params(tmp_path):
 
 def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(tmp_path, monkeypatch):
     queries, sleep = fake_limit_query(monkeypatch, _FAR_RESET)
-    backend = claude.ClaudeSDKBackend(auth_mode="visitor")
 
     with pytest.raises(UsageLimitError) as raised:
-        asyncio.run(backend.call(_limit_params(tmp_path)))
+        asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path)))
 
     assert str(raised.value) == FAR_RESET_MESSAGE
     assert queries == ["work"]
@@ -172,13 +170,9 @@ def test_claude_limit_event_after_the_result_keeps_the_result(tmp_path, monkeypa
 
     monkeypatch.setattr(claude, "RateLimitEvent", _RateLimit)
     monkeypatch.setattr(claude, "query", query)
-    monkeypatch.setattr(claude, "wall_clock", lambda: _NOW)
 
-    result = asyncio.run(
-        claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path))
-    )
-
-    assert result.output == "done"
+    backend = claude.ClaudeSDKBackend(auth_mode="visitor")
+    assert asyncio.run(backend.call(_limit_params(tmp_path))).output == "done"
 
 
 def test_runtime_import_and_artifact_use_never_load_ticket_board(tmp_path):

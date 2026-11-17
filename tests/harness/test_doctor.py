@@ -3505,11 +3505,7 @@ class TestDeveloperProbe:
         _deep_synth_writes_complete_report(monkeypatch, tmp_path / ".booley")
 
         real = developer_probe.measure_developer_rss
-
-        def measure(root, **_kw):
-            return real(root, getrusage=_rusage(0, 0))
-
-        _patch_developer_probe(monkeypatch, measure)
+        _patch_developer_probe(monkeypatch, lambda root, **_: real(root, getrusage=_rusage(0, 0)))
 
         result = _doctor_run(tmp_path, deep=True)
 
