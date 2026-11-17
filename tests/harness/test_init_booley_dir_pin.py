@@ -50,10 +50,12 @@ def _reconcile(
     ctx = InitContext(
         project_root=project, interactive=interactive, check_only=flags.get("check_only", False)
     )
+    # private: the public `run_init` needs the full host stub set and a non-symlinked layout.
     return init_cmd._reconcile_booley_dir_pin(ctx, args), ctx
 
 
 def _pin_file(project: Path) -> Path:
+    # private: `booley_dir_pin` has no public path to the raw pin bytes these tests corrupt.
     return booley_dir_pin._store().root / booley_dir_pin._pin_filename(project)
 
 
@@ -175,16 +177,19 @@ def test_full_init_pins_before_bootstrap_and_stops_on_a_retargeted_link(
     def stop_at_bootstrap(_ctx, _args):
         reached_bootstrap.append(True)
 
+    # private: stops `run_init` at the first step that follows the link (host and Docker).
     monkeypatch.setattr(init_cmd, "_project_checkout_ready", lambda _ctx: True)
     monkeypatch.setattr(init_cmd, "_reconcile_init_bootstrap", stop_at_bootstrap)
     monkeypatch.setattr("sys.stdin", type("NoTty", (), {"isatty": lambda self: False})())
     args = type("Args", (), {})()
 
+    # private: `run_init` also takes the host lifecycle lock, which these tests do not need.
     assert init_cmd._run_init_unlocked(args, project) == 0
     assert reached_bootstrap == [True]
     booley_dir_pin.require_pinned_entry(project)
 
     reached_bootstrap.clear()
     _retarget(project, _new_target(tmp_path, "ext-b"))
+    # private: see above.
     assert init_cmd._run_init_unlocked(args, project) == 2
     assert reached_bootstrap == []
