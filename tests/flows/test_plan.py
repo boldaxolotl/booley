@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from math import inf, nan
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from booley.flows.plan import (
     FlowPlan,
     WorkUnitPlan,
     normalize_plan_argv,
+    normalize_plan_inputs,
     normalize_plan_path,
     plan_value_fingerprint,
     stable_unit_id,
@@ -140,6 +142,18 @@ def test_argv_normalization_accepts_every_separator_spelling(
     assert normalize_plan_argv(
         ("tool", root, f"{root}{separator}.booley_work{separator}sim"), tmp_path
     ) == ("tool", ".", ".booley_work/sim")
+
+
+def test_inputs_are_partitioned_and_normalized_once(tmp_path: Path) -> None:
+    inputs = (
+        SimpleNamespace(path=str(tmp_path / "rtl/top.sv"), file_type="systemVerilogSource"),
+        SimpleNamespace(path=str(tmp_path / "constraints/top.sdc"), file_type="SDC"),
+    )
+
+    assert normalize_plan_inputs(inputs, tmp_path) == (
+        ("rtl/top.sv",),
+        ("constraints/top.sdc",),
+    )
 
 
 @pytest.mark.parametrize("value", [nan, inf, -inf])

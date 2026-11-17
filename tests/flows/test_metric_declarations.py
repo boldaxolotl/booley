@@ -200,7 +200,7 @@ def test_undeclared_flow_is_a_lookup_error() -> None:
         metric_declarations("elab")
 
 
-def test_synth_run_returns_cell_count_and_per_clock_timing() -> None:
+def test_synth_output_parses_to_cell_count_and_per_clock_timing() -> None:
     metrics = _synth_metrics()
 
     values = metrics.flow_metrics()
@@ -213,7 +213,7 @@ def test_synth_run_returns_cell_count_and_per_clock_timing() -> None:
     assert values.per_clock["whs_ns"] == pytest.approx({"clk_core": 0.1, "clk_io": 0.2})
 
 
-def test_fpga_run_returns_lut_count_and_per_clock_timing() -> None:
+def test_fpga_reports_parse_to_lut_count_and_per_clock_timing() -> None:
     values = _fpga_metrics().flow_metrics()
 
     assert values.plain["lut_count"] == 18

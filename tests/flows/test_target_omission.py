@@ -354,8 +354,12 @@ def test_typed_omission_preserves_caller_request(name, project, executed, capsys
 @pytest.mark.parametrize("quiet", (True, False), ids=("quiet", "normal"))
 def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, executed, capsys):
     write_targets(project, "lint")
+    flow = LintFlow()
     argv = ["--work-dir", str(project)] + (["--quiet"] if quiet else [])
-    LintFlow().execute_cli(argv)
+    result = flow.execute_cli(argv)
+    # A second publication must not print the notice again; only the endpoint
+    # object can republish, no public entry point does.
+    flow._publish_console_report(result.outcome)
     captured = capsys.readouterr()
     notice = "lint: --target omitted; selected Target chosen."
     assert captured.err.count(notice) == 1
@@ -363,35 +367,18 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     assert captured.err.rstrip().endswith(notice)
 
 
-@pytest.mark.parametrize("failure", ("simulation", "coverage"))
-def test_selection_notice_survives_preparation_failure(
-    failure, project, executed, no_admission, monkeypatch, capsys
-):
+def test_selection_notice_survives_preparation_failure(project, executed, no_admission, capsys):
     write_targets(project, "sim")
-    # Each refusal needs EDA tools or a simulator that cannot collect coverage.
-    if failure == "simulation":
-        monkeypatch.setattr(
-            SimulateFlow,
-            "_validate_prepared_selection",
-            lambda *args: EndpointOutcome(exit_code=2, report_text="simulation refused"),
-        )
-    else:
-        monkeypatch.setattr(
-            SimulateFlow,
-            "_prepare_coverage",
-            lambda self: EndpointOutcome(exit_code=2, report_text="coverage refused"),
-        )
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()
-    extra = ["--coverage"] if failure == "coverage" else []
+    # An unknown Test refuses publicly before any EDA tool runs; only the
+    # CLI transport sets `_cli_invocation`, and it spawns a process.
     flow._cli_invocation = CliInvocation(transport=True)
-    result = flow.execute_cli(["--work-dir", str(project), *extra])
+    result = flow.execute_cli(["--work-dir", str(project), "--test", "nope"])
     captured = capsys.readouterr()
     assert result.exit_code == 2 and executed == []
     assert captured.err.count(notice) == 1 and captured.err.rstrip().endswith(notice)
-    SimulateFlow().execute(
-        SimulateFlow.request_type(target="", work_dir=project, coverage=failure == "coverage")
-    )
+    SimulateFlow().execute(SimulateFlow.request_type(target="", work_dir=project, test=("nope",)))
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
 

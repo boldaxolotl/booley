@@ -356,6 +356,12 @@ class TestBatching:
             ["b@5", "a@5"],
         ]
 
+    def test_a_test_appears_once_per_cocotb_batch(self):
+        plan = self._cocotb_plan()
+        runs = (plan.run("c", "plain"), build_test_run("c", variant="twin", seed=1))
+        batches = batch_test_runs(runs, one_process_per_run=False)
+        assert [len(batch) for batch in batches] == [1, 1]
+
 
 def test_the_plan_module_reads_no_file_and_only_its_loader_does():
     """The module contract: pure policy here, ``tests.toml`` I/O in the loader."""
