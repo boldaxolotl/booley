@@ -50,13 +50,17 @@ def _current(trace, patterns: tuple[str, ...] = (), roots: tuple[Path, ...] = ()
     return CurrentRunTraces(trace, patterns, roots, {})
 
 
+def _finalize(trace, sim_proc=None, *, patterns=(), roots=(), timeout=60, **kwargs):
+    return finalize_trace(
+        _current(trace, patterns, roots), sim_proc, convert_timeout_s=timeout, **kwargs
+    )
+
+
 def test_ok_store_reports_metadata(tmp_path: Path):
     store = tmp_path / "trace.fst"
     store.write_bytes(b"fst")
 
-    output, result = finalize_trace(
-        _current(_FakeTrace(store, owned=True)), None, convert_timeout_s=60
-    )
+    output, result = _finalize(_FakeTrace(store, owned=True))
 
     metadata = TraceArtifact(store, 3, "tb", 3, 7).metadata_line()
     assert output == f"\nTRACE_OK: {store}\n{metadata}"
@@ -70,9 +74,7 @@ def test_unqueryable_store_is_an_incident(tmp_path: Path):
     trace = _FakeTrace(store, failure="FST has no signals", owned=True)
     sim_proc, conversion = SimpleNamespace(returncode=1), SimpleNamespace(name="bwave")
 
-    output, result = finalize_trace(
-        _current(trace), sim_proc, convert_timeout_s=60, conversion=conversion
-    )
+    output, result = _finalize(trace, sim_proc, conversion=conversion)
 
     reason = "trace requested but the retained waveform is not queryable: FST has no signals"
     assert trace.incidents == [(reason, sim_proc, conversion)]
@@ -96,7 +98,7 @@ def test_unqueryable_store_is_an_incident(tmp_path: Path):
 def test_missing_trace_names_what_was_searched_for(
     patterns: tuple[str, ...], roots: tuple[Path, ...], hint: str
 ):
-    _, result = finalize_trace(_current(_FakeTrace(), patterns, roots), None, convert_timeout_s=60)
+    _, result = _finalize(_FakeTrace(), patterns=patterns, roots=roots)
 
     assert result.status == "incident"
     assert result.detail == OPENING + hint
@@ -108,9 +110,7 @@ def test_raw_vcd_is_always_an_incident(tmp_path: Path):
     raw.write_bytes(b"0" * 8)
     trace = _FakeTrace(raw, failure="retained trace is raw .vcd")
 
-    output, result = finalize_trace(
-        _current(trace, ("dump.vcd",), (tmp_path,)), None, convert_timeout_s=60
-    )
+    output, result = _finalize(trace, patterns=("dump.vcd",), roots=(tmp_path,))
 
     assert result.status == "incident"
     assert "TRACE_INCIDENT" in output
@@ -125,13 +125,7 @@ def test_budget_starts_and_pending_incident_is_published_before_conversion(tmp_p
     def publish(pending) -> None:
         seen.append((pending.status, *trace.events))
 
-    finalize_trace(
-        _current(trace),
-        None,
-        convert_timeout_s=42,
-        publish_pending=publish,
-        raw_vcd=tmp_path / "dump.vcd",
-    )
+    _finalize(trace, timeout=42, publish_pending=publish, raw_vcd=tmp_path / "dump.vcd")
 
     assert seen == [("incident", "budget:42")]
     assert trace.events[:2] == ["budget:42", "postprocess"]
