@@ -1104,6 +1104,15 @@ def test_tty_lane_rows_are_indented_and_aligned(tmp_path, monkeypatch, colors):
     assert any("\x1b[" in row for row in frame) is colors
 
 
+def test_tty_lane_row_without_output_has_no_last_output_part(tmp_path, monkeypatch):
+    sink, clock = _tty_sink(tmp_path, monkeypatch, target="sim_demo")
+    with frozen_worker(sink), progress_lane("gamma/3"):
+        announce_unit("building")
+        clock[0] = 63.0
+        rows = _frame(sink)
+    assert rows[1] == "  gamma/3   building"
+
+
 def test_tty_lane_names_are_cut_to_fit(tmp_path, monkeypatch):
     with _two_lanes(
         tmp_path, monkeypatch, colors=False, width=30, alpha="a" * 40, alpha_tail=b"x" * 60 + b"\n"
