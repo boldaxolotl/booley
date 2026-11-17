@@ -3,10 +3,6 @@
 Handles Agent CLI and model selection from booley.toml ([models] pins), prompt
 construction, and transcript capture. Reuses the existing agent.py / _claude_backend.py /
 _codex_backend.py infrastructure.
-
-Code-modifying Specialists: subclasses that set ``code_modifying = True`` can
-use ``_commit_agent_changes()`` to commit the agent's work from Python
-instead of relying on the agent to run git commands.
 """
 
 from __future__ import annotations
@@ -16,7 +12,6 @@ import contextlib
 import dataclasses
 import logging
 import os
-import subprocess
 import threading
 from abc import abstractmethod
 from collections.abc import Sequence
@@ -24,18 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.agent_workspace.isolation import remove_shadow_package
-from booley.commit_policy import banned_phrases, stealth_enabled, validate_message
 from booley.core.boundary import parse_positive_int_arg
 from booley.core.models import AgentCallParams
-
-# Also re-exported for backward compatibility: tests import
-# _git_head_sha / _read_commit_info from this module.
-from booley.dev_support.commit_git_io import (
-    _git_head_sha,
-    _git_revert_files,
-    _read_commit_info,
-    _save_files_to_logs,
-)
 from booley.flows import job_resources
 from booley.flows.cli_arguments import HumanParser, add_timeout_args
 from booley.flows.cli_help import SurfaceHelp
@@ -405,35 +390,6 @@ class Specialist(McpTool):
             self._last_session_id = session_id if isinstance(session_id, str) else None
         return result
 
-    def _invoke_agent_with_resume(
-        self,
-        params: AgentCallParams,
-        on_event: Any = None,
-    ) -> Any:
-        """Call an agent with resume; fall back to fresh session on failure.
-
-        Only catches SDK/API errors that could be caused by a stale session.
-        Timeouts and hard crashes propagate unchanged.
-        """
-        if not params.resume_session:
-            return self._invoke_agent(params, on_event=on_event)
-        from claude_agent_sdk import ClaudeSDKError
-
-        from booley.runtime.agent_errors import ModelUnavailableError, TransientAPIError
-
-        try:
-            return self._invoke_agent(params, on_event=on_event)
-        except ModelUnavailableError:
-            raise  # a fresh session asks the same refused model; the fix is config
-        except (ClaudeSDKError, TransientAPIError, RuntimeError) as exc:
-            logger.warning(
-                "%s: resumed session failed (%s), retrying as fresh invocation",
-                self.name,
-                exc,
-            )
-            fresh = dataclasses.replace(params, session_id=None, resume_session=False)
-            return self._invoke_agent(fresh, on_event=on_event)
-
     # --- Session persistence helpers ---
 
     def _session_file_path(self, key: str) -> Path | None:
@@ -467,22 +423,6 @@ class Specialist(McpTool):
             path.write_text(self._last_session_id, encoding="utf-8")
         except OSError:
             logger.warning("Failed to persist session_id to %s", path)
-
-    def _load_session_id(self, key: str) -> str | None:
-        """Load a previously persisted session_id. Returns None if missing/corrupt."""
-        path = self._session_file_path(key)
-        if path is None or not path.exists():
-            return None
-        try:
-            sid = path.read_text(encoding="utf-8").strip()
-            return sid if sid else None
-        except OSError:
-            logger.warning("Failed to load session_id from %s", path)
-            return None
-
-    def _build_resume_params(self, params: AgentCallParams, session_id: str) -> AgentCallParams:
-        """Return a copy of params configured for session resume."""
-        return dataclasses.replace(params, session_id=session_id, resume_session=True)
 
     def _make_streaming_callback(self) -> Any:
         """Create an on_event callback that streams agent text to display.jsonl."""
@@ -592,206 +532,6 @@ class Specialist(McpTool):
 
         self.emit_progress("Specialist completed, interpreting output")
         return self._interpret_output(result.output, result.structured)
-
-    # --- Git commit helpers for code-modifying Specialists ---
-
-    # Subclasses override to provide a Specialist-specific fallback message.
-    _default_commit_message: str = "Apply Specialist changes"
-
-    # Shared commit-message guidance injected into code-modifying Specialist prompts.
-    # NOTE: do not bake the banned-phrase list into this static string — the
-    # list is loaded from booley.toml at module import in
-    # ``commit_msg_utils`` and is project-specific. Use
-    # ``commit_msg_banned_phrase_note()`` to get a dynamic warning string.
-    COMMIT_MSG_GUIDANCE = (
-        "## Commit Message\n"
-        "Write your `commit_message` as a short, descriptive one-line summary "
-        "of the change, e.g. 'Add carry-lookahead pipeline to the adder'.\n"
-    )
-
-    @staticmethod
-    def commit_msg_banned_phrase_note(project_root: Path | None = None) -> str:
-        """Build a "do not use these words" note from the live banned-phrase list.
-
-        Loaded dynamically so project-local overrides (booley.toml
-        ``[stealth] banned_words``) are honored. Used by code-modifying Specialists
-        to warn the agent up front and avoid burning a full agent run to a
-        post-hoc commit-msg rejection (Pattern A4 — see field reports).
-        """
-        # Stealth mode is opt-in ([stealth] enabled = true); when off, neither
-        # the commit-msg hook nor this prompt warning applies.
-        phrases = banned_phrases(project_root)
-        if not stealth_enabled(project_root) or not phrases:
-            return ""
-        joined = ", ".join(sorted(set(phrases)))
-        return (
-            "## Banned Words in Commit Message\n"
-            "Your `commit_message` MUST NOT contain any of the following "
-            "phrases (case-insensitive identifier-token matching, including "
-            "CamelCase and digits; known identity names and configured "
-            "banned_substrings match anywhere). They are "
-            "rejected by the commit-msg validator, and the commit fails "
-            f"after the work is done:\n  {joined}\n"
-            "Pick neutral hardware-design vocabulary instead "
-            "(e.g. 'utility', 'helper', 'module', 'block').\n"
-        )
-
-    class GitStatusError(RuntimeError):
-        """Raised when ``git status`` fails (e.g. ownership / config issues)."""
-
-    def _get_uncommitted_files(self) -> list[str]:
-        """Return repo-relative paths of modified/untracked files.
-
-        Raises ``GitStatusError`` if ``git status`` itself fails so callers
-        can distinguish "no changes" from "git is broken".
-        """
-        try:
-            result = subprocess.run(
-                ["git", "status", "--porcelain", "-uall"],
-                cwd=self.args.work_dir,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if result.returncode != 0:
-                logger.error(
-                    "git status failed (rc=%d): %s",
-                    result.returncode,
-                    result.stderr.strip(),
-                )
-                raise self.GitStatusError(result.stderr.strip())
-        except subprocess.TimeoutExpired as exc:
-            logger.error("git status timed out in %s", self.args.work_dir)
-            raise self.GitStatusError("git status timed out") from exc
-        except FileNotFoundError as exc:
-            logger.error("git not found on PATH")
-            raise self.GitStatusError("git not found") from exc
-        files: list[str] = []
-        for line in result.stdout.splitlines():
-            if len(line) > 3:
-                path = line[3:].split(" -> ")[-1].strip()
-                files.append(path.replace("\\", "/"))
-        return files
-
-    def _commit_agent_changes(
-        self,
-        message: str | None = None,
-        *,
-        scope_files: list[str],
-    ) -> dict[str, Any] | None:
-        """Stage and commit the agent's file changes from Python.
-
-        If the agent already committed (HEAD advanced past ``_before_sha``),
-        returns that commit's info without creating another.
-
-        Returns:
-            Dict with ``sha``, ``subject``, ``stat_summary``, ``changed_files``
-            on success; ``None`` if nothing to commit.
-        """
-        work_dir = self.args.work_dir
-        before_sha = getattr(self, "_before_sha", None)
-        msg = self._prepare_commit_message(message)
-
-        # Agent may have committed despite being told not to — use it.
-        current_sha = _git_head_sha(work_dir)
-        if before_sha and current_sha and current_sha != before_sha:
-            logger.info("Specialist already committed — using existing commit")
-            return _read_commit_info(work_dir, before_sha)
-
-        # Stage selected files while preserving other authored changes
-        to_stage, reverted = self._resolve_stageable_files(scope_files)
-        if not to_stage:
-            return None
-
-        # Stage and commit
-        self._git_add_and_commit(work_dir, to_stage, msg)
-        info = _read_commit_info(work_dir, before_sha or "")
-        if reverted:
-            info["reverted_files"] = reverted
-        return info
-
-    def _prepare_commit_message(self, message: str | None) -> str:
-        """Validate the agent's commit message as written, raising on failure.
-
-        Booley imposes no message convention; only the Project's Stealth
-        policy (banned terms, ``max_body_lines``) applies.
-        """
-        work_dir = self.args.work_dir
-        msg = (message or "").strip() or self._default_commit_message
-
-        # Guard: never commit in main worktree (must be a linked worktree)
-        git_path = Path(work_dir) / ".git"
-        if git_path.is_dir():
-            raise self.GitStatusError(
-                f"Refusing to commit in main worktree ({work_dir}). "
-                "Commits must happen in a linked worktree (.git must be a file)."
-            )
-
-        errors = validate_message(msg, project_root=work_dir)
-        if errors:
-            raise self.GitStatusError(f"Commit message validation failed: {'; '.join(errors)}")
-        return msg
-
-    def _resolve_stageable_files(
-        self,
-        scope_files: list[str],
-    ) -> tuple[list[str], list[dict[str, str]]]:
-        """Determine which selected files to stage; preserve other edits.
-
-        Returns (to_stage, reverted_info).
-        """
-        try:
-            uncommitted = self._get_uncommitted_files()
-        except self.GitStatusError as exc:
-            logger.error("Cannot list changes — git is broken: %s", exc)
-            raise
-        if not uncommitted:
-            return [], []
-        allowed = {f.replace("\\", "/") for f in scope_files}
-        to_stage = [f for f in uncommitted if f in allowed]
-        # Preserve other authored work for the Developer to commit and explain.
-        return to_stage, []
-
-    def _git_add_and_commit(
-        self,
-        work_dir: Path,
-        to_stage: list[str],
-        msg: str,
-    ) -> None:
-        """Stage files and create a commit. Raises GitStatusError on failure."""
-        from booley.runtime.git import git_run
-
-        add_result = git_run(work_dir, ["add", "--", *to_stage], timeout=30)
-        if add_result.returncode != 0:
-            logger.error("Git add failed: %s\nstdout: %s", add_result.stderr, add_result.stdout)
-            raise self.GitStatusError(f"git add failed: {add_result.stderr.strip()}")
-
-        commit_result = git_run(work_dir, ["commit", "-m", msg], timeout=30)
-        if commit_result.returncode != 0:
-            logger.error(
-                "Git commit failed: %s\nstdout: %s", commit_result.stderr, commit_result.stdout
-            )
-            raise self.GitStatusError(f"git commit failed: {commit_result.stderr.strip()}")
-
-    def _revert_out_of_scope(self, paths: list[str]) -> list[dict[str, str]]:
-        """Copy out-of-scope files to logs, then revert them from worktree.
-
-        Returns a list of dicts with ``original_path`` and ``saved_path``.
-        """
-        work_dir = Path(self.args.work_dir)
-        saved = _save_files_to_logs(work_dir, paths)
-        _git_revert_files(work_dir, paths)
-        return saved
-
-    @staticmethod
-    def _extract_commit_message(structured: dict | None) -> str | None:
-        """Extract commit_message from agent's structured output, if present."""
-        if structured and isinstance(structured, dict):
-            msg = structured.get("commit_message")
-            if msg and isinstance(msg, str) and msg.strip():
-                return msg.strip()
-        return None
 
     def _stamp_model_note(self, detail: dict[str, Any]) -> None:
         """Record the model that ran (and any ``[models]`` fallback) in *detail*.

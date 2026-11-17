@@ -348,6 +348,7 @@ impl ColumnCache {
             }
         };
         let mut pattern_hit = vec![false; matchers.len()];
+        let mut boundary_matches: Vec<Vec<&str>> = vec![Vec::new(); matchers.len()];
         let mut exact = std::collections::HashSet::new();
         let mut globs: HashMap<u64, usize> = HashMap::new();
         for (i, signal) in self.signals.iter().enumerate() {
@@ -358,6 +359,9 @@ impl ColumnCache {
                         globs.insert(signal.group_id, i);
                     } else {
                         exact.insert(i);
+                        if at_scope_boundary(&signal.name, &patterns[pi]) {
+                            boundary_matches[pi].push(&signal.name);
+                        }
                     }
                 }
             }
@@ -385,19 +389,17 @@ impl ColumnCache {
                 extra_results.push(i);
             }
         }
+        let all_empty = results.is_empty() && extra_results.is_empty();
+        let notes: Vec<String> = patterns
+            .iter()
+            .zip(&boundary_matches)
+            .filter_map(|(pattern, matched)| scope_depth_note(pattern, matched))
+            .collect();
         if report {
-            report_unmatched_patterns(
-                patterns,
-                &pattern_hit,
-                results.is_empty() && extra_results.is_empty(),
-            );
+            report_selection(patterns, &pattern_hit, all_empty, &notes);
         }
         SignalSelection {
-            warnings: unmatched_pattern_warnings(
-                patterns,
-                &pattern_hit,
-                results.is_empty() && extra_results.is_empty(),
-            ),
+            warnings: selection_warnings(patterns, &pattern_hit, all_empty, &notes),
             stored: results,
             extra: extra_results,
         }
@@ -731,6 +733,87 @@ fn unmatched_pattern_warnings(patterns: &[String], hit: &[bool], all_empty: bool
         .collect()
 }
 
+const BARE_NAME_HINT: &str =
+    "bare names match the end of the full path; use `*name*` to match a substring";
+const ROWS_MISSING_HINT: &str = "rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`";
+/// Longest path list a scope-depth note spells out.
+const SCOPE_NOTE_PATHS: usize = 3;
+
+/// True when some missed pattern is not an array element, whose own hint
+/// already explains the missing row.
+fn rows_missing_hint(patterns: &[String], hit: &[bool]) -> bool {
+    patterns
+        .iter()
+        .zip(hit)
+        .any(|(pat, hit)| !*hit && !looks_like_array_element(pat))
+}
+
+/// `s` without a trailing bit range: cut at the last `[`.
+fn without_range(s: &str) -> &str {
+    match (s.strip_suffix(']'), s.rfind('[')) {
+        (Some(_), Some(open)) => s[..open].trim_end_matches(' '),
+        _ => s,
+    }
+}
+
+/// True when `name` is `pattern` or ends with `.pattern`, ignoring a bit
+/// range on either side (matching strips both).
+fn at_scope_boundary(name: &str, pattern: &str) -> bool {
+    let boundary = |name: &str, pattern: &str| {
+        name == pattern
+            || name
+                .strip_suffix(pattern)
+                .is_some_and(|head| head.ends_with('.'))
+    };
+    boundary(name, pattern) || boundary(without_range(name), without_range(pattern))
+}
+
+/// The scope-depth note body for a bare `pattern` that matched at least two
+/// signals at scope boundaries, or None.
+fn scope_depth_note(pattern: &str, matched: &[&str]) -> Option<String> {
+    if explicit_glob(pattern) || matched.len() < 2 {
+        return None;
+    }
+    let shown = matched[..matched.len().min(SCOPE_NOTE_PATHS)].join(", ");
+    let more = match matched.len() - SCOPE_NOTE_PATHS.min(matched.len()) {
+        0 => String::new(),
+        n => format!(" (+{n} more)"),
+    };
+    Some(format!(
+        "'{pattern}' matches {} signals in different scopes: {shown}{more}; pass the full path to pick one",
+        matched.len()
+    ))
+}
+
+/// JSON `warnings` for a selection: dropped patterns, the rows-missing hint,
+/// then the scope-depth notes.
+fn selection_warnings(
+    patterns: &[String],
+    hit: &[bool],
+    all_empty: bool,
+    notes: &[String],
+) -> Vec<String> {
+    let mut warnings = unmatched_pattern_warnings(patterns, hit, all_empty);
+    if !all_empty && rows_missing_hint(patterns, hit) {
+        warnings.push(ROWS_MISSING_HINT.to_string());
+    }
+    warnings.extend(notes.iter().cloned());
+    warnings
+}
+
+/// Print the stderr diagnostics for a selection: the miss block, then notes.
+fn report_selection(patterns: &[String], hit: &[bool], all_empty: bool, notes: &[String]) {
+    report_unmatched_patterns(patterns, hit, all_empty);
+    if notes.is_empty() {
+        return;
+    }
+    let mut err = BufWriter::new(io::stderr().lock());
+    for note in notes {
+        let _ = writeln!(err, "# NOTE: {note}");
+    }
+    let _ = err.flush();
+}
+
 /// Warn (once per query) about `-s` patterns that matched no signal.
 ///
 /// Silent when every pattern matched, and silent when *nothing* matched at
@@ -765,6 +848,9 @@ fn report_unmatched_patterns(patterns: &[String], hit: &[bool], all_empty: bool)
         misses.len(),
         patterns.len()
     );
+    if rows_missing_hint(patterns, hit) {
+        let _ = writeln!(err, "# {ROWS_MISSING_HINT}");
+    }
     let _ = err.flush();
 }
 
@@ -786,14 +872,20 @@ fn no_match_message(patterns: &[String], cache: &ColumnCache) -> String {
         .map(|p| format!("'{}'", p))
         .collect::<Vec<_>>()
         .join(", ");
+    let bare_hint = if patterns.iter().any(|p| !explicit_glob(p)) {
+        format!("; {BARE_NAME_HINT}")
+    } else {
+        String::new()
+    };
     format!(
         "no signals match pattern(s) {}{} ({} signals in store; try `bwave list` \
-         or a broader -s glob)",
+         or a broader -s glob){}",
         listed,
         did_you_mean(&cache.anchored_suggestions(patterns))
             .map(|text| format!("; {text}"))
             .unwrap_or_default(),
-        cache.unique_signal_count()
+        cache.unique_signal_count(),
+        bare_hint
     )
 }
 
@@ -3655,11 +3747,18 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
 pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
     let cfg = query_config(cache, original);
-    let matched = cache.match_signals(&cfg.patterns);
+    let selection = cache.select_signals_with_names(&cfg.patterns, &[], true);
+    let matched = selection.stored;
     if matched.is_empty() {
         exit_no_signal_match(&cfg.patterns, cache);
     }
-    let (radixes, mut warnings) = build_radix_map(cache, &matched, &cfg);
+    let (radixes, radix_warnings) = build_radix_map(cache, &matched, &cfg);
+    let mut warnings = if cfg.json_format {
+        selection.warnings
+    } else {
+        Vec::new()
+    };
+    warnings.extend(radix_warnings);
     let names: Vec<_> = matched
         .iter()
         .map(|&i| cache.signals[i].name.clone())
@@ -4474,11 +4573,12 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         .iter()
         .map(|entry| entry.name.clone())
         .collect();
-    let (matched, selected_virtual_indices) =
-        cache.match_signals_with_names(&cfg.patterns, &virtual_names);
+    let selection = cache.select_signals_with_names(&cfg.patterns, &virtual_names, true);
+    let (matched, selected_virtual_indices) = (selection.stored, selection.extra);
     if matched.is_empty() && selected_virtual_indices.is_empty() {
         exit_no_signal_match(&cfg.patterns, cache);
     }
+    let selection_warnings = selection.warnings;
     let selected_virtuals: Vec<&VirtualEntry> = selected_virtual_indices
         .iter()
         .map(|&idx| &all_virtuals[idx])
@@ -4653,7 +4753,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     names: &display_names,
                     values: &grid,
                 },
-                Vec::new(),
+                selection_warnings,
             );
             return;
         }
@@ -4824,7 +4924,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     names: &display_names,
                     values: &grid,
                 },
-                Vec::new(),
+                selection_warnings,
             );
             return;
         }
@@ -5283,7 +5383,8 @@ $enddefinitions $end
         assert_eq!(
             msg,
             "no signals match pattern(s) 'nope' (4 signals in store; try `bwave list` \
-             or a broader -s glob)"
+             or a broader -s glob); bare names match the end of the full path; use \
+             `*name*` to match a substring"
         );
     }
 

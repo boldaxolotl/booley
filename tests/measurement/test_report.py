@@ -135,6 +135,25 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
     assert colors.red("1 unmet, 1 error, 1 not evaluated of 4 enforced") in terminal
 
 
+def test_verdict_line_counts_tracked_errors_apart_from_enforced_bounds(tmp_path: Path) -> None:
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(repo / ".booley")
+    reason = "lite: synthesis execution timeout"
+    entries = (
+        Entry("cell_count_max", "cell_count", 90, bound=100),
+        Entry("area_kge_max", "area_kge", 4, bound=5),
+        Entry("area_um2", "area_um2", None, verdict=Verdict.ERROR, detail=reason),
+        Entry("wns_ns", "wns_ns", None, verdict=Verdict.ERROR, detail=reason),
+    )
+    stored = store.write(build_run(key_of(repo, head), "r1", (Table("synth", entries),)), [])
+    view = view_of(repo, store, stored, head)
+
+    counts = view["view"]["counts"]
+    assert (counts["error"], counts["enforced_error"], counts["tracked_error"]) == (2, 0, 2)
+    assert "**2 of 2 enforced met; 2 tracked errors**" in markdown_report(view)
+    assert "2 of 2 enforced met; 2 tracked errors" in terminal_report(view)
+
+
 def agent_summary(view: dict[str, Any]) -> str:
     from booley.measurement.report import agent_summary as summarize
 

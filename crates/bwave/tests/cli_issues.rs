@@ -4044,24 +4044,24 @@ fn issue_1423_text_byte_oracles() {
         (&["list", "-s", "[oops"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["list", "-s", "tb.a%b", "-s", "tb.a%h"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "tb.b"], "# Snapshot at 10\na                                        = 1\nb                                        = 1\n", "# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing*"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob)\n", 2),
+        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing*"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["value", "--at", "10t", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n", 2),
         (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "mem[56]", "-s", "mem[57]"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'mem[56]' — filter dropped\n#   (indexed element: simulators do not dump unpacked array/memory elements by default — probe the element into a wire, or check `bwave list -s '*mem*'` for what was dumped)\n# WARNING: no signals match 'mem[57]' — filter dropped\n# 2 of 3 -s patterns matched nothing\n# scope: tb\n", 0),
         (&["value", "--at", "10t", "--async", "-s", "[oops"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["value", "--at", "10t", "--async", "-s", "tb.a%b", "-s", "tb.a%h"], "# Snapshot at 10\na                                        = 1\n", "# scope: tb\n# WARNING: signal 'tb.a' matched by multiple -s patterns with different radixes ([Bin, Hex]); using last: Hex\n", 0),
         (&["stats", "--async", "-s", "tb.a", "-s", "tb.b"], "# Simulation: 20ns\n# 2 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nb  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# scope: tb\n", 0),
-        (&["stats", "--async", "-s", "tb.a", "-s", "missing"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["stats", "--async", "-s", "tb.a", "-s", "missing*"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["stats", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob)\n", 2),
+        (&["stats", "--async", "-s", "tb.a", "-s", "missing"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["stats", "--async", "-s", "tb.a", "-s", "missing*"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["stats", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n", 2),
         (&["stats", "--async", "-s", "tb.a", "-s", "mem[56]", "-s", "mem[57]"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'mem[56]' — filter dropped\n#   (indexed element: simulators do not dump unpacked array/memory elements by default — probe the element into a wire, or check `bwave list -s '*mem*'` for what was dumped)\n# WARNING: no signals match 'mem[57]' — filter dropped\n# 2 of 3 -s patterns matched nothing\n# scope: tb\n", 0),
         (&["stats", "--async", "-s", "[oops"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["stats", "--async", "-s", "tb.a%b", "-s", "tb.a%h"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: signal 'tb.a' matched by multiple -s patterns with different radixes ([Bin, Hex]); using last: Hex\n# scope: tb\n", 0),
         (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "tb.a", "-s", "v"], "# Snapshot at 10\na                                        = 1\nv                                        = 1\n", "# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "v", "-s", "missing"], "# Snapshot at 10\nv                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n", 0),
+        (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "v", "-s", "missing"], "# Snapshot at 10\nv                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n", 0),
         (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "helper"], "# Snapshot at 10\nhelper                                   = 1\n", "", 0),
         (&["find", "tb.a", "rising", "--async"], "10 a 1\n", "# scope: tb\n# 1 matches found\n", 0),
-        (&["find", "missing", "rising", "--async"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob)\n", 2),
+        (&["find", "missing", "rising", "--async"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n", 2),
         (&["find", "[oops", "rising", "--async"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["find", "*", "rising", "--async"], "10 a 1\n10 b 1\n", "# scope: tb\n# 2 matches found\n", 0),
     ];
@@ -4105,9 +4105,13 @@ fn issue_1423_json_dropped_and_radix_warnings() {
             let (out, err, code) = run(&args);
             assert_eq!(code, 0, "{err}");
             let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+            let mut expected = vec![format!("no signals match '{missing}' — filter dropped")];
+            if command != "list" {
+                expected.push(ISSUE_4767_ROWS_HINT.to_string());
+            }
             assert_eq!(
                 json["warnings"],
-                serde_json::json!([format!("no signals match '{missing}' — filter dropped")]),
+                serde_json::json!(expected),
                 "{command}: {out}"
             );
         }
@@ -4145,6 +4149,161 @@ fn issue_1423_json_dropped_and_radix_warnings() {
                 .any(|w| w.as_str() == Some(expected)),
             "{command}: {out}"
         );
+    }
+}
+
+const ISSUE_4767_BARE_HINT: &str =
+    "bare names match the end of the full path; use `*name*` to match a substring";
+const ISSUE_4767_ROWS_HINT: &str = "rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`";
+
+fn issue_4767_store() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("input.vcd");
+    let fst = dir.path().join("input.fst");
+    let text = "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! o_data $end\n$var wire 1 \" r_data $end\n$scope module dut $end\n$var wire 1 # o_data $end\n$upscope $end\n$scope module a $end\n$var wire 1 $ o_data $end\n$upscope $end\n$scope module b $end\n$var wire 1 % o_data $end\n$upscope $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n0\"\n0#\n0$\n0%\n#10\n1!\n1\"\n1#\n1$\n1%\n";
+    std::fs::write(&vcd, text.as_bytes()).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+/// Args for each query command that takes `-s`, with the pattern args given.
+fn issue_4767_query<'a>(command: &'a str, fst: &'a str, selectors: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![command, fst];
+    match command {
+        "value" => args.extend(["--at", "10t"]),
+        "signal" | "wave" => args.extend(["-t", "0t:10t"]),
+        _ => {}
+    }
+    for selector in selectors {
+        args.extend(["-s", selector]);
+    }
+    args.push("--async");
+    args
+}
+
+#[test]
+fn issue_4767_total_miss_bare_name_hint() {
+    let (_dir, fst) = issue_4767_store();
+    for (pattern, hinted) in [("nope", true), ("*nope*", false)] {
+        let mut cases = vec![
+            issue_4767_query("value", &fst, &[pattern]),
+            issue_4767_query("stats", &fst, &[pattern]),
+            vec!["find", &fst, pattern, "rising", "--async"],
+        ];
+        for args in cases.drain(..) {
+            let (_, err, code) = run(&args);
+            assert_eq!(code, 2, "{args:?}: {err}");
+            assert!(
+                err.starts_with(&format!("ERROR: no signals match pattern(s) '{pattern}'")),
+                "{args:?}: {err}"
+            );
+            assert_eq!(
+                err.matches(ISSUE_4767_BARE_HINT).count(),
+                usize::from(hinted),
+                "{args:?}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn issue_4767_partial_miss_rows_hint() {
+    let (_dir, fst) = issue_4767_store();
+    let dropped = "# WARNING: no signals match 'nope' — filter dropped\n# WARNING: no signals match 'gone' — filter dropped\n# 2 of 3 -s patterns matched nothing\n";
+    for command in ["value", "stats"] {
+        let args = issue_4767_query(command, &fst, &["tb.r_data", "nope", "gone"]);
+        let (_, err, code) = run(&args);
+        assert_eq!(code, 0, "{err}");
+        assert!(
+            err.starts_with(&format!("{dropped}# {ISSUE_4767_ROWS_HINT}\n")),
+            "{command}: {err}"
+        );
+        assert_eq!(err.matches(ISSUE_4767_ROWS_HINT).count(), 1, "{err}");
+        let args = issue_4767_query(command, &fst, &["tb.r_data", "mem[3]"]);
+        let (_, err, code) = run(&args);
+        assert_eq!(code, 0, "{err}");
+        assert!(!err.contains(ISSUE_4767_ROWS_HINT), "{command}: {err}");
+    }
+    for command in ["value", "stats", "signal", "wave"] {
+        let mut args = issue_4767_query(command, &fst, &["tb.r_data", "nope", "gone"]);
+        args.extend(["--format", "json"]);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command}: {err}");
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            json["warnings"],
+            serde_json::json!([
+                "no signals match 'nope' — filter dropped",
+                "no signals match 'gone' — filter dropped",
+                ISSUE_4767_ROWS_HINT
+            ]),
+            "{command}: {out}"
+        );
+    }
+}
+
+#[test]
+fn issue_4767_scope_depth_note() {
+    let (_dir, fst) = issue_4767_store();
+    let note = |pattern: &str| {
+        format!(
+            "# NOTE: '{pattern}' matches 4 signals in different scopes: tb.o_data, tb.dut.o_data, tb.a.o_data (+1 more); pass the full path to pick one\n"
+        )
+    };
+    let (_, err, code) = run(&issue_4767_query(
+        "value",
+        &fst,
+        &["tb.dut.o_data", "tb.o_data"],
+    ));
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("NOTE"), "{err}");
+    for pattern in ["o_data", "o_data[0]"] {
+        for command in ["value", "stats"] {
+            let (_, err, code) = run(&issue_4767_query(command, &fst, &[pattern]));
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(err.matches(&note(pattern)).count(), 1, "{command}: {err}");
+        }
+    }
+    for pattern in ["data", "*o_data"] {
+        let (_, err, code) = run(&issue_4767_query("value", &fst, &[pattern]));
+        assert_eq!(code, 0, "{err}");
+        assert!(!err.contains("NOTE"), "{pattern}: {err}");
+    }
+    let body = note("o_data");
+    let body = body.strip_prefix("# NOTE: ").unwrap().trim_end();
+    for command in ["value", "signal", "wave"] {
+        let mut args = issue_4767_query(command, &fst, &["o_data"]);
+        args.extend(["--format", "json"]);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command}: {err}");
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(
+            json["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w.as_str() == Some(body)),
+            "{command}: {out}"
+        );
+    }
+    let (_, err, code) = run(&["list", &fst, "-s", "o_data"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("NOTE"), "{err}");
+    let (out, _, _) = run(&["list", &fst, "-s", "o_data", "--format", "json"]);
+    assert!(!out.contains("different scopes"), "{out}");
+}
+
+#[test]
+fn issue_4767_skill_drops_pattern_errors() {
+    let (out, err, code) = run(&["skill"]);
+    assert_eq!(code, 0, "{err}");
+    for gone in [
+        "Bare-name patterns use suffix-match",
+        "— filter dropped",
+        "A bare name matches at every scope depth",
+    ] {
+        assert!(!out.contains(gone), "skill still has {gone:?}");
     }
 }
 
@@ -4334,7 +4493,10 @@ fn issue_1423_array_virtual_and_limit_warnings() {
                 assert_eq!(code, 0, "{err}");
                 let json: serde_json::Value = serde_json::from_str(&out).unwrap();
                 let expected = if selectors[1] == "missing" {
-                    serde_json::json!(["no signals match 'missing' — filter dropped"])
+                    serde_json::json!([
+                        "no signals match 'missing' — filter dropped",
+                        ISSUE_4767_ROWS_HINT
+                    ])
                 } else {
                     serde_json::json!([])
                 };
@@ -4348,13 +4510,13 @@ fn issue_1423_array_virtual_and_limit_warnings() {
 fn issue_1423_library_text_byte_oracles() {
     let (_dir, fst) = issue_1423_store();
     let cases: &[(&str, &str, &str, i32)] = &[
-("partial","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n# 1 matches found\n",0),
-("early","\nrunning 1 test\n","ERROR: no signals match pattern(s) 'no_target' (2 signals in store; try `bwave list` or a broader -s glob)\n",2),
+("partial","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n# 1 matches found\n",0),
+("early","\nrunning 1 test\n","ERROR: no signals match pattern(s) 'no_target' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n",2),
 ("radix","\nrunning 1 test\n10 a 1\n","# WARNING: signal 'tb.a' matched by multiple -s patterns with different radixes ([Bin, Hex]); using last: Hex\n# scope: tb\n# 1 matches found\n",0),
 ("empty","\nrunning 1 test\n10 tb.a 1\n","# 1 matches found\n",0),
-("virtual","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n# 1 matches found\n",0),
+("virtual","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n# 1 matches found\n",0),
 ("virtual-missing","\nrunning 1 test\n10 tb.a 1\n","# 1 matches found\n",0),
-("stats-virtual","\nrunning 1 test\n# Simulation: 20ns\n# 3 signals analyzed\n\nhelper  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\ntb.a  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nv  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n",0),
+("stats-virtual","\nrunning 1 test\n# Simulation: 20ns\n# 3 signals analyzed\n\nhelper  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\ntb.a  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nv  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n",0),
 ("stats-virtual-missing","\nrunning 1 test\n# Simulation: 20ns\n# 2 signals analyzed\n\nhelper  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nv  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n","",0),
     ];
     for (case, stdout, stderr, code) in cases {
@@ -4781,4 +4943,121 @@ fn issue_3648_truncated_store_names_cause_and_rebuild_hint() {
     assert!(err.contains("not an FST file"), "{err}");
     assert!(!err.contains("truncated"), "{err}");
     let _ = std::fs::remove_file(store);
+}
+
+// -- Issue 4703: one validating Verilog-literal parser ---------------
+
+fn issue_4703_store(label: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("bwave-4703-{}-{label}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcd = dir.join("input.vcd");
+    let fst = dir.join("input.fst");
+    std::fs::write(&vcd, "$timescale 1ns $end\n$scope module tb $end\n$var wire 8 ! data $end\n$var wire 8 \" hi $end\n$var wire 8 # lo $end\n$upscope $end\n$enddefinitions $end\n#0\nb00001111 !\nb11111111 \"\nb11110000 #\n#10\nb11111111 !\n#20\nb11110000 !\n#30\nb0000001x !\n#40\nbzzzzzzzz !\n#50\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst)
+}
+
+/// Every command that takes a value literal, with `lit` as that literal.
+fn issue_4703_runs(p: &str, lit: &str) -> Vec<(&'static str, (String, String, i32))> {
+    let def = format!("v = *data == {lit}");
+    vec![
+        ("find", run(&["find", p, "data", lit, "--async", "--first"])),
+        ("sample", run(&["sample", p, "data", lit, "--async"])),
+        (
+            "distance",
+            run(&["distance", p, "data", lit, "--to", "data", "'hF", "--async"]),
+        ),
+        (
+            "distance --to",
+            run(&["distance", p, "data", "'hF", "--to", "data", lit, "--async"]),
+        ),
+        ("stuck", run(&["stuck", p, lit, "--async"])),
+        (
+            "--virtual",
+            run(&[
+                "find",
+                p,
+                "v",
+                "'h1",
+                "--virtual",
+                &def,
+                "--async",
+                "--first",
+            ]),
+        ),
+    ]
+}
+
+#[test]
+fn issue_4703_malformed_literals_exit_2_naming_the_literal() {
+    let (dir, fst) = issue_4703_store("malformed");
+    let p = fst.to_str().unwrap();
+    for lit in ["'h F", "'hF'd15", "'hG", "'d1x"] {
+        for (name, (_, err, code)) in issue_4703_runs(p, lit) {
+            assert_eq!(code, 2, "{name} {lit}: {err}");
+            assert!(
+                err.contains(&format!("invalid Verilog literal '{lit}'")),
+                "{name} {lit}: {err}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4703_valid_literals_match() {
+    let (dir, fst) = issue_4703_store("valid");
+    let p = fst.to_str().unwrap();
+    for (lit, time) in [
+        ("'hF", "0"),
+        ("'hff", "10"),
+        ("8'd255", "10"),
+        ("255", "10"),
+        ("'hx", "30"),
+        ("'h1x", "30"),
+        ("'bx", "30"),
+        ("'b1x", "30"),
+        ("'dx", "30"),
+        ("8'b0000001x", "30"),
+        ("'dz", "40"),
+    ] {
+        let (out, err, code) = run(&["find", p, "data", lit, "--async", "--first"]);
+        assert_eq!(code, 0, "{lit}: {err}");
+        assert!(
+            out.starts_with(&format!("{time} data ")),
+            "{lit}: expected a first match at {time}, got {out}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4703_underscores_are_ignored_in_every_command() {
+    let (dir, fst) = issue_4703_store("underscores");
+    let p = fst.to_str().unwrap();
+    for (with, without, time, stuck) in [
+        ("'hF_F", "'hFF", "10", "hi  8-bit  stuck at FF"),
+        (
+            "8'b1111_0000",
+            "8'b11110000",
+            "20",
+            "lo  8-bit  stuck at F0",
+        ),
+    ] {
+        let plain = issue_4703_runs(p, without);
+        for ((name, (out, err, code)), (_, (expected, _, _))) in
+            issue_4703_runs(p, with).into_iter().zip(plain)
+        {
+            assert_eq!(code, 0, "{name} {with}: {err}");
+            assert_eq!(out, expected, "{name} {with}");
+            if name == "find" {
+                assert!(out.starts_with(&format!("{time} data ")), "{with}: {out}");
+            }
+            if name == "stuck" {
+                assert!(out.contains(stuck), "{with}: {out}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
