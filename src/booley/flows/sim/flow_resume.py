@@ -12,7 +12,7 @@ import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.progress_lifecycle import (
@@ -23,10 +23,7 @@ from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.live_progress import (
     attempt_scope,
 )
-from booley.flows.test_runs import (
-    TestRun,
-    test_run_from_document,
-)
+from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -52,6 +49,7 @@ from .record import (
     SimulationRecordCancellationError,
     SimulationRecordIntegrityError,
     SimulationRecordManifest,
+    SimulationRecordManifestView,
     SimulationRecordOutcome,
     SimulationRecordPlan,
     SimulationRecordRecoveryStatus,
@@ -95,45 +93,11 @@ if TYPE_CHECKING:
     from .record import SimulationRecordPolicy
 
 
-def _manifest_no_waivers(manifest: SimulationRecordManifest) -> bool:
-    """Whether the frozen workload asked for raw coverage; absent (legacy) means waivers apply."""
-    workload = cast(Mapping[str, object], manifest.document["workload"])
-    return workload.get("no_waivers") is True
-
-
-def _manifest_trace(manifest: SimulationRecordManifest) -> bool:
-    """Whether the record *manifest* froze a traced workload."""
-    return cast(bool, cast(Mapping[str, object], manifest.document["workload"])["trace"])
-
-
 def _manifest_run_groups(
     manifest: SimulationRecordManifest,
 ) -> tuple[tuple[TestRun, ...], ...]:
     """The Test Runs of each work item, exactly as the manifest froze them."""
-    items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
-    return tuple(
-        tuple(
-            test_run_from_document(entry) for entry in cast(tuple[object, ...], item["test_runs"])
-        )
-        for item in items
-    )
-
-
-def _is_coverage_manifest(manifest: SimulationRecordManifest) -> bool:
-    """True when resume dispatches the coverage aggregate executor."""
-    items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
-    return bool(items) and items[0]["kind"] == "coverage_aggregate"
-
-
-def _unfinished_coverage_work(
-    manifest: SimulationRecordManifest, status: SimulationRecordRecoveryStatus
-) -> tuple[str, ...]:
-    """Coverage work-item ids without a recorded result; the caller passes a coverage manifest."""
-    unfinished = set(status.pending) | set(status.interrupted)
-    items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
-    return tuple(
-        cast(str, item["work_item_id"]) for item in items if item["work_item_id"] in unfinished
-    )
+    return SimulationRecordManifestView(manifest).test_run_groups
 
 
 def _fresh_simulation_record_recovery_detail(
@@ -220,7 +184,8 @@ class SimulationRecordResumeMixin:
         are untouched, as are all non-coverage Simulation Records.
         """
         manifest = validated.manifest
-        if not _is_coverage_manifest(manifest):
+        view = SimulationRecordManifestView(manifest)
+        if not view.is_coverage:
             return None
         try:
             status = SimulationRecord().inspect_resume(validated)
@@ -229,15 +194,14 @@ class SimulationRecordResumeMixin:
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Record integrity failure: {exc}",
             )
-        unfinished = _unfinished_coverage_work(manifest, status)
+        unfinished = view.unfinished_work_item_ids(status)
         if not unfinished:
             return None
         item_id = unfinished[0]
         state = "interrupted" if item_id in status.interrupted else "pending"
-        selector = cast(Mapping[str, str], manifest.document["target"])["selector"]
-        workload = cast(Mapping[str, object], manifest.document["workload"])
-        trace = " --trace" if workload["trace"] is True else ""
-        no_waivers = " --no-waivers" if _manifest_no_waivers(manifest) else ""
+        selector = view.target.selector
+        trace = " --trace" if view.trace else ""
+        no_waivers = " --no-waivers" if view.no_waivers else ""
         tests = self._frozen_test_run_options(manifest, selector)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
@@ -301,10 +265,9 @@ class SimulationRecordResumeMixin:
     def _preview_simulation_record_resume(
         self, validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
     ) -> EndpointOutcome:
-        origin = cast(Mapping[str, object], validated.manifest.document["origin"])
         try:
             current_plan = self._resume_simulation_record_plan(
-                validated, cast(int, origin["invocation_id"])
+                validated, SimulationRecordManifestView(validated.manifest).origin_invocation_id
             )
             preview = SimulationRecord().preview(
                 ResumeSimulationRecordPreviewRequest(
@@ -356,7 +319,7 @@ class SimulationRecordResumeMixin:
                 return lock_error
             coverage_plan = (
                 self._resume_coverage_target_plan(validated)
-                if _is_coverage_manifest(validated.manifest)
+                if SimulationRecordManifestView(validated.manifest).is_coverage
                 else None
             )
             if coverage_plan is None:
@@ -471,8 +434,8 @@ class SimulationRecordResumeMixin:
         admission: AdmissionContext,
         manifest_published: Callable[[Path], None],
     ) -> _SimulationRecordSteps:
-        target = cast(Mapping[str, object], validated.manifest.document["target"])
-        selector = str(target["selector"])
+        target = SimulationRecordManifestView(validated.manifest).target
+        selector = target.selector
         outcomes: list[SimulationRecordOutcome] = []
 
         def run() -> EndpointOutcome:
@@ -481,7 +444,7 @@ class SimulationRecordResumeMixin:
             )
             with attempt_scope(
                 selector,
-                identity=f"{target['vlnv']}#{target['name']}",
+                identity=target.identity,
                 operation="publication",
             ):
                 outcome = self._run_validated_resume_simulation_record(
@@ -568,61 +531,47 @@ class SimulationRecordResumeMixin:
         binding = validated.binding_for(manifest)
         handle = binding.handle if binding is not None else validated.target_handles[0]
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
-        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
-        groups = tuple(
-            cast(tuple[str, ...], cast(Mapping[str, object], item["selection"])["names"])
-            for item in items
-        )
+        view = SimulationRecordManifestView(manifest)
+        groups = view.selected_name_groups
         names = tuple(name for group in groups for name in group)
         # Resume runs the manifest's own Test Runs: nothing is resolved from
         # tests.toml again and no seed is drawn again.
-        run_groups = _manifest_run_groups(manifest)
+        run_groups = view.test_run_groups
         runs = tuple(run for group in run_groups for run in group)
         execution = self._simulation_execution()
         preview = execution.preview(handle, SelectedTestRuns(runs))
-        is_coverage = _is_coverage_manifest(manifest)
+        is_coverage = view.is_coverage
         if is_coverage:
             preview = replace(preview, groups=(names,), run_groups=(runs,))
         disclosures = (
             () if is_coverage else _group_disclosures(execution, handle, groups, run_groups)
         )
-        suite = cast(Mapping[str, object], manifest.document["required_suite"])
-        target = cast(Mapping[str, str], manifest.document["target"])
         revision = git_full_sha("HEAD", handle.project_root)
         if revision is None:
             raise SimulationRecordIntegrityError(
                 f"cannot verify resume Target revision at {handle.project_root}"
             )
-        if items and items[0]["kind"] in {"coverage_aggregate", "cocotb_batch"}:
-            kind = cast(str, items[0]["kind"])
-            if kind == "coverage_aggregate" and coverage_plan is None:
+        kind = view.work_item_kind
+        if kind is not None and (view.is_coverage or kind == "cocotb_batch"):
+            if view.is_coverage and coverage_plan is None:
                 self._resume_coverage_target_plan(validated)
             return plan_coarse_simulation_record(
                 handle=handle,
                 inspection=inspection,
                 preview=preview,
                 selected_tests=names,
-                required_suite=cast(tuple[str, ...], suite["names"]),
+                required_suite=view.required_suite_names,
                 revision=revision,
                 invocation_id=invocation_id,
                 execution_id="",
-                trace=_manifest_trace(manifest),
+                trace=view.trace,
                 kind=kind,
                 planning_disclosures=disclosures if kind == "cocotb_batch" else (),
-                required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
-                no_waivers=_manifest_no_waivers(manifest),
+                required_suite_catalog_backed=not view.required_suite_default_invocation,
+                no_waivers=view.no_waivers,
             )
         return self._ordinary_resume_plan(
-            handle,
-            inspection,
-            preview,
-            groups,
-            suite,
-            target,
-            revision,
-            invocation_id,
-            manifest,
-            disclosures,
+            handle, inspection, preview, view, revision, invocation_id, disclosures
         )
 
     def _ordinary_resume_plan(
@@ -630,30 +579,25 @@ class SimulationRecordResumeMixin:
         handle,
         inspection,
         preview,
-        groups,
-        suite,
-        target,
+        view: SimulationRecordManifestView,
         revision,
         invocation_id,
-        manifest,
         disclosures,
     ) -> SimulationRecordPlan:
         return plan_ordinary_hdl_simulation_record(
             handle=handle,
             inspection=inspection,
             preview=preview,
-            groups=groups,
-            required_suite=cast(tuple[str, ...], suite["names"]),
+            groups=view.selected_name_groups,
+            required_suite=view.required_suite_names,
             revision=revision,
             invocation_id=invocation_id,
             execution_id="",
-            trace=cast(bool, manifest.document["workload"]["trace"]),
-            prerequisite_documents=cast(
-                tuple[Mapping[str, object], ...], manifest.document["prerequisites"]
-            ),
+            trace=view.trace,
+            prerequisite_documents=view.prerequisites,
             planning_disclosures=disclosures,
-            role=target["role"],
-            required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
+            role=view.target.role,
+            required_suite_catalog_backed=not view.required_suite_default_invocation,
         )
 
     def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> Any:
@@ -664,24 +608,19 @@ class SimulationRecordResumeMixin:
             prepare_coverage_invocation,
         )
 
-        manifest = validated.manifest
-        target = cast(Mapping[str, str], manifest.document["target"])
-        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
-        names = cast(tuple[str, ...], cast(Mapping[str, object], items[0]["selection"])["names"])
-        workload = cast(Mapping[str, object], manifest.document["workload"])
+        view = SimulationRecordManifestView(validated.manifest)
+        selector = view.target.selector
+        names = view.selected_name_groups[0]
         context = coverage_project_context(self.args.work_dir)
-        runs = tuple(
-            test_run_from_document(entry)
-            for entry in cast(tuple[object, ...], items[0]["test_runs"])
-        )
+        runs = view.test_run_groups[0]
         prepared = prepare_coverage_invocation(
             CoverageInvocationRequest(
-                (target["selector"],),
+                (selector,),
                 tests=names,
                 # The manifest froze its Test Runs: resume never resolves again.
-                test_runs={target["selector"]: runs},
-                trace=cast(bool, workload["trace"]),
-                no_waivers=_manifest_no_waivers(manifest),
+                test_runs={selector: runs},
+                trace=view.trace,
+                no_waivers=view.no_waivers,
             ),
             context,
         )
@@ -690,8 +629,7 @@ class SimulationRecordResumeMixin:
     def _resume_coverage_preflight_if_coverage(
         self, validated: ValidatedResumeManifest
     ) -> EndpointOutcome | None:
-        items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
-        if items and items[0]["kind"] == "coverage_aggregate":
+        if SimulationRecordManifestView(validated.manifest).is_coverage:
             return self._resume_coverage_preflight(validated)
         return None
 
@@ -703,7 +641,7 @@ class SimulationRecordResumeMixin:
         Manifests without ``no_waivers`` (all legacy ones) keep their original
         lifecycle: the plan is rebuilt during resume, not at preflight.
         """
-        if not _manifest_no_waivers(validated.manifest):
+        if not SimulationRecordManifestView(validated.manifest).no_waivers:
             return None
         prepared = self._resume_coverage_prepared(validated)
         if prepared.plan is None:

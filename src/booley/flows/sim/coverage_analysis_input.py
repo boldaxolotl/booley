@@ -26,6 +26,7 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.record import (
     SimulationProjection,
+    SimulationRecordManifestView,
     decode_simulation_projection,
     resolve_artifact_reference,
 )
@@ -179,15 +180,13 @@ def _reference_projection(
     _safe_path(expected_manifest)
     manifest = authenticated.manifest
     reference = resolved.reference.document
-    target = manifest.document["target"]
-    if not isinstance(target, Mapping):
-        raise CoverageAnalysisError("Simulation Record Target is invalid")
+    view = SimulationRecordManifestView(manifest)
     if (
-        manifest.document["simulation_record_id"] != reference["simulation_record_id"]
+        view.simulation_record_id != reference["simulation_record_id"]
         or authenticated.manifest_path != expected_manifest.absolute()
         or authenticated.manifest_sha256 != reference["simulation_manifest_sha256"]
-        or target["selector"] != resolved.loaded.coverage_record.target.selector
-        or f"{target['vlnv']}#{target['name']}" != resolved.loaded.coverage_record.target.identity
+        or view.target.selector != resolved.loaded.coverage_record.target.selector
+        or view.target.identity != resolved.loaded.coverage_record.target.identity
     ):
         raise CoverageAnalysisError("Simulation Record manifest disagrees with reference")
 

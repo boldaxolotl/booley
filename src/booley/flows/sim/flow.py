@@ -105,6 +105,7 @@ from .record import (
     SimulationRecordCancellationError,
     SimulationRecordIntegrityError,
     SimulationRecordManifest,
+    SimulationRecordManifestView,
     SimulationRecordOutcome,
     SimulationRecordPlan,
     SimulationRecordPolicy,
@@ -1065,8 +1066,7 @@ class SimulateFlow(
         """Preserve nested evaluation or derive policy before an outcome exists."""
         if isinstance(error, _CoverageAggregateError):
             return cast(str, error.detail["evaluation"])
-        target = _coverage_request_target(request)
-        identity = f"{target['vlnv']}#{target['name']}"
+        identity = _coverage_request_target(request).identity
         matches = [
             plan for plan in self._coverage_prepared.targets if plan.handle.identity == identity
         ]
@@ -1520,11 +1520,8 @@ class SimulateFlow(
 
     def _record_simulation_record_tool(self, manifest: SimulationRecordManifest) -> None:
         """Use the frozen execution recipe, including when execution later fails."""
-        document = manifest.document
-        target = cast(Mapping[str, str], document["target"])
-        workload = cast(Mapping[str, object], document["workload"])
-        eda = cast(Mapping[str, str], workload["eda"])
-        self._record_eda_tool(str(target["selector"]), str(eda["kind"]))
+        view = SimulationRecordManifestView(manifest)
+        self._record_eda_tool(view.target.selector, view.eda_tool_kind)
 
     def _simulation_record_policy(self) -> SimulationRecordPolicy:
         return SimulationRecordPolicy(

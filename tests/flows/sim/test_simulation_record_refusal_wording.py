@@ -222,7 +222,6 @@ def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.Monke
             else public
         ),
     )
-    assert "Target is invalid" in refusal({"simulation_record_id": "owner"}, {"target": 1})
     assert "manifest disagrees with reference" in refusal(
         {"simulation_record_id": "owner"},
         {"target": {}, "simulation_record_id": "other"},
