@@ -769,7 +769,7 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
     assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
     assert (target / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
     assert (target / "FUSESOC_IGNORE").read_bytes() == init_cmd.FUSESOC_IGNORE_BODY.encode()
-    ignore = (target / ".gitignore").read_text()
+    ignore = (target / ".gitignore").read_text(encoding="utf-8")
     assert ignore.startswith("# custom ignore\ntmp/\n")
     assert missing_gitignore_patterns(ignore) == []
     assert set(ignore.splitlines()) - set("# custom ignore\ntmp/\n".splitlines()) == set(
@@ -846,14 +846,17 @@ def test_booley_dir_check_inaccessible_reports_incomplete(repo, capsys):
     try:
         if os.access(target, os.R_OK | os.X_OK):
             pytest.skip("privileges bypass directory search permissions")
-        results = _initialize(repo, check_only=True)
+        # private: the full run's core-projection step stats `.booley/cores` and raises
+        # PermissionError on Python 3.11 when the directory is unsearchable; only this step
+        # reports the incomplete backfill.
+        ctx = InitContext(project_root=repo, check_only=True)
+        init_cmd._step_booley_dir(ctx)
         output = capsys.readouterr().out
         assert "would secure Booley Directory permissions" in output
         assert "backfill report is incomplete" in output
         assert "cannot inspect" in output
         assert "would add" not in output
-        records = [r for r in results if r.name == "booley_dir"]
-        assert len(records) == 1 and records[0].status == "warn"
+        assert len(ctx.results) == 1 and ctx.results[0].status == "warn"
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
     finally:
         target.chmod(0o700)
