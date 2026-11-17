@@ -997,7 +997,7 @@ def _observe_pre_sim_reads(monkeypatch):
 
         return read
 
-    read_bytes = SimulationRecordStore._read
+    read_bytes = SimulationRecordStore._read  # Private: counting reads has no public hook
 
     def count_results(store, path, **kwargs):
         if path.name == "result.json":
@@ -1157,7 +1157,7 @@ def _remove_slot_entry(slots: SlotStore, token: SlotToken) -> None:
     """
 
     def removed() -> bool:
-        with slots._lease_gate(token) as acquired:
+        with slots._lease_gate(token) as acquired:  # Private: a real reap path, no public removal
             return acquired and slots._unlink_entry(token.path)
 
     _wait_until(removed, timeout=_PARALLEL_SYNC_TIMEOUT_S)
@@ -1273,7 +1273,7 @@ class _SimulationRecordAdmissionEndpoint:
         return True
 
     def _claim_slot(self) -> _Claim:
-        """Hold one small Memory Reservation in this stub's store, carrying the run's identity."""
+        """Hold one small Memory Reservation in this stub's store, carrying the run's identity (private ``_Claim``: the admission builds it itself)."""
         execution_id = (
             ExecutionId(self._runtime_execution_id) if self._runtime_execution_id else None
         )

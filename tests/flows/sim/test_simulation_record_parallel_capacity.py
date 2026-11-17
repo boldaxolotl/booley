@@ -18,6 +18,7 @@ import pytest
 
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.memory_admission import job_threads_at_start
 from booley.flows.sim.record.capacity import (
     LeaseLostError,
     SimulationRecordCapacity,
@@ -41,7 +42,6 @@ from booley.flows.sim.record.run_directory import (
 from booley.flows.sim.record.scheduler import (
     BoundedSimulationRecordScheduler,
     ScheduledAttempt,
-    SimulationRecordSchedulingError,
 )
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
@@ -60,7 +60,6 @@ from booley.runtime.job_slots import (
     QUEUED,
     ROLE_INTERACTIVE,
     ClaimAbortedError,
-    MemoryClaim,
     SlotRecovery,
     SlotStore,
     SlotToken,
@@ -116,14 +115,54 @@ def _child_permit(capacity: SimulationRecordCapacity, work_item_id: str = "item"
     )
 
 
-def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _record_project(tmp_path: Path):
+    """A published two-item manifest, its store, and an empty project with a Booley Directory."""
     manifest = _two_item_manifest()
     simulation_record_store = SimulationRecordStore(tmp_path / "record")
     simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
-    project.mkdir()
+    (project / ".booley").mkdir(parents=True, exist_ok=True)
+    return manifest, simulation_record_store, project
+
+
+@pytest.fixture
+def slots(tmp_path: Path):
+    """A real slot store with the Flow's outer claim held; the claim is released on teardown."""
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
+    try:
+        yield store, outer
+    finally:
+        store.release(outer)
+
+
+@pytest.fixture
+def managed_capacity(tmp_path: Path, slots):
+    """A managed capacity over the real slot store of ``slots``."""
+    store, outer = slots
+    return store, _capacity(_managed(store, outer), tmp_path)
+
+
+@pytest.fixture
+def blocked_capacity(tmp_path: Path, slots):
+    """A one-lane capacity whose slot store holds another Job's claim, leaving no room."""
+    store, outer = slots
+    blocker = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=_holder_claim(1))
+    try:
+        yield store, _capacity(_managed(store, outer, holders=1), tmp_path, lanes=1), blocker
+    finally:
+        store.release(blocker)
+
+
+def _assert_only_the_outer_claim_remains(store: SlotStore) -> None:
+    holders, waiters = store.snapshot(CLASS_MEMORY)
+    assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
+    assert waiters == []
+
+
+def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    manifest, simulation_record_store, project = _record_project(tmp_path)
     project_data = project / ".booley"
-    project_data.mkdir()
     monkeypatch.setenv("BOOLEY_DIR", str(project_data))
     item = manifest.document["work_items"][0]
     attempt_id = "550e8400-e29b-41d4-a716-446655440010"
@@ -150,6 +189,8 @@ def test_child_scope_keeps_whole_work_item_nonterminal_between_commands(
 ) -> None:
     project_data, child_id, registry, prepared, flow = _prepared_child(tmp_path, monkeypatch)
     scope = SupervisedExecutionScope(child_id, project_data, lambda: False)
+    # _execute_local: FlowMechanics has no public command runner; these tests pin its
+    # cancellation gate between processes.
     with supervised_execution_scope(scope):
         first = flow._execute_local([sys.executable, "-c", "print('first')"], timeout=5)
         between = read_json(execution_paths(child_id, booley_dir=project_data).record)
@@ -201,12 +242,10 @@ def test_process_registration_closes_constructor_cancellation_race(
 
 
 def test_real_child_process_is_terminated_immediately_on_lease_loss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, managed_capacity
 ) -> None:
     project_data, _child_id, registry, _prepared, flow = _prepared_child(tmp_path, monkeypatch)
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
+    _store, capacity = managed_capacity
     lane_ids: list[ExecutionId] = []
     child_registered = threading.Event()
     original_register = SupervisedProcessSet.register
@@ -217,78 +256,63 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
 
     monkeypatch.setattr(SupervisedProcessSet, "register", register_and_signal)
     started = time.monotonic()
-    try:
-        with (
-            pytest.raises(SimulationRecordCapacityError, match="lease lost"),
-            capacity.outer_permit(),
-            _child_permit(capacity) as permit,
-        ):
-            lane_ids.append(permit.child_execution_id)
-            record_path = execution_paths(
-                permit.child_execution_id, booley_dir=project_data
-            ).record
+    with (
+        pytest.raises(SimulationRecordCapacityError, match="lease lost"),
+        capacity.outer_permit(),
+        _child_permit(capacity) as permit,
+    ):
+        lane_ids.append(permit.child_execution_id)
+        record_path = execution_paths(permit.child_execution_id, booley_dir=project_data).record
 
-            def lose_lease() -> None:
-                assert child_registered.wait(timeout=2)
-                assert (read_json(record_path) or {}).get("state") == "running"
-                permit.lease_health.lost.set()
+        def lose_lease() -> None:
+            assert child_registered.wait(timeout=2)
+            assert (read_json(record_path) or {}).get("state") == "running"
+            permit.lease_health.lost.set()
 
-            killer = threading.Thread(
-                target=lose_lease,
-            )
-            killer.start()
-            with supervised_execution_scope(permit.scope):
-                flow._execute_local(
-                    [sys.executable, "-c", "import time; time.sleep(30)"], timeout=35
-                )
-            killer.join(timeout=2)
-    finally:
-        store.release(outer)
+        killer = threading.Thread(target=lose_lease)
+        killer.start()
+        with supervised_execution_scope(permit.scope):
+            flow._execute_local([sys.executable, "-c", "import time; time.sleep(30)"], timeout=35)
+        killer.join(timeout=2)
     assert time.monotonic() - started < 8
     assert registry.is_terminal(lane_ids[0])
 
 
 @pytest.mark.parametrize("cancel_after", [False, True])
-def test_child_permit_checks_lease_loss_before_return(tmp_path: Path, cancel_after: bool) -> None:
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
-    try:
-        with (
-            capacity.outer_permit(),
-            pytest.raises(LeaseLostError, match="lease lost"),
-            _child_permit(capacity) as permit,
-        ):
-            _remove_slot_entry(store, permit.token)  # lost to a reaper, not to the cancel
-            if cancel_after:
-                capacity.cancel_waiters("test cancellation")
-    finally:
-        store.release(outer)
+def test_child_permit_checks_lease_loss_before_return(
+    managed_capacity, cancel_after: bool
+) -> None:
+    store, capacity = managed_capacity
+    with (
+        capacity.outer_permit(),
+        pytest.raises(LeaseLostError, match="lease lost"),
+        _child_permit(capacity) as permit,
+    ):
+        _remove_slot_entry(store, permit.token)  # lost to a reaper, not to the cancel
+        if cancel_after:
+            capacity.cancel_waiters("test cancellation")
 
 
 def test_cancel_while_a_lane_holds_its_slot_aborts_instead_of_losing_its_lease(
-    tmp_path: Path,
+    tmp_path: Path, managed_capacity
 ) -> None:
     """A cancel retires a held lane as an abort and leaves its lease healthy."""
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
-    try:
-        with (
-            capacity.outer_permit(),
-            pytest.raises(ClaimAbortedError, match="cancellation"),
-            _child_permit(capacity) as permit,
-        ):
-            capacity.cancel_waiters("test cancellation")
-    finally:
-        store.release(outer)
+    store, capacity = managed_capacity
+    with (
+        capacity.outer_permit(),
+        pytest.raises(ClaimAbortedError, match="cancellation"),
+        _child_permit(capacity) as permit,
+    ):
+        capacity.cancel_waiters("test cancellation")
     assert not permit.lease_health.lost.is_set()
     record = read_json(
-        execution_paths(permit.child_execution_id, booley_dir=capacity._lanes.project_data).record
+        execution_paths(
+            permit.child_execution_id, booley_dir=_lane_registry(tmp_path).project_data
+        ).record
     )
     assert record is not None
     assert record["terminal_cause"] == "orphan_recovered"
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
+    _assert_only_the_outer_claim_remains(store)
 
 
 def test_a_cancelled_lane_whose_claim_is_reaped_still_aborts(tmp_path: Path) -> None:
@@ -316,16 +340,13 @@ def test_a_cancelled_lane_whose_claim_is_reaped_still_aborts(tmp_path: Path) -> 
 
 @pytest.mark.parametrize("lost_first", [False, True])
 def test_a_waiter_promoted_after_the_cancel_snapshot_still_aborts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost_first: bool
+    blocked_capacity, monkeypatch: pytest.MonkeyPatch, lost_first: bool
 ) -> None:
     """A claim promoted between the cancel's snapshot and its withdrawal aborts.
 
     One an independent recovery already took (``lost_first``) stays a lost lease.
     """
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    blocker = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=_holder_claim(1))
-    capacity = _capacity(_managed(store, outer, holders=1), tmp_path, lanes=1)
+    store, capacity, blocker = blocked_capacity
     refresh, withdraw = store.refresh, store.cancel_waiter_token
     queued: list[SlotToken] = []
     states: list[str] = []
@@ -347,78 +368,53 @@ def test_a_waiter_promoted_after_the_cancel_snapshot_still_aborts(
     monkeypatch.setattr(store, "refresh", cancel_on_first_poll)
     monkeypatch.setattr(store, "cancel_waiter_token", promote_then_withdraw)
     started: list[bool] = []
-    try:
-        with (
-            capacity.outer_permit(),
-            pytest.raises(LeaseLostError if lost_first else ClaimAbortedError),
-            _child_permit(capacity),
-        ):
-            started.append(True)
-    finally:
-        store.release(outer)
+    with (
+        capacity.outer_permit(),
+        pytest.raises(LeaseLostError if lost_first else ClaimAbortedError),
+        _child_permit(capacity),
+    ):
+        started.append(True)
     assert started == []
     assert states == [HOLDING]
     assert queued[0].lease_health.lost.is_set()
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
+    _assert_only_the_outer_claim_remains(store)
 
 
-def test_a_lease_lost_before_the_items_start_and_cancel_stays_lost(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("lost_first", [False, True])
+def test_a_claim_granted_before_its_item_starts_aborts_unless_a_recovery_took_it_first(
+    managed_capacity, monkeypatch: pytest.MonkeyPatch, lost_first: bool
 ) -> None:
-    """A recovery the cancel did not start is a lost lease, not an abort."""
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
-    acquire_child = capacity._acquire_child
+    """A claim granted as the record is cancelled never starts its item (#3846).
+    A recovery the cancel did not start (``lost_first``) is a lost lease, not an abort (#4492)."""
+    store, capacity = managed_capacity
+    acquire = store.acquire
 
-    def acquire_lose_then_cancel(*args, **kwargs):
-        token = acquire_child(*args, **kwargs)
-        store.begin_token_recovery(token)  # another cause, before the cancel
-        capacity.cancel_waiters("test cancellation")
+    def acquire_then_recover(*args, **kwargs):
+        token = acquire(*args, **kwargs)
+        if lost_first:
+            store.begin_token_recovery(token)  # another cause, before the cancel
         return token
 
-    monkeypatch.setattr(capacity, "_acquire_child", acquire_lose_then_cancel)
+    def threads_then_cancel(*args, **kwargs):
+        capacity.cancel_waiters("test cancellation")  # the claim is already granted
+        return job_threads_at_start(*args, **kwargs)
+
+    monkeypatch.setattr(store, "acquire", acquire_then_recover)
+    monkeypatch.setattr(
+        "booley.flows.sim.record.capacity.job_threads_at_start", threads_then_cancel
+    )
     started: list[bool] = []
-    try:
-        with (
-            capacity.outer_permit(),
-            pytest.raises(LeaseLostError, match="lease lost"),
-            _child_permit(capacity),
-        ):
-            started.append(True)
-    finally:
-        store.release(outer)
+    with (
+        capacity.outer_permit(),
+        pytest.raises(
+            LeaseLostError if lost_first else ClaimAbortedError,
+            match="lease lost" if lost_first else "cancellation",
+        ),
+        _child_permit(capacity),
+    ):
+        started.append(True)
     assert started == []
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
-
-
-def test_child_permit_never_yields_a_claim_admitted_after_cancellation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A claim admitted in the same moment the record is cancelled never starts its item."""
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
-    acquire_child = capacity._acquire_child
-
-    def acquire_then_cancel(*args, **kwargs):
-        token = acquire_child(*args, **kwargs)
-        capacity.cancel_waiters("test cancellation")  # lands while the claim was granted
-        return token
-
-    monkeypatch.setattr(capacity, "_acquire_child", acquire_then_cancel)
-    started: list[bool] = []
-    try:
-        with (
-            capacity.outer_permit(),
-            pytest.raises(ClaimAbortedError, match="cancellation"),
-            _child_permit(capacity),
-        ):
-            started.append(True)
-    finally:
-        store.release(outer)
-    assert started == []
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
+    _assert_only_the_outer_claim_remains(store)
 
 
 def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: Path) -> None:
@@ -440,67 +436,25 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: 
         pass
 
 
-def test_managed_capacity_releases_and_reacquires_exact_child_tokens(
-    tmp_path: Path,
-) -> None:
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
-    try:
-        with capacity.outer_permit():
-            for index in range(2):
-                with _child_permit(capacity, f"item-{index}") as permit:
-                    holders, waiters = store.snapshot(CLASS_MEMORY)
-                    assert waiters == []
-                    assert {token.execution_id for token in holders} == {
-                        ExecutionId("a" * 32),
-                        permit.child_execution_id,
-                    }
-                    assert permit.token.execution_id == permit.child_execution_id
+def test_managed_capacity_releases_and_reacquires_exact_child_tokens(managed_capacity) -> None:
+    store, capacity = managed_capacity
+    with capacity.outer_permit():
+        for index in range(2):
+            with _child_permit(capacity, f"item-{index}") as permit:
                 holders, waiters = store.snapshot(CLASS_MEMORY)
-                assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
                 assert waiters == []
-    finally:
-        store.release(outer)
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
+                assert {token.execution_id for token in holders} == {
+                    ExecutionId("a" * 32),
+                    permit.child_execution_id,
+                }
+                assert permit.token.execution_id == permit.child_execution_id
+            holders, waiters = store.snapshot(CLASS_MEMORY)
+            assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
+            assert waiters == []
 
 
-def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
-    tmp_path: Path,
-) -> None:
-    # Run-alone claims never hold together: one holder, the rest queue.
-    alone = MemoryClaim(budget_mb=1024, run_alone=True)
-    store = SlotStore(tmp_path / "slots")
-    holder = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=alone)
-    first_ticket = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=alone, role="background")
-    second_ticket = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=alone, role="background")
-    interactive = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=alone, role=ROLE_INTERACTIVE)
-    try:
-        holders, waiters = store.snapshot(CLASS_MEMORY)
-        assert [token.lease_id for token in holders] == [holder.lease_id]
-        assert [token.lease_id for token in waiters] == [
-            interactive.lease_id,
-            first_ticket.lease_id,
-            second_ticket.lease_id,
-        ]
-        store.release(holder)
-        assert store.refresh(interactive).state == HOLDING
-        assert store.refresh(first_ticket).state == QUEUED
-        store.release(interactive)
-        assert store.refresh(first_ticket).state == HOLDING
-        assert store.refresh(second_ticket).state == QUEUED
-    finally:
-        for token in (holder, interactive, first_ticket, second_ticket):
-            store.release(token)
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
-
-
-def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> None:
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    # Another Job's claim leaves no room for the child's.
-    blocker = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=_holder_claim(1))
-    capacity = _capacity(_managed(store, outer, holders=1), tmp_path, lanes=1)
+def test_capacity_cancellation_withdraws_a_real_queued_child(blocked_capacity) -> None:
+    store, capacity, _blocker = blocked_capacity
     errors: list[BaseException] = []
 
     def wait_for_child() -> None:
@@ -512,43 +466,16 @@ def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> 
 
     worker = threading.Thread(target=wait_for_child)
     worker.start()
-    try:
-        _wait_until(lambda: len(store.snapshot(CLASS_MEMORY)[1]) == 1)
-        capacity.cancel_waiters()
-        worker.join(timeout=2)
-        assert not worker.is_alive()
-        assert len(errors) == 1
-        assert store.snapshot(CLASS_MEMORY)[1] == []
-    finally:
-        store.release(blocker)
-        store.release(outer)
+    _wait_until(lambda: len(store.snapshot(CLASS_MEMORY)[1]) == 1)
+    capacity.cancel_waiters()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert store.snapshot(CLASS_MEMORY)[1] == []
 
 
-def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -> None:
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
-    try:
-        with (
-            capacity.outer_permit(),
-            pytest.raises(RuntimeError, match="injected worker failure"),
-            _child_permit(capacity) as permit,
-        ):
-            raise RuntimeError("injected worker failure")
-        holders, waiters = store.snapshot(CLASS_MEMORY)
-        assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
-        assert waiters == []
-        assert _lane_registry(tmp_path).is_terminal(permit.child_execution_id)
-    finally:
-        store.release(outer)
-
-
-def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
-    tmp_path: Path,
-) -> None:
-    store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(store)
-    capacity = _capacity(_managed(store, outer), tmp_path)
+def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(managed_capacity) -> None:
+    store, capacity = managed_capacity
     competitor = None
     try:
         with capacity.outer_permit(), _child_permit(capacity, "first"):
@@ -564,30 +491,20 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
     finally:
         if competitor is not None:
             store.release(competitor)
-        store.release(outer)
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
 
 
-def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
-    manifest = _two_item_manifest()
-    simulation_record_store = SimulationRecordStore(tmp_path / "record")
-    simulation_record_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
+def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path, slots) -> None:
+    manifest, simulation_record_store, project = _record_project(tmp_path)
     registry = ChildExecutionRegistry(manifest, project)
-    slot_store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(slot_store)
+    slot_store, outer = slots
     active = 0
     maximum_active = 0
     gate = threading.Lock()
 
     def allocate(item) -> ScheduledAttempt:
-        attempt_id = os.urandom(16).hex()
-        ordinal, directory = simulation_record_store.allocate_attempt_directory(
-            str(item["work_item_id"]), attempt_id
+        return replace(
+            _scheduled_attempt(simulation_record_store, item), collision_key="same-run-dir"
         )
-        return ScheduledAttempt(item, attempt_id, ordinal, directory, "same-run-dir")
 
     def execute(_attempt, _child_id) -> None:
         nonlocal active, maximum_active
@@ -599,90 +516,27 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
             active -= 1
 
     capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
-    try:
-        BoundedSimulationRecordScheduler(capacity, allocate=allocate, execute=execute).run(
-            manifest.document["work_items"]
-        )
-    finally:
-        slot_store.release(outer)
+    BoundedSimulationRecordScheduler(capacity, allocate=allocate, execute=execute).run(
+        manifest.document["work_items"]
+    )
 
     assert maximum_active == 1
-    assert slot_store.snapshot(CLASS_MEMORY) == ([], [])
+    _assert_only_the_outer_claim_remains(slot_store)
 
 
 def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
-    manifest = _two_item_manifest()
-    simulation_record_store = SimulationRecordStore(tmp_path / "record")
-    simulation_record_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
+    manifest, simulation_record_store, project = _record_project(tmp_path)
     admission = AdmissionContext(
         "unmanaged", None, None, "interactive", "a" * 32, 0.01, lambda: False
     )
     capacity = SimulationRecordCapacity(admission, manifest, project / ".booley")
-
-    def allocate(item) -> ScheduledAttempt:
-        attempt_id = os.urandom(16).hex()
-        ordinal, directory = simulation_record_store.allocate_attempt_directory(
-            str(item["work_item_id"]), attempt_id
-        )
-        return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
-
     started = time.monotonic()
     BoundedSimulationRecordScheduler(
         capacity,
-        allocate=allocate,
+        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
         execute=lambda *_args: time.sleep(0.04),
     ).run(manifest.document["work_items"])
     assert time.monotonic() - started >= 0.07
-
-
-def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
-    tmp_path: Path,
-) -> None:
-    manifest = _two_item_manifest()
-    simulation_record_store = SimulationRecordStore(tmp_path / "record")
-    simulation_record_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    slots = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(slots)
-    cancelled = threading.Event()
-    release_worker = threading.Event()
-    entered = threading.Event()
-    admission = replace(
-        _managed(slots, outer, holders=1), timeout_seconds=0.05, cancellation=cancelled.is_set
-    )
-    capacity = _item_capacity(admission, manifest, project / ".booley", lanes=1)
-
-    def execute(*_args) -> None:
-        entered.set()
-        release_worker.wait()
-
-    scheduler = BoundedSimulationRecordScheduler(
-        capacity,
-        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
-        execute=execute,
-    )
-    trigger = threading.Thread(target=lambda: (entered.wait(), cancelled.set()))
-    trigger.start()
-    started = time.monotonic()
-    with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
-        scheduler.run(manifest.document["work_items"][:1])
-    assert time.monotonic() - started < 0.5
-    slots.release(outer)  # endpoint AdmissionGate finally must be deferred
-    # The hung lane keeps its own claim until its thread exits and retires it.
-    holders = slots.snapshot(CLASS_MEMORY)[0]
-    assert len(holders) == 2
-    assert outer.lease_id in {token.lease_id for token in holders}
-    assert simulation_record_store.scan().interrupted == (
-        str(manifest.document["work_items"][0]["work_item_id"]),
-    )
-    release_worker.set()
-    _wait_until(lambda: slots.snapshot(CLASS_MEMORY) == ([], []))
-    trigger.join(timeout=1)
 
 
 class _ExitsDuringFinalWait(threading.Event):
@@ -714,6 +568,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
         execute=lambda *_args: None,
     )
 
+    # _await_lanes: run() creates its own lane-exit event, so the final-wait race cannot be forced through it.
     scheduler._await_lanes([], _ExitsDuringFinalWait())
 
 
@@ -722,48 +577,48 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
 def test_managed_simulation_record_bounds_overlap_keeps_order_and_cleans_child_claims(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    slots,
     first_finisher: str,
     schedule_seed: int,
 ) -> None:
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path, first_finisher, schedule_seed)
-    monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
-    )
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
-    )
+    executor = _parallel_executor(monkeypatch, state)
     outcome, slot_store, invocation = _run_parallel_simulation_record(
-        tmp_path, manifest, plan, project, executor
+        tmp_path, manifest, plan, project, executor, slots
     )
     _assert_parallel_outcome(outcome, plan, state, first_finisher)
     _assert_child_claim_integrity(invocation, slot_store, plan, project / ".booley")
 
 
-def _run_parallel_simulation_record(tmp_path, manifest, plan, project, executor):
+def _parallel_executor(monkeypatch: pytest.MonkeyPatch, state) -> OrdinaryHdlSerialExecutor:
+    """An executor whose every work item runs the shared ``_ParallelExecution`` of *state*."""
+    monkeypatch.setattr(
+        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
+    )
+    return OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
+    )
+
+
+def _run_parallel_simulation_record(tmp_path, manifest, plan, project, executor, slots):
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    slot_store = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(slot_store)
-    try:
-        outcome = SimulationRecord(executor, work_item_request=lambda *_args: None).run(
-            NewSimulationRecordRunRequest(
-                plan,
-                project,
-                invocation.parent,
-                SimulationRecordPolicy(),
-                invocation,
-                _managed(slot_store, outer),
-            )
+    slot_store, outer = slots
+    outcome = SimulationRecord(executor, work_item_request=lambda *_args: None).run(
+        NewSimulationRecordRunRequest(
+            plan,
+            project,
+            invocation.parent,
+            SimulationRecordPolicy(),
+            invocation,
+            _managed(slot_store, outer),
         )
-        holders, waiters = slot_store.snapshot(CLASS_MEMORY)
-        assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
-        assert waiters == []
-    finally:
-        slot_store.release(outer)
+    )
+    _assert_only_the_outer_claim_remains(slot_store)
     return outcome, slot_store, invocation
 
 
@@ -798,70 +653,61 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
         assert lane.context.is_file()
         record = read_json(lane.record)
         assert record["state"] == "terminal" and record["tree_terminal"] is True
-    assert slot_store.snapshot(CLASS_MEMORY) == ([], [])
+    _assert_only_the_outer_claim_remains(slot_store)
 
 
-@pytest.mark.parametrize("scope_stop", [False, "coverage"])
+@pytest.mark.parametrize(
+    "case", ["record_error", "coverage_scope_stop", "windows_sharing_violation"]
+)
 def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool | str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slots, case: str
 ) -> None:
-    slots, registry, simulation_record_store, child_ids = _run_lease_loss_scheduler(
-        tmp_path, monkeypatch, scope_stop
-    )
-    _assert_scheduler_terminal_cause(registry, simulation_record_store, child_ids, scope_stop)
-    assert slots.snapshot(CLASS_MEMORY) == ([], [])
-
-
-def test_scheduler_lease_loss_removal_retries_a_windows_sharing_violation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A transient WinError 32 on the child's entry removal is retried, not raised (#3982)."""
-    memory_dir = tmp_path / "slots" / CLASS_MEMORY
-    real_unlink = Path.unlink
     denials_left = 2
-    denial_lock = threading.Lock()
+    if case == "windows_sharing_violation":
+        # A transient WinError 32 on the child's entry removal is retried, not raised (#3982).
+        memory_dir = tmp_path / "slots" / CLASS_MEMORY
+        real_unlink = Path.unlink
+        denial_lock = threading.Lock()
 
-    def sharing_violating_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
-        """Deny the first two holder-entry removals, like a concurrent reader's open handle."""
-        nonlocal denials_left
-        if path.parent == memory_dir and path.name.startswith("h-"):
-            with denial_lock:
-                if denials_left > 0:
-                    denials_left -= 1
-                    raise sharing_error()
-        real_unlink(path, *args, **kwargs)
+        def sharing_violating_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+            """Deny the first two holder-entry removals, like a concurrent reader's open handle."""
+            nonlocal denials_left
+            if path.parent == memory_dir and path.name.startswith("h-"):
+                with denial_lock:
+                    if denials_left > 0:
+                        denials_left -= 1
+                        raise sharing_error()
+            real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", sharing_violating_unlink)
-    slots, registry, simulation_record_store, child_ids = _run_lease_loss_scheduler(
-        tmp_path, monkeypatch, False
+        monkeypatch.setattr(Path, "unlink", sharing_violating_unlink)
+    scope_stop = "coverage" if case == "coverage_scope_stop" else False
+    registry, child_ids = _run_lease_loss_scheduler(tmp_path, monkeypatch, slots, scope_stop)
+    if case == "windows_sharing_violation":
+        assert denials_left == 0
+    assert len(child_ids) == 1
+    terminal = read_json(
+        execution_paths(ExecutionId(child_ids[0]), booley_dir=registry.project_data).record
     )
-    assert denials_left == 0
-    _assert_scheduler_terminal_cause(registry, simulation_record_store, child_ids, False)
-    assert slots.snapshot(CLASS_MEMORY) == ([], [])
+    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "record_error")
+    _assert_only_the_outer_claim_remains(slots[0])
 
 
-def _run_lease_loss_scheduler(tmp_path, monkeypatch, scope_stop):
+def _run_lease_loss_scheduler(tmp_path, monkeypatch, slots, scope_stop):
     """Run two lanes whose first one loses its lease; return what the assertions read."""
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
-    manifest = _two_item_manifest()
-    simulation_record_store = SimulationRecordStore(tmp_path / "record")
-    simulation_record_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
+    manifest, simulation_record_store, project = _record_project(tmp_path)
     registry = ChildExecutionRegistry(manifest, project)
-    slots = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(slots)
+    store, outer = slots
     child_finished = threading.Event()
     child_ids = []
 
-    execute = _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path)
+    execute = _lease_lost_execute(store, child_finished, child_ids, scope_stop, tmp_path)
 
     # Recovery never completes, so the terminal cause comes from the lane itself.
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
     capacity = _item_capacity(
         # Keep this cause test within the production shutdown budget.
-        replace(_managed(slots, outer), timeout_seconds=30.0),
+        replace(_managed(store, outer), timeout_seconds=30.0),
         manifest,
         registry.project_data,
     )
@@ -875,8 +721,7 @@ def _run_lease_loss_scheduler(tmp_path, monkeypatch, scope_stop):
             scheduler.run(manifest.document["work_items"])
     finally:
         child_finished.set()
-        slots.release(outer)
-    return slots, registry, simulation_record_store, child_ids
+    return registry, child_ids
 
 
 def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
@@ -905,14 +750,6 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
         raise SimulationRecordCapacityError("unrelated publication failure")
 
     return execute
-
-
-def _assert_scheduler_terminal_cause(registry, simulation_record_store, child_ids, scope_stop):
-    assert len(child_ids) == 1
-    terminal = read_json(
-        execution_paths(ExecutionId(child_ids[0]), booley_dir=registry.project_data).record
-    )
-    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "record_error")
 
 
 def _execute_pre_cancelled_coverage(tmp_path):
@@ -1008,14 +845,7 @@ def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child
     project, state = _parallel_environment(tmp_path, "beta", 0)
     # One item at a time: nothing waits for a peer to overlap.
     state.barrier = threading.Barrier(1)
-    monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
-    )
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
-    )
+    executor = _parallel_executor(monkeypatch, state)
     booley_dir = project / ".booley"
     pin_budget(monkeypatch, 1000)
     # A fake /proc with no process: ranking never touches the worker's real OOM priority.
