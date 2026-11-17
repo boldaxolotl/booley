@@ -1641,7 +1641,7 @@ def _reported_values(result: EndpointOutcome) -> Any:
     return report_metric_values("mutation", json.loads(json.dumps(result.detail)))
 
 
-def test_campaign_report_gives_the_typed_mutation_metrics(tmp_path: Path, monkeypatch) -> None:
+def test_mutation_report_gives_the_typed_mutation_metrics(tmp_path: Path, monkeypatch) -> None:
     """AC1: the score counts valid Mutants only; a candidate that did not build is on neither side."""
 
     def detects_the_first_three(index: int | None) -> subprocess.CompletedProcess:
