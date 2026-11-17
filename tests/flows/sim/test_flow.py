@@ -305,26 +305,37 @@ def _launched_tests(run: SimulationRecordSimRun) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("targets", "selector", "named"),
+    ("targets", "selector", "message"),
     [
         pytest.param(
-            {"lite": ["smoke", "stress"]}, ("typo",), ("typo", "lite", "smoke"), id="typo"
+            {"lite": ["smoke", "stress"]},
+            ("typo",),
+            "unknown exact test(s) for target 'lite': typo. Declared tests: smoke, stress.",
+            id="typo",
         ),
         pytest.param(
-            {"lite": ["lite_stress"]}, ("stress",), ("stress", "lite_stress"), id="partial-name"
+            {"lite": ["lite_stress"]},
+            ("stress",),
+            "unknown exact test(s) for target 'lite': stress. Declared tests: lite_stress.",
+            id="partial-name",
         ),
-        pytest.param({"lite": []}, ("anything",), ("registered test catalog",), id="no-catalog"),
+        pytest.param(
+            {"lite": []},
+            ("anything",),
+            "exact named selection requires target 'lite' to have a registered test catalog",
+            id="no-catalog",
+        ),
         # Valid for one Target but absent from another: the other would run its default and PASS.
         pytest.param(
             {"lite": ["lite_smoke"], "full": ["full_sign"]},
             ("lite_smoke",),
-            ("full",),
+            "unknown exact test(s) for target 'full': lite_smoke.",
             id="one-of-many-targets",
         ),
     ],
 )
 def test_simulation_record_rejects_unknown_test_without_launching(
-    tmp_path: Path, monkeypatch, targets, selector: tuple[str, ...], named: tuple[str, ...]
+    tmp_path: Path, monkeypatch, targets, selector: tuple[str, ...], message: str
 ):
     # The reported bug: --test no_such_test used to run the TB's default test and
     # report PASS. The record must reject it before any simulator launches.
@@ -332,8 +343,7 @@ def test_simulation_record_rejects_unknown_test_without_launching(
         tmp_path, monkeypatch, targets, PASS_PROCESS, target=",".join(targets), test=selector
     )
     assert run.result.exit_code == EXIT_ERROR
-    for text in named:
-        assert text in run.result.outcome.report_text
+    assert message in run.result.outcome.report_text
     assert run.launched == []
 
 
