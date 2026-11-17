@@ -267,6 +267,17 @@ def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
     assert launched == []
 
 
+def test_gui_stray_vcd_hint_keeps_dollar_in_name_literal(tmp_path, launched):
+    dump = tmp_path / "sim$corner.vcd"
+    dump.write_bytes(b"")
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(str(tmp_path))
+
+    assert f"bwave gui '{dump}'" in str(exc.value)
+    assert launched == []
+
+
 # ── format gate ────────────────────────────────────────────────────────────
 
 

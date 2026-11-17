@@ -154,6 +154,14 @@ def _trace_diagnostics(target: Path) -> str:
 _STRAY_VCDS_SHOWN = 5
 
 
+def _quote_path(path: Path) -> str:
+    """Quote a path as one literal argument: double quotes, or single when `$`/backtick would expand."""
+    text = str(path)
+    if ("$" in text or "`" in text) and "'" not in text:
+        return f"'{text}'"
+    return f'"{text}"'
+
+
 def _stray_vcd_hint(directory: Path) -> str:
     """Name top-level VCD dumps discovery skipped (it reads only trace.vcd), or ""."""
     stray = sorted(p.name for p in directory.glob("*.vcd") if p.is_file())
@@ -161,7 +169,7 @@ def _stray_vcd_hint(directory: Path) -> str:
         return ""
     more = len(stray) - _STRAY_VCDS_SHOWN
     names = ", ".join(stray[:_STRAY_VCDS_SHOWN]) + (f" and {more} more" if more > 0 else "")
-    example = f'"{directory / stray[0]}"'
+    example = _quote_path(directory / stray[0])
     return (
         f"\nVCD dumps here that are not named trace.vcd: {names}\n"
         "Declare the dump in [flows.sim].trace_files and re-run the sim, "
