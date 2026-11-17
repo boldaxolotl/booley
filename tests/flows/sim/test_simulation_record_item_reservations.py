@@ -29,7 +29,7 @@ from booley.flows.endpoint_session import _attach_memory_warning
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import job_thread_count
 from booley.flows.sim.record import capacity
-from booley.flows.sim.record.capacity import LeaseLostError
+from booley.flows.sim.record.capacity import LeaseLostError, SimulationRecordCapacity
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
@@ -42,6 +42,7 @@ from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest
+from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.synth.flow import AsicSynthesizeFlow
@@ -67,6 +68,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _ParallelExecution,
     _ParallelGroup,
     _remove_child_lease,
+    _scheduled_attempt,
     _validated_simulation_record,
     _wait_until,
 )
@@ -437,6 +439,44 @@ def test_items_after_the_shared_build_hold_their_own_reservations(
         assert "memory_admission_warning" not in result.detail
 
 
+def test_a_job_queued_behind_an_item_names_its_run_flow_target_and_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The holders list names the item's run, Flow, own Target and test, not a pid (#4487).
+
+    The Job names two Targets, the Simulation Record one: the item shows its own. The Flow
+    holds nothing by then, so it is not listed.
+    """
+    monkeypatch.setenv("BOOLEY_RUN_ID", "run-4487")
+    requests = (*FLOW_REQUESTS, JobRequest("sim", "other", test_runs=NAMES))
+    said: list[str] = []
+    with _scenario(
+        tmp_path, monkeypatch, history=_history("sim", "other"), flow_requests=requests
+    ) as scenario:
+
+        def queue_behind_beta() -> None:
+            waiter = scenario.store.submit(
+                CLASS_MEMORY,
+                pid=os.getpid(),
+                memory=MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=900.0),
+            )
+            try:
+                wait = scenario.store.memory_wait(os.getpid())
+                assert wait is not None
+                said.append(wait.describe())
+            finally:
+                scenario.store.release(waiter)
+
+        scenario.hooks["beta"] = queue_behind_beta
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
+
+    assert outcome.complete is True
+    assert said == [
+        "needs 900 MiB; 750 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-4487 (synth, sim, beta) 250 MiB"
+    ]
+
+
 def test_resumed_simulation_record_items_take_their_own_claims_after_the_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -547,12 +587,68 @@ def test_simulation_record_completes_beside_a_queued_foreign_job(
         assert [seen["items"] for seen in scenario.seen.values()] == [[500.0]] * 3
 
 
+def _coverage_manifest() -> SimulationRecordManifest:
+    """One coverage aggregate item: it builds inside itself and owes no shared build."""
+    from tests.flows.sim.simulation_record_test_support import _maximum_hook_selection_manifest
+
+    return _maximum_hook_selection_manifest(("alpha",))[0]
+
+
 def _flow_claim(scenario: _Scenario):
     """A ``FlowClaim`` over the Flow's admission."""
     from booley.flows.sim.record.flow_claim import FlowClaim
 
     assert scenario.admission.memory_sizing is not None
     return FlowClaim(scenario.admission, scenario.admission.memory_sizing, _sizer)
+
+
+@pytest.mark.parametrize("case", ["coverage-record", "private-build"])
+def test_front_run_alone_record_item_starts_before_a_later_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A Job submitted after the Record does not start before the Record's first building item (#4482)."""
+    manifest = _coverage_manifest() if case == "coverage-record" else _private_manifest()
+    record_store = SimulationRecordStore(tmp_path / "record")
+    record_store.publish_manifest(manifest)
+    with _scenario(tmp_path / "scenario", monkeypatch, flow_requests=None) as scenario:
+        flow_claim = _flow_claim(scenario)
+        capacity = SimulationRecordCapacity(
+            scenario.admission,
+            manifest,
+            scenario.project / ".booley",
+            lambda item: flow_claim.item_claim(record_store.root, manifest, item),
+        )
+        # No wall-clock estimate: the later Job never jumps ahead of a waiting item.
+        later = _ForeignJob(scenario, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
+        started_before_item: list[bool] = []
+        holders: list[object] = []
+
+        def execute(_attempt: object, _child_id: str | None) -> None:
+            if not started_before_item:
+                started_before_item.append(later.started_after is not None)
+                holders.extend(_held(token) for token in scenario.store.observe(CLASS_MEMORY)[0])
+
+        def release_once_started() -> None:
+            _wait_until(lambda: later.started_after is not None, _PARALLEL_SYNC_TIMEOUT_S)
+            later.release()
+
+        releaser = threading.Thread(target=release_once_started)
+        releaser.start()
+        try:
+            with _deadline(scenario):
+                BoundedSimulationRecordScheduler(
+                    capacity,
+                    allocate=lambda item: _scheduled_attempt(record_store, item),
+                    execute=execute,
+                ).run(manifest.document["work_items"][:1])
+            releaser.join(_PARALLEL_SYNC_TIMEOUT_S)
+        finally:
+            later.finish()
+
+    assert started_before_item == [False], "the later Job started before the Record's first item"
+    # The item ran alone: the Flow reserves nothing and no other claim holds memory.
+    assert sorted(map(str, holders)) == ["0", "alone"]
+    assert later.started_after is not None
 
 
 def test_flow_claim_waits_only_for_the_running_simulation_records_builds(

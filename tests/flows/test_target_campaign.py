@@ -39,6 +39,7 @@ def test_executes_individual_units_through_injected_behavior() -> None:
     results = campaign.execute(lambda unit: unit.display_name.upper())
 
     assert results.values == ("RESET", "CORNER")
+    assert [unit.tests for unit in campaign.execution_units()] == [("reset",), ("corner",)]
 
 
 def test_batched_unit_describes_all_selected_tests() -> None:
@@ -55,6 +56,7 @@ def test_batched_unit_describes_all_selected_tests() -> None:
     assert len(units) == 1
     assert units[0].display_name == "<cocotb-suite>"
     assert units[0].selected_tests == ("reset", "corner")
+    assert units[0].tests == ("reset", "corner")
 
 
 def test_all_skipped_campaign_is_rejected() -> None:

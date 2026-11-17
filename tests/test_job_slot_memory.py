@@ -837,6 +837,25 @@ def test_unlabelled_holder_is_named_by_its_pid_and_at_most_three_are_listed(root
     )
 
 
+def test_holders_that_reserve_nothing_are_not_named_largest(root, world):
+    store = make_store(root, world)
+    flow = join(store, world, 101, claim(300), job=label("run-3", "sim", "a"))
+    assert store.refresh(flow).state == HOLDING
+    assert store.shrink_reservation(flow, 0)
+    coordinator = join(store, world, 102, companion(0), job=label("run-3", "sim", "b"))
+    big = join(store, world, 103, claim(600), job=label("run-3", "sim", "c"))
+    join(store, world, 104, claim(500))
+    assert store.refresh(coordinator).state == HOLDING and store.refresh(big).state == HOLDING
+
+    wait = store.memory_wait(104)
+
+    assert wait is not None
+    assert wait.describe() == (
+        "needs 500 MiB; 400 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-3 (sim, c) 600 MiB"
+    )
+
+
 def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, world):
     store = make_store(root, world)
     token = join(store, world, 101, claim(100), job=label("run-1", "sim", "a"))
@@ -844,9 +863,28 @@ def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, 
     (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
     assert holders[0].job == label("run-1", "sim", "a")
 
+    item = join(
+        store,
+        world,
+        102,
+        claim(100),
+        job=label("run-1", "sim", "a, b").for_work_item("a", ["t1", "t2", "t3", "t4"]),
+    )
+    assert store.refresh(item).state == HOLDING
+    (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
+    assert holders[1].job == job_slots.JobLabel("run-1", "sim", "a", "t1,t2,t3,+1", True)
+    assert job_slots.JobLabel.from_payload(holders[1].job.to_payload()) == holders[1].job
+    assert job_slots._holder_name(holders[1]) == "run-1 (sim, a, t1,t2,t3,+1)"
+
     entry = token.path
     payload = json.loads(entry.read_text(encoding="utf-8"))
-    for malformed in ("run-1", {"run_id": 1, "flow": "sim", "target": "a"}, {"run_id": "r"}):
+    malformed_labels = (
+        "run-1",
+        {"run_id": 1, "flow": "sim", "target": "a"},
+        {"run_id": "r"},
+        {"run_id": "r", "flow": "sim", "target": "a", "work_item": "yes"},
+    )
+    for malformed in malformed_labels:
         payload["job"] = malformed
         entry.write_text(json.dumps(payload), encoding="utf-8")
         (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
@@ -958,3 +996,88 @@ def test_entry_creation_exhaustion_names_the_memory_reservation(root, world, mon
     monkeypatch.setattr(Path, "hardlink_to", always_taken)
     with pytest.raises(RuntimeError, match="unique Memory Reservation entry"):
         store.submit(job_slots.CLASS_MEMORY, memory=claim(1.0), pid=100)
+
+
+def take_over(store: SlotStore, holder: job_slots.SlotToken, memory) -> job_slots.SlotToken:
+    """Submit *memory* from the holder's own process, taking over the holder's place (#4482)."""
+    return store.submit(job_slots.CLASS_MEMORY, pid=holder.pid, memory=memory, succeeds=holder)
+
+
+@pytest.mark.parametrize(("wall_s", "expected"), [(180.0, HOLDING), (720.0, QUEUED)])
+def test_a_short_later_claim_still_jumps_a_successor_that_cannot_start(
+    root, world, wall_s, expected
+):
+    store = make_store(root, world)
+    hold(store, world, 101, claim(300, wall_s=600.0))  # frees its memory in 10 min
+    flow = hold(store, world, 102, claim(500))
+    later = join(store, world, 103, claim(300, wall_s=wall_s))
+    successor = take_over(store, flow, claim(800))
+    assert store.refresh(successor) == TokenState(QUEUED, position=0)
+    assert store.refresh(later).state == expected
+    assert store._load_token(flow.path).memory.reservation_mb == 0
+
+
+def test_a_claim_takes_over_only_a_holder_that_still_reserves(root, world):
+    store = make_store(root, world)
+    flow = hold(store, world, 101, claim(500))
+    later = join(store, world, 102, claim(100))
+    assert store.shrink_reservation(flow, 0)
+    behind = take_over(store, flow, claim(100))  # nothing to take over: queues at the back
+    assert store.refresh(later).state == HOLDING
+    assert store.refresh(behind).state == HOLDING
+    assert behind.seq > later.seq
+    # A holder whose lease is gone refuses the takeover and leaves no waiter behind.
+    lost = hold(store, world, 103, claim(100))
+    store.release(lost)
+    with pytest.raises(job_slots.ClaimLostError):
+        take_over(store, lost, claim(100))
+    assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == []
+
+
+def test_no_waiter_ranks_while_a_claim_takes_over_a_holder(root, world, monkeypatch):
+    store = make_store(root, world)
+    rival = make_store(root, world)
+    flow = hold(store, world, 101, claim(None, run_alone=True))
+    later = join(rival, world, 102, claim(100))
+    real_shrink = store.shrink_reservation
+    gate_taken: list[bool] = []
+
+    def shrink_after_rival_tries_the_gate(token, reservation_mb):
+        with rival._promotion_gate(later) as acquired:
+            gate_taken.append(acquired)
+        return real_shrink(token, reservation_mb)
+
+    monkeypatch.setattr(store, "shrink_reservation", shrink_after_rival_tries_the_gate)
+    successor = take_over(store, flow, claim(None, run_alone=True))
+    assert gate_taken == [False]  # no ranking can interleave with the takeover
+    assert rival.refresh(later).state == QUEUED
+    assert store.refresh(successor).state == HOLDING
+
+
+def test_a_busy_promotion_gate_leaves_a_takeover_unsubmitted(root, world):
+    store = make_store(root, world)
+    rival = make_store(root, world)
+    flow = hold(store, world, 101, claim(None, run_alone=True))
+    later = join(rival, world, 102, claim(100))
+    with rival._promotion_gate(later) as acquired:
+        assert acquired
+        with pytest.raises(job_slots.TakeoverBusyError):
+            take_over(store, flow, claim(None, run_alone=True))
+        with pytest.raises(job_slots.ClaimAbortedError):
+            store.acquire(
+                job_slots.CLASS_MEMORY,
+                pid=101,
+                memory=claim(None, run_alone=True),
+                succeeds=flow,
+                should_abort=lambda: True,
+            )
+    assert store._load_token(flow.path).memory.run_alone
+    assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == [102]
+    # Once the gate is free the takeover goes through at the holder's place.
+    successor = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=101,
+        memory=claim(None, run_alone=True),
+        succeeds=flow,
+    )
+    assert successor.seq == flow.seq

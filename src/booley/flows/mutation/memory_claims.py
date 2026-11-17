@@ -10,7 +10,7 @@ as an unsized Simulation Record work item does.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
@@ -33,11 +33,19 @@ class CampaignClaims:
         self._admission = admission
 
     @contextmanager
-    def hold(self, request: Callable[[], JobRequest | None], *, build: bool) -> Iterator[None]:
+    def hold(
+        self,
+        request: Callable[[], JobRequest | None],
+        *,
+        build: bool,
+        target: str,
+        tests: Sequence[str] = (),
+    ) -> Iterator[None]:
         """Hold one Memory Reservation for the block, waiting in queue order for it.
 
         *request* names what the block runs (``None``: unknown, so it runs
-        alone); it is not called without managed admission. Raises
+        alone); it is not called without managed admission. *target* and *tests*
+        name the block in queue reports (a build has no tests). Raises
         ``ClaimAbortedError`` when the Job is cancelled while waiting and
         ``ClaimLostError`` when the waiting entry is withdrawn.
         """
@@ -56,6 +64,7 @@ class CampaignClaims:
             timeout_s=admission.timeout_seconds,
             should_abort=admission.cancellation,
             memory=claim,
+            job=admission.work_item_label(target, tests),
         )
         try:
             # Entered last, so ranking stops before the claim is released.

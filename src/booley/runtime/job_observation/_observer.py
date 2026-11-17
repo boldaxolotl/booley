@@ -138,14 +138,19 @@ def _job_claims(
     """The claim that speaks for the Job: its own, or a waiting work item's stand-in.
 
     Job admission labels the Job's own claim with the run ID; a work item's claim
-    (a Simulation Record lane, a campaign tool run) carries no label. The label,
-    not the owner kind, tells them apart: a CLI Job's own claim is execution-owned
-    because ``booley session enter`` exports the execution ID. A Job holding a
+    (a Simulation Record lane, a campaign tool run) carries its Job's label marked
+    as a work item. The label, not the owner kind, tells them apart: a CLI Job's
+    own claim is execution-owned because ``booley session enter`` exports the
+    execution ID. A Job holding a
     companion claim (a mutation coordinator) is ``queued`` while a work item's claim
     in its process waits, so that item's claim is returned instead.
     """
     mine = [token for token in slots if token.owner_identity == identity]
-    own = [token for token in mine if token.job is not None and token.job.run_id == run_id]
+    own = [
+        token
+        for token in mine
+        if token.job is not None and token.job.run_id == run_id and not token.job.work_item
+    ]
     if (
         len(own) == 1
         and own[0].is_holder
