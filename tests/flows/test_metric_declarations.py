@@ -246,22 +246,16 @@ def test_synth_report_yields_declared_metric_values() -> None:
 def test_synth_report_reads_cell_count() -> None:
     from booley.measurement.flow_metrics import report_metric_values
 
-    stored: dict[str, object] = {
-        "area_kge": 65.8,
-        "cell_count": 12345,
-        "per_clock": {},
-        "ppa_complete": True,
-    }
+    stored: dict[str, object] = {"area_kge": 65.8, "cell_count": 12345, "ppa_complete": True}
     values = report_metric_values("synth", {"targets": ["asic"], "asic": stored})
     assert values["asic"].plain == {"area_kge": 65.8, "cell_count": 12345}
 
-    older = {"area_kge": 65.8, "cells": 12345, "per_clock": {}, "ppa_complete": True}
+    older = {"area_kge": 65.8, "cells": 12345, "ppa_complete": True}
     values = report_metric_values("synth", {"targets": ["asic"], "asic": older})
     assert values["asic"].plain == {"area_kge": 65.8}
 
 
 def _fpga_detail(metrics: Any) -> Any:
-    """The FPGA report detail of *metrics*, read back from JSON the way a caller does."""
     from booley.flows.fpga.flow import FpgaImplFlow
     from booley.flows.fpga.implementation_report import build_fpga_implementation_report
     from booley.flows.implementation_report import (
@@ -279,7 +273,6 @@ def _fpga_detail(metrics: Any) -> Any:
 
 
 def _routed_fpga_metrics() -> Any:
-    """The FPGA metrics of a run that completed ``route_design``."""
     metrics = _fpga_metrics()
     metrics.route_completed = True
     return metrics
@@ -316,22 +309,27 @@ def _fpga_incomplete(**state: Any) -> Any:
 
 
 _INFRA = "Vivado required reports lack usable utilization/timing evidence"
+_TIMEOUT = "the FPGA implementation timed out"
+_SYNTH_STUB = {"targets": ["asic"], "asic": {"ppa_complete": True, "infra_error": "synth timeout"}}
+_NO_TERMINATION = {"targets": ["asic"], "asic": {"cell_count": 3}}
 
 
 @pytest.mark.parametrize(
     ("flow", "detail", "reason"),
     [
         pytest.param(*_synth_partial_ppa(), id="synth-partial-ppa"),
+        pytest.param("synth", _SYNTH_STUB, "synth timeout", id="synth-infra-error"),
         pytest.param(
-            "fpga",
-            _fpga_incomplete(timed_out=True),
-            "the FPGA implementation timed out",
-            id="fpga-timeout",
+            "synth",
+            _NO_TERMINATION,
+            "the synthesis run did not complete; its partial numbers are not final QoR",
+            id="synth-no-termination",
         ),
+        pytest.param("fpga", _fpga_incomplete(timed_out=True), _TIMEOUT, id="fpga-timeout"),
         pytest.param(
             "fpga",
             _fpga_incomplete(timed_out=True, infra_error=_INFRA),
-            f"the FPGA implementation timed out: {_INFRA}",
+            f"{_TIMEOUT}: {_INFRA}",
             id="fpga-timeout-infra-error",
         ),
         pytest.param("fpga", _fpga_incomplete(infra_error=_INFRA), _INFRA, id="fpga-infra-error"),
@@ -352,30 +350,6 @@ def test_report_of_a_run_that_did_not_complete_has_no_values(
     values = report_metric_values(flow, detail)
 
     assert values == {("asic" if flow == "synth" else "board"): MetricsUnavailable(reason)}
-
-
-def test_synth_summary_with_an_infrastructure_error_has_no_values() -> None:
-    from booley.flows.metric_declarations import MetricsUnavailable
-    from booley.measurement.flow_metrics import report_metric_values
-
-    summary = {"ppa_complete": True, "infra_error": "synthesis execution timeout", "cell_count": 3}
-
-    values = report_metric_values("synth", {"targets": ["asic"], "asic": summary})
-
-    assert values == {"asic": MetricsUnavailable("synthesis execution timeout")}
-
-
-def test_synth_summary_that_never_completed_fails_closed_without_a_termination() -> None:
-    from booley.flows.metric_declarations import MetricsUnavailable
-    from booley.measurement.flow_metrics import report_metric_values
-
-    values = report_metric_values("synth", {"targets": ["asic"], "asic": {"cell_count": 3}})
-
-    assert values == {
-        "asic": MetricsUnavailable(
-            "the synthesis run did not complete; its partial numbers are not final QoR"
-        )
-    }
 
 
 def test_report_without_declared_metrics_or_targets_yields_none() -> None:
