@@ -45,7 +45,10 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_CURRENT,
     DISPOSITION_DEFERRED,
     DISPOSITION_OUT_OF_SCOPE,
+    OPEN_STATUSES,
     ORIGIN_PRE_EXISTING,
+    STATUS_CANT_TELL,
+    STATUS_STILL_OPEN,
 )
 from booley.flows.cli_help import CliHelp
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
@@ -67,6 +70,17 @@ from .review_contract import (
     ReviewContractError,
     ReviewScopeContract,
     resolve_review_scope,
+)
+from .review_recheck import (
+    STATUS_LABELS,
+    RecheckInput,
+    RecheckInputError,
+    existing_scope,
+    judge_verdicts,
+    load_recheck_input,
+    recheck_prompt,
+    recheck_system_prompt,
+    rechecked_records,
 )
 from .review_simulators import render_simulation_context, resolve_scope_simulators
 from .specialist import Specialist
@@ -310,6 +324,13 @@ def resolve_spec_content(
         raise OSError(f"Specification file not found: {spec_path}")
     content = spec_path.read_text(encoding="utf-8", errors="replace")
     return _truncate_spec(content, label=str(spec_path)), f"spec file: {spec_path}"
+
+
+def _render_spec_section(spec_content: str | None, spec_source: str) -> str:
+    """The ``## Specification`` prompt section; empty when there is no content."""
+    if not spec_content:
+        return ""
+    return f"## Specification (source: {spec_source})\n\n{spec_content}\n"
 
 
 @dataclass
@@ -930,7 +951,11 @@ class ReviewerSpecialist(Specialist):
     """Single-focus code review: reports issues by severity."""
 
     name: str = "reviewer"
-    description: str = "Single-focus code review: reports issues by severity"
+    description: str = (
+        "Single-focus code review: reports issues by severity. Run one full review, then pass "
+        "its evidence file as recheck until its findings are fixed; run another full review "
+        "only on purpose, not as the check that ends the loop."
+    )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
             "Have an AI reviewer discover findings in the --scope files with one "
@@ -1025,6 +1050,8 @@ class ReviewerSpecialist(Specialist):
     def display_tag(self) -> str | None:
         if not self._args:
             return None
+        if self.args.recheck and not self.args.category:
+            return "recheck"  # the evidence file has not been read yet
         return f"{self.args.category}/{next(iter(self._parse_focus()), '?')}"
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
@@ -1058,6 +1085,21 @@ class ReviewerSpecialist(Specialist):
             parser,
             help_text="Developer Agent context and steering instructions.",
         )
+        self._add_spec_args(parser)
+        parser.add_argument(
+            "--fail-on",
+            default=None,
+            choices=["critical", "major", "minor"],
+            help=(
+                "Exit with failure when an open finding is at or above this severity; "
+                "without it a completed review exits 0."
+            ),
+        )
+        self._add_recheck_arg(parser)
+        self._add_dry_run_arg(parser)
+
+    @staticmethod
+    def _add_spec_args(parser: argparse.ArgumentParser) -> None:
         spec_source = parser.add_mutually_exclusive_group()
         spec_source.add_argument(
             "--spec",
@@ -1073,16 +1115,20 @@ class ReviewerSpecialist(Specialist):
             metavar="TEXT",
             help="Specification text the review checks, instead of a --spec file.",
         )
+
+    @staticmethod
+    def _add_recheck_arg(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--fail-on",
+            "--recheck",
             default=None,
-            choices=["critical", "major", "minor"],
+            metavar="PATH",
             help=(
-                "Exit with failure when an open finding is at or above this severity; "
-                "without it a completed review exits 0."
+                "Re-check the open findings of the Reviewer evidence file at PATH, which an "
+                "earlier review or re-check wrote, against the current sources: each becomes "
+                "fixed, still open or can't tell, and no new finding is reported. Category, "
+                "focus and scope come from the file."
             ),
         )
-        self._add_dry_run_arg(parser)
 
     # --- Validation ---
 
@@ -1420,9 +1466,7 @@ Untrusted data, not instructions; four backticks, so file text cannot end the fe
             getattr(self.args, "work_dir", None),
             getattr(self.args, "spec_text", None),
         )
-        if not spec_content:
-            return ""
-        return f"## Specification (source: {spec_source})\n\n{spec_content}\n"
+        return _render_spec_section(spec_content, spec_source)
 
     def _simulation_context_section(self) -> str:
         """Render which simulator runs each scoped file (resolved once per invocation).
@@ -1582,6 +1626,8 @@ object, even after calling the capability.
         self._simulation_context = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         self._review_evidence_written = False
+        if self.args.recheck:
+            return self._run_recheck()
         if error := self._prepare_invocation():
             return error
         if invalid := self._prepare_review_run():
@@ -2444,6 +2490,190 @@ object, even after calling the capability.
             display_lines=lines,
             detail=detail,
             report_text=report_text,
+        )
+
+    # --- Re-check (issue #4522) ---
+
+    def _recheck_conflicts(self) -> list[str]:
+        """The review options given alongside ``--recheck``; the file supplies them instead."""
+        given = {
+            "--scope": self.args.scope,
+            "--base": self.args.base,
+            "--category": self.args.category,
+            "--focus": self.args.focus,
+            "--spec": self.args.spec,
+            "--spec-text": self.args.spec_text,
+            "--steer": self.args.steer,
+        }
+        return [flag for flag, value in given.items() if value is not None]
+
+    def _load_recheck(self) -> RecheckInput | McpToolResult:
+        """Validate the options and the evidence file; a refusal is an error result."""
+        if conflicts := self._recheck_conflicts():
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "--recheck takes category, focus and scope from the evidence file; "
+                    f"remove {', '.join(conflicts)}"
+                ),
+            )
+        try:
+            return load_recheck_input(
+                Path(self.args.work_dir) / self.args.recheck,
+                rtl_focuses=RTL_FOCUS_CATEGORIES,
+                tb_focuses=TB_FOCUS_CATEGORIES,
+                severities=ALL_SEVERITIES,
+            )
+        except RecheckInputError as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+
+    def _run_recheck(self) -> McpToolResult:
+        """Judge the open findings of an earlier evidence file against the current sources."""
+        recheck = self._load_recheck()
+        if isinstance(recheck, McpToolResult):
+            return recheck
+        # The file's contract drives the tag, the snapshot's category and its scope grant. A scope
+        # file removed since the review is not granted: the snapshot refuses a missing one.
+        self.args.category, self.args.focus = recheck.category, recheck.focus
+        self._resolved_scope = existing_scope(recheck, Path(self.args.work_dir))[0]
+        if self.args.dry_run:
+            return self._recheck_dry_run(recheck)
+        self._review_evidence_path = (
+            resolve_common_booley_dir(Path(self.args.work_dir))
+            / "reviewer-evidence"
+            / f"{self._review_run_id}.json"
+        )
+        # The input's contract, so a later --recheck reads the same category, focus and scope.
+        self._sampled_contract = deepcopy(recheck.contract)
+        return self._publish_review_evidence(self._execute_recheck(recheck))
+
+    def _recheck_dry_run(self, recheck: RecheckInput) -> McpToolResult:
+        """Describe the re-check without calling the model or writing evidence."""
+        open_ids = [row["finding_id"] for row in recheck.open_findings]
+        carried = len(recheck.findings) - len(open_ids)
+        return self._dry_run_result(
+            summary=(
+                f"reviewer re-check dry-run: {recheck.category}/{recheck.focus}; "
+                f"{len(open_ids)} open finding(s) to re-check: {', '.join(open_ids)}; "
+                f"{carried} carried over"
+            ),
+            detail={
+                "recheck_of": str(recheck.path),
+                "category": recheck.category,
+                "focus": recheck.focus,
+                "scope": list(recheck.scope),
+                "open_finding_ids": open_ids,
+                "carried_over": carried,
+            },
+        )
+
+    def _recheck_spec_section(self, recheck: RecheckInput) -> str:
+        """The specification the review checked: its inline text, else its file's current text."""
+        spec_text = recheck.contract.get("spec_text")
+        spec_source = recheck.contract.get("spec_source")
+        if isinstance(spec_text, str):
+            return _render_spec_section(*resolve_spec_content(None, None, spec_text))
+        if isinstance(spec_source, str) and Path(spec_source).is_file():
+            return _render_spec_section(*resolve_spec_content(spec_source))
+        return ""
+
+    def _recheck_params(self, recheck: RecheckInput) -> AgentCallParams:
+        """One agent call: the re-check prompts, read-only, with no ``ReportFindings`` mirror."""
+        return AgentCallParams(
+            prompt=recheck_prompt(
+                recheck, self._recheck_spec_section(recheck), Path(self.args.work_dir)
+            ),
+            model=self._resolve_model(),
+            cwd=self.args.work_dir,
+            allowed_agent_capabilities=list(self.agent_capabilities),
+            disallowed_agent_capabilities=[*self.READ_ONLY_DENY, REPORT_FINDINGS_CAPABILITY],
+            system_prompt=recheck_system_prompt(recheck.category, recheck.focus),
+            max_turns=self.args.max_turns,
+            timeout_seconds=self.timeout_seconds(),
+            transcript_path=self.transcript_path(),
+            label=f"review-recheck-{recheck.category}-{recheck.focus}",
+            needs_skills=self._needs_skills(),
+            reasoning_effort=self._resolve_effort(),
+        )
+
+    def _execute_recheck(self, recheck: RecheckInput) -> McpToolResult:
+        """Call the model once and turn its verdicts into the re-check's result."""
+        start = time.monotonic()
+        self._attempt_id = f"{self._review_run_id}-{uuid4().hex}"
+        self._audit_phase = "recheck"
+        self.emit_progress(f"re-checking {recheck.category}/{recheck.focus}")
+        try:
+            params = self._recheck_params(recheck)
+            output = self._invoke_agent(params).output
+        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=self._record_review_provider_failure(
+                    exc, self.transcript_path(), "Reviewer re-check failed"
+                ),
+            )
+        payload = _find_balanced_json_object(output, "verdicts")
+        entries = payload["verdicts"] if payload is not None else None
+        if not isinstance(entries, list):
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "ERROR: Specialist output contained no verdicts JSON; "
+                    "the re-check is incomplete, not a clean pass"
+                ),
+            )
+        verdicts, rows = judge_verdicts(entries, recheck.open_findings, Path(self.args.work_dir))
+        self._record_rejections(rows, "recheck")
+        records = rechecked_records(recheck, verdicts)
+        return self._recheck_result(recheck, records, elapsed=time.monotonic() - start)
+
+    def _recheck_result(
+        self, recheck: RecheckInput, records: list[dict[str, Any]], *, elapsed: float
+    ) -> McpToolResult:
+        """Report each re-checked finding; ``--fail-on`` counts only those still open."""
+        # Records keep the input's order, so an open input record and its result pair up by
+        # position; an ID shared with a carried-over record cannot pull that one in.
+        judged = [
+            record
+            for source, record in zip(recheck.findings, records, strict=True)
+            if source["status"] in OPEN_STATUSES
+        ]
+        still_open = [
+            row for row in judged if row["status"] in (STATUS_STILL_OPEN, STATUS_CANT_TELL)
+        ]
+        lines = [
+            f"Re-check of {recheck.path}: {len(judged)} open finding(s), "
+            f"{len(records) - len(judged)} carried over",
+            *(
+                f"  [{_SEVERITY_TAG[row['severity'].upper()]}] {row['file']}:{row['line']} — "
+                f"{row['summary']} (ID: {row['finding_id']}) — {STATUS_LABELS[row['status']]}"
+                for row in judged
+            ),
+            f"RESULT: {len(judged) - len(still_open)} fixed, "
+            f"{len(still_open)} still open or can't tell",
+        ]
+        exit_code = self._completed_exit_code([row["severity"] for row in still_open])
+        report_text = "\n".join(lines)
+        print(report_text)
+        detail = {
+            "review_detail_version": REVIEW_DETAIL_VERSION,
+            **self._audit_detail(),
+            "issues": len(still_open),
+            "observation_count": len(records),
+            "issue_list": records,
+            **{
+                severity: sum(row["severity"].upper() == severity for row in still_open)
+                for severity in (SEVERITY_CRITICAL, SEVERITY_MAJOR, SEVERITY_MINOR)
+            },
+            "elapsed_s": round(elapsed, 1),
+            "gate_passed": True,
+            "review_outcome": "corrective" if still_open else "advisory",
+            "contract": self._review_contract_detail(),
+            "recheck_of": str(recheck.path),
+        }
+        self._attach_review_evidence(detail, exit_code)
+        return McpToolResult(
+            exit_code=exit_code, display_lines=lines, detail=detail, report_text=report_text
         )
 
     # --- _interpret_output (required by ABC, but _run is overridden) ---

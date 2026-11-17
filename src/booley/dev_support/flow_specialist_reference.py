@@ -194,6 +194,19 @@ def render_flow_reference(
     return "\n".join(lines)
 
 
+_REVIEWER_RECHECK = (
+    '**Re-check:** after fixing findings, pass `recheck="<evidence file>"` '
+    "(CLI: `--recheck <evidence file>`), the `Reviewer evidence:` path of the "
+    "earlier review or re-check, instead of running a new review. Run one full "
+    "review, then re-check until its findings are fixed; run another full review "
+    "only on purpose. Each open finding becomes `fixed`, `still open`, or `can't "
+    "tell`, and no new finding is reported. `fixed` needs current code that shows "
+    "it. Category, focus, and scope come from the file, so `scope`, `base`, "
+    "`category`, `focus`, `spec`, `spec_text`, and `steer` are refused. With "
+    "`fail_on`, only `still open` and `can't tell` findings count."
+)
+
+
 def _render_reviewer_reference() -> list[str]:
     """Render every registry-declared reviewer focus and its human meaning."""
     lines = [
@@ -240,6 +253,8 @@ def _render_reviewer_reference() -> list[str]:
             "the `scope` to give the Reviewer the files that use the changed ones. Findings "
             "already present before the change are listed separately as pre-existing and are "
             "never open.",
+            "",
+            _REVIEWER_RECHECK,
         ]
     )
     return lines
