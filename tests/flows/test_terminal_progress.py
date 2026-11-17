@@ -925,7 +925,9 @@ def test_agent_console_and_display_bytes_match_existing_transport(tmp_path, monk
     assert captured.out == "verdict unchanged\n"
     assert captured.err == ""
     assert result.exit_code == 7
-    assert (tmp_path / "display.jsonl").read_bytes() == DISPLAY_EVENTS
+    # The writer opens the file in text mode, so Windows stores CRLF.
+    written = (tmp_path / "display.jsonl").read_bytes().replace(b"\r\n", b"\n")
+    assert written == DISPLAY_EVENTS
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows anonymous pipe compatibility")
