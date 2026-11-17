@@ -1800,7 +1800,7 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
     root = job_slots.slots_dir()
     if root is None:
         _fail(
-            "slot store root unresolvable (no Booley Directory) — job admission cannot arbitrate",
+            "Memory Reservation store root unresolvable (no Booley Directory) — Job admission cannot arbitrate",
             "run doctor from the project workspace or set BOOLEY_DIR",
         )
         return
@@ -1811,11 +1811,11 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
         probe.unlink()
     except OSError as exc:
         _fail(
-            f"slot store root not writable: {root} ({exc})",
+            f"Memory Reservation store root not writable: {root} ({exc})",
             f"fix ownership/permissions on {root}",
         )
         return
-    _pass(f"slot store root writable: {root}")
+    _pass(f"Memory Reservation store root writable: {root}")
 
 
 def _check_image_bakes_runtime_marker(

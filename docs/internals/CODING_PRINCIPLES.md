@@ -335,3 +335,23 @@ on their own. When a change truly cannot be split, the PR body explains why,
 and the maintainer approves the size before review starts. A PR that is over
 the cap because of review rounds is a sign of bloat: remove code, do not add
 more.
+
+## Comments
+
+### 19. Comments say why
+
+A comment states what the code cannot: an external tool's behavior, a rejected
+alternative, an invariant, a unit, or the bug a test catches. Keep those.
+
+Change the code instead when a comment:
+
+- explains what the code does (rename or extract);
+- justifies a `cast`, or relies on a rule in another module (put the fact in
+  an existing type or interface; do not add a Protocol or wrapper for it,
+  principle 17);
+- labels a section of a file (check principle 8: split only if the parts
+  change independently; section comments inside a function are principle 1).
+
+Delete a comment that restates the code.
+
+The principle applies to code you write or touch. Do not sweep untouched files.

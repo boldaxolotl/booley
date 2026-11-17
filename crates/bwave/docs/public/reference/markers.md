@@ -21,26 +21,19 @@ names remain usable as time references on other commands; see
 --marker NAME TIME
 ```
 
-The option is repeatable. TIME uses the same typed grammar as `-t`:
-
-- In sync mode, a bare integer or `Nc` is a cycle.
-- `Nt` is a raw simulation tick.
-- `Nps`, `Nns`, `Nus`, and `Nms` are physical times.
-- In async mode, the suffix is required; a bare integer is ambiguous and is
-  rejected.
-- Marker times must be non-negative.
+The option is repeatable. TIME uses the same grammar as `-t`
+(`reference/time-tokens`) and must be non-negative.
 
 Each in-window marker becomes a label above its column. In async mode, B-Wave
 adds a column at the marker tick even if no selected signal transitions there.
 Markers outside the `-t` window are silently omitted.
 
 ```text
-              err_start              dma_done
-              v                      v
-              500         510         520         530
-              |---------- |---------- |---------- |----------
-clk           ^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_
-state         'h2  'h2  'h2  'h5  'h5  'h5  'h0  'h0  'h0
+$ bwave wave trace.fst -s clk -s data -t 4:9 --marker err_start 5 --marker done 8
+              err_start        done
+    cycle  4          5  6  7     8
+      clk  1          1  1  1     1
+data[7:0]  3          4  5  6     7
 ```
 
 ## Wrapper integration: `bwave markers`

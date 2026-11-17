@@ -168,8 +168,10 @@ class SimulationRecordCapacity:
         ``publish`` gets the lane ID before the slot is requested. A *memory*
         claim is the item's Memory Reservation; it fixes the item's thread count
         at its share of the cores for everything it runs.
-        *queue_reason* names why a requeued item claims again. *tests* are the
-        item's test names, shown beside its run, Flow and Target in queue reports.
+        *queue_reason* names why a requeued item claims again. While the Flow
+        still reserves memory, the claim takes over its reservation and queue place.
+        *tests* are the item's test names, shown beside its run, Flow and Target
+        in queue reports.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
@@ -293,7 +295,9 @@ class SimulationRecordCapacity:
 
     def _child_cancellation_cause(self, permit: ChildPermit) -> str | None:
         if permit.lease_health.lost.is_set():
-            return f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
+            return (
+                f"Memory Reservation lease lost: {permit.token.job_class}/{permit.token.path.name}"
+            )
         return self.cancellation_cause()
 
     def _confirm_lease(self, permit: ChildPermit) -> bool:
@@ -315,6 +319,7 @@ class SimulationRecordCapacity:
         tests: Sequence[str],
     ) -> SlotToken:
         submitted: list[SlotToken] = []
+        outer = self._admission.outer_token
 
         def register(token: SlotToken) -> None:
             with self._gate:
@@ -337,6 +342,7 @@ class SimulationRecordCapacity:
                 on_submitted=register,
                 memory=memory,
                 queue_reason=queue_reason,
+                succeeds=outer if isinstance(outer, SlotToken) else None,
                 job=self._admission.work_item_label(self._target, tests),
             )
         except BaseException:

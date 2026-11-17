@@ -180,7 +180,7 @@ def read_slot_entry(
     *,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any] | None:
-    """Read one Job Slot entry, keeping "missing" apart from "unreadable".
+    """Read one Memory Reservation entry, keeping "missing" apart from "unreadable".
 
     Returns the payload, or ``None`` when the file is missing or its content is
     corrupt (not UTF-8, not JSON, not an object). Any other ``OSError``,
