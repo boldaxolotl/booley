@@ -74,7 +74,7 @@ def test_bounded_run_timeout_kills_the_process_tree(tmp_path):
     launched = time.monotonic()
     with pytest.raises(pytest.fail.Exception):
         node_suite.run_bounded(stub, bound_s=_TREE_BOUND_S, output_dir=tmp_path)
-    time.sleep(max(0.0, 2 * _TREE_BOUND_S + 3 - (time.monotonic() - launched)))
+    time.sleep(max(0.0, 3 * _TREE_BOUND_S + 1 - (time.monotonic() - launched)))
     # Without this the test would pass vacuously if the bound beat the grandchild's start.
     assert ready.exists(), "the grandchild never started within the bound"
     assert not (tmp_path / "survived-stub").exists()

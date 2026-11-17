@@ -41,7 +41,7 @@ from booley.mcp import server_inspection
 from booley.runtime import host_docker, session_runtime
 from booley.runtime.session_admission import Sandbox
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
-from tests.time_budget import hang_guard_s, scaled
+from tests.time_budget import scaled
 
 _IMAGE_ID = "sha256:" + "a" * 64
 _OUTCOMES = ("ok", "nonzero", "missing", "timeout")
@@ -644,6 +644,6 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
         ]
         assert elapsed < limit, f"self-test hung {elapsed:.1f}s on a pipe held by a grandchild"
         assert paths["heartbeat"].exists(), "grandchild never started"
-        assert wait_until_heartbeat_stops(paths["heartbeat"], window=hang_guard_s()), (
+        assert wait_until_heartbeat_stops(paths["heartbeat"], window=scaled(5)), (
             "grandchild still running after the timeout"
         )
