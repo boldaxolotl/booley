@@ -1031,6 +1031,8 @@ def test_pairing_probe_failure_never_selects_another_source(tmp_path, monkeypatc
     goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
     _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
     _git(paired, "branch", "--set-upstream-to=project-source")
+    # Private seam: only the pairing probes fail here, which no real git
+    # repository can be made to do on demand, so the test wraps the helper.
     real_git = module._git
 
     def failing_git(cwd, *args, timeout):
