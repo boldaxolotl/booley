@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
+from booley.flows.metric_declarations import MetricsUnavailable
 from booley.flows.mutation.flow import (
     MutationFlow,
     MutationResult,
@@ -1608,6 +1609,33 @@ def test_build_failure_cap_scores_the_kept_mutants(
         assert "(required: 3, explicit)" in result.report_text
 
 
+def _reported_values(result: EndpointOutcome) -> Any:
+    """The typed values ``report.json`` gives back for the run's ``detail`` (a JSON round trip)."""
+    from booley.measurement.flow_metrics import report_metric_values
+
+    return report_metric_values("mutation", json.loads(json.dumps(result.detail)))
+
+
+def test_campaign_report_gives_the_typed_mutation_metrics(tmp_path: Path, monkeypatch) -> None:
+    """AC1: the score counts valid Mutants only; a candidate that did not build is on neither side."""
+
+    def detects_the_first_three(index: int | None) -> subprocess.CompletedProcess:
+        return _fake_proc(rc=0 if index is None or index > 3 else 1, stdout="[sim] run")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=4, run=detects_the_first_three, build=_failing_builds(2)
+    )
+
+    values = _reported_values(result)
+    assert result.exit_code == EXIT_FAILURE, result.report_text  # 3 of 4: below the default 4
+    assert set(values) == {"lite"}
+    assert values["lite"].plain == {
+        "mutation_score": 75.0,
+        "mutants_detected": 3,
+        "mutants_survived": 1,
+    }
+
+
 def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, monkeypatch) -> None:
     _prepare_scope_files(tmp_path, [_SCOPE])
     ranked = _candidates(tmp_path)
@@ -1628,6 +1656,7 @@ def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, mo
     assert result.detail["invalid_dropped"] == [ranked[i].id for i in range(3)]
     assert "3 candidate Mutants did not build and were replaced" in result.report_text
     assert fake.runs == [None]
+    assert _reported_values(result) == {"lite": MetricsUnavailable("no valid Mutant was scored")}
 
 
 def test_campaign_without_build_failures_names_no_replacement(tmp_path: Path, monkeypatch) -> None:
@@ -1742,6 +1771,10 @@ def test_error_phases_end_with_a_result_error_line(tmp_path: Path, monkeypatch) 
         if not builds:  # generation fails before any build
             assert result.detail["phase"] == "mutant_generation", phase
             assert fake.builds == [], phase
+        # No Mutation Operator site means no valid Mutant; a parse error has no values at all.
+        expected = {"generation": {"lite": MetricsUnavailable("no valid Mutant was scored")}}
+        if phase in ("parse", "generation"):
+            assert _reported_values(result) == expected.get(phase, {}), phase
 
 
 def test_missing_pyslang_refuses_with_its_name(tmp_path: Path, monkeypatch) -> None:

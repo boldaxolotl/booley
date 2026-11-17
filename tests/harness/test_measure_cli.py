@@ -97,6 +97,20 @@ def test_validate_without_metrics_file_declares_nothing(
     assert "declares nothing" in out
 
 
+def test_validate_refuses_an_automatic_mutation_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AC2: ``count = "auto"`` is a load error that names its table and key."""
+    write_metrics_project(
+        tmp_path, '[sim_core.mutation]\nmutation_score_min = 50\ncount = "auto"\n'
+    )
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 2
+
+    err = capsys.readouterr().err
+    assert "[sim_core.mutation] count: count must be an integer, got 'auto'" in err
+
+
 # ---------------------------------------------------------------- measuring a commit
 
 TWO_LINT_TABLES = "[sim_core.lint]\nwarnings_max = 0\n[sim_two.lint]\nwarnings_max = 0\n"
@@ -1022,3 +1036,70 @@ def test_validate_init_defaults_bound_listed_sim_headers(
     out = capsys.readouterr().out
     assert "4 tables" in out
     assert out.count("1 bounds") == 4
+
+
+MUTATION_TABLE = "[sim_core.mutation]\nmutation_score_min = 50\ncount = {count}\nseed = {seed}\n"
+
+
+def test_a_mutation_table_runs_its_child_with_count_and_seed_and_keys_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC3: the child gets the table's settings, and a changed setting is a new run key."""
+    from booley.harness import measure_children
+    from booley.harness.checkout_flow import (
+        CheckoutFlowRequest,
+        CheckoutFlowResult,
+        CheckoutFlowStatus,
+    )
+
+    requests: list[CheckoutFlowRequest] = []
+
+    class Instant:
+        """A child that has already ended with a mutation score of 75."""
+
+        pid = 4_194_305  # above every Linux PID: no live process has it
+
+        def start(self) -> Instant:
+            return self
+
+        def discard(self) -> None:
+            pass
+
+        def poll(self) -> bool:
+            return True
+
+        def settle(self) -> CheckoutFlowResult:
+            values = FlowMetricValues(plain={"mutation_score": 75.0}, per_clock={})
+            return CheckoutFlowResult(
+                "run",
+                CheckoutFlowStatus.PASSED,
+                0,
+                (Path("report.json"),),
+                {"sim_core": values},
+                Path("job.log"),
+            )
+
+    def prepare(request: CheckoutFlowRequest) -> Instant:
+        requests.append(request)
+        return Instant()
+
+    monkeypatch.setattr(measure_children, "prepare_checkout_flow", prepare)
+    project = committed_project(tmp_path, MUTATION_TABLE.format(count=4, seed=3))
+    keys = [key_of(project)]
+    assert run_command(monkeypatch, project) == 0
+    for count, seed in ((5, 3), (5, 4)):  # change one setting at a time, each in its own commit
+        (project / ".booley" / "metrics.toml").write_bytes(
+            MUTATION_TABLE.format(count=count, seed=seed).encode()
+        )
+        git(project, "commit", "-q", "-a", "-m", f"count {count} seed {seed}")
+        keys.append(key_of(project))
+        assert run_command(monkeypatch, project) == 0
+
+    assert [(r.flow, r.target, dict(r.settings)) for r in requests] == [
+        ("mutation", "sim_core", {"count": 4, "seed": 3}),
+        ("mutation", "sim_core", {"count": 5, "seed": 3}),
+        ("mutation", "sim_core", {"count": 5, "seed": 4}),
+    ]
+    assert len(set(keys)) == 3
+    store = MeasurementStore(project / ".booley")
+    assert [len(store.history(key)) for key in keys] == [1, 1, 1]

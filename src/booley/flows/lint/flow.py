@@ -22,7 +22,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
 from booley.flows import eda_parsers
 from booley.flows.cli_help import CliHelp
@@ -40,11 +39,9 @@ from booley.flows.metric_declarations import (
     FlowMetricValues,
     MetricDeclaration,
     MetricKind,
-    MetricsUnavailable,
     MetricsUnavailableError,
     metric_values,
     metrics_document,
-    metrics_from_document,
 )
 from booley.flows.plan import (
     CommandPlan,
@@ -528,18 +525,6 @@ def _lint_findings(
 def _lint_metrics_detail(results: list[LintConfigResult]) -> dict[str, dict[str, object]]:
     """Each Target's typed values for the report, or the reason it has none."""
     return {result.target: metrics_document(result.flow_metrics) for result in results}
-
-
-def lint_report_metric_values(
-    detail: dict[str, Any],
-) -> dict[str, FlowMetricValues | MetricsUnavailable]:
-    """Each Target's values from a ``lint`` report's ``detail.metrics``; the inverse."""
-    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
-    for target, raw in (as_dict(detail.get("metrics")) or {}).items():
-        entry = metrics_from_document(raw)
-        if entry is not None:
-            values[str(target)] = entry
-    return values
 
 
 def _lint_result_parts(

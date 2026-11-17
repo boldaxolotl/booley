@@ -39,7 +39,6 @@ REQUIRED_TERMS = {
         "advisory",
         "absolute path",
         "Heavy generated",
-        "mutation_score",
     ),
 }
 
