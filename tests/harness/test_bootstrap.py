@@ -13,6 +13,7 @@ import pytest
 
 from booley.config.host_config import HostConfigError, SandboxHostPolicy
 from booley.harness import bootstrap, bootstrap_cli, init_cmd
+from booley.harness.setup.skills import HostSkillReconciliation
 from booley.runtime import issuance_invalidation
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
@@ -20,6 +21,7 @@ from booley.runtime.docker_capacity import (
     DockerCapacityError,
 )
 from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
+from booley.runtime.skill_links import Outcome, SkillLinkEvent, SkillLinkReport
 from tests.conftest import require_symlinks
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 
@@ -53,47 +55,57 @@ def _prepare_empty_invalidation_store(config_root: Path, project: Path) -> Path:
     return config_root / "booley"
 
 
-def _wire_current(
-    monkeypatch: pytest.MonkeyPatch, *, stub_vscode_extension: bool = True
-) -> list[str]:
+def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Fake each collaborator as current so the real steps run; return the consulted ones."""
+    from booley.config import editor
+
     calls: list[str] = []
+    route_bounded_capture_through_subprocess_run(monkeypatch, bootstrap)
     monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: ())
     monkeypatch.setattr(
         bootstrap.host_sidecars, "plan_image_builds", lambda _intent, **_kwargs: ()
     )
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
     monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/fake/" + name)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/fake/code")
+
+    def run(argv, **_kwargs):
+        if argv[-1] == "--version":
+            output = "git version 2.48.0" if argv[0].endswith("git") else f"{argv[0]} 1.0"
+        elif argv[-1] == "info":
+            output = ""
+        elif argv == ["/fake/code", "--list-extensions"]:
+            calls.append("vscode-dev-containers")
+            output = bootstrap.DEV_CONTAINERS_EXTENSION_ID
+        else:
+            raise AssertionError(f"unexpected process: {argv}")
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
     monkeypatch.setattr(
         bootstrap,
-        "_prerequisite_findings",
-        lambda: (_current("git"), _current("docker"), _current("vscode")),
+        "reconcile_host_skills",
+        lambda *_args, **_kwargs: calls.append("skills") or (),
     )
-    if stub_vscode_extension:
-        monkeypatch.setattr(
-            bootstrap,
-            "_reconcile_vscode_dev_containers",
-            lambda _intent: (
-                calls.append("vscode-dev-containers") or _current("vscode-dev-containers")
-            ),
-        )
+    nangate = bootstrap.nangate_pdk
+    monkeypatch.setattr(nangate, "cache_root", lambda: Path("nangate-cache"))
+    monkeypatch.setattr(nangate, "secure_config_dir_for_cache", lambda _root: False)
     monkeypatch.setattr(
-        bootstrap,
-        "_reconcile_skills",
-        lambda _intent: calls.append("skills") or _current("skills"),
+        nangate, "validation_errors", lambda _root: calls.append("nangate45") or ()
+    )
+    monkeypatch.setattr(nangate, "inspect_cache", lambda _root: nangate.CacheInspection((), ()))
+    monkeypatch.setattr(
+        nangate, "fetch", lambda _root: pytest.fail("a current cache is not fetched")
     )
     monkeypatch.setattr(
         bootstrap,
-        "_reconcile_nangate",
-        lambda _intent: calls.append("nangate45") or _current("nangate45"),
+        "inspect_host_installation",
+        lambda _source: SimpleNamespace(error=None, pending=False),
     )
     base = LifecycleResult("booley-sandbox", "sha256:base", Status.CURRENT)
     monkeypatch.setattr(
-        bootstrap,
-        "_reconcile_base_image",
-        lambda _intent, **_kwargs: (
-            calls.append("base-image") or base,
-            _current("base-image"),
-        ),
+        bootstrap, "reconcile_images", lambda *_args, **_kwargs: calls.append("base-image") or base
     )
     monkeypatch.setattr(
         bootstrap.host_sidecars,
@@ -101,6 +113,25 @@ def _wire_current(
         lambda _policy, _intent, **_kwargs: calls.append("sidecars") or _current_sidecars(),
     )
     return calls
+
+
+def _forbid_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test when Host Bootstrap looks for any tool on PATH."""
+    monkeypatch.setattr(
+        bootstrap.shutil, "which", lambda name: pytest.fail(f"must not probe {name}")
+    )
+
+
+def _skill_reconciliation(
+    *events: SkillLinkEvent, diagnostics: tuple[str, ...] = (), fatal: str | None = None
+) -> HostSkillReconciliation:
+    return HostSkillReconciliation(
+        Path("skills-target"), SkillLinkReport(events, diagnostics, fatal)
+    )
+
+
+def _skill_event(outcome: Outcome, detail: str = "") -> SkillLinkEvent:
+    return SkillLinkEvent("x", outcome, None, Path("x"), detail=detail)
 
 
 def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,6 +149,7 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
         "git",
         "docker",
         "vscode",
+        "host-agent-cli",
         "vscode-dev-containers",
         "skills",
         "nangate45",
@@ -128,7 +160,6 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
         "proxy",
         "reaper",
     ]
-    assert result.ready
     assert result.exit_status == 0
 
 
@@ -182,19 +213,18 @@ def test_bootstrap_threads_aggregate_plan_through_every_build(
     monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", lambda *_a, **_kw: None)
     observed = []
 
-    def reconcile_base(_intent, **kwargs):
-        observed.append(kwargs["capacity_plan"])
-        result = LifecycleResult("booley-sandbox", "sha256:base", Status.CURRENT)
-        return result, _current("base-image")
+    def reconcile_images(_intent, *, capacity_plan, **_kwargs):
+        observed.append(capacity_plan)
+        return LifecycleResult("booley-sandbox", "sha256:base", Status.CURRENT)
 
     def reconcile_sidecars(_policy, _intent, **kwargs):
         observed.append(kwargs["capacity_plan"])
         return _current_sidecars()
 
-    monkeypatch.setattr(bootstrap, "_reconcile_base_image", reconcile_base)
+    monkeypatch.setattr(bootstrap, "reconcile_images", reconcile_images)
     monkeypatch.setattr(bootstrap.host_sidecars, "reconcile_sidecars", reconcile_sidecars)
 
-    assert bootstrap.reconcile_bootstrap(Intent.ENSURE).ready
+    assert bootstrap.reconcile_bootstrap(Intent.ENSURE).exit_status == 0
     assert [plan.requests for plan in observed] == [(base, proxy), (base, proxy)]
 
 
@@ -206,6 +236,7 @@ def test_unproxied_capacity_plan_omits_proxy_image(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy(egress="unproxied")
     )
+    # private: the sidecar adapter is the only Docker seam; there is no public factory to fake.
     monkeypatch.setattr(
         sidecars,
         "_docker_adapter",
@@ -238,11 +269,7 @@ def test_noncanonical_install_stops_before_host_mutation(
         "host_install_error",
         lambda _source: "temporary QA wheel cannot manage the host",
     )
-    monkeypatch.setattr(
-        bootstrap,
-        "_prerequisite_findings",
-        lambda: (_ for _ in ()).throw(AssertionError("must not probe or mutate")),
-    )
+    _forbid_probes(monkeypatch)
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
 
@@ -257,30 +284,10 @@ def test_invalid_config_stops_before_any_other_probe(
         raise HostConfigError(tmp_path / "config.toml", "sandbox.max_sessions", "bad")
 
     monkeypatch.setattr(bootstrap, "load_host_policy", invalid)
-    monkeypatch.setattr(
-        bootstrap,
-        "_prerequisite_findings",
-        lambda: (_ for _ in ()).throw(AssertionError("must not probe")),
-    )
+    _forbid_probes(monkeypatch)
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
     assert result.exit_status == 2
     assert [finding.resource for finding in result.findings] == ["host-config"]
-
-
-def test_check_only_pending_is_exit_one_but_mutating_pending_is_failure() -> None:
-    pending = bootstrap.BootstrapFinding("resource", bootstrap.BootstrapState.PENDING, "work")
-    assert bootstrap.BootstrapResult(Intent.CHECK, (pending,)).exit_status == 1
-    assert bootstrap.BootstrapResult(Intent.ENSURE, (pending,)).exit_status == 2
-
-
-def test_warning_is_ready_and_non_blocking() -> None:
-    warning = bootstrap.BootstrapFinding(
-        "qa-skills", bootstrap.BootstrapState.WARNING, "restore source"
-    )
-    result = bootstrap.BootstrapResult(Intent.CHECK, (warning,))
-
-    assert result.ready is True
-    assert result.exit_status == 0
 
 
 @pytest.mark.parametrize("flag", ["with_qa_skills", "without_qa_skills"])
@@ -294,20 +301,22 @@ def test_check_only_rejects_qa_selection_flags(flag: str, capsys) -> None:
 def test_opt_out_prunes_qa_before_failing_prerequisites(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
-    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
+    calls = _wire_current(monkeypatch)
     monkeypatch.setattr(
         bootstrap,
-        "_reconcile_qa_skills",
-        lambda *_args, **_kwargs: calls.append("qa-prune") or _current("qa-skills"),
+        "reconcile_host_qa_skills",
+        lambda *_args, **_kwargs: calls.append("qa-prune") or (),
     )
-    prerequisite = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
-    monkeypatch.setattr(
-        bootstrap,
-        "_prerequisite_findings",
-        lambda: (calls.append("prerequisites") or prerequisite,),
-    )
+    wired_run = subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[-1] == "info":
+            return subprocess.CompletedProcess(argv, 1, "", "offline")
+        if argv[0].endswith("git"):
+            calls.append("prerequisites")
+        return wired_run(argv, **kwargs)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE, qa_opt_out=True)
 
@@ -315,7 +324,10 @@ def test_opt_out_prunes_qa_before_failing_prerequisites(
     assert [finding.resource for finding in result.findings] == [
         "host-config",
         "qa-skills",
+        "git",
         "docker",
+        "vscode",
+        "host-agent-cli",
     ]
 
 
@@ -386,8 +398,11 @@ def test_qa_selection_flags_order_and_status(
 def test_qa_reconciliation_relinks_on_refresh_and_prunes_on_opt_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _wire_current(monkeypatch)
+    packaged = tmp_path / "packaged"
+    packaged.mkdir()
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: packaged)
     observed: list[tuple[Path, frozenset[str], bool]] = []
-    monkeypatch.setattr(bootstrap, "skills_dir", lambda: tmp_path / "packaged")
     recorded = Mock(return_value=Path("/qa"))
     monkeypatch.setattr(bootstrap, "active_qa_source_root", recorded)
 
@@ -399,12 +414,13 @@ def test_qa_reconciliation_relinks_on_refresh_and_prunes_on_opt_out(
 
     calls = ((Intent.ENSURE, False), (Intent.REFRESH, False), (Intent.ENSURE, True))
     for intent, opt_out in calls:
-        finding = bootstrap._reconcile_qa_skills(intent, opt_out=opt_out)
-        assert finding is not None and finding.state is bootstrap.BootstrapState.CURRENT
+        result = bootstrap.reconcile_bootstrap(intent, qa_opt_out=opt_out, include_images=False)
+        (finding,) = (item for item in result.findings if item.resource == "qa-skills")
+        assert finding.state is bootstrap.BootstrapState.CURRENT
     assert observed == [
         (Path("/qa"), bootstrap.QA_SKILL_NAMES, False),
         (Path("/qa"), bootstrap.QA_SKILL_NAMES, True),
-        (tmp_path / "packaged", frozenset(), False),
+        (packaged, frozenset(), False),
     ]
     assert recorded.call_count == 2  # opt-out never reads a possibly corrupt selection
 
@@ -474,8 +490,6 @@ def test_force_does_not_adopt_unrecorded_qa_links(tmp_path, monkeypatch, capsys,
 @pytest.mark.parametrize("consumer", ["plain", "check-only", "init"])
 def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, missing) -> None:
     root = _record_qa_checkout(tmp_path, monkeypatch)
-    for probe in ("_inspect_installation", "_inspect_skills", "_inspect_nangate"):
-        monkeypatch.setattr(bootstrap, probe, lambda: _current("other"))
     bootstrap.reconcile_bootstrap(Intent.ENSURE)  # record owned QA links first
     skills = tmp_path / "home" / ".agents" / "skills"
 
@@ -491,6 +505,7 @@ def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, mi
     result = {
         "plain": lambda: bootstrap.reconcile_bootstrap(Intent.ENSURE),
         "check-only": lambda: bootstrap.inspect_bootstrap(include_images=False),
+        # private: booley init would run Project Setup, far heavier than this check.
         "init": lambda: init_cmd._reconcile_init_bootstrap(
             init_cmd.InitContext(project_root=tmp_path), SimpleNamespace()
         ),
@@ -504,50 +519,47 @@ def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, mi
     assert entries() == owned  # a missing skill never prunes owned links
 
 
-def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[Intent] = []
-    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: seen.append(intent) or bootstrap.BootstrapResult(intent, ()),
-    )
-    assert (
-        bootstrap_cli.run_bootstrap(SimpleNamespace(force=True, check_only=False, verbose=False))
-        == 0
-    )
-    assert seen == [Intent.REFRESH]
-
-
-def test_public_adapter_registers_before_reconciliation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
+@pytest.fixture
+def cli(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Replace the adapter's collaborators; ``events`` records their calls in order."""
+    state = SimpleNamespace(events=[], result=bootstrap.BootstrapResult(Intent.CHECK, ()))
     identity = SimpleNamespace(version="1.2.3", payload_fingerprint="f" * 64)
     monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
     monkeypatch.setattr(
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kwargs: False
+    )
+    monkeypatch.setattr(
         bootstrap_cli,
         "register_host_installation",
-        lambda _source, *, update: events.append(f"register:{update}") or identity,
+        lambda _source, *, update: state.events.append(f"register:{update}") or identity,
     )
     monkeypatch.setattr(
         bootstrap_cli,
         "reconcile_bootstrap",
-        lambda intent, **_kwargs: (
-            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
-        ),
+        lambda intent, **_kwargs: state.events.append(f"reconcile:{intent}") or state.result,
     )
-
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(
-            force=False,
-            check_only=False,
-            verbose=False,
-        )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "inspect_bootstrap",
+        lambda **_kwargs: state.events.append("inspect") or state.result,
     )
+    return state
 
-    assert status == 0
-    assert events == ["register:False", "reconcile"]
+
+@pytest.mark.parametrize(
+    ("args", "events"),
+    [
+        pytest.param({}, ["register:False", "reconcile:ensure"], id="default"),
+        pytest.param({"update": True}, ["register:True", "reconcile:ensure"], id="update"),
+        pytest.param({"force": True}, ["register:False", "reconcile:refresh"], id="force"),
+        pytest.param({"check_only": True}, ["inspect"], id="check-only"),
+    ],
+)
+def test_public_adapter_intent_and_registration(
+    cli: SimpleNamespace, args: dict[str, bool], events: list[str]
+) -> None:
+    assert bootstrap_cli.run_bootstrap(SimpleNamespace(**args)) == 0
+    assert cli.events == events
 
 
 def test_public_adapter_recovers_before_registering_installation(
@@ -577,38 +589,6 @@ def test_public_adapter_recovers_before_registering_installation(
     assert "Recovered interrupted Sandbox host state" in capsys.readouterr().out
 
 
-def test_public_adapter_explicitly_updates_registered_installation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-    identity = SimpleNamespace(version="2.0.0", payload_fingerprint="a" * 64)
-    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "register_host_installation",
-        lambda _source, *, update: events.append(f"register:{update}") or identity,
-    )
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: (
-            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
-        ),
-    )
-
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(
-            force=False,
-            check_only=False,
-            verbose=False,
-            update=True,
-        )
-    )
-
-    assert status == 0
-    assert events == ["register:True", "reconcile"]
-
-
 def test_public_adapter_rejects_update_in_check_only(capsys):
     status = bootstrap_cli.run_bootstrap(
         SimpleNamespace(
@@ -623,30 +603,13 @@ def test_public_adapter_rejects_update_in_check_only(capsys):
     assert "check-only" in capsys.readouterr().out
 
 
-def test_public_adapter_check_only_does_not_register(monkeypatch):
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "register_host_installation",
-        lambda *_a, **_kw: pytest.fail("check-only must not register an installation"),
-    )
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "inspect_bootstrap",
-        lambda **_kwargs: bootstrap.BootstrapResult(Intent.CHECK, ()),
-    )
-
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(force=False, check_only=True, verbose=False)
-    )
-
-    assert status == 0
-
-
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
-def test_public_adapter_check_only_reports_unsafe_private_store(
+@pytest.mark.parametrize("check_only", [True, False], ids=["check-only", "mutate"])
+def test_public_adapter_reports_unsafe_private_store(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    check_only: bool,
 ) -> None:
     config_root = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
@@ -654,67 +617,6 @@ def test_public_adapter_check_only_reports_unsafe_private_store(
     booley_config.chmod(0o755)
     expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
     monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_a, **_kw: expected)
-
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(force=False, check_only=True, verbose=False)
-    )
-
-    captured = capsys.readouterr()
-    assert status == 2
-    assert "✗  " in captured.out
-    assert str(booley_config) in captured.out
-    assert "0755" in captured.out
-    assert f"chmod 700 {booley_config}" in captured.out
-    assert "Traceback" not in captured.out
-    assert "Traceback" not in captured.err
-
-
-@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
-def test_public_adapter_check_only_accepts_repaired_private_store(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    config_root = tmp_path / "config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
-    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
-    booley_config.chmod(0o700)
-    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
-    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_a, **_kw: expected)
-
-    assert (
-        bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
-        == 0
-    )
-
-
-@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
-def test_public_adapter_check_only_accepts_shared_xdg_root_at_0755(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    config_root = tmp_path / "config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
-    _prepare_empty_invalidation_store(config_root, tmp_path / "project")
-    config_root.chmod(0o755)
-    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
-    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_a, **_kw: expected)
-
-    assert (
-        bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
-        == 0
-    )
-
-
-@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
-def test_public_adapter_mutation_reports_unsafe_private_store_before_registration(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    config_root = tmp_path / "config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
-    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
-    booley_config.chmod(0o755)
     monkeypatch.setattr(
         bootstrap_cli,
         "register_host_installation",
@@ -722,7 +624,7 @@ def test_public_adapter_mutation_reports_unsafe_private_store_before_registratio
     )
 
     status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(force=False, check_only=False, verbose=False)
+        SimpleNamespace(force=False, check_only=check_only, verbose=False)
     )
 
     captured = capsys.readouterr()
@@ -733,6 +635,27 @@ def test_public_adapter_mutation_reports_unsafe_private_store_before_registratio
     assert f"chmod 700 {booley_config}" in captured.out
     assert "Traceback" not in captured.out
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+@pytest.mark.parametrize("layout", ["repaired-0700", "shared-xdg-0755"])
+def test_public_adapter_accepts_safe_private_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, layout: str
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    if layout == "repaired-0700":
+        booley_config.chmod(0o700)
+    else:
+        config_root.chmod(0o755)
+    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
+    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_a, **_kw: expected)
+
+    assert (
+        bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
+        == 0
+    )
 
 
 def test_public_adapter_reports_registration_failure(monkeypatch, capsys):
@@ -757,36 +680,18 @@ def test_public_adapter_reports_registration_failure(monkeypatch, capsys):
     assert "registration failed" in capsys.readouterr().out
 
 
-def test_skill_reconciliation_rejects_noncanonical_install(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    source = tmp_path / "skills"
-    source.mkdir()
-    monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
-    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: "not canonical")
-
-    finding = bootstrap._reconcile_skills(Intent.CHECK)
-
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert finding.detail == "not canonical"
-
-
 def test_skill_conflicts_name_each_entry_and_fix_in_bootstrap_and_doctor(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.audit.diagnostic_results import Findings, Severity
     from booley.harness import host_diagnostics
 
-    home = tmp_path / "home"
-    source = tmp_path / "skills"
-    target = home / ".agents" / "skills"
-    for name in ("booley-a", "booley-b"):
-        (source / name).mkdir(parents=True)
-        (source / name / "SKILL.md").write_bytes(b"---\nname: x\n---\n")
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    (environment.source / "second").mkdir()
+    (environment.source / "second" / "SKILL.md").write_bytes(b"---\nname: x\n---\n")
+    target = environment.home / ".agents" / "skills"
+    for name in ("example", "second"):
         (target / name).mkdir(parents=True)
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
-    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
 
     def text(name: str) -> str:
         return (
@@ -794,207 +699,79 @@ def test_skill_conflicts_name_each_entry_and_fix_in_bootstrap_and_doctor(
             "delete it if it is a dangling link, then rerun `booley bootstrap`"
         )
 
-    conflicts = f"{text('booley-a')}; {text('booley-b')}"
-    finding = bootstrap._reconcile_skills(Intent.ENSURE)
+    conflicts = f"{text('example')}; {text('second')}"
+    status, output = _run_inspection(capsys)
 
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert finding.detail == f"{target}: {conflicts}"
-    assert bootstrap_cli._inspection_detail(finding) == finding.detail
+    assert status == 2
+    row = next(line for line in output.splitlines() if " skills:" in line)
+    assert row.endswith(f"skills: {target}: {conflicts}")
 
     report = Findings()
-    result = bootstrap.BootstrapResult(Intent.CHECK, (bootstrap._reconcile_skills(Intent.CHECK),))
+    result = bootstrap.inspect_bootstrap(include_images=False)
+    # private: Doctor's public inspect_host also probes Python, the package and the install.
     host_diagnostics._add_bootstrap(result, report)
-    (failure,) = report.report().findings
-    assert failure.severity is Severity.FAIL
+    (failure,) = (item for item in report.report().findings if item.severity is Severity.FAIL)
     assert conflicts in failure.message
     assert failure.fix == conflicts
 
 
-def test_vscode_requires_an_executable_or_installed_application(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    from booley.config import editor
-
-    (tmp_path / ".config" / "Code").mkdir(parents=True)
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
-    monkeypatch.setattr(editor, "resolve_editor_install", lambda: None)
-
-    finding = bootstrap._vscode_finding()
-
-    assert finding.state is bootstrap.BootstrapState.ERROR
-
-
-def test_vscode_accepts_a_proven_gui_application(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    from booley.config import editor
-
-    application = tmp_path / "Visual Studio Code.app"
-    executable = application / "Contents" / "MacOS" / "Electron"
-    executable.parent.mkdir(parents=True)
-    executable.touch()
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
-    monkeypatch.setattr(editor, "resolve_editor_install", lambda: application)
-
-    finding = bootstrap._vscode_finding()
-
-    assert finding.state is bootstrap.BootstrapState.CURRENT
-    assert application.name in finding.detail
-
-
 @pytest.mark.parametrize(
-    "failed_resource",
-    ["git", "vscode-dev-containers", "skills", "nangate45", "base-image"],
+    ("failed_resource", "expected_calls"),
+    [
+        ("git", []),
+        ("vscode-dev-containers", ["vscode-dev-containers"]),
+        ("skills", ["vscode-dev-containers", "skills"]),
+        ("nangate45", ["vscode-dev-containers", "skills"]),
+        ("base-image", ["vscode-dev-containers", "skills", "nangate45", "base-image"]),
+    ],
 )
 def test_bootstrap_stops_after_each_failed_dependency(
     monkeypatch: pytest.MonkeyPatch,
     failed_resource: str,
+    expected_calls: list[str],
 ) -> None:
     calls = _wire_current(monkeypatch)
-    error = bootstrap.BootstrapFinding(
-        failed_resource,
-        bootstrap.BootstrapState.ERROR,
-        "failed",
-    )
-    if failed_resource == "git":
-        monkeypatch.setattr(
+    wired_run = subprocess.run
+    failing_probe = {
+        "git": ("git", "--version"),
+        "vscode-dev-containers": ("code", "--list-extensions"),
+    }
+
+    def run(argv, **kwargs):
+        completed = wired_run(argv, **kwargs)
+        name, flag = failing_probe.get(failed_resource, ("", ""))
+        if name and argv[0].endswith(name) and argv[-1] == flag:
+            return subprocess.CompletedProcess(argv, 1, "", "failed")
+        return completed
+
+    def unsafe_config(_root):
+        raise bootstrap.nangate_pdk.NangatePdkError("failed")
+
+    def broken_images(*_args, **_kwargs):
+        calls.append("base-image")
+        raise bootstrap.ImageLifecycleError("failed")
+
+    breakers = {
+        "git": lambda: monkeypatch.setattr(bootstrap.subprocess, "run", run),
+        "vscode-dev-containers": lambda: monkeypatch.setattr(bootstrap.subprocess, "run", run),
+        "skills": lambda: monkeypatch.setattr(
             bootstrap,
-            "_prerequisite_findings",
-            lambda: (error, _current("docker"), _current("vscode")),
-        )
-        expected_calls: list[str] = []
-    elif failed_resource == "vscode-dev-containers":
-        monkeypatch.setattr(
-            bootstrap,
-            "_reconcile_vscode_dev_containers",
-            lambda _intent: calls.append("vscode-dev-containers") or error,
-        )
-        expected_calls = ["vscode-dev-containers"]
-    elif failed_resource == "skills":
-        monkeypatch.setattr(
-            bootstrap,
-            "_reconcile_skills",
-            lambda _intent: calls.append("skills") or error,
-        )
-        expected_calls = ["vscode-dev-containers", "skills"]
-    elif failed_resource == "nangate45":
-        monkeypatch.setattr(
-            bootstrap,
-            "_reconcile_nangate",
-            lambda _intent: calls.append("nangate45") or error,
-        )
-        expected_calls = ["vscode-dev-containers", "skills", "nangate45"]
-    else:
-        monkeypatch.setattr(
-            bootstrap,
-            "_reconcile_base_image",
-            lambda _intent, **_kwargs: (calls.append("base-image") or None, error),
-        )
-        expected_calls = [
-            "vscode-dev-containers",
-            "skills",
-            "nangate45",
-            "base-image",
-        ]
+            "reconcile_host_skills",
+            lambda *_a, **_kw: calls.append("skills") or (_skill_reconciliation(fatal="failed"),),
+        ),
+        "nangate45": lambda: monkeypatch.setattr(
+            bootstrap.nangate_pdk, "secure_config_dir_for_cache", unsafe_config
+        ),
+        "base-image": lambda: monkeypatch.setattr(bootstrap, "reconcile_images", broken_images),
+    }
+    breakers[failed_resource]()
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
 
     assert result.exit_status == 2
     assert calls == expected_calls
-    assert error in result.findings
-
-
-def test_prerequisites_replace_a_valid_docker_probe_with_daemon_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(bootstrap, "_git_finding", lambda: _current("git"))
-    monkeypatch.setattr(bootstrap, "_tool_finding", lambda name, _arg: _current(name))
-    monkeypatch.setattr(bootstrap, "_docker_daemon_error", lambda: "daemon unavailable")
-    monkeypatch.setattr(bootstrap, "_vscode_finding", lambda: _current("vscode"))
-
-    findings = bootstrap._prerequisite_findings()
-
-    assert findings[1] == bootstrap.BootstrapFinding(
-        "docker", bootstrap.BootstrapState.ERROR, "daemon unavailable"
-    )
-
-
-@pytest.mark.parametrize(
-    "version_line",
-    [
-        "git version 2.37.2",
-        "git version 2.37.2.windows.1",
-        "git version 2.46.0 (Apple Git-152)",
-    ],
-)
-def test_git_probe_accepts_supported_stable_versions(
-    monkeypatch: pytest.MonkeyPatch,
-    version_line: str,
-) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, version_line, ""),
-    )
-
-    finding = bootstrap._git_finding()
-
-    assert finding.state is bootstrap.BootstrapState.CURRENT
-    assert finding.detail == version_line
-
-
-@pytest.mark.parametrize(
-    "version_line",
-    [
-        "git version 2.37.0.windows.1",
-        "git version 2.36.9",
-    ],
-)
-def test_git_probe_rejects_older_versions(
-    monkeypatch: pytest.MonkeyPatch,
-    version_line: str,
-) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, version_line, ""),
-    )
-
-    finding = bootstrap._git_finding()
-
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert "Git 2.37.2 or newer" in finding.detail
-    assert "Upgrade Git" in finding.detail
-
-
-@pytest.mark.parametrize(
-    "version_line",
-    [
-        "git version 2.37.2.rc0",
-        "git version 2.40.0-beta1",
-        "git version unknown",
-        "not git version 2.46.0",
-    ],
-)
-def test_git_probe_rejects_prerelease_and_unparseable_versions(
-    monkeypatch: pytest.MonkeyPatch,
-    version_line: str,
-) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, version_line, ""),
-    )
-
-    finding = bootstrap._git_finding()
-
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert "Git 2.37.2 or newer" in finding.detail
+    failed = next(item for item in result.findings if item.resource == failed_resource)
+    assert failed.state is bootstrap.BootstrapState.ERROR
 
 
 @pytest.mark.parametrize(
@@ -1016,558 +793,550 @@ def test_parse_git_version_is_strict_capability_evidence(
     assert bootstrap.parse_git_version(version_line) == expected
 
 
-def test_git_probe_reports_missing_and_execution_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: None)
-    assert "Git 2.37.2 or newer" in bootstrap._git_finding().detail
+_CURRENT = bootstrap.BootstrapState.CURRENT
+_ERROR = bootstrap.BootstrapState.ERROR
+_NEWER_GIT = "Git 2.37.2 or newer"
 
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
+
+def _row(row_id: str, resource: str, state, expected, **setup):
+    """One probe case: ``expected`` is the exact detail (str) or substrings (tuple)."""
+    return pytest.param(setup, resource, state, expected, id=row_id)
+
+
+def _git_row(row_id: str, line: str, state, *fragments: str):
+    return _row(row_id, "git", state, fragments or line, git=(0, line, ""))
+
+
+_PROBE_ROWS = [
+    _git_row("git-2.37.2", "git version 2.37.2", _CURRENT),
+    _git_row("git-windows-suffix", "git version 2.37.2.windows.1", _CURRENT),
+    _git_row("git-apple-suffix", "git version 2.46.0 (Apple Git-152)", _CURRENT),
+    _git_row(
+        "git-2.37.0-windows", "git version 2.37.0.windows.1", _ERROR, _NEWER_GIT, "Upgrade Git"
+    ),
+    _git_row("git-2.36.9", "git version 2.36.9", _ERROR, _NEWER_GIT, "Upgrade Git"),
+    _git_row("git-rc0", "git version 2.37.2.rc0", _ERROR, _NEWER_GIT),
+    _git_row("git-beta1", "git version 2.40.0-beta1", _ERROR, _NEWER_GIT),
+    _git_row("git-unknown", "git version unknown", _ERROR, _NEWER_GIT),
+    _git_row("git-foreign-line", "not git version 2.46.0", _ERROR, _NEWER_GIT),
+    _row("git-missing", "git", _ERROR, (_NEWER_GIT,), missing=("git",)),
+    _row("git-rc1", "git", _ERROR, ("probe failed",), git=(1, "", "bad")),
+    _row("git-oserror", "git", _ERROR, ("cannot run Git",), git=OSError("denied")),
+    _row("docker-missing", "docker", _ERROR, ("not on PATH",), missing=("docker",)),
+    _row("docker-rc1", "docker", _ERROR, ("probe failed",), docker=(1, "", "bad")),
+    _row(
+        "docker-stderr-first-line",
+        "docker",
+        _CURRENT,
+        "Docker 1.2",
+        docker=(0, "", "Docker 1.2\nmore"),
+    ),
+    _row("docker-oserror", "docker", _ERROR, ("cannot run docker",), docker=OSError("denied")),
+    _row(
+        "daemon-stopped",
+        "docker",
+        _ERROR,
+        "Docker daemon is not running or accessible: daemon stopped",
+        info=(1, "", "daemon stopped\nmore"),
+    ),
+    _row(
+        "daemon-timeout",
+        "docker",
+        _ERROR,
+        ("did not respond",),
+        info=subprocess.TimeoutExpired("docker", 10),
+    ),
+    _row("daemon-oserror", "docker", _ERROR, ("cannot contact",), info=OSError("denied")),
+    _row("vscode-path-command", "vscode", _CURRENT, "codium available", command="/usr/bin/codium"),
+    _row(
+        "vscode-gui-app",
+        "vscode",
+        _CURRENT,
+        ("Visual Studio Code.app",),
+        command=None,
+        app=Path("Visual Studio Code.app"),
+    ),
+    _row(
+        "vscode-no-editor",
+        "vscode",
+        _ERROR,
+        ("compatible editor is required",),
+        command=None,
+        app=None,
+    ),
+    _row(
+        "agent-cli-none",
+        "host-agent-cli",
+        bootstrap.BootstrapState.WARNING,
+        ("https://code.claude.com/docs/en/setup", "https://developers.openai.com/codex/cli"),
+        missing=("claude", "codex"),
+    ),
+    _row("agent-cli-claude", "host-agent-cli", _CURRENT, ("claude",), missing=("codex",)),
+    _row("agent-cli-codex", "host-agent-cli", _CURRENT, ("codex",), missing=("claude",)),
+]
+
+
+@pytest.mark.parametrize(("setup", "resource", "state", "expected"), _PROBE_ROWS)
+def test_prerequisite_probe_findings(monkeypatch, tmp_path, setup, resource, state, expected):
+    from booley.config import editor
+
+    _inspection_environment(monkeypatch, tmp_path)
+    missing = setup.get("missing", ())
     monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "bad"),
+        bootstrap.shutil, "which", lambda name: None if name in missing else "/fake/" + name
     )
-    assert "probe failed" in bootstrap._git_finding().detail
+    wired_run = subprocess.run
 
-    def fail(*_args, **_kwargs):
-        raise OSError("denied")
+    def run(argv, **kwargs):
+        probe = "info" if argv[-1] == "info" else Path(argv[0]).name
+        reply = setup.get(probe)
+        if reply is None:
+            return wired_run(argv, **kwargs)
+        if isinstance(reply, BaseException):
+            raise reply
+        return subprocess.CompletedProcess(argv, *reply)
 
-    monkeypatch.setattr(bootstrap.subprocess, "run", fail)
-    assert "cannot run Git" in bootstrap._git_finding().detail
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+    for key, resolver in (
+        ("command", "resolve_editor_management_command"),
+        ("app", "resolve_editor_install"),
+    ):
+        if key in setup:
+            monkeypatch.setattr(editor, resolver, lambda value=setup[key]: value)
+
+    result = bootstrap.inspect_bootstrap(include_images=False)
+
+    finding = next(item for item in result.findings if item.resource == resource)
+    assert finding.state is state
+    if isinstance(expected, str):
+        assert finding.detail == expected
+    else:
+        for fragment in expected:
+            assert fragment in finding.detail
 
 
-def test_tool_probe_reports_missing_failure_and_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: None)
-    assert bootstrap._tool_finding("git", "--version").state is bootstrap.BootstrapState.ERROR
+def _editor_replies(monkeypatch: pytest.MonkeyPatch, *replies) -> list[list[str]]:
+    """Answer ``/fake/code`` calls in order with ``(rc, stdout, stderr)`` or an exception."""
+    seen: list[list[str]] = []
+    pending = iter(replies)
+    wired_run = subprocess.run
 
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/tool")
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "bad"),
-    )
-    assert "probe failed" in bootstrap._tool_finding("git", "--version").detail
+    def run(argv, **kwargs):
+        if argv[0] != "/fake/code":
+            return wired_run(argv, **kwargs)
+        seen.append(argv[1:])
+        reply = next(pending)
+        if isinstance(reply, BaseException):
+            raise reply
+        return subprocess.CompletedProcess(argv, *reply)
 
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", "tool 1.2\nmore"),
-    )
-    assert bootstrap._tool_finding("git", "--version").detail == "tool 1.2"
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+    return seen
 
 
-def test_tool_probe_wraps_execution_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/tool")
-
-    def fail(*_args, **_kwargs):
-        raise OSError("denied")
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", fail)
-    assert "cannot run git" in bootstrap._tool_finding("git", "--version").detail
+_EXTENSION = bootstrap.DEV_CONTAINERS_EXTENSION_ID
+_LISTING = ["--list-extensions"]
+_OTHER = (0, "ms-python.python\n", "")
+_INSTALLED = (0, "", "")
+_OFFLINE = (1, "", "marketplace offline\n")
 
 
 @pytest.mark.parametrize(
-    ("outcome", "expected"),
+    ("intent", "replies", "state", "expected", "argv"),
     [
-        (subprocess.TimeoutExpired("docker", 10), "did not respond"),
-        (OSError("denied"), "cannot contact"),
+        pytest.param(
+            Intent.CHECK,
+            [(0, "MS-VSCODE-REMOTE.REMOTE-CONTAINERS\n", "")],
+            bootstrap.BootstrapState.CURRENT,
+            (_EXTENSION,),
+            [_LISTING],
+            id="current-any-case",
+        ),
+        pytest.param(
+            Intent.CHECK,
+            [_OTHER],
+            bootstrap.BootstrapState.PENDING,
+            (_EXTENSION,),
+            [_LISTING],
+            id="check-pending-no-install",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [_OTHER, _INSTALLED, (0, f"{_EXTENSION}\n", "")],
+            bootstrap.BootstrapState.CHANGED,
+            (_EXTENSION,),
+            [_LISTING, ["--install-extension", _EXTENSION, "--force"], _LISTING],
+            id="install-and-verify",
+        ),
+        pytest.param(
+            Intent.ENSURE, [_OFFLINE], _ERROR, ("marketplace offline",), None, id="list-fails"
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [_OTHER, _OFFLINE],
+            _ERROR,
+            "Dev Containers extension installation failed: marketplace offline",
+            None,
+            id="install-fails",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [subprocess.TimeoutExpired("code", 30)],
+            _ERROR,
+            ("within 30 seconds",),
+            None,
+            id="list-timeout",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [OSError("denied")],
+            _ERROR,
+            ("cannot inspect",),
+            None,
+            id="list-oserror",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [_OTHER, subprocess.TimeoutExpired("code", 120)],
+            _ERROR,
+            ("within 120 seconds",),
+            None,
+            id="install-timeout",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [_OTHER, OSError("denied")],
+            _ERROR,
+            ("cannot install",),
+            None,
+            id="install-oserror",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [_OTHER, _INSTALLED, _OTHER],
+            _ERROR,
+            ("did not report the extension",),
+            None,
+            id="verify-missing",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            [_OTHER, _INSTALLED, OSError("verification denied")],
+            _ERROR,
+            ("verification denied",),
+            None,
+            id="verify-oserror",
+        ),
     ],
 )
-def test_docker_daemon_wraps_probe_errors(
-    monkeypatch: pytest.MonkeyPatch,
-    outcome: BaseException,
-    expected: str,
-) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/docker")
+def test_dev_containers_reconciliation(monkeypatch, intent, replies, state, expected, argv):
+    _wire_current(monkeypatch)
+    seen = _editor_replies(monkeypatch, *replies)
 
-    def fail(*_args, **_kwargs):
-        raise outcome
+    result = bootstrap.reconcile_bootstrap(intent, include_images=False)
 
-    monkeypatch.setattr(bootstrap.subprocess, "run", fail)
-    assert expected in (bootstrap._docker_daemon_error() or "")
-
-
-def test_docker_daemon_reports_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
-    )
-    assert bootstrap._docker_daemon_error() is None
-
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "daemon stopped\nmore"),
-    )
-    assert bootstrap._docker_daemon_error() == (
-        "Docker daemon is not running or accessible: daemon stopped"
-    )
+    finding = next(item for item in result.findings if item.resource == "vscode-dev-containers")
+    assert finding.state is state
+    if isinstance(expected, str):
+        assert finding.detail == expected
+    else:
+        assert all(fragment in finding.detail for fragment in expected)
+    if argv is not None:
+        assert seen == argv
 
 
-def test_vscode_accepts_a_path_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    from booley.config import editor
-
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/codium")
-
-    finding = bootstrap._vscode_finding()
-
-    assert finding.state is bootstrap.BootstrapState.CURRENT
-    assert finding.detail == "codium available"
-
-
-def test_public_bootstrap_rejects_an_editor_without_a_management_command(
+def test_dev_containers_need_an_extension_management_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from booley.config import editor
 
-    calls = _wire_current(monkeypatch, stub_vscode_extension=False)
+    calls = _wire_current(monkeypatch)
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
+    monkeypatch.setattr(editor, "resolve_editor_install", lambda: Path("Visual Studio Code.app"))
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
 
     assert result.findings[-1].resource == "vscode-dev-containers"
-    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
+    assert result.findings[-1].state is _ERROR
     assert "management command" in result.findings[-1].detail
     assert calls == []
 
 
-@pytest.mark.parametrize(
-    ("failure", "expected"),
-    [
-        (subprocess.TimeoutExpired("code", 30), "within 30 seconds"),
-        (OSError("denied"), "cannot inspect"),
-    ],
-)
-def test_public_bootstrap_reports_extension_probe_exceptions(
-    monkeypatch: pytest.MonkeyPatch,
-    failure: BaseException,
-    expected: str,
-) -> None:
-    from booley.config import editor
-
-    _wire_current(monkeypatch, stub_vscode_extension=False)
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-
-    def fail(*_args, **_kwargs):
-        raise failure
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", fail)
-
-    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
-
-    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
-    assert expected in result.findings[-1].detail
+_CONFLICT = _skill_event("conflict", "`x` is not Booley's")
+_FAILURE = _skill_event("error", "broken")
 
 
 @pytest.mark.parametrize(
-    ("failure", "expected"),
+    ("intent", "reconciliation", "state", "detail"),
     [
-        (subprocess.TimeoutExpired("code", 120), "within 120 seconds"),
-        (OSError("denied"), "cannot install"),
-    ],
-)
-def test_public_bootstrap_reports_extension_install_exceptions(
-    monkeypatch: pytest.MonkeyPatch,
-    failure: BaseException,
-    expected: str,
-) -> None:
-    from booley.config import editor
-
-    _wire_current(monkeypatch, stub_vscode_extension=False)
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-    calls = 0
-
-    def fail_after_probe(argv, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return subprocess.CompletedProcess(argv, 0, "ms-python.python\n", "")
-        raise failure
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", fail_after_probe)
-
-    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
-
-    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
-    assert expected in result.findings[-1].detail
-
-
-@pytest.mark.parametrize("verification_error", [False, True])
-def test_public_bootstrap_rejects_an_unverified_install(
-    monkeypatch: pytest.MonkeyPatch,
-    verification_error: bool,
-) -> None:
-    from booley.config import editor
-
-    _wire_current(monkeypatch, stub_vscode_extension=False)
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-    calls = 0
-
-    def run(argv, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            return subprocess.CompletedProcess(argv, 0, "", "")
-        if calls == 3 and verification_error:
-            raise OSError("verification denied")
-        return subprocess.CompletedProcess(argv, 0, "ms-python.python\n", "")
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", run)
-
-    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
-
-    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
-    if verification_error:
-        assert "verification denied" in result.findings[-1].detail
-    else:
-        assert "did not report the extension" in result.findings[-1].detail
-
-
-def test_vscode_dev_containers_accepts_an_existing_install(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from booley.config import editor
-
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 0, "MS-VSCODE-REMOTE.REMOTE-CONTAINERS\n", ""
+        pytest.param(Intent.CHECK, None, _ERROR, None, id="missing-source"),
+        pytest.param(
+            Intent.CHECK,
+            _skill_reconciliation(_skill_event("created")),
+            bootstrap.BootstrapState.PENDING,
+            None,
+            id="check-changed",
         ),
-    )
-
-    finding = bootstrap._reconcile_vscode_dev_containers(Intent.CHECK)
-
-    assert finding.state is bootstrap.BootstrapState.CURRENT
-    assert bootstrap.DEV_CONTAINERS_EXTENSION_ID in finding.detail
-
-
-def test_vscode_dev_containers_check_reports_pending_without_installing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from booley.config import editor
-
-    calls: list[list[str]] = []
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-
-    def run(argv, **_kwargs):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "ms-python.python\n", "")
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", run)
-
-    finding = bootstrap._reconcile_vscode_dev_containers(Intent.CHECK)
-
-    assert finding.state is bootstrap.BootstrapState.PENDING
-    assert calls == [["/usr/bin/code", "--list-extensions"]]
-
-
-def test_vscode_dev_containers_is_installed_and_verified(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from booley.config import editor
-
-    calls: list[list[str]] = []
-    outputs = iter(("ms-python.python\n", "", f"{bootstrap.DEV_CONTAINERS_EXTENSION_ID}\n"))
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-
-    def run(argv, **_kwargs):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, next(outputs), "")
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", run)
-
-    finding = bootstrap._reconcile_vscode_dev_containers(Intent.ENSURE)
-
-    assert finding.state is bootstrap.BootstrapState.CHANGED
-    assert calls == [
-        ["/usr/bin/code", "--list-extensions"],
-        [
-            "/usr/bin/code",
-            "--install-extension",
-            bootstrap.DEV_CONTAINERS_EXTENSION_ID,
-            "--force",
-        ],
-        ["/usr/bin/code", "--list-extensions"],
-    ]
-
-
-def test_vscode_dev_containers_reports_cli_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from booley.config import editor
-
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-    monkeypatch.setattr(
-        bootstrap.subprocess,
-        "run",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "marketplace offline\n"),
-    )
-
-    finding = bootstrap._reconcile_vscode_dev_containers(Intent.ENSURE)
-
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert "marketplace offline" in finding.detail
-
-
-def test_vscode_dev_containers_reports_install_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from booley.config import editor
-
-    results = iter(
-        (
-            subprocess.CompletedProcess([], 0, "ms-python.python\n", ""),
-            subprocess.CompletedProcess([], 1, "", "marketplace offline\n"),
-        )
-    )
-    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
-    monkeypatch.setattr(bootstrap.subprocess, "run", lambda *_args, **_kwargs: next(results))
-
-    finding = bootstrap._reconcile_vscode_dev_containers(Intent.ENSURE)
-
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert finding.detail == "Dev Containers extension installation failed: marketplace offline"
-
-
-def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    missing = tmp_path / "missing"
-    monkeypatch.setattr(bootstrap, "skills_dir", lambda: missing)
-    assert bootstrap._reconcile_skills(Intent.CHECK).state is bootstrap.BootstrapState.ERROR
-
+        pytest.param(
+            Intent.ENSURE,
+            _skill_reconciliation(_skill_event("created")),
+            bootstrap.BootstrapState.CHANGED,
+            None,
+            id="ensure-changed",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            _skill_reconciliation(_FAILURE, diagnostics=("diagnostic",), fatal="fatal"),
+            _ERROR,
+            "skills-target: broken; diagnostic; fatal",
+            id="failed-diagnostic-fatal",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            _skill_reconciliation(_CONFLICT, _FAILURE),
+            _ERROR,
+            None,
+            id="conflict-plus-failure",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            _skill_reconciliation(_CONFLICT, diagnostics=("diagnostic",)),
+            _ERROR,
+            None,
+            id="conflict-plus-diagnostic",
+        ),
+    ],
+)
+def test_skill_finding(monkeypatch, tmp_path, intent, reconciliation, state, detail):
+    _wire_current(monkeypatch)
     source = tmp_path / "skills"
-    source.mkdir()
+    if reconciliation is not None:
+        source.mkdir()
     monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
-    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
-    changed_event = SimpleNamespace(changed=True, failed=False, detail="", name="linked")
-    report = SimpleNamespace(events=(changed_event,), diagnostics=(), fatal=None)
-    target = tmp_path / ".agents" / "skills"
-    reconciliation = SimpleNamespace(target=target, report=report)
-    monkeypatch.setattr(
-        bootstrap, "reconcile_host_skills", lambda *_args, **_kwargs: (reconciliation,)
-    )
-    assert bootstrap._reconcile_skills(Intent.CHECK).state is bootstrap.BootstrapState.PENDING
-    assert bootstrap._reconcile_skills(Intent.ENSURE).state is bootstrap.BootstrapState.CHANGED
+    monkeypatch.setattr(bootstrap, "reconcile_host_skills", lambda *_a, **_kw: (reconciliation,))
 
-    failed_event = SimpleNamespace(
-        changed=False, failed=True, detail="broken", name="link", outcome="error"
-    )
-    failed_report = SimpleNamespace(
-        events=(failed_event,), diagnostics=("diagnostic",), fatal="fatal"
-    )
-    monkeypatch.setattr(
-        bootstrap,
-        "reconcile_host_skills",
-        lambda *_args, **_kwargs: (SimpleNamespace(target=target, report=failed_report),),
-    )
-    finding = bootstrap._reconcile_skills(Intent.ENSURE)
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert finding.detail == f"{target}: broken; diagnostic; fatal"
+    result = bootstrap.reconcile_bootstrap(intent, include_images=False)
+
+    finding = next(item for item in result.findings if item.resource == "skills")
+    assert finding.state is state
+    if detail is not None:
+        assert finding.detail == detail
+    # Doctor's hint and the remedy stay generic unless every failure is a conflict.
     assert finding.doctor_fix is None
     assert finding.remedy is None
 
-    conflict = SimpleNamespace(
-        changed=False, failed=True, detail="`x` is not Booley's", name="x", outcome="conflict"
-    )
-    for report in (
-        SimpleNamespace(events=(conflict, failed_event), diagnostics=(), fatal=None),
-        SimpleNamespace(events=(conflict,), diagnostics=("diagnostic",), fatal=None),
-    ):
-        monkeypatch.setattr(
-            bootstrap,
-            "reconcile_host_skills",
-            lambda *_args, report=report, **_kwargs: (
-                SimpleNamespace(target=target, report=report),
-            ),
-        )
-        mixed = bootstrap._reconcile_skills(Intent.ENSURE)
-        assert mixed.doctor_fix is None
-        assert mixed.remedy is None
 
+@pytest.mark.parametrize(
+    ("intent", "issues", "fetch_error", "config_error", "state", "expected"),
+    [
+        pytest.param(Intent.CHECK, (), None, None, _CURRENT, (), id="check-current"),
+        pytest.param(
+            Intent.CHECK,
+            ("missing archive",),
+            None,
+            None,
+            bootstrap.BootstrapState.PENDING,
+            ("missing archive", "non-commercial use"),
+            id="check-pending",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            ("missing archive",),
+            None,
+            None,
+            bootstrap.BootstrapState.CHANGED,
+            ("Downloaded cache",),
+            id="ensure-fetch",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            ("missing archive",),
+            "download failed",
+            None,
+            _ERROR,
+            ("download failed",),
+            id="ensure-fetch-fails",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            (),
+            None,
+            "unsafe config root",
+            _ERROR,
+            "unsafe config root",
+            id="ensure-unsafe-config",
+        ),
+    ],
+)
+def test_nangate_finding(monkeypatch, intent, issues, fetch_error, config_error, state, expected):
+    _wire_current(monkeypatch)
+    nangate = bootstrap.nangate_pdk
 
-def test_nangate_reconciliation_covers_current_check_fetch_and_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    monkeypatch.setattr(bootstrap.nangate_pdk, "cache_root", lambda: tmp_path)
-    monkeypatch.setattr(bootstrap.nangate_pdk, "secure_config_dir_for_cache", lambda _root: False)
-    monkeypatch.setattr(bootstrap.nangate_pdk, "validation_errors", lambda _root: ())
-    assert bootstrap._reconcile_nangate(Intent.CHECK).state is bootstrap.BootstrapState.CURRENT
+    def secure(_root):
+        if config_error:
+            raise nangate.NangatePdkError(config_error)
+        return False
 
-    monkeypatch.setattr(
-        bootstrap.nangate_pdk, "validation_errors", lambda _root: ("missing archive",)
-    )
-    pending = bootstrap._reconcile_nangate(Intent.CHECK)
-    assert pending.state is bootstrap.BootstrapState.PENDING
-    assert "missing archive" in pending.detail
+    def fetch(_root):
+        if fetch_error:
+            raise nangate.NangatePdkError(fetch_error)
 
-    monkeypatch.setattr(bootstrap.nangate_pdk, "fetch", lambda _root: None)
-    assert bootstrap._reconcile_nangate(Intent.ENSURE).state is bootstrap.BootstrapState.CHANGED
+    monkeypatch.setattr(nangate, "secure_config_dir_for_cache", secure)
+    monkeypatch.setattr(nangate, "validation_errors", lambda _root: issues)
+    monkeypatch.setattr(nangate, "fetch", fetch)
 
-    def fail(_root):
-        raise bootstrap.nangate_pdk.NangatePdkError("download failed")
+    result = bootstrap.reconcile_bootstrap(intent, include_images=False)
 
-    monkeypatch.setattr(bootstrap.nangate_pdk, "fetch", fail)
-    assert bootstrap._reconcile_nangate(Intent.ENSURE).state is bootstrap.BootstrapState.ERROR
+    finding = next(item for item in result.findings if item.resource == "nangate45")
+    assert finding.state is state
+    if isinstance(expected, str):
+        assert finding.detail == expected
+    else:
+        assert all(fragment in finding.detail for fragment in expected)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows mode bits do not describe ACLs")
 def test_nangate_reconciliation_hardens_config_for_existing_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    nangate = bootstrap.nangate_pdk
+    real_cache_root = nangate.cache_root
+    real_secure = nangate.secure_config_dir_for_cache
+    _wire_current(monkeypatch)
+    monkeypatch.setattr(nangate, "cache_root", real_cache_root)
+    monkeypatch.setattr(nangate, "secure_config_dir_for_cache", real_secure)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     config_root = tmp_path / "booley"
     config_root.mkdir(mode=0o755)
-    monkeypatch.setattr(bootstrap.nangate_pdk, "validation_errors", lambda _root: ())
 
-    finding = bootstrap._reconcile_nangate(Intent.ENSURE)
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE, include_images=False)
 
+    finding = next(item for item in result.findings if item.resource == "nangate45")
     assert finding.state is bootstrap.BootstrapState.CHANGED
     assert stat.S_IMODE(config_root.stat().st_mode) == 0o700
 
 
-def test_nangate_reconciliation_reports_config_security_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    monkeypatch.setattr(bootstrap.nangate_pdk, "cache_root", lambda: tmp_path)
+_RELEASE = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+_RETAINED = "ghcr.io/boldaxolotl/booley-sandbox:0.2.4"
 
-    def fail(_root):
-        raise bootstrap.nangate_pdk.NangatePdkError("unsafe config root")
 
-    monkeypatch.setattr(bootstrap.nangate_pdk, "secure_config_dir_for_cache", fail)
-
-    finding = bootstrap._reconcile_nangate(Intent.ENSURE)
-
-    assert finding.state is bootstrap.BootstrapState.ERROR
-    assert finding.detail == "unsafe config root"
+def _image(status: Status, **cleanup: tuple[str, ...]) -> LifecycleResult:
+    return LifecycleResult("booley-sandbox", "sha256:id", status, cleanup=ImageCleanup(**cleanup))
 
 
 @pytest.mark.parametrize(
-    ("image_status", "bootstrap_state"),
+    ("intent", "outcome", "state", "detail"),
     [
-        (Status.CURRENT, bootstrap.BootstrapState.CURRENT),
-        (Status.STALE, bootstrap.BootstrapState.PENDING),
-        (Status.CHANGED, bootstrap.BootstrapState.CHANGED),
-        (Status.EXTERNAL, bootstrap.BootstrapState.ERROR),
+        pytest.param(Intent.CHECK, _image(Status.CURRENT), _CURRENT, None, id="current"),
+        pytest.param(
+            Intent.CHECK, _image(Status.STALE), bootstrap.BootstrapState.PENDING, None, id="stale"
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            _image(Status.CHANGED),
+            bootstrap.BootstrapState.CHANGED,
+            None,
+            id="changed",
+        ),
+        pytest.param(Intent.CHECK, _image(Status.EXTERNAL), _ERROR, None, id="external"),
+        pytest.param(
+            Intent.CHECK,
+            bootstrap.ImageLifecycleError("inspect failed"),
+            _ERROR,
+            "inspect failed",
+            id="inspect-fails",
+        ),
+        pytest.param(
+            Intent.CHECK,
+            _image(Status.CURRENT, pending=(_RELEASE,)),
+            bootstrap.BootstrapState.PENDING,
+            f"obsolete Docker image tag can be removed: {_RELEASE}",
+            id="cleanup-pending",
+        ),
+        pytest.param(
+            Intent.ENSURE,
+            _image(Status.CHANGED, removed=(_RELEASE,), retained_required=(_RETAINED,)),
+            bootstrap.BootstrapState.CHANGED,
+            f"removed obsolete Docker image tags: {_RELEASE}; "
+            f"retained Docker image tags still required by containers: {_RETAINED}",
+            id="cleanup-removed-retained",
+        ),
     ],
 )
-def test_base_image_status_mapping(
-    monkeypatch: pytest.MonkeyPatch,
-    image_status: Status,
-    bootstrap_state: bootstrap.BootstrapState,
-) -> None:
-    result = LifecycleResult("base", "sha256:id", image_status)
-    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_args, **_kwargs: result)
-    actual, finding = bootstrap._reconcile_base_image(Intent.CHECK, verbose=False)
-    assert actual is result
-    assert finding.state is bootstrap_state
+def test_base_image_finding(monkeypatch, intent, outcome, state, detail):
+    _wire_current(monkeypatch)
+
+    def reconcile_images(*_args, **_kwargs):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(bootstrap, "reconcile_images", reconcile_images)
+
+    result = bootstrap.reconcile_bootstrap(intent)
+
+    finding = next(item for item in result.findings if item.resource == "base-image")
+    assert finding.state is state
+    if detail is not None:
+        assert finding.detail == detail
+    assert result.base_image is (None if state is _ERROR else outcome)
 
 
-def test_base_image_failure_becomes_typed_finding(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(*_args, **_kwargs):
-        raise bootstrap.ImageLifecycleError("inspect failed")
-
-    monkeypatch.setattr(bootstrap, "reconcile_images", fail)
-    result, finding = bootstrap._reconcile_base_image(Intent.CHECK, verbose=False)
-    assert result is None
-    assert finding == bootstrap.BootstrapFinding(
-        "base-image", bootstrap.BootstrapState.ERROR, "inspect failed"
+def test_sidecar_state_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    sidecars = bootstrap.host_sidecars
+    _wire_current(monkeypatch)
+    findings = tuple(
+        sidecars.SidecarFinding(resource, state, "detail")
+        for resource, state in (
+            ("proxy-image", sidecars.SidecarState.CURRENT),
+            ("network", sidecars.SidecarState.PENDING),
+            ("proxy", sidecars.SidecarState.CHANGED),
+            ("reaper", sidecars.SidecarState.ERROR),
+        )
+    )
+    monkeypatch.setattr(
+        sidecars,
+        "reconcile_sidecars",
+        lambda _policy, _intent, **_kwargs: sidecars.SidecarResult(findings),
     )
 
+    result = bootstrap.reconcile_bootstrap(Intent.CHECK)
 
-def test_base_image_check_reports_pending_release_tag_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
-    result = LifecycleResult(
-        "booley-sandbox",
-        "sha256:id",
-        Status.CURRENT,
-        cleanup=ImageCleanup(pending=(release,)),
-    )
-    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_args, **_kwargs: result)
-
-    actual, finding = bootstrap._reconcile_base_image(Intent.CHECK, verbose=False)
-
-    assert actual is result
-    assert finding.state is bootstrap.BootstrapState.PENDING
-    assert finding.detail == f"obsolete Docker image tag can be removed: {release}"
-
-
-def test_base_image_reports_removed_and_container_retained_release_tags(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    removed = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
-    retained = "ghcr.io/boldaxolotl/booley-sandbox:0.2.4"
-    result = LifecycleResult(
-        "booley-sandbox",
-        "sha256:id",
-        Status.CHANGED,
-        cleanup=ImageCleanup(removed=(removed,), retained_required=(retained,)),
-    )
-    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_args, **_kwargs: result)
-
-    actual, finding = bootstrap._reconcile_base_image(Intent.ENSURE, verbose=False)
-
-    assert actual is result
-    assert finding.state is bootstrap.BootstrapState.CHANGED
-    assert finding.detail == (
-        f"removed obsolete Docker image tags: {removed}; "
-        f"retained Docker image tags still required by containers: {retained}"
+    states = bootstrap.BootstrapState
+    assert result.findings[-4:] == (
+        bootstrap.BootstrapFinding("proxy-image", states.CURRENT, "detail"),
+        bootstrap.BootstrapFinding("network", states.PENDING, "detail"),
+        bootstrap.BootstrapFinding("proxy", states.CHANGED, "detail"),
+        bootstrap.BootstrapFinding("reaper", states.ERROR, "detail"),
     )
 
 
 @pytest.mark.parametrize(
-    ("sidecar_state", "bootstrap_state"),
+    ("intent", "state", "status", "summary"),
     [
-        (bootstrap.host_sidecars.SidecarState.CURRENT, bootstrap.BootstrapState.CURRENT),
-        (bootstrap.host_sidecars.SidecarState.PENDING, bootstrap.BootstrapState.PENDING),
-        (bootstrap.host_sidecars.SidecarState.CHANGED, bootstrap.BootstrapState.CHANGED),
-        (bootstrap.host_sidecars.SidecarState.ERROR, bootstrap.BootstrapState.ERROR),
+        (Intent.CHECK, bootstrap.BootstrapState.CURRENT, 0, "is current"),
+        (Intent.CHECK, bootstrap.BootstrapState.PENDING, 1, "pending work"),
+        (Intent.ENSURE, bootstrap.BootstrapState.PENDING, 2, "is incomplete"),
+        (Intent.CHECK, bootstrap.BootstrapState.WARNING, 0, "is current"),
+        (Intent.CHECK, bootstrap.BootstrapState.ERROR, 2, "is incomplete"),
     ],
 )
-def test_sidecar_state_mapping(sidecar_state, bootstrap_state) -> None:
-    finding = bootstrap._sidecar_finding(
-        bootstrap.host_sidecars.SidecarFinding("proxy", sidecar_state, "detail")
-    )
-    assert finding == bootstrap.BootstrapFinding("proxy", bootstrap_state, "detail")
-
-
-@pytest.mark.parametrize(
-    ("state", "expected_message"),
-    [
-        (bootstrap.BootstrapState.CURRENT, "is current"),
-        (bootstrap.BootstrapState.PENDING, "pending work"),
-        (bootstrap.BootstrapState.WARNING, "is current"),
-        (bootstrap.BootstrapState.ERROR, "is incomplete"),
-    ],
-)
-def test_cli_renders_each_exit_class(
-    monkeypatch: pytest.MonkeyPatch,
+def test_cli_exit_status_and_summary(
+    cli: SimpleNamespace,
     capsys: pytest.CaptureFixture[str],
+    intent: Intent,
     state: bootstrap.BootstrapState,
-    expected_message: str,
+    status: int,
+    summary: str,
 ) -> None:
-    result = bootstrap.BootstrapResult(
-        Intent.CHECK,
-        (bootstrap.BootstrapFinding("resource", state, "detail"),),
+    cli.result = bootstrap.BootstrapResult(
+        intent, (bootstrap.BootstrapFinding("resource", state, "detail"),)
     )
-    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_args, **_kwargs: result)
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(force=False, check_only=True, verbose=True)
+
+    assert (
+        bootstrap_cli.run_bootstrap(SimpleNamespace(check_only=intent is Intent.CHECK)) == status
     )
-    output = capsys.readouterr().out
-    assert status == result.exit_status
-    assert expected_message in output
+    assert summary in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("canonical", [False, True])
@@ -1592,7 +1361,6 @@ def test_host_policy_migration_warning_reaches_init_and_doctor(
     path.write_text(text)
     monkeypatch.setattr(bootstrap, "load_host_policy", load_host_policy)
     result = bootstrap.reconcile_bootstrap(intent)
-    assert result.ready
     assert result.exit_status == 0
     assert result.policy.max_sessions == (3 if canonical else 2)
     warning = next(f for f in result.findings if f.state is bootstrap.BootstrapState.WARNING)
@@ -1603,9 +1371,11 @@ def test_host_policy_migration_warning_reaches_init_and_doctor(
     )
     assert expected in warning.detail
     ctx = init_cmd.InitContext(project_root=tmp_path, verbose=False)
+    # private: Init's public entry would run Project Setup; this checks only its bootstrap rows.
     init_cmd._record_bootstrap(ctx, result)
     assert expected in capsys.readouterr().out
     report = host_diagnostics.Findings()
+    # private: Doctor's public inspect_host also probes Python, the package and the installation.
     host_diagnostics._add_bootstrap(result, report)
     assert any(
         f.severity.value == "warn" and expected in f.message for f in report.report().findings
@@ -1646,6 +1416,7 @@ def test_cli_bootstrap_registers_persistent_wheel_venv(tmp_path, monkeypatch, up
     if update:
         from dataclasses import replace
 
+        # private: public registration cannot record the older identity that update replaces.
         host_install._write_identity(
             replace(identity, revision="old"), host_install.host_installation_path()
         )
@@ -1654,37 +1425,13 @@ def test_cli_bootstrap_registers_persistent_wheel_venv(tmp_path, monkeypatch, up
     assert host_install.host_install_error(source) is None
 
 
-@pytest.mark.parametrize("installed", [(), ("claude",), ("codex",), ("claude", "codex")])
-def test_host_agent_cli_prerequisite(monkeypatch, tmp_path, installed):
-    monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setenv("PATHEXT", ".EXE")
-    monkeypatch.chdir(tmp_path)
-    for name in installed:
-        executable = tmp_path / (f"{name}.exe" if os.name == "nt" else name)
-        executable.write_text("CLI presence fixture")
-        executable.chmod(0o755)
-    monkeypatch.setattr(bootstrap, "_git_finding", lambda: _current("git"))
-    monkeypatch.setattr(bootstrap, "_tool_finding", lambda name, _arg: _current(name))
-    monkeypatch.setattr(bootstrap, "_docker_daemon_error", lambda: None)
-    monkeypatch.setattr(bootstrap, "_vscode_finding", lambda: _current("vscode"))
-    findings = bootstrap._prerequisite_findings()
-    agent = next(finding for finding in findings if finding.resource == "host-agent-cli")
-    if installed:
-        assert agent.state is bootstrap.BootstrapState.CURRENT
-    else:
-        assert agent.state is bootstrap.BootstrapState.WARNING
-        assert "https://code.claude.com/docs/en/setup" in agent.detail
-        assert "https://developers.openai.com/codex/cli" in agent.detail
-
-
 @pytest.mark.parametrize("intent", [Intent.CHECK, Intent.ENSURE])
 def test_missing_host_agent_cli_does_not_block_bootstrap(monkeypatch, intent):
     calls = _wire_current(monkeypatch)
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
-        bootstrap,
-        "_prerequisite_findings",
-        lambda: (_current("git"), _current("docker"), bootstrap._host_agent_cli_finding()),
+        bootstrap.shutil,
+        "which",
+        lambda name: None if name in {"claude", "codex"} else "/fake/" + name,
     )
     result = bootstrap.reconcile_bootstrap(intent)
     assert result.exit_status == 0
@@ -1701,6 +1448,7 @@ def test_cli_invalid_registration_never_prints_update_success(
 
     source = Path(host_install.__file__).resolve().parent.parent / "data/skills"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    # private: the eligibility gate reads the interpreter's install layout; no public seam.
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
     monkeypatch.setattr(
         host_install,
@@ -1711,6 +1459,7 @@ def test_cli_invalid_registration_never_prints_update_success(
     )
     identity = host_install.current_host_installation(source)
     state = host_install.host_installation_path()
+    # private: public registration cannot record the previous revision this test compares.
     host_install._write_identity(identity, state)
     before = state.read_bytes()
     monkeypatch.setattr(
@@ -1784,6 +1533,7 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
     cache = _inspection_cache(monkeypatch, tmp_path)
 
     docker = _InspectionDocker()
+    # private: the sidecar adapter is the only Docker seam; there is no public factory to fake.
     monkeypatch.setattr(bootstrap.host_sidecars, "_docker_adapter", lambda: docker)
     return SimpleNamespace(
         home=home,
@@ -1814,6 +1564,7 @@ def _inspection_installation(monkeypatch, tmp_path, recorded):
         "abc123",
         "f" * 64,
     )
+    # private: the eligibility gate reads the interpreter's install layout; no public seam.
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
     monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
@@ -1836,6 +1587,7 @@ def _inspection_cache(monkeypatch, tmp_path):
     member = nangate_pdk.PinnedFile("member", "member", hashlib.sha256(b"ok").hexdigest())
     monkeypatch.setattr(nangate_pdk, "FILES", (member,))
     monkeypatch.setattr(nangate_pdk, "cache_root", lambda: cache)
+    # private: the packaged license read has no public seam.
     monkeypatch.setattr(nangate_pdk, "_license_bytes", lambda: b"license")
 
     return cache
@@ -1984,6 +1736,8 @@ def test_check_only_continues_after_resource_error(monkeypatch, tmp_path, capsys
     assert _tree_snapshot(tmp_path) == before
     if resource == "nangate45":
         assert "✗  nangate45:" in output, "cache access failure must be ERROR"
+        assert str(environment.cache / "member") in output
+        assert "access" in output
     _assert_complete(output)
     assert status == 2
     line = next(line for line in output.splitlines() if f" {resource}:" in line)
@@ -2004,6 +1758,11 @@ def test_check_only_invalid_policy_still_inspects_independent_resources(
     assert status == 2
     for resource in ("proxy", "reaper"):
         assert "policy" in next(line for line in output.splitlines() if f" {resource}:" in line)
+    proxy = next(line for line in output.splitlines() if " proxy:" in line)
+    assert "foreign Docker resource" not in proxy, (
+        "policy blocker must not recommend Docker removal"
+    )
+    assert "repair host config" in proxy
 
 
 def test_check_only_prerequisite_error_lists_pending_with_remedies(monkeypatch, tmp_path, capsys):
@@ -2023,19 +1782,6 @@ def test_check_only_prerequisite_error_lists_pending_with_remedies(monkeypatch, 
             assert "booley bootstrap" in line
     assert "daemon" in output and "access" in output
     assert not environment.docker.calls
-
-
-def test_check_only_cache_permission_error_is_not_pending(monkeypatch, tmp_path, capsys):
-    environment = _inspection_environment(monkeypatch, tmp_path)
-    _deny_cache_read(monkeypatch, environment)
-    before = _tree_snapshot(tmp_path)
-    status, output = _run_inspection(capsys)
-    assert _tree_snapshot(tmp_path) == before
-    assert "✗  nangate45:" in output, "cache access failure must be ERROR"
-    assert status == 2
-    _assert_complete(output)
-    assert str(environment.cache / "member") in output
-    assert "access" in output
 
 
 def test_check_only_pending_recovery_lists_resources_without_recovering(
@@ -2137,13 +1883,15 @@ def test_complete_inspection_all_current_and_warning_only(monkeypatch, tmp_path)
     assert result.exit_status == 0
     assert not any("image" in finding.resource for finding in result.findings)
     monkeypatch.setattr(
-        bootstrap,
-        "_host_agent_cli_finding",
-        lambda: bootstrap.BootstrapFinding(
-            "host-agent-cli", bootstrap.BootstrapState.WARNING, "optional CLI missing"
-        ),
+        bootstrap.shutil,
+        "which",
+        lambda name: None if name in {"claude", "codex"} else "/fake/" + name,
     )
-    assert bootstrap.inspect_bootstrap(include_images=False).exit_status == 0
+    result = bootstrap.inspect_bootstrap(include_images=False)
+    assert result.exit_status == 0
+    assert [f.state for f in result.findings if f.resource == "host-agent-cli"] == [
+        bootstrap.BootstrapState.WARNING
+    ]
 
 
 def test_check_only_cache_directory_collision_is_error(monkeypatch, tmp_path, capsys):
@@ -2193,6 +1941,7 @@ def test_check_only_ineligible_install_names_canonical_command(monkeypatch, tmp_
     from booley.runtime import host_install
 
     _inspection_environment(monkeypatch, tmp_path)
+    # private: the eligibility gate reads the interpreter's install layout; no public seam.
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: "source checkout")
     status, output = _run_inspection(capsys)
     line = next(line for line in output.splitlines() if " host-install:" in line)
@@ -2200,21 +1949,6 @@ def test_check_only_ineligible_install_names_canonical_command(monkeypatch, tmp_
     assert "reinstall" not in line
     assert status == 2
     assert "✗  skills:" in output
-
-
-def test_check_only_policy_blocker_has_only_its_applicable_remedy(monkeypatch, tmp_path, capsys):
-    _inspection_environment(monkeypatch, tmp_path)
-
-    def invalid(**_kwargs):
-        raise HostConfigError(tmp_path / "config.toml", "", "invalid value")
-
-    monkeypatch.setattr(bootstrap, "load_host_policy", invalid)
-    _status, output = _run_inspection(capsys)
-    line = next(line for line in output.splitlines() if " proxy:" in line)
-    assert "foreign Docker resource" not in line, (
-        "policy blocker must not recommend Docker removal"
-    )
-    assert "repair host config" in line
 
 
 def test_check_only_unsearchable_policy_preserves_independent_findings(
@@ -2240,50 +1974,54 @@ def test_check_only_unsearchable_policy_preserves_independent_findings(
     assert "policy directory is not searchable" in output
 
 
-def _render_one_per_state(capsys: pytest.CaptureFixture[str]) -> list[str]:
+def _render_one_per_state(cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]) -> list[str]:
     states = bootstrap.BootstrapState
-    findings = tuple(
-        bootstrap.BootstrapFinding(name, state, f"{name} detail")
-        for name, state in (
-            ("a", states.CHANGED),
-            ("b", states.WARNING),
-            ("c", states.ERROR),
-            ("d", states.CURRENT),
-            ("e", states.PENDING),
-        )
+    cli.result = bootstrap.BootstrapResult(
+        Intent.ENSURE,
+        tuple(
+            bootstrap.BootstrapFinding(name, state, f"{name} detail")
+            for name, state in (
+                ("a", states.CHANGED),
+                ("b", states.WARNING),
+                ("c", states.ERROR),
+                ("d", states.CURRENT),
+                ("e", states.PENDING),
+            )
+        ),
     )
-    bootstrap_cli._render_result(bootstrap.BootstrapResult(Intent.ENSURE, findings))
+    bootstrap_cli.run_bootstrap(SimpleNamespace())
     return capsys.readouterr().out.splitlines()
 
 
 def test_bootstrap_rows_use_the_shared_header_and_glyphs(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], cli: SimpleNamespace
 ) -> None:
     from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    lines = _render_one_per_state(capsys)
+    lines = _render_one_per_state(cli, capsys)
     assert lines[0] == "Host Bootstrap"
     assert lines[1:6] == [
-        "  \u2713  a: a detail",
+        "  ✓  a: a detail",
         "  !  b: b detail",
-        "  \u2717  c: c detail",
+        "  ✗  c: c detail",
         "  =  d: d detail",
         "  +  e: e detail",
     ]
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
-    assert _render_one_per_state(capsys)[0] == colors.bold_accent("Host Bootstrap")
+    assert _render_one_per_state(cli, capsys)[0] == colors.bold_accent("Host Bootstrap")
 
 
 def test_current_and_skipped_render_differently(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], cli: SimpleNamespace
 ) -> None:
     from booley.harness.setup import common
     from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    bootstrap_cli._render_result(bootstrap.BootstrapResult(Intent.ENSURE, (_current("proxy"),)))
+    cli.result = bootstrap.BootstrapResult(Intent.ENSURE, (_current("proxy"),))
+    bootstrap_cli.run_bootstrap(SimpleNamespace())
     common.skip("proxy: current")
     bootstrap_row, skipped_row = capsys.readouterr().out.splitlines()[1:3]
     assert bootstrap_row[:5] != skipped_row[:5]
@@ -2298,6 +2036,7 @@ def test_verbose_init_records_current_bootstrap_findings(tmp_path, capsys):
     ctx = init_cmd.InitContext(project_root=tmp_path, verbose=True)
     result = bootstrap.BootstrapResult(Intent.ENSURE, (_current("proxy"),))
 
+    # private: Init's public entry would run Project Setup; this checks only its bootstrap rows.
     init_cmd._record_bootstrap(ctx, result)
 
     assert ctx.results[-1] == init_cmd.StepResult("bootstrap.proxy", "current", "current")
