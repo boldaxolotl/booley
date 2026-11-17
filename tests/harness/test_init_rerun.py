@@ -1376,6 +1376,7 @@ def test_init_origin_ignores_external_booley_dir(repo, monkeypatch):
         "seed+force",
         "seed+check",
         "seed+force+check",
+        "bare-seed",
     ],
 )
 def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys, mode):
@@ -1392,17 +1393,17 @@ def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys, mode):
         lambda scope, intent, **kwargs: intents.append(intent) or real(scope, intent, **kwargs),
     )
     args = _scaffold_args() if mode == "scaffold" else _init_args()
-    args.seed = "seed" in flags
+    args.seed = bool(flags & {"seed", "bare-seed"})  # bare-seed: no Booley Directory yet
     args.force = "force" in flags
     args.check_only = "check" in flags
     capsys.readouterr()
 
-    assert init_cmd.run_init(args, repo) == 0
+    assert init_cmd.run_init(args, repo) == (2 if mode == "bare-seed" else 0)
 
     labels = re.findall(r"^Step (\S+) —", capsys.readouterr().out, re.MULTILINE)
     assert labels == [str(n) for n in range(1, len(labels) + 1)] and labels
-    if args.seed:  # the seed image inspection never builds (#1564)
-        assert intents and set(intents) == {init_cmd.ImageLifecycleIntent.CHECK}
+    assert set(intents) <= {init_cmd.ImageLifecycleIntent.CHECK} or not args.seed  # #1564
+    assert intents or "seed" not in flags
 
 
 @pytest.mark.parametrize("name", [".gitignore", "FUSESOC_IGNORE"])
