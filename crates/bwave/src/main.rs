@@ -1193,10 +1193,13 @@ fn run_value(args: ValueArgs) {
 }
 
 /// Name the time-window flag the user typed. clap does not report which alias
-/// matched, so a `--time` process argument means `--time`, else `-t`.
+/// matched, so a `--time` process argument before any `--` means `--time`,
+/// else `-t`.
 fn time_flag(time: &Option<String>) -> Option<String> {
     let value = time.as_ref()?;
-    let long = std::env::args().any(|arg| arg == "--time" || arg.starts_with("--time="));
+    let long = std::env::args()
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--time" || arg.starts_with("--time="));
     Some(format!("{} {value}", if long { "--time" } else { "-t" }))
 }
 

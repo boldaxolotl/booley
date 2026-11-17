@@ -61,11 +61,10 @@ tick in async). These bounds are plain `i64` values.
 
 ## Windows outside the trace
 
-A `-t`, `--after` or `--before` window with no part inside the trace prints
-one `# WARNING:` line and exits 0. It names the flag as typed and the
-trace's extent: the last counted cycle and end time in sync mode, the end tick
-and time in async mode or without a clock. With `--format json` the text goes
-in `warnings[]`. A window that overlaps the trace only in part stays quiet.
+A `-t`, `--after` or `--before` window past the end of the trace (in sync
+mode, also one before the first counted cycle) prints one `# WARNING:` line
+and exits 0. It names the flag as typed and where the trace ends. With
+`--format json` the text goes in `warnings[]`.
 
 ## Examples
 

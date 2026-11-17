@@ -117,11 +117,11 @@ bwave gui @dut \
   that directory: the testbench wrote its dump under its own name. Declare it in
   `[flows.sim].trace_files`, or point `register`/`build` straight at the
   file.
-- **Async query returned only the t=0 row** (exit 0): the window
-  held no transitions — usually because it is outside the trace. `list` reports
-  `total_ticks` in *ticks*, not nanoseconds; converting by eye is how you land
-  past the end; a window wholly past the end warns with the trace's end.
-  Check the timescale, or drop `--async` and use cycles.
+- **Async query returned only the t=0 row** (exit 0, no warning): the window is
+  inside the trace but held no transitions. A `# WARNING: ... outside the trace`
+  means the window is past the end. `list` reports `total_ticks` in *ticks*,
+  not nanoseconds; converting by eye is how you land past the end. Check the
+  timescale, or drop `--async` and use cycles.
 - **`signal` printed nothing for `-t N:N`**: it prints *transitions*. It falls
   back to the held value and says so, but `value --at N` is the direct way to
   ask "what is it holding right now?".

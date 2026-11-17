@@ -4915,3 +4915,27 @@ fn window_outside_trace_warning_in_json_envelope() {
         assert!(!stderr.contains("outside the trace"), "{name}: {stderr}");
     }
 }
+
+#[test]
+fn window_outside_trace_warning_names_typed_flag_beside_option_like_store_name() {
+    let store = build_bwave("test_basic.vcd", "window_outside_name");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(&store, dir.path().join("--time=trace.fst")).unwrap();
+    let out = Command::new(exe_path())
+        .current_dir(dir.path())
+        .args([
+            "signal",
+            "-s",
+            "*",
+            "-t",
+            "5000:6000",
+            "--",
+            "--time=trace.fst",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let want = format!("# WARNING: -t 5000:6000 {SYNC_PAST_END}");
+    assert_eq!(stderr.lines().next(), Some(want.as_str()), "{stderr}");
+}
