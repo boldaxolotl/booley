@@ -31,6 +31,7 @@ from booley.mcp.base import EXIT_SUCCESS
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.server import _params_to_argv
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 pytestmark = pytest.mark.skipif(
@@ -93,8 +94,9 @@ class Bench:
     def _build_root(self, target: str) -> Path:
         return work_root_for(self.root, "synth", target) / "dut_0" / "syn"
 
-    def resolve(self, target: str = TARGET, **_kwargs) -> fusesoc_registry.ResolvedTarget:
+    def resolve(self, handle: TargetHandle, **_kwargs) -> fusesoc_registry.ResolvedTarget:
         """Stage sources and SDC under the Target work root, as FuseSoC export does."""
+        target = handle.selector
         build_root = self._build_root(target)
         (build_root / "src").mkdir(parents=True, exist_ok=True)
         (build_root / "src" / "dut.sv").write_text("module dut(input clk); endmodule\n")
@@ -240,8 +242,8 @@ def bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Bench:
             root, selector, flow="generic", eda_tool="yosys", drivable_by=("synth",)
         ),
     )
-    # Private: the FuseSoC resolver is the seam where Target resolution is faked.
-    monkeypatch.setattr(fusesoc_registry, "_resolve_target", bench.resolve)
+    # The public handle resolver is the seam where Target resolution is faked.
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", bench.resolve)
     return bench
 
 

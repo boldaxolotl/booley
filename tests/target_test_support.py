@@ -111,33 +111,32 @@ def install_lenient_target_catalog(
     real_catalog_build: Callable[[Path | str], TargetCatalog],
     fallback_handle: Callable[[Path, str], TargetHandle],
 ) -> None:
-    """Install the shared legacy-selection adapter for layer-focused Flow tests."""
+    """Install the shared legacy-selection adapter for layer-focused Flow tests.
+
+    The adapter fakes Target selection and the setup argv only; tests that
+    resolve stub ``resolve_target_handle`` themselves.
+    """
     monkeypatch.setattr(
         TargetCatalog,
         "build",
         classmethod(lambda _cls, root: _LenientCatalog(root, real_catalog_build, fallback_handle)),
     )
 
-    def resolve_handle(handle: TargetHandle, **kwargs):
-        # Flows pass the build's library plan (None unless the Project isolates
-        # native cores); the legacy resolver below has no such parameter.
-        kwargs.pop("library_plan", None)
-        return fusesoc_registry._resolve_target(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
+    real_setup = fusesoc_registry.setup_command_for_handle
 
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve_handle)
-
-    def setup_handle(handle: TargetHandle, **kwargs):
-        return fusesoc_registry._setup_command(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
+    def setup_handle(handle: TargetHandle, *, library_plan=None, **kwargs):
+        if library_plan is None:
+            library_plan = fusesoc_registry.prepare_core_library_plan(handle.project_root)
+            try:
+                library_plan.operational_core(handle.core_file)
+            except fusesoc_registry.FuseSocError:
+                # A fallback handle names a .core no Project declares.
+                library_plan = fusesoc_registry.CoreLibraryPlan(
+                    library_plan.roots,
+                    library_plan.ignored_dirs,
+                    ((handle.core_file, handle.core_file),),
+                )
+        return real_setup(handle, library_plan=library_plan, **kwargs)
 
     monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", setup_handle)
 

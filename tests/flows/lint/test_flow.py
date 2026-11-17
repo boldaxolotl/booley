@@ -1857,7 +1857,7 @@ class TestVeribleTargets:
         )
         with patch.object(
             fusesoc_registry,
-            "_resolve_target",
+            "resolve_target_handle",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()
