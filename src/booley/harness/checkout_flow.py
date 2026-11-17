@@ -146,6 +146,8 @@ class CheckoutFlowRequest:
     target: str
     timeout_s: float | None = None  # wall clock of the run, admission queueing included
     coverage: bool = False  # run the Flow with coverage collection (``sim`` only)
+    # The table's integer settings, each passed as ``--<name> <value>`` (``mutation``'s count, seed).
+    settings: Mapping[str, int] = field(default_factory=dict[str, int])
 
 
 @dataclass(frozen=True)
@@ -327,10 +329,10 @@ def _refuse_live_inputs(checkout: Path, roots: list[LiveRoot]) -> None:
 
 
 def _prepare_scratch(checkout: Path) -> Path:
-    """Create the run's directory beside the checkout: ``home/``, ``tmp/`` and ``bin/git``."""
+    """Create the run's directory beside the checkout: ``home/``, ``tmp/``, ``runtime/`` and ``bin/git``."""
     scratch = Path(tempfile.mkdtemp(dir=checkout.parent, prefix=f".{checkout.name}.env-"))
     try:
-        for name in ("home", "tmp", "bin"):
+        for name in ("home", "tmp", "runtime", "bin"):
             (scratch / name).mkdir()
         write_git_refusal(scratch / "bin")
     except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
@@ -340,8 +342,11 @@ def _prepare_scratch(checkout: Path) -> Path:
 
 
 def _flow_arguments(request: CheckoutFlowRequest) -> list[str]:
-    """The Flow's own arguments for *request*: its Target, and coverage when asked."""
-    return ["--target", request.target, *(["--coverage"] if request.coverage else [])]
+    """The Flow's own arguments for *request*: its Target, its settings, coverage when asked."""
+    settings = [
+        part for name, value in request.settings.items() for part in (f"--{name}", str(value))
+    ]
+    return ["--target", request.target, *settings, *(["--coverage"] if request.coverage else [])]
 
 
 def _launch(
@@ -843,6 +848,7 @@ def prepare_checkout_flow(request: CheckoutFlowRequest) -> PreparedCheckoutFlow:
             main_booley_dir=main,
             home=scratch / "home",
             tmp=scratch / "tmp",
+            runtime=scratch / "runtime",
             git_refusal=scratch / "bin",
         )
         _preflight(request, checkout, roots, scratch, environment)

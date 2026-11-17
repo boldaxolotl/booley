@@ -68,6 +68,8 @@ class CheckoutStub(BooleyFlow):
 
     def _add_args(self, parser):
         parser.add_argument("--coverage", action="store_true")
+        parser.add_argument("--count", type=int)
+        parser.add_argument("--seed", type=int)
 
     def _run(self):
         seen = {{
@@ -76,6 +78,8 @@ class CheckoutStub(BooleyFlow):
             "tmp_is_dir": os.path.isdir(os.environ["TMPDIR"]),
             "work_dir": str(self.args.work_dir),
             "coverage": self.args.coverage,
+            "count": self.args.count,
+            "seed": self.args.seed,
         }}
         (CTL / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
         (CTL / "started").write_text("1", encoding="utf-8")
@@ -738,8 +742,24 @@ def test_checkout_flow_environment_is_scrubbed(
     assert seen["home_is_dir"] and seen["tmp_is_dir"]
     scratch = Path(env["HOME"]).parent
     assert scratch.parent == world.checkout.parent and scratch not in before
+    # The run's own runtime tree: no other child or live run shares its scratch (AC3).
+    assert Path(env["BOOLEY_RUNTIME_DIR"]).parent == scratch
     assert not scratch.exists()
     assert set(world.checkout.parent.iterdir()) == before
+
+
+@linux_only
+def test_flow_settings_reach_the_child_as_its_options(world: World) -> None:
+    """AC3: each setting of the request is one ``--<name> <value>`` option of the Flow child."""
+    from booley.harness.checkout_flow import _flow_arguments, run_checkout_flow
+
+    request = world.request("pass", settings={"count": 4, "seed": 3})
+
+    assert _flow_arguments(request) == ["--target", "pass", "--count", "4", "--seed", "3"]
+    run_checkout_flow(request)
+
+    seen = world.seen()
+    assert (seen["count"], seen["seed"]) == (4, 3)
 
 
 def assert_no_record_names(main: Path, checkout: Path) -> None:

@@ -137,6 +137,10 @@ def _write(tmp_path: Path, text: str) -> Path:
     return p
 
 
+def _parse(tmp_path: Path, text: str) -> cr.CocotbResults:
+    return cr.parse_results_xml(_write(tmp_path, text))
+
+
 class TestParseResultsXml:
     def test_mixed_suite_parses_all_states(self):
         res = cr.parse_results_xml(_RESULTS_XML)
@@ -149,38 +153,33 @@ class TestParseResultsXml:
         assert by_name["test_fail"].status == cr.VERDICT_FAIL
         assert by_name["test_skipped"].status == "skipped"
 
-    def test_failure_text_carries_type_and_message(self):
-        res = cr.parse_results_xml(_RESULTS_XML)
-        fail = next(t for t in res.tests if t.name == "test_fail")
-        assert fail.failure_text == (
-            "AssertionError: deliberate failure: compatibility sample\nassert 1 == 0"
-        )
-
-    def test_missing_file_is_missing_never_pass(self, tmp_path: Path):
-        res = cr.parse_results_xml(tmp_path / "nope.xml")
-        assert res.state == cr.STATE_MISSING
-        assert not res.tests
-
-    def test_truncated_xml_is_unparseable(self, tmp_path: Path):
-        # A SIGKILL mid-write leaves a torn file (S4).
-        res = cr.parse_results_xml(
-            _write(tmp_path, '<testsuites><testsuite><testcase name="interrupted"')
-        )
-        assert res.state == cr.STATE_UNPARSEABLE
-        assert "truncated or malformed" in res.detail
-
-    def test_empty_testsuite_is_empty(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
+    @pytest.mark.parametrize(
+        ("content", "state"),
+        [
+            (None, cr.STATE_MISSING),
+            # A SIGKILL mid-write leaves a torn file (S4).
+            ('<testsuites><testsuite><testcase name="interrupted"', cr.STATE_UNPARSEABLE),
+            (
                 '<testsuites name="results"><testsuite name="all" package="all">'
                 "</testsuite></testsuites>",
-            )
-        )
-        assert res.state == cr.STATE_EMPTY
-
-    def test_not_a_file_is_missing(self, tmp_path: Path):
-        assert cr.parse_results_xml(tmp_path).state == cr.STATE_MISSING
+                cr.STATE_EMPTY,
+            ),
+            ("DIRECTORY", cr.STATE_MISSING),
+        ],
+        ids=["missing-file", "truncated", "empty-suite", "not-a-file"],
+    )
+    def test_unusable_results_file_never_passes(self, tmp_path: Path, content, state):
+        if content is None:
+            path = tmp_path / "nope.xml"
+        elif content == "DIRECTORY":
+            path = tmp_path
+        else:
+            path = _write(tmp_path, content)
+        res = cr.parse_results_xml(path)
+        assert res.state == state
+        assert not res.tests
+        if state == cr.STATE_UNPARSEABLE:
+            assert "truncated or malformed" in res.detail
 
     def test_duplicate_names_fail_wins(self, tmp_path: Path):
         res = cr.parse_results_xml(
@@ -343,12 +342,6 @@ class TestResultsLineRoundTrip:
         assert "long IDs abbreviated" in detail
         assert "cocotb_results.json" in detail
 
-    @pytest.mark.parametrize("names", [None, "test", {}, [1], ["test", False]])
-    def test_invalid_reported_names_reject_transport(self, names):
-        payload = {"state": "ok", "tests": [], "reported_names": names}
-        with pytest.raises(BoundaryError):
-            cr.decode_results_payload(payload)
-
     def test_large_candidate_detail_is_safe_for_simulation_record_evidence(self):
         from booley.flows.sim.record.codec import MAX_DETAIL_BYTES
 
@@ -373,54 +366,43 @@ class TestResultsLineRoundTrip:
         assert line.startswith(cr.COCOTB_RESULTS_PREFIX)
         assert cr.parse_results_line(f"noise\n{line}\ntrailing") == res
 
-    def test_missing_line_returns_none(self):
-        assert cr.parse_results_line("no sentinel here\n") is None
-
-    def test_malformed_line_returns_none_not_pass(self):
-        assert cr.parse_results_line(f"{cr.COCOTB_RESULTS_PREFIX}{{broken") is None
-
-    def test_non_object_or_non_list_payload_is_rejected(self):
-        for payload in ("[]", '"payload"', '{"tests": {}}'):
-            with pytest.raises(BoundaryError):
-                cr.decode_results_payload(json.loads(payload))
-        # parse_results_line keeps its fail-safe: a rejected payload is "no results".
-        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + "[]") is None
-
-    def test_non_object_test_entries_reject_the_transport(self):
-        payload = '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}'
-        with pytest.raises(BoundaryError):
-            cr.decode_results_payload(json.loads(payload))
-
-    @pytest.mark.parametrize(
-        "testcase",
-        [
-            '{"name":{},"module":"m","status":"pass"}',
-            '{"name":"bad","module":[],"status":"pass"}',
-            '{"name":"bad","module":"m","status":true}',
-            '{"name":"bad","module":"m","status":"pass","failure":7}',
-            '{"name":"bad","module":"m","status":"pass","elapsed_s":true}',
-            '{"name":"bad","module":"m","status":"pass","elapsed_s":-1}',
-            '{"name":"bad","module":"m","status":"pass","elapsed_s":1e999}',
-        ],
-    )
-    def test_invalid_test_fields_reject_the_transport(self, testcase):
-        payload = f'{{"state":"ok","tests":[{testcase}]}}'
-        with pytest.raises(BoundaryError):
-            cr.decode_results_payload(json.loads(payload))
+    @pytest.mark.parametrize("line", ["no sentinel here\n", f"{cr.COCOTB_RESULTS_PREFIX}{{broken"])
+    def test_missing_or_malformed_line_returns_none_not_pass(self, line):
+        assert cr.parse_results_line(line) is None
 
     @pytest.mark.parametrize(
         "payload",
         [
+            "[]",
+            '"payload"',
+            '{"tests": {}}',
+            '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}',
+            '{"state":"ok","tests":[{"name":{},"module":"m","status":"pass"}]}',
+            '{"state":"ok","tests":[{"name":"b","module":[],"status":"pass"}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":true}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","failure":7}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":true}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":-1}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":1e999}]}',
             '{"state":7,"tests":[]}',
             '{"state":"unknown","tests":[]}',
             '{"detail":{},"tests":[]}',
             '{"skipped_unselected":true,"tests":[]}',
             '{"skipped_unselected":-1,"tests":[]}',
+            '{"state":"ok","tests":[],"reported_names":null}',
+            '{"state":"ok","tests":[],"reported_names":"test"}',
+            '{"state":"ok","tests":[],"reported_names":{}}',
+            '{"state":"ok","tests":[],"reported_names":[1]}',
+            '{"state":"ok","tests":[],"reported_names":["test",false]}',
         ],
     )
-    def test_invalid_result_fields_reject_the_transport(self, payload):
+    def test_invalid_payload_rejects_the_transport(self, payload):
         with pytest.raises(BoundaryError):
             cr.decode_results_payload(json.loads(payload))
+
+    def test_a_rejected_line_payload_is_no_results(self):
+        # parse_results_line keeps its fail-safe: a rejected payload is "no results".
+        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + "[]") is None
 
     def test_last_line_wins(self):
         res = cr.parse_results_xml(_RESULTS_XML)
@@ -468,45 +450,30 @@ class TestFailureMessageDialects:
     cocotb 1.x writes ``message="Test failed with RANDOM_SEED=…"``.
     """
 
-    def test_cocotb1_message_attribute(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
-                _xml_with_failure('<failure message="Test failed with RANDOM_SEED=1783871502" />'),
-            )
-        )
-        assert res.tests[0].failure_text == "Test failed with RANDOM_SEED=1783871502"
-
-    def test_cocotb2_init_failure_msg_attribute(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(tmp_path, _xml_with_failure('<failure msg="Test initialization failed" />'))
-        )
-        assert res.tests[0].failure_text == "Test initialization failed"
-
-    def test_plain_junit_type_and_text(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
-                _xml_with_failure('<failure type="AssertionError">assert 1 == 0</failure>'),
-            )
-        )
-        assert res.tests[0].failure_text == "AssertionError: assert 1 == 0"
-        assert res.tests[0].elapsed_s == 0.012
-
-    def test_error_msg_still_wins_when_present(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
-                _xml_with_failure(
-                    '<failure error_type="AssertionError" error_msg="count should be 0" '
-                    'message="Test failed with RANDOM_SEED=1" />'
-                ),
-            )
-        )
-        assert res.tests[0].failure_text == "AssertionError: count should be 0"
-
-    def test_bare_failure_element_still_yields_empty_text(self, tmp_path: Path):
-        # Honest limit: nothing to attribute, and we must not invent any.
-        res = cr.parse_results_xml(_write(tmp_path, _xml_with_failure("<failure />")))
+    @pytest.mark.parametrize(
+        ("child", "text"),
+        [
+            (
+                '<failure message="Test failed with RANDOM_SEED=1783871502" />',
+                "Test failed with RANDOM_SEED=1783871502",
+            ),
+            ('<failure msg="Test initialization failed" />', "Test initialization failed"),
+            (
+                '<failure type="AssertionError">assert 1 == 0</failure>',
+                "AssertionError: assert 1 == 0",
+            ),
+            (
+                '<failure error_type="AssertionError" error_msg="count should be 0" '
+                'message="Test failed with RANDOM_SEED=1" />',
+                "AssertionError: count should be 0",
+            ),
+            # Honest limit: nothing to attribute, and we must not invent any.
+            ("<failure />", ""),
+        ],
+        ids=["cocotb1-message", "cocotb2-init-msg", "junit-type-text", "error-msg-wins", "bare"],
+    )
+    def test_failure_text_by_dialect(self, tmp_path: Path, child, text):
+        res = _parse(tmp_path, _xml_with_failure(child))
         assert res.tests[0].status == cr.VERDICT_FAIL
-        assert res.tests[0].failure_text == ""
+        assert res.tests[0].failure_text == text
+        assert res.tests[0].elapsed_s == 0.012

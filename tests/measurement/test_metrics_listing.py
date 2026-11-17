@@ -76,6 +76,22 @@ def test_each_target_lists_its_flows_with_every_metric_and_unit(tmp_path: Path) 
     assert "[synth_core.sim]" not in listing
 
 
+def test_simulation_targets_list_a_mutation_table_with_its_settings(tmp_path: Path) -> None:
+    """AC4: a Simulation Target lists ``mutation`` with its metrics and its settings."""
+    listing = listing_of(write_listing_project(tmp_path))
+
+    assert block(listing, "[sim_core.mutation]") == (
+        "[sim_core.mutation]\n"
+        "mutation_score_min =  # %, plain\n"
+        "mutants_detected_min =  # Mutants, plain\n"
+        "mutants_survived_max =  # Mutants, plain\n"
+        "count = 10  # setting: Mutants to score\n"
+        "seed = 0  # setting: selects the Mutants"
+    )
+    assert "[sim_icarus.mutation]" in listing
+    assert "[synth_core.mutation]" not in listing
+
+
 def test_per_test_keys_are_quoted_selectors_of_one_test_run(tmp_path: Path) -> None:
     project = write_listing_project(tmp_path)
     listing = listing_of(project)

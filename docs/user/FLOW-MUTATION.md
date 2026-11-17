@@ -212,6 +212,37 @@ the Booley Directory or `--report-dir`
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
 
+## Measuring the mutation score
+
+`booley measure` can hold the Mutation Flow to a bound, like any other Flow
+(see
+[Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#write-metricstoml)).
+A `[<target>.mutation]` table in `metrics.toml` works on every simulation
+Target and measures:
+
+| Metric | Meaning | Better |
+|---|---|---|
+| `mutation_score` | The percentage of valid Mutants (those that build) your tests detected. | higher |
+| `mutants_detected` | How many valid Mutants your tests detected. | higher |
+| `mutants_survived` | How many valid Mutants your tests did not detect. | lower |
+
+The table also takes two settings that choose the Mutants: `count` (how many,
+default `10`, at least `1`; `auto` is refused) and `seed` (which sample,
+default `0`, at least `0`). A table's own setting overrides the one in
+`[defaults.mutation]`.
+
+```toml
+[defaults.mutation]
+count = 20
+
+[sim_core.mutation]
+mutation_score_min = 80
+mutants_survived_max = 4
+seed = 3
+```
+
+`booley cheat --metrics` lists it.
+
 ## Configuration (`[flows.mutation]`)
 
 ```toml

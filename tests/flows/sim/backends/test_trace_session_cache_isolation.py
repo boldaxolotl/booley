@@ -16,9 +16,15 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from tests.conftest import MINIMAL_FST_BYTES
 
 from booley.flows.sim.trace_session import TraceSession
+
+
+@pytest.fixture
+def cache_root(tmp_path: Path) -> Path:
+    return tmp_path / "bwave"
 
 
 def _cache_patch(cache_root: Path):
@@ -26,8 +32,7 @@ def _cache_patch(cache_root: Path):
     return patch("booley.bwave.waveform_store.tempfile.gettempdir", return_value=str(cache_root))
 
 
-def test_same_named_work_dirs_get_distinct_cache_buckets(tmp_path):
-    cache_root = tmp_path / "bwave"
+def test_same_named_work_dirs_get_distinct_cache_buckets(tmp_path, cache_root):
     a = tmp_path / "ticket_a" / "sim"
     b = tmp_path / "ticket_b" / "sim"
     a.mkdir(parents=True)
@@ -42,9 +47,8 @@ def test_same_named_work_dirs_get_distinct_cache_buckets(tmp_path):
     assert bucket_b.name.startswith("sim-")
 
 
-def test_other_tickets_trace_is_not_served(tmp_path):
+def test_other_tickets_trace_is_not_served(tmp_path, cache_root):
     """The exact cross-design bind: B's cached trace must not answer for A."""
-    cache_root = tmp_path / "bwave"
     a = tmp_path / "ticket_a" / "sim"
     b = tmp_path / "ticket_b" / "sim"
     a.mkdir(parents=True)
@@ -57,9 +61,8 @@ def test_other_tickets_trace_is_not_served(tmp_path):
         assert TraceSession(a).find() is None
 
 
-def test_start_fifo_streams_into_the_session_store_path(tmp_path):
+def test_start_fifo_streams_into_the_session_store_path(tmp_path, cache_root):
     """TraceSession.start_fifo hands the streamer its own ``bwave_path``."""
-    cache_root = tmp_path / "bwave"
     work = tmp_path / "sim"
     work.mkdir()
     seen: list[Path] = []
@@ -80,9 +83,19 @@ def test_start_fifo_streams_into_the_session_store_path(tmp_path):
         assert seen == [session.bwave_path]
 
 
-def test_fresher_published_store_beats_stale_cache(tmp_path):
-    """A re-sim publishes beside the artifacts; the old cached store loses."""
-    cache_root = tmp_path / "bwave"
+@pytest.mark.parametrize(
+    ("cached_mtime", "published_mtime"),
+    [
+        # A re-sim publishes beside the artifacts; the old cached store loses.
+        (1_000_000, 2_000_000),
+        # copy2 preserves mtime; on that tie reports name the host-visible published file.
+        (2_000_000, 2_000_000),
+    ],
+    ids=["fresher-published", "equal-mtime"],
+)
+def test_published_store_beats_cache_unless_cache_is_newer(
+    tmp_path, cache_root, cached_mtime, published_mtime
+):
     work = tmp_path / "sim"
     work.mkdir()
 
@@ -90,36 +103,17 @@ def test_fresher_published_store_beats_stale_cache(tmp_path):
         session = TraceSession(work)
         cached = session.cache_dir / "trace.fst"
         cached.write_bytes(MINIMAL_FST_BYTES)
-        os.utime(cached, (1_000_000, 1_000_000))
+        os.utime(cached, (cached_mtime, cached_mtime))
 
         published = work / "trace.fst"
         published.write_bytes(MINIMAL_FST_BYTES)
-        os.utime(published, (2_000_000, 2_000_000))
+        os.utime(published, (published_mtime, published_mtime))
 
         assert session.find() == published
 
 
-def test_equal_mtime_prefers_host_visible_published_store(tmp_path):
-    """copy2 preserves mtime; reports must name the file copied into the Project on that tie."""
-    cache_root = tmp_path / "bwave"
-    work = tmp_path / "sim"
-    work.mkdir()
-
-    with _cache_patch(cache_root):
-        session = TraceSession(work)
-        cached = session.cache_dir / "trace.fst"
-        cached.write_bytes(MINIMAL_FST_BYTES)
-        published = work / "trace.fst"
-        published.write_bytes(MINIMAL_FST_BYTES)
-        os.utime(cached, (2_000_000, 2_000_000))
-        os.utime(published, (2_000_000, 2_000_000))
-
-        assert session.find() == published
-
-
-def test_reset_for_run_removes_every_candidate_from_an_earlier_attempt(tmp_path):
+def test_reset_for_run_removes_every_candidate_from_an_earlier_attempt(tmp_path, cache_root):
     """A failed trace attempt must not earn TRACE_OK from surviving artifacts."""
-    cache_root = tmp_path / "bwave"
     work = tmp_path / "sim"
     run_dir = tmp_path / "run"
     work.mkdir()
@@ -143,8 +137,7 @@ def test_reset_for_run_removes_every_candidate_from_an_earlier_attempt(tmp_path)
         assert session.find() is None
 
 
-def test_successful_postprocess_consumes_raw_vcd_outside_work_dir(tmp_path):
-    cache_root = tmp_path / "bwave"
+def test_successful_postprocess_consumes_raw_vcd_outside_work_dir(tmp_path, cache_root):
     work = tmp_path / "runtime" / "sim"
     run_dir = tmp_path / "project"
     work.mkdir(parents=True)
@@ -176,8 +169,7 @@ def test_successful_postprocess_consumes_raw_vcd_outside_work_dir(tmp_path):
         assert session.work_bwave_path.is_file()
 
 
-def test_failed_postprocess_moves_raw_vcd_and_diagnostic_into_work_dir(tmp_path):
-    cache_root = tmp_path / "bwave"
+def test_failed_postprocess_moves_raw_vcd_and_diagnostic_into_work_dir(tmp_path, cache_root):
     work = tmp_path / "runtime" / "sim"
     run_dir = tmp_path / "project"
     work.mkdir(parents=True)
