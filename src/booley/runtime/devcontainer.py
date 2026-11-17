@@ -1,6 +1,6 @@
-"""Generate the untracked ``.devcontainer/devcontainer.json`` for Interactive Mode.
+"""Generate the untracked ``.devcontainer/devcontainer.json`` for the Sandbox.
 
-ADR 0018: Interactive Mode is entered by opening the repo folder in VS Code and
+ADR 0018: the Sandbox is entered by opening the repo folder in VS Code and
 accepting "Reopen in Container". The runtime is described by a single,
 Booley-generated ``.devcontainer/devcontainer.json`` that lives in the repo but
 is never tracked by git (hidden via ``.git/info/exclude``, not ``.gitignore``).
@@ -727,7 +727,7 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
         else {}
     )
     remote_env |= {
-        # Container-side MCP runs in interactive mode and finds config here.
+        # The in-Sandbox MCP server reads BOOLEY_MCP_MODE and finds config here.
         "BOOLEY_MCP_MODE": "interactive",
         "BOOLEY_DIR": BOOLEY_DIR_TARGET,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
@@ -904,7 +904,7 @@ def build_devcontainer_spec(
     egress: str = "proxy",
     legacy_clis: frozenset[str] = frozenset(),
 ) -> dict:
-    """Build the ``devcontainer.json`` dict for an Interactive Mode session.
+    """Build the ``devcontainer.json`` dict for a Sandbox session.
 
     Args:
         app: one of :data:`SUPPORTED_APPS`: the default Agent CLI, which the in-container

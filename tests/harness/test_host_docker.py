@@ -1,4 +1,4 @@
-"""Tests for the Interactive Mode Docker probes (ADR 0018).
+"""Tests for the Sandbox Docker probes (ADR 0018).
 
 The ``docker`` CLI is mocked at the single ``_run_docker`` seam, so these run
 without Docker installed.
@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
+from booley.runtime import host_docker as idk
 from booley.runtime import image_identity
-from booley.runtime import interactive_docker as idk
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 
 

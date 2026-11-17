@@ -17,7 +17,7 @@ def test_expected_interactive_spec_is_init_rebuild_on_host(
     """On the host the drift check rebuilds the spec through init's own builder."""
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
 
-    rebuild = doctor._expected_interactive_spec(tmp_path)
+    rebuild = doctor._expected_sandbox_spec(tmp_path)
 
     assert isinstance(rebuild, functools.partial)
     assert rebuild.func is init_cmd.current_interactive_spec
@@ -30,4 +30,4 @@ def test_expected_interactive_spec_is_none_inside_sandbox(
     """Inside the Sandbox host inputs are invisible, so no rebuild is offered."""
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
 
-    assert doctor._expected_interactive_spec(tmp_path) is None
+    assert doctor._expected_sandbox_spec(tmp_path) is None

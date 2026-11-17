@@ -29,7 +29,7 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Project sandbox image (bakes repo Python deps) — ADR 0018
     - Git hooks: repo hooks, project commit-msg, worktree prune guard,
       line endings, guidance links
-    - Interactive Mode: untracked devcontainer + egress/reaper objects — ADR 0018
+    - Sandbox: untracked devcontainer + egress/reaper objects — ADR 0018
     - Post-setup advisories
 
 Historical steps, since handled by ``pip install`` or eliminated: venv
@@ -163,7 +163,7 @@ from booley.runtime import (
     runtime_context,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import (
     booley_dir_for_init,
@@ -1072,7 +1072,7 @@ def _step_image_lifecycle(
 
 
 # ---------------------------------------------------------------------------
-# Sandbox image resolution for the Interactive Mode devcontainer.
+# Sandbox image resolution for the Sandbox devcontainer.
 # ---------------------------------------------------------------------------
 
 
@@ -1093,7 +1093,7 @@ def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = F
     """Regenerate, pin, and stamp the Session spec after an image refresh."""
     ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
     pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
-    _step_interactive(ctx, nangate_pdk_root=pdk_root, runtime_image_id=image_id)
+    _step_sandbox(ctx, nangate_pdk_root=pdk_root, runtime_image_id=image_id)
     failures = [result.detail for result in ctx.results if result.status == "err"]
     if failures:
         raise RuntimeError("Sandbox spec reissuance failed: " + "; ".join(failures))
@@ -1150,14 +1150,14 @@ def _mask_source_dir() -> Path:
 
     Lives under Booley's per-user config dir (beside the ``booley auth``
     store) so it is host-global, never inside a workspace, and can never
-    accumulate content of its own. Pure path math — ``_step_interactive``
+    accumulate content of its own. Pure path math — ``_step_sandbox``
     mkdirs it right before writing the spec, because docker's ``--mount``
     (unlike ``-v``) refuses a missing bind source at container create.
     """
     return auth_token.config_dir() / "empty-mask"
 
 
-def _select_interactive_app(
+def _select_agent_app(
     project_root: Path | None = None, project_data_source: Path | None = None
 ) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
@@ -1281,7 +1281,7 @@ _NANGATE_PDK_NOT_REQUESTED = object()
 
 
 @dataclass(frozen=True, slots=True)
-class _InteractiveSpecSources:
+class _SandboxSpecSources:
     project_root: Path
     app: str
     nangate_pdk_root: Path | object
@@ -1398,15 +1398,15 @@ def _credential_plans(
     return tuple(plans)
 
 
-def _interactive_spec_sources(
+def _sandbox_spec_sources(
     ctx: InitContext,
     nangate_pdk_root: Path | object,
     agent_app: str | None,
     runtime_image_id: str | None,
-) -> _InteractiveSpecSources:
+) -> _SandboxSpecSources:
     source = authorized_project_data_source(ctx.project_root)
-    app = agent_app or _select_interactive_app(ctx.project_root, source)
-    return _InteractiveSpecSources(
+    app = agent_app or _select_agent_app(ctx.project_root, source)
+    return _SandboxSpecSources(
         credential_plans=_credential_plans(app, ctx.project_root, source),
         project_root=ctx.project_root,
         app=app,
@@ -1422,16 +1422,14 @@ def _interactive_spec_sources(
     )
 
 
-def _current_interactive_spec_sources(
-    project_root: Path, image_id: str | None
-) -> _InteractiveSpecSources:
+def _current_sandbox_spec_sources(project_root: Path, image_id: str | None) -> _SandboxSpecSources:
     """The sources ``booley init`` and Sandbox refresh build the spec from today.
 
     Nangate is mounted exactly when its cache is ready, and the agent app is the
     ``[agent]`` default (``agent_app=None``), as in both callers.
     """
     root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else _NANGATE_PDK_NOT_REQUESTED
-    return _interactive_spec_sources(
+    return _sandbox_spec_sources(
         InitContext(project_root=project_root, force=False, verbose=False),
         root,
         None,
@@ -1449,7 +1447,7 @@ def current_interactive_spec(project_root: Path, image_id: str | None) -> dict:
     from booley.runtime import session_issuance
 
     try:
-        sources = _current_interactive_spec_sources(project_root, image_id)
+        sources = _current_sandbox_spec_sources(project_root, image_id)
         prepared = session_issuance.preview(
             project_root, sources.build, expected_image_id=image_id
         )
@@ -1460,25 +1458,23 @@ def current_interactive_spec(project_root: Path, image_id: str | None) -> dict:
     return prepared.spec
 
 
-def _report_interactive_state(
-    ctx: InitContext, plan: interactive_init.InteractiveInitPlan
-) -> None:
+def _report_sandbox_state(ctx: InitContext, plan: interactive_init.InteractiveInitPlan) -> None:
     if plan.pending_details:
         detail = "would reconcile " + ", ".join(plan.pending_details)
         warn(detail)
         ctx.record("interactive", "warn", detail)
         return
-    current("Interactive Mode specification, issuance, and exclusions are current")
+    current("Sandbox specification, issuance, and exclusions are current")
     ctx.record("interactive", "current", "current")
 
 
-def _report_interactive_changes(
+def _report_sandbox_changes(
     ctx: InitContext,
-    sources: _InteractiveSpecSources,
+    sources: _SandboxSpecSources,
     changes: interactive_init.InteractiveInitChanges,
 ) -> None:
     if not changes.changed:
-        current("Interactive Mode specification, issuance, and exclusions are current")
+        current("Sandbox specification, issuance, and exclusions are current")
         ctx.record("interactive", "current", "current")
         return
     if changes.issued:
@@ -1495,16 +1491,14 @@ def _report_interactive_changes(
     if changes.runtime_reconciled:
         ok("reconciled stopped Sandbox resources from their prior issuance")
     if changes.exclusions_changed:
-        ok(
-            "reconciled Interactive Mode git exclusions (info/exclude); existing exclusions retained"
-        )
+        ok("reconciled Sandbox git exclusions (info/exclude); existing exclusions retained")
     notes = [f"app={sources.app}"]
     if changes.issuance.license_profile is not None:
         notes.append("license-relay-image:present")
     ctx.record("interactive", "ok", ", ".join(notes))
 
 
-def _interactive_precondition_failed(
+def _sandbox_precondition_failed(
     ctx: InitContext,
     nangate_pdk_root: Path | object | None,
     *,
@@ -1512,7 +1506,7 @@ def _interactive_precondition_failed(
 ) -> bool:
     if _devcontainer_is_tracked(ctx.project_root):
         err(".devcontainer/ is tracked by git — refusing to clobber it")
-        info("  Interactive Mode is unavailable for this repo until it is removed")
+        info("  the Sandbox is unavailable for this repo until it is removed")
         ctx.record("interactive", "err", "tracked .devcontainer")
         return True
     if _init_owned_booley_dir_missing(
@@ -1551,7 +1545,7 @@ def _init_owned_booley_dir_missing(
     return False
 
 
-def _inspect_interactive_plan(
+def _inspect_sandbox_plan(
     ctx: InitContext,
     request: interactive_init.InteractiveInitRequest,
 ) -> interactive_init.InteractiveInitPlan | None:
@@ -1570,7 +1564,7 @@ def _inspect_interactive_plan(
     return None
 
 
-def _apply_interactive_plan(
+def _apply_sandbox_plan(
     ctx: InitContext,
     plan: interactive_init.InteractiveInitPlan,
 ) -> interactive_init.InteractiveInitChanges | None:
@@ -1588,7 +1582,7 @@ def _apply_interactive_plan(
     return None
 
 
-def _step_interactive(
+def _step_sandbox(
     ctx: InitContext,
     *,
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
@@ -1597,8 +1591,8 @@ def _step_interactive(
     init_will_create_booley_dir: bool = False,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
-    ctx.step_banner("Interactive Mode (Reopen in Container)")
-    if _interactive_precondition_failed(
+    ctx.step_banner("Sandbox (Reopen in Container)")
+    if _sandbox_precondition_failed(
         ctx,
         nangate_pdk_root,
         init_will_create_booley_dir=init_will_create_booley_dir,
@@ -1606,7 +1600,7 @@ def _step_interactive(
         return
 
     try:
-        sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
+        sources = _sandbox_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
     except RuntimeSpecError as exc:
         detail = str(exc)
         err(f"Sandbox authorization failed closed: {detail}")
@@ -1618,24 +1612,24 @@ def _step_interactive(
         expected_image_id=runtime_image_id,
         mask_source=_mask_source_dir() if sources.mask_paths else None,
     )
-    plan = _inspect_interactive_plan(ctx, request)
+    plan = _inspect_sandbox_plan(ctx, request)
     if plan is None:
         return
     for notice in plan.dashboard_tasks.notices:
         info(notice)
     if ctx.check_only or (not plan.pending_details and not ctx.force):
-        _report_interactive_state(ctx, plan)
+        _report_sandbox_state(ctx, plan)
         return
-    changes = _apply_interactive_plan(ctx, plan)
+    changes = _apply_sandbox_plan(ctx, plan)
     if changes is None:
         return
-    _report_interactive_changes(ctx, sources, changes)
+    _report_sandbox_changes(ctx, sources, changes)
 
 
-def _step_interactive_files(ctx: InitContext) -> None:
+def _step_sandbox_files(ctx: InitContext) -> None:
     """Reconcile the Dashboard task and Interactive excludes without a Sandbox.
 
-    These are the Project-file parts of Interactive Mode: no Docker, no Sandbox
+    These are the Project-file parts of the Sandbox: no Docker, no Sandbox
     Issuance. Records nothing when everything is current, and nothing in check-only.
     """
     if ctx.check_only:
@@ -1645,13 +1639,11 @@ def _step_interactive_files(ctx: InitContext) -> None:
         excludes_changed = add_git_excludes(root, interactive_init.exclude_names(root))
         transaction = dashboard_tasks.reconcile(root, authorized_project_data_source(root))
     except (OSError, RuntimeError, RuntimeSpecError) as exc:
-        err(f"could not reconcile Interactive Mode files: {exc}")
+        err(f"could not reconcile Sandbox files: {exc}")
         ctx.record("interactive_files", "err", str(exc))
         return
     if excludes_changed:
-        ok(
-            "reconciled Interactive Mode git exclusions (info/exclude); existing exclusions retained"
-        )
+        ok("reconciled Sandbox git exclusions (info/exclude); existing exclusions retained")
     for notice in transaction.plan.notices:
         info(notice)
     for diagnostic in transaction.plan.diagnostics:
@@ -2263,7 +2255,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
 
 
 def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
-    """Seed only the Interactive Mode devcontainer for this folder/worktree.
+    """Seed only the Sandbox devcontainer for this folder/worktree.
 
     Used for each worktree: the long-lived
     Docker objects are global (re-ensured idempotently here), but each session
@@ -2280,13 +2272,13 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
             )
         return _print_summary(ctx)
     if not ctx.check_only and sys.stdout.isatty():
-        print(section_header(f"Seeding Interactive Mode for {ctx.project_root}"))
+        print(section_header(f"Seeding the Sandbox for {ctx.project_root}"))
         print()
     if "BOOLEY_DIR" not in os.environ and not own_booley_dir(ctx.project_root).is_dir():
-        _step_interactive(ctx, agent_app=selection.provider)
+        _step_sandbox(ctx, agent_app=selection.provider)
         return _print_summary(ctx)
     pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
-    _step_interactive(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
+    _step_sandbox(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
     return _print_summary(ctx)
 
 
@@ -2584,7 +2576,7 @@ def initialize_project(ctx: InitContext, request: ProjectInitialization) -> bool
     _step_worktree_policies(ctx, facts.sandbox_git_version)
     _step_line_endings_and_guidance(ctx, request.guidance_plan, request.line_ending_baseline)
     if request.reconcile_interactive_files:
-        _step_interactive_files(ctx)
+        _step_sandbox_files(ctx)
     return True
 
 
@@ -2662,7 +2654,7 @@ def _run_project_init_steps(
     )
     if not initialize_project(ctx, request):
         return _print_summary(ctx)
-    _step_interactive(
+    _step_sandbox(
         ctx,
         nangate_pdk_root=host.pdk_root,
         agent_app=selection.provider,

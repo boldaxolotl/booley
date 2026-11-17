@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar
 
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import issuance_invalidation
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr

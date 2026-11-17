@@ -177,10 +177,10 @@ def _import_and_extract(
 
 
 def _status_mcp_tool_def() -> dict[str, Any]:
-    """Return the synthetic Interactive Mode status MCP tool definition."""
+    """Return the synthetic Sandbox status MCP tool definition."""
     return {
         "name": _STATUS_MCP_TOOL_NAME,
-        "description": "Show whether Booley Interactive Mode is ready in this tab.",
+        "description": "Show whether Booley is ready in this tab.",
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
     }
 

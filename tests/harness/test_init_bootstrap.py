@@ -372,7 +372,7 @@ def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
     monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", observe)
     monkeypatch.setattr(
         init_cmd,
-        "_step_interactive",
+        "_step_sandbox",
         lambda *_args, **_kwargs: pytest.fail("refused seed must not apply a spec"),
     )
     assert init_cmd.run_init(_args(seed=True, force=True), tmp_path) == 2

@@ -5,7 +5,7 @@ Two transports (``--transport``, or ``BOOLEY_MCP_TRANSPORT``):
 - ``stdio`` (default) — spawned by the agent app / SDK as a child process
   inside the Sandbox. The agent client owns the child process lifetime.
 - ``http`` — a streamable-HTTP server on ``127.0.0.1``. Used by
-  Interactive Mode (ADR 0023): the devcontainer ``postStartCommand`` starts it
+  the Sandbox (ADR 0023): the devcontainer ``postStartCommand`` starts it
   on every container start (including resume), and the agent app *connects*
   to a URL instead of owning a child process — so a devcontainer stop→start
   no longer strands the client with a dead stdio pipe it never re-spawns.
@@ -186,14 +186,14 @@ _ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
 # CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS lifts that past this wait (issue #2627).
 _DEFAULT_JOB_INLINE_WAIT_SECONDS = 240.0
 
-# Interactive MCP servers are Docker containers spawned by Codex/Claude tabs.
+# In-Sandbox MCP servers are Docker containers spawned by Codex/Claude tabs.
 # Clients do not always tear them down promptly, so the server exits itself
 # after sitting idle. Set BOOLEY_MCP_IDLE_TIMEOUT_SECONDS=0 to disable.
-_DEFAULT_INTERACTIVE_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
-_DEFAULT_INTERACTIVE_MAX_AGE_SECONDS = 12 * 60 * 60
+_DEFAULT_MCP_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
+_DEFAULT_MCP_MAX_AGE_SECONDS = 12 * 60 * 60
 _MCP_WATCHDOG_POLL_SECONDS = 30.0
 
-# HTTP transport (Interactive Mode, ADR 0023). Loopback only — the URL is
+# HTTP transport (the Sandbox, ADR 0023). Loopback only — the URL is
 # reachable from agent apps inside the same container, never from the host.
 _HTTP_HOST = "127.0.0.1"
 
@@ -267,11 +267,11 @@ class _McpLifetime:
         return cls(
             _env_timeout_seconds(
                 "BOOLEY_MCP_IDLE_TIMEOUT_SECONDS",
-                _DEFAULT_INTERACTIVE_IDLE_TIMEOUT_SECONDS,
+                _DEFAULT_MCP_IDLE_TIMEOUT_SECONDS,
             ),
             _env_timeout_seconds(
                 "BOOLEY_MCP_MAX_AGE_SECONDS",
-                _DEFAULT_INTERACTIVE_MAX_AGE_SECONDS,
+                _DEFAULT_MCP_MAX_AGE_SECONDS,
             ),
             heartbeat_path=_MCP_HEARTBEAT_PATH,
         )
@@ -442,7 +442,7 @@ def _resolve_transcript_dir(
     elif logs_dir:
         runtime_dir = logs_runtime_dir(logs_dir)
     else:
-        # Interactive Mode sets neither env var. Writing transcripts to an
+        # The Sandbox sets neither env var. Writing transcripts to an
         # ephemeral OS tempdir made a failed specialist impossible to
         # post-mortem — the raw agent output vanished with the session and was
         # never where `booley cheat` advertises (QA_REPORT C1: an ~$0.85
@@ -669,7 +669,7 @@ def _build_mcp_tool_index(
 
 
 def _format_status_card(mcp_tool_names: list[str]) -> str:
-    """Return the concise user-facing Interactive Mode status card."""
+    """Return the concise user-facing Sandbox status card."""
     session_id = _interactive_session_id()
     mcp_tools_text = ", ".join(mcp_tool_names) if mcp_tool_names else "none"
     try:
@@ -2041,7 +2041,7 @@ def _build_mcp_catalog(
 
 
 def build_mcp_probe_payload() -> dict[str, Any]:
-    """Build the real Interactive Mode catalog and return Doctor's payload."""
+    """Build the real Sandbox catalog and return Doctor's payload."""
     _maybe_configure_interactive_logs_dir()
     _load_agent_settings_from_toml()
     application, _mcp_tools, discovery_errors = _build_mcp_catalog(_McpLifetime(None, None))
@@ -2344,7 +2344,7 @@ def _sdk_tool(tool: McpToolDefinition) -> McpSdkTool:
 
 
 def _interactive_session_id() -> str:
-    """Stable per-tab identifier for the Interactive Mode logs directory.
+    """Stable per-tab identifier for the Sandbox logs directory.
 
     The container hostname is Docker's short container ID by default — so
     this also identifies which tab the logs belong to.  Falls back to the
@@ -2361,14 +2361,14 @@ def _interactive_session_id() -> str:
 
 
 def _maybe_configure_interactive_logs_dir() -> None:
-    """In Interactive Mode, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
+    """In the Sandbox, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
     Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
     disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
     takes precedence over this default.
 
-    Interactive Mode is detected by:
+    The Sandbox is detected by:
       - ``BOOLEY_LOGS_DIR`` not already set;
       - a Project resolving from the server's environment and CWD.
 
@@ -2398,7 +2398,7 @@ def _maybe_configure_interactive_logs_dir() -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(
-        "Interactive Mode: BOOLEY_LOGS_DIR=%s (session %s)",
+        "MCP server logs: BOOLEY_LOGS_DIR=%s (session %s)",
         logs_dir,
         session_id,
     )
@@ -2472,7 +2472,7 @@ async def _main() -> None:
 def _run_http(port: int) -> None:
     """Serve the MCP tools over protected streamable HTTP on loopback.
 
-    Interactive Mode transport (ADR 0023): started by the devcontainer's
+    The Sandbox transport (ADR 0023): started by the devcontainer's
     ``postStartCommand`` (via ``incontainer_register.ensure_http_server``), so
     a container stop→start transparently brings the endpoint back — the agent
     apps hold only a URL, not a child process.
@@ -2543,7 +2543,7 @@ def main() -> None:
         "--transport",
         choices=("stdio", "http"),
         default=os.environ.get("BOOLEY_MCP_TRANSPORT", "stdio"),
-        help="stdio: client-spawned child; http: standalone loopback server (Interactive Mode)",
+        help="stdio: client-spawned child; http: standalone loopback server inside the Sandbox",
     )
     parser.add_argument(
         "--port",

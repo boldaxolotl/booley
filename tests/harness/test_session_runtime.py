@@ -642,7 +642,7 @@ class TestPrepareLegacyContainer:
                 )
             ),
         )
-        monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: [])
+        monkeypatch.setattr(sr, "_strict_running_sandbox_states", lambda: [])
 
         with pytest.raises(sr.SessionError) as caught:
             sr.prepare(workspace)
@@ -667,7 +667,7 @@ class TestPrepareLegacyContainer:
         ]
         validate = Mock()
         monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
+            sr, "_strict_running_sandbox_states", lambda: [("legacy", json.dumps(legacy))]
         )
         monkeypatch.setattr(
             "booley.runtime.session_issuance.authorized_project_data_source",
@@ -716,7 +716,7 @@ class TestPrepareLegacyContainer:
             license_profile=None,
         )
         monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("current", json.dumps(current))]
+            sr, "_strict_running_sandbox_states", lambda: [("current", json.dumps(current))]
         )
         monkeypatch.setattr(
             "booley.runtime.session_issuance.authorized_project_data_source",
@@ -727,7 +727,7 @@ class TestPrepareLegacyContainer:
             "booley.runtime.session_issuance.requested_license", lambda _path, **_kwargs: None
         )
         monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
+        monkeypatch.setattr(sr, "_strict_all_sandbox_states", lambda *_args: [])
 
         assert sr.prepare(workspace) == "abc"
 
@@ -773,7 +773,7 @@ class TestPrepareLegacyContainer:
             }
         ]
         monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
+            sr, "_strict_running_sandbox_states", lambda: [("legacy", json.dumps(legacy))]
         )
         monkeypatch.setattr(
             "booley.runtime.session_issuance.authorized_project_data_source",
@@ -805,7 +805,7 @@ class TestPrepareLegacyContainer:
         _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
         monkeypatch.setattr(
             sr,
-            "_strict_running_interactive_states",
+            "_strict_running_sandbox_states",
             lambda: [("nifty_wright", self._legacy_vscode_state(workspace, "a" * 64))],
         )
         run = Mock()
@@ -841,7 +841,7 @@ class TestPrepareLegacyContainer:
         monkeypatch.setattr(runtime_spec, "validate", validate)
         monkeypatch.setattr(
             sr,
-            "_strict_running_interactive_states",
+            "_strict_running_sandbox_states",
             lambda: [("nifty_wright", self._legacy_vscode_state(workspace, "a" * 64))],
         )
         run = Mock()
@@ -876,7 +876,7 @@ class TestPrepareLegacyContainer:
         _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
         monkeypatch.setattr(runtime_spec, "validate", Mock())
         monkeypatch.setattr(
-            sr, "_strict_running_interactive_states", lambda: [("editor", json.dumps(state))]
+            sr, "_strict_running_sandbox_states", lambda: [("editor", json.dumps(state))]
         )
         run = Mock()
         monkeypatch.setattr(sr, "_run", run)
@@ -904,7 +904,7 @@ class TestPrepareLegacyContainer:
         _write_spec(workspace, {**_spec(), **damage})
         monkeypatch.setattr(
             sr,
-            "_strict_running_interactive_states",
+            "_strict_running_sandbox_states",
             lambda: pytest.fail("an unreadable spec must not reach the container inventory"),
         )
         monkeypatch.setattr(
@@ -1204,8 +1204,8 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
             "booley.runtime.session_issuance.authorized_project_data_source",
             return_value=workspace / ".booley",
         ),
-        patch.object(sr, "_strict_running_interactive_states", return_value=[]),
-        patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+        patch.object(sr, "_strict_running_sandbox_states", return_value=[]),
+        patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
         patch.object(sr, "container_matches_issuance", return_value=True),
         patch.object(sr, "_run") as run,
     ):
@@ -1245,7 +1245,7 @@ class TestInitReconciliation:
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
             patch.object(sr, "_remove_stopped_session_container") as remove,
             patch.object(sr, "_relay_objects_exist", return_value=False),
         ):
@@ -1263,7 +1263,7 @@ class TestInitReconciliation:
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
-            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
             patch.object(sr, "_remove_stopped_session_container") as remove,
             patch.object(sr, "_relay_objects_exist", return_value=False),
         ):
@@ -1353,7 +1353,7 @@ class TestInitReconciliation:
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("vscode-session", "state")],
             ),
             patch.object(sr, "_remove_stopped_session_container") as remove,
@@ -1375,7 +1375,7 @@ class TestInitReconciliation:
             patch.object(sr, "_relay_resources", return_value=relay),
             patch.object(sr, "_relay_objects_exist", return_value=True),
             patch.object(sr, "_relay_matches_issuance", return_value=False),
-            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
             patch.object(sr, "_remove_license_relay") as remove_relay,
         ):
             changed = sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
@@ -1614,7 +1614,7 @@ class TestUp:
         stale = "stale-vscode"
         with (
             patch.object(
-                sr, "_strict_all_interactive_states", return_value=[(stale, json.dumps([state]))]
+                sr, "_strict_all_sandbox_states", return_value=[(stale, json.dumps([state]))]
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr.idk, "container_running", return_value=False),
@@ -1657,7 +1657,7 @@ class TestUp:
         with (
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("current-vscode", json.dumps([state]))],
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
@@ -1687,7 +1687,7 @@ class TestUp:
         with (
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("active-vscode", json.dumps([state]))],
             ),
             pytest.raises(sr.SessionError, match=r"running Sandbox.*older host issuance"),
@@ -1785,7 +1785,7 @@ class TestUp:
         with (
             patch.object(
                 sr,
-                "_strict_all_interactive_states",
+                "_strict_all_sandbox_states",
                 return_value=[("stale-vscode", json.dumps([stale_vscode]))],
             ),
             patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
@@ -5451,8 +5451,8 @@ def test_prepare_refuses_alias_container_from_pre_rename_image(
         for image in (_NEW_IMAGE, _OLD_IMAGE)
     }
     running = [("editor", states[_OLD_IMAGE])]
-    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: running)
-    monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
+    monkeypatch.setattr(sr, "_strict_running_sandbox_states", lambda: running)
+    monkeypatch.setattr(sr, "_strict_all_sandbox_states", lambda *_args: [])
 
     with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
         sr.prepare(workspace)
@@ -5469,8 +5469,8 @@ def test_running_vscode_container_mount_follows_current_target(
     issuance = _test_issuance(workspace)
     _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
     running: list[tuple[str, str]] = []
-    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: running)
-    monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
+    monkeypatch.setattr(sr, "_strict_running_sandbox_states", lambda: running)
+    monkeypatch.setattr(sr, "_strict_all_sandbox_states", lambda *_args: [])
 
     def bind_at(target: str) -> None:
         state = _running_vscode_state(

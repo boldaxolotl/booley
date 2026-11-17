@@ -1,7 +1,7 @@
 """Who started a Job: the owner an argument-free ``booley_poll`` waits on.
 
 An owner is the submitting MCP server plus, when the client names one, the agent
-tab (Codex thread or Claude Code process) that made the call: Interactive Mode
+tab (Codex thread or Claude Code process) that made the call: the Sandbox
 serves every tab of a Sandbox from one HTTP server. Ownership only selects which
 result an argument-free poll hands back; any Job stays reachable by its ``run_id``.
 """
@@ -51,7 +51,7 @@ def server_identity() -> str:
 
 
 def http_server_identity(hostname: str, port: int) -> str:
-    """Identity of the Interactive Mode HTTP server; stable across Sandbox restarts."""
+    """Identity of the Sandbox HTTP server; stable across Sandbox restarts."""
     return f"mcp-http:{DisplayScope.current().value}:{hostname}:{port}"
 
 

@@ -67,7 +67,7 @@ def simulation_booley_dir(project_root: Path) -> Path | None:
 
 
 # Booley Directory children whose ``<id>/.runtime`` holds Flow reports for agent runs:
-# Interactive Mode MCP sessions and the Goal Record directories an earlier version left behind.
+# in-Sandbox MCP sessions and the Goal Record directories an earlier version left behind.
 _RUNTIME_OWNER_DIRS = frozenset({INTERACTIVE_LOGS_DIR_NAME, GOALS_DIR_NAME})
 
 

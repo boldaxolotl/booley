@@ -73,8 +73,8 @@ def test_preserve_mode_still_creates_a_missing_config(root: Path) -> None:
 def test_interactive_files_step_adds_excludes_once(root: Path) -> None:
     ctx = InitContext(project_root=root)
 
-    init_cmd._step_interactive_files(ctx)
-    init_cmd._step_interactive_files(ctx)
+    init_cmd._step_sandbox_files(ctx)
+    init_cmd._step_sandbox_files(ctx)
 
     exclude = (root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
     assert "/.devcontainer" in exclude
@@ -84,7 +84,7 @@ def test_interactive_files_step_adds_excludes_once(root: Path) -> None:
 def test_interactive_files_step_does_nothing_in_check_only(root: Path) -> None:
     ctx = InitContext(project_root=root, check_only=True)
 
-    init_cmd._step_interactive_files(ctx)
+    init_cmd._step_sandbox_files(ctx)
 
     assert ctx.results == []
     assert "/.devcontainer" not in (root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
@@ -99,7 +99,7 @@ def test_interactive_files_step_records_authorization_failure(
     monkeypatch.setattr(init_cmd, "authorized_project_data_source", refuse)
     ctx = InitContext(project_root=root)
 
-    init_cmd._step_interactive_files(ctx)
+    init_cmd._step_sandbox_files(ctx)
 
     assert [(r.name, r.status, r.detail) for r in ctx.results] == [
         ("interactive_files", "err", "not authorized")
@@ -115,7 +115,7 @@ def test_interactive_files_step_warns_on_dashboard_diagnostics(
     )
     ctx = InitContext(project_root=root)
 
-    init_cmd._step_interactive_files(ctx)
+    init_cmd._step_sandbox_files(ctx)
 
     assert [(r.status, r.detail) for r in ctx.results if r.name == "interactive_files"] == [
         ("warn", "Dashboard task unavailable: busy")

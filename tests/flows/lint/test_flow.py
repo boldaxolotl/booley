@@ -1365,7 +1365,7 @@ class TestFullRun:
         assert "rule/file:line/message" in summary
 
     def test_summary_no_pointer_without_report(self):
-        """No report dir (Interactive Mode) вЂ” summary stays count-only."""
+        """No report dir (Developer Agent session) вЂ” summary stays count-only."""
         warnings = [LintWarning("UNUSEDSIGNAL", "f.sv", 1, 5, "unused 'x'", "lite")]
         exit_code, summary = LintFlow._build_summary(warnings, None)
         assert exit_code == EXIT_FAILURE

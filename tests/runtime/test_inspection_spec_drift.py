@@ -1,6 +1,6 @@
 """Doctor's devcontainer drift check: diff the on-disk spec against what init would write.
 
-Specs are seeded through init's real entry point (``init_cmd._step_interactive``) against
+Specs are seeded through init's real entry point (``init_cmd._step_sandbox``) against
 a disposable host home with Claude and Codex logins, then hand-edited to produce each
 kind of drift. Doctor's side uses ``init_cmd.current_interactive_spec``, the same
 rebuild ``booley doctor`` injects on the host.
@@ -127,7 +127,7 @@ def _seed(
     toml = "" if app == dc.APP_NONE else f'[agent]\nprovider = "{app}"\n{auth_line}'
     (root / ".booley" / "booley.toml").write_text(toml, encoding="utf-8")
     _set_host_egress(egress)
-    init_cmd._step_interactive(
+    init_cmd._step_sandbox(
         InitContext(project_root=root, force=True, verbose=False),
         nangate_pdk_root=nangate if nangate is not None else init_cmd._NANGATE_PDK_NOT_REQUESTED,
         agent_app=app,
@@ -540,14 +540,14 @@ def test_current_interactive_spec_reports_build_failures_as_spec_errors(
     def refuse(*_args: object, **_kwargs: object) -> object:
         raise OSError("unreadable")
 
-    monkeypatch.setattr(init_cmd, "_current_interactive_spec_sources", refuse)
+    monkeypatch.setattr(init_cmd, "_current_sandbox_spec_sources", refuse)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="unreadable"):
         init_cmd.current_interactive_spec(project, _IMAGE_A)
 
     def refuse_spec(*_args: object, **_kwargs: object) -> object:
         raise runtime_spec.RuntimeSpecError("no trusted launcher")
 
-    monkeypatch.setattr(init_cmd, "_current_interactive_spec_sources", refuse_spec)
+    monkeypatch.setattr(init_cmd, "_current_sandbox_spec_sources", refuse_spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="no trusted launcher"):
         init_cmd.current_interactive_spec(project, _IMAGE_A)
 

@@ -182,7 +182,7 @@ def _stub_nested_init_services(tmp_path, monkeypatch):
         lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
     )
     monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
-    monkeypatch.setattr(init_cmd, "_step_interactive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(init_cmd, "_step_sandbox", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(init_cmd, "_step_project_inventory", lambda _ctx: None)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
 
@@ -630,7 +630,7 @@ def test_seed_uses_resolved_provider_even_when_check_only_did_not_write(tmp_path
     )
     monkeypatch.setattr(
         init_cmd,
-        "_step_interactive",
+        "_step_sandbox",
         lambda _ctx, **kwargs: calls.append(kwargs),
     )
     monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
@@ -642,7 +642,7 @@ def test_seed_uses_resolved_provider_even_when_check_only_did_not_write(tmp_path
     assert calls[0]["agent_app"] == "codex"
 
 
-def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path, monkeypatch):
+def test_full_init_passes_verified_runtime_image_id_to_sandbox_step(tmp_path, monkeypatch):
     result = init_cmd.LifecycleResult(
         "booley-sandbox-riscv",
         "sha256:" + "f" * 64,
@@ -675,7 +675,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
     calls = []
     monkeypatch.setattr(
         init_cmd,
-        "_step_interactive",
+        "_step_sandbox",
         lambda _ctx, **kwargs: calls.append(kwargs),
     )
     ctx = InitContext(project_root=tmp_path)
@@ -873,18 +873,18 @@ def test_seed_heads_its_output_with_a_section_header_on_a_tty(tmp_path, monkeypa
             "private", "sha256:id", init_cmd.ImageLifecycleStatus.CURRENT
         ),
     )
-    monkeypatch.setattr(init_cmd, "_step_interactive", lambda _ctx, **_kwargs: None)
+    monkeypatch.setattr(init_cmd, "_step_sandbox", lambda _ctx, **_kwargs: None)
     monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
     ctx = InitContext(project_root=tmp_path, interactive=False)
 
     init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "api_key"))
 
-    assert capsys.readouterr().out.startswith(f"Seeding Interactive Mode for {tmp_path}\n")
+    assert capsys.readouterr().out.startswith(f"Seeding the Sandbox for {tmp_path}\n")
 
 
-def test_unchanged_interactive_mode_is_recorded_as_current(tmp_path):
+def test_unchanged_sandbox_is_recorded_as_current(tmp_path):
     ctx = InitContext(project_root=tmp_path)
 
-    init_cmd._report_interactive_changes(ctx, None, SimpleNamespace(changed=False))
+    init_cmd._report_sandbox_changes(ctx, None, SimpleNamespace(changed=False))
 
     assert ctx.results[-1] == init_cmd.StepResult("interactive", "current", "current")

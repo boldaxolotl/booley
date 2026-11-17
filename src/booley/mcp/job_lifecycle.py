@@ -635,7 +635,7 @@ class JobLifecycle:
     def _is_unread(self, rec: jobrec.JobRecord) -> bool:
         """Finished and not yet read by its owner.
 
-        Releases never stamped ``read_at``, and Interactive Mode keeps every Job
+        Releases never stamped ``read_at``, and the Sandbox keeps every Job
         record in the Project tree, so a record without an owner only counts when
         this server could still be the one to deliver it: still unrecorded as
         finished, or ended since the server started.
