@@ -1404,8 +1404,8 @@ def test_cgroup_probe_failure_is_a_typed_setup_error(
         tool_declaration="    flow: sim\n    flow_options: {tool: verilator}\n",
     )
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    # Private seam: the cgroup quota is host state read through `cpu_budget._read_text`;
-    # no public input makes that read fail.
+    # Private seam: the cgroup quota is host state read through `build_parallelism._read_text`
+    # (imported from `cpu_budget`); no public input makes that read fail.
     monkeypatch.setattr(
         build_parallelism,
         "_read_text",

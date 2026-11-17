@@ -99,6 +99,8 @@ def test_supervised_pre_sim_process_kills_after_communication_failure(
 def test_coverage_execution_requires_authenticated_artifacts_and_containment(
     tmp_path: Path,
 ) -> None:
+    # Private seam: an unprepared execution is unreachable through `prepare`, which sets both
+    # fields; the guards behind `authenticated_image` need them unset or forged.
     execution = object.__new__(VerilatorCoverageExecution)
     execution._prepared = None
     execution._artifact_paths = ()

@@ -372,6 +372,7 @@ def test_coverage_build_and_launch_stages_survive_observation_failure(tmp_path, 
 
     execution, target, raw, _captured = _execution_fixture(tmp_path, monkeypatch)
     path = tmp_path / "progress.json"
+    # Private seam: `_invoke` is the tool-process spawn; the public run API takes no spawner.
     original_invoke = execution._invoke
     seen = []
 
