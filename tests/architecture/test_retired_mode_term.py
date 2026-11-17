@@ -89,3 +89,11 @@ def test_docker_module_and_private_names_are_renamed() -> None:
                 hits.append(f"{path.relative_to(_ROOT).as_posix()}:{number}")
 
     assert hits == []
+
+
+def test_status_tool_description_uses_no_retired_mode_name() -> None:
+    from booley.mcp import catalog
+
+    definition = catalog._status_mcp_tool_def()  # pyright: ignore[reportPrivateUsage]
+
+    assert definition["description"] == "Show whether Booley is ready in this tab."
