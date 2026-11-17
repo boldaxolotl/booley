@@ -60,6 +60,7 @@ from booley.flows.metric_declarations import (
     FlowMetricValues,
     MetricDeclaration,
     MetricKind,
+    MetricsUnavailable,
     metric_values,
 )
 from booley.flows.plan import (
@@ -992,16 +993,40 @@ def _aggregate_detail(
     return detail
 
 
-def report_metric_values(detail: dict[str, Any]) -> dict[str, FlowMetricValues]:
+def _incomplete_reason(summary: dict[str, Any]) -> str | None:
+    """Why a Target summary's run did not complete, or ``None`` when it did.
+
+    A summary without ``ppa_complete`` is not a completed run: the reader fails closed.
+    """
+    infra_error = summary.get("infra_error")
+    if isinstance(infra_error, str) and infra_error:
+        return infra_error
+    if summary.get("ppa_complete") is not True:
+        return (
+            f"the synthesis run did not complete ({summary.get('termination')}); "
+            "its partial numbers are not final QoR"
+        )
+    return None
+
+
+def report_metric_values(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
     """Read each Target's :data:`SYNTH_METRIC_DECLARATIONS` values from an aggregate *detail*.
 
     The inverse of :func:`_aggregate_detail`. A Target whose summary is missing or
-    malformed is skipped: judging an absent measurement belongs to the caller.
+    malformed is skipped: judging an absent measurement belongs to the caller. A Target
+    whose run did not complete (timeout, out of memory, infrastructure error, partial
+    PPA) is :class:`MetricsUnavailable` with the reason, never its partial numbers.
     """
-    values: dict[str, FlowMetricValues] = {}
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
     for target in as_str_list(detail.get("targets")):
         summary = as_dict(detail.get(target))
         if summary is None:
+            continue
+        reason = _incomplete_reason(summary)
+        if reason is not None:
+            values[target] = MetricsUnavailable(reason)
             continue
         values[target] = metric_values(
             SYNTH_METRIC_DECLARATIONS,

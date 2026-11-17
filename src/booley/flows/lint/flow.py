@@ -870,9 +870,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # lint regression had nothing on disk to act on.
         result.log_path = self._persist_lint_output(selector, combined)
         evidence_log = self.args.work_dir / result.log_path if result.log_path else None
-        if proc.timed_out:
-            result.error = f"Timed out after {self._get_timeout()}s"
-            result.error_is_eda_tool_failure = True
+        if stopped := self._linter_stop_reason(proc):
+            result.error, result.error_is_eda_tool_failure = stopped, True
             return result
         if family == "verible":
             result.warnings = parse_verible_warnings(combined, selector)
@@ -888,6 +887,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 pointer = posix_relpath(evidence_log, self.args.work_dir)
                 result.error += f" (full log: {pointer})"
         return result
+
+    def _linter_stop_reason(self, proc: SubprocessResult) -> str:
+        """Why the linter stopped before its output could be judged, or ``""`` when it ran."""
+        if proc.timed_out:
+            return f"Timed out after {self._get_timeout()}s"
+        if proc.oom_blamed:
+            return "the linter was killed for running out of memory"
+        return ""
 
     def _prepare_lint_targets(
         self,

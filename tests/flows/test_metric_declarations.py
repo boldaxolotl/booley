@@ -246,39 +246,125 @@ def test_synth_report_yields_declared_metric_values() -> None:
 def test_synth_report_reads_cell_count() -> None:
     from booley.measurement.flow_metrics import report_metric_values
 
-    stored: dict[str, object] = {"area_kge": 65.8, "cell_count": 12345, "per_clock": {}}
+    stored: dict[str, object] = {
+        "area_kge": 65.8,
+        "cell_count": 12345,
+        "per_clock": {},
+        "ppa_complete": True,
+    }
     values = report_metric_values("synth", {"targets": ["asic"], "asic": stored})
     assert values["asic"].plain == {"area_kge": 65.8, "cell_count": 12345}
 
-    older = {"area_kge": 65.8, "cells": 12345, "per_clock": {}}
+    older = {"area_kge": 65.8, "cells": 12345, "per_clock": {}, "ppa_complete": True}
     values = report_metric_values("synth", {"targets": ["asic"], "asic": older})
     assert values["asic"].plain == {"area_kge": 65.8}
 
 
-def test_fpga_report_yields_declared_metric_values() -> None:
+def _fpga_detail(metrics: Any) -> Any:
+    """The FPGA report detail of *metrics*, read back from JSON the way a caller does."""
     from booley.flows.fpga.flow import FpgaImplFlow
     from booley.flows.fpga.implementation_report import build_fpga_implementation_report
     from booley.flows.implementation_report import (
         ImplementationContext,
         build_implementation_aggregate,
     )
-    from booley.measurement.flow_metrics import report_metric_values
 
     context = ImplementationContext(flow="fpga", target="board", eda_tool="vivado")
-    report = build_fpga_implementation_report(context, _fpga_metrics(), None)
+    report = build_fpga_implementation_report(context, metrics, None)
     aggregate = build_implementation_aggregate({"board": report})
     # A public run needs Vivado; this writes the stored report from the parsed metrics.
-    detail = json.loads(
-        json.dumps(
-            FpgaImplFlow._aggregate_detail(["board"], {"board": _fpga_metrics()}, aggregate)
-        )
+    return json.loads(
+        json.dumps(FpgaImplFlow._aggregate_detail(["board"], {"board": metrics}, aggregate))
     )
+
+
+def _routed_fpga_metrics() -> Any:
+    """The FPGA metrics of a run that completed ``route_design``."""
+    metrics = _fpga_metrics()
+    metrics.route_completed = True
+    return metrics
+
+
+def test_fpga_report_yields_declared_metric_values() -> None:
+    from booley.measurement.flow_metrics import report_metric_values
+
+    detail = _fpga_detail(_routed_fpga_metrics())
 
     values = report_metric_values("fpga", detail)
 
     assert set(values) == {"board"}
     assert values["board"].plain["lut_count"] == 18
     assert values["board"].per_clock["wns_ns"] == pytest.approx({"clk": 0.25, "clk2": -0.1})
+
+
+def _synth_partial_ppa() -> tuple[str, Any, str]:
+    metrics = _synth_metrics()
+    metrics.termination = "design_failure"
+    metrics.ppa_complete = False
+    reason = (
+        "the synthesis run did not complete (design_failure); "
+        "its partial numbers are not final QoR"
+    )
+    return "synth", _synth_detail(metrics), reason
+
+
+def _fpga_incomplete(**state: Any) -> tuple[str, Any, str]:
+    metrics = _routed_fpga_metrics()
+    for name, value in state.items():
+        setattr(metrics, name, value)
+    return "fpga", _fpga_detail(metrics), ""
+
+
+_INFRA = "Vivado required reports lack usable utilization/timing evidence"
+
+
+@pytest.mark.parametrize(
+    ("flow", "detail", "reason"),
+    [
+        pytest.param(*_synth_partial_ppa(), id="synth-partial-ppa"),
+        pytest.param(
+            "fpga",
+            _fpga_incomplete(timed_out=True)[1],
+            "the FPGA implementation timed out",
+            id="fpga-timeout",
+        ),
+        pytest.param(
+            "fpga",
+            _fpga_incomplete(timed_out=True, infra_error=_INFRA)[1],
+            f"the FPGA implementation timed out: {_INFRA}",
+            id="fpga-timeout-infra-error",
+        ),
+        pytest.param(
+            "fpga", _fpga_incomplete(infra_error=_INFRA)[1], _INFRA, id="fpga-infra-error"
+        ),
+        pytest.param(
+            "fpga",
+            _fpga_incomplete(route_completed=False)[1],
+            "Vivado did not complete route_design",
+            id="fpga-route-incomplete",
+        ),
+    ],
+)
+def test_report_of_a_run_that_did_not_complete_has_no_values(
+    flow: str, detail: Any, reason: str
+) -> None:
+    from booley.flows.metric_declarations import MetricsUnavailable
+    from booley.measurement.flow_metrics import report_metric_values
+
+    values = report_metric_values(flow, detail)
+
+    assert values == {("asic" if flow == "synth" else "board"): MetricsUnavailable(reason)}
+
+
+def test_synth_summary_with_an_infrastructure_error_has_no_values() -> None:
+    from booley.flows.metric_declarations import MetricsUnavailable
+    from booley.measurement.flow_metrics import report_metric_values
+
+    summary = {"ppa_complete": True, "infra_error": "synthesis execution timeout", "cell_count": 3}
+
+    values = report_metric_values("synth", {"targets": ["asic"], "asic": summary})
+
+    assert values == {"asic": MetricsUnavailable("synthesis execution timeout")}
 
 
 def test_report_without_declared_metrics_or_targets_yields_none() -> None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -104,7 +104,7 @@ def sim_result(
 def lint_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    execution: MagicMock | None = None,
+    execution: SubprocessResult | None = None,
     *,
     prepare_error: Exception | None = None,
 ) -> CheckoutFlowResult:
@@ -135,10 +135,17 @@ def lint_result(
     return checkout_result(outer, "lint", outcome.exit_code)
 
 
-def linter_output(stdout: str, *, returncode: int = 0, timed_out: bool = False) -> MagicMock:
+def linter_output(
+    stdout: str, *, returncode: int = 0, timed_out: bool = False, oom_killed: bool = False
+) -> SubprocessResult:
     """What the faked linter process returned."""
-    return MagicMock(
-        returncode=returncode, stdout=stdout, stderr="", timed_out=timed_out, duration_s=0.5
+    return SubprocessResult(
+        returncode=returncode,
+        stdout=stdout,
+        stderr="",
+        timed_out=timed_out,
+        oom_killed=oom_killed,
+        duration_s=0.5,
     )
 
 
@@ -294,6 +301,15 @@ def unfinished_simulation_record_result(
     return checkout_result(tmp_path / "out", "sim", reported.exit_code)
 
 
+class _MergeFailsExecution(_MixedCoverageExecution):
+    """A coverage execution whose native merge command fails."""
+
+    def command(self, *args: Any, **kwargs: Any) -> Any:
+        from booley.flows.sim.verilator_coverage import SimulationCommandResult
+
+        return SimulationCommandResult(1)
+
+
 def test_target_whose_values_cannot_be_produced_returns_the_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -317,6 +333,12 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
         ),
         "lint setup failed": lint_result(
             tmp_path / "d", monkeypatch, prepare_error=RuntimeError("broken setup")
+        ),
+        "running out of memory": lint_result(
+            tmp_path / "e", monkeypatch, linter_output(LINT_ERROR, returncode=2, oom_killed=True)
+        ),
+        "native merge failed": coverage_result(
+            tmp_path / "f", monkeypatch, _MergeFailsExecution()
         ),
     }
 

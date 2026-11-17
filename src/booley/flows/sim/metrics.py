@@ -81,6 +81,10 @@ def coverage_record_path(outcome: SimulationRecordOutcome) -> Path:
 def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValue]:
     """Coverage percentages by declared name; empty unless collection completed.
 
+    Raises :class:`MetricsUnavailableError` when the native merge failed or disagreed with
+    the per-run counts: the run measured no coverage. A Test Run's own failure or timeout
+    leaves the merge ``not_run`` and returns ``{}``, so the test counts stay values.
+
     Computed from the point counts, not the stored two-decimal ``percent``, which would
     round 20,000 of 20,001 points up to ``100.0`` where the coverage floor compares the
     exact fraction.
@@ -91,7 +95,20 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
         ).loaded.coverage_record
     except CoverageRecordReferenceError as error:
         raise MetricsUnavailableError(f"the Coverage Record could not be read: {error}") from error
-    if coverage_record.collection["status"] != "complete":
+    collection = coverage_record.collection
+    if collection["status"] != "complete":
+        merge_status = (as_dict(collection.get("merge")) or {}).get("status")
+        if merge_status in ("failed", "mismatch"):
+            diagnostics = collection.get("diagnostics")
+            first = (
+                as_dict(diagnostics[0])
+                if isinstance(diagnostics, (list, tuple)) and diagnostics
+                else None
+            )
+            message = (first or {}).get("message")
+            raise MetricsUnavailableError(
+                f"the coverage collection did not complete: {message or f'native merge {merge_status}'}"
+            )
         return {}
     return {
         COVERAGE_METRIC_NAMES[rollup.metric]: rollup.covered_points * 100 / rollup.eligible_points
@@ -129,6 +146,7 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     ``cycle_count`` is keyed by Test Run name and only for a Test Run that passed with
     a count. A coverage run adds the five coverage percentages, omitted when the
     coverage collection did not complete (a failing test is still a value).
+    A failed or mismatched native coverage merge raises instead.
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
     Test Run: the Simulation Record did not finish, a Test Run ended in infrastructure error, or
