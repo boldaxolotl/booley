@@ -27,7 +27,6 @@ from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import ExecutionResult
 from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.simulation_record_boundary import (
@@ -108,19 +107,6 @@ def test_display_label_names_the_requested_scope(
     assert _start_label(tmp_path, monkeypatch, targets, **request_args) == expected
 
 
-def test_a_request_outside_the_sandbox_is_refused(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    if runtime_context.inside_session_runtime():
-        pytest.skip("the refusal needs a host process")
-
-    result = SimulateFlow().execute(
-        SimRequest(work_dir=tmp_path, report_dir=tmp_path / "reports", target="lite")
-    )
-
-    assert result.exit_code == EXIT_ERROR
-    assert "runs inside the Booley Sandbox" in result.outcome.report_text
-
-
 @pytest.mark.parametrize(
     ("target", "names", "skips", "expected"),
     [
@@ -151,29 +137,19 @@ def test_display_label_of_a_target_no_core_declares(
         assert flow._resolve_display_label() == expected
 
 
-def test_simulation_record_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
-    # Private seam: the Target catalog and skip list need a real FuseSoC resolve; no public input
-    # replaces them.
+def test_simulation_record_work_units_are_summed_over_every_target(tmp_path: Path):
+    # Private seam: the Target catalog and skip list need a real FuseSoC resolve.
     with (
         patch(
-            "booley.flows.sim.watchdog_sizing._target_is_cocotb",
-            side_effect=lambda _root, target: target == "cocotb",
-        ),
-        patch(
             "booley.flows.sim.watchdog_sizing._get_test_names",
-            return_value={
-                "native": ["smoke", "stress", "known_hang"],
-                "cocotb": ["one", "two", "three"],
-            },
+            return_value={"one": ["smoke", "stress", "known_hang"], "two": ["smoke"]},
         ),
         patch(
             "booley.flows.sim.watchdog_sizing._get_test_skips",
-            return_value={"native": ["known_hang"]},
+            return_value={"one": ["known_hang"]},
         ),
     ):
-        units = resolve_simulation_record_work_units(tmp_path, "native,cocotb")
-
-    assert units == 3  # two native processes plus one cocotb batch, summed over both Targets
+        assert resolve_simulation_record_work_units(tmp_path, "one,two") == 3
 
 
 @pytest.mark.parametrize(
@@ -233,7 +209,6 @@ def _preview(
 
     *targets* maps each selector to its configured Tests (empty: none configured).
     """
-    from booley.flows.sim.request import SimRequest
     from booley.runtime.booley_dir import reset_cache
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")

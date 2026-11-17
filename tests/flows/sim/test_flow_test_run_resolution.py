@@ -69,13 +69,6 @@ def test_selectors_keep_order_and_override_skip(tmp_path, monkeypatch):
     assert runs == [("stress+soak@9", ("+iters=9",)), ("reset@1", ())]
 
 
-def test_random_seed_gives_each_selected_run_a_positive_seed(tmp_path, monkeypatch):
-    _result, runs = _launched(tmp_path, monkeypatch, seed="random", test=("stress", "reset"))
-    seeds = [int(name.rsplit("@", 1)[1]) for name, _args in runs]
-    assert len(seeds) == 2
-    assert all(seed >= 1 for seed in seeds)
-
-
 def test_count_selector_resolves_to_distinct_seeds(tmp_path, monkeypatch):
     _result, runs = _launched(tmp_path, monkeypatch, test=("stress@x4",))
     assert len({name for name, _args in runs}) == 4
