@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import as_dict, as_str
@@ -60,3 +61,66 @@ def configured_sandbox_memory(config: Mapping[str, object]) -> str:
     if memory_table is not None:
         memory = memory_table.get("default", "")
     return (as_str(memory, "") or "").strip()
+
+
+def configured_sandbox_swap(config: Mapping[str, object]) -> str:
+    """Return the configured ``[sandbox].swap``, or an empty string when absent."""
+    section = as_dict(config.get("sandbox"), default={}) or {}
+    return (as_str(section.get("swap", ""), "") or "").strip()
+
+
+@dataclass(frozen=True)
+class HostMemory:
+    """The memory and swap of the Docker host, in bytes."""
+
+    memory_bytes: int
+    swap_bytes: int
+
+
+def _meminfo_bytes(text: str, key: str) -> int:
+    match = re.search(rf"^{key}:\s*(\d+)\s*kB\s*$", text, re.MULTILINE)
+    if match is None:
+        raise ValueError(f"no {key} line in the meminfo text")
+    return int(match.group(1)) * 1024
+
+
+def parse_meminfo(text: str) -> HostMemory:
+    """Parse ``/proc/meminfo`` text into :class:`HostMemory`.
+
+    Raises:
+        ValueError: ``MemTotal`` or ``SwapTotal`` is missing.
+    """
+    return HostMemory(_meminfo_bytes(text, "MemTotal"), _meminfo_bytes(text, "SwapTotal"))
+
+
+def _format_exact_size(byte_count: int) -> str:
+    """Render a byte count in the largest unit that holds it exactly."""
+    for suffix, factor in (("g", GIB_BYTES), ("m", 1024**2), ("k", 1024)):
+        if byte_count % factor == 0:
+            return f"{byte_count // factor}{suffix}"
+    return str(byte_count)
+
+
+def sandbox_swap_bytes(memory: str, swap: str, host_swap_bytes: int) -> int | None:
+    """Return the swap a Sandbox may use beyond *memory*, or ``None`` with no memory limit.
+
+    A parseable *swap* is used as written (``"0"`` means no swap). An empty or
+    unparseable *swap* defaults to a quarter of *memory*, capped at the swap the
+    Docker host has, so a typo never escapes the cap.
+    """
+    memory_bytes = parse_memory_limit(memory)
+    if memory_bytes is None:
+        return None
+    swap_limit = parse_memory_limit(swap)
+    if swap_limit is not None:
+        return swap_limit
+    return min(memory_bytes // 4, host_swap_bytes)
+
+
+def memory_swap_limit(memory: str, swap: str, host_swap_bytes: int) -> str:
+    """Return the Docker ``--memory-swap`` value (memory plus swap), or ``""`` with no memory."""
+    swap_bytes = sandbox_swap_bytes(memory, swap, host_swap_bytes)
+    memory_bytes = parse_memory_limit(memory)
+    if swap_bytes is None or memory_bytes is None:
+        return ""
+    return _format_exact_size(memory_bytes + swap_bytes)

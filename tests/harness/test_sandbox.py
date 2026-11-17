@@ -97,6 +97,16 @@ class TestDockerRunnerBuildCmd:
         assert cmd[sec_idx + 1] == "no-new-privileges"
 
     @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
+    def test_memory_swap_limit_follows_config(self):
+        config = DockerSandboxConfig(
+            image="test-image", needs_network=False, memory_limit="8g", memory_swap="10g"
+        )
+        cmd = DockerRunner(config, worktree=Path("/tmp/wt"))._build_docker_cmd(["true"])
+        assert cmd[cmd.index("--memory") + 1] == "8g"
+        assert cmd[cmd.index("--memory-swap") + 1] == "10g"
+        assert "--memory-swap" not in self._make_runner()._build_docker_cmd(["true"])
+
+    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
     def test_custom_cwd(self):
         runner = self._make_runner()
         cmd = runner._build_docker_cmd(["ls"], cwd="/work/subdir")

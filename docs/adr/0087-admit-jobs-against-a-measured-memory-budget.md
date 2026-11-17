@@ -47,6 +47,13 @@ read-only, and delegating it would loosen the hardening.
   `[sandbox].memory` is unset. There is no override: one that replaces the
   computed budget subtracts no reserve, so the natural setting lets Jobs eat
   the memory the agents are using and invites OOM kills.
+- Swap is explicit. With `[sandbox].memory` set, the Sandbox gets a
+  `--memory-swap` limit: `[sandbox].swap` beyond the memory, else a quarter of
+  `memory`, capped at the swap the Docker host has (read from the host, or the
+  Docker Desktop VM on Windows). Docker's default (swap equal to memory) never
+  applies. Admission ignores swap, so the budget stays memory-only; the OOM
+  kill, and so the single requeue, happens at memory plus swap. Doctor warns
+  when the host cannot back the setting.
 - Queue priority by requester role: `interactive` first; background work last.
   Standalone Jobs (ADR 0086) are admitted like any Job at their priorities.
 - A Project that uses a licensed EDA tool must declare its Seat Cap in

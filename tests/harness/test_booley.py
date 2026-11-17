@@ -18,8 +18,10 @@ import pytest
 from booley.harness import booley as tlr
 from booley.harness import bootstrap_cli
 from booley.runtime import health
+from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from tests.docker_host_support import fake_docker_host
 from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
@@ -1152,14 +1154,16 @@ class TestCmdShell:
 
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
         monkeypatch.setattr(cfgmod, "load_agent_settings", lambda _root: None)
-        sandbox_cfg = type("S", (), {"image": "img", "memory": "8g"})()
+        sandbox_cfg = type("S", (), {"image": "img", "memory": "8g", "swap": "0"})()
         backend_cfg = type("C", (), {"sandbox": sandbox_cfg})()
         monkeypatch.setattr(cfgmod, "get_agent_settings", lambda: backend_cfg)
+        fake_docker_host(monkeypatch, memory_gib=16, swap_gib=2)
         captured: dict[str, str] = {}
 
         class _FakeRunner:
             def __init__(self, cfg, _root, label=""):
                 captured["memory"] = cfg.memory_limit
+                captured["memory_swap"] = cfg.memory_swap
 
             def ephemeral_argv(self, payload, tty=False):
                 return ["true"]
@@ -1173,6 +1177,26 @@ class TestCmdShell:
         rc = tlr._cmd_shell(args, Path("/work"))
         assert rc == 0
         assert captured["memory"] == "8g"
+        assert captured["memory_swap"] == "8g"
+
+    def test_shell_stops_when_the_docker_hosts_swap_is_unreadable(self, monkeypatch, capsys):
+        import booley.config.settings as cfgmod
+        from booley.harness import sandbox as sandbox_mod
+
+        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+        monkeypatch.setattr(cfgmod, "load_agent_settings", lambda _root: None)
+        sandbox_cfg = type("S", (), {"image": "img", "memory": "", "swap": ""})()
+        backend_cfg = type("C", (), {"sandbox": sandbox_cfg})()
+        monkeypatch.setattr(cfgmod, "get_agent_settings", lambda: backend_cfg)
+        monkeypatch.setattr(sandbox_mod.DockerSandboxConfig, "verify", lambda self: None)
+
+        def _unreadable(_image):
+            raise pi.DockerImageError("probe failed")
+
+        monkeypatch.setattr(pi, "probe_docker_host_memory", _unreadable, raising=False)
+        args = tlr._build_parser().parse_args(["shell", "--", "true"])
+        assert tlr._cmd_shell(args, Path("/work")) == 2
+        assert "probe failed" in capsys.readouterr().err
 
     def test_registered_as_early_command(self):
         assert tlr._EARLY_COMMANDS.get("shell") is tlr._cmd_shell

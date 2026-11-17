@@ -171,12 +171,14 @@ class SandboxConfig:
     Sandbox (devcontainer), so there are no per-Flow containers to
     size or route. ``memory`` is the single container memory limit fed into
     the generated devcontainer; the empty default means "no explicit limit"
-    (the pre-ADR-0028 devcontainer set none, so existing installs see no
-    change until they opt in via ``[sandbox] memory = "8g"``).
+    until a project opts in via ``[sandbox] memory = "8g"`` (ADR 0087).
     """
 
     image: str = SANDBOX_IMAGE
     memory: str = ""
+    # Swap beyond ``memory`` (ADR 0087); empty = a quarter of ``memory``, capped
+    # at the Docker host's swap. Ignored without ``memory``.
+    swap: str = ""
     # Opt-in: bind the user's HOST agent skills (``~/.claude/skills`` +
     # ``~/.agents/skills``) into the sandbox read-only, so global personal
     # skills are usable inside the container alongside Booley's built-ins.
@@ -712,11 +714,19 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
             'memory limit); use memory = "8g" — ignoring',
         )
 
+    swap = ""
+    swap_val = section.get("swap", "")
+    if isinstance(swap_val, str):
+        swap = swap_val.strip()
+    elif "swap" in section:
+        logger.warning("Invalid [sandbox] swap %r; ignoring", swap_val)
+
     mount_host_skills = bool(section.get("mount_host_skills", False))
 
     return SandboxConfig(
         image=image,
         memory=memory,
+        swap=swap,
         mount_host_skills=mount_host_skills,
     )
 
