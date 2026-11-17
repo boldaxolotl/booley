@@ -6888,8 +6888,9 @@ _NO_SEAT_CAP = "vivado has no Seat Cap: every licensed EDA tool the Project uses
     ("toml", "rows"),
     [
         pytest.param("\n[flows.fpga]\n", [(Severity.FAIL, _NO_SEAT_CAP)], id="fpga-flow"),
+        # `provisioning = "image"`: host provisioning is a schema error on Windows and hides the check.
         pytest.param(
-            '\n[eda.vivado]\nprovisioning = "host"\n',
+            '\n[eda.vivado]\nprovisioning = "image"\n',
             [(Severity.FAIL, _NO_SEAT_CAP)],
             id="vivado-declared",
         ),
@@ -6900,7 +6901,7 @@ _NO_SEAT_CAP = "vivado has no Seat Cap: every licensed EDA tool the Project uses
         ),
         # Vivado is declared but the FPGA Flow is off: Booley provisions none, no seat is owed.
         pytest.param(
-            '\n[flows.fpga]\nenabled = false\n[eda.vivado]\nprovisioning = "host"\n',
+            '\n[flows.fpga]\nenabled = false\n[eda.vivado]\nprovisioning = "image"\n',
             [],
             id="vivado-fpga-disabled",
         ),
