@@ -148,9 +148,9 @@ def _import_and_extract_file(
         logger.warning(msg)
         return None, msg
 
-    cls, instance, schema = found
-    return catalog._mcp_tool_def_from_class(
-        cls,
+    _, instance, schema = found
+    return catalog._mcp_tool_def_from_endpoint(
+        instance,
         schema,
         py_path.stem,
         negative_flags=flow_negative_flags(instance),
