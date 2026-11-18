@@ -586,7 +586,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             f"fpga: Target {target!r} has no FPGA constraints. Add a "
             "`file_type: xdc` fileset (create_clock / set_property PACKAGE_PIN / "
             "false-paths) to the Target — an XDC is a design constraint, so it "
-            "lives with the design, not on [flows.fpga] (ADR 0031)."
+            "lives with the design, not on [flows.fpga]."
         )
 
     def _announce_vivado_run(self, prepared, target: str) -> None:

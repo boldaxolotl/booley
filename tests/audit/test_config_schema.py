@@ -116,7 +116,6 @@ def test_unknown_tables_have_stable_warning_identity_and_migration_hint() -> Non
         "config.unknown-table",
     ]
     assert [finding.subject for finding in audit.findings] == ["fusesoc", "toolz"]
-    assert "ADR 0030" in audit.findings[0].message
     assert "Target scoping now lives in .core files" in audit.findings[0].message
     assert "default_target" not in audit.findings[0].message
     assert "settings are ignored" in audit.findings[1].message
