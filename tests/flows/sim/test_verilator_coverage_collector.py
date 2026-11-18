@@ -756,25 +756,72 @@ def test_invalid_start_hook_is_a_collector_error(
 
 
 @pytest.mark.parametrize(
-    ("hooks", "reset_included", "expected_code"),
+    ("harness", "hooks", "reset_included", "expected_code", "expected_fix"),
     [
-        ((), True, "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED"),
-        (("write_hook",), False, "COV_CUSTOM_MAIN_START_HOOK_REQUIRED"),
-        (("write_hook", "start_hook"), True, "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY"),
-        (("write_hook", "write_hook"), True, "COV_CUSTOM_MAIN_HOOK_DUPLICATE"),
-        (("write_hook", "mystery"), True, "COV_CUSTOM_MAIN_HOOK_UNKNOWN"),
+        (
+            "generated_main",
+            ("write_hook",),
+            True,
+            "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
+            "remove it",
+        ),
+        (
+            "custom_main",
+            ("write_hook", "write_hook"),
+            True,
+            "COV_CUSTOM_MAIN_HOOK_DUPLICATE",
+            "more than once",
+        ),
+        (
+            "custom_main",
+            ("write_hook", "mystery"),
+            True,
+            "COV_CUSTOM_MAIN_HOOK_UNKNOWN",
+            "['mystery']",
+        ),
+        (
+            "custom_main",
+            (),
+            True,
+            "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED",
+            "booley_coverage_write() once on every normal exit path",
+        ),
+        (
+            "custom_main",
+            ("write_hook",),
+            False,
+            "COV_CUSTOM_MAIN_START_HOOK_REQUIRED",
+            "booley_coverage_start() once after reset",
+        ),
+        (
+            "custom_main",
+            ("write_hook", "start_hook"),
+            True,
+            "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY",
+            "reset_included: false",
+        ),
+    ],
+    ids=[
+        "forbidden",
+        "duplicate",
+        "unknown",
+        "write_hook_required",
+        "start_hook_required",
+        "start_hook_unnecessary",
     ],
 )
 def test_invalid_custom_main_hook_declarations_fail_before_execution(
     tmp_path: Path,
+    harness: str,
     hooks: tuple[str, ...],
     reset_included: bool,
     expected_code: str,
+    expected_fix: str,
 ) -> None:
     request = _request(
         tmp_path,
         "custom",
-        harness="custom_main",
+        harness=harness,
         hooks=hooks,
         reset_included=reset_included,
         sources=(),
@@ -785,18 +832,10 @@ def test_invalid_custom_main_hook_declarations_fail_before_execution(
     assert result.status == "collector_error"
     assert result.runs == ()
     assert [finding.code for finding in result.findings] == [expected_code]
-
-
-def test_non_custom_target_rejects_custom_main_hooks_before_execution(
-    tmp_path: Path,
-) -> None:
-    request = _request(tmp_path, "generated", hooks=("write_hook",))
-
-    result = collect(request, _NoExecution())
-
-    assert result.status == "collector_error"
-    assert result.runs == ()
-    assert [finding.code for finding in result.findings] == ["COV_CUSTOM_MAIN_HOOK_FORBIDDEN"]
+    message = result.findings[0].message
+    assert message.startswith("sim_counter: ")
+    assert "flow_options.booley.coverage.custom_main_hooks" in message
+    assert expected_fix in message
 
 
 def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) -> None:
