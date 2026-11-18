@@ -32,6 +32,9 @@ pub struct SignalPattern {
     full: GlobMatcher,
     /// Matches the name with its bit-select removed.
     stripped: GlobMatcher,
+    /// The pattern ends in an all-digit element index (`dmem_wr[0]`), so
+    /// `stripped` only stands in for a signal dumped with no bit-select.
+    element: bool,
     /// `common_scope_prefix` of the store (trailing `.`), or empty for none.
     scope: String,
 }
@@ -62,9 +65,13 @@ impl SignalPattern {
                     .is_some_and(|relative| test(self, relative)))
     }
 
-    /// Test one path against both the bit-select-stripped and original forms.
+    /// Test one path against the original form and the bit-select-stripped
+    /// form. An element pattern uses the stripped form only for a path with
+    /// no bit-select, so it never selects a sibling element or a ranged vector.
     fn matches_stripped(&self, path: &str) -> bool {
-        self.stripped.is_match(strip_bit_select(path)) || self.full.is_match(path)
+        let bare = strip_bit_select(path);
+        self.full.is_match(path)
+            || ((!self.element || bare == path) && self.stripped.is_match(bare))
     }
 
     /// Test one path against both matchers without stripping the path.
@@ -140,9 +147,11 @@ pub fn compile_patterns(patterns: &[String], scope: &str) -> Result<Vec<SignalPa
         .map(|p| {
             let wrapped = auto_wrap_pattern(p);
             // A trailing Verilog index is compiled as a literal; the stripped
-            // matcher below still covers the case where the simulator dumped
-            // the whole vector under its base name.
-            let orig_pat = match index_suffix_start(&wrapped) {
+            // matcher below covers only a simulator that dumped the whole
+            // vector under its plain base name.
+            let index = index_suffix_start(&wrapped);
+            let element = index.is_some_and(|open| !wrapped[open..].contains(':'));
+            let orig_pat = match index {
                 Some(open) => escape_index_bracket(&wrapped, open),
                 None => wrapped.clone(),
             };
@@ -156,6 +165,7 @@ pub fn compile_patterns(patterns: &[String], scope: &str) -> Result<Vec<SignalPa
             Ok(SignalPattern {
                 full,
                 stripped,
+                element,
                 scope: scope.to_string(),
             })
         })

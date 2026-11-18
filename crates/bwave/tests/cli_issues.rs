@@ -1390,23 +1390,45 @@ fn list_honors_limit() {
 // skipped the bare-name `*` wrap and could never match a hierarchical
 // name. Array elements looked absent from every trace.
 #[test]
-fn indexed_element_pattern_matches_its_signal() {
-    let bwave = build_bwave("test_unpacked_array.vcd", "indexed_elem");
-    let bp = bwave.to_string_lossy().to_string();
-    let (stdout, stderr, code) = run(&["list", &bp, "-s", "dmem_wr[0]"]);
-    let _ = std::fs::remove_file(&bwave);
-    assert_eq!(code, 0, "list failed: {}", stderr);
-    assert!(
-        stdout.contains("dmem_wr[0]"),
-        "indexed element must be found, got stdout={} stderr={}",
-        stdout,
-        stderr
-    );
-    assert!(
-        !stderr.contains("no signals match"),
-        "must not report a dropped filter: {}",
-        stderr
-    );
+fn indexed_element_pattern_selects_only_its_element() {
+    let ua = build_bwave("test_unpacked_array.vcd", "indexed_elem");
+    let ps = build_bwave("test_ps_timescale.vcd", "indexed_elem_ps");
+    let (ua_s, ps_s) = (ua.to_string_lossy(), ps.to_string_lossy());
+    let mut cases: Vec<_> = ["list", "value", "signal", "wave"]
+        .map(|c| issue_4767_query(c, &ua_s, &["dmem_wr[0]"]))
+        .into();
+    cases.push(vec!["find", &ua_s, "dmem_wr[0]", "1", "--async"]);
+    for args in &cases {
+        let (out, err, code) = run(args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        let only = out.contains("dmem_wr[0]") && !out.contains("dmem_wr[1]");
+        assert!(only, "{args:?}: {out}");
+    }
+    // (store, pattern, present, absent)
+    let lists: [(&str, &str, &[&str], &[&str]); 5] = [
+        (&ua_s, "tb.dut.dmem_wr[0]", &["dmem_wr[0]"], &["dmem_wr[1]"]),
+        (&ua_s, "*_wr[0]", &["imem_wr[0]"], &["dmem_wr[1]"]),
+        (&ua_s, "clk[0]", &["clk"], &[]),
+        (&ua_s, "dmem_wr", &["dmem_wr[0]", "dmem_wr[1]"], &[]),
+        (&ps_s, "counter", &["counter[7:0]"], &[]),
+    ];
+    for (store, pattern, present, absent) in lists {
+        let (out, err, code) = run(&["list", store, "-s", pattern]);
+        assert_eq!(code, 0, "{pattern}: {err}");
+        assert!(present.iter().all(|n| out.contains(n)), "{pattern}: {out}");
+        assert!(!absent.iter().any(|n| out.contains(n)), "{pattern}: {out}");
+    }
+    // A nonexistent element, or an index into a ranged vector, is a miss.
+    for (store, pattern, other) in [
+        (&ua_s, "imem_wr[1]", "imem_wr"),
+        (&ps_s, "counter[3]", "counter"),
+    ] {
+        let (out, err, code) = run(&issue_4767_query("signal", store, &[pattern]));
+        assert_eq!(code, 2, "{pattern}: {out}");
+        assert!(err.contains("no signals match"), "{pattern}: {err}");
+        assert!(!out.contains(other), "{pattern}: {out}");
+    }
+    let _ = (std::fs::remove_file(&ua), std::fs::remove_file(&ps));
 }
 
 // A real character class keeps class semantics — the index fix must not
