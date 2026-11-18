@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.lifecycle_lock_support import observe_lifecycle_contention
+from tests.time_budget import hang_guard_s
 
 from booley.audit.diagnostic_results import Findings, Severity
 from booley.core.user_paths import config_dir
@@ -391,7 +392,7 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     def mutation(_identity: str):
         def commit() -> str:
             commit_entered.set()
-            if not release_commit.wait(2):
+            if not release_commit.wait(2 * hang_guard_s()):
                 raise RuntimeError("test grant gate timed out")
             events.append("grant-commit")
             return "grant"
@@ -401,7 +402,7 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     monkeypatch.setattr(session_issuance, "invalidate_project", lambda _identity: None)
 
     grant = _start_grant_mutation(project, mutation, monkeypatch, grant_done, errors)
-    assert commit_entered.wait(2)
+    assert commit_entered.wait(hang_guard_s())
 
     runtime_waiting = observe_lifecycle_contention(monkeypatch)
     operation = _waiting_runtime_command(project, monkeypatch, runtime_command, events)
@@ -410,13 +411,13 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
         args=(operation, errors, runtime_done),
     )
     runtime.start()
-    assert runtime_waiting.wait(2)
+    assert runtime_waiting.wait(hang_guard_s())
     assert events == []
     assert not runtime_done.is_set()
 
     release_commit.set()
-    grant.join(2)
-    runtime.join(2)
+    grant.join(hang_guard_s())
+    runtime.join(hang_guard_s())
     assert grant_done.is_set()
     assert runtime_done.is_set()
     assert errors == []

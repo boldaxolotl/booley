@@ -6,8 +6,6 @@ from pathlib import Path
 
 from tests.subprocess_budget import run_bounded_child
 
-GIT_TIMEOUT_S = 30
-
 CORE = """CAPI=2:
 name: ::top:0
 filesets:
@@ -42,7 +40,6 @@ def git(cwd: Path, *args: str) -> str:
             *args,
         ],
         cwd=cwd,
-        timeout=GIT_TIMEOUT_S,
         check=True,
     )
     return result.stdout.strip()

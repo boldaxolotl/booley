@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
@@ -338,7 +339,8 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
 
 def _wait_for_child_pid(path: Path) -> int:
     """Wait for complete readiness, not an empty file created by shell redirection."""
-    for _ in range(200):
+    deadline = time.monotonic() + hang_guard_s()
+    while time.monotonic() < deadline:
         try:
             text = path.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
@@ -387,7 +389,7 @@ def test_image_validation_wrapper_cleans_promptly_on_cancellation(
     child_pid = _wait_for_child_pid(child_pid_path)
 
     process.terminate()
-    assert process.wait(timeout=5) == 143
+    assert process.wait(timeout=scaled(5)) == 143
     with pytest.raises(ProcessLookupError):
         os.kill(child_pid, 0)
     calls = docker_log.read_text(encoding="utf-8").splitlines()

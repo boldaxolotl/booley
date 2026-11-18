@@ -14,6 +14,9 @@ from pathlib import Path
 import pytest
 
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import scaled
+
+_TESTS_DIR = Path(__file__).resolve().parent
 
 # CPython's crash probe bypasses ctypes' Windows SEH wrapper and disables core
 # dumps / Windows Error Reporting before dereferencing NULL in native code.
@@ -117,7 +120,7 @@ def test_timeout_evidence_records_live_child(tmp_path: Path) -> None:
     assert "live-child-marker" in entry["args"][-1]
     assert entry["running"] is True
     assert entry["returncode"] is None
-    assert 0 <= entry["elapsed_seconds"] <= 30
+    assert 0 <= entry["elapsed_seconds"] <= scaled(30)
     assert entry["started_at"].endswith("Z")
 
 
@@ -247,7 +250,11 @@ def _timeout_environment(evidence: Path) -> dict[str, str]:
     }
     environment.update(
         PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
-        PYTHONPATH=str(Path(__file__).parent),
+        # The plugin imports ``tests.time_budget``, which imports ``booley``, so the
+        # repository root and ``src`` must be importable.
+        PYTHONPATH=os.pathsep.join(
+            [str(_TESTS_DIR), str(_TESTS_DIR.parent), str(_TESTS_DIR.parent / "src")]
+        ),
         BOOLEY_PYTEST_EVIDENCE_DIR=str(evidence),
     )
     return environment

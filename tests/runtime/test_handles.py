@@ -11,6 +11,7 @@ import pytest
 from tests.booley_checkouts_support import isolate_git, main_project
 from tests.conftest import symlink_or_skip
 from tests.project_runtime_git_support import git
+from tests.time_budget import hang_guard_s
 
 from booley.mcp import session_registry
 from booley.mcp.session_registry import Attribution, SessionRegistry
@@ -166,7 +167,7 @@ def test_job_kinds_and_project_wide_counter(tmp_path_factory):
 
 
 def _allocate_worker(root, number, start):
-    start.wait(timeout=10)
+    start.wait(timeout=hang_guard_s())
     handles.register_job(Path(root), f"job-{number}", "sim", None)
     handles.register_job(Path(root), "shared", "lint", None)
 
@@ -180,9 +181,10 @@ def test_concurrent_processes_allocate_unique_stable_jobs(tmp_path):
 
 
 def _register_session_worker(root, number, start):
-    start.wait(timeout=10)
+    start.wait(timeout=hang_guard_s())
     registry = SessionRegistry(Path(root))
-    for _ in range(100):
+    deadline = time.monotonic() + hang_guard_s()
+    while time.monotonic() < deadline:
         try:
             registry.upsert(attribution(f"codex:{number}"), "sim", "completed", now=100)
             return
@@ -413,14 +415,14 @@ def run_workers(tmp_path, target):
         worker.start()
     try:
         for worker in workers:
-            worker.join(timeout=20)
+            worker.join(timeout=2 * hang_guard_s())
             assert not worker.is_alive()
             assert worker.exitcode == 0
     finally:
         for worker in workers:
             if worker.is_alive():
                 worker.terminate()
-            worker.join(timeout=5)
+            worker.join(timeout=hang_guard_s())
 
 
 def test_shape_valid_maps_remain_usable(tmp_path_factory, caplog):

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.time_budget import scaled
 
 from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.project_identity import project_label_id
@@ -222,20 +223,22 @@ def test_hung_docker_inventory_times_out_to_the_connectivity_remedy(
     stub = tmp_path / "bin" / "docker"
     stub.parent.mkdir()
     # No Sandbox is running; the inventory of all Sandbox containers that follows hangs.
+    # The stub outlasts twice the elapsed bound, so a missed timeout still fails it.
+    bound_s = scaled(15)
     stub.write_text(
-        f'#!/bin/sh\necho "$*" >> "{calls}"\ncase "$1 $2" in "ps -a") exec sleep 30;; esac\n',
+        f'#!/bin/sh\necho "$*" >> "{calls}"\ncase "$1 $2" in "ps -a") exec sleep {2 * bound_s:g};; esac\n',
         encoding="utf-8",
     )
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{stub.parent}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(session_admission, "_DOCKER_TIMEOUT_S", 2)
+    monkeypatch.setattr(session_admission, "_DOCKER_TIMEOUT_S", scaled(2))
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(session_issuance, "load_issued_snapshot", lambda _root: object())
 
     start = time.monotonic()
     remedy = session_runtime.sandbox_remedy(root)
 
-    assert time.monotonic() - start < 15
+    assert time.monotonic() - start < bound_s
     assert calls.read_text(encoding="utf-8").splitlines()[-1].startswith("ps -a ")
     assert remedy == (
         "restore Docker connectivity and inspect Sandbox ownership on the host before repair"

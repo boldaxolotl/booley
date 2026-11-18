@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +24,7 @@ from booley.mcp import (
     report_encoding,
 )
 from booley.runtime import health_presentation
+from tests.time_budget import hang_guard_s, scaled
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -362,7 +364,7 @@ class TestRunSubprocess:
         code, _out, err, timed_out = asyncio.run(
             self._run_subprocess(
                 [sys.executable, "-c", "import time; time.sleep(5)"],
-                timeout=1,
+                timeout=scaled(1),
             ),
         )
         assert code == 2
@@ -394,7 +396,7 @@ class TestRunSubprocess:
         script = (
             "import os, sys, time, subprocess, pathlib\n"
             "subprocess.Popen([sys.executable, '-c',"
-            f' "import time, pathlib; time.sleep(1.5);'
+            f' "import time, pathlib; time.sleep({scaled(1.5)});'
             f" pathlib.Path({str(survived)!r}).write_text('x')\"])\n"
             f"pathlib.Path({str(started)!r}).write_text(str(os.getpid()))\n"
             "time.sleep(30)\n"
@@ -402,9 +404,10 @@ class TestRunSubprocess:
 
         async def drive():
             task = asyncio.create_task(
-                self._run_subprocess([sys.executable, "-c", script], timeout=30)
+                self._run_subprocess([sys.executable, "-c", script], timeout=hang_guard_s())
             )
-            for _ in range(250):  # up to ~5s for the child to come up
+            child_deadline = time.monotonic() + hang_guard_s()
+            while time.monotonic() < child_deadline:  # wait for the child to come up
                 if started.exists():
                     break
                 await asyncio.sleep(0.02)
@@ -412,7 +415,7 @@ class TestRunSubprocess:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            await asyncio.sleep(2.0)  # past the grandchild's 1.5s write attempt
+            await asyncio.sleep(scaled(2.0))  # past the grandchild's write attempt
 
         asyncio.run(drive())
         assert not survived.exists(), (
@@ -2049,7 +2052,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
         write_progress_json(tmp_path / "flow-reports/sim/2/progress.json", foreign)
         checkpoints[run_id] = checkpoint
         entered.set()
-        await asyncio.wait_for(release.wait(), timeout=5)
+        await asyncio.wait_for(release.wait(), timeout=hang_guard_s())
         return 0, "", "", False
 
     monkeypatch.setattr(server, "_run_subprocess", gated_child)
@@ -2058,7 +2061,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
     original_wait = jobs.wait
 
     async def inline_wait(run_id, seconds):
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await asyncio.wait_for(entered.wait(), timeout=hang_guard_s())
         return await original_wait(run_id, seconds)
 
     monkeypatch.setattr(jobs, "wait", inline_wait)
@@ -2072,7 +2075,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
         _assert_live_checkpoint(structured, checkpoints[run_id])
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=5)
+        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=hang_guard_s())
 
 
 async def _live_checkpoint_response(
@@ -2131,7 +2134,7 @@ def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatc
 
     def blocked_launch(_launch):
         entered.set()
-        assert release.wait(30), "test failed to release simulator launch"
+        assert release.wait(hang_guard_s()), "test failed to release simulator launch"
         return PASS_PROCESS
 
     def submit(pool):
@@ -2181,7 +2184,7 @@ def _poll_blocked_flow(
     with pool_type(max_workers=1) as pool:
         future = submit(pool)
         try:
-            assert entered.wait(30), "simulator launch was not reached"
+            assert entered.wait(hang_guard_s()), "simulator launch was not reached"
             application = server._build_mcp_application([], [], server._McpLifetime(None, None))
             payload = asyncio.run(
                 application.call_tool(
@@ -2207,7 +2210,7 @@ def _poll_blocked_flow(
         finally:
             release.set()
             # The released run must finish cleanly, not merely stop blocking.
-            assert future.result(timeout=30).result.exit_code == 0
+            assert future.result(timeout=hang_guard_s()).result.exit_code == 0
 
 
 def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():

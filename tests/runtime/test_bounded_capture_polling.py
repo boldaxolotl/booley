@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.runtime import platform_paths
 
@@ -28,7 +29,7 @@ def test_wait_is_sliced_so_an_interrupt_is_never_blocked_for_the_full_timeout(
 
     monkeypatch.setattr(subprocess.Popen, "communicate", record_wait)
 
-    result = platform_paths.run_captured_bounded(_sleep_argv(1.3), timeout=60)
+    result = platform_paths.run_captured_bounded(_sleep_argv(1.3), timeout=hang_guard_s())
 
     assert result.returncode == 0
     assert len(waits) > 1
@@ -48,10 +49,10 @@ def test_interrupt_in_a_later_slice_stops_the_child(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(subprocess.Popen, "communicate", interrupt_second_slice)
 
     with pytest.raises(KeyboardInterrupt):
-        platform_paths.run_captured_bounded(_sleep_argv(60), timeout=120)
+        platform_paths.run_captured_bounded(_sleep_argv(60), timeout=hang_guard_s())
 
     assert started[0] is started[1]
-    assert started[0].wait(timeout=10) is not None, "the child outlived the interrupt"
+    assert started[0].wait(timeout=hang_guard_s()) is not None, "the child outlived the interrupt"
 
 
 def test_missing_executable_with_input_raises_and_leaks_no_descriptor(tmp_path: Path) -> None:
@@ -60,7 +61,7 @@ def test_missing_executable_with_input_raises_and_leaks_no_descriptor(tmp_path: 
 
     with pytest.raises(FileNotFoundError):
         platform_paths.run_captured_bounded(
-            [str(tmp_path / "absent-tool")], input=b"x", text=False, timeout=5
+            [str(tmp_path / "absent-tool")], input=b"x", text=False, timeout=hang_guard_s()
         )
 
     if before is not None:
@@ -96,7 +97,7 @@ def test_interrupt_before_communicate_starts_closes_both_pipes() -> None:
         assert proc.stdout is not None and proc.stdout.closed
         assert proc.stderr is not None and proc.stderr.closed
     finally:
-        proc.wait(timeout=10)
+        proc.wait(timeout=hang_guard_s())
 
 
 def test_pipe_with_a_live_reader_thread_is_left_to_that_thread() -> None:
@@ -116,4 +117,4 @@ def test_pipe_with_a_live_reader_thread_is_left_to_that_thread() -> None:
         assert real_stdout is not None and real_stderr is not None
         real_stdout.close()
         real_stderr.close()
-        proc.wait(timeout=10)
+        proc.wait(timeout=hang_guard_s())

@@ -101,7 +101,7 @@ def test_authored_inputs_remain_trackable(versioned_project, path):
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("authored input\n")
     result = run_bounded_child(
-        ["git", "-C", str(data), "check-ignore", "--no-index", "--quiet", path], timeout=10
+        ["git", "-C", str(data), "check-ignore", "--no-index", "--quiet", path]
     )
     assert result.returncode == 1, (path, result.stderr)
 
