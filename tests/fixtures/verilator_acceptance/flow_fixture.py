@@ -1,8 +1,13 @@
 """Small projects exercising real Booley execution and coverage finalization."""
 
+import math
 from pathlib import Path
 
 import yaml
+from tests.time_budget import scaled
+
+# The custom timeout child must outlive the 2 s wall timeout the acceptance run sets, at any factor.
+_CUSTOM_TIMEOUT_SLEEP_S = math.ceil(15 * scaled(2))
 
 
 def write_project(root: Path, harness: str, outcome: str) -> None:
@@ -70,7 +75,9 @@ def _custom(root: Path, outcome: str):
     statements = {
         "pass": 'std::cout << "[SIM_RESULT] PASSED\\n"; return 0;',
         "fail": 'std::cerr << "[SIM_RESULT] FAILED\\n"; return 1;',
-        "timeout": "std::this_thread::sleep_for(std::chrono::seconds(30)); return 2;",
+        "timeout": (
+            f"std::this_thread::sleep_for(std::chrono::seconds({_CUSTOM_TIMEOUT_SLEEP_S})); return 2;"
+        ),
         "signal": "std::raise(SIGTERM); return 3;",
         "compile": "return 0;",
     }

@@ -14,11 +14,15 @@ import pytest
 
 from booley.specialists import specialist
 from booley.specialists.specialist import parent_death_watchdog
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="watchdog is POSIX-only")
 
+# Hang guard for the polling waits below; nothing asserts that it expires.
+_HANG_S = hang_guard_s()
 
-def _wait_for(predicate, timeout: float = 2.0) -> bool:
+
+def _wait_for(predicate, timeout: float = _HANG_S) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -113,7 +117,6 @@ def test_thread_stops_with_the_context(monkeypatch):
         assert any(t.name == "parent-watchdog-reviewer" for t in threading.enumerate())
     assert _wait_for(
         lambda: {t.name for t in threading.enumerate()} <= before | {"MainThread"},
-        timeout=1.0,
     )
 
 

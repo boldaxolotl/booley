@@ -13,6 +13,7 @@ from booley.mcp.application import (
     McpDispatchResult,
     UnknownMcpToolError,
 )
+from tests.time_budget import hang_guard_s
 
 
 def _definition(name: str = "echo", **extra):
@@ -285,8 +286,8 @@ def test_cancelled_schema_discovery_owns_worker_until_cleanup(monkeypatch, delay
 
     def worker(paths, cancel):
         entered.set()
-        assert cancel.wait(3)
-        assert release.wait(12)
+        assert cancel.wait(hang_guard_s())
+        assert release.wait(hang_guard_s())
         reaped.set()
         raise error("worker cleanup completed")
 
@@ -296,7 +297,7 @@ def test_cancelled_schema_discovery_owns_worker_until_cleanup(monkeypatch, delay
         # Cancellation must hit the schema worker thread itself; a running refresh cannot be
         # cancelled at that point deterministically.
         task = asyncio.create_task(live_catalog._async_schemas({}))
-        assert await asyncio.to_thread(entered.wait, 2)
+        assert await asyncio.to_thread(entered.wait, hang_guard_s())
         task.cancel()
         try:
             await asyncio.sleep(delay)

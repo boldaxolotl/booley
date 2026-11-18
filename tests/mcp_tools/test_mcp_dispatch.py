@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import sys
@@ -22,9 +23,15 @@ from booley.mcp import (
 from booley.runtime.session_paths import session_jobs_dir
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
-from tests.time_budget import hang_guard_s
+from tests.time_budget import hang_guard_s, scaled
 
 __all__ = ["flow_project", "project_alias"]
+
+# Poll window the blocked fake job must not beat (the poll answers RUNNING / queued).
+_SHORT_POLL_S = scaled(0.05)
+# Queue-credit budget; queued ticks must outlast it at any time scale.
+_QUEUE_BUDGET_S = scaled(0.03)
+_QUEUE_TICK_S = 0.01
 
 # mcp_server.py lives at src/ root, outside the endpoints package
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -999,7 +1006,7 @@ class TestStructuredContent:
             return (0, "SIM OK", "", False)
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1030,7 +1037,7 @@ class TestStructuredContent:
             return (0, "SIM OK", "", False)
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1054,7 +1061,7 @@ class TestStructuredContent:
             return exit_code, "specialist failed", "", False
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1129,7 +1136,7 @@ class TestAsyncJobDispatch:
         # A run that completes within the inline window behaves exactly like the
         # old synchronous path: full EXIT_CODE + stdout, no run_id handoff.
         monkeypatch.setattr(mcp_server, "_run_subprocess", self._fast_subprocess())
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1161,7 +1168,7 @@ class TestAsyncJobDispatch:
         _seed_report(_report_env, "sim", {"flow": "sim", "report_text": "RESULT: PASS"})
         monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
-        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: 0.05)
+        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: _SHORT_POLL_S)
 
         async def scenario():
             life = _FakeLifetime()
@@ -1217,7 +1224,7 @@ class TestAsyncJobDispatch:
         )
         monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
-        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: 0.05)
+        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: _SHORT_POLL_S)
 
         async def scenario():
             life = _FakeLifetime()
@@ -1272,8 +1279,8 @@ class TestAsyncJobDispatch:
             second = await _dispatch_async_job("fpga", ["c"], 60, jobs, context=_call_ctx())
             release.set()
             # Drain both jobs so the manager releases its lifetime holds.
-            await jobs.wait(_run_id_from(_text(first)), 1.0)
-            await jobs.wait(_run_id_from(_text(second)), 1.0)
+            await jobs.wait(_run_id_from(_text(first)), hang_guard_s())
+            await jobs.wait(_run_id_from(_text(second)), hang_guard_s())
             return _text(first), _text(second)
 
         first_text, second_text = asyncio.run(scenario())
@@ -1323,7 +1330,7 @@ class TestAsyncJobDispatch:
             assert run_id in text  # same job, no fresh run_id
 
             release.set()
-            await jobs.wait(run_id, 1.0)
+            await jobs.wait(run_id, hang_guard_s())
             return text
 
         asyncio.run(scenario())
@@ -1354,8 +1361,8 @@ class TestAsyncJobDispatch:
             first = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             second = await _dispatch_async_job("sim", ["--other"], 60, jobs, context=_call_ctx())
             release.set()
-            await jobs.wait(_run_id_from(_text(first)), 1.0)
-            await jobs.wait(_run_id_from(_text(second)), 1.0)
+            await jobs.wait(_run_id_from(_text(first)), hang_guard_s())
+            await jobs.wait(_run_id_from(_text(second)), hang_guard_s())
             return _text(first), _text(second)
 
         first_text, second_text = asyncio.run(scenario())
@@ -1393,7 +1400,7 @@ class TestAsyncJobDispatch:
             run_id = _run_id_from(_text(submit_out))
             # Job finishes shortly after the long-poll starts waiting.
             asyncio.get_running_loop().call_later(0.05, release.set)
-            out = await _dispatch_poll({"run_id": run_id, "wait_seconds": 10}, jobs)
+            out = await _dispatch_poll({"run_id": run_id, "wait_seconds": hang_guard_s()}, jobs)
             return _text(out)
 
         text = asyncio.run(scenario())
@@ -1421,18 +1428,18 @@ class TestAsyncJobDispatch:
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
-        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
             submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             run_id = _run_id_from(_text(submit_out))
-            asyncio.get_running_loop().call_later(0.2, release.set)
+            asyncio.get_running_loop().call_later(scaled(0.2), release.set)
             out = await _dispatch_poll({"run_id": run_id, "wait_seconds": 0}, jobs)
             text = _text(out)
             # Let the job drain so the JobManager releases its lifetime hold.
             release.set()
-            await jobs.wait(run_id, 1.0)
+            await jobs.wait(run_id, hang_guard_s())
             return text
 
         text = asyncio.run(scenario())
@@ -1792,7 +1799,7 @@ class TestAttachSurvivesRestart:
             return (0, "FRESH RUN", "", False)
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _fast)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
         jobs = _JobManager(_FakeLifetime())
         text = _text(asyncio.run(_dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())))
         assert "FRESH RUN" in text  # a new run really executed
@@ -1868,7 +1875,7 @@ class TestCancel:
             )
             out = self._cancel({"run_id": "simulate-c-2"})
             assert "CANCELLED: running job" in _text(out)
-            child.wait(timeout=10)
+            child.wait(timeout=hang_guard_s())
             got = jobrec.read_record("simulate-c-2", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
             assert got.exit_code == 130
@@ -1880,7 +1887,7 @@ class TestCancel:
         finally:
             if child.poll() is None:
                 child.kill()
-                child.wait(timeout=10)
+                child.wait(timeout=hang_guard_s())
 
     def test_slot_holder_is_cancelled(self, _report_env):
         import subprocess
@@ -1908,13 +1915,13 @@ class TestCancel:
             assert store.refresh(token).state == job_slots.HOLDING
             out = self._cancel({"run_id": "simulate-c-4"})
             assert "CANCELLED: running job" in _text(out)
-            child.wait(timeout=10)
+            child.wait(timeout=hang_guard_s())
             got = jobrec.read_record("simulate-c-4", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
         finally:
             if child.poll() is None:
                 child.kill()
-                child.wait(timeout=10)
+                child.wait(timeout=hang_guard_s())
 
     def test_queued_job_is_cancelled(self, _report_env):
         # A real queued child: a live sleeping process holding a waiter entry
@@ -1956,7 +1963,7 @@ class TestCancel:
             assert "withdrawn" in text
             # The queued child really stopped. POSIX exposes the terminating
             # signal; Windows taskkill uses its own non-zero exit status.
-            returncode = child.wait(timeout=10)
+            returncode = child.wait(timeout=hang_guard_s())
             if sys.platform == "win32":
                 assert returncode != 0
             else:
@@ -1968,7 +1975,7 @@ class TestCancel:
         finally:
             if child.poll() is None:
                 child.kill()
-                child.wait(timeout=10)
+                child.wait(timeout=hang_guard_s())
 
     def test_in_process_running_job_cancels_supervisor_and_persists_outcome(
         self,
@@ -2304,7 +2311,7 @@ class TestMemoryAdmittedEndpointsRunAsJobs:
             return 0, "CHILD DONE", "", False
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", run)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.05)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: _SHORT_POLL_S)
 
     def test_queued_call_hands_back_run_id_and_poll_follows_the_job(
         self, kind, _report_env, monkeypatch
@@ -2521,21 +2528,22 @@ class TestQueueCreditWatchdog:
         # soon as it goes active: must be True (exited), never a timeout.
         import asyncio
 
-        monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", 0.01)
+        monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", _QUEUE_TICK_S)
         proc = self._NeverExits()
+        queued_ticks = math.ceil(3 * _QUEUE_BUDGET_S / _QUEUE_TICK_S)
         state = {"calls": 0}
         first_active = []
 
         def is_queued() -> bool:
             state["calls"] += 1
-            if state["calls"] > 10:  # ~0.1s queued vs a 0.03s budget
+            if state["calls"] > queued_ticks:  # ~3x the queue budget
                 proc.exit_now()
                 return False
             return True
 
         exited = asyncio.run(
             mcp_server._wait_with_queue_credit(
-                proc, 0.03, is_queued, lambda: first_active.append(1)
+                proc, _QUEUE_BUDGET_S, is_queued, lambda: first_active.append(1)
             )
         )
         assert exited is True
@@ -2546,7 +2554,9 @@ class TestQueueCreditWatchdog:
 
         monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", 0.01)
         proc = self._NeverExits()
-        exited = asyncio.run(mcp_server._wait_with_queue_credit(proc, 0.03, lambda: False, None))
+        exited = asyncio.run(
+            mcp_server._wait_with_queue_credit(proc, _QUEUE_BUDGET_S, lambda: False, None)
+        )
         assert exited is False
 
 
@@ -2801,7 +2811,9 @@ class TestDiskLongPoll:
             lambda r, alive, **kw: next(statuses),
         )
         jobs = _JobManager(_FakeLifetime())
-        result = asyncio.run(mcp_server._poll_from_disk("simulate-d-1", jobs, wait_seconds=5.0))
+        result = asyncio.run(
+            mcp_server._poll_from_disk("simulate-d-1", jobs, wait_seconds=hang_guard_s())
+        )
         text = _text(result)
         assert "still in progress" not in text
         assert "EXIT_CODE" in text
@@ -2849,7 +2861,7 @@ class TestSubmitEnvStamp:
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
             run_id = jobs.submit("sim", ["c"], 60, context=_call_ctx())
-            await jobs.wait(run_id, 5.0)
+            await jobs.wait(run_id, hang_guard_s())
             return run_id
 
         run_id = asyncio.run(scenario())
@@ -3226,7 +3238,7 @@ def test_server_supervisor_writes_job_log(tmp_path):
     log = tmp_path / "run-1" / "job.log"
     cmd = [sys.executable, "-c", "print('to-agent')"]
     exit_code, stdout, _stderr, timed_out = asyncio.run(
-        mcp_server._run_subprocess(cmd, timeout=30, log_path=log)
+        mcp_server._run_subprocess(cmd, timeout=hang_guard_s(), log_path=log)
     )
     assert (exit_code, stdout.splitlines(), timed_out) == (0, ["to-agent"], False)
     assert log.read_text(encoding="utf-8").splitlines() == ["to-agent"]
