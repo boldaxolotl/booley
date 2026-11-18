@@ -841,7 +841,7 @@ _CAT_DRIVER = ("cat", "cat", "cat")
 @pytest.mark.parametrize("driver", ["ident", "filter", "ident-quoted-name"])
 def test_converted_paths_are_normalized_through_git_clean_conversion(tmp_path: Path, driver: str):
     attributes = b"*.v filter=cat\n" if driver == "filter" else b"*.v ident\n"
-    name = '"q\\\N{LATIN SMALL LETTER E WITH ACUTE}.v' if driver == "ident-quoted-name" else "a.v"
+    name = '"q\\\n\N{LATIN SMALL LETTER E WITH ACUTE}.v' if driver == "ident-quoted-name" else "a.v"
     _converted_repo(
         tmp_path,
         attributes,
