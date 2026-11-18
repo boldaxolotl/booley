@@ -976,7 +976,7 @@ def _three_target_coverage_origin(tmp_path, monkeypatch):
     return reports
 
 
-def _assert_coverage_fault(fault, result, reports, returned, terminal_phases, monkeypatch):
+def _assert_coverage_fault(fault, result, reports, returned, terminal_phases, monkeypatch, capsys):
     detail = result.outcome.detail
     report = json.loads((reports / "sim/1/report.json").read_text())
     counted = {
@@ -1000,7 +1000,7 @@ def _assert_coverage_fault(fault, result, reports, returned, terminal_phases, mo
         assert all(row[0]["cycle_count"] is None for row in report["cycle_counts"].values())
         coverage_record = (returned[0].manifest_path.parents[1] / "coverage.json").resolve()
         assert f"  Coverage Record: {coverage_record}" in result.outcome.report_text.splitlines()
-        assert _coverage_uncovered_exit(monkeypatch, coverage_record) == 0
+        assert _coverage_uncovered_exit(monkeypatch, capsys, coverage_record) == 0
     elif fault == "projection":
         error = detail["completion_error"]
         assert error["operation"] == "publish Simulation Record projections"
@@ -1036,20 +1036,20 @@ def _assert_coverage_fault(fault, result, reports, returned, terminal_phases, mo
     assert published == retained[fault]
 
 
-def _coverage_uncovered_exit(monkeypatch, coverage_json: Path) -> int:
+def _coverage_uncovered_exit(monkeypatch, capsys, coverage_json: Path) -> int:
     """Exit code of ``booley coverage uncovered`` on a Coverage Record, run as a host terminal."""
     from booley.harness import booley as cli
+    from tests.harness.test_coverage_cli import _booley
 
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(cli.sys, "argv", ["booley", "coverage", "uncovered", str(coverage_json)])
-    try:
-        return cli.main()
-    except SystemExit as stop:
-        return int(stop.code or 0)
+    return _booley(monkeypatch, capsys, "coverage", "uncovered", str(coverage_json))[0]
 
 
 def _fail_projection_of(monkeypatch, target: str) -> None:
-    """Make writing *target*'s ``simulation.json`` fail, as a full disk would."""
+    """Make writing *target*'s ``simulation.json`` fail, as a full disk would.
+
+    Patches Booley's own writer: no public entry point injects a disk-write fault.
+    """
     from booley.flows.sim import acceptance
 
     original = acceptance.write_compatibility_projection
@@ -1065,7 +1065,7 @@ def _fail_projection_of(monkeypatch, target: str) -> None:
 @pytest.mark.parametrize(
     "fault", ["progress", "terminal_progress", "retention", "run", "cancel", "projection"]
 )
-def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, fault):
+def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, capsys, fault):
     """A fault after some Targets finished keeps their counts apart from what is published.
 
     A finished Target's Coverage Record is readable before the next Target starts, and a
@@ -1090,7 +1090,7 @@ def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, fa
         if len(returned) == 1 and fault != "progress":
             # The second Target is starting: the first one is already readable.
             first = returned[0].manifest_path.parents[1] / "coverage.json"
-            readable.append(_coverage_uncovered_exit(monkeypatch, first))
+            readable.append(_coverage_uncovered_exit(monkeypatch, capsys, first))
         if len(returned) == 1 and fault == "run":
             raise RuntimeError("second run failed before outcome")
         if len(returned) == 1 and fault == "cancel":
@@ -1123,7 +1123,7 @@ def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, fa
     # Observed while the second Target started: `booley coverage uncovered` took the first's record.
     assert readable == ([] if fault == "progress" else [0])
     assert result.exit_code == (130 if fault == "cancel" else 2)
-    _assert_coverage_fault(fault, result, reports, returned, terminal_phases, monkeypatch)
+    _assert_coverage_fault(fault, result, reports, returned, terminal_phases, monkeypatch, capsys)
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
