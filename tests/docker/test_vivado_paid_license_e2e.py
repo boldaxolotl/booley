@@ -7,6 +7,7 @@ only from a live vendor ``lmutil lmstat`` response observed through the relay.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -217,9 +218,8 @@ def _run_paid_flow_with_vendor_evidence(container: str, p: Prerequisites) -> Non
     assert active_status, "FlexNet never reported this Session's paid checkout"
 
     released_status = ""
-    # The release must show within this window (asserted below), polled every second.
-    release_deadline = time.monotonic() + scaled(30)
-    while time.monotonic() < release_deadline:
+    # The release must show within this many polls (asserted below), one per second.
+    for _ in range(math.ceil(scaled(30))):
         status = _lmstat(container, p)
         if status.returncode == 0:
             try:

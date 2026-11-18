@@ -213,7 +213,7 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
                 session,
                 "sh",
                 "-c",
-                f"printf request-{port} | nc -w {_HANG_S} booley-license-xilinx {port}",
+                f"printf request-{port} | nc -w 3 booley-license-xilinx {port}",
             )
             assert flowed.returncode == 0, flowed.stderr
             assert flowed.stdout == reply

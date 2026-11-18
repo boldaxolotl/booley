@@ -29,7 +29,7 @@ from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
-pytestmark = pytest.mark.timeout(120)
+pytestmark = pytest.mark.timeout(math.ceil(4 * hang_guard_s()))
 JOB_TIMEOUT = hang_guard_s()
 WAIT_TIMEOUT = hang_guard_s()
 # Job timeouts the tests assert fire; whole seconds because the message formats them.
@@ -1134,7 +1134,7 @@ async def test_a_timed_out_measure_job_is_terminated_before_it_is_killed(tmp_pat
     script = textwrap.dedent(f"""
         import signal, subprocess, sys, time
         child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+            [sys.executable, "-c", "import time; time.sleep({15 * _MEASURE_KILL_AFTER_S})"], start_new_session=True
         )
         open({str(pid_file)!r}, "w").write(str(child.pid))
 
@@ -1144,7 +1144,7 @@ async def test_a_timed_out_measure_job_is_terminated_before_it_is_killed(tmp_pat
             sys.exit(0)
 
         signal.signal(signal.SIGTERM, stop)
-        time.sleep(60)
+        time.sleep({15 * _MEASURE_KILL_AFTER_S})
     """)
     try:
         _, _, stderr, timed_out = await endpoint_process._run_subprocess(

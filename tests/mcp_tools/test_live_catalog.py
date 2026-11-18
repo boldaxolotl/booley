@@ -478,8 +478,8 @@ def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
         assert_worker_pid_stopped(pid)
 
 
-# Upper bound for a queued SIGKILL to take effect on a loaded host; it matches
-# the worker's own 5 s reap bound and is only spent when the process lingers.
+# Upper bound for a queued SIGKILL to take effect on a loaded host; it scales
+# with the load factor and is only spent when the process lingers.
 _KILL_LANDS_SECONDS = scaled(5)
 
 
