@@ -1,10 +1,8 @@
-"""Tests for the ``[sandbox] mount_host_skills`` host-side skill resolver.
-
-It turns the user's global skill dirs into read-only binds.
-"""
+"""Tests for the ``[sandbox] mount_host_skills`` host-side skill resolver."""
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -84,12 +82,15 @@ def test_host_skills_mount_each_real_personal_skill_once(
     (agents / "grill-me").symlink_to(_make_skill(tmp_path / "a", "grill-me"))
     (claude / "not-a-skill").mkdir()  # a real dir without SKILL.md
 
-    assert _mounted(project_root) == [
+    expected = [
         ("booley-qa-triage", docker_mount_path(foreign.resolve())),
         ("deslop", docker_mount_path(linked.resolve())),
         ("grill-me", docker_mount_path(claude_real.resolve())),
         ("keeper", docker_mount_path(personal.resolve())),
     ]
+    assert _mounted(project_root) == expected
+    shutil.rmtree(agents)  # a host without ~/.agents/skills mounts the same skills
+    assert _mounted(project_root) == expected
 
 
 def test_host_skills_stay_unmounted_unless_enabled(
