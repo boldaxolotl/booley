@@ -53,6 +53,7 @@ from booley.flows.eda_failures import (
     strip_failure_markers,
 )
 from booley.flows.flow_config import expected_count
+from booley.flows.job_estimates import JobRequest
 from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
 from booley.flows.memory_admission import job_thread_count
 from booley.flows.metric_declarations import (
@@ -81,9 +82,11 @@ from booley.flows.result_table import (
     status_cell,
 )
 from booley.flows.synth import openroad_reuse
-from booley.flows.synth.backends.pipeline import openroad_thread_assignment
+from booley.flows.synth.backends.pipeline import openroad_thread_assignment, tool_phases
 from booley.flows.synth.backends.yosys.core import (
+    DEFAULT_FRONTEND,
     NAND2_AREA_UM2,
+    resolve_frontend,
 )
 from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
 from booley.flows.synth.cli import SynthArguments
@@ -106,6 +109,8 @@ from booley.runtime.timefmt import (
     rfc3339_from_epoch,
     utc_now_rfc3339,
 )
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts, edam
@@ -1456,17 +1461,54 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         self,
         target: str,
     ) -> tuple[SynthMetrics, str]:
-        """Run synthesis for one target and report its ``synth`` phase ended.
+        """Run synthesis for one target."""
+        return self._synthesize_target(target)
 
-        A phase that is skipped (a setup failure) ends at once. A baseline run
-        reports nothing: its Target may be the candidate's, whose phase it must
-        not count out of the Job's Memory Reservation.
+    def _end_phases(self, target: str, *phases: str) -> None:
+        """Report *phases* of *target* ended, unless this is a baseline run.
+
+        A baseline's Target may be the candidate's, whose phases it must not
+        count out of the Job's Memory Reservation. A phase the Job did not plan
+        or already ended changes nothing.
         """
+        if getattr(self, "_execution_role", "candidate") != "baseline":
+            for phase in phases:
+                report_phase_end(target, phase)
+
+    def memory_job_requests(
+        self, handles: tuple[TargetHandle, ...]
+    ) -> tuple[JobRequest, ...] | None:
+        """One request per Target, planning the tools its mode and frontend run.
+
+        With ``--baseline`` every Target plans all three tools: the baseline
+        revision's mode and frontend are known only once its worktree exists,
+        and the baselines run first, under the largest tool estimate.
+        """
+        catalog = TargetCatalog.build(self.args.work_dir)
+        requests: list[JobRequest] = []
+        for handle in dict.fromkeys(handles):
+            phases = self._planned_phases(catalog, handle)
+            self._planned_tool_phases[handle.selector] = phases
+            requests.append(JobRequest(self.name, handle.selector, split_phases=phases))
+        return tuple(requests)
+
+    def _planned_phases(self, catalog: TargetCatalog, handle: TargetHandle) -> tuple[str, ...]:
+        """The tool phases to plan for *handle*; ``()`` plans the whole command."""
+        if self.args.baseline:
+            return tool_phases(SynthMode.PHYSICAL, "sv2v")
         try:
-            return self._synthesize_target(target)
-        finally:
-            if getattr(self, "_execution_role", "candidate") != "baseline":
-                report_phase_end(target, "synth")
+            options = catalog.inspect(handle).flow_options
+            mode = resolve_synth_mode(options, target=handle.selector)
+            frontend = (
+                resolve_frontend(dict(options), override=self.args.frontend) or DEFAULT_FRONTEND
+            )
+        except (BoundaryError, fusesoc_registry.FuseSocError, OSError, ValueError):
+            return ()  # the run reports the same error
+        return tool_phases(mode, frontend)
+
+    def begin_invocation(self) -> None:
+        """Forget the tool phases an earlier invocation planned."""
+        self._planned_tool_phases: dict[str, tuple[str, ...]] = {}
 
     def _synthesize_target(
         self,
@@ -1590,6 +1632,10 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         yosys = self._execute_boundary(self._synth_boundary_cmd(plan, "yosys"), timeout=timeout)
         if yosys.returncode != 0 or yosys.timed_out:
             return _SynthRun(yosys)
+        # Only a plan that holds OpenROAD may shrink here: a Target admitted as
+        # logical but run as physical must keep its reservation through OpenROAD.
+        if "openroad" in self._planned_tool_phases.get(target, ()):
+            self._end_phases(target, "sv2v", "yosys")
         if getattr(self, "_execution_role", "candidate") != "candidate":
             return _SynthRun(
                 _merge_stage_results(yosys, self._run_openroad_stage(plan, timeout, start))
@@ -1606,11 +1652,13 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             # Before the copy: the log observer replays the restored openroad.log.
             announce_unit("candidate: OpenROAD reused", target=target)
             if slot.restore(entry, plan.build_dir):
+                self._end_phases(target, "openroad")
                 # The stage marker attributes the run to OpenROAD exactly as a fresh run.
                 stdout = yosys.stdout.rstrip("\n") + "\nBOOLEY_STAGE: sta\n"
                 return _SynthRun(replace(yosys, stdout=stdout), producer=entry.producer)
         slot.invalidate()
         openroad = self._run_openroad_stage(plan, timeout, start)
+        self._end_phases(target, "openroad")
         return _SynthRun(_merge_stage_results(yosys, openroad), key=key, identity=identity)
 
     def _run_openroad_stage(self, plan: Any, timeout: int, start: float) -> SubprocessResult:
@@ -2205,6 +2253,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             output = str(exc)
             metrics = _infra_metrics(output)
             publish(metrics)
+        finally:
+            # Whatever ran, a phase the Target never reached must not hold its estimate.
+            self._end_phases(target, "sv2v", "yosys", "openroad", "synth")
         if baseline:
             metrics.log_path = self._persist_baseline_log(target, output, self._project_root)
         return metrics

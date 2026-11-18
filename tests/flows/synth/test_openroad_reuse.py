@@ -25,6 +25,7 @@ import booley
 from booley.core.build_paths import work_root_for
 from booley.flows.base import SubprocessResult
 from booley.flows.builtin_cli import parse_request
+from booley.flows.reservation_phases import ReservationShrinker
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_SUCCESS
@@ -75,8 +76,8 @@ class Bench:
     openroad_calls: int = 0
     #: Read the SDC in place in the Project, as projection mode (ignore_native_cores) does.
     sdc_in_place: bool = False
-    #: Runs after the Yosys stage's file writes when set.
-    on_yosys: Callable[[], None] | None = None
+    #: Runs after the Yosys stage's file writes when set; may return a result.
+    on_yosys: Callable[[], SubprocessResult | None] | None = None
     #: Runs in place of the OpenROAD stage's file writes when set; may return a result.
     on_openroad: Callable[[Path], SubprocessResult | None] | None = None
 
@@ -144,8 +145,10 @@ class Bench:
             }.items():
                 (build / name).write_text(text)
             stdout += "BOOLEY_STAGE: sv2v\nBOOLEY_STAGE: yosys\n"
-            if self.on_yosys:
-                self.on_yosys()
+            result = self.on_yosys() if self.on_yosys else None
+            if result is not None:
+                result.dispatched_unix = dispatched
+                return result
         if stage in {"openroad", "all"}:
             self.openroad_calls += 1
             result = self.on_openroad(build) if self.on_openroad else self._openroad(build)
@@ -407,7 +410,11 @@ def test_sdc_left_in_place_never_reuses(bench: Bench) -> None:
     bench.sdc_in_place = True
     bench.sdc = SDC + "create_clock -period $p clk\n"
     in_place = bench.root / "constraints" / "dut.sdc"
-    bench.on_yosys = lambda: in_place.write_text(SDC)  # plain again before the key is computed
+
+    def plain_again() -> None:  # before the key is computed
+        in_place.write_text(SDC)
+
+    bench.on_yosys = plain_again
 
     bench.run_fresh()
     bench.run_fresh()
@@ -555,3 +562,111 @@ def test_logical_mode_creates_no_slot_and_never_reports_reuse(bench: Bench) -> N
     assert not work_root_for(
         bench.root, "synth", LOGICAL_TARGET, variant="openroad_reuse"
     ).exists()
+
+
+# History in MiB; with the estimate margin of 1.25 the phases reserve 2500 / 500 / 125.
+_PHASE_HISTORY = {
+    "core": {"sv2v": 40, "yosys": 800, "openroad": 2000, "synth": 2000},
+    "core2": {"sv2v": 40, "yosys": 400, "openroad": 100, "synth": 600},
+}
+
+
+class _RecordingShrinker(ReservationShrinker):
+    """Records the held reservation after every reported end, and whether core reused OpenROAD yet."""
+
+    def __init__(self, *args: object, run_log: Path, held: Callable[[], float]) -> None:
+        super().__init__(*args)  # type: ignore[arg-type]
+        self._run_log = run_log
+        self._held = held
+        self.ends: list[tuple[str, str, float, bool]] = []
+
+    def phase_ended(self, target: str, phase: str, tests: object = ()) -> None:
+        super().phase_ended(target, phase, tests)  # type: ignore[arg-type]
+        reused = self._run_log.is_file() and "BOOLEY_OPENROAD_REUSED" in self._run_log.read_text()
+        self.ends.append((target, phase, self._held(), reused))
+
+
+@pytest.mark.parametrize("scenario", ["reuse", "yosys_fails"])
+def test_reservation_follows_the_synthesis_phases(bench: Bench, scenario: str) -> None:
+    """A synthesis Job holds each tool's estimate and drops it as the tool, or its Target, ends."""
+    from booley.flows import reservation_phases
+    from booley.flows.memory_admission import plan_memory_claim
+    from booley.runtime import job_slots
+    from tests.test_job_slots import FakeWorld, make_store, spawn
+
+    bench.run_fresh()  # core's OpenROAD slot now matches a rerun
+    history = [
+        {
+            "key": {"target": target, "phase": phase, "flags": [], "test_run": ""},
+            "peak_memory_mb": peak,
+            "wall_s": 1.0,
+        }
+        for target, phases in _PHASE_HISTORY.items()
+        for phase, peak in phases.items()
+    ]
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            f"{TARGET},core2",
+            "--work-dir",
+            str(bench.root),
+            "--report-dir",
+            str(bench.root / "r"),
+        ]
+    )
+    requests = flow.memory_job_requests(
+        tuple(TargetCatalog.build(bench.root).select(t) for t in (TARGET, "core2"))
+    )
+    plan = plan_memory_claim(requests, history, 10_000.0, None)
+    assert plan.claim.reservation_mb == 2500.0
+
+    world = FakeWorld()
+    store = make_store(bench.root / "slots", world)
+    spawn(world, 101)
+    token = store.submit(job_slots.CLASS_MEMORY, pid=101, memory=plan.claim)
+    assert store.refresh(token).state == job_slots.HOLDING
+
+    def held() -> float:
+        (mine,) = (t for t in store.observe(job_slots.CLASS_MEMORY)[0] if t.pid == token.pid)
+        assert mine.memory is not None
+        assert mine.memory.reservation_mb is not None
+        return mine.memory.reservation_mb
+
+    shrinker = _RecordingShrinker(
+        reservation_phases.PhasePlan(plan.phases, plan.claim.reservation_mb),
+        store,
+        token,
+        run_log=work_root_for(bench.root, "synth", TARGET) / "run.log",
+        held=held,
+    )
+    dispatched: list[float] = []
+
+    def boundary(cmd: list[str], **kwargs: object) -> SubprocessResult:
+        dispatched.append(held())
+        return bench.boundary(cmd, **kwargs)
+
+    yosys_runs: list[None] = []
+
+    def fail_core_yosys() -> SubprocessResult | None:
+        yosys_runs.append(None)
+        if len(yosys_runs) == 1:  # core runs first
+            return SubprocessResult(returncode=1, stdout="BOOLEY_STAGE: yosys\n")
+        return None
+
+    if scenario == "yosys_fails":
+        bench.on_yosys = fail_core_yosys
+    with (
+        reservation_phases.shrinking(shrinker),
+        patch.object(flow, "_execute_boundary", side_effect=boundary),
+    ):
+        flow._run()
+
+    stages = [cmd[3:4] for cmd in bench.commands[1:]]
+    # core's yosys, then (core's OpenROAD ended at the reuse, or never ran) core2's two stages.
+    assert dispatched == [2500.0, 500.0, 125.0]
+    assert stages[-3:] == [["yosys"], ["yosys"], ["openroad"]]
+    if scenario == "reuse":
+        # The OpenROAD phase ends at the reuse, before the restored results are interpreted.
+        reuse_end = next(e for e in shrinker.ends if e[:2] == (TARGET, "openroad"))
+        assert reuse_end[2:] == (500.0, False)

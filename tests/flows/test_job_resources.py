@@ -781,10 +781,15 @@ def test_flows_label_their_commands_and_requests_map_to_their_keys(
     assert label == job_resources.ResourceLabel("core", phase, split=split, source_bytes=4096)
     assert job_resources.current_label() is None
 
-    # Synthesis also records a split tool row; the request lists only the whole command.
+    # Synthesis also records a split tool row; a request plans the whole command or the tools.
     recorded = _recorded_keys(label, {"yosys": job_resources.Usage()} if split else None)
     assert list(phase_keys(JobRequest(flow_name, "core"))) == recorded[:1]
     assert [key.phase for key in recorded[1:]] == (["yosys"] if split else [])
+    if split:
+        assert (
+            list(phase_keys(JobRequest(flow_name, "core", split_phases=("yosys",))))
+            == (recorded[1:])
+        )
 
 
 @linux_only
