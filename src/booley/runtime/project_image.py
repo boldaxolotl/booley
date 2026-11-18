@@ -385,8 +385,8 @@ def is_managed_generated_file(path: Path) -> bool:
 
     A file that is missing (never generated), or that still begins with
     :data:`_GENERATED_HEADER` (or the header of the v0.4.0 release), carries no
-    :data:`_KEEP_DIRECTIVE`, and matches its stamped self-hash is managed and safe to overwrite. Anything else — a
-    hand-written Dockerfile, an edited generated one (hash mismatch), or one
+    :data:`_KEEP_DIRECTIVE`, and matches its stamped self-hash is managed and safe
+    to overwrite. Anything else — a hand-written Dockerfile, an edited generated one (hash mismatch), or one
     flagged ``# booley:keep`` — is user-owned; init must not clobber it
     (SETUP-6). Unreadable files are treated as user-owned.
     """

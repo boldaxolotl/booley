@@ -365,8 +365,8 @@ FUSESOC_IGNORE_BODY = (
     "# marker FuseSoC's recursive --cores-root scan would let a stale worktree\n"
     "# core shadow the source at the Project Root and silently build the wrong RTL.\n"
     "#\n"
-    "# One subtree is exempt BY DESIGN: cores/ (stealth authored cores, ADR\n"
-    "# 0036). Booley scans it as a second root, so this marker never applies\n"
+    "# One subtree is exempt BY DESIGN: cores/ (stealth authored cores).\n"
+    "# Booley scans it as a second root, so this marker never applies\n"
     "# to it — do not drop a FUSESOC_IGNORE inside cores/ unless you mean to\n"
     "# hide those cores from Booley too.\n"
 )

@@ -120,14 +120,14 @@ the Developer Agent change how its own results are produced:
 - **Parameters hold literal values.** A parameter's `datatype` is `bool`,
   `file`, `int`, `real`, or `str`. Booley can't pass an HDL expression such
   as `WIDTH*2` to the tool as a parameter, so write out its value.
-- **Scripts live outside the design directories.** A file that a `scripts:`
-  or `generators:` entry runs must sit outside the directories that hold the
-  Target's RTL and testbench files, for example in `scripts/`, so what
-  runs during a build is not a file the Developer Agent edits as part of its
-  design work.
+- **Scripts live outside the source directories.** A file that a `scripts:`
+  or `generators:` entry runs must sit outside the Project's RTL and
+  testbench directories, for example in `scripts/`, so the Developer Agent
+  does not edit it as part of its design work. While the agent's write Scope
+  is unrestricted (`*`), every such script is flagged.
 
-The first two fail Doctor; a script inside the design directories gets a
-warning. Each finding names the change to make.
+The first two fail Doctor; the script rule is a warning. Each finding names
+the change to make.
 
 ### Target authoring
 
