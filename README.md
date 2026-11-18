@@ -54,7 +54,7 @@ Normally the result of a task reaches you second-hand: a project-specific script
 
 Booley comes with built-in, tested recipes for each supported EDA tool, built on the open-source FuseSoC. They launch the run and read the numbers out of the tool's reports, the same way on every project. Nobody writes a script for your repo, and no agent interprets a log.
 
-You and the agent work from the same numbers. That makes metric-driven development possible: set limits for your design, such as area, timing, coverage or mutation score, and the agent iterates until it meets them. Booley then measures the finished commit and marks it Measured only when every limit is met.
+Set limits for your design, such as area, timing, coverage or mutation score. An agent works far better against a bound it can check than against "make it smaller". Booley measures every finished commit against all of them, so a change that cuts area but halves Fmax fails instead of slipping through, and the recorded numbers show how the design moved over time.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-results-dark.svg">
