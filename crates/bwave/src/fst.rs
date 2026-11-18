@@ -706,6 +706,7 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
             // aliases share the FST handle; queries dedup alias groups by
             // group_id, so expose the handle index there.
             group_id: v.handle_idx as u64,
+            slice: None,
         })
         .collect();
 

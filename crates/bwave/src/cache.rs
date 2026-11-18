@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::format::{format_value_with_radix, values_match, Radix, TriggerMode};
 use crate::reset::{Reset, ResetReport};
 use crate::signal::{anchored_form, compile_patterns, match_signal};
+use crate::slice::SliceOf;
 use crate::ExtractConfig;
 
 use rayon::prelude::*;
@@ -90,6 +91,18 @@ pub struct CachedSignal {
     /// Alias-group key (the FST handle index): aliases of the same
     /// underlying signal share it, and queries dedup alias groups by it.
     pub group_id: u64,
+    /// Set for a derived bit-slice row (`add_slices`): what it reads.
+    pub slice: Option<crate::slice::SliceOf>,
+}
+
+impl CachedSignal {
+    /// Whether any of `patterns` selects this signal: a stored signal by its
+    /// name, a slice row by its exact name (see `SignalPattern::selects`).
+    pub fn matches(&self, patterns: &[crate::signal::SignalPattern]) -> bool {
+        patterns
+            .iter()
+            .any(|p| p.selects(&self.name, Some(self.width), self.slice.is_some()))
+    }
 }
 
 /// Query-facing view of an FST waveform store: header metadata plus read
@@ -107,7 +120,9 @@ pub struct ColumnCache {
     /// The reset all queries use: auto-detected at load, or chosen by `--reset`.
     pub reset: Option<crate::reset::Reset>,
     pub clock_table: Vec<ClockEntry>,
+    /// Stored signals first, then the slice rows `add_slices` appends.
     pub signals: Vec<CachedSignal>,
+    stored: usize,
     fst: crate::fst::FstBacking,
     clock_analysis: std::sync::OnceLock<crate::clock::ClockAnalysis>,
     /// Store-wide common scope (`TOP.tb.`), computed once for `-s` matching.
@@ -133,10 +148,65 @@ impl ColumnCache {
     /// can name a number larger than anything `list` will ever show.
     pub fn unique_signal_count(&self) -> usize {
         let mut groups = std::collections::HashSet::new();
-        self.signals
+        self.signals[..self.stored]
             .iter()
             .filter(|s| groups.insert(s.group_id))
             .count()
+    }
+
+    /// Append one row per slice the patterns ask for (`-s "qa.data[5:4]"`).
+    /// Aliases share one slice group per (source group, msb, lsb).
+    pub fn add_slices(&mut self, patterns: &[String]) -> Result<(), String> {
+        let mut groups: HashMap<(u64, u32, u32), u64> = HashMap::new();
+        let mut next_group = self
+            .signals
+            .iter()
+            .map(|s| s.group_id + 1)
+            .max()
+            .unwrap_or(0);
+        for pattern in patterns {
+            for (name, of) in self.plan_slices(pattern)?.1 {
+                if self.signals.iter().any(|s| s.name == name) {
+                    continue;
+                }
+                let source = &self.signals[of.source];
+                let key = (source.group_id, of.msb, of.lsb);
+                let group_id = *groups.entry(key).or_insert_with(|| {
+                    next_group += 1;
+                    next_group - 1
+                });
+                let row = CachedSignal {
+                    name,
+                    width: of.msb - of.lsb + 1,
+                    var_type: source.var_type.clone(),
+                    group_id,
+                    slice: Some(of),
+                };
+                self.signals.push(row);
+            }
+        }
+        Ok(())
+    }
+
+    /// The pattern's select as written and the slice rows it asks for.
+    fn plan_slices(&self, pattern: &str) -> Result<(String, Vec<(String, SliceOf)>), String> {
+        let matchers = compile_patterns(&[pattern.to_string()], self.scope_prefix())?;
+        let select = matchers[0].select().map(|s| s.text()).unwrap_or_default();
+        let rows = crate::slice::plan(&self.signals[..self.stored], &matchers[0], pattern)?;
+        Ok((select, rows))
+    }
+
+    /// `--clock` / `--reset` / `gui` take a whole signal: a pattern that
+    /// selects bits of a vector is caller input to refuse.
+    pub fn refuse_slice(&self, pattern: &str, option: &str) -> Result<(), String> {
+        let (select, rows) = self.plan_slices(pattern)?;
+        match rows.first() {
+            Some((_, of)) => Err(format!(
+                "{option} '{pattern}' selects bits {select} of '{}'; {option} takes a whole signal",
+                self.signals[of.source].name
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Construct a cache over an open FST backing (see `crate::fst::load_fst`).
@@ -166,6 +236,7 @@ impl ColumnCache {
             clock_before_reset_at_deassert: false,
             reset: None,
             clock_table,
+            stored: signals.len(),
             signals,
             fst: backing,
             clock_analysis: std::sync::OnceLock::new(),
@@ -222,6 +293,7 @@ impl ColumnCache {
     pub fn select_reset(&mut self, pattern: &str) -> Result<(), String> {
         let matchers = compile_patterns(&[pattern.to_string()], self.scope_prefix())
             .map_err(|e| format!("--reset '{pattern}': {e}"))?;
+        self.refuse_slice(pattern, "--reset")?;
         let index = crate::reset::candidate(&self.signals, Some(&matchers))
             .ok_or_else(|| format!("--reset '{pattern}' matches no 1-bit signal"))?;
         self.set_reset(Some(index), true);
@@ -250,12 +322,13 @@ impl ColumnCache {
     pub fn detect_clock_from_pattern(&self, pattern: &str) -> Result<(u64, u64, String), String> {
         let matchers = compile_patterns(&[pattern.to_string()], self.scope_prefix())
             .map_err(|e| format!("invalid clock pattern: {}", e))?;
+        self.refuse_slice(pattern, "--clock")?;
 
         let mut candidates: Vec<(usize, &str)> = self
             .signals
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.width == 1 && match_signal(&s.name, &matchers))
+            .filter(|(_, s)| s.width == 1 && s.matches(&matchers))
             .map(|(i, s)| (i, s.name.as_str()))
             .collect();
 
@@ -320,12 +393,24 @@ impl ColumnCache {
     /// that dominates FST point-query latency, while keeping memory bounded
     /// by the window.
     pub fn prefetch_window(&self, sig_indices: &[usize], tick_max: u64) {
-        self.fst.prefetch_to(sig_indices, tick_max);
+        let mut sources: Vec<usize> = sig_indices
+            .iter()
+            .map(|&i| self.signals[i].slice.map_or(i, |of| of.source))
+            .collect();
+        sources.sort_unstable();
+        sources.dedup();
+        self.fst.prefetch_to(&sources, tick_max);
     }
 
     /// Read all transitions for a signal by index.
     pub fn read_transitions(&self, sig_idx: usize) -> Vec<(u64, String)> {
-        self.fst.read_all(sig_idx)
+        match self.signals[sig_idx].slice {
+            Some(of) => {
+                let width = self.signals[of.source].width;
+                crate::slice::slice_transitions(self.fst.read_all(of.source), width, &of, None)
+            }
+            None => self.fst.read_all(sig_idx),
+        }
     }
 
     /// Read transitions in a tick range.
@@ -337,7 +422,14 @@ impl ColumnCache {
         tick_min: u64,
         tick_max: u64,
     ) -> (Option<String>, Vec<(u64, String)>) {
-        self.fst.read_range(sig_idx, tick_min, tick_max)
+        let Some(of) = self.signals[sig_idx].slice else {
+            return self.fst.read_range(sig_idx, tick_min, tick_max);
+        };
+        let width = self.signals[of.source].width;
+        let (before, source) = self.fst.read_range(of.source, tick_min, tick_max);
+        let before = before.map(|v| crate::format::slice_value(&v, width, of.msb, of.lsb));
+        let rows = crate::slice::slice_transitions(source, width, &of, before.clone());
+        (before, rows)
     }
 
     /// Get the value of a signal at a specific tick.
@@ -390,7 +482,7 @@ impl ColumnCache {
         let mut globs: HashMap<u64, usize> = HashMap::new();
         for (i, signal) in self.signals.iter().enumerate() {
             for (pi, matcher) in matchers.iter().enumerate() {
-                if match_signal(&signal.name, std::slice::from_ref(matcher)) {
+                if signal.matches(std::slice::from_ref(matcher)) {
                     pattern_hit[pi] = true;
                     if explicit_glob(&patterns[pi]) {
                         globs.insert(signal.group_id, i);
@@ -499,7 +591,7 @@ fn alias_warnings(
                 .signals
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| match_signal(&s.name, &matchers))
+                .filter(|(_, s)| s.matches(&matchers))
             {
                 representative.entry(signal.group_id).or_insert(i);
             }
@@ -512,7 +604,7 @@ fn alias_warnings(
             .signals
             .iter()
             .enumerate()
-            .filter(|(_, s)| match_signal(&s.name, &matchers))
+            .filter(|(_, s)| s.matches(&matchers))
         {
             if (!event && rows.binary_search(&i).is_ok())
                 || representative.get(&signal.group_id) == Some(&i)
@@ -769,8 +861,9 @@ fn query_config(cache: &ColumnCache, original: &ExtractConfig) -> ExtractConfig 
 /// fit the signals they are compared with, then the `--virtual` comparison
 /// warnings. Virtual Signals targeted by a pattern count as 1-bit.
 fn literal_fit_warnings(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<String> {
-    let signal_names: Vec<String> = cache.signals.iter().map(|s| s.name.clone()).collect();
-    let signal_widths: Vec<u32> = cache.signals.iter().map(|s| s.width).collect();
+    let stored = &cache.signals[..cache.stored];
+    let signal_names: Vec<String> = stored.iter().map(|s| s.name.clone()).collect();
+    let signal_widths: Vec<u32> = stored.iter().map(|s| s.width).collect();
     // A bad definition is reported, with exit code 2, by `resolve_virtuals`.
     let resolved = resolve_virtual_definitions(&cfg.virtual_defs, &signal_names, &signal_widths)
         .unwrap_or_default();
@@ -1103,8 +1196,9 @@ pub struct VirtualEntry {
 }
 
 fn resolve_virtuals(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<ResolvedVirtual> {
-    let signal_names: Vec<String> = cache.signals.iter().map(|s| s.name.clone()).collect();
-    let signal_widths: Vec<u32> = cache.signals.iter().map(|s| s.width).collect();
+    let stored = &cache.signals[..cache.stored];
+    let signal_names: Vec<String> = stored.iter().map(|s| s.name.clone()).collect();
+    let signal_widths: Vec<u32> = stored.iter().map(|s| s.width).collect();
     resolve_virtual_definitions(&cfg.virtual_defs, &signal_names, &signal_widths).unwrap_or_else(
         |error| {
             eprintln!("ERROR: --virtual '{}': {}", error.definition, error.message);
@@ -1201,19 +1295,19 @@ fn build_radix_map(
     let retained_exact: std::collections::HashSet<usize> = matched
         .iter()
         .copied()
-        .filter(|&idx| match_signal(&cache.signals[idx].name, &exact_matchers))
+        .filter(|&idx| cache.signals[idx].matches(&exact_matchers))
         .collect();
     for (pat, radix) in &cfg.signal_radixes {
         if let Ok(matchers) = compile_patterns(&[pat.clone()], cache.scope_prefix()) {
             let selected_groups: std::collections::HashSet<u64> = cache
                 .signals
                 .iter()
-                .filter(|s| match_signal(&s.name, &matchers))
+                .filter(|s| s.matches(&matchers))
                 .map(|s| s.group_id)
                 .collect();
             for &idx in matched {
                 let signal = &cache.signals[idx];
-                let matches = match_signal(&signal.name, &matchers);
+                let matches = signal.matches(&matchers);
                 if (matches && !explicit_glob(pat))
                     || (explicit_glob(pat)
                         && !retained_exact.contains(&idx)
@@ -1948,7 +2042,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             .signals
             .iter()
             .enumerate()
-            .filter(|(_, s)| match_signal(&s.name, &find_matchers))
+            .filter(|(_, s)| s.matches(&find_matchers))
             .filter(|(_, s)| seen.insert(s.group_id))
             .map(|(i, _)| i)
             .collect()
@@ -3046,7 +3140,7 @@ fn collect_event_ticks(
             .signals
             .iter()
             .enumerate()
-            .filter(|(_, s)| match_signal(&s.name, &matchers))
+            .filter(|(_, s)| s.matches(&matchers))
             .filter(|(_, s)| seen.insert(s.group_id))
             .map(|(i, _)| i)
             .collect()
@@ -4111,7 +4205,7 @@ pub fn list_signals_from_cache(
     let matched: Vec<(String, u32, String)> = cache
         .signals
         .iter()
-        .filter(|s| crate::signal::match_signal(&s.name, &matchers))
+        .filter(|s| s.matches(&matchers))
         .map(|s| (s.name.clone(), s.width, s.var_type.clone()))
         .collect();
 
@@ -4186,7 +4280,7 @@ pub fn list_signals_from_cache(
                 cache
                     .signals
                     .iter()
-                    .any(|signal| match_signal(&signal.name, std::slice::from_ref(matcher)))
+                    .any(|signal| signal.matches(std::slice::from_ref(matcher)))
             })
             .collect();
         warnings.extend(unmatched_pattern_warnings(
