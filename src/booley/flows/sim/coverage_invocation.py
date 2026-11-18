@@ -135,11 +135,21 @@ def _suite(
         selected = request.tests
     else:
         selected = tuple(name for name in declared if name not in skipped)
-    for names in (declared, required, selected):
-        if not names or any(not isinstance(name, str) or not name.strip() for name in names):
+    # Declared comes last so a registry emptied of the recorded Tests still
+    # names them instead of reporting an empty suite.
+    for names in (selected, required, declared):
+        if any(not isinstance(name, str) or not name.strip() for name in names):
             raise ValueError("Coverage requires an exact non-empty registered test suite")
-        if len(set(names)) != len(names) or set(names) - set(declared):
-            raise ValueError("Coverage suite contains duplicate or unregistered tests")
+        unregistered = [name for name in dict.fromkeys(names) if name not in declared]
+        if unregistered:
+            raise ValueError(
+                "Coverage suite names Tests tests.toml does not register for the Target: "
+                + ", ".join(unregistered)
+            )
+        if not names:
+            raise ValueError("Coverage requires an exact non-empty registered test suite")
+        if len(set(names)) != len(names):
+            raise ValueError("Coverage suite contains duplicate tests")
     return tuple(sorted(declared)), tuple(sorted(selected)), key, criterion
 
 

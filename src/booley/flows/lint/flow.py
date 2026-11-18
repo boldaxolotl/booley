@@ -31,7 +31,7 @@ from booley.flows.eda_failures import (
     new_attempt_token,
     render_failure_marker,
 )
-from booley.flows.job_resources import resolved_source_bytes, resource_phase
+from booley.flows.job_resources import judged_commands, resolved_source_bytes, resource_phase
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
 from booley.flows.metric_declarations import (
@@ -41,6 +41,7 @@ from booley.flows.metric_declarations import (
     MetricDeclaration,
     MetricKind,
     MetricsUnavailableError,
+    counted_items,
     metric_values,
     metrics_document,
 )
@@ -101,24 +102,51 @@ LINT_METRIC_DECLARATIONS = (
 )
 
 
-def count_lint_errors(output: str, family: str) -> int:
-    """Count the unique error findings in one Target's linter *output*.
+def _finding_lines(findings: Iterable[tuple[str, str, int, str]]) -> list[str]:
+    """Display lines of ``(rule, file, line, message)`` findings, sorted by file, line, rule, message.
+
+    A line reads ``file:line RULE: message``; an absent location or rule is left out.
+    """
+    lines: list[str] = []
+    for rule, file, line, message in sorted(findings, key=lambda f: (f[1], f[2], f[0], f[3])):
+        where = f"{file}:{line}" if file else ""
+        head = " ".join(part for part in (where, rule) if part)
+        lines.append(f"{head}: {message}" if head else message)
+    return lines
+
+
+def lint_error_findings(
+    output: str, family: str, project_paths: ProjectSourcePaths | None = None
+) -> list[str]:
+    """The unique error findings in one Target's linter *output*, one display line each.
 
     Verilator: every ``%Error`` line but the exit epilogue, keyed by rule, location and
     message (rule-less, location-less lines are common, so the message tells two apart;
     a multi-line message counts once because its continuation lines do not start with
-    ``%Error``). Verible: every parse-error line, keyed by file and line.
+    ``%Error``). Verible: every parse-error line, keyed by file and line, keeping the first
+    message. Sorted by file, line, rule and message. A file the linter printed as a FuseSoC
+    build-tree copy is named by its Project path when *project_paths* maps it.
     """
+    paths = project_paths or ProjectSourcePaths()
     if family == "verible":
-        return len(
-            {tuple(line.split(":")[:2]) for line in eda_parsers.VERIBLE_ERROR_RE.findall(output)}
+        by_location: dict[tuple[str, int], str] = {}
+        for error in eda_parsers.VERIBLE_ERROR_RE.findall(output):
+            file, line, _, message = error.split(":", 3)
+            by_location.setdefault((paths.project_path(file), int(line)), message.strip())
+        return _finding_lines(
+            ("", file, line, message) for (file, line), message in by_location.items()
         )
     findings = {
-        match.groups()
+        (
+            match["rule"] or "",
+            paths.project_path(match["file"] or ""),
+            int(match["line"] or 0),
+            match["message"],
+        )
         for match in eda_parsers.VERILATOR_ERROR_FINDING_RE.finditer(output)
         if not _EXIT_EPILOGUE_RE.match(match.group("message"))
     }
-    return len(findings)
+    return _finding_lines(findings)
 
 
 def _lint_eda_tool_family(eda_tool: str | None) -> str:
@@ -187,8 +215,9 @@ class LintConfigResult:
     real and pass vacuously. Hard-fails the Target (same spirit as the ADR
     0026 doctor hard-fail: an integrity hole must not stay a silent WARN).
     Defaults True to avoid false alarms when unknown."""
-    error_count: int = 0
-    """Unique error findings in the linter output (0 when none could be read)."""
+    error_findings: list[str] = field(default_factory=list[str])
+    """Unique error findings in the linter output, one display line each (none when none
+    could be read)."""
     log_path: str = ""
     """Project-relative path of this Target's persisted ``run.log``. The parsed
     report carries rule/file:line/message and Target provenance per warning,
@@ -198,15 +227,26 @@ class LintConfigResult:
     def flow_metrics(self) -> FlowMetricValues:
         """Typed metrics of this Target: its unique warning and error counts.
 
+        ``counted_items`` lists the first findings behind each non-zero count.
         The counts cover the whole Target, whatever ``--scope`` filtered from the
         printed report. Raises :class:`MetricsUnavailableError` when the linter could
         not run, or rejected the design without an error finding that could be read.
         """
-        if self.error_is_eda_tool_failure or (self.error and not self.error_count):
+        if self.error_is_eda_tool_failure or (self.error and not self.error_findings):
             raise MetricsUnavailableError(self.error)
-        return metric_values(
+        warnings = deduplicate_warnings(self.warnings)
+        values = metric_values(
             LINT_METRIC_DECLARATIONS,
-            {"warnings": len(deduplicate_warnings(self.warnings)), "errors": self.error_count},
+            {"warnings": len(warnings), "errors": len(self.error_findings)},
+        )
+        listed = {
+            "errors": counted_items(self.error_findings),
+            "warnings": counted_items(
+                _finding_lines((w.rule, w.file, w.line, w.message) for w in warnings)
+            ),
+        }
+        return replace(
+            values, counted_items={name: lines for name, lines in listed.items() if lines}
         )
 
 
@@ -906,7 +946,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return result
         paths = prepared.project_paths
         result.warnings = _parse_findings(combined, family, selector, paths)
-        result.error_count = count_lint_errors(combined, family)
+        result.error_findings = lint_error_findings(combined, family, paths)
         if not result.error:
             _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
             if result.error and not result.error_is_eda_tool_failure:
@@ -1098,7 +1138,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
         target_results: list[LintConfigResult] = []
         for target in targets:
             unit = prepared[target.identity] if prepared is not None else None
-            cr = self._run_lint_target(target, unit)
+            with judged_commands() as commands:
+                cr = self._run_lint_target(target, unit)
+                commands.judge(not cr.error)
             target_results.append(cr)
             line = _target_summary_line(cr)
             print(line)

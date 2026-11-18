@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -228,10 +227,10 @@ def test_synth_target_end_is_reported_unless_baseline(
 def test_fpga_target_end_is_reported_unless_baseline(
     role: str, reported: bool, recorder: _Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.flows.fpga.flow import FpgaImplFlow
+    from booley.flows.fpga.flow import FpgaImplFlow, FpgaMetrics
 
     flow = FpgaImplFlow()
     flow._execution_role = role
-    monkeypatch.setattr(flow, "_implement_target", lambda _target: SimpleNamespace())
+    monkeypatch.setattr(flow, "_implement_target", lambda _target: FpgaMetrics())
     flow._run_single_target("a")
     assert recorder.ends == ([("a", "fpga_impl", "")] if reported else [])

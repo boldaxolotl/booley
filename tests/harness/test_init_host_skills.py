@@ -1,130 +1,102 @@
-"""Tests for ``_resolve_host_skills_sources`` — the [sandbox] mount_host_skills
-host-side resolver that turns the user's global skill dirs into read-only binds.
-"""
+"""Tests for the ``[sandbox] mount_host_skills`` host-side skill resolver."""
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+
+import pytest
 
 from booley.harness import init_cmd
 from booley.runtime.platform_paths import docker_mount_path
 from tests.conftest import require_symlinks
 
 
-def _write_toml(project_root: Path, *, enabled: bool) -> None:
-    toml = project_root / ".booley" / "booley.toml"
-    toml.parent.mkdir(parents=True, exist_ok=True)
-    body = "[sandbox]\n"
-    if enabled:
-        body += "mount_host_skills = true\n"
-    toml.write_text(body, encoding="utf-8")
-
-
-def _make_skill(dir_: Path, name: str) -> Path:
-    """Create a real skill dir (with SKILL.md) and return it."""
-    skill = dir_ / name
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
-    return skill
-
-
-def _setup(tmp_path, monkeypatch, *, enabled=True):
-    """Wire a fake $HOME + packaged-skills dir; return (project_root, home)."""
+def _setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True
+) -> tuple[Path, Path, Path]:
+    """Wire a fake $HOME + packaged-skills dir; return (project_root, home, builtin)."""
     home = tmp_path / "home"
     home.mkdir()
     builtin = tmp_path / "pkg" / "skills"
     builtin.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    # The packaged skills dir is install layout, not an input a test can place.
     monkeypatch.setattr(init_cmd, "skills_dir", lambda: builtin)
     project_root = tmp_path / "proj"
     project_root.mkdir()
-    _write_toml(project_root, enabled=enabled)
+    toml = project_root / ".booley" / "booley.toml"
+    toml.parent.mkdir()
+    toml.write_bytes(b"[sandbox]\n" + (b"mount_host_skills = true\n" if enabled else b""))
     monkeypatch.setenv("BOOLEY_DIR", str(project_root / ".booley"))
     return project_root, home, builtin
 
 
-def test_disabled_returns_empty(tmp_path, monkeypatch):
-    project_root, home, _ = _setup(tmp_path, monkeypatch, enabled=False)
-    _make_skill(home / ".claude" / "skills", "deslop")
-    assert init_cmd._resolve_host_skills_sources(project_root) == []
+def _make_skill(dir_: Path, name: str) -> Path:
+    skill = dir_ / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_bytes(b"---\nname: x\n---\n")
+    return skill
 
 
-def test_resolves_symlink_to_real_dir(tmp_path, monkeypatch):
-    # ~/.claude/skills is typically all symlinks; the mount source must be the
-    # resolved REAL dir, else it dangles in the container.
-    require_symlinks(tmp_path)
-    project_root, home, _ = _setup(tmp_path, monkeypatch)
-    real = _make_skill(tmp_path / "real-skills", "deslop")
-    claude = home / ".claude" / "skills"
-    claude.mkdir(parents=True)
-    (claude / "deslop").symlink_to(real)
-
-    pairs = init_cmd._resolve_host_skills_sources(project_root)
-    assert pairs == [("deslop", docker_mount_path(real.resolve()))]
+def _mounted(project_root: Path) -> list[tuple[str, str]]:
+    # private: the only caller builds the Sandbox spec, which the public
+    # current_interactive_spec previews through Docker.
+    return init_cmd._resolve_host_skills_sources(project_root)
 
 
-def test_excludes_builtins_by_path_and_name(tmp_path, monkeypatch):
+def test_host_skills_mount_each_real_personal_skill_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """~/.claude/skills is typically all symlinks: mount the resolved REAL dir, once."""
     require_symlinks(tmp_path)
     project_root, home, builtin = _setup(tmp_path, monkeypatch)
-    # A host symlink INTO the packaged skills dir = a built-in already in the image.
-    _make_skill(builtin, "booley-setup")
     claude = home / ".claude" / "skills"
+    agents = home / ".agents" / "skills"
     claude.mkdir(parents=True)
-    (claude / "booley-setup").symlink_to(builtin / "booley-setup")
-    # A genuine personal skill alongside it still comes through.
-    _make_skill(claude, "keeper")
-
-    pairs = dict(init_cmd._resolve_host_skills_sources(project_root))
-    assert "booley-setup" not in pairs  # excluded: resolves under the packaged dir
-    assert "keeper" in pairs
-
-
-def test_dedupes_by_name_across_both_dirs(tmp_path, monkeypatch):
-    # Same skill name in ~/.claude/skills and ~/.agents/skills -> Claude wins.
-    require_symlinks(tmp_path)
-    project_root, home, _ = _setup(tmp_path, monkeypatch)
+    agents.mkdir(parents=True)
+    linked = _make_skill(tmp_path / "real-skills", "deslop")
+    personal = _make_skill(claude, "keeper")
+    packaged = _make_skill(builtin, "booley-setup")
     claude_real = _make_skill(tmp_path / "c", "grill-me")
-    agents_real = _make_skill(tmp_path / "a", "grill-me")
-    (home / ".claude" / "skills").mkdir(parents=True)
-    (home / ".agents" / "skills").mkdir(parents=True)
-    (home / ".claude" / "skills" / "grill-me").symlink_to(claude_real)
-    (home / ".agents" / "skills" / "grill-me").symlink_to(agents_real)
-
-    pairs = init_cmd._resolve_host_skills_sources(project_root)
-    assert pairs == [("grill-me", docker_mount_path(claude_real.resolve()))]
-
-
-def test_skips_dangling_and_non_skill_dirs(tmp_path, monkeypatch):
-    require_symlinks(tmp_path)
-    project_root, home, _ = _setup(tmp_path, monkeypatch)
-    claude = home / ".claude" / "skills"
-    claude.mkdir(parents=True)
-    (claude / "dangling").symlink_to(tmp_path / "nowhere")  # dangling
-    (claude / "not-a-skill").mkdir()  # real dir, no SKILL.md
-    _make_skill(claude, "real")
-
-    pairs = init_cmd._resolve_host_skills_sources(project_root)
-    assert [n for n, _ in pairs] == ["real"]
-
-
-def test_excludes_linked_booley_qa_skill_but_keeps_same_name_foreign_copy(tmp_path, monkeypatch):
-    require_symlinks(tmp_path)
-    project_root, home, _ = _setup(tmp_path, monkeypatch)
+    foreign = _make_skill(tmp_path / "foreign", "booley-qa-triage")
     checkout = tmp_path / "Booley"
     (checkout / "src" / "booley").mkdir(parents=True)
-    (checkout / "src" / "booley" / "__init__.py").write_text("", encoding="utf-8")
-    (checkout / "pyproject.toml").write_text(
-        "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
-    )
-    qa_skill = _make_skill(checkout / "qa", "booley-qa-run")
-    foreign = _make_skill(tmp_path / "foreign", "booley-qa-triage")
-    claude = home / ".claude" / "skills"
-    claude.mkdir(parents=True)
-    (claude / "booley-qa-run").symlink_to(qa_skill)
-    (claude / "booley-qa-triage").symlink_to(foreign)
+    (checkout / "src" / "booley" / "__init__.py").write_bytes(b"")
+    (checkout / "pyproject.toml").write_bytes(b"[tool.booley]\nsource_checkout = true\n")
+    links = {
+        "deslop": linked,
+        # Links into the packaged skills dir are built-ins already in the image, whether
+        # they carry the built-in's name or another one.
+        "booley-setup": packaged,
+        "renamed-builtin": packaged,
+        "grill-me": claude_real,  # also in ~/.agents/skills: Claude's copy wins
+        "dangling": tmp_path / "nowhere",
+        # Booley's own QA skill is excluded; a foreign skill with a similar name is not.
+        "booley-qa-run": _make_skill(checkout / "qa", "booley-qa-run"),
+        "booley-qa-triage": foreign,
+    }
+    for name, target in links.items():
+        (claude / name).symlink_to(target)
+    (agents / "grill-me").symlink_to(_make_skill(tmp_path / "a", "grill-me"))
+    (claude / "not-a-skill").mkdir()  # a real dir without SKILL.md
 
-    pairs = dict(init_cmd._resolve_host_skills_sources(project_root))
+    expected = [
+        ("booley-qa-triage", docker_mount_path(foreign.resolve())),
+        ("deslop", docker_mount_path(linked.resolve())),
+        ("grill-me", docker_mount_path(claude_real.resolve())),
+        ("keeper", docker_mount_path(personal.resolve())),
+    ]
+    assert _mounted(project_root) == expected
+    shutil.rmtree(agents)  # a host without ~/.agents/skills mounts the same skills
+    assert _mounted(project_root) == expected
 
-    assert "booley-qa-run" not in pairs
-    assert pairs["booley-qa-triage"] == docker_mount_path(foreign.resolve())
+
+def test_host_skills_stay_unmounted_unless_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root, home, _ = _setup(tmp_path, monkeypatch, enabled=False)
+    _make_skill(home / ".claude" / "skills", "deslop")
+
+    assert _mounted(project_root) == []

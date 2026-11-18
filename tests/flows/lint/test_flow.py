@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from booley.flows import artifacts as flow_artifacts
-from booley.flows.base import SubprocessResult
+from booley.flows.base import FlowMechanics, SubprocessResult
 from booley.flows.lint.flow import (
     LintConfigResult,
     LintFlow,
@@ -32,6 +32,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
+from tests.canned_process_support import canned_command
 from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
@@ -145,7 +146,8 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
     returns the result and the command of every linter run. The Targets run in
     order and take the processes in order (the last repeats). ``resolved(handle,
     build_root)`` stands for ``resolve_target_handle``; ``resolved=None`` keeps
-    the resolver the test installed.
+    the resolver the test installed. ``measured=True`` runs each canned result as a
+    real child process through the measured run, so a history record is written.
     """
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
@@ -159,12 +161,16 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
         resolved: Callable[..., object] | None = lambda handle, build_root: _stub_resolved(
             build_root=tmp_path / handle.selector
         ),
+        measured: bool = False,
     ) -> tuple[ExecutionResult, list[list[str]]]:
         commands: list[list[str]] = []
 
         def execute(_flow: LintFlow, cmd: list[str], **_kwargs: object) -> SubprocessResult:
             commands.append(cmd)
-            return processes[min(len(commands), len(processes)) - 1]
+            process = processes[min(len(commands), len(processes)) - 1]
+            if measured:  # the real measured run, which writes the history record
+                return FlowMechanics._execute_local(_flow, canned_command(process))
+            return process
 
         # Unit tests have no Verilator: the linter subprocess is the one
         # private seam the public Flow entry cannot replace.
@@ -750,6 +756,26 @@ _DESIGN_FAIL_STDERR = (
     "%Error: Exiting due to 1 error(s)\n"
 )
 _NON_BLOCKING_KNOB = "[flows.lint]\nwarnings_as_errors = false\n"
+
+
+@pytest.mark.parametrize(
+    ("process", "outcome"),
+    [
+        pytest.param(_process(2, stderr=_WARNINGS_ONLY_STDERR), "exit_zero", id="warnings-only"),
+        pytest.param(
+            _process(0, stderr=_DESIGN_FAIL_STDERR), "exit_nonzero", id="exit-zero-error"
+        ),
+    ],
+)
+def test_lint_record_outcome_follows_the_linter_error(
+    run_lint: _LintRun, tmp_path: Path, process: SubprocessResult, outcome: str
+) -> None:
+    from booley.runtime import resource_history
+
+    run_lint(process, measured=True)
+
+    (record,) = resource_history.load_records(tmp_path)
+    assert (record["outcome"], record["returncode"]) == (outcome, process.returncode)
 
 
 @pytest.mark.parametrize(
@@ -2536,7 +2562,7 @@ _VERIBLE_FINDINGS = (
     "rtl/top.sv:9:1: Line length exceeds 100. [line-length]\n"
     'rtl/top.sv:3:1: syntax error at token "endmodule"\n'
     'rtl/top.sv:5:1: syntax error at token "foo"\n'
-    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+    'rtl/top.sv:5:7: syntax error at token "bar"\n'  # same line: counted once, first message
 )
 
 
@@ -2570,24 +2596,68 @@ class TestFlowMetrics:
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             return flow._run_lint_target(_target_handle("lite", eda_tool=family))
 
-    @pytest.mark.parametrize(
-        ("family", "output", "returncode"),
-        [
-            pytest.param("verilator", _VERILATOR_FINDINGS, 2, id="verilator"),
-            pytest.param("verible", _VERIBLE_FINDINGS, 1, id="verible"),
-        ],
-    )
     def test_findings_return_unique_warning_and_error_counts(
-        self, tmp_path: Path, state_file: Path, family: str, output: str, returncode: int
+        self, tmp_path: Path, state_file: Path
     ) -> None:
-        result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
+        cases = [
+            (
+                "verilator",
+                _VERILATOR_FINDINGS,
+                2,
+                {
+                    "errors": [
+                        "rtl/x.v:1: Can't find definition of variable: 'zzz'",
+                        "rtl/x.v:9: second diagnostic",
+                    ],
+                    "warnings": [
+                        "rtl/a.v:3 UNUSEDSIGNAL: Signal is not used: 'x'",
+                        "rtl/b.v:9 WIDTH: Operator ASSIGNW expects 8 bits",
+                    ],
+                },
+            ),
+            (
+                "verible",
+                _VERIBLE_FINDINGS,
+                1,
+                {
+                    "errors": [
+                        'rtl/top.sv:3: syntax error at token "endmodule"',
+                        'rtl/top.sv:5: syntax error at token "foo"',
+                    ],
+                    "warnings": [
+                        "rtl/top.sv:4 interface-name-style: Interface names must end with _if.",
+                        "rtl/top.sv:9 line-length: Line length exceeds 100.",
+                    ],
+                },
+            ),
+        ]
+        for family, output, returncode, expected in cases:
+            result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
 
-        assert result.flow_metrics().plain == {"warnings": 2, "errors": 2}
+            values = result.flow_metrics()
+            assert values.plain == {"warnings": 2, "errors": 2}, family
+            assert values.counted_items == expected, family
+
+    def test_listed_findings_are_capped_and_cut(self, tmp_path: Path, state_file: Path) -> None:
+        output = "".join(
+            f"%Warning-WIDTH: rtl/w.v:{line}:1: {'long ' * 60 if line == 1 else 'wide'}\n"
+            for line in range(1, 26)
+        )
+
+        values = self._lint(tmp_path, "verilator", stdout=output, returncode=0).flow_metrics()
+
+        assert values.plain["warnings"] == 25
+        listed = values.counted_items["warnings"]
+        assert len(listed) == 20
+        assert listed[1] == "rtl/w.v:2 WIDTH: wide"
+        assert len(listed[0]) == 200
 
     def test_clean_run_returns_zero_counts(self, tmp_path: Path, state_file: Path) -> None:
         result = self._lint(tmp_path, "verilator", stdout="", returncode=0)
 
-        assert result.flow_metrics().plain == {"warnings": 0, "errors": 0}
+        values = result.flow_metrics()
+        assert values.plain == {"warnings": 0, "errors": 0}
+        assert values.counted_items == {}
 
     def test_warnings_only_run_does_not_count_the_epilogue_as_an_error(
         self, tmp_path: Path, state_file: Path
@@ -2621,36 +2691,31 @@ class TestFlowMetrics:
         with pytest.raises(MetricsUnavailableError, match="exited 3"):
             result.flow_metrics()
 
-    @pytest.mark.parametrize(
-        ("output", "expected"),
-        [
+    def test_lint_error_findings_verilator(self) -> None:
+        from booley.flows.lint.flow import lint_error_findings
+
+        cases = [
             # Two different errors on one line count twice; a rule-less, location-less one once.
-            pytest.param(
+            (
                 "%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n",
                 3,
-                id="same-line-and-locationless",
             ),
             # A repeated line counts once; the same message under another rule counts again.
-            pytest.param(
+            (
                 "%Error-UNSUPPORTED: a.v:2:1: nope\n%Error-UNSUPPORTED: a.v:2:1: nope\n"
                 "%Error: a.v:2:1: nope\n",
                 2,
-                id="repeated-and-other-rule",
             ),
             # Continuation lines of a multi-line message are not errors.
-            pytest.param(
+            (
                 "%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n",
                 1,
-                id="multi-line-message",
             ),
-            pytest.param("%Error: Exiting due to 1 error(s)\n", 0, id="epilogue-only"),
-            pytest.param("", 0, id="empty"),
-        ],
-    )
-    def test_count_lint_errors_verilator(self, output: str, expected: int) -> None:
-        from booley.flows.lint.flow import count_lint_errors
-
-        assert count_lint_errors(output, "verilator") == expected
+            ("%Error: Exiting due to 1 error(s)\n", 0),
+            ("", 0),
+        ]
+        for output, expected in cases:
+            assert len(lint_error_findings(output, "verilator")) == expected, output
 
 
 def _author_cross_core_project(root: Path) -> None:

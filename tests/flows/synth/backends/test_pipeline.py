@@ -788,6 +788,7 @@ def _run_fake_make(tmp_path: Path, monkeypatch, spec, scripts: dict[str, str]):
 def _interpret(tmp_path: Path, plan, result, started: float):
     """The Flow's metrics for a finished fake make run."""
     from booley.flows.base import SubprocessResult
+    from booley.flows.job_resources import JudgedCommands
     from booley.flows.synth.flow import AsicSynthesizeFlow
 
     flow = AsicSynthesizeFlow()
@@ -805,6 +806,7 @@ def _interpret(tmp_path: Path, plan, result, started: float):
             dispatched_unix=started,
         ),
         0.1,
+        commands=JudgedCommands(),
     )
     return metrics
 
