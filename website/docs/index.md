@@ -16,7 +16,10 @@ document: Booley product datasheet
   <div class="front">
     <section aria-labelledby="description" class="desc">
       <h2 class="sec" id="description"><span class="n">1</span>Description</h2>
-      <p>Booley combines the speed of agentic workflows with strict, deterministic EDA checks and thorough reviews by engineers and LLMs. Agents get every tool hardware design needs, safely sandboxed. You get a control panel to orchestrate them and metrics you can trust.</p>
+      <p>Booley combines the speed of agentic workflows with strict,
+      deterministic EDA checks and thorough reviews by engineers and LLMs.
+      Agents get every tool hardware design needs, safely sandboxed. You get a
+      control panel to orchestrate them and metrics you can trust.</p>
     </section>
 
     <div class="order" aria-labelledby="order-h">
@@ -39,9 +42,21 @@ document: Booley product datasheet
       <div class="feat__card">
         <div class="feat__txt">
           <h3>Agents equipped for hardware work</h3>
-          <p>A general-purpose coding agent knows little about EDA tools, so Booley gives it one short command per job: simulate, synthesize, lint, build for FPGA. The same commands work whichever EDA tool runs underneath, such as Verilator or Icarus Verilog for simulation.</p>
-          <p>It also gets tools for checking its own work. Waveform queries let it ask questions about real simulation traces (“when did <code>data_o</code> equal <code>0xDEADBEEF</code>?”) instead of guessing from the RTL. Mutation testing plants small bugs in the RTL and counts how many the testbench catches, which shows whether the tests would notice a real bug.</p>
-          <p>For a second opinion, the agent can call an independent reviewer that didn’t write the code. Reviewers follow guides written by hardware engineers, covering common RTL bugs, style rules and typical optimization opportunities. Each review looks for one kind of problem, so nothing gets skimmed.</p>
+          <p>A general-purpose coding agent knows little about EDA tools, so
+          Booley gives it one short command per job: simulate, synthesize, lint,
+          build for FPGA. The same commands work whichever EDA tool runs
+          underneath, such as Verilator or Icarus Verilog for simulation.</p>
+          <p>It also gets tools for checking its own work. Waveform queries let
+          it ask questions about real simulation traces (“when did
+          <code>data_o</code> equal <code>0xDEADBEEF</code>?”) instead of
+          guessing from the RTL. Mutation testing plants small bugs in the RTL
+          and counts how many the testbench catches, which shows whether the
+          tests would notice a real bug.</p>
+          <p>For a second opinion, the agent can call an independent reviewer
+          that didn’t write the code. Reviewers follow guides written by
+          hardware engineers, covering common RTL bugs, style rules and typical
+          optimization opportunities. Each review looks for one kind of problem,
+          so nothing gets skimmed.</p>
         </div>
         <div class="feat__fig">
 --8<-- "feature-tools.svg"
@@ -50,9 +65,20 @@ document: Booley product datasheet
       <div class="feat__card">
         <div class="feat__txt">
           <h3>Run many agents, stay in control</h3>
-          <p>Agents work best when they don’t stop to ask permission, and Booley makes that safe. Each agent runs in a container that sees only your project, with internet access limited to the LLM provider. You can leave it running unattended; it can’t touch the rest of your machine. The same container gives everyone on the team identical tool versions.</p>
-          <p>Run several agents at once. Booley creates and manages a separate git worktree and branch for each one, so they work independently and never overwrite each other. A built-in scheduler learns how much memory each simulation or synthesis run needs and starts as many together as your machine can hold, so small runs don’t wait behind big ones and nothing runs out of memory.</p>
-          <p>Everything sits in one VS Code window: agent chats, RTL, terminals, waveforms, and a dashboard showing what every agent is doing.</p>
+          <p>Agents work best when they don’t stop to ask permission, and Booley
+          makes that safe. Each agent runs in a container that sees only your
+          project, with internet access limited to the LLM provider. You can
+          leave it running unattended; it can’t touch the rest of your machine.
+          The same container gives everyone on the team identical tool
+          versions.</p>
+          <p>Run several agents at once. Booley creates and manages a separate
+          git worktree and branch for each one, so they work independently and
+          never overwrite each other. A built-in scheduler learns how much
+          memory each simulation or synthesis run needs and starts as many
+          together as your machine can hold, so small runs don’t wait behind big
+          ones and nothing runs out of memory.</p>
+          <p>Everything sits in one VS Code window: agent chats, RTL, terminals,
+          waveforms, and a dashboard showing what every agent is doing.</p>
         </div>
         <div class="feat__fig">
 --8<-- "feature-parallel.svg"
@@ -61,9 +87,20 @@ document: Booley product datasheet
       <div class="feat__card">
         <div class="feat__txt">
           <h3>Results you can trust</h3>
-          <p>Normally the result of a task reaches you second-hand: a project-specific script runs the EDA tool, then the agent reads the log and tells you what it found. Each hand-off can go wrong.</p>
-          <p>Booley comes with built-in, tested recipes for each supported EDA tool, built on the open-source FuseSoC. They launch the run and read the numbers out of the tool’s reports, the same way on every project. Nobody writes a script for your repo, and no agent interprets a log.</p>
-          <p>Set limits for your design, such as area, timing, coverage or mutation score. An agent works far better against a bound it can check than against “make it smaller”. Booley measures every finished commit against all of them, so a change that cuts area but halves Fmax fails instead of slipping through, and the recorded numbers show how the design moved over time.</p>
+          <p>Normally the result of a task reaches you second-hand: a
+          project-specific script runs the EDA tool, then the agent reads the
+          log and tells you what it found. Each hand-off can go wrong.</p>
+          <p>Booley comes with built-in, tested recipes for each supported EDA
+          tool, built on the open-source FuseSoC. They launch the run and read
+          the numbers out of the tool’s reports, the same way on every project.
+          Nobody writes a script for your repo, and no agent interprets a
+          log.</p>
+          <p>Set limits for your design, such as area, timing, coverage or
+          mutation score. An agent works far better against a bound it can check
+          than against “make it smaller”. Booley measures every finished commit
+          against all of them, so a change that cuts area but halves Fmax fails
+          instead of slipping through, and the recorded numbers show how the
+          design moved over time.</p>
         </div>
         <div class="feat__fig">
 --8<-- "feature-results.svg"
@@ -321,6 +358,10 @@ document: Booley product datasheet
 
   <h2 class="sec" id="how-it-is-built"><span class="n">6</span>How it is built</h2>
   <div class="detail">
-    <p>I designed Booley and maintain it as a hardware engineer, not a career software engineer. Claude and Codex wrote its first-party code, but this is not vibe-coding: I define the architecture and specifications, weigh tradeoffs, review plans and code, and make the final engineering decisions.</p>
+    <p>I designed Booley and maintain it as a hardware engineer, not a career
+    software engineer. Claude and Codex wrote its first-party code, but this is
+    not vibe-coding: I define the architecture and specifications, weigh
+    tradeoffs, review plans and code, and make the final engineering
+    decisions.</p>
     <p>Every change goes through separate agent and human reviews, with isolated branches, type checking, linting, automated tests, coverage requirements, and CI (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CODING_PRINCIPLES.md">coding principles</a>). Reviews from experienced software engineers are especially welcome.</p>
   </div>
