@@ -193,11 +193,11 @@ Every work item of a simulation or coverage record is admitted on its own,
 with its own key. The Flow's reservation covers preparation and build, then
 drops to zero, and admission decides how many items run at once. Each item
 ranks for the OOM killer as a Job newer than its Flow, so the newest item's
-simulator ranks first, within the bounds of the Out-of-memory guard. An item's own OOM kill at the Sandbox's limit stops
-only that item: it is requeued once, to run alone after the running items
-finish, and its second failure is its result. A host kill of an item is never
-requeued. A kill of an item running under the Flow's own claim
-requeues the whole Flow Job instead.
+simulator ranks first, within the bounds of the Out-of-memory guard. An item's
+own OOM kill at the Sandbox's limit stops only that item: it is requeued once,
+to run alone after the running items finish, and its second failure is its
+result. A host kill of an item is never requeued. A kill of an item running
+under the Flow's own claim requeues the whole Flow Job instead.
 
 ## Considered options
 
