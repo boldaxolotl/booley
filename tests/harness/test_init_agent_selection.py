@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import sys
-import tomllib
 import warnings
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -13,111 +13,54 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime import auth_token
+from booley.projects import inventory
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
 from tests.conftest import symlink_or_skip
+from tests.docker_cli_guard import docker_cli_absent
+from tests.harness.init_agent_support import (
+    api_key,
+    empty_host,
+    login,
+    project_config,
+    seed_init,
+    stub_host_images,
+)
 from tests.subprocess_budget import run_bounded_child
+
+_SANDBOX_IMAGE = "sha256:" + "f" * 64
+_CURRENT = init_cmd.LifecycleResult(
+    "booley-sandbox-riscv", _SANDBOX_IMAGE, init_cmd.ImageLifecycleStatus.CURRENT
+)
 
 
 @pytest.fixture(autouse=True)
-def _no_host_credentials(tmp_path, monkeypatch):
+def _empty_host(tmp_path, monkeypatch):
     """Detection reads the host's credentials: run every test on an empty one."""
-    home = tmp_path / "empty-home"
-    home.mkdir()
-    for name in ("HOME", "USERPROFILE"):
-        monkeypatch.setenv(name, str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
-    for name in (*auth_token.CREDENTIAL_ENV_KEYS, "CODEX_HOME"):
-        monkeypatch.delenv(name, raising=False)
-
-
-def _args(**overrides) -> argparse.Namespace:
-    values = {"seed": False, "provider": None, "auth": None}
-    values.update(overrides)
-    return argparse.Namespace(**values)
-
-
-def test_unattended_first_init_records_compatible_defaults(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    init_cmd.reset_cache()
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-
-    config = init_cmd._agent_config_path(tmp_path, seed=False)
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
-
-    assert resolved == init_cmd.AgentSelection("claude", "subscription", True, "subscription")
-    assert config == init_cmd.booley_dir_for_init(tmp_path) / "booley.toml"
+    return empty_host(tmp_path, monkeypatch)
 
 
 def test_initial_line_ending_baseline_does_not_warn_for_uncreated_data(tmp_path):
     ctx = InitContext(project_root=tmp_path)
     with init_cmd.init_booley_dir_scope(tmp_path), warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
+        # private: the baseline is sampled inside host and Sandbox init before any write,
+        # and the warning it must not raise does not reach init's records.
         assert init_cmd._sample_line_ending_baseline(ctx) == {}
     assert caught == []
     assert not init_cmd.booley_dir_for_init(tmp_path).exists()
 
 
-def test_seed_agent_config_uses_resolved_booley_directory(tmp_path, monkeypatch):
-    booley_dir = tmp_path / "project-data"
-    booley_dir.mkdir()
-    monkeypatch.setattr(init_cmd, "resolve_checkout_booley_dir", lambda _root: booley_dir)
-
-    assert init_cmd._agent_config_path(tmp_path, seed=True) == booley_dir / "booley.toml"
-
-
-def test_sandbox_git_version_treats_runtime_error_as_unknown(monkeypatch):
-    monkeypatch.setattr(
-        init_cmd.idk,
-        "_run_docker",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
-    )
-
-    assert init_cmd._sandbox_git_version("image-id") is None
-
-
 def test_seed_retains_ancestor_project_resolution(tmp_path, monkeypatch):
-    parent_config = tmp_path / ".booley" / "booley.toml"
-    parent_config.parent.mkdir()
-    parent_config.write_text(
-        '[agent]\nprovider = "codex"\nauth = "subscription"\n',
-        encoding="utf-8",
-    )
+    parent_config = project_config(tmp_path, b'[agent]\nprovider = "codex"\n')
     child = tmp_path / "ticket-checkout"
     child.mkdir()
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    init_cmd.reset_cache()
+    stub_host_images(monkeypatch)
 
-    assert init_cmd._agent_config_path(child, seed=True) == parent_config
+    seed_init(child)
 
-
-def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monkeypatch):
-    parent = tmp_path / "parent"
-    parent_config = parent / ".booley" / "booley.toml"
-    parent_config.parent.mkdir(parents=True)
-    original = '[agent]\nprovider = "claude"\nauth = "auto"\n'
-    parent_config.write_text(original, encoding="utf-8")
-    child = parent / "child"
-    child.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(parent_config.parent))
-    init_cmd.reset_cache()
-    assert init_cmd.resolve_booley_dir() == parent_config.parent.resolve()
-
-    config = init_cmd._agent_config_path(child, seed=False)
-    ctx = InitContext(project_root=child, interactive=False)
-    selection = init_cmd._resolve_agent_selection(
-        ctx,
-        _args(provider="codex", auth="subscription"),
-        config,
-    )
-
-    assert config == child / ".booley" / "booley.toml"
-    assert selection == init_cmd.AgentSelection("codex", "subscription", True, "subscription")
-    config.parent.mkdir()
-    assert init_cmd._step_agent_config(ctx, selection, config)
-    assert 'default = "codex"' in config.read_text(encoding="utf-8")
-    assert parent_config.read_text(encoding="utf-8") == original
+    assert parent_config.read_bytes() == b'[agent]\nprovider = "codex"\nauth = "subscription"\n'
+    assert not (child / ".booley").exists()
 
 
 @pytest.mark.parametrize("relocated_parent", [False, True])
@@ -128,7 +71,7 @@ def test_nested_child_run_init_isolates_every_project_write(
     parent_booley_dir = tmp_path / ("project-data" if relocated_parent else ".booley")
     parent_config = parent_booley_dir / "booley.toml"
     parent_config.parent.mkdir()
-    original = '[agent]\nprovider = "claude"\nauth = "auto"\n'
+    original = '[agent]\nprovider = "claude"\nauth = "auto"\n\n[interactive]\nidle_timeout_seconds = 600\n'
     parent_config.write_text(original, encoding="utf-8")
     parent_guidance = parent_booley_dir / "AGENTS.md"
     parent_guidance.write_bytes(b"# Parent Project\r\n")
@@ -144,19 +87,12 @@ def test_nested_child_run_init_isolates_every_project_write(
     init_cmd.reset_cache()
     assert init_cmd.resolve_booley_dir() == parent_config.parent.resolve()
 
-    _stub_nested_init_services(tmp_path, monkeypatch)
+    sandbox_calls, docker_calls = _stub_nested_init_services(tmp_path, monkeypatch)
 
-    assert (
-        init_cmd.run_init(
-            _args(
-                provider="codex",
-                auth="subscription",
-                skip_credentials=True,
-            ),
-            child,
-        )
-        == 0
+    args = argparse.Namespace(
+        seed=False, provider="codex", auth="subscription", skip_credentials=True
     )
+    assert init_cmd.run_init(args, child) == 0
 
     child_config = child / ".booley" / "booley.toml"
     content = child_config.read_text(encoding="utf-8")
@@ -173,17 +109,26 @@ def test_nested_child_run_init_isolates_every_project_write(
     else:
         assert not (child / "AGENTS.md").exists()
     assert init_cmd.resolve_booley_dir() == parent_booley_dir.resolve()
+    assert docker_calls == [["run", "--rm", _SANDBOX_IMAGE, "git", "--version"]]
+    assert sandbox_calls == [
+        {
+            "nangate_pdk_root": tmp_path / "pdk",
+            "agent_app": "codex",
+            "runtime_image_id": _SANDBOX_IMAGE,
+            "init_will_create_booley_dir": True,
+        }
+    ]
+    assert str(child.resolve()) in inventory.known_roots()
 
 
 def _stub_nested_init_services(tmp_path, monkeypatch):
+    """Stand in for the Docker-backed services; return the Sandbox and Docker calls made."""
+    stub_host_images(monkeypatch, _CURRENT)
+    sandbox_calls = []
+    # private: Sandbox Issuance needs Docker.
     monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
+        init_cmd, "_step_sandbox", lambda _ctx, **kwargs: sandbox_calls.append(kwargs)
     )
-    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
-    monkeypatch.setattr(init_cmd, "_step_sandbox", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(init_cmd, "_step_project_inventory", lambda _ctx: None)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
 
     from booley.runtime import issuance_invalidation, lifecycle_lock
@@ -194,6 +139,7 @@ def _stub_nested_init_services(tmp_path, monkeypatch):
         "shared_recovery_blocks_command",
         lambda *, read_only: False,
     )
+    return sandbox_calls, docker_cli_absent(monkeypatch)
 
 
 def _initialize_nested_git_repositories(parent_booley_dir, child):
@@ -219,672 +165,444 @@ def _initialize_nested_git_repositories(parent_booley_dir, child):
     return (parent_booley_dir / ".git" / "config").read_bytes()
 
 
-def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):
-    parent_config = tmp_path / ".booley" / "booley.toml"
-    parent_config.parent.mkdir()
-    parent_config.write_text(
-        "[interactive]\nidle_timeout_seconds = 600\n",
-        encoding="utf-8",
-    )
-    child = tmp_path / "child"
-    child.mkdir()
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    init_cmd.reset_cache()
-    config = init_cmd._agent_config_path(child, seed=False)
-
-    assert init_cmd._project_config_migration_preflight(InitContext(project_root=child), config)
-
-
-def test_init_resolves_config_path_once_for_preflight_read_and_write(tmp_path, monkeypatch):
-    config = tmp_path / ".booley" / "booley.toml"
-    selection = init_cmd.AgentSelection("codex", "subscription", True, "subscription")
-    calls = []
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
-    )
-
-    def config_path(_root, *, seed):
-        calls.append(("path", seed))
-        return config
-
-    def preflight(_ctx, path):
-        calls.append(("preflight", path))
-        return True
-
-    def resolve(_ctx, _args, path):
-        calls.append(("read", path))
-        return selection
-
-    def project_steps(_ctx, _args, selected, path, *_rest):
-        calls.append(("write", path))
-        assert selected is selection
-        return 0
-
-    monkeypatch.setattr(init_cmd, "_agent_config_path", config_path)
-    monkeypatch.setattr(init_cmd, "_project_config_migration_preflight", preflight)
-    monkeypatch.setattr(init_cmd, "_resolve_agent_selection", resolve)
-    monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
-    monkeypatch.setattr(init_cmd, "_run_project_init_steps", project_steps)
-
-    assert init_cmd._run_init_unlocked(_args(), tmp_path) == 0
-    assert calls == [
-        ("path", False),
-        ("preflight", config),
-        ("read", config),
-        ("write", config),
-    ]
-
-
-def test_terminal_prompt_accepts_documented_defaults(tmp_path, monkeypatch):
-    answers = iter(("",))  # the provider; auth is detected, not asked
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-    ctx = InitContext(project_root=tmp_path, interactive=True)
-
-    config = init_cmd._agent_config_path(tmp_path, seed=False)
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
-
-    assert resolved is not None
-    assert resolved == init_cmd.AgentSelection("claude", "subscription", True, "subscription")
-
-
-def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
-    booley_dir = init_cmd.booley_dir_for_init(tmp_path)
-    booley_dir.mkdir()
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
-    )
-
-    def seed(_ctx, selection):
-        config = (booley_dir / "booley.toml").read_text(encoding="utf-8")
-        assert selection == init_cmd.AgentSelection("codex", "subscription", True, "subscription")
-        assert '[agent]\ndefault = "codex"\nauth = "subscription"' in config
-        return 0
-
-    monkeypatch.setattr(init_cmd, "_run_seed", seed)
-
-    assert (
-        init_cmd.run_init(
-            _args(seed=True, provider="codex", auth="subscription"),
-            tmp_path,
-        )
-        == 0
-    )
-
-
-def test_terminal_prompt_stops_after_three_invalid_answers(monkeypatch):
-    answers = iter(("", "other", "still-other"))
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-
-    assert init_cmd._prompt_agent_choice("provider", ("claude", "codex")) is None
-
-
-def test_agent_selection_records_an_aborted_auth_prompt(tmp_path, monkeypatch):
-    choices = iter(("claude", None))
-    monkeypatch.setattr(init_cmd, "_prompt_agent_choice", lambda *_args, **_kwargs: next(choices))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")  # both credentials: auth is asked
-    (tmp_path / "empty-home" / ".claude").mkdir()
-    (tmp_path / "empty-home" / ".claude" / ".credentials.json").write_bytes(
-        b'{"claudeAiOauth": {"accessToken": "a", "refreshToken": "r", "expiresAt": 4102444800000}}'
-    )
-    ctx = InitContext(project_root=tmp_path, interactive=True)
-
-    config = init_cmd._agent_config_path(tmp_path, seed=False)
-    assert init_cmd._resolve_agent_selection(ctx, _args(), config) is None
-    assert ctx.results[-1].detail == "agent selection aborted"
-
-
-def test_existing_guidance_plan_can_proceed(tmp_path, monkeypatch):
-    canon = tmp_path / ".booley" / "AGENTS.md"
-    canon.parent.mkdir()
-    canon.write_text("# Project\n", encoding="utf-8")
-    plan = SimpleNamespace(blockers=[])
-    monkeypatch.setattr(init_cmd, "plan_guidance_links", lambda *_args: plan)
-
-    assert init_cmd._plan_existing_guidance(InitContext(project_root=tmp_path)) == (plan, True)
-
-
-def test_existing_guidance_inspection_failure_stops_init(tmp_path, monkeypatch):
-    canon = tmp_path / ".booley" / "AGENTS.md"
-    canon.parent.mkdir()
-    canon.write_text("# Project\n", encoding="utf-8")
-    monkeypatch.setattr(
-        init_cmd,
-        "plan_guidance_links",
-        lambda *_args: (_ for _ in ()).throw(OSError("unreadable")),
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    assert init_cmd._plan_existing_guidance(ctx) == (None, False)
-    assert ctx.results[-1].detail == "inspection failed"
-
-
-def test_persist_selection_preserves_existing_config_text(tmp_path):
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    original = "# user comment\n\n[flows.sim]\nenabled = false\n"
-    config.write_text(original, encoding="utf-8")
-    selection = init_cmd.AgentSelection("claude", "api_key", True, "api_key")
-
-    assert init_cmd._step_agent_config(InitContext(project_root=tmp_path), selection, config)
-
-    updated = config.read_text(encoding="utf-8")
-    assert updated.startswith(original)
-    assert updated.endswith('[agent]\ndefault = "claude"\nauth = "api_key"\n')
-
-
-def test_persist_selection_writes_project_data_with_lf(tmp_path):
-    """Windows text mode must not turn booley.toml into Booley configuration with CRLF line endings (#609)."""
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    config.write_bytes(b"# user comment\n[flows.sim]\nenabled = false\n")
-    selection = init_cmd.AgentSelection("claude", "api_key", True, "api_key")
-
-    assert init_cmd._step_agent_config(InitContext(project_root=tmp_path), selection, config)
-
-    assert b"\r\n" not in config.read_bytes()
-
-
-@pytest.mark.parametrize("check_only", [False, True])
-def test_agent_config_refuses_symlinked_booley_toml(tmp_path, check_only):
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    destination = tmp_path / "outside.toml"
-    destination.write_bytes(b"# elsewhere\n")
-    config = booley_dir / "booley.toml"
-    symlink_or_skip(config, destination)
-    planted_target = config.readlink()
-    selection = init_cmd.AgentSelection("claude", "api_key", True, "api_key")
-    ctx = InitContext(project_root=tmp_path, check_only=check_only)
-
-    assert init_cmd._step_agent_config(ctx, selection, config) is False
-
-    assert destination.read_bytes() == b"# elsewhere\n"
-    assert config.readlink() == planted_target
-    assert ctx.results[-1].status == "err"
-
-
-def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeypatch):
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    body = '[agent]\nprovider = "codex"\nauth = "subscription"\n'
-    # write_bytes: write_text would turn \n into \r\n on Windows and skew the byte compare.
-    config.write_bytes(body.encode())
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
-    )
-    ctx = InitContext(project_root=tmp_path, interactive=True)
-
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
-
-    assert resolved == init_cmd.AgentSelection("codex", "subscription")
-    assert init_cmd._step_agent_config(ctx, resolved, config)
-    assert config.read_text(encoding="utf-8") == body
-
-
-def test_init_keeps_a_per_cli_auth_table(tmp_path, monkeypatch):
-    """An [agent.auth] table counts as declared auth: no prompt, no rewrite."""
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    body = (
-        '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n\n'
-        '[agent.auth]\nclaude = "api_key"\ncodex = "subscription"\n'
-    )
-    # Bytes, not write_text: Windows would translate "\n" to CRLF.
-    config.write_bytes(body.encode())
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
-    )
-    ctx = InitContext(project_root=tmp_path, interactive=True)
-
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
-
-    assert resolved == init_cmd.AgentSelection("codex", "subscription")
-    assert init_cmd._step_agent_config(ctx, resolved, config)
-    assert config.read_bytes() == body.encode()
-
-
-def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    config.write_text('[agent]\nprovider = "claude"\n', encoding="utf-8")
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True), config)
-
-    assert resolved == init_cmd.AgentSelection("claude", "subscription", False, "subscription")
-    assert init_cmd._step_agent_config(ctx, resolved, config)
-    # Bytes: the older `provider` line must survive byte-identical; init only adds auth.
-    assert config.read_bytes() == b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
-
-
-@pytest.mark.parametrize(
-    "existing",
-    [
-        pytest.param(None, id="missing-file"),
-        pytest.param(b"# c\n[flows.sim]\nenabled = false\n", id="no-agent-table"),
-    ],
+_AGENT_GIT = b'[agent]\nprovider = "claude"\n\n[agent.git]\nname = "Expected Developer"\n'
+_TABLE_COMMENTS = (
+    b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
+    b'[agent.auth]\n# billing\nclaude = "api_key"  # keep\ncodex = "auto"\n\n[flows]\nx = 1\n'
 )
-def test_first_init_records_default_not_provider(tmp_path, existing):
-    """A Project without [agent] gets the current key `default`, never the older `provider`."""
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    if existing is not None:
-        config.write_bytes(existing)
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
-    assert init_cmd._step_agent_config(ctx, resolved, config)
-
-    written = config.read_bytes()
-    assert written.startswith(existing or b"")
-    assert written.endswith(b'[agent]\ndefault = "claude"\nauth = "subscription"\n')
-    assert "provider" not in tomllib.loads(written.decode("utf-8"))["agent"]
-
-
-def test_agent_table_without_default_gains_default(tmp_path):
-    """An [agent] table that declares no default CLI receives `default`, not `provider`."""
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    config.write_bytes(b'[agent]\nauth = "subscription"\n')
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
-    assert init_cmd._step_agent_config(ctx, resolved, config)
-
-    assert config.read_bytes() == b'[agent]\nauth = "subscription"\ndefault = "claude"\n'
 
 
 @pytest.mark.parametrize(
-    "declared",
-    [
-        pytest.param(b'[agent]\ndefault = "codex"\n', id="default"),
-        pytest.param(b'[agent]\nprovider = "codex"\n', id="provider-alias"),
-        pytest.param(b'[agent]\nclis = ["codex"]\n', id="clis"),
-    ],
-)
-def test_provider_flag_conflict_names_agent_default(tmp_path, capsys, declared):
-    """The conflict error names the config key `[agent] default`, whichever spelling declared it."""
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    config.write_bytes(declared)
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-
-    assert init_cmd._resolve_agent_selection(ctx, _args(provider="claude"), config) is None
-
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert "--provider=claude conflicts with booley.toml [agent] default='codex'" in output
-    assert "[agent] provider" not in output
-    assert config.read_bytes() == declared
-
-
-@pytest.mark.parametrize(
-    ("before", "after"),
+    ("before", "flags", "after"),
     [
         pytest.param(
-            '[agent]\nprovider = "codex"\n\n[sandbox]\nenabled = true\n',
-            '[agent]\nprovider = "codex"\nauth = "subscription"\n\n[sandbox]\nenabled = true\n',
+            None, {}, b'[agent]\ndefault = "claude"\nauth = "subscription"\n', id="missing-file"
+        ),
+        pytest.param(
+            b"# c\n[flows.sim]\nenabled = false\n",
+            {},
+            b"# c\n[flows.sim]\nenabled = false\n"
+            b'\n[agent]\ndefault = "claude"\nauth = "subscription"\n',
+            id="no-agent-table",
+        ),
+        pytest.param(
+            b'[agent]\nprovider = "claude"\n',
+            {},
+            b'[agent]\nprovider = "claude"\nauth = "subscription"\n',
+            id="provider-only",
+        ),
+        pytest.param(
+            b'[agent]\nauth = "subscription"\n',
+            {},
+            b'[agent]\nauth = "subscription"\ndefault = "claude"\n',
+            id="auth-without-default",
+        ),
+        pytest.param(
+            b'[agent]\nprovider = "codex"\n\n[sandbox]\nenabled = true\n',
+            {},
+            b'[agent]\nprovider = "codex"\nauth = "subscription"\n\n[sandbox]\nenabled = true\n',
             id="trailing-blank",
         ),
         pytest.param(
-            '[agent]\nprovider = "codex"\n[sandbox]\nenabled = true\n',
-            '[agent]\nprovider = "codex"\nauth = "subscription"\n[sandbox]\nenabled = true\n',
+            b'[agent]\nprovider = "codex"\n[sandbox]\nenabled = true\n',
+            {},
+            b'[agent]\nprovider = "codex"\nauth = "subscription"\n[sandbox]\nenabled = true\n',
             id="no-blank",
         ),
         pytest.param(
-            '[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\n\n',
-            '[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\nauth = "subscription"\n\n',
+            b'[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\n\n',
+            {},
+            b'[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\nauth = "subscription"\n\n',
             id="last-table",
         ),
         pytest.param(
-            '[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\n\n[sandbox]\n',
-            '[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\nauth = "subscription"\n\n[sandbox]\n',
+            b'[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\n\n[sandbox]\n',
+            {},
+            b'[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\n'
+            b'auth = "subscription"\n\n[sandbox]\n',
             id="nested-array",
         ),
         pytest.param(
-            '[agent]\nprovider = "codex"\n\n# sandbox settings\n[sandbox]\nenabled = true\n',
-            '[agent]\nprovider = "codex"\n\n# sandbox settings\nauth = "subscription"\n'
-            "[sandbox]\nenabled = true\n",
+            b'[agent]\nprovider = "codex"\n\n# sandbox settings\n[sandbox]\nenabled = true\n',
+            {},
+            b'[agent]\nprovider = "codex"\n\n# sandbox settings\nauth = "subscription"\n'
+            b"[sandbox]\nenabled = true\n",
             id="comment-before-header",
         ),
         pytest.param(
-            '[agent.git]\nname = "E"\n',
-            '[agent]\ndefault = "claude"\nauth = "subscription"\n\n[agent.git]\nname = "E"\n',
+            b'[agent.git]\nname = "E"\n',
+            {},
+            b'[agent]\ndefault = "claude"\nauth = "subscription"\n\n[agent.git]\nname = "E"\n',
             id="agent-git-only",
+        ),
+        pytest.param(
+            _AGENT_GIT,
+            {},
+            _AGENT_GIT.replace(b'"claude"\n\n', b'"claude"\nauth = "subscription"\n\n', 1),
+            id="agent-git-identity",
+        ),
+        pytest.param(
+            _TABLE_COMMENTS,
+            {},
+            _TABLE_COMMENTS.replace(b'codex = "auto"', b'codex = "subscription"'),
+            id="auth-table-comments",
+        ),
+        pytest.param(
+            b'[agent]\nauth = "auto"  # billing\ndefault = "claude"\n',
+            {},
+            b'[agent]\nauth = "subscription"  # billing\ndefault = "claude"\n',
+            id="auto-string-comment",
+        ),
+        pytest.param(
+            b'[agent]\ndefault = "claude"\n',
+            {"auth": "api_key"},
+            b'[agent]\ndefault = "claude"\nauth = "api_key"\n',
+            id="auth-flag",
         ),
     ],
 )
-def test_recorded_auth_follows_last_agent_key(tmp_path, before, after):
-    """New [agent] keys land after the table's last non-blank line, not after
-    the blank lines that separate it from the next header."""
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    config.write_text(before, encoding="utf-8")
-    ctx = InitContext(project_root=tmp_path, interactive=False)
+def test_init_records_missing_agent_keys(tmp_path, monkeypatch, before, flags, after):
+    """Init adds only the missing ``[agent]`` keys and leaves every other byte alone.
 
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True), config)
-    assert init_cmd._step_agent_config(ctx, resolved, config)
+    New keys land after the table's last non-blank line (40e468e49); the current key
+    ``default`` is written, never the older ``provider`` (#3227); the file keeps LF
+    line endings (#609); a retired ``auto`` is replaced in place, keeping its comment.
+    """
+    config = project_config(tmp_path, before)
+    stub_host_images(monkeypatch)
 
-    written = config.read_text(encoding="utf-8")
-    assert written == after
-    assert tomllib.loads(written)["agent"]["auth"] == "subscription"
+    seed_init(tmp_path, **flags)
 
-
-def test_persisting_auth_preserves_existing_git_identity(tmp_path):
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    config = booley_dir / "booley.toml"
-    config.write_text(
-        '[agent]\nprovider = "claude"\n\n'
-        '[agent.git]\nname = "Expected Developer"\n'
-        'email = "developer-identity.invalid"\n',
-        encoding="utf-8",
-    )
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True), config)
-
-    assert resolved == init_cmd.AgentSelection("claude", "subscription", False, "subscription")
-    assert init_cmd._step_agent_config(ctx, resolved, config)
-    assert config.read_text(encoding="utf-8") == (
-        '[agent]\nprovider = "claude"\nauth = "subscription"\n\n'
-        '[agent.git]\nname = "Expected Developer"\n'
-        'email = "developer-identity.invalid"\n'
-    )
-
-
-def test_check_only_reports_pending_selection_before_booley_dir_exists(tmp_path):
-    selection = init_cmd.AgentSelection("codex", "subscription", True, "subscription")
-    config = tmp_path / ".booley" / "booley.toml"
-    ctx = InitContext(project_root=tmp_path, check_only=True, interactive=False)
-
-    assert init_cmd._step_agent_config(ctx, selection, config)
-
-    assert ctx.results[-1].status == "warn"
-    assert not config.exists()
-
-
-def test_seed_uses_resolved_provider_even_when_check_only_did_not_write(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_image_lifecycle",
-        lambda _ctx, **_kwargs: init_cmd.LifecycleResult(
-            "private", "sha256:id", init_cmd.ImageLifecycleStatus.CURRENT
-        ),
-    )
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_sandbox",
-        lambda _ctx, **kwargs: calls.append(kwargs),
-    )
-    monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
-    ctx = InitContext(project_root=tmp_path, check_only=True, interactive=False)
-
-    assert init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "api_key")) == 0
-
-    assert len(calls) == 1
-    assert calls[0]["agent_app"] == "codex"
-
-
-def test_full_init_passes_verified_runtime_image_id_to_sandbox_step(tmp_path, monkeypatch):
-    result = init_cmd.LifecycleResult(
-        "booley-sandbox-riscv",
-        "sha256:" + "f" * 64,
-        init_cmd.ImageLifecycleStatus.CURRENT,
-    )
-    monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
-    for name in (
-        "_step_booley_dir",
-        "_step_core_projections",
-        "_step_auth",
-        "_step_git_hooks",
-        "_step_project_git_hooks",
-        "_step_worktree_prune_guard",
-        "_step_line_endings",
-        "_step_guidance_links",
-        "_step_advisories",
-    ):
-        monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: "pdk")
-    monkeypatch.setattr(init_cmd, "_step_image_lifecycle", lambda _ctx, **_kwargs: result)
-    monkeypatch.setattr(init_cmd, "_sandbox_git_version", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
-    remembered = []
-    monkeypatch.setattr(
-        init_cmd,
-        "remember_project",
-        remembered.append,
-        raising=False,
-    )
-    calls = []
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_sandbox",
-        lambda _ctx, **kwargs: calls.append(kwargs),
-    )
-    ctx = InitContext(project_root=tmp_path)
-    selection = init_cmd.AgentSelection("codex", "subscription")
-
-    assert (
-        init_cmd._run_project_init_steps(
-            ctx,
-            _args(),
-            selection,
-            tmp_path / ".booley" / "booley.toml",
-            None,
-        )
-        == 0
-    )
-
-    assert calls == [
-        {
-            "nangate_pdk_root": "pdk",
-            "agent_app": "codex",
-            "runtime_image_id": result.selected_id,
-            "init_will_create_booley_dir": True,
-        }
-    ]
-    assert remembered == [tmp_path]
+    assert config.read_bytes() == after
 
 
 @pytest.mark.parametrize(
-    ("status", "record", "result_status", "detail"),
+    ("declared", "flags", "message"),
     [
-        (
-            init_cmd.ImageLifecycleStatus.EXTERNAL,
-            "project_image",
-            "skip",
-            "user-managed image",
+        pytest.param(
+            b'[agent]\ndefault = "codex"\n',
+            {"provider": "claude"},
+            "--provider=claude conflicts with booley.toml [agent] default='codex'",
+            id="default",
         ),
-        (
-            init_cmd.ImageLifecycleStatus.STALE,
-            "docker_image",
-            "warn",
-            "Sandbox Image provenance is stale",
+        pytest.param(
+            b'[agent]\nprovider = "codex"\n',
+            {"provider": "claude"},
+            "--provider=claude conflicts with booley.toml [agent] default='codex'",
+            id="provider-alias",
         ),
-        (init_cmd.ImageLifecycleStatus.CURRENT, "docker_image", "current", "current"),
+        pytest.param(
+            b'[agent]\nclis = ["codex"]\n',
+            {"provider": "claude"},
+            "--provider=claude conflicts with booley.toml [agent] default='codex'",
+            id="clis",
+        ),
+        pytest.param(
+            b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
+            b'[agent.auth]\nclaude = "api_key"\ncodex = "auto"\n',
+            {"auth": "subscription"},
+            "--auth=subscription conflicts with booley.toml [agent] auth=",
+            id="auth-table",
+        ),
     ],
 )
-def test_image_lifecycle_step_returns_each_nonerror_result(
-    tmp_path,
-    monkeypatch,
-    status,
-    record,
-    result_status,
-    detail,
+def test_conflicting_flag_is_refused(tmp_path, monkeypatch, capsys, declared, flags, message):
+    """The conflict error names the config key `[agent] default`, whichever spelling declared it."""
+    config = project_config(tmp_path, declared)
+    reached = stub_host_images(monkeypatch)
+
+    seed_init(tmp_path, **flags)
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert message in output
+    assert "[agent] provider" not in output
+    assert config.read_bytes() == declared
+    assert reached == []
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+def test_agent_config_refuses_symlinked_booley_toml(tmp_path, monkeypatch, capsys, check_only):
+    destination = tmp_path / "outside.toml"
+    destination.write_bytes(b"# elsewhere\n")
+    config = project_config(tmp_path)
+    symlink_or_skip(config, destination)
+    planted_target = config.readlink()
+    stub_host_images(monkeypatch)
+
+    seed_init(tmp_path, check_only=check_only)
+
+    assert destination.read_bytes() == b"# elsewhere\n"
+    assert config.readlink() == planted_target
+    captured = capsys.readouterr()
+    assert "refusing symlinked" in captured.out + captured.err
+
+
+@pytest.mark.parametrize("check_only", [False, True], ids=["write", "check-only"])
+def test_seed_hands_the_resolved_provider_to_the_sandbox_step(
+    tmp_path, monkeypatch, capsys, check_only
 ):
-    result = init_cmd.LifecycleResult("booley-sandbox", "sha256:" + "f" * 64, status)
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "reconcile_planned",
-        lambda *_args, **_kwargs: result,
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    assert init_cmd._step_image_lifecycle(ctx) is result
-    assert ctx.results[-1] == init_cmd.StepResult(record, result_status, detail)
-
-
-def test_image_lifecycle_step_reports_release_tag_cleanup(tmp_path, monkeypatch):
-    result = init_cmd.LifecycleResult(
-        "booley-sandbox-riscv",
-        "sha256:" + "f" * 64,
-        init_cmd.ImageLifecycleStatus.CHANGED,
-        cleanup=ImageCleanup(removed=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5",)),
-    )
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "reconcile_planned",
-        lambda *_args, **_kwargs: result,
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    assert init_cmd._step_image_lifecycle(ctx) is result
-    assert ctx.results[-1] == init_cmd.StepResult(
-        "docker_image", "ok", "removed obsolete Sandbox Image tags"
-    )
-
-
-def test_image_lifecycle_step_returns_after_reporting_pending_cleanup(tmp_path, monkeypatch):
-    release = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
-    result = init_cmd.LifecycleResult(
-        "booley-sandbox-riscv",
-        "sha256:" + "f" * 64,
-        init_cmd.ImageLifecycleStatus.CURRENT,
-        cleanup=ImageCleanup(pending=(release,)),
-    )
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "reconcile_planned",
-        lambda *_args, **_kwargs: result,
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    assert init_cmd._step_image_lifecycle(ctx) is result
-    assert ctx.results[-1] == init_cmd.StepResult(
-        "docker_image", "warn", "obsolete Sandbox Image tags remain"
-    )
-
-
-def test_image_lifecycle_step_reports_cleanup_alongside_stale_image(tmp_path, monkeypatch):
-    pending = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
-    retained = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.4"
-    result = init_cmd.LifecycleResult(
-        "booley-sandbox-riscv",
-        "sha256:" + "f" * 64,
-        init_cmd.ImageLifecycleStatus.STALE,
-        diagnostics=(Diagnostic("stale", "flavor provenance is stale"),),
-        cleanup=ImageCleanup(pending=(pending,), retained_required=(retained,)),
-    )
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "reconcile_planned",
-        lambda *_args, **_kwargs: result,
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    assert init_cmd._step_image_lifecycle(ctx) is result
-    assert (
-        init_cmd.StepResult("docker_image", "warn", "obsolete Sandbox Image tags remain")
-        in ctx.results
-    )
-    assert (
-        init_cmd.StepResult("docker_image", "warn", "obsolete Sandbox Image tags are in use")
-        in ctx.results
-    )
-    assert ctx.results[-1] == init_cmd.StepResult(
-        "docker_image", "warn", "Sandbox Image provenance is stale"
-    )
-
-
-def test_image_lifecycle_step_reports_cleanup_when_image_was_rebuilt(tmp_path, monkeypatch):
-    release = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
-    result = init_cmd.LifecycleResult(
-        "booley-sandbox-riscv",
-        "sha256:" + "f" * 64,
-        init_cmd.ImageLifecycleStatus.CHANGED,
-        changed_images=("booley-sandbox-riscv",),
-        cleanup=ImageCleanup(removed=(release,)),
-    )
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "reconcile_planned",
-        lambda *_args, **_kwargs: result,
-    )
-    # A changed image probes live Sandboxes through the real Docker CLI; stub it
-    # so the step stays a unit test (the live probe took up to 36 s on Windows CI).
-    monkeypatch.setattr(sr, "sessions_on_stale_image", lambda _root, _image: [])
-    ctx = InitContext(project_root=tmp_path)
-
-    assert init_cmd._step_image_lifecycle(ctx) is result
-    assert (
-        init_cmd.StepResult("docker_image", "ok", "removed obsolete Sandbox Image tags")
-        in ctx.results
-    )
-    assert ctx.results[-1] == init_cmd.StepResult(
-        "docker_image", "ok", "selected booley-sandbox-riscv"
-    )
-
-
-def test_flag_cannot_silently_replace_existing_provider(tmp_path):
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text(
-        '[agent]\nprovider = "claude"\nauth = "auto"\n', encoding="utf-8"
-    )
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-
-    assert (
-        init_cmd._resolve_agent_selection(
-            ctx,
-            _args(provider="codex"),
-            booley_dir / "booley.toml",
-        )
-        is None
-    )
-    assert ctx.results[-1].status == "err"
-
-
-def test_seed_heads_its_output_with_a_section_header_on_a_tty(tmp_path, monkeypatch, capsys):
     from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_image_lifecycle",
-        lambda _ctx, **_kwargs: init_cmd.LifecycleResult(
-            "private", "sha256:id", init_cmd.ImageLifecycleStatus.CURRENT
+    stub_host_images(monkeypatch, _CURRENT)
+    if not check_only:
+        project_config(tmp_path)
+    handed = []
+
+    def sandbox_step(_ctx, **kwargs):
+        config = tmp_path / ".booley" / "booley.toml"
+        handed.append((kwargs["agent_app"], config.read_bytes() if config.exists() else None))
+
+    # private: Sandbox Issuance needs Docker.
+    monkeypatch.setattr(init_cmd, "_step_sandbox", sandbox_step)
+
+    seed_init(tmp_path, provider="codex", check_only=check_only)
+
+    out = capsys.readouterr().out
+    if check_only:
+        assert handed == [("codex", None)]
+        assert not (tmp_path / ".booley").exists()
+        assert "would record [agent] codex/subscription" in out
+    else:
+        assert handed == [("codex", b'[agent]\ndefault = "codex"\nauth = "subscription"\n')]
+        assert f"Seeding the Sandbox for {tmp_path}\n" in out
+
+
+@pytest.mark.parametrize("inspection", ["fails", "passes"])
+def test_seed_stops_when_existing_guidance_cannot_be_inspected(
+    tmp_path, monkeypatch, capsys, inspection
+):
+    booley_dir = project_config(tmp_path, b'[agent]\ndefault = "claude"\n').parent
+    (booley_dir / "AGENTS.md").write_bytes(b"# Project\n")
+    reached = stub_host_images(monkeypatch)
+    if inspection == "fails":
+
+        def unreadable(*_args):
+            raise OSError("unreadable")
+
+        # No portable file state makes the guidance inspection raise.
+        monkeypatch.setattr(init_cmd, "plan_guidance_links", unreadable)
+
+    seed_init(tmp_path)
+
+    config = (booley_dir / "booley.toml").read_bytes()
+    if inspection == "fails":
+        assert "initialization filesystem inspection failed: unreadable" in capsys.readouterr().out
+        assert config == b'[agent]\ndefault = "claude"\n'
+        assert reached == []
+    else:
+        assert config == b'[agent]\ndefault = "claude"\nauth = "subscription"\n'
+        assert reached == [tmp_path]
+
+
+def _select_at_terminal(root, **flags):
+    """Resolve and persist the selection with a terminal; return the last record."""
+    ctx = InitContext(project_root=root, interactive=True, show_step_banners=False)
+    config = project_config(root)
+    # private: `run_init` takes `interactive` from `sys.stdin.isatty`, bound when booley is
+    # imported, so a test cannot give it a terminal; prompts are driven at the selection step.
+    selection = init_cmd._resolve_agent_selection(ctx, argparse.Namespace(**flags), config)
+    if selection is not None:
+        init_cmd._step_agent_config(ctx, selection, config)  # private: same reason
+    return ctx.results[-1]
+
+
+def _answer_prompts(monkeypatch, *answers):
+    """Answer each prompt in turn, then end the input; return the prompts asked."""
+    prompts = []
+    remaining = iter(answers)
+
+    def answer(prompt):
+        prompts.append(prompt)
+        try:
+            return next(remaining)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr(builtins, "input", answer)
+    return prompts
+
+
+_DEFAULT_CLAUDE = b'[agent]\ndefault = "claude"\nauth = "%s"\n'
+
+
+@pytest.mark.parametrize(
+    ("credentials", "answers", "prompts", "written"),
+    [
+        pytest.param((), ("",), 1, _DEFAULT_CLAUDE % b"subscription", id="provider-default"),
+        pytest.param((), ("other", "still-other", "nope"), 3, None, id="three-invalid-answers"),
+        pytest.param(
+            ("login", "key"), ("", ""), 2, _DEFAULT_CLAUDE % b"subscription", id="auth-default"
         ),
+        pytest.param(
+            ("login", "key"), ("", "api-key"), 2, _DEFAULT_CLAUDE % b"api_key", id="auth-api-key"
+        ),
+        pytest.param(("login", "key"), ("",), 2, None, id="auth-aborted"),
+        pytest.param(("key",), ("",), 1, _DEFAULT_CLAUDE % b"api_key", id="single-credential"),
+    ],
+)
+def test_terminal_prompts_resolve_or_abort(
+    tmp_path, monkeypatch, capsys, _empty_host, credentials, answers, prompts, written
+):
+    if "login" in credentials:
+        login(_empty_host, "claude")
+    if "key" in credentials:
+        api_key(monkeypatch, "claude")
+    asked = _answer_prompts(monkeypatch, *answers)
+
+    result = _select_at_terminal(tmp_path)
+
+    assert len(asked) == prompts
+    if len(asked) == 2:
+        assert "auth for claude" in asked[1]
+    config = tmp_path / ".booley" / "booley.toml"
+    if written is None:
+        assert result == init_cmd.StepResult("agent_config", "err", "agent selection aborted")
+        assert not config.exists()
+    else:
+        assert config.read_bytes() == written
+    if len(answers) == 3:
+        assert (
+            "agent provider selection aborted after 3 invalid answers" in capsys.readouterr().out
+        )
+
+
+@pytest.mark.parametrize(
+    ("body", "credentials", "label"),
+    [
+        pytest.param(
+            b'[agent]\nprovider = "codex"\nauth = "subscription"\n',
+            (),
+            "codex/subscription",
+            id="provider-alias",
+        ),
+        pytest.param(
+            b'[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n\n'
+            b'[agent.auth]\nclaude = "api_key"\ncodex = "subscription"\n',
+            (),
+            "codex/subscription",
+            id="per-cli-table",
+        ),
+        pytest.param(
+            b'[agent]\ndefault = "claude"\nauth = "subscription"\n',
+            ("key",),
+            "claude/subscription",
+            id="default-auth-with-key",
+        ),
+    ],
+)
+def test_recorded_selection_is_kept_without_prompting(
+    tmp_path, monkeypatch, body, credentials, label
+):
+    """A prompt would abort: the recorded selection is authoritative and not rewritten."""
+    if "key" in credentials:
+        api_key(monkeypatch, "claude")
+    config = project_config(tmp_path, body)
+
+    result = _select_at_terminal(tmp_path)
+
+    assert result == init_cmd.StepResult("agent_config", "skip", label)
+    assert config.read_bytes() == body
+
+
+@pytest.mark.parametrize(
+    ("result", "records"),
+    [
+        pytest.param(
+            init_cmd.LifecycleResult(
+                "booley-sandbox", _SANDBOX_IMAGE, init_cmd.ImageLifecycleStatus.EXTERNAL
+            ),
+            [("project_image", "skip", "user-managed image")],
+            id="external",
+        ),
+        pytest.param(
+            init_cmd.LifecycleResult(
+                "booley-sandbox", _SANDBOX_IMAGE, init_cmd.ImageLifecycleStatus.STALE
+            ),
+            [("docker_image", "warn", "Sandbox Image provenance is stale")],
+            id="stale",
+        ),
+        pytest.param(
+            init_cmd.LifecycleResult(
+                "booley-sandbox", _SANDBOX_IMAGE, init_cmd.ImageLifecycleStatus.CURRENT
+            ),
+            [("docker_image", "current", "current")],
+            id="current",
+        ),
+        pytest.param(
+            init_cmd.LifecycleResult(
+                "booley-sandbox-riscv",
+                _SANDBOX_IMAGE,
+                init_cmd.ImageLifecycleStatus.CHANGED,
+                cleanup=ImageCleanup(removed=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5",)),
+            ),
+            [("docker_image", "ok", "removed obsolete Sandbox Image tags")],
+            id="release-tags-removed",
+        ),
+        pytest.param(
+            init_cmd.LifecycleResult(
+                "booley-sandbox-riscv",
+                _SANDBOX_IMAGE,
+                init_cmd.ImageLifecycleStatus.CURRENT,
+                cleanup=ImageCleanup(pending=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5",)),
+            ),
+            [("docker_image", "warn", "obsolete Sandbox Image tags remain")],
+            id="cleanup-pending",
+        ),
+        pytest.param(
+            init_cmd.LifecycleResult(
+                "booley-sandbox-riscv",
+                _SANDBOX_IMAGE,
+                init_cmd.ImageLifecycleStatus.STALE,
+                diagnostics=(Diagnostic("stale", "flavor provenance is stale"),),
+                cleanup=ImageCleanup(
+                    pending=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5",),
+                    retained_required=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.4",),
+                ),
+            ),
+            [
+                ("docker_image", "warn", "obsolete Sandbox Image tags remain"),
+                ("docker_image", "warn", "obsolete Sandbox Image tags are in use"),
+                ("docker_image", "warn", "Sandbox Image provenance is stale"),
+            ],
+            id="stale-with-cleanup",
+        ),
+        pytest.param(
+            init_cmd.LifecycleResult(
+                "booley-sandbox-riscv",
+                _SANDBOX_IMAGE,
+                init_cmd.ImageLifecycleStatus.CHANGED,
+                changed_images=("booley-sandbox-riscv",),
+                cleanup=ImageCleanup(removed=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5",)),
+            ),
+            [
+                ("docker_image", "ok", "removed obsolete Sandbox Image tags"),
+                ("docker_image", "ok", "selected booley-sandbox-riscv"),
+            ],
+            id="rebuilt",
+        ),
+    ],
+)
+def test_image_lifecycle_step_records(tmp_path, monkeypatch, result, records):
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle, "reconcile_planned", lambda *_args, **_kwargs: result
     )
-    monkeypatch.setattr(init_cmd, "_step_sandbox", lambda _ctx, **_kwargs: None)
-    monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
-    ctx = InitContext(project_root=tmp_path, interactive=False)
+    # A changed image probes live Sandboxes through the real Docker CLI.
+    monkeypatch.setattr(sr, "sessions_on_stale_image", lambda _root, _image: [])
+    ctx = InitContext(project_root=tmp_path)
 
-    init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "api_key"))
-
-    assert capsys.readouterr().out.startswith(f"Seeding the Sandbox for {tmp_path}\n")
+    # private: every caller goes on to Sandbox Issuance, which needs Docker.
+    assert init_cmd._step_image_lifecycle(ctx) is result
+    assert [(r.name, r.status, r.detail) for r in ctx.results] == records
 
 
 def test_unchanged_sandbox_is_recorded_as_current(tmp_path):
     ctx = InitContext(project_root=tmp_path)
 
+    # private: only `_step_sandbox` reports Sandbox changes, after a Sandbox Issuance
+    # that needs Docker.
     init_cmd._report_sandbox_changes(ctx, None, SimpleNamespace(changed=False))
 
     assert ctx.results[-1] == init_cmd.StepResult("interactive", "current", "current")

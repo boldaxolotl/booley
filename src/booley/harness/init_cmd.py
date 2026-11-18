@@ -605,18 +605,19 @@ def _prompt_agent_choice(
     label: str,
     choices: tuple[str, ...],
     *,
-    default: str | None = None,
+    default: str,
 ) -> str | None:
-    """Prompt for one choice, accepting the documented default when provided."""
+    """Prompt for one choice; an empty answer takes the documented default."""
     options = "/".join(choice.replace("_", "-") for choice in choices)
     for _attempt in range(3):
         try:
-            suffix = f" [{default.replace('_', '-')}]" if default else ""
-            value = input(f"  Select agent {label} ({options}){suffix}: ").strip()
+            value = input(
+                f"  Select agent {label} ({options}) [{default.replace('_', '-')}]: "
+            ).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
-        if not value and default:
+        if not value:
             return default
         value = value.lower().replace("-", "_")
         if value in choices:
@@ -783,9 +784,9 @@ def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]
     table's last non-blank line: after a multi-line value's closing line and
     after a whole-line comment in the table body, but before the blank lines
     that separate the table from the next header. Without one, an ``[agent]``
-    table is appended at the end of the file. A ``dict`` value is an
-    ``[agent.auth]`` table: a recorded table keeps its lines and only has the
-    changed entries set. A recorded string is replaced in place, keeping its
+    table of string fields is appended at the end of the file. A ``dict`` value
+    is an ``[agent.auth]`` table: a recorded table keeps its lines and only has
+    the changed entries set. A recorded string is replaced in place, keeping its
     comment; a string turned into a table moves to the end of the table.
     """
     document = tomlkit.parse(content)
@@ -795,13 +796,7 @@ def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]
         rendered = "".join(
             f'{key} = "{value}"\n' for key, value in fields.items() if isinstance(value, str)
         )
-        tables = "".join(
-            f"\n[agent.{key}]\n"
-            + "".join(f'{cli} = "{policy}"\n' for cli, policy in value.items())
-            for key, value in fields.items()
-            if isinstance(value, dict)
-        )
-        return content + prefix + separator + "[agent]\n" + rendered + tables
+        return content + prefix + separator + "[agent]\n" + rendered
     table = document["agent"]
     for key, value in fields.items():
         current = table.get(key)
