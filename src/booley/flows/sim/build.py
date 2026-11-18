@@ -214,7 +214,7 @@ def _prepare_simulation_build(
         resolution_vlnv=resolution_vlnv,
         backend_arguments=backend_arguments,
         library_plan=core_library,
-        # Without a measured runner FuseSoC setup runs unmeasured, as for a Mutation Flow.
+        # Without a measured runner FuseSoC setup runs unmeasured.
         runner=setup_runner or subprocess.run,
     )
     validate_top_parameter_intent(resolved, flow="sim")
