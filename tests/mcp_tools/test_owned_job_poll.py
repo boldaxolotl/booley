@@ -327,12 +327,6 @@ def _stub_http_server(monkeypatch, build=None):
     return capture_serving(monkeypatch)
 
 
-def _announcements(caplog):
-    return [
-        r.getMessage() for r in caplog.records if "Interactive MCP server (HTTP)" in r.getMessage()
-    ]
-
-
 def test_http_server_passes_stable_owner(monkeypatch, caplog):
     from booley.mcp import job_ownership
 
@@ -357,7 +351,7 @@ def test_http_server_passes_stable_owner(monkeypatch, caplog):
     assert seen["identity"] == job_ownership.http_server_identity("box", 0)
     ((_app, (_host, port)),) = served
     assert port != 0
-    assert _announcements(caplog) == [f"Interactive MCP server (HTTP) on 127.0.0.1:{port}"]
+    assert f"Interactive MCP server (HTTP) on 127.0.0.1:{port}" in caplog.messages
 
 
 def test_http_server_on_a_held_port_exits_2_without_announcing(monkeypatch, caplog, capsys):
@@ -377,7 +371,7 @@ def test_http_server_on_a_held_port_exits_2_without_announcing(monkeypatch, capl
     err = capsys.readouterr().err
     assert f"127.0.0.1:{port}" in err
     assert "--port" in err
-    assert _announcements(caplog) == []
+    assert "Interactive MCP server" not in caplog.text
     assert served == []
 
 

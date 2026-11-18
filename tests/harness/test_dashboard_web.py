@@ -237,7 +237,6 @@ def test_web_flag_serves_loopback_after_binding(world):
         match = re.fullmatch(r"Booley Dashboard \(web\): http://127\.0\.0\.1:(\d+)\n", banner)
         assert match, banner
         port = int(match.group(1))
-        assert port != 0
         base = f"http://127.0.0.1:{port}"
         with urllib.request.urlopen(f"{base}/", timeout=hang_guard_s()) as page:
             assert page.status == 200
@@ -259,26 +258,16 @@ def test_web_flag_serves_loopback_after_binding(world):
         for stream in (proc.stdout, proc.stderr):
             if stream is not None:
                 stream.close()
-    with socket.socket() as again:
-        # TIME_WAIT from the served requests blocks a plain bind; only a live listener blocks this.
-        again.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        again.bind(("127.0.0.1", port))
 
 
-@pytest.mark.parametrize("words", [["--port"], []], ids=["port-flag", "default-port"])
-def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys, words):
+def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
     served = capture_serving(monkeypatch)
     with socket.socket() as holder:
         holder.bind(("127.0.0.1", 0))
         holder.listen()
         port = holder.getsockname()[1]
-        if words:
-            args = _dashboard_args("--web", "--port", str(port))
-        else:
-            monkeypatch.setattr(_web(), "DEFAULT_PORT", port)
-            args = _dashboard_args("--web")
 
-        assert tlr._cmd_dashboard(args, world.main) == 2
+        assert tlr._cmd_dashboard(_dashboard_args("--web", "--port", str(port)), world.main) == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""

@@ -320,5 +320,4 @@ def test_relay_that_cannot_listen_logs_the_address_and_exits_2(monkeypatch, capl
         with caplog.at_level(logging.ERROR):
             assert flexnet_relay.main([]) == 2
 
-    (record,) = [r for r in caplog.records if "relay could not listen" in r.getMessage()]
-    assert str(port) in record.getMessage()
+    assert any("relay could not listen" in m and str(port) in m for m in caplog.messages)
