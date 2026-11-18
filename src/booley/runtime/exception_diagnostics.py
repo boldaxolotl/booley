@@ -131,7 +131,7 @@ def write_exception_diagnostic(
 
 
 def with_diagnostic(text: str, diagnostic_path: Path | None) -> str:
-    """Append the diagnostic path to ``text`` with exactly one period before it."""
+    """Append the diagnostic path to ``text`` without doubling a trailing period."""
     if diagnostic_path is None:
         return text
     separator = " " if text.endswith(".") else ". "
