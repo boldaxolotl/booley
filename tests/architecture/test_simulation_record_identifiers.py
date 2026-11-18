@@ -113,29 +113,6 @@ def _defined_names(tree: ast.AST) -> list[tuple[int, str, str]]:
     return collector.found
 
 
-# Coverage Record names kept on purpose: shared QA helpers (#2911 owns QA mission assets) and the
-# persisted waiver keys (#2909 keeps the waiver candidate identity and path fields and the
-# Coverage reference kind in waivers).
-_COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
-    "qa/shared/coverage/evaluator/measurements.py": frozenset(
-        {
-            "CAMPAIGN_SCHEMA",
-            "read_campaign",
-        }
-    ),
-    "qa/shared/coverage/faults/approvals.py": frozenset(
-        {
-            "bind:campaign",
-        }
-    ),
-    "qa/shared/coverage/faults/campaign.py": frozenset(
-        {
-            "nested_campaign",
-            "rebind_reference:campaign",
-        }
-    ),
-}
-
 # Mutation Tester and Target campaign names, which keep their name.
 _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
     "src/booley/agent_workspace/isolation.py": frozenset(
@@ -230,7 +207,7 @@ _GOAL_NAMES: dict[str, frozenset[str]] = {
 def _kept_entries() -> dict[str, frozenset[str]]:
     """Merge the keep lists by file. An entry is name or Scope.qualname:name."""
     merged: dict[str, set[str]] = {}
-    for kept in (_COVERAGE_RECORD_NAMES, _MUTATION_TARGET_NAMES, _GOAL_NAMES):
+    for kept in (_MUTATION_TARGET_NAMES, _GOAL_NAMES):
         for relative, entries in kept.items():
             merged.setdefault(relative, set()).update(entries)
     return {relative: frozenset(entries) for relative, entries in merged.items()}
