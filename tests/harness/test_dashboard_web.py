@@ -239,15 +239,17 @@ def test_web_flag_serves_loopback_after_binding(world):
         port = int(match.group(1))
         assert port != 0
         base = f"http://127.0.0.1:{port}"
-        with urllib.request.urlopen(f"{base}/") as page:
+        with urllib.request.urlopen(f"{base}/", timeout=hang_guard_s()) as page:
             assert page.status == 200
             assert "html" in page.headers["Content-Type"]
         query = urllib.parse.urlencode({"worktree": str(world.main)})
-        with urllib.request.urlopen(f"{base}/api/snapshot?{query}") as snapshot:
+        with urllib.request.urlopen(
+            f"{base}/api/snapshot?{query}", timeout=hang_guard_s()
+        ) as snapshot:
             assert snapshot.status == 200
             assert {"header", "now", "results"} <= set(json.load(snapshot))
         proc.send_signal(signal.SIGINT)
-        _out, err = proc.communicate()
+        _out, err = proc.communicate(timeout=hang_guard_s())
         assert proc.returncode == 0
         assert "Traceback" not in err
     finally:

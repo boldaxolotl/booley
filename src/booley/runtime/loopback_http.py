@@ -37,6 +37,7 @@ def serve(app: object, sock: socket.socket) -> None:
     """Serve ``app`` on the listening ``sock`` until interrupted, then close it."""
     import uvicorn
 
+    # uvicorn types ``app`` as an ASGI callable; callers pass Starlette apps.
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))  # type: ignore[arg-type]
     try:
         with contextlib.suppress(KeyboardInterrupt):
