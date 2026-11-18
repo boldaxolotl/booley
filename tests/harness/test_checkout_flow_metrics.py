@@ -355,7 +355,8 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
         "COV_WAIVER_DIRECTORY_MISSING": coverage_result(
             tmp_path / "g", monkeypatch, _MixedCoverageExecution(), booley_toml=_MISSING_WAIVERS
         ),
-        "the coverage evaluation was blocked": coverage_result(
+        # A blocked evaluation still errors when the design also aborted the collection.
+        "the coverage evaluation was blocked: COV_WAIVER_DIRECTORY_MISSING": coverage_result(
             tmp_path / "h", monkeypatch, _TimedOutCoverageExecution(), booley_toml=_MISSING_WAIVERS
         ),
     }
