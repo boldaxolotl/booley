@@ -887,6 +887,27 @@ def test_a_cancelled_run_whose_report_fails_exits_130_with_a_note(
     assert "measurement failed" not in captured.err
     assert (f"Run {path.stem}: cancelled" in captured.out) is (failing == "markdown")
     assert path.with_suffix(".md").is_file() is (failing == "print")
+    if failing == "print":  # a bare exception still names what failed
+        assert notes[0].endswith(": BrokenPipeError")
+
+
+def test_a_cancelled_run_with_no_terminal_still_ends_as_a_ctrl_c(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+
+    def children(tables: Sequence[TableRules], _cancelled: object) -> ChildrenOutcome:
+        monkeypatch.setattr(sys, "stdout", _BrokenPipe())
+        monkeypatch.setattr(sys, "stderr", _BrokenPipe())  # the note cannot be written either
+        return outcome_of(tables, [0, 0], status=RunStatus.CANCELLED, finished=[True, False])
+
+    script_children(monkeypatch, children)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command(monkeypatch, project)
+
+    monkeypatch.undo()
+    assert_cancelled_run_stored(project)
 
 
 def test_stored_text_reports_skip_symlinks(tmp_path: Path) -> None:

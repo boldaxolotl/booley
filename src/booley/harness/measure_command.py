@@ -35,7 +35,7 @@ import tempfile
 import time
 import traceback
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -530,7 +530,10 @@ def _best_effort(what: str, step: Callable[[], _T]) -> _T | None:
     try:
         return step()
     except Exception as exc:  # noqa: BLE001 - the run is stored: a report failure must not replace exit 130
-        print(f"note: {what}: {' '.join(str(exc).split())}", file=sys.stderr)
+        reason = " ".join(str(exc).split()) or type(exc).__name__
+        # A closed terminal must not turn the note into the failure that replaces exit 130.
+        with suppress(OSError):
+            print(f"note: {what}: {reason}", file=sys.stderr)
         return None
 
 
