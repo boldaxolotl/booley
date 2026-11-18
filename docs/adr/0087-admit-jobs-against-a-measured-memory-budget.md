@@ -84,8 +84,8 @@ read-only, and delegating it would loosen the hardening.
   alone. (Always running unknown Jobs alone would serialize a fresh
   Project's first regression.) ASIC synthesis and FPGA implementation never
   borrow from another Target: their memory scales with the design, so a
-  block's estimate admits a chip's first run an order of magnitude low and
-  leaves the catch to the OOM guard after a wasted run. A Target's first such
+  block's estimate admits a chip's first run far too low and leaves the
+  catch to the OOM guard after a wasted run. A Target's first such
   run runs alone and says it has no measurement yet.
 - A Job estimated over the whole budget waits until nothing else runs, then
   runs alone with a warning. It is never refused: estimates are padded and
