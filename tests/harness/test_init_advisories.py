@@ -98,7 +98,7 @@ def send_off(project: Path, capsys: pytest.CaptureFixture[str]) -> SendOffRunner
         # PDK cache, image reconciliation) and Sandbox Issuance, which need Docker; driving
         # each case through it takes the dozen stubs of test_init_rerun.py::repo per case.
         if advise:
-            init_cmd._step_advisories(ctx)
+            init_cmd._step_advisories(ctx)  # private: see above
         advice = capsys.readouterr().out
         code = init_cmd._print_summary(ctx)  # private: the closing step named above
         detail = next((r.detail for r in ctx.results if r.name == "advisories"), None)

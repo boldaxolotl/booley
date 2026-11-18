@@ -54,9 +54,9 @@ def _finding(
     return bootstrap.BootstrapFinding(resource, state, state.value)
 
 
+# private: a function's length is source structure, not public behavior.
 @pytest.mark.parametrize("coordinator", ["_run_project_init_steps", "_run_init_unlocked"])
 def test_init_coordinators_fit_on_a_screen(coordinator: str) -> None:
-    # private: a function's length is source structure, not public behavior.
     source = inspect.getsourcelines(getattr(init_cmd, coordinator))[0]
     assert len(source) <= 50, f"{coordinator} exceeds the 50-line architecture limit"
 
@@ -72,7 +72,7 @@ def _host_setup_run(
         # Host Bootstrap; the test only asks whether `run_init` waits for the lock.
         monkeypatch.setattr(
             init_cmd,
-            "_run_init_unlocked",
+            "_run_init_unlocked",  # private: see above
             lambda *_args: invoked.append(operation) or 0,
         )
         return lambda: init_cmd.run_init(_args(), tmp_path)
@@ -143,7 +143,7 @@ def test_init_reports_unsafe_private_store_before_project_work(
     # Docker-backed Host Bootstrap; it proves recovery refuses before that work.
     monkeypatch.setattr(
         init_cmd,
-        "_run_init_unlocked",
+        "_run_init_unlocked",  # private: see above
         lambda *_a, **_kw: pytest.fail("unsafe recovery must precede Project work"),
     )
 
