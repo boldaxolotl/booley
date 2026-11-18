@@ -16,6 +16,7 @@ import pytest
 import booley.flows.sim.build as build_module
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
+from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
@@ -524,11 +525,22 @@ def test_missing_executable_is_typed_in_elab_only_result(
     assert "manifest:" not in outcome.report_text
 
 
+@pytest.mark.parametrize("signalled", [False, True])
 def test_elab_only_terminalizes_after_later_target_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signalled: bool
 ) -> None:
+    progress_path = tmp_path / "reports/sim/1/progress.json"
+    published: list[dict[str, object]] = []
+
+    class Builds(dict[str, Any]):
+        def __getitem__(self, selector: str) -> Any:
+            if signalled and selector == "sim_b":  # a signal ends the process here
+                abort_open_progress()
+                published.append(json.loads(progress_path.read_text(encoding="utf-8")))
+            return super().__getitem__(selector)
+
     crash = RuntimeError("simulated elaboration interruption")
-    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_a": _PASS, "sim_b": crash})
+    result, _seen = elab_cli(tmp_path, monkeypatch, Builds(sim_a=_PASS, sim_b=crash))
 
     assert result.exit_code == EXIT_ERROR
     assert "elaboration interruption" in result.outcome.report_text
@@ -537,6 +549,9 @@ def test_elab_only_terminalizes_after_later_target_crash(
     assert progress["phase"] == "aborted"
     assert progress["completed_targets"] == ["sim_a"]
     assert progress["pending_targets"] == ["sim_b"]
+    if signalled:
+        (snapshot,) = published
+        assert (snapshot["phase"], snapshot["pending_targets"]) == ("aborted", ["sim_b"])
 
 
 def test_one_target_executes_only_authenticated_make_and_resolves_its_build_budget(

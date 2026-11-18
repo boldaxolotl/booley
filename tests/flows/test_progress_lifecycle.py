@@ -15,6 +15,8 @@ from booley.flows import progress_lifecycle as progress_module
 from booley.flows.progress_lifecycle import (
     ProgressLifecycle,
     ProgressPublicationError,
+    abort_open_progress,
+    after_progress_publication,
     progress_document,
     read_progress_for_run,
     repair_progress_after_reap,
@@ -37,6 +39,52 @@ def test_normal_completion_publishes_once() -> None:
     with ProgressLifecycle(phases.append) as lifecycle:
         lifecycle.complete()
     assert phases == ["complete"]
+
+
+def test_signal_during_a_lock_held_write_waits_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "progress.json"
+    events: list[str] = []
+    original = progress_module._write_progress_json_unlocked  # pyright: ignore[reportPrivateUsage]
+
+    def signalled_write(target: Path, document: Any) -> None:
+        if not events:
+            # The signal lands while this write holds the progress lock.
+            events.append("signal")
+            after_progress_publication(lambda: events.append("handler") or abort_open_progress())
+        original(target, document)
+        events.append(f"wrote {document['phase']}")
+
+    monkeypatch.setattr(progress_module, "_write_progress_json_unlocked", signalled_write)
+
+    def publish(phase: str) -> None:
+        write_progress_json(
+            path,
+            progress_document(
+                flow="f", run_id="r", phase=phase, targets=["a"], completed_targets=[], detail={}
+            ),
+            lock_timeout_s=0.2,
+        )
+
+    with ProgressLifecycle(publish):
+        publish("running")
+
+    assert events == ["signal", "wrote running", "handler", "wrote aborted"]
+    assert json.loads(path.read_text(encoding="utf-8"))["phase"] == "aborted"
+
+
+def test_signal_during_the_terminal_publication_waits_for_it() -> None:
+    events: list[str] = []
+
+    def publish(phase: str) -> None:
+        after_progress_publication(lambda: events.append("handler") or abort_open_progress())
+        events.append(f"published {phase}")
+
+    with ProgressLifecycle(publish) as lifecycle:
+        lifecycle.complete()
+
+    assert events == ["published complete", "handler"]  # no `aborted` follows a landed `complete`
 
 
 def test_early_return_terminalizes_aborted() -> None:
