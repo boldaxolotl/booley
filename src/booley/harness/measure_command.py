@@ -482,15 +482,28 @@ def _measure_commit(
 
 
 def _flow_reports(outcome: ChildrenOutcome) -> list[FlowReport]:
-    """Every regular file (never a symlink) beside each table's final ``report.json``, it first."""
+    """Each table's report artifacts from its final invocation directory, ``report.json`` first."""
     reports: list[FlowReport] = []
     for table in outcome.tables:
         if not table.reports:
             continue
         directory = table.reports[-1].parent  # the final attempt's invocation directory
-        files = sorted(
-            path for path in directory.iterdir() if path.is_file() and not path.is_symlink()
-        )
+        files = sorted(path for path in directory.iterdir() if _is_report_artifact(path))
         files.sort(key=lambda path: path.name != table.reports[-1].name)
         reports.extend(FlowReport(table.run.identity, table.run.flow, path) for path in files)
     return reports
+
+
+def _is_report_artifact(path: Path) -> bool:
+    """Whether *path* is a regular file (never a symlink) that is a Flow report, not bookkeeping.
+
+    A Flow keeps its live progress (``progress.json``) and, as hidden files, the progress lock and
+    the temporaries of an interrupted atomic write beside its reports. Any other top-level
+    bookkeeping file a Flow adds must be hidden too, or it is stored as a report.
+    """
+    return (
+        path.is_file()
+        and not path.is_symlink()
+        and path.name != "progress.json"
+        and not path.name.startswith(".")
+    )
