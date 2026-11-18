@@ -13,7 +13,7 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
-from booley.runtime import runtime_context
+from booley.runtime import runtime_context, worktree_paths
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
@@ -617,12 +617,20 @@ def test_project_branch_collision_preserves_existing_branch(
     assert git(source, "rev-parse", "booley-worktree/collision") == head
 
 
-def test_paired_caller_is_refused_before_outer_creation(versioned_project, python_outer, capsys):
+def test_paired_caller_is_refused_before_outer_creation(
+    versioned_project, python_outer, capsys, tmp_path, monkeypatch
+):
     root = versioned_project
     assert _new("paired-caller", root) == 0
     caller = worktree_cmd.worktree_path(root, "paired-caller")
+    external = tmp_path / "external"
+    external.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
     assert _new("nested", caller) == 1
-    assert "run booley worktree new from the primary workspace" in capsys.readouterr().err
+    assert (
+        "cannot create a worktree from a Paired Checkout; "
+        "run booley worktree new from the main checkout"
+    ) in capsys.readouterr().err
     assert not worktree_cmd.worktree_path(caller, "nested").exists()
 
 
@@ -1659,14 +1667,21 @@ def test_booley_dir_outside_checkout_is_refused_without_leftovers(
         tmp_path, monkeypatch, external.as_posix() if source == "project-dir" else "state"
     )
     _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+    # A linked-worktree marker must not turn a configured escape into the Paired Checkout refusal.
+    _write(external / ".git", "gitdir: elsewhere\n")
     if source == "ambient":
         monkeypatch.setenv("BOOLEY_DIR", str(external))
     branches = _git(root, "branch", "--list").stdout
 
     assert _new("demo", root) == 1
+    assert worktree_paths.main([str(root), "--ambient"]) == 1
 
     err = capsys.readouterr().err
-    assert str(external) in err and "relative [project].dir" in err
+    if source == "ambient":
+        assert err.count(f"BOOLEY_DIR={external} is not this checkout's Booley Directory") == 2
+        assert "[project].dir" not in err
+    else:
+        assert err.count("relative [project].dir") == 2
     assert _worktree_paths(root) == [f"worktree {root}"]
     assert _git(root, "branch", "--list").stdout == branches
     assert not (root / ".booley").exists()

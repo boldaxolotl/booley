@@ -39,14 +39,19 @@ class ProjectPairing:
     left_out: tuple[str, ...]
 
 
+def refuse_paired_checkout(booley_dir: Path) -> None:
+    """Refuse worktree creation when *booley_dir* is a Paired Checkout (its ``.git`` is a file)."""
+    if (booley_dir / ".git").is_file():
+        raise ProjectPairingError(
+            "cannot create a worktree from a Paired Checkout; "
+            "run booley worktree new from the main checkout"
+        )
+
+
 def project_pairing_source(project_root: Path) -> Path | None:
     """Select a Versioned Booley Directory; refuse creation from a Paired Checkout."""
     source = own_booley_dir(project_root)
-    if (source / ".git").is_file():
-        raise ProjectPairingError(
-            "cannot create a worktree from a Paired Checkout; "
-            "run booley worktree new from the primary workspace"
-        )
+    refuse_paired_checkout(source)
     if (source / ".git").is_dir():
         # Git skips an unusable .git directory and keeps searching upward, so a
         # broken Booley Directory's repository would otherwise resolve to the outer one.
