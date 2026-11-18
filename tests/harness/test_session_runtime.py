@@ -3382,6 +3382,28 @@ def _linked_cli(monkeypatch, argv):
     return cli.main()
 
 
+def test_ctrl_c_while_session_enter_prepares_the_sandbox_prints_one_line(
+    tmp_path, monkeypatch, capsys
+):
+    _linked_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+
+    def interrupted(_root):
+        raise KeyboardInterrupt
+
+    # This is where the host Sandbox preparation (the Docker image checks) runs; no Docker fake
+    # can deliver a Ctrl-C into it (the same seam `_linked_attachment` replaces).
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", interrupted)
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _linked_cli(monkeypatch, ["session", "enter", "--", "true"])
+
+    assert type(raised.value) is KeyboardInterrupt
+    assert capsys.readouterr().err.splitlines()[-1:] == ["interrupted; session enter cancelled"]
+    sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert capsys.readouterr().err == ""
+
+
 def _linked_attachment(monkeypatch):
     calls = []
     monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
