@@ -707,6 +707,29 @@ class SimulationRecord:
         )
         return ScheduledAttempt(work_item, attempt_id, ordinal, directory, collision_key)
 
+    def _execute_item(
+        self,
+        store: SimulationRecordStore,
+        manifest: SimulationRecordManifest,
+        attempt: ScheduledAttempt,
+        invocation: int,
+        request: SimulationRecordRunRequest,
+        child_execution_id: str | None,
+    ):
+        """Execute one attempt; a killed final attempt is named even when its execution fails."""
+        assert self._executor is not None
+        try:
+            return self._executor.execute(
+                self._work_execution_request(
+                    store, manifest, attempt, invocation, request, child_execution_id
+                )
+            )
+        except PreSimScopeStoppedError as signal:
+            raise SimulationRecordCapacityError(str(signal)) from signal
+        except BaseException:
+            note_final_work_item_oom_kill(work_item_label(attempt.item), passed=False)
+            raise
+
     def _execute_scheduled(
         self,
         store: SimulationRecordStore,
@@ -725,24 +748,9 @@ class SimulationRecord:
         """
         work_item = attempt.item
         work_item_id = cast(str, work_item["work_item_id"])
-        assert self._executor is not None
-        try:
-            result = self._executor.execute(
-                self._work_execution_request(
-                    store,
-                    manifest,
-                    attempt,
-                    invocation,
-                    request,
-                    child_execution_id,
-                )
-            )
-        except PreSimScopeStoppedError as signal:
-            raise SimulationRecordCapacityError(str(signal)) from signal
-        except BaseException:
-            # A killed final attempt is still named when its execution then fails.
-            note_final_work_item_oom_kill(work_item_label(work_item), passed=False)
-            raise
+        result = self._execute_item(
+            store, manifest, attempt, invocation, request, child_execution_id
+        )
         passed = result.document["grade"] == "pass"
         if work_item_attempt_requeues(passed=passed):
             raise_if_cancelled_before_publication()  # a cancelled attempt is never requeued
