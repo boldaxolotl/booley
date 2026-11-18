@@ -66,3 +66,38 @@ This corpus protects only result-document compatibility associated with
 `5a5239fb` and focused diagnostics associated with `6ee1e78a`. It makes no claim
 about VPI/environment/runtime behavior, console-based timeout recovery, trace
 artifacts, or Coverage Record (#213).
+
+## Zero-match sample
+
+`2.1.0/results-no-match.xml` is what Cocotb 2.1.0 writes when its test filter
+matches no test: the document holds no `<testcase>`, because 2.1 omits excluded
+tests instead of listing them as `skipped` (2.0.1 listed them). It backs only
+the empty-results reconciliation of a focused selection.
+
+Captured on 18 NOV 2026 from `no_match_cases.py` (one `@cocotb.test()` with
+`@cocotb.parametrize(width=[1, 2])`, so its rendered IDs are
+`test_param/width=1` and `test_param/width=2`), `capture.sv`, and `Makefile`:
+
+- Cocotb **2.1.0**, verified with `cocotb-config --version`.
+- Local Sandbox Image `booley-sandbox:latest`, image ID
+  `sha256:434acae01dbc78416c762555f08842e3e96e547e86eaa2ed3b1682ce56d1ad0b`.
+- Exit code 0 and the console warning `No tests left after filtering with:
+  ^no_match_cases\.(test_param)$`, the filter form Booley builds for a
+  selected `test_param`, which is not a rendered ID.
+
+```sh
+capture_dir=$(mktemp -d)
+docker run --rm --network none --hostname cocotb-results \
+  --user "$(id -u):$(id -g)" --entrypoint sh \
+  --mount type=bind,src="$PWD/tests/fixtures/cocotb_results",dst=/source,readonly \
+  --mount type=bind,src="$capture_dir",dst=/capture \
+  booley-sandbox:latest -c '
+    cp /source/no_match_cases.py /source/capture.sv /source/Makefile /capture/ &&
+    cd /capture &&
+    test "$(cocotb-config --version)" = 2.1.0 &&
+    COCOTB_RANDOM_SEED=1 make COCOTB_TEST_MODULES=no_match_cases \
+      "COCOTB_TEST_FILTER='\''^no_match_cases\.(test_param)\$\$'\''"'
+```
+
+No substitutions were applied: the file is the emitted bytes (two lines, no
+trailing newline; no timestamp, path, or hostname appears in it).

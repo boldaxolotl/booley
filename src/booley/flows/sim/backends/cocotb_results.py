@@ -23,8 +23,11 @@ Empirical XML states this parser is frozen against (spike S4, cocotb 2.0.1 and 2
   varies by cocotb generation — ``error_type``/``error_msg`` on 2.x, ``msg`` on
   its init-failure path, ``message`` on 1.x — so the message is read through
   :func:`_failure_message` rather than one hard-coded attribute (F-36);
-* skipped — ``<skipped/>`` child (test excluded by ``COCOTB_TEST_FILTER``; a
-  zero-match filter yields a file where *every* test is skipped, at rc=0);
+* skipped — ``<skipped/>`` child, a ``skip=True`` test on both versions; cocotb
+  2.0.1 also lists every test excluded by ``COCOTB_TEST_FILTER`` this way (a
+  zero-match filter there gives a file where *every* test is skipped);
+* empty — no ``<testcase>``; cocotb 2.1 omits excluded tests, so a filter
+  matching nothing writes ``<testsuites name="cocotb tests" />`` at rc=0;
 * absent — a ``tests.toml`` ID not reported by cocotb never appears in the XML
   (including a generating function's base name; reactive validation, decision 7);
 * no file — SIGKILL/segfault, ``ModuleNotFoundError`` (also rc=0!), or any
@@ -84,6 +87,11 @@ _MAX_FAILURE_CHARS = 500
 # canonical JSON detail limits, including escaping when the detail is serialized.
 _MAX_ABSENT_DETAIL_CHARS = 1200
 _MAX_DISPLAY_NAME_CHARS = 120
+_RENDERED_ID_RULE = (
+    "tests.toml must list each test by its cocotb test ID: a plain test's "
+    "function name, or a parametrized or generated test's rendered ID, "
+    'such as "name/param=value".'
+)
 
 # cocotb's own console cry when it cannot import the test module, e.g.
 #     0.00ns CRITICAL cocotb.regression  Failed to import module test_eth_mac:
@@ -382,10 +390,18 @@ def _display_name(name: str) -> str:
     return rendered
 
 
+def _no_test_ran_detail(name: str) -> str:
+    """Explain an empty focused run: cocotb 2.1 writes no testcase when its filter matched none."""
+    return (
+        f"no matching test ID {_display_name(name)} in cocotb results: no cocotb "
+        f"test ID matched the selected tests, so cocotb ran none. {_RENDERED_ID_RULE}"
+    )
+
+
 def _absent_test_detail(name: str, results: CocotbResults) -> str:
     """One bounded diagnostic shared by complete XML and compact consumers."""
     prefix = f"no matching test ID {_display_name(name)} in cocotb results. "
-    remedy = "Check tests.toml against the rendered IDs in results.xml."
+    remedy = _RENDERED_ID_RULE
     names = _reported_names(results)
     preview: list[str] = []
     # Reserve room for the omitted count and artifact pointer before adding IDs.
@@ -417,7 +433,9 @@ def reconcile(
     The selected-set reconciliation of ADR 0034 decision 7: every name Booley
     asked for must come back as a real pass/fail from the XML —
 
-    * non-OK file state → every test inconclusive, carrying the state detail;
+    * empty file (cocotb 2.1 ran no test the filter matched) → every test
+      inconclusive, naming the no-match cause and the rendered-ID rule;
+    * other non-OK file state → every test inconclusive, carrying the state detail;
     * name absent from the XML → inconclusive with reported IDs and a
       correction hint (typo'd, undecorated, or generating function base name);
     * present but ``skipped`` → inconclusive (the filter Booley built did not
@@ -430,6 +448,9 @@ def reconcile(
     """
     out: list[tuple[str, ReconciledVerdict, str]] = []
     for name in selected:
+        if results.state == STATE_EMPTY:
+            out.append((name, VERDICT_INCONCLUSIVE, _no_test_ran_detail(name)))
+            continue
         if results.state != STATE_OK:
             out.append((name, VERDICT_INCONCLUSIVE, results.detail))
             continue

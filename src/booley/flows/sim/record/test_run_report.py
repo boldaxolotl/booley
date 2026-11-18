@@ -383,7 +383,7 @@ def _rerun_lines(
     )
     heading = (
         "  Rerun the whole batch with the same seed "
-        "(register its test functions as Tests in tests.toml to rerun one alone):"
+        "(register its test IDs as Tests in tests.toml to rerun one alone):"
         if any(row["name"] in batches for row in failed)
         else "  Rerun a failed Test Run with the same seed:"
     )
