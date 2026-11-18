@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="fd" viewBox="0 0 440 176" role="img" aria-label="The agent (Claude Code or Codex) presses buttons on a Booley panel. Run buttons (sim, synth, lint, fpga) and Check buttons (waveform query, mutation test) drive the EDA tools such as Verilator, Yosys and Vivado. Review buttons (spec, bugs, protocol, security, optimization, style, testbench) go only to a separate Reviewer agent.">
+<rect class="bx" x="0.5" y="30.5" width="60" height="137"/>
+<g class="bot" transform="translate(15 66) scale(0.911765)"><path d="M17 3v5"/><circle cx="17" cy="3" r="1.4"/><rect x="6" y="8" width="22" height="18" rx="4"/><circle class="eye" cx="13" cy="16" r="2"/><circle class="eye" cx="21" cy="16" r="2"/><path d="M13 21h8"/><path d="M3 15v5M31 15v5"/></g>
+<text class="t" x="30.5" y="114" text-anchor="middle">Agent</text>
+<text class="s" x="30.5" y="128" text-anchor="middle">Claude Code</text>
+<text class="s" x="30.5" y="140" text-anchor="middle">or Codex</text>
+<path class="ln" d="M61 99H80"/><path class="ah" d="M81 99l-7 -3.5v7z"/>
+<path class="chip" d="M82 5H198A8 8 0 0 0 214 5H330V171H82Z"/>
+<text class="mark" x="92" y="22">BOOLEY</text>
+<rect class="lane" x="91" y="30" width="230" height="57" rx="3"/>
+<text class="cap" x="97" y="49">RUN</text>
+<g class="key run"><rect x="142" y="38" width="26.1" height="15" rx="2.5"/><path d="M143.5 53H166.6"/><text x="155.05" y="48.8">sim</text></g><g class="key run"><rect x="172.1" y="38" width="37.5" height="15" rx="2.5"/><path d="M173.6 53H208.1"/><text x="190.85" y="48.8">synth</text></g><g class="key run"><rect x="213.6" y="38" width="31.8" height="15" rx="2.5"/><path d="M215.1 53H243.9"/><text x="229.5" y="48.8">lint</text></g><g class="key run"><rect x="249.4" y="38" width="31.8" height="15" rx="2.5"/><path d="M250.9 53H279.7"/><text x="265.3" y="48.8">fpga</text></g>
+<text class="cap" x="97" y="72">CHECK</text>
+<g class="key run"><rect x="142" y="61" width="88.8" height="15" rx="2.5"/><path d="M143.5 76H229.3"/><text x="186.4" y="71.8">waveform query</text></g><g class="key run"><rect x="234.8" y="61" width="83.1" height="15" rx="2.5"/><path d="M236.3 76H316.4"/><text x="276.35" y="71.8">mutation test</text></g>
+<rect class="lane rev" x="91.5" y="95.5" width="229" height="68" rx="3"/>
+<text class="cap rev" x="97" y="133">REVIEW</text>
+<g class="key rev"><rect x="142" y="102" width="31.8" height="15" rx="2.5"/><path d="M143.5 117H172.3"/><text x="157.9" y="112.8">spec</text></g><g class="key rev"><rect x="177.8" y="102" width="31.8" height="15" rx="2.5"/><path d="M179.3 117H208.1"/><text x="193.7" y="112.8">bugs</text></g><g class="key rev"><rect x="213.6" y="102" width="54.6" height="15" rx="2.5"/><path d="M215.1 117H266.7"/><text x="240.9" y="112.8">protocol</text></g>
+<g class="key rev"><rect x="142" y="121" width="54.6" height="15" rx="2.5"/><path d="M143.5 136H195.1"/><text x="169.3" y="131.8">security</text></g><g class="key rev"><rect x="200.6" y="121" width="77.4" height="15" rx="2.5"/><path d="M202.1 136H276.5"/><text x="239.3" y="131.8">optimization</text></g>
+<g class="key rev"><rect x="142" y="140" width="37.5" height="15" rx="2.5"/><path d="M143.5 155H178.0"/><text x="160.75" y="150.8">style</text></g><g class="key rev"><rect x="183.5" y="140" width="60.3" height="15" rx="2.5"/><path d="M185.0 155H242.3"/><text x="213.65" y="150.8">testbench</text></g>
+<path class="ln ok" d="M321 58.5H349"/><path class="ah ok" d="M352 58.5l-7 -3.5v7z"/>
+<path class="ln rev" d="M321 129.5H349"/><path class="ah rev" d="M352 129.5l-7 -3.5v7z"/>
+<rect class="bx" x="352.5" y="30.5" width="87" height="56"/>
+<text class="t" x="396" y="51" text-anchor="middle">EDA tools</text>
+<text class="s" x="396" y="65" text-anchor="middle">Verilator, Yosys,</text>
+<text class="s" x="396" y="77" text-anchor="middle">Vivado, …</text>
+<rect class="bx rev" x="352.5" y="95.5" width="87" height="68"/>
+<g class="bot rev" transform="translate(386 101) scale(0.617647)"><path d="M17 3v5"/><circle cx="17" cy="3" r="1.4"/><rect x="6" y="8" width="22" height="18" rx="4"/><circle class="eye" cx="13" cy="16" r="2"/><circle class="eye" cx="21" cy="16" r="2"/><path d="M13 21h8"/><path d="M3 15v5M31 15v5"/></g>
+<text class="t" x="396" y="138" text-anchor="middle">Reviewer</text>
+<text class="s" x="396" y="152" text-anchor="middle">a separate agent</text>
+</svg>
