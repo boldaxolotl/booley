@@ -1676,8 +1676,8 @@ jobs:
       # RISC-V lane ran in this job's validation group: every test.yml run
       # created 2026-10-22 to 2026-11-05 (the last 2026-11-05 08:38Z),
       # excluding one run whose jobs API failed (run 39767032597). Test
-      # phase before 2026-10-23 ended at "Build standard wheel overlay",
-      # where the clock now sits. Every RISC-V job in the window resolved
+      # phase before 2026-10-23 started at the end of "Build standard wheel
+      # overlay", where the clock now sits. Every RISC-V job in the window resolved
       # its tooling from the registry.
       # - registry, 2026-10-22..11-05: 123 jobs, 384-648 s (median 563 s,
       #   p95 620 s). 2026-10-28..11-05: 42 jobs, 396-642 s (median 591.5 s,
