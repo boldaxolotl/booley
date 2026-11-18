@@ -1388,7 +1388,9 @@ fn list_honors_limit() {
 // `-s "dmem_wr[0]"` matched nothing, though the trace declares exactly
 // that name: globset read `[0]` as a character class, so the pattern also
 // skipped the bare-name `*` wrap and could never match a hierarchical
-// name. Array elements looked absent from every trace.
+// name. Array elements looked absent from every trace. The stripped-name
+// fallback then over-matched: `dmem_wr[0]` also selected `dmem_wr[1]`, and
+// `counter[3]` a ranged `counter[7:0]`.
 #[test]
 fn indexed_element_pattern_selects_only_its_element() {
     let ua = build_bwave("test_unpacked_array.vcd", "indexed_elem");
@@ -1407,7 +1409,12 @@ fn indexed_element_pattern_selects_only_its_element() {
     // (store, pattern, present, absent)
     let lists: [(&str, &str, &[&str], &[&str]); 5] = [
         (&ua_s, "tb.dut.dmem_wr[0]", &["dmem_wr[0]"], &["dmem_wr[1]"]),
-        (&ua_s, "*_wr[0]", &["imem_wr[0]"], &["dmem_wr[1]"]),
+        (
+            &ua_s,
+            "*_wr[0]",
+            &["imem_wr[0]", "dmem_wr[0]"],
+            &["dmem_wr[1]"],
+        ),
         (&ua_s, "clk[0]", &["clk"], &[]),
         (&ua_s, "dmem_wr", &["dmem_wr[0]", "dmem_wr[1]"], &[]),
         (&ps_s, "counter", &["counter[7:0]"], &[]),
@@ -1428,6 +1435,8 @@ fn indexed_element_pattern_selects_only_its_element() {
         assert!(err.contains("no signals match"), "{pattern}: {err}");
         assert!(!out.contains(other), "{pattern}: {out}");
     }
+    let (out, err, code) = run(&["find", &ua_s, "imem_wr[1]", "1", "--async"]);
+    assert!(!out.contains("imem_wr"), "find: {out} {err} {code}");
     let _ = (std::fs::remove_file(&ua), std::fs::remove_file(&ps));
 }
 
