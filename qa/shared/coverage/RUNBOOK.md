@@ -205,9 +205,10 @@ must match the `expected.json` case `staged-union`: 4/8 per test and a
 complementary union of 8/8. Restore the prior configuration afterward.
 
 The cocotb case uses `sim_cocotb_staged` tests `gap` and `full` under the same
-configuration. The command runs once for the selected batch and writes both
-literal per-test vectors; each cocotb test reads and checks its own named
-vector. Keep the batch-stage log and the separate native run evidence. The
+configuration. Under `--coverage` each cocotb Test Run runs in its own
+simulator process, so the command runs once per test with that one name in
+`BOOLEY_TEST_NAMES`; each cocotb test reads and checks its own named vector.
+Keep both stage logs and the separate native run evidence. The
 negative control removes `full` from the vectors the script writes (after it
 validates the same selected list); the `full` test must then fail loading it.
 Restore the script and configuration bytes and rerun both tests. A pre-sim
@@ -467,8 +468,10 @@ Candidate cases request the matching disposition:
   waived uses the `waiver` baseline.
 - Observed-hit uses a covered eligible point and the same nonempty proof
   reference as the positive unreachable control.
-- Unreachable and missing-proof use an unhit eligible point. Missing-source
-  first applies the source-stale fixture.
+- Unreachable and missing-proof use an unhit eligible point; both screen
+  `ready_for_human_review` and stay `not_approved` (ADR 0066: a candidate
+  needs no proof reference). Missing-source first applies the source-stale
+  fixture.
 - Missing-evidence uses an empty evidence string; invalid-reason uses the
   literal `invalid`; duplicate repeats the exact same delivered candidate.
 - Unknown or invented reference uses `point:999999999`, which must not have
