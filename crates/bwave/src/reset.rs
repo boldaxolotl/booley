@@ -1,6 +1,7 @@
 //! The one reset rule: which signal is the reset, its polarity, when it
 //! deasserts, and the report every sync query and `overview` prints about it.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cache::CachedSignal;
@@ -69,15 +70,27 @@ pub fn deassert_tick(transitions: &[(u64, String)], active_low: bool) -> Option<
         .map(|(t, _)| *t)
 }
 
-/// What a sync query or `overview` says about the reset it used.
-#[derive(Debug, Clone, Serialize)]
+// What a sync query or `overview` says about the reset it used.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "resetReport", deny_unknown_fields)]
 pub struct ResetReport {
+    /// Full name of the reset signal; null when the store has none.
     pub signal: Option<String>,
+    /// Polarity guessed from the signal's name; null without a reset.
+    #[schemars(extend("enum" = ["active_low", "active_high", null]), transform = crate::output::without_type)]
     pub polarity: Option<&'static str>,
+    /// Whether detection or `--reset` picked the signal.
+    #[schemars(extend("enum" = ["auto", "--reset"]), transform = crate::output::without_type)]
     pub chosen_by: &'static str,
+    /// Tick of the first transition to the inactive value; null when the reset
+    /// never deasserts.
     pub deassert_tick: Option<u64>,
+    /// deassert_tick in the store's timescale, such as `25ns`.
     pub deassert_time: Option<String>,
+    /// Clock cycles before the deassert that sync queries skip; 0 with
+    /// --with-reset, without a clock or without a deassert.
     pub skipped_cycles: u64,
+    /// Whether --with-reset kept the reset phase.
     pub with_reset: bool,
 }
 
