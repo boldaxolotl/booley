@@ -635,7 +635,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         the resolution already knows — the actual EDA tool, the linted file
         list, and the declared toplevel — instead of discarding it.
 
-        ADR 0022 (decision 4): FuseSoC owns design-description. ``resolve_target``
+        ADR 0022 (decision 4): FuseSoC owns design-description. ``resolve_target_handle``
         runs ``fusesoc run --setup``, which itself runs Edalize ``configure()``
         and leaves a ready-to-``make`` build dir — superseding the Booley-built
         EDAM of 0019. Booley contributes nothing to the design here: sources,
@@ -697,7 +697,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         :meth:`_prepare_lint_command` (which runs ``fusesoc run --setup`` to
         resolve the build dir), dry-run **does not resolve**. It shows the
         ``fusesoc run --setup`` command resolution *would* execute (via
-        :func:`fusesoc_registry.setup_command`, a cheap ``.core`` YAML read — no
+        :func:`fusesoc_registry.setup_command_for_handle`, a cheap ``.core`` YAML read — no
         subprocess, works on the host with no ``fusesoc`` on PATH) chained to the
         deterministic lint ``make``. The previewed ``make -C`` names the outer
         build root; resolution nests the Makefile one level deeper, so the

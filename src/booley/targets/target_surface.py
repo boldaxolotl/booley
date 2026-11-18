@@ -267,7 +267,7 @@ def detail_payload(
     ambiguous *token*\\ s DO raise (:class:`booley.targets.domain.UnknownTargetError`
     / :class:`booley.targets.domain.AmbiguousTargetError`) — their messages already
     name the candidates. The remaining keyword arguments mirror
-    :func:`fusesoc_registry.resolve_target`.
+    :func:`fusesoc_registry.resolve_target_handle`.
     """
     root = Path(project_root)
     catalog = TargetCatalog.build(root)
