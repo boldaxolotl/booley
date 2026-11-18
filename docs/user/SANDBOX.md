@@ -82,7 +82,7 @@ memory = "8g"                                  # container memory limit; unset =
 # mask_paths = ["private/notes"]               # directories the agent must not see
 ```
 
-`memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs-jobs) that
+`memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
 admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
 
@@ -91,9 +91,8 @@ of `memory`, but no more than the swap your Docker host has: `memory = "12g"`
 allows 3 GiB of swap. `swap = "0"` gives a Sandbox no swap, and `swap` has no
 effect without `memory`. `booley doctor` warns when the host cannot back the
 setting. The debug shell uses the same limits, with 4 GB of memory when
-`memory` is unset. With swap, the Memory Budget holds back less and Jobs
-reserve less, so more of them run at once; `swap = "0"` costs that parallelism
-(see [CONFIG.md](CONFIG.md#jobs--concurrency-jobs)).
+`memory` is unset. `swap = "0"` lets fewer Jobs run at once; see
+[CONFIG.md](CONFIG.md#jobs--concurrency-jobs).
 
 Every `[sandbox]` change takes effect when you
 [apply it](#after-changing-sandbox-settings).
