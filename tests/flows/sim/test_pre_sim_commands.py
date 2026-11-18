@@ -247,7 +247,7 @@ def test_immutable_simulation_record_hook_runs_from_project_root_without_build_a
             id="process-spawn-error",
         ),
         pytest.param(
-            {"process": _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))},
+            {"process": lambda: _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))},
             "timed_out",
             "",
             False,
@@ -258,6 +258,11 @@ def test_immutable_simulation_record_hook_runs_from_project_root_without_build_a
 def test_pre_sim_process_outcomes_become_evidence(
     tmp_path: Path, answer: dict[str, Any], status: str, detail: str, exact: bool
 ) -> None:
+    # A one-shot timeout lives on the process, so build it per run: a repeated run
+    # (flake-stress) must not reuse the instance the first run already consumed.
+    process = answer.get("process")
+    if callable(process):
+        answer = {**answer, "process": process()}
     evidence, _run = _fire(_handle(tmp_path), **answer)
 
     assert evidence is not None
