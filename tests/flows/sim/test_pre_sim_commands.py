@@ -31,24 +31,64 @@ def _handle(root: Path) -> TargetHandle:
     )
 
 
-def _completed(returncode: int = 0, *, stderr: str = "") -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+class _HookProcess:
+    """A spawned hook: the pid is above the kernel limit, so sampling it finds nothing."""
+
+    pid = 4_194_305
+
+    def __init__(
+        self,
+        returncode: int = 0,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        timeout: subprocess.TimeoutExpired | None = None,
+    ) -> None:
+        self.returncode = returncode
+        self.stdout, self.stderr = MagicMock(), MagicMock()
+        self._answers: list[Any] = [timeout] if timeout is not None else []
+        self._output = (stdout, stderr)
+        self.communicate = MagicMock(side_effect=self._communicate)
+
+    def _communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        if self._answers:
+            raise self._answers.pop()
+        return self._output
 
 
 def _fire(
-    handle: TargetHandle, run: MagicMock | None = None, **overrides: Any
+    handle: TargetHandle,
+    process: _HookProcess | None = None,
+    *,
+    spawn_error: OSError | None = None,
+    **overrides: Any,
 ) -> tuple[Any, MagicMock]:
-    """Run the Pre-Sim Commands of *handle* with a mocked ``subprocess.run``."""
-    run = run or MagicMock(return_value=_completed())
+    """Run the Pre-Sim Commands of *handle* with a mocked ``subprocess.Popen``."""
+    return _fire_with(handle, process, spawn_error, overrides)[:2]
+
+
+def _fire_with(
+    handle: TargetHandle,
+    process: _HookProcess | None,
+    spawn_error: OSError | None,
+    overrides: dict[str, Any],
+) -> tuple[Any, MagicMock, MagicMock, MagicMock]:
+    """:func:`_fire` that also returns the mocked tree kill and the history record call."""
+    spawn = MagicMock(return_value=process or _HookProcess(), side_effect=spawn_error)
     options: dict[str, Any] = {
         "test_names": ("smoke",),
         "build_root": handle.project_root / "build" / "lite",
         "eda_tool": "icarus",
         "timeout_s": 5,
+        "resource_flags": (),
         **overrides,
     }
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        return run_pre_sim_commands(handle, **options), run
+    with (
+        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen", spawn),
+        patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
+        patch("booley.flows.sim.execution.pre_sim.record_command") as record,
+    ):
+        return run_pre_sim_commands(handle, **options), spawn, kill, record
 
 
 def test_single_test_environment_is_project_scoped_and_reserved_values_win(
@@ -74,7 +114,7 @@ def test_single_test_environment_is_project_scoped_and_reserved_values_win(
     assert environment["BOOLEY_RUN_CWD"] == str(tmp_path / "util" / "sim")
     assert environment["BOOLEY_SIM_EDA_TOOL"] == "verilator"
     assert run.call_args.kwargs["cwd"] == tmp_path
-    assert run.call_args.kwargs["timeout"] == 5
+    assert run.return_value.communicate.call_args.kwargs["timeout"] == 5
 
 
 def test_batch_environment_has_selected_set_without_single_test_name(tmp_path: Path) -> None:
@@ -102,14 +142,22 @@ def test_invalid_pre_run_commands_spawn_nothing(tmp_path: Path, value: str) -> N
     """Only a list of strings is a command list; anything else runs nothing."""
     handle = _handle(tmp_path)
     _write_pre_run_commands(tmp_path, value)
-    run = MagicMock(return_value=_completed())
-
-    with pytest.raises(
-        ValueError, match=r"\[flows\.sim\]\.pre_run_commands must be a list of strings"
+    with (
+        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen") as spawn,
+        pytest.raises(
+            ValueError, match=r"\[flows\.sim\]\.pre_run_commands must be a list of strings"
+        ),
     ):
-        _fire(handle, run)
+        run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+            resource_flags=(),
+        )
 
-    run.assert_not_called()
+    spawn.assert_not_called()
 
 
 @pytest.mark.parametrize("table", ["[flows.sim]\n", "[flows.sim]\npre_run_commands = []\n"])
@@ -174,7 +222,7 @@ def test_immutable_simulation_record_hook_runs_from_project_root_without_build_a
     ("answer", "status", "detail", "exact"),
     [
         pytest.param(
-            {"return_value": _completed(3, stderr="firmware build failed")},
+            {"process": _HookProcess(3, stderr="firmware build failed")},
             "failed",
             "firmware build failed",
             True,
@@ -182,7 +230,7 @@ def test_immutable_simulation_record_hook_runs_from_project_root_without_build_a
         ),
         pytest.param(
             {
-                "return_value": _completed(
+                "process": _HookProcess(
                     127, stderr="/bin/bash: line 2: riscv64-unknown-elf-gcc: command not found"
                 )
             },
@@ -192,14 +240,14 @@ def test_immutable_simulation_record_hook_runs_from_project_root_without_build_a
             id="missing-executable",
         ),
         pytest.param(
-            {"side_effect": OSError("resource temporarily unavailable")},
+            {"spawn_error": OSError("resource temporarily unavailable")},
             "failed",
             "resource temporarily unavailable",
             False,
             id="process-spawn-error",
         ),
         pytest.param(
-            {"side_effect": subprocess.TimeoutExpired("bash", 5)},
+            {"process": lambda: _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))},
             "timed_out",
             "",
             False,
@@ -210,7 +258,12 @@ def test_immutable_simulation_record_hook_runs_from_project_root_without_build_a
 def test_pre_sim_process_outcomes_become_evidence(
     tmp_path: Path, answer: dict[str, Any], status: str, detail: str, exact: bool
 ) -> None:
-    evidence, _run = _fire(_handle(tmp_path), MagicMock(**answer))
+    # A one-shot timeout lives on the process, so build it per run: a repeated run
+    # (flake-stress) must not reuse the instance the first run already consumed.
+    process = answer.get("process")
+    if callable(process):
+        answer = {**answer, "process": process()}
+    evidence, _run = _fire(_handle(tmp_path), **answer)
 
     assert evidence is not None
     assert evidence.status == status
@@ -280,6 +333,7 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
         build_root=tmp_path / "build",
         eda_tool="icarus",
         timeout_s=hang_guard_s(),
+        resource_flags=(),
         commands=(
             f'"{sys.executable}" -c "import project_helper; assert project_helper.VALUE == 42"',
             f'"{sys.executable}" -m pytest --lf -q "{nested}"',
@@ -299,8 +353,8 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
 def test_hook_preserves_actual_rc_and_independent_utf8_tails(
     tmp_path: Path, returncode: int
 ) -> None:
-    process = subprocess.CompletedProcess([], returncode, "\u03b1" * 10000, "β" * 10000)
-    evidence, _run = _fire(_handle(tmp_path), MagicMock(return_value=process))
+    process = _HookProcess(returncode, stdout="\u03b1" * 10000, stderr="β" * 10000)
+    evidence, _run = _fire(_handle(tmp_path), process)
     assert evidence is not None
     assert evidence.returncode == returncode
     assert evidence.stdout_tail == "\u03b1" * 4096
@@ -310,7 +364,7 @@ def test_hook_preserves_actual_rc_and_independent_utf8_tails(
 
 def test_timeout_partial_byte_streams_preserve_unknown_exit_code(tmp_path: Path) -> None:
     timeout = subprocess.TimeoutExpired("bash", 5, output=b"hook-out\n", stderr=b"hook-err\n")
-    evidence, _run = _fire(_handle(tmp_path), MagicMock(side_effect=timeout))
+    evidence, _run = _fire(_handle(tmp_path), _HookProcess(-9, timeout=timeout))
     assert evidence is not None and evidence.status == "timed_out"
     assert evidence.returncode is None
     assert evidence.stdout_tail == "hook-out\n"
@@ -337,6 +391,7 @@ def test_pre_cancelled_scope_does_not_spawn_or_fabricate_a_firing(tmp_path: Path
             build_root=tmp_path / "build",
             eda_tool="icarus",
             timeout_s=5,
+            resource_flags=(),
         )
     spawn.assert_not_called()
 
@@ -359,6 +414,7 @@ def test_pre_sim_spawn_failure_records_no_command_start(tmp_path: Path) -> None:
             build_root=tmp_path / "build",
             eda_tool="icarus",
             timeout_s=5,
+            resource_flags=(),
         )
     assert evidence is not None and evidence.status == "failed"
     assert "command started" not in sink.stream.getvalue(), (
@@ -375,6 +431,7 @@ def test_actual_hook_normalizes_invalid_utf8_output(tmp_path: Path) -> None:
         build_root=tmp_path / "build",
         eda_tool="icarus",
         timeout_s=hang_guard_s(),
+        resource_flags=(),
         commands=("printf '\\377hook-out\\n'; printf '\\376hook-err\\n' >&2",),
     )
     assert evidence is not None and evidence.returncode == 0
@@ -398,6 +455,7 @@ def test_pre_sim_commands_do_not_run_after_the_jobs_oom_kill(tmp_path: Path) -> 
             build_root=tmp_path / "build",
             eda_tool="icarus",
             timeout_s=hang_guard_s(),
+            resource_flags=(),
             commands=(touch,),
         )
 
@@ -415,3 +473,70 @@ def test_pre_sim_commands_do_not_run_after_the_jobs_oom_kill(tmp_path: Path) -> 
         ran = run_hook()
     assert ran is not None and ran.status == "passed", ran
     assert marker.exists()
+
+
+def test_a_timed_out_firing_is_recorded_as_a_lower_bound(tmp_path: Path) -> None:
+    hook = _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))
+
+    evidence, _spawn, _kill, record = _fire_with(_handle(tmp_path), hook, None, {})
+
+    assert evidence is not None and evidence.status == "timed_out"
+    (_flow, label, flags, _measurement, result), _ = record.call_args
+    assert (label.phase, flags, result.timed_out) == ("sim_pre_run", (), True)
+
+
+def test_a_firing_that_never_spawned_records_nothing(tmp_path: Path) -> None:
+    evidence, _spawn, _kill, record = _fire_with(
+        _handle(tmp_path), None, OSError("resource temporarily unavailable"), {}
+    )
+
+    assert evidence is not None and evidence.status == "failed"
+    record.assert_not_called()
+
+
+def test_each_firing_gets_a_private_tmpdir_removed_afterwards(tmp_path: Path) -> None:
+    _evidence, spawn, _kill, _record = _fire_with(_handle(tmp_path), None, None, {})
+
+    private = Path(spawn.call_args.kwargs["env"]["TMPDIR"])
+    assert private.name and not private.exists()
+
+
+def test_an_escaped_descendant_holding_the_pipes_cannot_hang_the_timeout(
+    tmp_path: Path,
+) -> None:
+    """The drain after the tree kill is bounded; the pipes are dropped and the firing recorded."""
+    hook = _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))
+    hook._answers.insert(0, subprocess.TimeoutExpired("bash", 5))  # the drain times out too
+
+    evidence, _spawn, kill, record = _fire_with(_handle(tmp_path), hook, None, {})
+
+    assert evidence is not None and evidence.status == "timed_out"
+    kill.assert_called_once()
+    hook.stdout.close.assert_called_once()
+    hook.stderr.close.assert_called_once()
+    record.assert_called_once()
+
+
+def test_a_monitor_that_cannot_start_does_not_leave_the_hook_running(tmp_path: Path) -> None:
+    hook = _HookProcess()
+    with (
+        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen", return_value=hook),
+        patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
+        patch("booley.flows.sim.execution.pre_sim.record_command") as record,
+        patch(
+            "booley.flows.sim.execution.pre_sim.JobResourceMonitor.start",
+            side_effect=RuntimeError("can't start new thread"),
+        ),
+        pytest.raises(RuntimeError, match="can't start new thread"),
+    ):
+        run_pre_sim_commands(
+            _handle(tmp_path),
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+            resource_flags=(),
+        )
+
+    kill.assert_called_once_with(hook)
+    record.assert_not_called()

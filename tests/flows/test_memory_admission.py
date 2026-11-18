@@ -316,8 +316,12 @@ def _resolve(
     monkeypatch.setattr(flow, "_resolve_test_runs", resolve)
     monkeypatch.setattr(
         "booley.flows.sim.flow.sim_job_request",
-        lambda plan, runs, *, flags: JobRequest(
-            "sim", plan.target, test_runs=("smoke",), flags=flags
+        lambda plan, runs, *, flags, pre_sim_commands=False: JobRequest(
+            "sim",
+            plan.target,
+            test_runs=("smoke",),
+            flags=flags,
+            pre_sim_commands=pre_sim_commands,
         ),
     )
     return asked

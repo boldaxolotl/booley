@@ -145,7 +145,9 @@ _ALL_PASS = {name: "pass" for name, _status, _text in _PASSING}
 _ALL_FAIL = dict.fromkeys(_ALL_PASS, "fail")
 _ALL_INCONCLUSIVE = dict.fromkeys(_ALL_PASS, "inconclusive")
 _SVA_LINE = "ERROR: rtl/counter.sv:18: counter reached error trap\n"
+_NO_MATCH_XML = Path(__file__).parents[2] / "fixtures/cocotb_results/2.1.0/results-no-match.xml"
 _ZERO_MATCH_IDS = ["test_reset/ifg=12", "test_reset/ifg=0"]
+# The cocotb 2.0.1 shape: tests the filter excluded are listed as skipped.
 _ZERO_MATCH_RESULTS = cr.CocotbResults(
     state=cr.STATE_OK,
     tests=tuple(cr.CocotbTest(name, "test_counter", "skipped") for name in _ZERO_MATCH_IDS),
@@ -228,7 +230,24 @@ _ZERO_MATCH_RESULTS = cr.CocotbResults(
             EXIT_FAILURE,
             {"test_reset": "inconclusive"},
             ("INCONCLUSIVE", *_ZERO_MATCH_IDS),
-            id="zero-match",
+            id="zero-match-cocotb-2.0.1",
+        ),
+        pytest.param(
+            # The cocotb 2.1 shape: a filter matching nothing writes no testcase.
+            cr.format_results_line(
+                cr.results_payload(
+                    cr.compact_results(cr.parse_results_xml(_NO_MATCH_XML), ["test_reset"])
+                )
+            )
+            + "\n"
+            + format_summary(False, 0, inconclusive=True)
+            + "\n",
+            1,
+            {"test": ("test_reset",)},
+            EXIT_FAILURE,
+            {"test_reset": "inconclusive"},
+            ("INCONCLUSIVE", 'no matching test ID "test_reset"', "rendered ID"),
+            id="zero-match-cocotb-2.1",
         ),
         pytest.param(
             # An extra XML test is logged, never verdict-bearing: selected set only.

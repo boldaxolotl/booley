@@ -13,6 +13,10 @@ estimated from the retained records:
   Project;
 * **unknown**: with neither, the phase has no estimate.
 
+Pre-Sim Commands (``sim_pre_run``) are the exception to the Project borrowing:
+they run per Target, so with no record of their own and none for the Target they
+take the Target's ``sim_build`` estimate instead.
+
 Memory and wall-clock time follow the same rules, each on its own values; a
 record's memory value counts what the Job swapped out. Every
 outcome counts: an OOM-killed or timed-out run is a lower bound, so it can
@@ -47,8 +51,17 @@ def memory_margin(swap_bytes: int) -> float:
 _SIM_FLOW = "sim"
 _SINGLE_PHASE_FLOWS = {"lint": "lint", "fpga": "fpga_impl", "synth": "synth"}
 _COVERAGE_FLAG = "coverage"
+_PRE_SIM_PHASE = "sim_pre_run"
+_BUILD_PHASE = "sim_build"
 
 _K = TypeVar("_K")
+
+
+def sim_resource_flags(*, coverage: bool, trace: bool) -> tuple[str, ...]:
+    """Coverage and tracing change a simulation's footprint; history keys carry them."""
+    return tuple(
+        flag for flag, enabled in ((_COVERAGE_FLAG, coverage), ("trace", trace)) if enabled
+    )
 
 
 @dataclass(frozen=True)
@@ -65,10 +78,16 @@ class JobRequest:
     test_runs: tuple[str, ...] = ("",)
     #: Instrumentation flags (``coverage``, ``trace``); order does not matter.
     flags: tuple[str, ...] = ()
+    #: Sim only: the Target runs Pre-Sim Commands before its Test Runs.
+    pre_sim_commands: bool = False
 
 
 def sim_job_request(
-    plan: TargetTestPlan, runs: Sequence[TestRun], *, flags: tuple[str, ...] = ()
+    plan: TargetTestPlan,
+    runs: Sequence[TestRun],
+    *,
+    flags: tuple[str, ...] = (),
+    pre_sim_commands: bool = False,
 ) -> JobRequest:
     """The sim request that runs *runs* (resolved by ``plan.resolve``) on *plan*'s Target.
 
@@ -80,7 +99,8 @@ def sim_job_request(
 
     The request always lists simulator processes; a ``--mode elab-only`` Job
     runs none (only its FuseSoC setup and build), so its caller builds
-    ``JobRequest(..., test_runs=())`` itself.
+    ``JobRequest(..., test_runs=())`` itself. *pre_sim_commands* is true when the
+    Project configures Pre-Sim Commands.
     """
     one_process_per_run = plan.adapter != "cocotb" or _COVERAGE_FLAG in flags
     groups = batch_test_runs(runs, one_process_per_run=one_process_per_run)
@@ -88,7 +108,9 @@ def sim_job_request(
         ",".join(plan.history_test_name(run) for run in group if run.test is not None)
         for group in groups
     )
-    return JobRequest(_SIM_FLOW, plan.target, test_runs=names, flags=flags)
+    return JobRequest(
+        _SIM_FLOW, plan.target, test_runs=names, flags=flags, pre_sim_commands=pre_sim_commands
+    )
 
 
 def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
@@ -103,8 +125,7 @@ def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
     Synthesis lists its whole-command ``synth`` key only: the split ``sv2v``,
     ``yosys`` and ``openroad`` keys depend on the synthesis mode and frontend,
     and a listed phase that never runs would leave the Job unknown forever.
-    ``sim_pre_run`` is never listed (nothing records it), nor are the
-    per-module probe keys of ``--mode elab-only-standalone``.
+    The per-module probe keys of ``--mode elab-only-standalone`` are never listed.
     """
     return tuple(dict.fromkeys(phase_occurrences(request)))
 
@@ -123,7 +144,10 @@ def phase_occurrences(request: JobRequest) -> tuple[HistoryKey, ...]:
     if request.flow == _SIM_FLOW:
         coverage = _COVERAGE_FLAG in request.flags
         # FuseSoC setup runs once per prepared build, coverage or not.
-        keys = [key("sim_prepare"), key("sim_build")]
+        keys = [key("sim_prepare"), key(_BUILD_PHASE)]
+        if request.pre_sim_commands and request.test_runs:
+            # Listed once, whatever the number of firings, and never reported ended.
+            keys.append(key(_PRE_SIM_PHASE))
         keys.extend(key("sim_run", name) for name in request.test_runs)
         if coverage:
             keys.append(key("sim_postprocess"))
@@ -251,14 +275,21 @@ class _Maxima:
             _raise_to(self._project, key.phase, value)
 
     def estimate(self, key: HistoryKey) -> Estimate:
-        """Own, else the Target's, else the Project's largest for *key*'s phase, with margin."""
+        """Own, else the Target's, else the Project's largest for *key*'s phase, with margin.
+
+        Pre-Sim Commands skip the Project's: with no record of their own or the
+        Target's, the Target's ``sim_build`` estimate stands in.
+        """
+        pre_sim = key.phase == _PRE_SIM_PHASE
         for source, found in (
             (Source.OWN, self._own.get(key)),
             (Source.TARGET, self._target.get((key.target, key.phase))),
-            (Source.PROJECT, self._project.get(key.phase)),
+            (Source.PROJECT, None if pre_sim else self._project.get(key.phase)),
         ):
             if found is not None:
                 return Estimate(found * self._margin, source)
+        if pre_sim:
+            return self.estimate(key._replace(phase=_BUILD_PHASE))
         return Estimate(None, Source.UNKNOWN)
 
 

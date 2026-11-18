@@ -1925,6 +1925,7 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
             build_root=group.build_root,
             eda_tool="icarus",
             timeout_s=hang_guard_s(),
+            resource_flags=(),
             commands=(
                 "printf '\\n# mutation\\n' >> "
                 ".booley/tmp/fusesoc-isolated-cores/booley-isolated-multi.core",

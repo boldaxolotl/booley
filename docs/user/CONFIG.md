@@ -126,7 +126,9 @@ Booley reserves what the Job used on earlier runs
 margin. With no record of its own, the Job borrows from the same step on the
 same Target, then anywhere in the Project. Only a step Booley has never measured
 makes the Job run alone. A Simulation Record runs independent tests in parallel
-while their reservations fit.
+while their reservations fit. A Target's
+[Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
+reserve as much as that Target's build until Booley has measured them.
 
 If the kernel kills a Job for running out of memory because the Sandbox has
 used `[sandbox].memory` plus its

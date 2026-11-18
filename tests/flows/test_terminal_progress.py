@@ -564,6 +564,7 @@ def test_pre_sim_observed_without_changing_evidence(tmp_path):
             build_root=tmp_path / "build",
             eda_tool="icarus",
             timeout_s=SUBPROCESS_TIMEOUT_S,
+            resource_flags=(),
             commands=("printf 'hook out\\n'; printf 'hook err\\n' >&2",),
         )
         assert evidence is not None
