@@ -470,14 +470,22 @@ def test_expression_parameter_fails_security(tmp_path):
     (failure,) = _security_report(tmp_path).active_findings
     assert failure.severity is Severity.FAIL
     assert failure.message.startswith(".core security [expr_param] design.core:")
-    assert failure.fix == "ADR 0022 decision 21"
+    assert failure.fix == (
+        "give parameter 'width' a literal datatype (bool, file, int, real or str) "
+        "and the literal value as its default"
+    )
     assert failure.check_id is None
 
 
 def test_fpga_hook_fails_security(tmp_path):
     _write_core(tmp_path, _FPGA_HOOK_CORE)
-    failures = _rows(_security_report(tmp_path), Severity.FAIL)
-    assert any("[fpga_hook]" in message for message in failures)
+    (failure,) = _security_report(tmp_path).active_findings
+    assert failure.severity is Severity.FAIL
+    assert "[fpga_hook]" in failure.message
+    assert failure.fix == (
+        "delete `hooks:` from Target 'impl'; run that step from a `generators:` "
+        "entry or outside the .core"
+    )
 
 
 def test_security_pass_needs_at_least_one_target(tmp_path):

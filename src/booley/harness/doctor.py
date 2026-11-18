@@ -1661,8 +1661,7 @@ def _check_worktree_core_shadow_guard(
 # the sandbox image build, and the derived-image drift gotcha means the base
 # rebuild alone silently leaves per-project images stale.
 _RUNTIME_MARKER_FIX = (
-    "the image predates the ADR 0028 runtime marker; recreate the Sandbox: "
-    f"{UNKNOWN_SANDBOX_STEPS}"
+    f"the image predates the Sandbox runtime marker; recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
 )
 
 
@@ -1877,7 +1876,7 @@ def _check_host_agent_session(_pass: Check) -> None:
 
     app = runtime_context.agent_session_app()
     if app is None:
-        message = "host shell — Booley Flows live in the Sandbox (ADR 0028)"
+        message = "host shell — Booley Flows live in the Sandbox"
     else:
         message = (
             f"{app} is running on the HOST, as expected for host-side Project Setup. "
@@ -2754,7 +2753,7 @@ def _run_container_tool_checks(
         _container_check(
             "verible-verilog-lint (a .core lint Target selects verible)",
             ["verible-verilog-lint", "--version"],
-            "rebuild the sandbox image — it predates Verible support (ADR 0033)",
+            "rebuild the sandbox image — it predates Verible support",
         )
     _container_check("ripgrep", ["rg", "--version"], "rebuild sandbox image")
     # Two distinct things, and an image can have one without the other:
@@ -4097,7 +4096,7 @@ def _run_flow_audit(
                 _note(
                     f"sim pre_run_commands configured ({len(pre_sim_commands)} "
                     f"line(s)); they run in the Sandbox before "
-                    "each sim run (BOOLEY_* env contract, ADR 0039)"
+                    "each sim run (BOOLEY_* env contract)"
                 )
         if flow_name == "sim":
             _check_sim_run_cwd(project, _pass, _warn)
@@ -4282,7 +4281,7 @@ def _enumerate_core_audit_targets(
     if not refs:
         _fail(
             "project has no .core: a resolvable FuseSoC .core Target is a "
-            "precondition for every Booley Flow (ADR 0039)",
+            "precondition for every Booley Flow",
             "author a .core (the booley-setup skill's project-config step walks through it)",
         )
     else:
@@ -4527,15 +4526,14 @@ def _check_sim_target_tb_staging(
     if sources.rtl_source_files and not sources.tb_files:
         _fail(
             f"sim Target '{name}' has files but none tagged tags:[tb]",
-            "tag the testbench fileset tags:[tb] so Source Isolation can "
-            "partition RTL vs TB (ADR 0022 dec 13)",
+            "tag the testbench fileset tags:[tb] so Source Isolation can partition RTL vs TB",
         )
     elif not sources.tb_files:
         _fail(
             f"sim Target '{name}' stages zero files — no testbench "
             "(or design) ever reaches the simulator",
             "list the rtl + tb filesets in the Target's filesets: "
-            "entry (the tb fileset tagged tags:[tb], ADR 0022 dec 13)",
+            "entry (the tb fileset tagged tags:[tb])",
         )
     else:
         _pass(f"sim Target '{name}' TB fileset tagged")
@@ -4574,7 +4572,7 @@ def _warn_missing_sim_sentinel(
         emit(
             f"sim Target '{name}' TB emits no configured pass sentinel ({shown}) "
             "and its TB fileset is Python — for a cocotb TB declare "
-            "flow_options.cocotb_module on the Target (ADR 0034) so the verdict "
+            "flow_options.cocotb_module on the Target so the verdict "
             "comes from results.xml; $display sentinels only apply to SV TBs"
         )
         return

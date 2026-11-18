@@ -351,8 +351,8 @@ Authoring rules:
   deleted cone, and the authoring rules above are the primary guard.
 - **`fpga` Targets:** `flow: generic`, `flow_options: {tool: vivado, …}`;
   `xdc` is a typed fileset, `top` is `toplevel`, and the board `part` plus
-  `out_of_context` live in Target `flow_options`. **No `hooks:`** (decision 21,
-  below).
+  `out_of_context` live in Target `flow_options`. **No `hooks:`** (see the
+  validator rules below).
 - **Trace: Icarus needs no wiring; an owned-main Verilator Target needs
   `trace_files`.** For **Icarus** sim Targets (including cocotb on Icarus),
   `booley flow sim --trace` works without any fileset change — the trace overlay

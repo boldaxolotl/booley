@@ -232,7 +232,7 @@ BOOLEY_TOML_SKELETON = f"""\
 # it has inspected the repository's docs, manifests, filelists, scripts, and CI.
 #
 # Does a test need a non-RTL build step before it can run (e.g. cross-compile
-# the selected test's firmware)? Declare it as Pre-Sim Commands (ADR 0039) —
+# the selected test's firmware)? Declare it as Pre-Sim Commands —
 # shell lines run inside the Sandbox immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
@@ -498,7 +498,7 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
         return
     if ctx.check_only:
         ctx.record("booley_dir", "warn", "would initialize inner git repository")
-        warn(f"would `git init -b {branch.branch}` {target} (stealth persistence, ADR 0036)")
+        warn(f"would `git init -b {branch.branch}` {target} (stealth persistence)")
         return
     try:
         result = subprocess.run(

@@ -67,7 +67,7 @@ enabled = false              # synthesis recipe belongs in Target flow_options
 # vivado = 1                 # license seats Booley may use at once
 
 # NOTE: RTL-vs-TB source isolation is derived from the .core filesets — a file
-# tagged `tags: [tb]` is testbench, everything else is RTL (ADR 0026). There is
+# tagged `tags: [tb]` is testbench, everything else is RTL. There is
 # no [sources.*] table in booley.toml anymore; tag your testbench fileset in the
 # .core instead (see CORE_TEMPLATE.yaml).
 

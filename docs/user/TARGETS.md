@@ -110,6 +110,25 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 - SystemC, UHDM, VHDL, and Tcl filesets have no supported path through the
   built-in Flows; see the [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
 
+### What Doctor rejects in a `.core`
+
+Doctor checks the `.core` files your Targets use for anything that would let
+the Developer Agent change how its own results are produced:
+
+- **No `hooks:` on an fpga Target.** FPGA builds run a fixed, reviewed tool
+  setup. Run an extra step from a `generators:` entry or outside the `.core`.
+- **Parameters hold literal values.** A parameter's `datatype` is `bool`,
+  `file`, `int`, `real`, or `str`. Booley can't pass an HDL expression such
+  as `WIDTH*2` to the tool as a parameter, so write out its value.
+- **Scripts live outside the design directories.** A file that a `scripts:`
+  or `generators:` entry runs must sit outside the directories that hold the
+  Target's RTL and testbench files, for example in `scripts/`, so what
+  runs during a build is not a file the Developer Agent edits as part of its
+  design work.
+
+The first two fail Doctor; a script inside the design directories gets a
+warning. Each finding names the change to make.
+
 ### Target authoring
 
 Name your own Targets `<axis>_<subject>`: the axis is the Flow that runs the
