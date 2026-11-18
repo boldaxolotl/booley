@@ -688,6 +688,36 @@ pub fn hex_slice(value: &str, sig_width: u32, msb: u32, lsb: u32) -> String {
     pack_bits_to_hex(&bits[high..=low])
 }
 
+/// Bits `msb..=lsb` (offsets from the least significant bit) of a stored
+/// value, in the store's canonical form. A short x/z bit-text value is
+/// left-extended with its leading x/z (zero otherwise) before slicing: the
+/// store drops that padding (`cache::minimal_xz`), and `expand_to_bits` alone
+/// would read it as 0.
+pub fn slice_value(value: &str, width: u32, msb: u32, lsb: u32) -> String {
+    let bit_text = |b: u8| matches!(b.to_ascii_lowercase(), b'0' | b'1' | b'x' | b'z');
+    let short = value.len() < width as usize
+        && value.bytes().all(bit_text)
+        && value.bytes().any(|b| !matches!(b, b'0' | b'1'));
+    let extended;
+    let value = if short {
+        let fill = match value.as_bytes()[0].to_ascii_lowercase() {
+            c @ (b'x' | b'z') => c as char,
+            _ => '0',
+        };
+        extended = fill.to_string().repeat(width as usize - value.len()) + value;
+        extended.as_str()
+    } else {
+        value
+    };
+    let bits = expand_to_bits(value, width);
+    if bits.is_empty() {
+        return value.to_string();
+    }
+    let (high, low) = ((width - 1 - msb) as usize, (width - 1 - lsb) as usize);
+    let text = String::from_utf8_lossy(&bits[high..=low]).into_owned();
+    crate::cache::minimal_xz(format_value(&text))
+}
+
 fn expand_to_bits(value: &str, sig_width: u32) -> Vec<u8> {
     let width = sig_width as usize;
     if width == 0 {
@@ -1299,6 +1329,15 @@ mod tests {
     }
 
     // ---- hex_slice (issue 4c) ----
+
+    #[test]
+    fn slice_value_extends_x_and_z() {
+        assert_eq!(slice_value("x01", 8, 7, 6), "x");
+        assert_eq!(slice_value("33", 8, 5, 4), "3");
+        assert_eq!(slice_value("z1", 4, 3, 2), "z");
+        assert_eq!(slice_value("0x1", 8, 7, 6), "0");
+        assert_eq!(slice_value("1x0", 3, 2, 0), "1x0");
+    }
 
     #[test]
     fn hex_slice_clean() {

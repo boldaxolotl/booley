@@ -129,6 +129,8 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[TOP.tb.dut.*-expected0]",
     "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[*dut.*-expected1]",
     "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[bus-expected2]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_refuses_bit_slice[False]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_refuses_bit_slice[True]",
 }
 
 
