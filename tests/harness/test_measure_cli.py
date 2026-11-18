@@ -1130,8 +1130,22 @@ def test_a_target_run_exits_like_a_full_run(
     assert stored_runs(project) == []
 
 
-def test_a_target_on_a_measured_commit_shows_the_stored_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("arguments", "code", "said", "runs"),
+    [
+        (["--target", "nope"], 2, "Unknown target 'nope'", 1),
+        (["--target", "sim_fifo"], 2, NOTHING_IN_SCOPE, 1),
+        (["--all", "--target", "sim_core"], 0, ": not stored", 2),
+    ],
+)
+def test_a_target_on_a_measured_commit_is_validated_and_measured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    code: int,
+    said: str,
+    runs: int,
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
     steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
@@ -1139,11 +1153,14 @@ def test_a_target_on_a_measured_commit_shows_the_stored_run(
     (first,) = stored_runs(project)
     capsys.readouterr()
 
-    assert run_command(monkeypatch, project, "--target", "sim_core") == 0
+    assert run_command(monkeypatch, project, *arguments) == code
 
-    assert "is already Measured by run" in capsys.readouterr().err
-    assert steps == ["prepare", "run"]
+    captured = capsys.readouterr()
+    assert said in captured.out + captured.err
+    assert "is already Measured" not in captured.err
+    assert steps == ["prepare", "run"] * runs
     assert stored_runs(project) == [first]
+    assert MeasurementStore(project / ".booley").measured(key_of(project)).path == first
 
 
 def test_validate_init_defaults_bound_listed_sim_headers(

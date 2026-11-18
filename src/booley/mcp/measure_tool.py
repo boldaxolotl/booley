@@ -27,7 +27,7 @@ _DESCRIPTION = (
     "status (EXIT_CODE), the verdict line, the failing rows, the Markdown and JSON report "
     "paths and, after exit 1 or 2, the rule to follow next. booley_cancel stops the "
     "measurement and its Flows (up to 45 s). A commit already Measured shows its stored run "
-    "unless 'again' is set.\n\nRules:\n"
+    "unless 'again' or 'target' is set.\n\nRules:\n"
 )
 
 

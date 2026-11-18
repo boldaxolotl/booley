@@ -195,9 +195,9 @@ Dashboard shows each session's measurement; see
 [The dashboard](USAGE.md#the-dashboard).
 
 A commit that is already Measured is not measured again: the command prints
-its stored run, starts no Flow and exits with status 0. A commit whose latest
-run is unmet, errored, stopped or cancelled is measured again without
-`--again`.
+its stored run, starts no Flow and exits with status 0. `--target` checks and
+measures its Target even then. A commit whose latest run is unmet, errored,
+stopped or cancelled is measured again without `--again`.
 
 | Option | Effect |
 |---|---|
