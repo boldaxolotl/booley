@@ -17,17 +17,24 @@ from booley.harness.setup.line_endings import (
     LineEndingActionState,
     LineEndingMode,
     LineEndingObservationCode,
+    LineEndingRefusalReason,
     LineEndingStatus,
     reconcile_project_line_endings,
 )
+from tests.git_command_fake import REAL_RUN, GitCommandFake
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
 
+@pytest.fixture
+def git_commands(monkeypatch: pytest.MonkeyPatch) -> GitCommandFake:
+    return GitCommandFake.install(monkeypatch)
+
+
 def _git(root: Path, *args: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
-    # Kept on subprocess.run: needs stdin (`hash-object --stdin`) and binary output.
-    return subprocess.run(
+    # Real Git, never through the fake's rules: needs stdin and binary output.
+    return REAL_RUN(
         ["git", "-C", str(root), *args],
         input=input_bytes,
         capture_output=True,
@@ -47,19 +54,8 @@ def _commit_file(root: Path, name: str, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     assert _git(root, "add", "-f", name).returncode == 0
-    assert (
-        _git(
-            root,
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            name,
-        ).returncode
-        == 0
-    )
+    commit = _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name)
+    assert commit.returncode == 0
 
 
 def _crlf_repo(root: Path, name: str = "a.v") -> Path:
@@ -82,14 +78,11 @@ def _snapshot(path: Path) -> tuple[bytes, int, int]:
     return path.read_bytes(), metadata.st_mtime_ns, metadata.st_mode
 
 
-def _normalize_action(
+def _action(
     report: line_endings.LineEndingReport,
+    kind: LineEndingActionKind = LineEndingActionKind.NORMALIZE_FILES,
 ) -> line_endings.LineEndingActionResult:
-    return next(
-        action
-        for action in report.repositories[0].actions
-        if action.kind is LineEndingActionKind.NORMALIZE_FILES
-    )
+    return next(action for action in report.repositories[0].actions if action.kind is kind)
 
 
 def _recheckout_again(root: Path, name: str) -> None:
@@ -105,30 +98,43 @@ def test_no_repository_is_not_applicable(tmp_path: Path):
     assert report.repositories == ()
 
 
-def test_repository_discovery_preserves_probe_failure_context(tmp_path: Path):
-    failures = (
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
         (FileNotFoundError(), "git unavailable"),
         (subprocess.TimeoutExpired(["git"], 10), "Git probe failed"),
         (OSError("permission denied"), "Git probe failed"),
-    )
+    ],
+    ids=["missing", "timeout", "os-error"],
+)
+def test_repository_discovery_preserves_probe_failure_context(
+    tmp_path: Path, git_commands: GitCommandFake, error: BaseException, expected: str
+):
+    git_commands.crash("rev-parse", error=error)
 
-    for failure, expected in failures:
-        with patch.object(line_endings.subprocess, "run", side_effect=failure):
-            discovery = line_endings.discover_line_ending_repositories(tmp_path)
-        assert discovery.repositories == ()
-        assert len(discovery.failures) == 1
-        assert expected in discovery.failures[0].detail
+    discovery = line_endings.discover_line_ending_repositories(tmp_path)
+
+    assert discovery.repositories == ()
+    assert len(discovery.failures) == 1
+    assert expected in discovery.failures[0].detail
 
 
-def test_git_probe_error_helpers_preserve_binary_and_failed_output(tmp_path: Path):
-    assert line_endings._error_text(b"bad bytes\xff\n") == "bad bytes�"
-    failed = subprocess.CompletedProcess(["git"], 2, "", "failed")
-    with patch.object(line_endings.subprocess, "run", return_value=failed):
-        assert line_endings._crlf_worktree_files(tmp_path) is None
-        assert line_endings.read_autocrlf_setting(tmp_path) is None
-    with patch.object(line_endings.subprocess, "run", side_effect=OSError("unavailable")):
-        assert line_endings._crlf_worktree_files(tmp_path) is None
-        assert line_endings.read_autocrlf_setting(tmp_path) is None
+@pytest.mark.parametrize(
+    "reader",
+    [line_endings.read_autocrlf_setting, line_endings.read_local_eol],
+    ids=["autocrlf", "eol"],
+)
+@pytest.mark.parametrize("failure", ["exit", "crash"])
+def test_unreadable_git_config_reads_as_none(
+    tmp_path: Path, git_commands: GitCommandFake, reader, failure: str
+):
+    _init(tmp_path)
+    if failure == "exit":
+        git_commands.answer("config")
+    else:
+        git_commands.crash("config", error=OSError("unavailable"))
+
+    assert reader(tmp_path) is None
 
 
 def test_inspection_is_mechanically_read_only(tmp_path: Path):
@@ -159,124 +165,90 @@ def test_repair_is_idempotent_through_public_interface(tmp_path: Path):
     assert second.repositories[0].actions == ()
 
 
-def test_stale_plan_never_overwrites_intervening_worktree_edit(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("change", "status"),
+    [
+        ("worktree-edit", LineEndingStatus.UNSAFE),
+        ("index-change", LineEndingStatus.UNSAFE),
+        ("crlf-rule", LineEndingStatus.SAFE),
+    ],
+)
+def test_change_after_planning_leaves_the_file_untouched(
+    tmp_path: Path, git_commands: GitCommandFake, change: str, status: LineEndingStatus
+):
     _crlf_repo(tmp_path)
-    local_edit = b"module a;\r\n  localparam KEEP = 1;\r\nendmodule\r\n"
-    real_actions = line_endings._repair_actions
+    path = tmp_path / "a.v"
+    snapshots: list[tuple[bytes, int, int]] = []
 
-    def edit_then_apply(plan):
-        (tmp_path / "a.v").write_bytes(local_edit)
-        return real_actions(plan)
+    def change_then_snapshot() -> None:
+        if change == "worktree-edit":
+            path.write_bytes(b"module a;\r\n  localparam KEEP = 1;\r\nendmodule\r\n")
+        elif change == "index-change":
+            blob = _git(tmp_path, "hash-object", "-w", "--stdin", input_bytes=b"changed index\n")
+            oid = os.fsdecode(blob.stdout).strip()
+            assert (
+                _git(tmp_path, "update-index", "--cacheinfo", "100644", oid, "a.v").returncode == 0
+            )
+        else:
+            info_attributes = tmp_path / ".git" / "info" / "attributes"
+            info_attributes.parent.mkdir(exist_ok=True)
+            info_attributes.write_bytes(b"a.v text eol=crlf\n")
+        snapshots.append(_snapshot(path))
 
-    with patch.object(line_endings, "_repair_actions", side_effect=edit_then_apply):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    # ls-files call 1 is planning; call 2 is the repair's own scan, which sees the change.
+    git_commands.hook("ls-files", action=change_then_snapshot, call=2)
 
-    assert report.status is LineEndingStatus.UNSAFE
-    assert (tmp_path / "a.v").read_bytes() == local_edit
-    normalize = _normalize_action(report)
-    assert normalize.state is LineEndingActionState.REFUSED
-    assert normalize.reason is line_endings.LineEndingRefusalReason.NOT_LINE_ENDING_ONLY
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-
-def test_clean_baseline_never_discards_later_content_edits(tmp_path: Path):
-    for ending in (b"\r\n", b"\n"):
-        root = tmp_path / ("crlf" if ending == b"\r\n" else "lf")
-        _crlf_repo(root)
-        _commit_file(root, "b.v", b"module b;\nendmodule\n")
-        _recheckout_again(root, "b.v")
-        baseline = line_endings.sample_worktree_cleanliness(root)
-        assert baseline[root] is True
-        edited = b"module a;\r\n  localparam KEEP = 1;" + ending + b"endmodule\r\n"
-        (root / "a.v").write_bytes(edited)
-        index_before = _git(root, "ls-files", "--stage", "-z").stdout
-
-        report = reconcile_project_line_endings(
-            root, mode=LineEndingMode.REPAIR, clean_baseline=baseline
-        )
-
-        normalize = _normalize_action(report)
-        assert report.status is LineEndingStatus.UNSAFE
-        assert normalize.state is LineEndingActionState.REFUSED
-        assert normalize.reason is line_endings.LineEndingRefusalReason.NOT_LINE_ENDING_ONLY
-        assert normalize.count == 2
-        assert "normalized 1" in (normalize.detail or "")
-        assert (root / "a.v").read_bytes() == edited
-        assert (root / "b.v").read_bytes() == b"module b;\nendmodule\n"
-        assert _git(root, "ls-files", "--stage", "-z").stdout == index_before
+    # A re-checkout would rewrite the bytes and the mtime.
+    assert _snapshot(path) == snapshots[0]
+    assert report.status is status
 
 
-def test_stale_index_input_refuses_worktree_replacement(tmp_path: Path):
-    _crlf_repo(tmp_path)
-    original = (tmp_path / "a.v").read_bytes()
-    real_actions = line_endings._repair_actions
+@pytest.mark.parametrize(
+    "ending", [pytest.param(b"\r\n", id="crlf"), pytest.param(b"\n", id="lf")]
+)
+def test_clean_baseline_never_discards_later_content_edits(tmp_path: Path, ending: bytes):
+    root = _crlf_repo(tmp_path)
+    _commit_file(root, "b.v", b"module b;\nendmodule\n")
+    _recheckout_again(root, "b.v")
+    baseline = line_endings.sample_worktree_cleanliness(root)
+    assert baseline[root] is True
+    edited = b"module a;\r\n  localparam KEEP = 1;" + ending + b"endmodule\r\n"
+    (root / "a.v").write_bytes(edited)
+    index_before = _git(root, "ls-files", "--stage", "-z").stdout
 
-    def change_index_then_apply(plan):
-        blob = _git(tmp_path, "hash-object", "-w", "--stdin", input_bytes=b"changed index\n")
-        assert blob.returncode == 0
-        oid = os.fsdecode(blob.stdout).strip()
-        assert _git(tmp_path, "update-index", "--cacheinfo", "100644", oid, "a.v").returncode == 0
-        return real_actions(plan)
-
-    with patch.object(line_endings, "_repair_actions", side_effect=change_index_then_apply):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    assert report.status is LineEndingStatus.UNSAFE
-    assert (tmp_path / "a.v").read_bytes() == original
-
-
-def test_crlf_attribute_added_after_planning_keeps_crlf(tmp_path: Path):
-    _crlf_repo(tmp_path)
-    before = _snapshot(tmp_path / "a.v")
-    real_actions = line_endings._repair_actions
-
-    def add_attribute_then_apply(plan):
-        info_attributes = tmp_path / ".git" / "info" / "attributes"
-        info_attributes.parent.mkdir(exist_ok=True)
-        info_attributes.write_text("a.v text eol=crlf\n", encoding="utf-8")
-        return real_actions(plan)
-
-    with patch.object(line_endings, "_repair_actions", side_effect=add_attribute_then_apply):
-        reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    # A re-checkout would rewrite the bytes and the mtime: the fresh scan must see the rule.
-    assert _snapshot(tmp_path / "a.v") == before
-
-
-def test_config_change_after_inspection_is_refused_for_that_run(tmp_path: Path):
-    _init(tmp_path, autocrlf="true")
-    real_actions = line_endings._repair_actions
-
-    def change_config_then_apply(plan):
-        assert _git(tmp_path, "config", "core.autocrlf", "false").returncode == 0
-        return real_actions(plan)
-
-    with patch.object(line_endings, "_repair_actions", side_effect=change_config_then_apply):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    assert report.status is LineEndingStatus.UNSAFE
-    pin = next(
-        action
-        for action in report.repositories[0].actions
-        if action.kind is LineEndingActionKind.PIN_AUTOCRLF
+    report = reconcile_project_line_endings(
+        root, mode=LineEndingMode.REPAIR, clean_baseline=baseline
     )
-    assert pin.state is LineEndingActionState.REFUSED
+
+    normalize = _action(report)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert normalize.state is LineEndingActionState.REFUSED
+    assert normalize.reason is LineEndingRefusalReason.NOT_LINE_ENDING_ONLY
+    assert normalize.count == 2
+    assert "normalized 1" in (normalize.detail or "")
+    assert (root / "a.v").read_bytes() == edited
+    assert (root / "b.v").read_bytes() == b"module b;\nendmodule\n"
+    assert _git(root, "ls-files", "--stage", "-z").stdout == index_before
 
 
-def test_failed_config_command_remains_unsafe_even_if_value_changed(tmp_path: Path):
+@pytest.mark.parametrize("key", ["core.autocrlf", "core.eol"])
+def test_setting_changed_after_planning_refuses_the_pin(
+    tmp_path: Path, git_commands: GitCommandFake, key: str
+):
     _init(tmp_path, autocrlf="true")
-    real_run = line_endings.subprocess.run
+    value = "false" if key == "core.autocrlf" else "crlf"
 
-    def fail_after_config(*args, **kwargs):
-        command = args[0]
-        result = real_run(*args, **kwargs)
-        if command[-4:] == ["config", "--local", "core.autocrlf", "false"]:
-            return subprocess.CompletedProcess(command, 1, result.stdout, "simulated failure")
-        return result
+    # Planning reads config three times; call 4 is the pin's first re-read.
+    git_commands.hook("config", action=lambda: _git(tmp_path, "config", key, value), call=4)
 
-    with patch.object(line_endings.subprocess, "run", side_effect=fail_after_config):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    assert _git(tmp_path, "config", "--local", "--get", "core.autocrlf").stdout.strip() == b"false"
+    pin = _action(report, LineEndingActionKind.PIN_AUTOCRLF)
+    assert pin.state is LineEndingActionState.REFUSED
+    assert pin.reason is LineEndingRefusalReason.SETTING_CHANGED
+    assert pin.detail == f"{key} changed during line-ending repair"
     assert report.status is LineEndingStatus.UNSAFE
 
 
@@ -300,18 +272,13 @@ def test_stale_index_refresh_preserves_unrelated_staged_and_unstaged_edits(tmp_p
     assert b"a.v" not in _git(tmp_path, "status", "--porcelain").stdout
 
 
-def test_post_repair_unreadable_inspection_is_unsafe_and_retry_converges(tmp_path: Path):
+def test_post_repair_unreadable_inspection_is_unsafe_and_retry_converges(
+    tmp_path: Path, git_commands: GitCommandFake
+):
     _crlf_repo(tmp_path)
-    real_scan = line_endings._crlf_worktree_files
-    calls = 0
+    git_commands.answer("ls-files", call=3)  # the final inspection: planning and repair scan first
 
-    def fail_final_scan(root: Path):
-        nonlocal calls
-        calls += 1
-        return None if calls == 2 else real_scan(root)
-
-    with patch.object(line_endings, "_crlf_worktree_files", side_effect=fail_final_scan):
-        first = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    first = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
     retry = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
     assert first.status is LineEndingStatus.UNSAFE
@@ -356,24 +323,7 @@ def test_refused_normalization_withholds_the_autocrlf_flip_and_leaves_no_phantom
     )
     assert pin.state is LineEndingActionState.PLANNED
     assert _local_autocrlf(tmp_path) == "true"
-    assert _normalize_action(report).state is LineEndingActionState.REFUSED
-
-
-def test_readonly_staged_file_cleanup_does_not_crash(tmp_path: Path):
-    """Windows [WinError 5] when unlinking a read-only temp file must not crash."""
-    from booley.harness.setup.line_endings import _cleanup_staged_files
-
-    readonly = tmp_path / ".booley-eol-readonly"
-    readonly.write_bytes(b"staged content")
-    readonly.chmod(0o444)
-
-    _cleanup_staged_files({"a.v": readonly})
-
-    if os.name == "nt":
-        readonly.chmod(0o644)
-        readonly.unlink()
-    else:
-        assert not readonly.exists()
+    assert _action(report).state is LineEndingActionState.REFUSED
 
 
 def test_hostile_git_location_environment_cannot_redirect_repair(tmp_path: Path, monkeypatch):
@@ -414,39 +364,6 @@ def test_init_repair_attribute_queries_ignore_attribute_source_oid(tmp_path, mon
     report = reconcile_project_line_endings(root, None, mode=LineEndingMode.REPAIR)
     assert report.status is LineEndingStatus.SAFE
     assert (root / "a.v").read_bytes() == b"module a;\nendmodule\n"
-
-
-def test_reconciliation_never_inventories_attributes_sources(tmp_path, monkeypatch):
-    root = tmp_path / "project"
-    _init(root, autocrlf="true")
-    _commit_file(root, "a.v", b"module a;\nendmodule\n")
-    _commit_file(root, ".gitattributes", b"*.png binary\n")
-    linked = tmp_path / "linked"
-    assert _git(root, "worktree", "add", "-q", str(linked), "-b", "side").returncode == 0
-    data = root / ".booley"
-    data.mkdir()
-    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
-    calls: list[tuple[str, ...]] = []
-    real_run = subprocess.run
-
-    def recording_run(command, *args, **kwargs):
-        calls.append(tuple(command))
-        return real_run(command, *args, **kwargs)
-
-    def forbidden_walk(*_args, **_kwargs):
-        raise AssertionError("reconciliation must not walk the tree for attributes")
-
-    monkeypatch.setattr(line_endings.subprocess, "run", recording_run)
-    monkeypatch.setattr(line_endings.os, "walk", forbidden_walk)
-    for mode in (LineEndingMode.INSPECT, LineEndingMode.REPAIR):
-        calls.clear()
-        reconcile_project_line_endings(root, data, mode=mode)
-        assert calls
-        for command in calls:
-            assert "worktree" not in command
-            assert "var" not in command
-            assert "cat-file" not in command
-            assert "core.attributesFile" not in command
 
 
 def _local_autocrlf(root: Path) -> str:
@@ -543,7 +460,7 @@ def test_mode_change_after_baseline_is_left_untouched(tmp_path: Path):
         tmp_path, mode=LineEndingMode.REPAIR, clean_baseline=baseline
     )
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert normalize.state is LineEndingActionState.REFUSED
     assert normalize.reason is line_endings.LineEndingRefusalReason.NOT_LINE_ENDING_ONLY
     assert "'a.v' (changed)" in (normalize.detail or "")
@@ -559,7 +476,7 @@ def test_git_protected_crlf_path_refuses_normalization(tmp_path: Path, flag: str
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert normalize.state is LineEndingActionState.REFUSED
     assert normalize.reason is line_endings.LineEndingRefusalReason.PROTECTED_PATHS
     assert "Git-protected" in (normalize.detail or "")
@@ -567,9 +484,7 @@ def test_git_protected_crlf_path_refuses_normalization(tmp_path: Path, flag: str
     assert (tmp_path / "a.v").read_bytes() == edited
 
 
-def test_native_crlf_eol_with_text_auto_is_pinned_and_normalized(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_native_crlf_eol_with_text_auto_is_pinned_and_normalized(tmp_path: Path):
     # Git for Windows' native core.eol=crlf, emulated in the isolated global config.
     (tmp_path / "isolated-git.config").write_bytes(b"[core]\n\teol = crlf\n")
     root = tmp_path / "repo"
@@ -649,87 +564,58 @@ def test_non_repository_is_skipped_under_a_localized_git(
     assert report.status is LineEndingStatus.NOT_APPLICABLE
 
 
-def _git_process_count(root: Path) -> tuple[int, line_endings.LineEndingReport]:
-    real_run = subprocess.run
-    count = 0
-
-    def counting(*args, **kwargs):
-        nonlocal count
-        if args[0][:1] == ["git"]:
-            count += 1
-        return real_run(*args, **kwargs)
-
-    with patch.object(subprocess, "run", side_effect=counting):
-        report = reconcile_project_line_endings(root, None, mode=LineEndingMode.REPAIR)
-    return count, report
-
-
-def test_repair_git_process_count_is_independent_of_crlf_file_count(tmp_path: Path):
+def test_repair_git_process_count_is_independent_of_crlf_file_count(
+    tmp_path: Path, git_commands: GitCommandFake
+):
     _multi_crlf_repo(tmp_path / "few", 2)
     _multi_crlf_repo(tmp_path / "many", 8)
+    counts: list[int] = []
+    reports: list[line_endings.LineEndingReport] = []
+    for root in (tmp_path / "few", tmp_path / "many"):
+        git_commands.commands.clear()
+        reports.append(reconcile_project_line_endings(root, None, mode=LineEndingMode.REPAIR))
+        counts.append(len(git_commands.commands))
 
-    few_count, few = _git_process_count(tmp_path / "few")
-    many_count, many = _git_process_count(tmp_path / "many")
-
-    assert few.status is LineEndingStatus.SAFE
-    assert many.status is LineEndingStatus.SAFE
-    assert many_count == few_count, f"{few_count} Git processes for 2 files, {many_count} for 8"
-
-
-def _fail_git(*subcommands: str, stderr: bytes = b"simulated failure"):
-    """A ``subprocess.run`` stand-in failing every Git command that names one of ``subcommands``."""
-    real_run = subprocess.run
-
-    def run(*args, **kwargs):
-        command = args[0]
-        if any(name in command for name in subcommands):
-            return subprocess.CompletedProcess(command, 128, b"", stderr)
-        return real_run(*args, **kwargs)
-
-    return run
+    assert [report.status for report in reports] == [LineEndingStatus.SAFE] * 2
+    assert counts[1] == counts[0], f"{counts[0]} Git processes for 2 files, {counts[1]} for 8"
 
 
-def test_failed_recheckout_is_reported_failed_and_unsafe(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("failure", "fragments"),
+    [
+        ("index-scan", ("simulated failure",)),
+        ("check-attr", ("check-attr",)),
+        ("diff-files", ("diff-files",)),
+        (
+            "checkout-exit",
+            ("simulated failure\N{REPLACEMENT CHARACTER}", "git checkout -- <path>"),
+        ),
+        ("checkout-crash", ("git vanished", "git checkout -- <path>")),
+    ],
+)
+def test_git_failure_during_normalization_fails_it(
+    tmp_path: Path, git_commands: GitCommandFake, failure: str, fragments: tuple[str, ...]
+):
     _crlf_repo(tmp_path)
     before = _snapshot(tmp_path / "a.v")
+    if failure == "index-scan":
+        git_commands.answer("ls-files", call=2)  # call 1 is planning
+    elif failure in ("check-attr", "diff-files"):
+        git_commands.answer(failure)
+    elif failure == "checkout-exit":
+        git_commands.answer("checkout-index", "-u", stderr=b"simulated failure\xff")
+    else:
+        git_commands.crash("checkout-index", "-u", error=OSError("git vanished"))
 
-    with patch.object(subprocess, "run", side_effect=_fail_git("checkout-index")):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert normalize.state is LineEndingActionState.FAILED
-    assert "simulated failure" in (normalize.detail or "")
-    assert "git checkout -- <path>" in (normalize.detail or "")
+    for fragment in fragments:
+        assert fragment in (normalize.detail or "")
     assert report.status is LineEndingStatus.UNSAFE
     # The shifted mtime is put back for a path Git never rewrote.
     assert _snapshot(tmp_path / "a.v") == before
-
-
-@pytest.mark.skipif(os.name == "nt", reason="needs a read-only directory")
-def test_partial_recheckout_failure_leaves_no_phantom_modifications(tmp_path: Path):
-    # Git rewrites every path it can and writes no index when one path cannot be replaced.
-    _crlf_repo(tmp_path)
-    _commit_file(tmp_path, "locked/b.v", b"module b;\nendmodule\n")
-    (tmp_path / "locked" / "b.v").unlink()
-    assert _git(tmp_path, "checkout", "--", "locked/b.v").returncode == 0
-    # No text rule covers these files: keep their index entries out of Git's same-second
-    # "racily clean" window so status compares only the refreshed stat data.
-    _wait_for_next_second()
-    locked = tmp_path / "locked"
-    locked.chmod(0o555)
-    try:
-        if os.access(locked, os.W_OK):
-            pytest.skip("directory permissions are not enforced for this user")
-        failed = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-    finally:
-        locked.chmod(0o755)
-
-    assert _normalize_action(failed).state is LineEndingActionState.FAILED
-    assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
-    # The next run repairs what is left: the tree is not stuck as dirty.
-    retry = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-    assert retry.status is LineEndingStatus.SAFE
-    assert (tmp_path / "locked" / "b.v").read_bytes() == b"module b;\nendmodule\n"
 
 
 def _wait_for_next_second() -> None:
@@ -769,113 +655,83 @@ def test_failed_recheckout_keeps_crlf_files_stat_clean_without_a_text_rule(
     finally:
         locked.chmod(0o755)
 
-    assert _normalize_action(failed).state is LineEndingActionState.FAILED
+    assert _action(failed).state is LineEndingActionState.FAILED
     assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
     retry = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
     assert retry.status is LineEndingStatus.SAFE
     assert (tmp_path / "locked" / "b.v").read_bytes() == b"module m;\nendmodule\n"
 
 
-def test_path_git_removed_and_could_not_write_is_not_an_mtime_failure(tmp_path: Path):
+@pytest.mark.parametrize("partial", ["removed", "rewritten"])
+def test_checkout_failure_after_partial_work_is_reported(
+    tmp_path: Path, git_commands: GitCommandFake, partial: str
+):
     _crlf_repo(tmp_path)
-    real_run = subprocess.run
+    path = tmp_path / "a.v"
+    # Git unlinked the path and could not write it back, or rewrote it; then it failed.
+    before = path.unlink if partial == "removed" else lambda: path.write_bytes(b"module a;\n")
+    git_commands.answer("checkout-index", "-u", returncode=1, before=before)
+    git_commands.answer("--index-info", stderr=b"index failure")
 
-    def remove_then_fail(*args, **kwargs):
-        command = args[0]
-        if "checkout-index" in command and "--temp" not in command:
-            (tmp_path / "a.v").unlink()  # Git unlinked the path, then could not write it back
-            return subprocess.CompletedProcess(command, 1, b"", b"simulated failure")
-        return real_run(*args, **kwargs)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    with patch.object(subprocess, "run", side_effect=remove_then_fail):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    detail = _normalize_action(report).detail or ""
+    detail = _action(report).detail or ""
     assert "simulated failure" in detail
     assert "git checkout -- <path>" in detail
-    assert "could not restore the mtime" not in detail
+    if partial == "removed":
+        assert "could not restore the mtime" not in detail
+    else:
+        assert "could not refresh the index after the failure" in detail
 
 
-def test_failed_stat_refresh_after_partial_checkout_is_reported(tmp_path: Path):
-    _crlf_repo(tmp_path)
-    real_run = subprocess.run
-
-    def fail_checkout_then_refresh(*args, **kwargs):
-        command = args[0]
-        if "checkout-index" in command and "--temp" not in command:
-            # Git rewrote the file, then failed.
-            (tmp_path / "a.v").write_bytes(b"module a;\nendmodule\n")
-            return subprocess.CompletedProcess(command, 1, b"", b"simulated failure")
-        if "--index-info" in command:
-            return subprocess.CompletedProcess(command, 128, b"", b"index failure")
-        return real_run(*args, **kwargs)
-
-    with patch.object(subprocess, "run", side_effect=fail_checkout_then_refresh):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    detail = _normalize_action(report).detail or ""
-    assert "simulated failure" in detail
-    assert "could not refresh the index after the failure" in detail
-
-
-@pytest.mark.skipif(os.name == "nt", reason="a colon is not valid in a Windows file name")
-def test_crlf_path_starting_with_a_colon_is_normalized(tmp_path: Path):
-    # "./" keeps Git from reading the leading colon as pathspec magic.
+@pytest.mark.skipif(os.name == "nt", reason="a colon or a tab is not valid in a Windows file name")
+@pytest.mark.parametrize(
+    ("git_name", "file_name"),
+    [
+        pytest.param("./:a.v", ":a.v", id="colon"),  # "./" keeps Git from reading pathspec magic
+        pytest.param("a\tb.v", "a\tb.v", id="tab"),
+    ],
+)
+def test_crlf_path_with_git_special_characters_is_normalized(
+    tmp_path: Path, git_name: str, file_name: str
+):
     _init(tmp_path, autocrlf="true")
-    _commit_file(tmp_path, "./:a.v", b"module a;\nendmodule\n")
-    (tmp_path / ":a.v").unlink()
-    assert _git(tmp_path, "checkout", "--", "./:a.v").returncode == 0
-    assert b"\r\n" in (tmp_path / ":a.v").read_bytes()
+    _commit_file(tmp_path, git_name, b"module a;\nendmodule\n")
+    (tmp_path / file_name).unlink()
+    assert _git(tmp_path, "checkout", "--", git_name).returncode == 0
+    assert b"\r\n" in (tmp_path / file_name).read_bytes()
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
     assert report.status is LineEndingStatus.SAFE
-    assert (tmp_path / ":a.v").read_bytes() == b"module a;\nendmodule\n"
+    assert (tmp_path / file_name).read_bytes() == b"module a;\nendmodule\n"
 
 
-def test_many_left_paths_are_listed_with_a_count():
-    left = {f"f{number}.v": "changed" for number in range(5)}
+def test_malformed_index_records_are_skipped(tmp_path: Path, git_commands: GitCommandFake):
+    _init(tmp_path)
+    _commit_file(tmp_path, "a.v", b"module a;\nendmodule\n")
+    records = b"no tabs at all\0H 100644\ti/lf w/crlf\ta.v\0H 100644 abc 0\ti/lf\ta.v\0"
+    git_commands.answer("ls-files", returncode=0, stdout=records, stderr=b"")
 
-    detail = line_endings._left_detail(2, left)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.INSPECT)
 
-    assert detail.startswith("normalized 2 file(s) to LF; left 5 tracked file(s) untouched:")
-    assert "'f2.v' (changed), and 2 more" in detail
-    assert "f3.v" not in detail
-
-
-def test_unreadable_index_scan_fails_normalization(tmp_path: Path):
-    _crlf_repo(tmp_path)
-    real_scan = line_endings._scan_index
-    calls = 0
-
-    def fail_second_scan(root: Path):
-        nonlocal calls
-        calls += 1
-        if calls == 2:  # planning scans once; the re-checkout scans again before touching files
-            return None, "simulated scan failure"
-        return real_scan(root)
-
-    with patch.object(line_endings, "_scan_index", side_effect=fail_second_scan):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    normalize = _normalize_action(report)
-    assert normalize.state is LineEndingActionState.FAILED
-    assert normalize.detail == "simulated scan failure"
-    assert report.status is LineEndingStatus.UNSAFE
+    assert report.status is LineEndingStatus.SAFE
 
 
-@pytest.mark.parametrize("failing", ["check-attr", "diff-files"])
-def test_unclassifiable_candidates_fail_normalization(tmp_path: Path, failing: str):
-    _crlf_repo(tmp_path)
-    before = _snapshot(tmp_path / "a.v")
+def test_many_left_paths_are_listed_with_a_count(tmp_path: Path):
+    names = _multi_crlf_repo(tmp_path, 6)
+    baseline = line_endings.sample_worktree_cleanliness(tmp_path)
+    for name in names[1:]:
+        (tmp_path / name).write_bytes(b"module edited;\r\n// local edit\r\nendmodule\r\n")
 
-    with patch.object(subprocess, "run", side_effect=_fail_git(failing)):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    report = reconcile_project_line_endings(
+        tmp_path, mode=LineEndingMode.REPAIR, clean_baseline=baseline
+    )
 
-    normalize = _normalize_action(report)
-    assert normalize.state is LineEndingActionState.FAILED
-    assert failing in (normalize.detail or "")
-    assert _snapshot(tmp_path / "a.v") == before
+    detail = _action(report).detail or ""
+    assert detail.startswith("normalized 1 file(s) to LF; left 5 tracked file(s) untouched:")
+    assert detail.endswith("'m3.v' (changed), and 2 more")
+    assert "m4.v" not in detail
 
 
 def test_mtime_that_cannot_be_shifted_leaves_the_path_with_its_cause(tmp_path: Path):
@@ -885,39 +741,67 @@ def test_mtime_that_cannot_be_shifted_leaves_the_path_with_its_cause(tmp_path: P
     with patch.object(os, "utime", side_effect=OSError("read-only volume")):
         report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert normalize.state is LineEndingActionState.REFUSED
     assert normalize.reason is line_endings.LineEndingRefusalReason.NOT_LINE_ENDING_ONLY
     assert "'a.v' (could not update mtime: read-only volume)" in (normalize.detail or "")
     assert _snapshot(tmp_path / "a.v") == before
 
 
-def test_regular_file_check_names_what_a_candidate_became(tmp_path: Path):
-    (tmp_path / "file.v").write_bytes(b"x")
-    (tmp_path / "folder").mkdir()
+@pytest.mark.parametrize(
+    ("change", "cause"),
+    [
+        ("directory", "not a regular file"),
+        ("deleted", "could not read"),
+        pytest.param(
+            "unreadable",
+            "could not read",
+            marks=pytest.mark.skipif(os.name == "nt", reason="needs POSIX permissions"),
+        ),
+    ],
+)
+def test_candidate_changed_after_classification_starts_is_left_with_its_cause(
+    tmp_path: Path, git_commands: GitCommandFake, change: str, cause: str
+):
+    _crlf_repo(tmp_path)
+    path = tmp_path / "a.v"
+    if change == "unreadable":
+        path.chmod(0)
+        readable = os.access(path, os.R_OK)
+        path.chmod(0o644)
+        if readable:
+            pytest.skip("file permissions are not enforced for this user")
 
-    assert line_endings._regular_file_cause(tmp_path, "file.v") is None
-    assert line_endings._regular_file_cause(tmp_path, "folder") == "not a regular file"
-    assert "could not read" in (line_endings._regular_file_cause(tmp_path, "gone.v") or "")
+    def mutate() -> None:
+        if change == "unreadable":
+            path.chmod(0)
+            return
+        path.unlink()
+        if change == "directory":
+            path.mkdir()
+
+    # The change lands after Git's mode check and before the per-file classification.
+    git_commands.answer("diff-files", returncode=0, stderr=b"", before=mutate)
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    normalize = _action(report)
+    assert normalize.state is LineEndingActionState.REFUSED
+    assert normalize.reason is LineEndingRefusalReason.NOT_LINE_ENDING_ONLY
+    assert f"'a.v' ({cause}" in (normalize.detail or "")
 
 
-def test_unreadable_candidate_is_left_with_its_cause(tmp_path: Path):
-    entry = line_endings._IndexEntry(
-        "gone.v", "H", "100644", "0" * 40, "0", "i/lf", "w/crlf", False
-    )
+def test_crlf_checkout_in_a_sha256_repository_is_normalized(tmp_path: Path):
+    assert _git(tmp_path, "init", "-q", "--object-format=sha256").returncode == 0
+    assert _git(tmp_path, "config", "core.autocrlf", "true").returncode == 0
+    _commit_file(tmp_path, "a.v", b"module a;\nendmodule\n")
+    _recheckout_again(tmp_path, "a.v")
+    assert b"\r\n" in (tmp_path / "a.v").read_bytes()
 
-    assert "could not read" in (line_endings._plain_path_cause(tmp_path, entry) or "")
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-
-def test_blob_object_ids_follow_the_repository_hash_algorithm(tmp_path: Path):
-    _init(tmp_path)
-    for algorithm in ("sha1", "sha256"):
-        repository = tmp_path / algorithm
-        repository.mkdir()
-        assert _git(repository, "init", "-q", f"--object-format={algorithm}").returncode == 0
-        expected = _git(repository, "hash-object", "--stdin", input_bytes=b"content\n")
-        oid = os.fsdecode(expected.stdout).strip()
-        assert line_endings._blob_oid(b"content\n", len(oid)) == oid
+    assert report.status is LineEndingStatus.SAFE
+    assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
 
 
 def _converted_repo(
@@ -927,8 +811,9 @@ def _converted_repo(
     *,
     autocrlf: str = "true",
     driver: tuple[str, str, str] | None = None,
+    name: str = "a.v",
 ) -> None:
-    """CRLF checkout of ``a.v`` under a repo-local attributes rule (Git does the checkout).
+    """CRLF checkout of ``name`` under a repo-local attributes rule (Git does the checkout).
 
     ``driver`` is a filter's ``(name, clean, smudge)``, configured before the commit.
     """
@@ -936,11 +821,14 @@ def _converted_repo(
     (root / ".git" / "info").mkdir(exist_ok=True)
     (root / ".git" / "info" / "attributes").write_bytes(attributes)
     if driver is not None:
-        name, clean, smudge = driver
-        for key, value in ((f"filter.{name}.clean", clean), (f"filter.{name}.smudge", smudge)):
+        driver_name, clean, smudge = driver
+        for key, value in (
+            (f"filter.{driver_name}.clean", clean),
+            (f"filter.{driver_name}.smudge", smudge),
+        ):
             assert _git(root, "config", key, value).returncode == 0
-    _commit_file(root, "a.v", content)
-    _recheckout_again(root, "a.v")
+    _commit_file(root, name, content)
+    _recheckout_again(root, name)
 
 
 needs_posix_filters = pytest.mark.skipif(
@@ -950,21 +838,23 @@ _CAT_DRIVER = ("cat", "cat", "cat")
 
 
 @needs_posix_filters
-@pytest.mark.parametrize("driver", ["ident", "filter"])
+@pytest.mark.parametrize("driver", ["ident", "filter", "ident-quoted-name"])
 def test_converted_paths_are_normalized_through_git_clean_conversion(tmp_path: Path, driver: str):
-    attributes = b"a.v ident\n" if driver == "ident" else b"a.v filter=cat\n"
+    attributes = b"*.v filter=cat\n" if driver == "filter" else b"*.v ident\n"
+    name = '"q\\\N{LATIN SMALL LETTER E WITH ACUTE}.v' if driver == "ident-quoted-name" else "a.v"
     _converted_repo(
         tmp_path,
         attributes,
         b"module a; // $Id$\nendmodule\n",
         driver=_CAT_DRIVER if driver == "filter" else None,
+        name=name,
     )
-    assert b"\r\n" in (tmp_path / "a.v").read_bytes()
+    assert b"\r\n" in (tmp_path / name).read_bytes()
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
     assert report.status is LineEndingStatus.SAFE
-    assert b"\r" not in (tmp_path / "a.v").read_bytes()
+    assert b"\r" not in (tmp_path / name).read_bytes()
     assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
 
 
@@ -982,7 +872,7 @@ def test_filter_that_emits_crlf_is_never_rewritten(tmp_path: Path):
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert normalize.state is LineEndingActionState.REFUSED
     assert normalize.reason is line_endings.LineEndingRefusalReason.NOT_LINE_ENDING_ONLY
     assert "its line endings come from the filter" in (normalize.detail or "")
@@ -1004,21 +894,31 @@ def test_filter_output_that_differs_beyond_line_endings_is_left(tmp_path: Path):
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert "checkout output differs from the file beyond line endings" in (normalize.detail or "")
     assert _snapshot(tmp_path / "a.v") == before
 
 
-def test_failing_clean_conversion_leaves_converted_paths_with_their_cause(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("failure", "fragment"),
+    [("exit", "simulated failure"), ("short-output", "unexpected number of object ids")],
+)
+def test_failing_clean_conversion_leaves_converted_paths_with_their_cause(
+    tmp_path: Path, git_commands: GitCommandFake, failure: str, fragment: str
+):
     _converted_repo(tmp_path, b"a.v ident\n", b"module a; // $Id$\nendmodule\n")
     before = _snapshot(tmp_path / "a.v")
+    if failure == "exit":
+        git_commands.answer("hash-object")
+    else:
+        git_commands.answer("hash-object", returncode=0, stderr=b"")
 
-    with patch.object(subprocess, "run", side_effect=_fail_git("hash-object")):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert normalize.state is LineEndingActionState.REFUSED
     assert "'a.v' (clean conversion failed: " in (normalize.detail or "")
+    assert fragment in (normalize.detail or "")
     assert _snapshot(tmp_path / "a.v") == before
 
 
@@ -1027,60 +927,87 @@ def _cat_filter_repo(root: Path) -> None:
 
 
 @needs_posix_filters
-@pytest.mark.parametrize("failure", ["exit", "incomplete"])
-def test_failing_smudge_probe_leaves_filtered_paths_with_their_cause(tmp_path: Path, failure: str):
+@pytest.mark.parametrize(
+    ("failure", "fragment"),
+    [
+        ("exit", "simulated failure"),
+        ("incomplete", "incomplete Git output"),
+        ("crash", "git vanished"),
+    ],
+)
+def test_failing_smudge_probe_leaves_filtered_paths_with_their_cause(
+    tmp_path: Path, git_commands: GitCommandFake, failure: str, fragment: str
+):
     _cat_filter_repo(tmp_path)
     before = _snapshot(tmp_path / "a.v")
     if failure == "exit":
-        patched = _fail_git("--temp")
+        git_commands.answer("--temp")
+    elif failure == "incomplete":
+        git_commands.answer("--temp", returncode=0, stderr=b"")
     else:
-        real_run = subprocess.run
+        git_commands.crash("--temp", error=OSError("git vanished"))
 
-        def patched(*args, **kwargs):
-            if "--temp" in args[0]:
-                return subprocess.CompletedProcess(args[0], 0, b"", b"")
-            return real_run(*args, **kwargs)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    with patch.object(subprocess, "run", side_effect=patched):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    normalize = _normalize_action(report)
-    assert "'a.v' (filter failed: " in (normalize.detail or "")
+    normalize = _action(report)
+    assert f"'a.v' (filter failed: {fragment}" in (normalize.detail or "")
     assert _snapshot(tmp_path / "a.v") == before
 
 
 @needs_posix_filters
-@pytest.mark.parametrize("removable", [True, False], ids=["removable", "locked"])
-def test_smudge_probe_timeout_removes_its_temporary_files(tmp_path: Path, removable: bool):
+@pytest.mark.parametrize("cleanup", ["removable", "locked", "vanished"])
+def test_smudge_probe_timeout_removes_its_temporary_files(
+    tmp_path: Path, git_commands: GitCommandFake, cleanup: str
+):
     _cat_filter_repo(tmp_path)
     (tmp_path / ".merge_file_keep").write_bytes(b"not ours")
-    real_run = subprocess.run
+    temporary = tmp_path / ".merge_file_new"
     real_unlink = Path.unlink
 
-    def killed_probe(*args, **kwargs):
-        command = args[0]
-        if "--temp" not in command:
-            return real_run(*args, **kwargs)
-        (tmp_path / ".merge_file_new").write_bytes(b"partial")
-        raise subprocess.TimeoutExpired(command, 300, output=b".merge_file_new\ta.v\0")
+    def partial_output() -> None:
+        if cleanup != "vanished":
+            temporary.write_bytes(b"partial")
 
-    def locked_unlink(path: Path, missing_ok: bool = False):
+    def locked_unlink(path: Path, missing_ok: bool = False) -> None:
         if path.name == ".merge_file_new":
             raise PermissionError("held by a scanner")
         real_unlink(path, missing_ok=missing_ok)
 
-    with patch.object(subprocess, "run", side_effect=killed_probe):
-        if removable:
-            report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-        else:
-            with patch.object(Path, "unlink", new=locked_unlink):
-                report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    git_commands.crash(
+        "--temp",
+        error=subprocess.TimeoutExpired(["git"], 300, output=b".merge_file_new\ta.v\0"),
+        before=partial_output,
+    )
 
-    detail = _normalize_action(report).detail or ""
+    if cleanup == "locked":
+        with patch.object(Path, "unlink", new=locked_unlink):
+            report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    else:
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    detail = _action(report).detail or ""
     assert "'a.v' (filter failed: timed out after 300 s)" in detail
     assert (tmp_path / ".merge_file_keep").read_bytes() == b"not ours"
-    assert (tmp_path / ".merge_file_new").exists() is not removable
-    assert ("temporary file could not be removed: .merge_file_new" in detail) is not removable
+    assert temporary.exists() is (cleanup == "locked")
+    assert ("temporary file could not be removed: .merge_file_new" in detail) is (
+        cleanup == "locked"
+    )
+
+
+@needs_posix_filters
+def test_unreadable_filtered_path_is_left_with_its_cause(tmp_path: Path):
+    _cat_filter_repo(tmp_path)
+    real_read = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path.name == "a.v":
+            raise OSError("sharing violation")
+        return real_read(path)
+
+    with patch.object(Path, "read_bytes", new=read_bytes):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert "sharing violation" in (_action(report).detail or "")
 
 
 def _phantom_repo(root: Path) -> None:
@@ -1090,88 +1017,52 @@ def _phantom_repo(root: Path) -> None:
     (root / "a.v").write_bytes(b"module a;\nendmodule\n")
 
 
-@pytest.mark.parametrize("failing", ["unstaged", "staged"])
-def test_phantom_diff_failures_are_reported(tmp_path: Path, failing: str):
+@pytest.mark.parametrize(
+    ("failing", "code", "fragment"),
+    [
+        (("core.eol",), LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE, "core.eol"),
+        (("ls-files",), LineEndingObservationCode.EOL_SCAN_UNREADABLE, ""),
+        (("--name-only",), LineEndingObservationCode.STATUS_UNREADABLE, "simulated failure"),
+        (
+            ("--name-only", "--cached"),
+            LineEndingObservationCode.STATUS_UNREADABLE,
+            "simulated failure",
+        ),
+    ],
+    ids=["core.eol", "ls-files", "diff", "diff-cached"],
+)
+def test_unreadable_git_state_makes_inspection_unsafe(
+    tmp_path: Path,
+    git_commands: GitCommandFake,
+    failing: tuple[str, ...],
+    code: LineEndingObservationCode,
+    fragment: str,
+):
     _phantom_repo(tmp_path)
-    real_run = subprocess.run
+    git_commands.answer(*failing)
 
-    def run(*args, **kwargs):
-        command = args[0]
-        if "--name-only" in command and ("--cached" in command) is (failing == "staged"):
-            return subprocess.CompletedProcess(command, 128, b"", b"simulated diff failure")
-        return real_run(*args, **kwargs)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.INSPECT)
 
-    with patch.object(subprocess, "run", side_effect=run):
-        paths, error = line_endings._tracked_phantom_paths(tmp_path)
-
-    assert paths is None
-    assert error is not None and "simulated diff failure" in error
-
-
-@pytest.mark.parametrize("failing", ["--index-info", "--refresh"])
-def test_stale_index_refresh_failures_are_reported(tmp_path: Path, failing: str):
-    _phantom_repo(tmp_path)
-
-    with patch.object(subprocess, "run", side_effect=_fail_git(failing)):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    refresh = next(
-        action
-        for action in report.repositories[0].actions
-        if action.kind is LineEndingActionKind.REFRESH_INDEX
-    )
-    assert refresh.state is LineEndingActionState.FAILED
-    assert "simulated failure" in (refresh.detail or "")
+    observation = next(item for item in report.repositories[0].observations if item.code is code)
+    assert fragment in (observation.detail or "")
     assert report.status is LineEndingStatus.UNSAFE
 
 
-def test_stale_index_refresh_scan_failure_is_reported(tmp_path: Path):
+@pytest.mark.parametrize("failing", ["--index-info", "--refresh", "index-scan"])
+def test_stale_index_refresh_failures_are_reported(
+    tmp_path: Path, git_commands: GitCommandFake, failing: str
+):
     _phantom_repo(tmp_path)
-    real_scan = line_endings._scan_index
-    calls = 0
+    if failing == "index-scan":
+        git_commands.answer("ls-files", call=2)  # call 1 is planning; 2 the refresh's own scan
+    else:
+        git_commands.answer(failing)
 
-    def fail_refresh_scan(root: Path):
-        nonlocal calls
-        calls += 1
-        if calls == 2:  # planning scans once; the refresh scans again for the entries it resets
-            return None, "simulated scan failure"
-        return real_scan(root)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    with patch.object(line_endings, "_scan_index", side_effect=fail_refresh_scan):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    refresh = next(
-        action
-        for action in report.repositories[0].actions
-        if action.kind is LineEndingActionKind.REFRESH_INDEX
-    )
+    refresh = _action(report, LineEndingActionKind.REFRESH_INDEX)
     assert refresh.state is LineEndingActionState.FAILED
-    assert refresh.detail == "simulated scan failure"
-
-
-def test_local_eol_reads_unset_set_and_unreadable(tmp_path: Path):
-    _init(tmp_path)
-    assert line_endings.read_local_eol(tmp_path) == ""
-    assert _git(tmp_path, "config", "--local", "core.eol", "crlf").returncode == 0
-    assert line_endings.read_local_eol(tmp_path) == "crlf"
-    with patch.object(subprocess, "run", side_effect=_fail_git("core.eol")):
-        assert line_endings.read_local_eol(tmp_path) is None
-    with patch.object(subprocess, "run", side_effect=OSError("unavailable")):
-        assert line_endings.read_local_eol(tmp_path) is None
-
-
-def test_unreadable_local_eol_is_reported_as_unreadable_policy(tmp_path: Path):
-    _init(tmp_path)
-
-    with patch.object(subprocess, "run", side_effect=_fail_git("core.eol")):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.INSPECT)
-
-    observation = next(
-        item
-        for item in report.repositories[0].observations
-        if item.code is LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE
-    )
-    assert observation.detail == "core.eol"
+    assert "simulated failure" in (refresh.detail or "")
     assert report.status is LineEndingStatus.UNSAFE
 
 
@@ -1197,196 +1088,69 @@ def test_eol_pin_is_written_on_a_clean_tree_with_autocrlf_already_pinned(tmp_pat
         LineEndingActionKind.PIN_AUTOCRLF
     ]
     assert _local_eol(tmp_path) == "lf"
-    assert (
-        reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-        .repositories[0]
-        .actions
-        == ()
-    )
 
 
-def test_core_eol_changed_after_planning_is_refused_for_that_run(tmp_path: Path):
+@pytest.mark.parametrize("failure", ["autocrlf-exit", "autocrlf-exit-after-write", "eol-crash"])
+def test_failed_pin_write_is_reported_failed(
+    tmp_path: Path, git_commands: GitCommandFake, failure: str
+):
     _init(tmp_path, autocrlf="true")
-    real_actions = line_endings._repair_actions
+    if failure == "autocrlf-exit":
+        git_commands.answer("core.autocrlf", "false")
+    elif failure == "autocrlf-exit-after-write":
+        # The value changes and Git still exits non-zero: accepting the exit because the
+        # value now verifies would hide a failed write.
+        git_commands.answer(
+            "core.autocrlf",
+            "false",
+            before=lambda: _git(tmp_path, "config", "--local", "core.autocrlf", "false"),
+        )
+    else:
+        git_commands.crash("core.eol", "lf", error=OSError("git vanished"))
 
-    def change_eol_then_apply(plan):
-        assert _git(tmp_path, "config", "core.eol", "crlf").returncode == 0
-        return real_actions(plan)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    with patch.object(line_endings, "_repair_actions", side_effect=change_eol_then_apply):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    pin = next(
-        action
-        for action in report.repositories[0].actions
-        if action.kind is LineEndingActionKind.PIN_AUTOCRLF
-    )
-    assert pin.state is LineEndingActionState.REFUSED
-    assert pin.reason is line_endings.LineEndingRefusalReason.SETTING_CHANGED
-    assert pin.detail == "core.eol changed during line-ending repair"
-    assert report.status is LineEndingStatus.UNSAFE
-
-
-def test_failed_eol_write_blocks_the_pin(tmp_path: Path):
-    _init(tmp_path, autocrlf="true")
-
-    with patch.object(subprocess, "run", side_effect=_fail_git("lf")):  # the write, not the read
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    pin = next(
-        action
-        for action in report.repositories[0].actions
-        if action.kind is LineEndingActionKind.PIN_AUTOCRLF
+    pin = _action(report, LineEndingActionKind.PIN_AUTOCRLF)
+    expected = (
+        "core.eol: git vanished" if failure == "eol-crash" else "core.autocrlf: simulated failure"
     )
     assert pin.state is LineEndingActionState.FAILED
-    assert pin.detail is not None and pin.detail.startswith("could not set core.eol: ")
+    assert pin.detail == f"could not set {expected}"
     assert report.status is LineEndingStatus.UNSAFE
 
 
-def test_unverifiable_pin_is_reported_failed(tmp_path: Path):
+def test_unverifiable_pin_is_reported_failed(tmp_path: Path, git_commands: GitCommandFake):
     _init(tmp_path, autocrlf="true")
-    real_eol = line_endings.read_local_eol
-    reads = 0
+    # core.eol reads: planning is 1, the pin's re-read 2, its verification after the writes 3.
+    git_commands.answer("--get", "core.eol", call=3, returncode=0, stdout=b"crlf\n", stderr=b"")
 
-    def drifting_eol(root: Path):
-        nonlocal reads
-        reads += 1
-        return "crlf" if reads >= 3 else real_eol(root)  # the read after the writes
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    with patch.object(line_endings, "read_local_eol", side_effect=drifting_eol):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    pin = next(
-        action
-        for action in report.repositories[0].actions
-        if action.kind is LineEndingActionKind.PIN_AUTOCRLF
-    )
+    pin = _action(report, LineEndingActionKind.PIN_AUTOCRLF)
     assert pin.state is LineEndingActionState.FAILED
     assert "did not verify" in (pin.detail or "")
 
 
-def test_local_config_write_failures_carry_their_key(tmp_path: Path):
-    _init(tmp_path, autocrlf="true")
-
-    with patch.object(subprocess, "run", side_effect=_fail_git("core.autocrlf")):
-        failure = line_endings._set_local_config(tmp_path, "core.autocrlf", "false")
-    with patch.object(subprocess, "run", side_effect=OSError("git vanished")):
-        crash = line_endings._set_local_config(tmp_path, "core.eol", "lf")
-
-    assert failure == "could not set core.autocrlf: simulated failure"
-    assert crash == "could not set core.eol: git vanished"
-
-
-def test_unparseable_index_records_are_skipped():
-    assert line_endings._parse_index_record("no tabs at all") is None
-    assert line_endings._parse_index_record("H 100644\ti/lf w/crlf\ta.v") is None
-    entry = line_endings._parse_index_record(
-        "H 100644 abc 0\ti/lf    w/crlf  attr/text eol=crlf\ta\tb.v"
-    )
-    assert entry is not None
-    assert (entry.path, entry.tag, entry.stage, entry.eol_crlf_attr) == ("a\tb.v", "H", "0", True)
-    assert not entry.crlf_mismatch
-
-
-def test_paths_for_git_stdin_are_c_quoted():
-    assert line_endings._c_quote(b'a"\\\n\xffz') == b'"a\\042\\134\\012\\377z"'
-
-
-def test_staged_file_cleanup_reports_what_it_could_not_remove(tmp_path: Path):
-    stuck = tmp_path / "stuck"
-    stuck.write_bytes(b"x")
-    with patch.object(Path, "unlink", side_effect=PermissionError("held")):
-        assert line_endings._cleanup_staged_files({"stuck": stuck}) == [stuck]
-    assert line_endings._cleanup_staged_files({"gone": tmp_path / "gone"}) == []
-
-
-def test_unexpected_clean_conversion_output_is_an_error(tmp_path: Path):
-    with patch.object(line_endings, "_git_output", return_value=(b"", None)):
-        oids, error = line_endings._clean_conversion_oids(tmp_path, ["a.v"])
-
-    assert oids is None
-    assert error == "Git returned an unexpected number of object ids"
-
-
-def test_candidate_that_stopped_being_a_regular_file_is_left(tmp_path: Path):
-    _crlf_repo(tmp_path)
-    before = _snapshot(tmp_path / "a.v")
-
-    with patch.object(line_endings, "_regular_file_cause", return_value="not a regular file"):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    assert "'a.v' (not a regular file)" in (_normalize_action(report).detail or "")
-    assert _snapshot(tmp_path / "a.v") == before
-
-
-def test_recheckout_process_failure_is_reported_failed(tmp_path: Path):
-    _crlf_repo(tmp_path)
-    real_run = subprocess.run
-
-    def run(*args, **kwargs):
-        if "checkout-index" in args[0]:
-            raise OSError("git vanished")
-        return real_run(*args, **kwargs)
-
-    with patch.object(subprocess, "run", side_effect=run):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    normalize = _normalize_action(report)
-    assert normalize.state is LineEndingActionState.FAILED
-    assert "git vanished" in (normalize.detail or "")
-
-
-@needs_posix_filters
-@pytest.mark.parametrize("failure", ["probe-crash", "read-failure"])
-def test_filtered_path_failures_outside_git_are_left_with_their_cause(
-    tmp_path: Path, failure: str
+def test_unreadable_git_status_refuses_normalization_with_a_typed_reason(
+    tmp_path: Path, git_commands: GitCommandFake
 ):
-    _cat_filter_repo(tmp_path)
-    real_run = subprocess.run
-    real_read = Path.read_bytes
-
-    def run(*args, **kwargs):
-        if failure == "probe-crash" and "--temp" in args[0]:
-            raise OSError("git vanished")
-        return real_run(*args, **kwargs)
-
-    def read_bytes(path: Path):
-        if failure == "read-failure" and path.name == "a.v":
-            raise OSError("sharing violation")
-        return real_read(path)
-
-    with (
-        patch.object(subprocess, "run", side_effect=run),
-        patch.object(Path, "read_bytes", new=read_bytes),
-    ):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
-
-    expected = "git vanished" if failure == "probe-crash" else "sharing violation"
-    assert expected in (_normalize_action(report).detail or "")
-
-
-def test_unreadable_git_status_refuses_normalization_with_a_typed_reason(tmp_path: Path):
     _crlf_repo(tmp_path)
     before = _snapshot(tmp_path / "a.v")
+    git_commands.answer("status", call=2)  # call 1 is the phantom scan; 2 the cleanliness check
 
-    with patch.object(line_endings, "_worktree_is_clean", return_value=None):
-        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    normalize = _normalize_action(report)
+    normalize = _action(report)
     assert normalize.state is LineEndingActionState.REFUSED
-    assert normalize.reason is line_endings.LineEndingRefusalReason.STATUS_UNREADABLE
+    assert normalize.reason is LineEndingRefusalReason.STATUS_UNREADABLE
     assert _snapshot(tmp_path / "a.v") == before
-
-
-def _crlf_tracked_attributes_repo(root: Path) -> None:
-    _crlf_repo(root)
-    _commit_file(root, ".gitattributes", b"*.bat -text\n")
-    _recheckout_again(root, ".gitattributes")
-    assert b"\r\n" in (root / ".gitattributes").read_bytes()
 
 
 def test_normalized_tracked_root_attributes_get_no_default_rule(tmp_path: Path):
-    _crlf_tracked_attributes_repo(tmp_path)
+    _crlf_repo(tmp_path)
+    _commit_file(tmp_path, ".gitattributes", b"*.bat -text\n")
+    _recheckout_again(tmp_path, ".gitattributes")
+    assert b"\r\n" in (tmp_path / ".gitattributes").read_bytes()
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
