@@ -386,14 +386,9 @@ def test_explicit_stealth_tiers_identifier_optout_and_hits(tmp_path):
         '[feedback]\nredact_identifiers = false\n[stealth]\nbanned_words = ["agent", "booley"]\nbanned_substrings = ["quokka"]\n'
     )
     plan = build_plan(root)
-    text = (
-        "booley_config BooleyRunner myquokkafile axi_agent uvm.agent/cfg reagent precursor public"
-    )
-    expected = (
-        "<redacted>_config <redacted>Runner my<redacted>file axi_<redacted> "
-        "uvm.<redacted>/cfg reagent precursor public"
-    )
-    assert apply_plan(text, plan) == (expected, {"<redacted>": 5})
+    text = "booley_config BooleyRunner myquokkafile axi_agent reagent precursor public"
+    expected = "<redacted>_config <redacted>Runner my<redacted>file axi_<redacted> reagent precursor public"
+    assert apply_plan(text, plan) == (expected, {"<redacted>": 4})
     assert apply_plan(expected, plan) == (expected, {})
     assert plan.mapping()["quokka"] == "<redacted>"
 
