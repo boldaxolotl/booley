@@ -19,6 +19,7 @@ from booley.flows.endpoint_events import (
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
+    OOM_KILL_NOTE,
     OOM_REQUEUE_NOTE,
     EndpointOutcome,
     normalize_completion_error,
@@ -486,7 +487,11 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     if already_shown:
         return
     # A note appended after the report the witness already saw is all that is new.
-    for opening in ("\nCompletion failure (", f"\n{OOM_REQUEUE_NOTE}"):
+    for opening in (
+        "\nCompletion failure (",
+        f"\n{OOM_REQUEUE_NOTE}",
+        f"\n{OOM_KILL_NOTE}",
+    ):
         original, separator, rest = result.report_text.partition(opening)
         if separator and witness is not None and witness.saw(original):
             print(f"{opening[1:]}{rest}", file=sys.stderr, flush=True)
