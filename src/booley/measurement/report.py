@@ -107,7 +107,11 @@ def _verdict_line(document: Mapping[str, Any]) -> _Text:
     parts = [
         f"{counts['unmet']} unmet" if counts["unmet"] else "",
         _count(counts["enforced_error"], "error") if counts["enforced_error"] else "",
-        f"{counts['not_evaluated']} not evaluated" if counts["not_evaluated"] else "",
+        (
+            f"{counts['enforced_not_evaluated']} not evaluated"
+            if counts["enforced_not_evaluated"]
+            else ""
+        ),
     ]
     enforced = counts["enforced"]
     failing = ", ".join(part for part in parts if part)
@@ -118,6 +122,8 @@ def _verdict_line(document: Mapping[str, Any]) -> _Text:
     )
     if counts["tracked_error"]:
         text += f"; {_count(counts['tracked_error'], 'tracked error')}"
+    if counts["tracked_not_evaluated"]:
+        text += f"; {counts['tracked_not_evaluated']} tracked not evaluated"
     return _Text(text, _tone(document))
 
 
