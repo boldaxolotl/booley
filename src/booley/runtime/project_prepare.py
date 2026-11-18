@@ -195,7 +195,7 @@ def prepare_project(
         return _prepare_logged(hook, checkout, env, timeout_s, log)
     try:
         result = platform_paths.run_captured_bounded(
-            _hook_command(hook), cwd=checkout, env=env, timeout=timeout_s, errors="strict"
+            _hook_command(hook), cwd=checkout, env=env, timeout=timeout_s, errors="replace"
         )
     except subprocess.TimeoutExpired:
         return PreparationResult(False, hook, f"post-setup hook timed out ({timeout_s}s)")

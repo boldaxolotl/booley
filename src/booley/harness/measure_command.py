@@ -256,8 +256,22 @@ class _Preflight:
     prepared: list[tuple[TableRules, PreparedChild]]
 
 
-def _load_rules(checkout: Path) -> MetricsRules:
-    """The checkout's rules; a load error or no table at all is a refusal."""
+def _run_hook(checkout: Path, main: Path, run_id: str) -> None:
+    """Run the Project's post-setup hook in *checkout*; a failure is a refusal."""
+    try:
+        run_post_setup_hook(
+            checkout, main, slug=run_id, log=standalone_log_root(main) / run_id / "post-setup.log"
+        )
+    except ValueError as exc:  # includes CheckoutFlowError and FlowConfigError
+        raise MeasureRefusedError(str(exc)) from exc
+
+
+def _load_rules(checkout: Path, main: Path, run_id: str) -> MetricsRules:
+    """The checkout's rules; a load error or no table at all is a refusal.
+
+    The hook runs first: it may build a core or a file the rules read.
+    """
+    _run_hook(checkout, main, run_id)
     try:
         rules = load_metrics_rules(checkout)
     except MetricsFileError as exc:
@@ -285,9 +299,6 @@ def _preflight(
 ) -> _Preflight:
     """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child."""
     try:
-        run_post_setup_hook(
-            checkout, main, slug=run_id, log=standalone_log_root(main) / run_id / "post-setup.log"
-        )
         catalog = TargetCatalog.build(checkout)
         scope = None
         if target is not None:
@@ -426,7 +437,7 @@ def _measure_commit(
         for notice in _live_tree_notices(project_root, commit, export.drift):
             print(notice, file=sys.stderr)
         keyed = _key_of(project_root, commit, export.paired_commit)
-        rules = _load_rules(checkout)
+        rules = _load_rules(checkout, main, run_id)
         preflight = _preflight(checkout, main, run_id, rules, request.target)
         rules = preflight.rules
         signals.interruptible = False  # the children run: a signal now cancels, never aborts

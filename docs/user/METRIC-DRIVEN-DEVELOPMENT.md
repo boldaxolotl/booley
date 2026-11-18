@@ -283,9 +283,8 @@ used and the report says "its rules differ". See [Stealth Mode](STEALTH.md).
   builds and Git ignores reaches it only through the post-setup hook
   (`.booley/hooks/post-setup.*`, see
   [Worktree setup hooks](CONFIG.md#worktree-setup-hooks-booleyhooks)). It runs
-  in the checkout before the Targets are checked. A failing or timed-out hook
-  stops the measurement with exit 2 and names its log, kept beside the
-  `measure` Job's `job.log`.
+  in the checkout before the Targets are checked. If the hook fails, the
+  measurement stops and names the hook's log.
 - Local results are advisory. The measurement store is writable from the
   Sandbox, and a deliberate read of the live tree by absolute path is
   possible. A run in CI is the trusted one.

@@ -154,6 +154,7 @@ def test_a_hook_built_input_is_built_in_the_checkout_and_measured(
                 "[top.v]", "[top.v, gen.v]"
             ),
             "top.v": "module top; endmodule\n",
+            ".gitignore": "gen.v\n",
             ".booley/hooks/post-setup.sh": hook,
             ".booley/metrics.toml": "[metrics_gen.checkout_stub]\nmarker_max = 10\n",
         }
@@ -163,6 +164,26 @@ def test_a_hook_built_input_is_built_in_the_checkout_and_measured(
 
     assert len(stored_documents(world)) == 1
     assert not (world.live / "gen.v").exists()
+
+
+@linux_only
+def test_a_hook_built_core_defines_a_target_the_rules_name(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook runs before the rules are read, so a core it writes can hold a Target."""
+    core = CORE.format(name="metrics_gen").replace("\n", "\\n")
+    hook = f'printf "{core}" > metrics_gen.core\n'
+    world = make_world(
+        files={
+            "top.v": "module top; endmodule\n",
+            ".booley/hooks/post-setup.sh": hook,
+            ".booley/metrics.toml": "[metrics_gen.checkout_stub]\nmarker_max = 10\n",
+        }
+    )
+
+    assert measure(monkeypatch, world) == 0
+
+    assert len(stored_documents(world)) == 1
 
 
 @linux_only

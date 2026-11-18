@@ -576,21 +576,14 @@ def test_link_within_the_cores_tree_stays_verbatim(tmp_path: Path) -> None:
         assert (copied / "util.v").read_text(encoding="utf-8") == "util\n"
 
 
-@pytest.mark.parametrize("hook", [False, True], ids=["no-hook", "hook-builds-it"])
-def test_link_target_missing_from_the_ref_is_refused(tmp_path: Path, hook: bool) -> None:
+def test_link_target_missing_from_the_ref_is_refused(tmp_path: Path) -> None:
     """The target exists in the working tree but not in the checkout (untracked
     or added after the ref) — the baseline cannot be built from that ref, and
-    saying so beats a dangling path the Flows resolve however they like. A
-    post-setup hook that builds the target in the baseline lifts the refusal."""
+    saying so beats a dangling path the Flows resolve however they like."""
     _init_repo(tmp_path)
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "top.v").write_text("generated\n", encoding="utf-8")  # never committed
     _stealth_core_linking_to_rtl(tmp_path)
-    if hook:
-        _write_hook(tmp_path, "mkdir -p rtl && echo built > rtl/top.v")
-        with baseline_worktree(tmp_path, "HEAD") as baseline:
-            assert (baseline / ".booley/cores/ip/rtl/top.v").read_text() == "built\n"
-        return
 
     with (
         pytest.raises(BaselineWorktreeError, match="no source for stealth-core"),
@@ -605,6 +598,17 @@ def _write_hook(project: Path, script: str) -> None:
     hook = project / ".booley" / "hooks" / "post-setup.sh"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_bytes(f"{script}\n".encode())
+
+
+def test_a_hook_built_link_target_lifts_the_refusal(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "top.v").write_text("generated\n", encoding="utf-8")  # never committed
+    _stealth_core_linking_to_rtl(tmp_path)
+    _write_hook(tmp_path, "mkdir -p rtl && echo built > rtl/top.v")
+
+    with baseline_worktree(tmp_path, "HEAD") as baseline:
+        assert (baseline / ".booley/cores/ip/rtl/top.v").read_text() == "built\n"
 
 
 @pytest.mark.parametrize("fails", [False, True], ids=["builds", "fails"])
