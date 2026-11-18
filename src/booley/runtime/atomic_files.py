@@ -6,6 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from booley.runtime import timefmt
 from booley.runtime.filesystem_utils import replace_file, unlink_file
 
 STAGED_SUFFIX = ".booley-staged"
@@ -25,6 +26,25 @@ def fsync_directory(directory: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def keep_unreadable(path: Path) -> Path:
+    """Move an unreadable state file aside, beside itself, and return the kept path.
+
+    The copy is named ``<name>.unreadable-<UTC time>``, with ``-2``, ``-3``, ...
+    appended when that name is taken, so an earlier kept copy is never replaced.
+    The caller holds the lock that serializes writers of *path*. ``OSError``
+    propagates, leaving *path* in place.
+    """
+    stem = f"{path.name}.unreadable-{timefmt.compact_utc_now()}"
+    kept = path.with_name(stem)
+    number = 1
+    while kept.exists():
+        number += 1
+        kept = path.with_name(f"{stem}-{number}")
+    replace_file(path, kept)
+    fsync_directory(path.parent)
+    return kept
 
 
 def _staged_bytes(path: Path, content: bytes, mode: int) -> Path:

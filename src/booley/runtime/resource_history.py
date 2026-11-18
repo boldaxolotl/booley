@@ -20,7 +20,7 @@ from typing import Any, NamedTuple
 
 from booley.core.boundary import as_dict
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.atomic_files import atomic_replace_bytes, keep_unreadable
 from booley.runtime.timefmt import format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,12 @@ def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
             try:
                 existing = load_records(booley_dir)
             except ValueError as exc:
-                logger.warning("Starting a new Job resource history: %s", exc)
+                kept = keep_unreadable(path)
+                logger.warning(
+                    "Kept the unreadable Job resource history as %s and started a new one: %s",
+                    kept,
+                    exc,
+                )
                 existing = []
             document = {"$schema": SCHEMA, "records": _retained([*existing, *records])}
             atomic_replace_bytes(path, json.dumps(document, separators=(",", ":")).encode("utf-8"))

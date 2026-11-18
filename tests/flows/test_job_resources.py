@@ -665,6 +665,41 @@ def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
         assert seqs == list(range(newest - 19, newest + 1))
 
 
+@pytest.mark.parametrize(
+    "unreadable",
+    [
+        pytest.param("not json", id="malformed"),
+        pytest.param(
+            '{"$schema": "booley.job-resource-history/v0", "records": []}', id="foreign-schema"
+        ),
+    ],
+)
+def test_unreadable_history_is_kept_aside(tmp_path, caplog, unreadable):
+    path = resource_history.history_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    first = path.with_name("history.json.unreadable-20261118T000000Z")
+    second = path.with_name("history.json.unreadable-20261118T000000Z-2")
+
+    with patch("booley.runtime.timefmt.compact_utc_now", return_value="20261118T000000Z"):
+        path.write_bytes(unreadable.encode())
+        resource_history.append_records(tmp_path, [_record("a")])
+        assert first.is_file()
+        assert first.read_text(encoding="utf-8") == unreadable
+        assert str(first) in caplog.text
+
+        resource_history.append_records(tmp_path, [_record("b")])
+        assert not second.exists()
+        assert [r["key"]["target"] for r in _history(tmp_path)] == ["a", "b"]
+
+        path.write_bytes((unreadable + "\n").encode())
+        resource_history.append_records(tmp_path, [_record("c")])
+
+    assert first.read_text(encoding="utf-8") == unreadable
+    assert second.read_text(encoding="utf-8") == unreadable + "\n"
+    assert str(second) in caplog.text
+    assert [r["key"]["target"] for r in _history(tmp_path)] == ["c"]
+
+
 def test_key_expires_ninety_days_after_its_newest_record(tmp_path):
     def aged(key: str, days: int) -> dict[str, Any]:
         then = datetime.now(UTC) - timedelta(days=days)

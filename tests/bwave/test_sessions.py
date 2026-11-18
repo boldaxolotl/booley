@@ -176,6 +176,22 @@ def test_load_corrupt_sessions():
     assert _load_sessions() == {}
 
 
+def test_register_keeps_an_unreadable_store_aside(capsys):
+    from booley.bwave import sessions
+    from booley.bwave.cli import _load_sessions, register_trace
+
+    session_file = sessions._temporary_store().path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text("not json {{{")
+
+    register_trace(Path("/tmp/a.fst"), alias="a")
+
+    kept = list(session_file.parent.glob("bwave_sessions.json.unreadable-*"))
+    assert [path.read_text() for path in kept] == ["not json {{{"]
+    assert "a" in _load_sessions()
+    assert str(kept[0]) in capsys.readouterr().err
+
+
 def test_register_multiple_aliases():
     from booley.bwave.cli import _load_sessions, register_trace
 
