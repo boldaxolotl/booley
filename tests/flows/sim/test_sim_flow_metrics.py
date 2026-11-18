@@ -282,6 +282,7 @@ def test_coverage_run_with_timed_out_test_keeps_simulation_metrics(
 
     # Collection fails after a timeout: no coverage value, but the failing test is a value.
     assert values.plain == {"tests_failed": 1, "tests_total": 2}
+    assert list(values.failing_tests) == ["wrap@1"]
 
 
 def test_boolean_cycle_count_gives_no_value(tmp_path: Path) -> None:

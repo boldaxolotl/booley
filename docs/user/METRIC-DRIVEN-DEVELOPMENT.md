@@ -237,8 +237,8 @@ the work is accepted:
 
 Failing rows come first, and the metric table follows. A simulation or
 coverage table with failing tests also lists up to 20 of them, each with the
-first line of its failure, and the path of the Flow's report that holds the
-rest.
+first line of its failure, and the path of the Flow's report with the full
+results.
 
 The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer
