@@ -30,7 +30,7 @@ MIB = 2**20
 SCOPE = "pid:[4026531836]"
 # 2026-10-08T10:00:20Z
 NOW = 1791453620.0
-# 8 GiB less the fixed headroom.
+# 8 GiB less a quarter, the no-swap headroom.
 BUDGET_BYTES = 6442450944
 STARTED = "2026-10-08T10:00:00Z"
 

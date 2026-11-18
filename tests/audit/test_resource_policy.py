@@ -89,6 +89,32 @@ def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeyp
     assert resource_policy.cgroup_memory_limit_bytes() == 9 * _GIB
 
 
+def test_cgroup_swap_limit_reads_v2_then_v1(tmp_path: Path, monkeypatch) -> None:
+    v2 = tmp_path / "memory.swap.max"
+    v1 = tmp_path / "memory.memsw.limit_in_bytes"
+    monkeypatch.setattr(resource_policy, "CGROUP_SWAP_LIMIT_PATHS", (v2, v1))
+
+    # Neither file: a host without swap accounting.
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) is None
+
+    # v1 states memory plus swap, so the memory limit comes off; never below 0.
+    v1.write_text(str(10 * _GIB), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 2 * _GIB
+    assert resource_policy.cgroup_swap_limit_bytes(12 * _GIB) == 0
+    v1.write_text(str(1 << 62), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
+
+    # v2 wins and states the swap itself; an unparseable file falls through to v1.
+    v2.write_text("invalid", encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
+    v2.write_text(str(4 * _GIB), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 4 * _GIB
+    v2.write_text("max", encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
+    v2.write_text(str(1 << 61), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
+
+
 def test_doctor_does_not_reimplement_extracted_resource_mechanisms() -> None:
     doctor_path = _ROOT / "src" / "booley" / "harness" / "doctor.py"
     tree = ast.parse(doctor_path.read_text(encoding="utf-8"))
