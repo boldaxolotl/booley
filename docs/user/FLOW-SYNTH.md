@@ -121,7 +121,8 @@ warning, so the run ends `WARN` rather than `PASS`.
 ## Synthesis Target
 
 A synthesis Target selects the RTL plus an SDC timing-constraints fileset. The
-`flow_options` after `arch` are optional and shown with their defaults:
+`flow_options` after `arch` are optional. The uncommented ones show their
+defaults; the commented ones have no default and show examples:
 
 ```yaml
 CAPI=2:
