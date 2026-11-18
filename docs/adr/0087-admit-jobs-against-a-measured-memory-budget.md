@@ -155,20 +155,37 @@ read-only, and delegating it would loosen the hardening.
   tree; where `/proc` is missing it does nothing.
 - Booley does not add a memory-pressure watcher: it is new always-on
   machinery, and the kernel's priority already gives "newest first, never the
-  agent" within those bounds. It would be added only if OOM kills turn out to be
-  common.
-- A Job killed by the OOM killer is requeued once, to run alone, with its
-  estimate raised to at least its observed peak; a second kill while alone
-  fails it. Results and evidence come only from the final attempt. A Job
-  bound to a Goal is never requeued as a whole, so its evidence comes from its
-  only attempt.
+  agent" within those bounds. It would be added only if OOM kills turn out to
+  be common.
+- A Job killed by the OOM killer at the Sandbox's limit is requeued once, to
+  run alone, with its estimate raised to at least its observed peak; a second
+  kill while alone fails it. Results and evidence come only from the final
+  attempt. A Job bound to a Goal is never requeued as a whole, so its
+  evidence comes from its only attempt.
+- The two kinds of kill are told apart by the cgroup's `oom` event count,
+  read in one snapshot with `oom_kill`: `oom` counts the times the Sandbox
+  reached its own limit, `oom_kill` every process an OOM killer took, the
+  host's too. An own kill while `oom` did not rise is a host kill: the host
+  ran out of memory while the Sandbox stayed within its limit. Running alone
+  cannot relieve pressure from outside the Sandbox, so a host kill is never
+  requeued; the result leads with a line naming host memory, the Sandbox
+  limit, and the remedy (free host memory or lower `[sandbox].memory`), and
+  the Flow's own error follows it. The Resource History records outcome
+  `host_oom_kill`, a lower bound like `oom_kill`. A Sandbox with no memory
+  limit never reaches one, so every own kill in it is a host kill. An
+  unreadable `oom` count proves nothing: the kill is handled as a Sandbox
+  limit kill.
 - The OOM-kill counter is container-wide, so a rise alone cannot say which
   Job was hit. A command counts as OOM-killed only when the counter rose while
   it ran, it exited nonzero, and a process of its own tree died by a SIGKILL
   Booley did not send. A timeout, a cancellation or an unreadable counter
-  never marks a kill. Detection is deliberately conservative: a kill hidden
-  behind a wrapper that reports none of the known signs is a plain failure
-  and is not requeued.
+  never marks a kill. The signs are the root's SIGKILL, a Booley launcher's
+  report, and a kill line in the command's output or, for Vivado, in the run
+  scripts' own logs.
+  Detection is deliberately conservative: a kill hidden behind a wrapper that
+  reports none of these (a FuseSoC generator names no signal) is a plain
+  failure and is not requeued, as is a kill in a Pre-Sim Command or a
+  mutation run, which are not measured commands.
 
 ### Simulation Records
 
@@ -176,11 +193,11 @@ Every work item of a simulation or coverage record is admitted on its own,
 with its own key. The Flow's reservation covers preparation and build, then
 drops to zero, and admission decides how many items run at once. Each item
 ranks for the OOM killer as a Job newer than its Flow, so the newest item's
-simulator ranks first, within the bounds of the Out-of-memory guard. An
-item's own OOM kill stops only that item: it is requeued once, to run alone
-after the running items finish, and its second failure is its result. A kill
-of an item running under the Flow's own claim requeues the whole Flow Job
-instead.
+simulator ranks first, within the bounds of the Out-of-memory guard. An item's own OOM kill at the Sandbox's limit stops
+only that item: it is requeued once, to run alone after the running items
+finish, and its second failure is its result. A host kill of an item is never
+requeued. A kill of an item running under the Flow's own claim
+requeues the whole Flow Job instead.
 
 ## Considered options
 

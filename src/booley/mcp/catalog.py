@@ -288,7 +288,7 @@ def _targets_mcp_tool_def() -> dict[str, Any]:
         "name": _TARGETS_MCP_TOOL_NAME,
         "description": (
             "List the project's FuseSoC .core Targets — the values a Booley Flow's 'target' argument"
-            " accepts (ADR 0030). Cheap .core-YAML enumeration, no fusesoc run: per Target it "
+            " accepts. Cheap .core-YAML enumeration, no fusesoc run: per Target it "
             "reports the copy-pasteable selector (vlnv#name when the bare name is ambiguous), flow "
             "(sim/lint/generic), declared EDA tool, cocotb module, declared toplevel, which Doctor "
             "Flows the Target selects via flow_options.booley.doctor, and which Booley Flows could "
@@ -376,7 +376,7 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
         "description": (
             "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold this MCP "
             "tool call open for 'seconds' server-side, then return timing details. Exists to measure"
-            " the MCP client's MCP-tool-call kill ceiling (ADR 0027) — it does no RTL work and is "
+            " the MCP client's MCP-tool-call kill ceiling — it does no RTL work and is "
             "intended for timing diagnostics."
         ),
         "schema": {

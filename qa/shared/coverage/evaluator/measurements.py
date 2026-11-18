@@ -13,8 +13,8 @@ from pathlib import Path
 SOURCE_METRICS = {"line", "branch", "expression", "toggle"}
 
 
-#: Must equal the Campaign schema Booley writes; tests/qa guards the match.
-CAMPAIGN_SCHEMA = "booley.coverage-record/v1"
+#: Must equal the Coverage Record schema Booley writes; tests/qa guards the match.
+RECORD_SCHEMA = "booley.coverage-record/v1"
 
 
 def require(condition: bool, message: str) -> None:
@@ -22,11 +22,11 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
-def read_campaign(path: Path) -> tuple[dict, list[dict]]:
+def read_record(path: Path) -> tuple[dict, list[dict]]:
     """Read the bounded public pair and independently verify its integrity."""
     require(path.stat().st_size <= 16 * 1024 * 1024, "manifest size ceiling")
     manifest = json.loads(path.read_text())
-    require(manifest["$schema"] == CAMPAIGN_SCHEMA, f"expected {CAMPAIGN_SCHEMA}")
+    require(manifest["$schema"] == RECORD_SCHEMA, f"expected {RECORD_SCHEMA}")
     ref = manifest["point_store"]
     require(ref["path"] == "coverage-points.jsonl.gz", "noncanonical point path")
     points_path = path.parent / ref["path"]
@@ -43,7 +43,9 @@ def read_campaign(path: Path) -> tuple[dict, list[dict]]:
     records = [json.loads(line) for line in raw.splitlines()]
     header, *points = records
     require(header["$schema"] == "booley.coverage-points/v2", "point schema")
-    require(header["coverage_record_id"] == manifest["coverage_record_id"], "Campaign binding")
+    require(
+        header["coverage_record_id"] == manifest["coverage_record_id"], "Coverage Record binding"
+    )
     require(header["target_identity"] == manifest["target"]["identity"], "Target binding")
     require(len(points) == ref["point_count"], "point count mismatch")
     require(len({p["id"] for p in points}) == len(points), "duplicate points")
@@ -228,12 +230,12 @@ def verify_known_answer(manifest: dict, points: list[dict], case: dict) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("campaign", type=Path)
+    parser.add_argument("record", type=Path)
     parser.add_argument("--expected", type=Path, required=True)
     parser.add_argument("--case", required=True)
     parser.add_argument("--native", action="append", default=[], metavar="RUN_ID=PATH")
     args = parser.parse_args()
-    manifest, points = read_campaign(args.campaign)
+    manifest, points = read_record(args.record)
     native = dict(item.split("=", 1) for item in args.native)
     require(
         set(native) == {r["id"] for r in manifest["tests"]["runs"]},

@@ -572,11 +572,11 @@ endmodule
 
 def _cocotb_testbench(c: ScaffoldChoices) -> str:
     return f'''\
-# test_{c.name} — cocotb testbench for the scaffold counter (Cocotb Target,
-# ADR 0034). The verdict comes from cocotb's results.xml: a test passes when
-# its coroutine returns and fails when it raises — assert, never print
-# sentinels. One @cocotb.test() per behavior; `.booley/tests.toml`
-# lists exactly these function names.
+# test_{c.name} — cocotb testbench for the scaffold counter (Cocotb Target).
+# The verdict comes from cocotb's results.xml: a test passes when its
+# coroutine returns and fails when it raises — assert, never print sentinels.
+# One @cocotb.test() per behavior; `.booley/tests.toml` lists exactly these
+# function names.
 
 import random
 
@@ -630,7 +630,7 @@ def _tb_fileset(c: ScaffoldChoices) -> str:
         return f"""\
   tb:
     files:
-      # Python TBs stage into the build root via copyto (ADR 0034 decision 4);
+      # Python TBs stage into the build root via copyto;
       # the basename MUST match flow_options.cocotb_module below.
       - tb/test_{c.name}.py: {{file_type: user, copyto: test_{c.name}.py}}
     tags: [tb]
@@ -905,7 +905,7 @@ def _booley_toml(c: ScaffoldChoices) -> str:
         *_stealth_toml_lines(c),
         "",
         "[sandbox]",
-        "# Sizes the Memory Budget that Jobs are admitted against (ADR 0087).",
+        "# Sizes the Memory Budget that Jobs are admitted against.",
         'memory = "8g"',
         "",
         "[flows]",

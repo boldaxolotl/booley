@@ -15,7 +15,7 @@ from booley.flows.sim.record.codec import MANIFEST_SCHEMA
 ROOT = Path(__file__).resolve().parents[2]
 TAXI_VALIDATOR = ROOT / "qa/missions/taxi/fixtures/simulation-record/validate_phase5.py"
 # Documents captured unchanged from one Taxi QA run.
-CAPTURED = ROOT / "tests/runtime/fixtures/directory_migration/taxi_simulation_record"
+CAPTURED = ROOT / "tests/qa/fixtures/taxi_simulation_record"
 
 
 def _module(path: Path, name: str):
@@ -56,7 +56,7 @@ ATTEMPT_IDS = ("7852faf4-7c93-4f9f-8e21-8bb0952b34f8", "0142c525-7188-45a2-9aee-
 def _manifest(names_per_item: list[list[str]], kind: str) -> dict[str, object]:
     return {
         "$schema": MANIFEST_SCHEMA,
-        "campaign_id": SIMULATION_RECORD_ID,
+        "simulation_record_id": SIMULATION_RECORD_ID,
         "fingerprints": {"workload_sha256": WORKLOAD},
         "work_items": [
             {
@@ -81,13 +81,13 @@ def _batch_attempt(simulation_record: Path, ordinal: int) -> Path:
 
 def _taxi_batch_files(tmp_path: Path) -> tuple[Path, Path]:
     """Write one resumed Cocotb-batch Simulation Record and the pre-resume attempt copy."""
-    simulation_record = tmp_path / "campaign"
+    simulation_record = tmp_path / "record"
     simulation_record.mkdir()
     manifest = _write(
         simulation_record / "manifest.json", _manifest([BATCH_TESTS], "cocotb_batch")
     )
     identity = {
-        "campaign_id": SIMULATION_RECORD_ID,
+        "simulation_record_id": SIMULATION_RECORD_ID,
         "manifest_sha256": _digest(manifest.read_bytes().rstrip(b"\n")),
         "workload_sha256": WORKLOAD,
         "work_item_id": BATCH_ITEM,
@@ -95,12 +95,12 @@ def _taxi_batch_files(tmp_path: Path) -> tuple[Path, Path]:
     for ordinal, attempt_id in enumerate(ATTEMPT_IDS, start=1):
         record = _batch_attempt(simulation_record, ordinal)
         record.parent.mkdir(parents=True)
-        attempt = {"$schema": "booley.simulation-attempt/v1", **identity}
+        attempt = {"$schema": "booley.simulation-attempt/v2", **identity}
         _write(record, {**attempt, "attempt_id": attempt_id, "attempt_ordinal": ordinal})
     _write(
         _batch_directory(simulation_record) / "result.json",
         {
-            "$schema": "booley.simulation-result/v2",
+            "$schema": "booley.simulation-result/v5",
             **identity,
             "attempt_id": ATTEMPT_IDS[1],
             "attempt_ordinal": 2,
@@ -120,7 +120,7 @@ def test_taxi_batch_validator_accepts_interrupted_then_resumed_batch(taxi, tmp_p
 
 def test_taxi_batch_validator_accepts_captured_run(taxi) -> None:
     taxi.validate_cocotb_batch(
-        CAPTURED / "batch/campaign", CAPTURED / "batch/interrupted-attempt.json"
+        CAPTURED / "batch/record", CAPTURED / "batch/interrupted-attempt.json"
     )
 
 
@@ -154,7 +154,7 @@ def _bind_result_to_interrupted_attempt(result: dict) -> None:
     ("mutation", "message"),
     [
         (
-            _attempt_mutation(1, lambda value: value.update(campaign_id="other")),
+            _attempt_mutation(1, lambda value: value.update(simulation_record_id="other")),
             "do not bind",
         ),
         (
@@ -171,7 +171,7 @@ def _bind_result_to_interrupted_attempt(result: dict) -> None:
         (_drop_resumed_attempt, "one interrupted and one resumed attempt"),
         (_result_mutation(_bind_result_to_interrupted_attempt), "bind the resumed attempt"),
         (
-            _result_mutation(lambda value: value.update(campaign_id="other")),
+            _result_mutation(lambda value: value.update(simulation_record_id="other")),
             "resumed result does",
         ),
         (_result_mutation(lambda value: value.update(state="aborted")), "did not complete"),
@@ -198,15 +198,17 @@ def test_taxi_batch_validator_rejects_foreign_interrupted_attempt_copy(
     taxi, tmp_path: Path
 ) -> None:
     simulation_record, interrupted = _taxi_batch_files(tmp_path)
-    _rewrite(interrupted, lambda attempt: attempt.update(campaign_id="other"))
-    with pytest.raises(ValueError, match="copy differs from the Campaign's first attempt"):
+    _rewrite(interrupted, lambda attempt: attempt.update(simulation_record_id="other"))
+    with pytest.raises(
+        ValueError, match="copy differs from the Simulation Record's first attempt"
+    ):
         taxi.validate_cocotb_batch(simulation_record, interrupted)
 
 
 MCP_KINDS = {
-    "manifest": "simulation_campaign_manifest",
+    "manifest": "simulation_record_manifest",
     "simulation": "simulation_projection",
-    "coverage": "coverage_campaign_reference",
+    "coverage": "coverage_record_reference",
 }
 
 
@@ -241,6 +243,8 @@ def _mcp_observations(names: list[str]) -> dict[str, object]:
             "assertion_count": 0,
             "cycle_count": None,
             "detail": {"reason": name},
+            "log": None,
+            "trace": None,
         }
         for name in names[:32]
     ]
@@ -260,9 +264,11 @@ def _mcp_observations(names: list[str]) -> dict[str, object]:
 
 def _mcp_simulation_record(invocation: Path, names: list[str]) -> dict[str, object]:
     manifest = (json.dumps(_manifest([[name] for name in names], "ordinary_hdl")) + "\n").encode()
-    projection = json.dumps({"campaign_id": SIMULATION_RECORD_ID, "passed": True}).encode()
+    projection = json.dumps(
+        {"simulation_record_id": SIMULATION_RECORD_ID, "passed": True}
+    ).encode()
     return {
-        "campaign_id": SIMULATION_RECORD_ID,
+        "simulation_record_id": SIMULATION_RECORD_ID,
         "manifest_sha256": _digest(manifest.rstrip(b"\n")),
         "artifacts": {
             "manifest": _retain(invocation, "manifest", manifest),
@@ -275,7 +281,7 @@ def _mcp_simulation_record(invocation: Path, names: list[str]) -> dict[str, obje
 
 
 def _mcp_envelope(simulation_record: dict[str, object], structured_key: str) -> dict[str, object]:
-    report = {"exit_code": 0, "detail": {"campaigns": {"taxi": simulation_record}}}
+    report = {"exit_code": 0, "detail": {"records": {"taxi": simulation_record}}}
     return {
         "meta": None,
         "content": [{"type": "text", "text": "EXIT_CODE: 0\nPASS"}],
@@ -314,18 +320,10 @@ def test_taxi_mcp_validator_accepts_authenticated_response(
         taxi.validate_mcp_response(response, response.stat().st_size - 1, invocation)
 
 
-@pytest.mark.parametrize(
-    ("capture", "invocation"),
-    [
-        ("ordered-mcp.txt", "3"),
-        ("ordered-mcp-alias-normalized.json", "3"),
-        ("taxi-ordered-mcp.txt", "4"),
-    ],
-)
-def test_taxi_mcp_validator_accepts_captured_responses(
-    taxi, capture: str, invocation: str
-) -> None:
-    _validate_mcp(taxi, CAPTURED / "mcp" / capture, CAPTURED / "mcp/flow-reports/sim" / invocation)
+def test_taxi_mcp_validator_accepts_captured_response(taxi) -> None:
+    _validate_mcp(
+        taxi, CAPTURED / "mcp/mcp-sim-response.json", CAPTURED / "mcp/flow-reports/sim/1"
+    )
 
 
 def test_taxi_mcp_validator_accepts_truncated_preview_of_full_selection(
@@ -394,7 +392,7 @@ def _reorder_selected_tests(simulation_record) -> None:
 
 
 def _rename_simulation_record(simulation_record) -> None:
-    simulation_record["campaign_id"] = "foreign"
+    simulation_record["simulation_record_id"] = "foreign"
     for reference in simulation_record["artifacts"].values():
         reference["owner"] = "foreign"
 
@@ -466,7 +464,7 @@ def _rename_simulation_record(simulation_record) -> None:
         ),
         (_omit_selected_test, "total differs from the manifest selection"),
         (_reorder_selected_tests, "observations differ from the manifest selection"),
-        (_rename_simulation_record, "names a foreign Campaign"),
+        (_rename_simulation_record, "names a foreign Simulation Record"),
         (
             lambda simulation_record: simulation_record.update(
                 manifest_sha256="sha256:" + "b" * 64
@@ -489,7 +487,7 @@ def _rename_simulation_record(simulation_record) -> None:
         ),
         (
             lambda simulation_record: simulation_record.update(grade="unknown"),
-            "campaign grade is invalid",
+            "Simulation Record grade is invalid",
         ),
         (
             lambda simulation_record: simulation_record.update(observation_total=3),
@@ -502,6 +500,18 @@ def _rename_simulation_record(simulation_record) -> None:
         (
             lambda simulation_record: simulation_record["observations"][0].pop("detail"),
             "fields differ",
+        ),
+        (
+            lambda simulation_record: simulation_record["observations"][0].update(
+                log="/work/run.log"
+            ),
+            "log path is invalid",
+        ),
+        (
+            lambda simulation_record: simulation_record["observations"][0].update(
+                trace="../trace.fst"
+            ),
+            "trace path is invalid",
         ),
         (
             lambda simulation_record: simulation_record["observation_counts"]["functional"].update(

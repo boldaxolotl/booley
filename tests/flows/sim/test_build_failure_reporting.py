@@ -123,6 +123,28 @@ def test_oom_build_names_oom_evidence_and_remedy(
     assert "BOOLEY_BUILD_STAGE" not in report
 
 
+def test_host_oom_build_names_host_memory_not_a_sandbox_remedy() -> None:
+    outcome = classify_build_outcome(
+        SubprocessResult(
+            returncode=137,
+            stdout="make: *** Error 137\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n",
+            oom_kill_delta=1,
+            oom_killed=True,
+            host_oom_kill=True,
+            peak_rss_mb=2048.0,
+        ),
+        "abc123",
+        timeout_s=600,
+    )
+
+    assert (
+        outcome.reason
+        == "build failed: the host ran out of memory and killed it (build peak RSS 2048 MB)"
+    )
+    assert "raise [sandbox].memory" not in (outcome.reason or "")
+    assert outcome.failure_kind == "infrastructure"
+
+
 def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypatch) -> None:
     diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
     outcome = classify_build_outcome(

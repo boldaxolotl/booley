@@ -1,4 +1,4 @@
-"""Literal independent oracle controls, separate from real product Campaign evidence."""
+"""Literal independent oracle controls, separate from real product Coverage Record evidence."""
 
 import argparse
 import gzip
@@ -43,7 +43,7 @@ def _manifest(header: dict, rollup: dict, compressed: bytes, raw: bytes) -> dict
         for metric in ["line", "branch", "expression"]
     ]
     return {
-        "$schema": measurements.CAMPAIGN_SCHEMA,
+        "$schema": measurements.RECORD_SCHEMA,
         "coverage_record_id": "qa-control",
         "target": {"identity": header["target_identity"]},
         "tests": {"runs": [{"id": "r1", "test": "half"}]},
@@ -95,7 +95,7 @@ def exercise(mode: str, root: Path) -> None:
         corrupt = bytearray(point_store.read_bytes())
         corrupt[-1] ^= 1
         point_store.write_bytes(corrupt)
-    manifest, points = measurements.read_campaign(path)
+    manifest, points = measurements.read_record(path)
     if mode == "hit-count":
         points[0]["hits_by_run"]["r1"] = 3
     elif mode == "source-grouping":

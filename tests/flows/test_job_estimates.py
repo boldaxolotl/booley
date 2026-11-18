@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from booley.flows import job_estimates as estimates
 
 
@@ -49,10 +51,11 @@ def test_memory_estimate_is_largest_record_times_margin() -> None:
     assert estimate.source is estimates.Source.OWN
 
 
-def test_oom_killed_record_only_raises_the_estimate() -> None:
+@pytest.mark.parametrize("outcome", ["oom_kill", "host_oom_kill"])
+def test_oom_killed_record_only_raises_the_estimate(outcome: str) -> None:
     for oom_peak, expected in ((8192, 10240.0), (1024, 8320.0)):
         records = [_record("t", "sim_run", memory=mb, test_run="a") for mb in (2048, 2560, 6656)]
-        records.append(_record("t", "sim_run", memory=oom_peak, test_run="a", outcome="oom_kill"))
+        records.append(_record("t", "sim_run", memory=oom_peak, test_run="a", outcome=outcome))
 
         job = estimates.ResourceEstimator(records).estimate([_sim("t", "a")])
 

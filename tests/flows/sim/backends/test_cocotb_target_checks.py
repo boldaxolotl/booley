@@ -248,7 +248,7 @@ class TestCocotbTestNames:
 _SELECT_FAIL = (
     "cocotb Target 'sim' declares a tests.toml `select` plusarg template",
     "remove `select` — cocotb test selection is the COCOTB_TEST_FILTER env var "
-    "built from the `tests` list (ADR 0034)",
+    "built from the `tests` list",
 )
 
 
