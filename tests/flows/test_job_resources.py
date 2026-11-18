@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import multiprocessing
 import os
 import sys
@@ -34,6 +35,7 @@ from booley.runtime.supervised_execution import (
 from booley.runtime.timefmt import rfc3339_from_datetime, utc_now_rfc3339
 from tests.flows.test_flow_base import EchoFlow, _flow_env
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
@@ -351,7 +353,9 @@ def test_unreadable_counter_or_timeout_is_never_oom_killed(flow, monkeypatch):
 
     # Booley's own timeout kill is not the OOM killer's.
     _oom_counter(monkeypatch, iter([0, 1]))
-    timed_out = _execute(flow, _python("import time; time.sleep(30)"), timeout=1)
+    timed_out = _execute(
+        flow, _python("import time; time.sleep(30)"), timeout=math.ceil(scaled(1))
+    )
     assert timed_out.timed_out and not timed_out.oom_killed
 
 
@@ -406,7 +410,7 @@ def test_command_killed_by_a_cancelled_scope_is_not_oom_killed(flow, tmp_path, m
     scope = SupervisedExecutionScope(None, tmp_path / ".booley", cancelled.is_set)
 
     def cancel_once_running() -> None:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + hang_guard_s()
         while not started.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         cancelled.set()
@@ -452,7 +456,7 @@ launch = SimulatorLaunch(
     command=[sys.executable, "-c", {SELF_SIGKILL!r}],
     run_cwd=run_cwd,
     env=dict(os.environ),
-    timeout_s=30,
+    timeout_s={hang_guard_s()},
 )
 run_supervised(launch)
 raise SystemExit(1)
@@ -643,7 +647,7 @@ def test_parallel_writers_never_lose_or_corrupt_records(tmp_path):
     for writer in writers:
         writer.start()
     for writer in writers:
-        writer.join(timeout=60)
+        writer.join(timeout=hang_guard_s())
         assert writer.exitcode == 0
 
     keys = {record["key"]["target"] for record in _history(tmp_path)}
