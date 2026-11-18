@@ -4,7 +4,8 @@ Status: accepted; the Goal-owned review contract is superseded by
 [ADR 0091](0091-review-commits-outside-measurement.md) when Goal Mode is
 removed, and a review then stops being part of the acceptance gate
 ([ADR 0092](0092-measure-commits-against-target-metrics.md)). `--verify` and
-`--waive` were removed from the hand-run Reviewer with its review history; the
+stored waivers were removed from the hand-run Reviewer with its review history
+(its `--recheck` accepts `--waive` proposals again, without stored state); the
 verification and waiver rules below apply to `booley review --verify`
 ([ADR 0091](0091-review-commits-outside-measurement.md)).
 

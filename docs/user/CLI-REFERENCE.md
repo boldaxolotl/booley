@@ -113,6 +113,7 @@ booley flow sim --help                       # every option of one Flow
 booley specialist                            # list the Specialists
 booley specialist reviewer --help            # a Specialist's arguments
 booley specialist reviewer --recheck <evidence.json>   # re-check an earlier review's findings
+booley specialist reviewer --recheck <evidence.json> --waive <finding-id> "<reason>"   # propose a waiver
 ```
 
 Targets, options, exit codes, and results are in
