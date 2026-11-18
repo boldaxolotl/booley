@@ -131,7 +131,9 @@ read-only, and delegating it would loosen the hardening.
   within 5 % of the limit of each other (2.5 % for a coordinator against the
   next older Job's tools; Jobs with five or more newer ones share one level).
   A Job's processes die before the agent's while the agent uses less than
-  about a quarter of the limit more. Beyond a bound the larger process may die
+  about a quarter of the limit more (27.5 % against a coordinator on the
+  lowest level). A coordinator dies after its own tools while it uses less
+  than 2.5 % of the limit more. Beyond a bound the larger process may die
   first. A stronger guarantee is not possible: every level must fit between
   the agent's 0 and the kernel's maximum 1000, since going below 0 needs
   privilege and would rank Jobs below the agent, so widening one gap narrows
@@ -144,7 +146,7 @@ read-only, and delegating it would loosen the hardening.
   |---|---|
   | Newest Job's tools before the next older Job's | newest 0.1 %, older 45 % |
   | Newer before older Job's tools, among older Jobs | newer 0.1 %, older 4.5 % |
-  | Job processes before the agent | Job process 0 % on the lowest level, agent 12 % |
+  | Job processes before the agent | Coordinator on the lowest level 0 %, agent 12 % |
   | Coordinator below its own tools | coordinator 2 %, tool 0 % |
 
 - Raising `oom_score_adj` needs no privilege, so the Sandbox hardening is

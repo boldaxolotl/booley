@@ -151,14 +151,15 @@ Try:
 - The kernel kills a compiler of the Job admitted last. Its output says it
   was requeued after an out-of-memory kill; it waits to run alone, then
   builds. Its result says it is from the second attempt. The other Job is
-  untouched: the two lowered builds stay far less than half the limit apart,
-  so the ranking's bound (ADR 0087) holds. History records `oom_kill`, which
-  raises the estimate.
+  untouched, unless a process of the older Job uses more than half the limit
+  more than the victim (the ranking's bound, ADR 0087: read each process's
+  memory at the kill). History records `oom_kill`, which raises the estimate.
 - Exactly controlled: `mem_hog --mb` above the container limit is killed
   twice and fails with an out-of-memory reason; it is not requeued again.
 - Compare with `docs/user/CONFIG.md` "Jobs and concurrency".
-Look for: the older Job killed first while the two Jobs' processes were less
-than half the limit apart, the agent or MCP server killed, a second
+Look for: the older Job killed first while its processes used less than half
+the limit more than the newest Job's, the agent or MCP server killed while it
+used less than a quarter of the limit more than a Job process, a second
 requeue, a compiler kill reported as a compile error, a result that hides the
 first attempt, a kill not recorded in history.
 

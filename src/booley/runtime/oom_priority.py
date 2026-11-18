@@ -52,7 +52,8 @@ TOOL_ADJ: tuple[int, ...] = (1000, 500, 450, 400, 350, 300)
 
 #: The coordinator ranks this far below its Job's tools: half the smallest step
 #: between levels, so it stays above the processes of an older Job that has a
-#: lower level (every older Job until the levels bottom out at five newer Jobs).
+#: lower level (every older Job until the levels bottom out at five newer Jobs),
+#: while the older Job's process uses less than 2.5 % of the limit more.
 COORDINATOR_GAP = 25
 
 #: How often the ranking is re-applied to the Job's process tree.
