@@ -709,28 +709,28 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     [
         (
             'auth = "auto"\n',
-            {
-                "claude": (
+            [
+                (
                     "claude: booley.toml [agent] auth 'auto' is retired; detected: subscription",
                     'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
                     'claude = "subscription" in booley.toml, or re-run booley init',
                 ),
-                "codex": (
+                (
                     "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
                     'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
                     'codex = "api_key" in booley.toml, or re-run booley init',
                 ),
-            },
+            ],
         ),
         (
             '\n[agent.auth]\nclaude = "subscription"\ncodex = "auto"\n',
-            {
-                "codex": (
+            [
+                (
                     "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
                     'set codex = "api_key" under [agent.auth] in booley.toml, '
                     "or re-run booley init",
                 ),
-            },
+            ],
         ),
     ],
     ids=["string", "table"],
@@ -755,9 +755,11 @@ def test_doctor_names_the_value_for_a_retired_auto_auth(tmp_path, monkeypatch, a
         for f in result.findings
         if f.check_id == "agent.credential-policy" and f.severity is Severity.FAIL
     ]
-    assert policy == list(rows.values())
+    assert policy == rows
     messages = _messages(result)
     assert "project setup audit skipped - no valid project config" not in messages
+    assert "worker backend health check skipped - set [agent] auth first" in messages
+    assert not [m for m in messages if "skipped - project config invalid" in m]
     text = "\n".join(f"{f.message}\n{f.fix}" for f in result.findings)
     for absent in ("clis/default", "gateway", "booley doctor names"):
         assert absent not in text
