@@ -76,6 +76,9 @@ class FlowMetricValues:
     # Every clock the run reported timing for, valued or not: a clock with no fmax is
     # absent from ``per_clock`` but still named here.
     clocks: tuple[str, ...] = ()
+    # Test Run name -> first line of its failure reason; bounded by the Flow, empty for a Flow
+    # without Test Runs.
+    failing_tests: dict[str, str] = field(default_factory=dict[str, str])
 
 
 class UndeclaredMetricError(ValueError):
@@ -154,7 +157,7 @@ class MetricsUnavailable:
 def metrics_document(measure: Callable[[], FlowMetricValues]) -> dict[str, object]:
     """The ``report.json`` form of one Target's values, or of why it has none.
 
-    Returns the four value maps of *measure*'s result, or ``{"unavailable": reason}``
+    Returns the value maps of *measure*'s result, or ``{"unavailable": reason}``
     when *measure* raises :class:`MetricsUnavailableError`.
     """
     try:
@@ -166,6 +169,7 @@ def metrics_document(measure: Callable[[], FlowMetricValues]) -> dict[str, objec
         "per_clock": values.per_clock,
         "per_test": values.per_test,
         "clocks": list(values.clocks),
+        "failing_tests": values.failing_tests,
     }
 
 
@@ -186,6 +190,7 @@ def metrics_from_document(raw: object) -> FlowMetricValues | MetricsUnavailable 
         },
         per_test={name: dict(by_test) for name, by_test in document.get("per_test", {}).items()},
         clocks=tuple(document.get("clocks", ())),
+        failing_tests=dict(document.get("failing_tests", {})),
     )
 
 

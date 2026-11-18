@@ -602,6 +602,46 @@ def test_submodules_tests_diff_and_failing_tests_render(tmp_path: Path) -> None:
     assert "not started" in terminal
 
 
+def test_failing_tests_list_test_runs_first_lines_and_the_report(tmp_path: Path) -> None:
+    from booley.flows.metric_declarations import FlowMetricValues
+
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(repo / ".booley")
+    reason = "booley: git rev-parse HEAD: the measurement checkout is not a git repository"
+    failing = {"t00": reason, "t01": "", **{f"t{index:02d}": "boom" for index in range(2, 20)}}
+    unmet = Entry(
+        "tests_failed_max", "tests_failed", 23, bound=0, verdict=Verdict.UNMET, detail="23 bad"
+    )
+    listed = FlowMetricValues(
+        plain={"tests_failed": 23, "tests_total": 25}, per_clock={}, failing_tests=failing
+    )
+    table = Table("sim", (unmet,), listed)
+    source = tmp_path / "sources" / "report.json"
+    write(source, "{}")
+    stored = store.write(
+        build_run(key_of(repo, head), "r1", (table,)),
+        [FlowReport("acme:core:1.0#top", "sim", source)],
+    )
+    view = view_of(repo, store, stored, head)
+
+    markdown = markdown_report(view)
+    terminal = terminal_report(view, width=200)
+
+    tests = section(markdown, "Failing tests")
+    assert "- core sim: 23 failed of 25 tests" in tests
+    assert f"t00: {reason}\n" in tests
+    assert "\nt01\n" in tests
+    assert "... and 3 more" in tests
+    assert f"- core sim report: `{stored.path.parent / 'r1' / '0-sim' / 'report.json'}`" in tests
+    assert f"    t00: {reason}" in terminal
+    assert "**1 unmet of 1 enforced**" in markdown
+    old: dict[str, Any] = json.loads(json.dumps(view))
+    del old["tables"][0]["values"]["failing_tests"]
+    for text in (markdown_report(old), terminal_report(old)):
+        assert "core sim: 23 failed of 25 tests" in text
+        assert "t00" not in text
+
+
 def test_wordings_numbers_and_markdown_escaping_of_user_text(tmp_path: Path) -> None:
     repo, store, stored, head, first = failing_world(tmp_path)
     view: dict[str, Any] = json.loads(json.dumps(view_of(repo, store, stored, head, base=first)))
