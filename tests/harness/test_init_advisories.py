@@ -1,25 +1,22 @@
 """Step 12's post-setup advisories: print only what's actually outstanding.
 
-Init used to end every run with the full booley-setup checklist plus "Finish the
-setup skills above, then run Booley" — including on a project whose
-.booley/ was already complete (the demo-repo clone, where the user has
-nothing to finish). These tests pin the per-step probe that replaced that, and
-the rule that keeps it honest: an explicit `enabled = false` is a deliberate
-"Flow disabled" (Doctor reads it that way), so it must not be nagged about.
+An explicit `enabled = false` is a deliberate "Flow disabled" that must not be nagged about.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
-import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime import doctor_stamp
+from tests.git_command_fake import GitCommandFake
 from tests.subprocess_budget import run_bounded_child
 
 CONFIGURED_TOML = """\
@@ -74,67 +71,92 @@ def _write(project: Path, toml: str, *, agents: bool = True) -> None:
         (project / ".booley" / "AGENTS.md").write_text("# guide\n", encoding="utf-8")
 
 
-class TestOutstandingSteps:
-    def test_fresh_init_is_outstanding_on_everything(self, project):
-        _write(project, init_cmd.BOOLEY_TOML_SKELETON, agents=False)
+class SendOff(NamedTuple):
+    """What a finished run prints: the advice, the summary, the exit code and the detail."""
 
-        steps = init_cmd._outstanding_setup_steps(project)
+    advice: str
+    summary: str
+    code: int
+    detail: str | None
 
-        assert len(steps) == len(init_cmd._SETUP_STEP_LINES)
-        assert any("project config" in s for s in steps) and any("synth" in s for s in steps)
 
-    def test_fully_configured_project_has_nothing_outstanding(self, project):
-        _write(project, CONFIGURED_TOML)
+SendOffRunner = Callable[..., SendOff]
 
-        assert init_cmd._outstanding_setup_steps(project) == []
 
-    def test_half_finished_project_lists_only_the_gaps(self, project):
-        """The case a fresh-vs-configured boolean would get wrong either way."""
-        _write(project, '[project]\nname = "x"\n\n[flows.lint]\n')
+@pytest.fixture
+def send_off(project: Path, capsys: pytest.CaptureFixture[str]) -> SendOffRunner:
+    """Run the closing steps of `booley init` over a context holding the given records."""
 
-        steps = init_cmd._outstanding_setup_steps(project)
+    def run(
+        *records: tuple[str, str, str], check_only: bool = False, advise: bool = True
+    ) -> SendOff:
+        ctx = InitContext(project_root=project, check_only=check_only)
+        for record in records:
+            ctx.record(*record)
+        capsys.readouterr()
+        # private: `run_init` reaches the closing steps only after host preparation (auth,
+        # PDK cache, image reconciliation) and Sandbox Issuance, which need Docker; driving
+        # each case through it takes the dozen stubs of test_init_rerun.py::repo per case.
+        if advise:
+            init_cmd._step_advisories(ctx)  # private: see above
+        advice = capsys.readouterr().out
+        code = init_cmd._print_summary(ctx)  # private: the closing step named above
+        detail = next((r.detail for r in ctx.results if r.name == "advisories"), None)
+        return SendOff(advice, capsys.readouterr().out, code, detail)
 
-        assert all("lint" not in s and "project config" not in s for s in steps), steps
-        assert len(steps) == len(init_cmd.SETUP_WIRED_FLOWS) - 1, steps
+    return run
 
-    def test_unwired_fpga_impl_is_outstanding(self, project):
-        """The F-4 report case: everything else configured, fpga_impl silent."""
-        _write(project, CONFIGURED_TOML.replace("[flows.fpga]\nenabled = false\n", ""))
 
-        steps = init_cmd._outstanding_setup_steps(project)
+_ALL_STEPS = [
+    *(f"Step 2 ({name})" for name in ("project config", "sim", "lint", "synth", "fpga")),
+    "Step 3 (AGENTS.md)",
+]
+_NO_FPGA = CONFIGURED_TOML.replace("[flows.fpga]\nenabled = false\n", "")
+_OUTSTANDING = {
+    "fresh": (init_cmd.BOOLEY_TOML_SKELETON, False, _ALL_STEPS),
+    "configured": (CONFIGURED_TOML, True, []),
+    "half-finished": (
+        '[project]\nname = "x"\n\n[flows.lint]\n',
+        True,
+        ["Step 2 (sim)", "Step 2 (synth)", "Step 2 (fpga)"],
+    ),
+    "unwired-fpga": (_NO_FPGA, True, ["Step 2 (fpga)"]),
+    "no-agents-md": (CONFIGURED_TOML, False, ["Step 3 (AGENTS.md)"]),
+    "disabled-flow": (
+        CONFIGURED_TOML.replace("[flows.lint]\n", "[flows.lint]\nenabled = false\n"),
+        True,
+        [],
+    ),
+    "blank-name": (
+        CONFIGURED_TOML.replace('name = "demo_cpu"', 'name = "   "'),
+        True,
+        ["Step 2 (project config)"],
+    ),
+    "unreadable": ("[project\nname = broken", False, _ALL_STEPS),
+}
 
-        assert len(steps) == 1 and "fpga" in steps[0], steps
 
-    def test_missing_agents_md_is_outstanding(self, project):
-        _write(project, CONFIGURED_TOML, agents=False)
+@pytest.mark.parametrize("case", _OUTSTANDING)
+def test_send_off_lists_only_outstanding_setup_steps(
+    project: Path, send_off: SendOffRunner, case: str
+) -> None:
+    """A half-finished project lists only its gaps (F-4: fpga_impl silent is one).
 
-        steps = init_cmd._outstanding_setup_steps(project)
+    `enabled = false` is a deliberate choice (ADR 0039), and an unparsable config is
+    never reported as ready.
+    """
+    toml, agents, outstanding = _OUTSTANDING[case]
+    _write(project, toml, agents=agents)
 
-        assert len(steps) == 1 and "Step 3" in steps[0]
+    off = send_off()
 
-    def test_explicit_enabled_false_is_a_choice_not_a_gap(self, project):
-        """`enabled = false` means the Flow is deliberately disabled (ADR
-        0039) — doctor skips it. Telling the user to go wire it would nag
-        them into undoing their own decision."""
-        _write(
-            project,
-            CONFIGURED_TOML.replace("[flows.lint]\n", "[flows.lint]\nenabled = false\n"),
-        )
-
-        assert init_cmd._outstanding_setup_steps(project) == []
-
-    def test_blank_project_name_does_not_count(self, project):
-        _write(project, CONFIGURED_TOML.replace('name = "demo_cpu"', 'name = "   "'))
-
-        steps = init_cmd._outstanding_setup_steps(project)
-
-        assert len(steps) == 1 and "project config" in steps[0]
-
-    def test_unreadable_toml_is_treated_as_unconfigured(self, project):
-        """Never claim a project is ready off a config we failed to parse."""
-        _write(project, "[project\nname = broken", agents=False)
-
-        assert len(init_cmd._outstanding_setup_steps(project)) == len(init_cmd._SETUP_STEP_LINES)
+    assert re.findall(r"\* (Step [23] \([^)]*\))", off.advice) == outstanding
+    if outstanding:
+        assert "Step 0, the plan phase" in off.advice
+        assert "Step 4 (doctor)" in off.advice
+        assert "plans setup with you first" in off.summary
+    else:
+        assert off.detail == "configured"
 
 
 PUBLISHED_ORIGIN = "https://github.com/boldaxolotl/booley-prj-picorv32.git"
@@ -163,327 +185,242 @@ def _publish(project: Path, origin: str, toml: str, *, fetched: bool = True) -> 
         _git(state_dir, "update-ref", "refs/remotes/origin/main", "HEAD")
 
 
-class TestAdvisorySendOff:
-    def test_published_probe_reports_git_execution_failure(self, project, monkeypatch, capsys):
-        _write(project, CONFIGURED_TOML)
-
-        def fail_git(*_args, **_kwargs):
-            raise subprocess.TimeoutExpired(["git", "config"], timeout=5)
-
-        monkeypatch.setattr(init_cmd.subprocess, "run", fail_git)
-
-        assert init_cmd._is_published_project(project) is False
-
-        out = capsys.readouterr().out
-        assert "could not inspect published Project state" in out
-        assert "timed out" in out
-
-    @pytest.mark.parametrize(
-        "origin",
-        [
-            "https://github.com/boldaxolotl/booley-prj-picorv32.git",
-            "git@github.com:boldaxolotl/booley-prj-caliptra",
-            "ssh://git@github.com/boldaxolotl/booley-prj-future-ip.git",
-        ],
+def test_published_probe_reports_git_execution_failure(
+    project: Path, monkeypatch: pytest.MonkeyPatch, send_off: SendOffRunner
+) -> None:
+    _write(project, CONFIGURED_TOML)
+    GitCommandFake.install(monkeypatch).crash(
+        "remote.origin.url", error=subprocess.TimeoutExpired(["git", "config"], timeout=5)
     )
-    def test_published_project_gets_runtime_steps_instead_of_setup_skill(
-        self, project, capsys, origin
+
+    off = send_off()
+
+    assert off.detail == "configured"
+    assert "could not inspect published Project state" in off.advice
+    assert "timed out" in off.advice
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/boldaxolotl/booley-prj-picorv32.git",
+        "git@github.com:boldaxolotl/booley-prj-caliptra",
+        "ssh://git@github.com/boldaxolotl/booley-prj-future-ip.git",
+    ],
+)
+def test_published_project_gets_runtime_steps_instead_of_setup_skill(
+    project: Path, send_off: SendOffRunner, origin: str
+) -> None:
+    """Any maintainer-published Project qualifies, not one hardcoded repository.
+
+    The published toml leaves FPGA unconfigured, which the per-step probe would
+    otherwise report as an outstanding booley-setup step.
+    """
+    _publish(project, origin, _NO_FPGA)
+
+    off = send_off()
+
+    out = off.advice + off.summary
+    assert off.code == 0
+    for fragment in (
+        "preconfigured demo_cpu Project",
+        "the booley-setup skill does not apply",
+        "this preconfigured Project is ready",
+        "open the proj folder",
+        "popup notification",
+        "F1",
+        "Ctrl+Shift+P",
+        '"Dev Containers: Reopen in Container"',
     ):
-        """Any maintainer-published Project qualifies, not one hardcoded repository.
+        assert fragment in out
+    assert "Run the booley-setup skill" not in out
+    assert "Step 2 (fpga)" not in out
+    assert off.detail == "published"
+    # The post-setup hook is named only when the Project ships one.
+    assert "hooks/post-setup.sh" not in out
+    hook = project / ".booley" / "hooks" / "post-setup.sh"
+    hook.parent.mkdir()
+    hook.write_bytes(b"#!/bin/sh\n")
+    assert "bash .booley/hooks/post-setup.sh" in send_off().advice
 
-        The published toml leaves FPGA unconfigured, which the per-step probe
-        would otherwise report as an outstanding booley-setup step.
-        """
-        _publish(project, origin, CONFIGURED_TOML.replace("[flows.fpga]\nenabled = false\n", ""))
-        ctx = InitContext(project_root=project)
 
-        init_cmd._step_advisories(ctx)
-        assert init_cmd._print_summary(ctx) == 0
+#: Files a change writes into a pristine published checkout (None deletes AGENTS.md).
+_CHANGES = {
+    # Init appends to .gitignore and writes untracked state on every run.
+    "init-owned": {".gitignore": "goals/*/\n", ".managed/project-git-hooks.pyz": ""},
+    # Init records the agent choice when the published file leaves it open.
+    "agent-choice": {"booley.toml": CONFIGURED_TOML + '[agent]\ndefault="claude"\nauth="api"\n'},
+    # Reports and notes from ordinary use are not setup changes.
+    "setup-notes": {"SETUP-NOTES.md": "x\n"},
+    "edit-toml": {"booley.toml": CONFIGURED_TOML + "\n[flows.formal]\n"},
+    "break-toml": {"booley.toml": "[project\n"},
+    "add-core": {"cores/extra.core": "CAPI=2:\n"},
+    "delete-agents": None,
+    "edit-script": {"scripts/build.sh": "exit 1\n"},  # any tracked published file counts
+    "commit": {"notes.md": "mine\n"},
+}
+_KEEPS_PUBLISHED = ["init-owned", "agent-choice", "setup-notes"]
+_OTHER_ORIGINS = [
+    "https://github.com/someone-else/booley-prj-picorv32.git",
+    "https://github.com/boldaxolotl/booley.git",
+    "https://github.com/boldaxolotl/booley-prj-.git",
+    "https://example.com/github.com/boldaxolotl/booley-prj-picorv32.git",
+]
 
-        out = capsys.readouterr().out
-        assert "preconfigured demo_cpu Project" in out
-        assert "the booley-setup skill does not apply" in out
-        assert "this preconfigured Project is ready" in out
-        assert "open the proj folder" in out
-        assert "popup notification" in out
-        assert "F1" in out
-        assert "Ctrl+Shift+P" in out
-        assert '"Dev Containers: Reopen in Container"' in out
-        assert "Run the booley-setup skill" not in out
-        assert "Step 2 (fpga)" not in out
-        assert ctx.results[-1].detail == "published"
 
-    def test_post_setup_hook_is_named_only_when_the_project_ships_one(self, project, capsys):
-        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        ctx = InitContext(project_root=project)
+def _change(state_dir: Path, change: str) -> None:
+    files = _CHANGES[change]
+    if files is None:
+        (state_dir / "AGENTS.md").unlink()
+    for name, text in (files or {}).items():
+        (state_dir / name).parent.mkdir(parents=True, exist_ok=True)
+        (state_dir / name).write_text(text, encoding="utf-8")
+    if change == "commit":
+        _git(state_dir, "add", "notes.md")
+        _git(state_dir, "commit", "-q", "-m", "local work")
 
-        init_cmd._step_advisories(ctx)
-        assert "hooks/post-setup.sh" not in capsys.readouterr().out
 
-        hook = project / ".booley" / "hooks" / "post-setup.sh"
-        hook.parent.mkdir()
-        hook.write_text("#!/bin/sh\n", encoding="utf-8")
-        init_cmd._step_advisories(InitContext(project_root=project))
-        assert "bash .booley/hooks/post-setup.sh" in capsys.readouterr().out
+@pytest.mark.parametrize(
+    ("origin", "change", "fetched"),
+    [
+        *[pytest.param(o, None, True, id=f"origin-{n}") for n, o in enumerate(_OTHER_ORIGINS)],
+        *[pytest.param(PUBLISHED_ORIGIN, c, True, id=c) for c in _CHANGES],
+        # Without a remote-tracking ref nothing proves HEAD matches the origin.
+        pytest.param(PUBLISHED_ORIGIN, None, False, id="unfetched"),
+    ],
+)
+def test_only_an_unmodified_published_checkout_is_sent_to_its_runtime_steps(
+    project: Path,
+    send_off: SendOffRunner,
+    origin: str,
+    change: str | None,
+    fetched: bool,
+) -> None:
+    """A user who changed the published files owns them; the per-step probe decides."""
+    _publish(project, origin, CONFIGURED_TOML, fetched=fetched)
+    if change is not None:
+        _change(project / ".booley", change)
 
-    @pytest.mark.parametrize(
-        "origin",
-        [
-            "https://github.com/someone-else/booley-prj-picorv32.git",
-            "https://github.com/boldaxolotl/booley.git",
-            "https://github.com/boldaxolotl/booley-prj-.git",
-            "https://example.com/github.com/boldaxolotl/booley-prj-picorv32.git",
-        ],
-    )
-    def test_other_origins_are_not_published_projects(self, project, origin):
-        _publish(project, origin, CONFIGURED_TOML)
+    off = send_off()
 
-        assert init_cmd._is_published_project(project) is False
+    assert (off.detail == "published") is (change in _KEEPS_PUBLISHED)
+    assert "could not inspect" not in off.advice
 
-    def test_init_owned_changes_keep_the_checkout_published(self, project):
-        """Init appends to .gitignore and writes untracked state on every run;
-        a re-run must not flip the send-off because of init's own writes."""
-        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        state_dir = project / ".booley"
-        (state_dir / ".gitignore").write_text("goals/*/\n", encoding="utf-8")
-        (state_dir / ".managed").mkdir()
-        (state_dir / ".managed" / "project-git-hooks.pyz").write_bytes(b"")
 
-        assert init_cmd._is_published_project(project) is True
+@pytest.mark.parametrize("stamp", ["none", "clean", "unreadable"])
+def test_configured_project_send_off_routes_through_doctor(
+    project: Path, send_off: SendOffRunner, monkeypatch: pytest.MonkeyPatch, stamp: str
+) -> None:
+    """Without a clean doctor stamp, "ready" still routes through verification.
 
-    def test_recorded_agent_choice_keeps_the_checkout_published(self, project):
-        """Init records the provider/auth choice in booley.toml when the
-        published file leaves it open; that is init's write, not a user edit."""
-        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        toml = project / ".booley" / "booley.toml"
-        toml.write_text(
-            init_cmd._insert_agent_fields(
-                toml.read_text(encoding="utf-8"),
-                {"default": "claude", "auth": "subscription"},
-            ),
-            encoding="utf-8",
-        )
-        assert "[agent]" in toml.read_text(encoding="utf-8")
+    The stamp is advisory by contract: failing to read it never breaks init.
+    """
+    _write(project, CONFIGURED_TOML)
+    if stamp == "clean":
+        doctor_stamp.record_clean_run(project / ".booley", project, deep=False)
+    if stamp == "unreadable":
 
-        assert init_cmd._is_published_project(project) is True
-
-    @pytest.mark.parametrize(
-        "change", ["edit-toml", "break-toml", "add-core", "delete-agents", "edit-script", "commit"]
-    )
-    def test_locally_changed_project_is_no_longer_published(self, project, capsys, change):
-        """A user who changed the published files owns them; the per-step probe decides."""
-        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        state_dir = project / ".booley"
-        if change == "edit-toml":
-            with (state_dir / "booley.toml").open("a", encoding="utf-8") as stream:
-                stream.write("\n[flows.formal]\n")
-        elif change == "break-toml":
-            (state_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
-        elif change == "add-core":
-            (state_dir / "cores").mkdir()
-            (state_dir / "cores" / "extra.core").write_text("CAPI=2:\n", encoding="utf-8")
-        elif change == "delete-agents":
-            (state_dir / "AGENTS.md").unlink()
-        elif change == "edit-script":
-            # Any tracked published file counts, not only the config files.
-            (state_dir / "scripts" / "build.sh").write_text("exit 1\n", encoding="utf-8")
-        else:
-            (state_dir / "notes.md").write_text("mine\n", encoding="utf-8")
-            _git(state_dir, "add", "notes.md")
-            _git(state_dir, "commit", "-q", "-m", "local work")
-
-        assert init_cmd._is_published_project(project) is False
-        assert capsys.readouterr().out == ""
-
-    def test_untracked_files_outside_the_setup_keep_the_checkout_published(self, project):
-        """Reports and notes left by ordinary use are not setup changes."""
-        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        (project / ".booley" / "SETUP-NOTES.md").write_text("x\n", encoding="utf-8")
-
-        assert init_cmd._is_published_project(project) is True
-
-    def test_unfetched_origin_is_not_published(self, project):
-        """Without a remote-tracking ref nothing proves HEAD matches the origin."""
-        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML, fetched=False)
-
-        assert init_cmd._is_published_project(project) is False
-
-    def test_configured_project_is_not_told_to_finish_setup(self, project, capsys):
-        _write(project, CONFIGURED_TOML)
-        ctx = InitContext(project_root=project)
-
-        init_cmd._step_advisories(ctx)
-        out = capsys.readouterr().out
-
-        assert "already configured" in out
-        assert "booley-setup skill" not in out
-        assert "Step 4" not in out
-        assert ctx.results[-1].detail == "configured"
-
-    def test_configured_project_gets_the_ready_send_off(self, project, capsys):
-        _write(project, CONFIGURED_TOML)
-        ctx = InitContext(project_root=project)
-
-        init_cmd._step_advisories(ctx)
-        assert init_cmd._print_summary(ctx) == 0
-
-        out = capsys.readouterr().out
-        assert "this project is ready" in out
-        assert "plans setup with you first" not in out
-
-    def test_unconfigured_project_keeps_the_checklist(self, project, capsys):
-        _write(project, init_cmd.BOOLEY_TOML_SKELETON, agents=False)
-        ctx = InitContext(project_root=project)
-
-        init_cmd._step_advisories(ctx)
-        assert init_cmd._print_summary(ctx) == 0
-
-        out = capsys.readouterr().out
-        assert "booley-setup skill" in out
-        assert "Step 0, the plan phase" in out
-        assert "Step 4 (doctor)" in out
-        assert "plans setup with you first" in out
-
-    def test_configured_project_is_nagged_to_run_doctor(self, project, capsys):
-        """With no doctor stamp on record, "ready" must still route the user
-        through verification rather than assert an environment nobody checked."""
-        _write(project, CONFIGURED_TOML)
-
-        init_cmd._step_advisories(InitContext(project_root=project))
-
-        assert "booley doctor" in capsys.readouterr().out
-
-    def test_a_clean_doctor_stamp_replaces_the_nag(self, project, capsys, monkeypatch):
-        _write(project, CONFIGURED_TOML)
-        monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp_advisory", lambda *a, **k: None)
-
-        init_cmd._step_advisories(InitContext(project_root=project))
-
-        assert "you're good to go" in capsys.readouterr().out
-
-    def test_stamp_failure_never_breaks_init(self, project, capsys, monkeypatch):
-        """The stamp is advisory by contract."""
-        _write(project, CONFIGURED_TOML)
-
-        def _boom(*a, **k):
+        def gone(*_args: object, **_kwargs: object) -> None:
             raise OSError("Booley Directory is gone")
 
-        monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp_advisory", _boom)
-        ctx = InitContext(project_root=project)
+        # private: no public route makes the stamp read raise; init must survive it.
+        monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp_advisory", gone)
 
-        init_cmd._step_advisories(ctx)
+    off = send_off()
 
-        assert ctx.results[-1].detail == "configured"
-
-    def test_scaffold_send_off_is_unchanged(self, project, capsys):
-        """--scaffold keeps its own block: it writes a populated booley.toml but
-        no AGENTS.md, so it is not "already configured"."""
-        _write(project, CONFIGURED_TOML, agents=False)
-        ctx = InitContext(project_root=project)
-        ctx.record("scaffold", "ok", "")
-
-        init_cmd._step_advisories(ctx)
-
-        out = capsys.readouterr().out
-        assert "Scaffolded starter project" in out
-        assert ctx.results[-1].detail == "scaffold"
-        # Host first: the skill runs here, and it says when to Reopen in Container.
-        assert "`/booley-setup new` in your agent chat here on the host" in out
-        assert "tells you when to Reopen in Container" in out
-        assert out.index("/booley-setup new") < out.index("Reopen in Container")
-        assert 'choose "Reopen in Container"' not in out
-
-    def test_seed_run_does_not_claim_unfinished_skills(self, capsys):
-        """`--seed` prints no advisories, so there is nothing "above" to finish."""
-        ctx = InitContext(project_root=Path("/tmp/x"))
-        ctx.record("interactive", "ok", "app=claude")
-
-        assert init_cmd._print_summary(ctx) == 0
-
-        out = capsys.readouterr().out
-        assert "Booley base setup complete." in out
-        assert "plans setup with you first" not in out
+    assert "already configured" in off.advice
+    assert ("you're good to go" in off.advice) is (stamp != "none")
+    assert "booley doctor" in off.advice
+    assert "booley-setup skill" not in off.advice
+    assert "Step 4" not in off.advice
+    assert off.detail == "configured"
+    assert off.code == 0
+    assert "this project is ready" in off.summary
+    assert "plans setup with you first" not in off.summary
 
 
-class TestFailedStepSendOff:
-    """fpu F-2: init keeps going after a failed step (every step is idempotent),
-    but the send-off must stop claiming the project is ready for booley-setup."""
+def test_scaffold_send_off_is_unchanged(project: Path, send_off: SendOffRunner) -> None:
+    """--scaffold keeps its own block: it writes a populated booley.toml but
+    no AGENTS.md, so it is not "already configured"."""
+    _write(project, CONFIGURED_TOML, agents=False)
 
-    def test_failed_step_replaces_the_setup_send_off(self, project, capsys):
-        _write(project, init_cmd.BOOLEY_TOML_SKELETON, agents=False)
-        ctx = InitContext(project_root=project)
-        ctx.record("docker_image", "err", "wheel build failed")
+    off = send_off(("scaffold", "ok", ""))
 
-        init_cmd._step_advisories(ctx)
-        out = capsys.readouterr().out
-
-        assert "docker_image" in out  # names what failed
-        assert "NOT ready for the booley-setup skill" in out
-        assert "Re-run `booley init`" in out
-        # The normal "go run booley-setup" checklist must not appear.
-        assert "Before running the harness" not in out
-        assert "plans setup with you first" not in out
-        assert ctx.results[-1].detail == "incomplete"
-
-    def test_failed_step_outranks_the_configured_send_off(self, project, capsys):
-        """Even a fully-configured project must not be called ready."""
-        _write(project, CONFIGURED_TOML)
-        ctx = InitContext(project_root=project)
-        ctx.record("project_image", "err", "build failed")
-
-        init_cmd._step_advisories(ctx)
-        out = capsys.readouterr().out
-
-        assert "already configured" not in out
-        assert "project_image" in out
-
-    def test_summary_still_exits_two(self, project, capsys):
-        _write(project, CONFIGURED_TOML)
-        ctx = InitContext(project_root=project)
-        ctx.record("docker_image", "err", "wheel build failed")
-
-        init_cmd._step_advisories(ctx)
-        assert init_cmd._print_summary(ctx) == 2
-
-        out = capsys.readouterr().out
-        assert "Setup incomplete" in out
-        assert "this project is ready" not in out
-
-    def test_warnings_do_not_trigger_the_incomplete_send_off(self, project, capsys):
-        """Only `err` counts — a [!!] step is not a failure."""
-        _write(project, CONFIGURED_TOML)
-        ctx = InitContext(project_root=project)
-        ctx.record("line_endings", "warn", "CRLF working tree")
-
-        init_cmd._step_advisories(ctx)
-
-        assert "already configured" in capsys.readouterr().out
+    assert "Scaffolded starter project" in off.advice
+    assert off.detail == "scaffold"
+    # Host first: the skill runs here, and it says when to Reopen in Container.
+    assert "`/booley-setup new` in your agent chat here on the host" in off.advice
+    assert "tells you when to Reopen in Container" in off.advice
+    assert off.advice.index("/booley-setup new") < off.advice.index("Reopen in Container")
+    assert 'choose "Reopen in Container"' not in off.advice
 
 
-@pytest.mark.parametrize("configured", [False, True])
-def test_init_guidance_does_not_offer_retired_notifications(project, capsys, configured):
-    _write(project, CONFIGURED_TOML if configured else init_cmd.BOOLEY_TOML_SKELETON)
-    init_cmd._step_advisories(InitContext(project_root=project))
-    output = capsys.readouterr().out
-    assert "ntfy" not in output.lower()
-    assert "[notifications]" not in output
-    assert "[notifications]" not in init_cmd.BOOLEY_TOML_SKELETON
+@pytest.mark.parametrize(
+    ("records", "failed"),
+    [
+        pytest.param(
+            (("docker_image", "err", "wheel build failed"),), "docker_image", id="skeleton"
+        ),
+        pytest.param(
+            (("project_image", "err", "build failed"),), "project_image", id="configured"
+        ),
+        pytest.param((("line_endings", "warn", "CRLF working tree"),), None, id="warning"),
+    ],
+)
+def test_only_a_failed_step_replaces_the_ready_send_off(
+    project: Path,
+    send_off: SendOffRunner,
+    records: tuple[tuple[str, str, str], ...],
+    failed: str | None,
+) -> None:
+    """fpu F-2: after a failed step the send-off must stop claiming the project is ready.
+
+    Only `err` counts: a warning step is not a failure.
+    """
+    skeleton = failed == "docker_image"
+    _write(
+        project,
+        init_cmd.BOOLEY_TOML_SKELETON if skeleton else CONFIGURED_TOML,
+        agents=not skeleton,
+    )
+
+    off = send_off(*records)
+
+    if failed is None:
+        assert "already configured" in off.advice
+        assert off.code == 0
+        return
+    assert failed in off.advice  # names what failed
+    assert "NOT ready for the booley-setup skill" in off.advice
+    assert "Re-run `booley init`" in off.advice
+    # Even a fully configured project must not be called ready.
+    assert "already configured" not in off.advice
+    assert "Before running the harness" not in off.advice
+    assert off.detail == "incomplete"
+    assert off.code == 2
+    assert "Setup incomplete" in off.summary
+    assert "this project is ready" not in off.summary
+    assert "plans setup with you first" not in off.summary
 
 
-def test_summary_rows_use_the_shared_status_glyphs(project, monkeypatch, capsys):
+def test_summary_rows_use_the_shared_status_glyphs(
+    project: Path, monkeypatch: pytest.MonkeyPatch, send_off: SendOffRunner
+) -> None:
     from booley.harness import terminal_status as ts
     from booley.presentation import colors
 
+    # The "Summary" banner line is matched below, so it must be plain text.
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    ctx = InitContext(project_root=project)
-    ctx.record("a", "ok", "done")
-    ctx.record("b", "skip", "not applicable")
-    ctx.record("c", "warn", "drifted")
-    ctx.record("d", "err", "broke")
 
-    init_cmd._print_summary(ctx)
+    off = send_off(
+        ("a", "ok", "done"),
+        ("b", "skip", "not applicable"),
+        ("c", "warn", "drifted"),
+        ("d", "err", "broke"),
+        advise=False,
+    )
 
-    lines = capsys.readouterr().out.splitlines()
+    lines = off.summary.splitlines()
     assert "Summary" in lines
     start = lines.index("Summary") + 1
     assert lines[start : start + 4] == [
@@ -494,50 +431,53 @@ def test_summary_rows_use_the_shared_status_glyphs(project, monkeypatch, capsys)
     ]
 
 
-def test_check_only_final_verdict_reports_checked_state(project, capsys):
-    ctx = InitContext(project_root=project, check_only=True)
-    ctx.record("auth", "ok", "checked authentication")
-    assert init_cmd._print_summary(ctx) == 0
-    assert "Checked initialization: nothing pending" in capsys.readouterr().out.splitlines()[-1], (
-        "check verdict must state checked result"
-    )
+@pytest.mark.parametrize(
+    ("status", "check_only", "code", "verdict"),
+    [
+        ("ok", True, 0, "Checked initialization: nothing pending"),
+        ("warn", True, 1, "unique-unresolved-detail"),
+        ("err", True, 2, "unique-unresolved-detail"),
+        # `--seed` prints no advisories, so there is nothing "above" to finish.
+        ("ok", False, 0, "Booley base setup complete."),
+    ],
+)
+def test_final_verdict_states_the_result_of_the_run(
+    send_off: SendOffRunner, status: str, check_only: bool, code: int, verdict: str
+) -> None:
+    detail = "unique-unresolved-detail" if status != "ok" else "checked authentication"
+
+    off = send_off(("probe", status, detail), check_only=check_only, advise=False)
+
+    assert off.code == code
+    assert verdict in (off.summary.splitlines()[-1] if check_only else off.summary)
+    assert "plans setup with you first" not in off.summary
 
 
-def test_check_only_final_verdict_names_pending_and_failed_checks(project, capsys):
-    for status, code in (("warn", 1), ("err", 2)):
-        ctx = InitContext(project_root=project, check_only=True)
-        ctx.record("probe", status, "unique-unresolved-detail")
-        assert init_cmd._print_summary(ctx) == code
-        assert "unique-unresolved-detail" in capsys.readouterr().out.splitlines()[-1], (
-            "check verdict must name unresolved details"
-        )
-
-
-def test_configured_scaffold_stops_repeating_greenfield_setup(project, capsys, monkeypatch):
+def test_configured_scaffold_stops_repeating_greenfield_setup(
+    project: Path, send_off: SendOffRunner
+) -> None:
     for agents in (False, True):
-        for stamp in (
-            None,
-            type("Stamp", (), {"requires_action": False, "message": "Doctor evidence current"})(),
-        ):
+        for stamped in (False, True):
             _write(project, "# booley-init-origin: scaffold\n" + CONFIGURED_TOML, agents=agents)
-            monkeypatch.setattr(
-                init_cmd.doctor_stamp, "check_stamp_advisory", lambda *_a, current=stamp: current
-            )
-            init_cmd._step_advisories(InitContext(project_root=project))
-            output = capsys.readouterr().out
+            if stamped:
+                doctor_stamp.record_clean_run(project / ".booley", project, deep=False)
+            else:
+                doctor_stamp.stamp_path(project / ".booley").unlink(missing_ok=True)
+            output = send_off().advice
             assert "already configured" in output
             assert "/booley-setup new" not in output
             assert "AGENTS.md is\n" not in output
             assert "doctor" in output.lower()
             (project / ".booley/AGENTS.md").unlink(missing_ok=True)
     (project / "demo.core").unlink()
-    init_cmd._step_advisories(InitContext(project_root=project))
-    output = capsys.readouterr().out
+    output = send_off().advice
     assert "/booley-setup new" in output
     assert "every enabled Flow is wired" not in output
 
 
-def test_unrecorded_legacy_projects_keep_generic_advice(project, capsys):
+def test_unrecorded_legacy_projects_keep_generic_advice(
+    project: Path, send_off: SendOffRunner
+) -> None:
     headers = (
         "",
         "# booley.toml — generated by `booley init --scaffold` for the 'starter' starter IP.\n",
@@ -549,9 +489,7 @@ def test_unrecorded_legacy_projects_keep_generic_advice(project, capsys):
             body = CONFIGURED_TOML if configured else init_cmd.BOOLEY_TOML_SKELETON
             _write(project, header + body, agents=configured)
             before = (project / ".booley/booley.toml").read_bytes()
-            ctx = InitContext(project_root=project)
-            init_cmd._step_advisories(ctx)
-            output = capsys.readouterr().out
+            output = send_off().advice
             assert "/booley-setup new" not in output
             assert ("already configured" in output) == configured
             if configured:
@@ -562,22 +500,25 @@ def test_unrecorded_legacy_projects_keep_generic_advice(project, capsys):
             (project / ".booley/AGENTS.md").unlink(missing_ok=True)
 
 
-def test_plain_init_without_rtl_suggests_new_ip_setup(project, capsys):
+def test_plain_init_without_rtl_suggests_new_ip_setup(
+    project: Path, send_off: SendOffRunner
+) -> None:
     """No RTL or `.core`: a new IP starts with `/booley-setup new` on the host."""
     (project / ".booley" / "booley.toml").write_text(
         init_cmd.BOOLEY_TOML_SKELETON, encoding="utf-8"
     )
-    ctx = InitContext(project_root=project)
 
-    init_cmd._step_advisories(ctx)
-    assert init_cmd._print_summary(ctx) == 0
+    off = send_off()
 
-    out = capsys.readouterr().out
-    assert next(r for r in ctx.results if r.name == "advisories").detail == "new-ip"
-    assert "No RTL or `.core` files found" in out
-    assert "run `/booley-setup new` in your" in out
-    assert "here on the host" in out
-    assert "New IP: run `/booley-setup new`" in out
-    # The port checklist still follows, unchanged.
-    assert "Step 0, the plan phase" in out
+    out = off.advice + off.summary
+    assert off.code == 0
+    assert off.detail == "new-ip"
+    for fragment in (
+        "No RTL or `.core` files found",
+        "run `/booley-setup new` in your",
+        "here on the host",
+        "New IP: run `/booley-setup new`",
+        "Step 0, the plan phase",  # the port checklist still follows, unchanged
+    ):
+        assert fragment in out
     assert 'choose "Reopen in Container"' not in out
