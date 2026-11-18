@@ -14,6 +14,7 @@ from time import perf_counter
 import pytest
 import yaml
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import scaled
 
 SCANNER = Path(__file__).parents[2] / ".github/scripts/confidential_content_guard.py"
 SAFE_IDENT = "Safe User <safe@example.test>"
@@ -127,6 +128,9 @@ def _sealed_fixture(repo: Path, config: str) -> dict[str, str]:
     )
     assert result.returncode == 0, result.stderr
     return env
+
+
+_PROMPT_SCAN_S = scaled(3.0)
 
 
 def _scan(
@@ -947,7 +951,7 @@ def test_large_nonmatching_pr_text_scans_promptly(tmp_path: Path, prefix: str) -
     elapsed = perf_counter() - start
 
     assert result.returncode == 0, result.stderr
-    assert elapsed < 3.0, f"nonmatching scan took {elapsed:.2f} seconds"
+    assert elapsed < _PROMPT_SCAN_S, f"nonmatching scan took {elapsed:.2f} seconds"
 
 
 @pytest.mark.parametrize("text", ["f\u0130le", "f\u0131le", "\u017fecret", "\u212aey"])

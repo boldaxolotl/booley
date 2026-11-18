@@ -101,7 +101,7 @@ from booley.config import settings, project_config
 from booley.config import eda
 assert project_config._CONFIG_CACHE is None
 """
-    result = run_bounded_child([sys.executable, "-c", script, str(source)], timeout=20)
+    result = run_bounded_child([sys.executable, "-c", script, str(source)])
     assert result.returncode == 0, result.stderr
 
 

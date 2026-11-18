@@ -9,6 +9,7 @@ import pytest
 from booley.feedback import materialize, render
 from booley.feedback.findings import Finding, append, read_log
 from booley.feedback.render import Environment
+from tests.time_budget import scaled
 
 
 def _project(tmp_path: Path) -> Path:
@@ -143,7 +144,7 @@ def test_materialization_timeout_does_not_write_snapshots_or_log(tmp_path, monke
     append(Finding(title="attached", attachments=[str(source)]), directory)
     path = findings.log_path(directory)
     before = path.read_bytes()
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
     with (
         holding_findings_lock(directory),
         pytest.raises(findings.FindingsLockTimeoutError, match=r"materialize.*findings.lock"),

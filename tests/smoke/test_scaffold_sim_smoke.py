@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from tests.bwave.native_binary import require_exact_binary
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.dev_support.test_profiles import native_test_binary, native_test_problem
 from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
@@ -54,7 +55,7 @@ def _write_project(root: Path, *, stealth: bool = False) -> None:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-    run_bounded_child(["git", "init", "-q"], cwd=root, timeout=10, check=True)
+    run_bounded_child(["git", "init", "-q"], cwd=root, check=True)
     if stealth:
         # The layout `booley init` leaves behind: the Booley Directory is hidden
         # from the host repository and FuseSoC skips worktree copies.
@@ -72,7 +73,7 @@ def _write_project(root: Path, *, stealth: bool = False) -> None:
             "scaffold",
         ],
     ):
-        run_bounded_child(["git", *args], cwd=root, timeout=10, check=True)
+        run_bounded_child(["git", *args], cwd=root, check=True)
 
 
 def _assert_coverage(reports: Path, detail: dict) -> None:
@@ -114,7 +115,7 @@ def test_real_scaffold_simulation_modes(
             work_dir=tmp_path,
             coverage=coverage,
             trace=trace,
-            timeout_ms=60_000,
+            timeout_ms=2 * hang_guard_s() * 1000,
             report_dir=reports,
         )
     )
@@ -138,7 +139,6 @@ def _assert_trace(tmp_path, reports, scaffold_native_binary):
     for store in stores:
         query = run_bounded_child(
             [str(scaffold_native_binary), "list", str(store), "--format", "json"],
-            timeout=15,
             check=True,
         )
         assert json.loads(query.stdout)["data"]["signal_count"] > 0
@@ -149,9 +149,7 @@ def test_real_stealth_scaffold_simulation(tmp_path, monkeypatch, scaffold_native
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     _write_project(tmp_path, stealth=True)
-    tracked = run_bounded_child(
-        ["git", "ls-files"], cwd=tmp_path, timeout=10, check=True
-    ).stdout.split()
+    tracked = run_bounded_child(["git", "ls-files"], cwd=tmp_path, check=True).stdout.split()
     assert not [path for path in tracked if path.endswith(".core")]
     reports = tmp_path / "reports"
     result = SimulateFlow().execute(
@@ -159,7 +157,7 @@ def test_real_stealth_scaffold_simulation(tmp_path, monkeypatch, scaffold_native
             target="sim_wave_counter",
             work_dir=tmp_path,
             trace=True,
-            timeout_ms=60_000,
+            timeout_ms=2 * hang_guard_s() * 1000,
             report_dir=reports,
         )
     )

@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import math
 import socket
 
 import pytest
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.eda.provisioning.licensing.flexnet_relay import (
     ENV_CONNECT_TIMEOUT,
@@ -23,6 +25,12 @@ from booley.eda.provisioning.licensing.flexnet_relay import (
     RelayConfigError,
     healthcheck,
 )
+
+# Short real windows that must not expire under load grow with the time scale.
+_IDLE_S = scaled(1.0)
+_CONNECT_S = scaled(5.0)
+_RESET_IDLE_S = scaled(0.15)
+_WRITE_GAP_S = 0.03
 
 
 def _env(**overrides: str) -> dict[str, str]:
@@ -105,9 +113,9 @@ async def _half_close_echo(reader: asyncio.StreamReader, writer: asyncio.StreamW
 def _test_config(
     upstream_ports: tuple[int, int],
     *,
-    idle_timeout: float = 1.0,
+    idle_timeout: float = _IDLE_S,
     maximum: int = 4,
-    connect_timeout: float = 5.0,
+    connect_timeout: float = _CONNECT_S,
 ) -> RelayConfig:
     return RelayConfig(
         ipaddress.IPv4Address("127.0.0.1"),
@@ -182,12 +190,12 @@ async def test_idle_connection_is_closed_with_metadata_only_reason(caplog) -> No
 
     upstream = await _start_server(hanging)
     port = upstream.sockets[0].getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port), idle_timeout=0.05))
+    relay = FlexNetRelay(_test_config((port, port), idle_timeout=scaled(0.05)))
     caplog.set_level(logging.WARNING)
     await relay.start()
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
-        assert await asyncio.wait_for(reader.read(), timeout=1) == b""
+        assert await asyncio.wait_for(reader.read(), timeout=hang_guard_s()) == b""
         writer.close()
         await writer.wait_closed()
     finally:
@@ -200,24 +208,30 @@ async def test_idle_connection_is_closed_with_metadata_only_reason(caplog) -> No
 
 @pytest.mark.asyncio
 async def test_activity_in_either_direction_resets_connection_idle_timeout() -> None:
+    writes = math.ceil(2 * _RESET_IDLE_S / _WRITE_GAP_S)
+
     async def streaming(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Streaming lasts twice the idle window, so a relay that never resets it fails.
         assert await reader.readexactly(1) == b"?"
-        for _ in range(10):
+        for _ in range(writes):
             writer.write(b"x")
             await writer.drain()
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(_WRITE_GAP_S)
         writer.close()
         await writer.wait_closed()
 
     upstream = await _start_server(streaming)
     port = upstream.sockets[0].getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port), idle_timeout=0.15))
+    relay = FlexNetRelay(_test_config((port, port), idle_timeout=_RESET_IDLE_S))
     await relay.start()
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
         writer.write(b"?")
         await writer.drain()
-        assert await asyncio.wait_for(reader.readexactly(10), timeout=2) == b"xxxxxxxxxx"
+        assert (
+            await asyncio.wait_for(reader.readexactly(writes), timeout=hang_guard_s())
+            == b"x" * writes
+        )
         writer.close()
         await writer.wait_closed()
     finally:
@@ -243,12 +257,12 @@ async def test_connection_limit_rejects_excess_without_upstream_attempt(caplog) 
     caplog.set_level(logging.WARNING)
     await relay.start()
     first_reader, first_writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
-    await asyncio.wait_for(accepted.wait(), timeout=1)
+    await asyncio.wait_for(accepted.wait(), timeout=hang_guard_s())
     try:
         rejected_reader, rejected_writer = await asyncio.open_connection(
             "127.0.0.1", relay.bound_ports[1]
         )
-        assert await asyncio.wait_for(rejected_reader.read(), timeout=1) == b""
+        assert await asyncio.wait_for(rejected_reader.read(), timeout=hang_guard_s()) == b""
         rejected_writer.close()
         await rejected_writer.wait_closed()
     finally:
@@ -282,7 +296,7 @@ async def test_unreachable_upstream_fails_closed_without_destination_in_logs(cap
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
             try:
-                assert await asyncio.wait_for(reader.read(), timeout=2) == b""
+                assert await asyncio.wait_for(reader.read(), timeout=hang_guard_s()) == b""
             finally:
                 writer.close()
                 await writer.wait_closed()

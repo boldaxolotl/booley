@@ -279,7 +279,6 @@ def test_cli_sorted_diagnostics_and_nonzero_exit_without_importing(tmp_path: Pat
         )
     result = run_bounded_child(
         [sys.executable, str(_SCRIPT), "--repo", str(repo)],
-        timeout=10,
         check=False,
     )
     assert result.returncode == 1

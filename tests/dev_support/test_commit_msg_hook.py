@@ -182,7 +182,7 @@ class TestBannedTermRejection:
             ["git", "init", "-q", str(project)],
             ["git", "-C", str(project), "config", key, value],
         ):
-            assert run_bounded_child(argv, timeout=10).returncode == 0
+            assert run_bounded_child(argv).returncode == 0
 
     def test_merge_commit_message_file_gets_merge_hint(self, tmp_path: Path):
         folder = tmp_path / "it's $HOME"
@@ -393,7 +393,7 @@ class TestMain:
             "[tool.booley]\nsource_checkout = true\n",
             encoding="utf-8",
         )
-        init = run_bounded_child(["git", "init", "-q", str(root)], timeout=10)
+        init = run_bounded_child(["git", "init", "-q", str(root)])
         assert init.returncode == 0, init.stderr
         support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
         for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
@@ -413,7 +413,6 @@ class TestMain:
         result = run_bounded_child(
             [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
             cwd=root,
-            timeout=10,
         )
 
         assert result.returncode == 0, result.stderr

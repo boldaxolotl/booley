@@ -109,9 +109,9 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path, newl
             "accepted",
         ],
     ]:
-        run_bounded_child([*git_command, *args], timeout=10, check=True, env=git_env)
+        run_bounded_child([*git_command, *args], check=True, env=git_env)
     commit = run_bounded_child(
-        [*git_command, "rev-parse", "HEAD"], timeout=10, check=True, env=git_env
+        [*git_command, "rev-parse", "HEAD"], check=True, env=git_env
     ).stdout.strip()
     entries = [
         {"path": name, "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest()}

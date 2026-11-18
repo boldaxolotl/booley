@@ -48,7 +48,6 @@ def _run(
         path.write_text(document if isinstance(document, str) else json.dumps(document))
     return run_bounded_child(
         [sys.executable, "-I", str(SCRIPT), "--evidence", str(path), "--image-digest", digest],
-        timeout=30,
         check=False,
     )
 

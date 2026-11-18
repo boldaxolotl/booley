@@ -16,6 +16,7 @@ from typing import NoReturn
 
 import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.core import file_lock
 from booley.core.host_probes import HostProbe, ProbeState, probe_docker
@@ -576,10 +577,10 @@ def test_waiting_bootstrap_reuses_the_published_environment(monkeypatch, tmp_pat
     with ThreadPoolExecutor() as pool, lock.open("a+", encoding="utf-8") as first:
         acquire(first)
         second = pool.submit(module.main, argv)
-        assert contended.wait(30)
+        assert contended.wait(hang_guard_s())
         _write_receipt(tmp_path / "fp")
         file_lock.release_file_lock(first)
-        assert second.result(60) == 0
+        assert second.result(2 * hang_guard_s()) == 0
 
 
 def _console_script_wheel(directory: Path) -> Path:
@@ -610,7 +611,7 @@ def _run_console_script(environment: Path) -> subprocess.CompletedProcess[str]:
     name = "demo-tool.exe" if sys.platform == "win32" else "demo-tool"
     launcher = str(readiness.venv_python(environment).with_name(name))
     try:
-        return run_bounded_child([launcher], timeout=60)
+        return run_bounded_child([launcher], timeout=2 * hang_guard_s())
     except OSError as error:
         return subprocess.CompletedProcess((launcher,), 127, "", str(error))
 

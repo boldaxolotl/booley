@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from tests.smoke.test_verilator_coverage_collector_smoke import _invoke, _write_core
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.verilator_coverage_execution import collect_target_coverage
@@ -75,7 +76,7 @@ def test_real_coverage_merges_two_variants_and_two_seeds_of_one_test(tmp_path: P
         selected_tests=("smoke",),
         artifact_root=tmp_path / "record",
         invoke=_invoke,
-        options=SimulationOptions(timeout_ms=30_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
         test_runs=runs,
     )
 

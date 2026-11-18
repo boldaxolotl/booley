@@ -19,6 +19,7 @@ import pytest
 import yaml
 from tests.flows.sim.prepared_group import run_prepared_group
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.compiler_cache import (
@@ -35,7 +36,7 @@ pytestmark = pytest.mark.skipif(
     shutil.which("verilator") is None or shutil.which("ccache") is None,
     reason="real smoke runs inside the pinned Booley Sandbox Image",
 )
-_TOOL_TIMEOUT_S = 300
+_TOOL_TIMEOUT_S = 10 * hang_guard_s()
 
 
 def _write_project(root: Path, revision: int) -> Path:
@@ -109,7 +110,7 @@ def _simulate(root: Path) -> str:
         result = run_bounded_child(
             command,
             cwd=cwd or root,
-            timeout=min(timeout + 120, _TOOL_TIMEOUT_S),
+            timeout=min(timeout + 4 * hang_guard_s(), _TOOL_TIMEOUT_S),
         )
         outputs.append(result.stdout + result.stderr)
         return SubprocessResult(
@@ -118,7 +119,9 @@ def _simulate(root: Path) -> str:
 
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
     result = run_prepared_group(
-        SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=30000)),
+        SimulationExecution(
+            invoke=invoke, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
+        ),
         handle,
         ("check",),
     )
@@ -180,7 +183,9 @@ def _cached_build(root: Path, revision: int, cache_dir: Path) -> str:
         timeout=_TOOL_TIMEOUT_S,
         check=True,
     )
-    return run_bounded_child([str(build_root / "sim")], cwd=root, timeout=60, check=True).stdout
+    return run_bounded_child(
+        [str(build_root / "sim")], cwd=root, timeout=2 * hang_guard_s(), check=True
+    ).stdout
 
 
 def test_concurrent_builds_share_cache_without_corruption(tmp_path):

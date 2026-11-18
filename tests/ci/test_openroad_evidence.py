@@ -132,7 +132,6 @@ def _run_staged_probe(
             "TMPDIR": str(scratch),
             "PROBE_FAILURE": failure,
         },
-        timeout=10,
         check=False,
     )
     assert not list(scratch.iterdir())
