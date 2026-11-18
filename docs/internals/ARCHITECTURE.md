@@ -233,11 +233,13 @@ CPU, but they fail by running out of memory.
 - **Running.** A running Job is never preempted. Its reservation shrinks as
   its phases finish and never grows, so it never waits partway through.
 - **Out of memory.** Booley ranks processes for the kernel's OOM killer so
-  the newest Job's EDA tools die first and the Developer Agent and the MCP
-  server last. A Job killed at the Sandbox's limit runs once more, alone, with
-  its estimate raised; a second kill fails it. A kill while the Sandbox stayed
-  below its limit is the host's: the Job fails with that cause and is not
-  retried.
+  the newest Job's EDA tools rank first and the Developer Agent and the MCP
+  server last; the kernel also weighs each process's memory, so the order
+  holds only within the bounds of
+  [ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md).
+  A Job killed at the Sandbox's limit runs once more, alone, with its estimate
+  raised; a second kill fails it. A kill while the Sandbox stayed below its
+  limit is the host's: the Job fails with that cause and is not retried.
 - **Parallel tests.** Each test of a Simulation Record is admitted on its
   own, so free memory decides how many tests run at once, never more than the
   cores.

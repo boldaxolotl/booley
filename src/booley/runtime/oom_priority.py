@@ -3,11 +3,14 @@
 The kernel kills the process with the highest ``oom_badness``: its memory plus
 ``oom_score_adj`` x limit / 1000, so in shares of the limit the score is
 ``1000 x share + oom_score_adj``. While a Job holds a Memory Reservation its
-processes get a value by admission order: the newest running Job's tools are
-killed first, every Job's processes before the Developer Agent's (which keep
-the container default, 0). The Job's coordinating process (the one holding the
+processes get a value by admission order: the newest running Job's tools rank
+first, every Job's processes above the Developer Agent's (which keep the
+container default, 0). The Job's coordinating process (the one holding the
 claim) ranks just below its own tools, so an OOM kill takes a tool and leaves
-the coordinator able to report the kill or requeue the Job.
+the coordinator able to report the kill or requeue the Job. Because the kernel
+adds each process's share, a higher-ranked process dies first only while the
+other's share exceeds its own by less than their level difference / 1000 of
+the limit; ADR 0087 (Out-of-memory guard) states the bounds.
 
 A child inherits its parent's value at fork, so a coordinator ranked below its
 tools cannot hand them a higher value by inheritance, and tools start from many
@@ -20,7 +23,7 @@ interval. Where ``/proc`` is unavailable nothing changes.
 A Simulation Record work item that holds a Memory Reservation of its own
 ranks as its own Job: it is newer than its Flow, and its registered processes
 (``work_item_processes``) and their descendants take the level its admission
-order gives, so an out-of-memory kill takes the newest item's simulator first.
+order gives, so the newest item's simulator ranks first.
 """
 
 from __future__ import annotations
@@ -40,13 +43,17 @@ logger = logging.getLogger(__name__)
 
 #: ``oom_score_adj`` of a Job's tool processes by the number of running memory
 #: Jobs admitted after it (index clamped to the last entry). The newest running
-#: Job is always 1000; the wide first gap lets it lose even against a much
-#: larger older Job, since it is the Job most likely to have tipped the container.
+#: Job is 1000, the maximum: the 500-point first gap keeps its tools ahead of
+#: an older process that uses less than half the OOM limit more, and each later
+#: 50-point step orders older Jobs' tools within 5 % of the limit. Every level
+#: must fit between the agent's 0 and 1000, so widening one gap narrows another
+#: (ADR 0087, Out-of-memory guard).
 TOOL_ADJ: tuple[int, ...] = (1000, 500, 450, 400, 350, 300)
 
 #: The coordinator ranks this far below its Job's tools: half the smallest step
 #: between levels, so it stays above the processes of an older Job that has a
-#: lower level (every older Job until the levels bottom out at five newer Jobs).
+#: lower level (every older Job until the levels bottom out at five newer Jobs),
+#: while the older Job's process uses less than 2.5 % of the limit more.
 COORDINATOR_GAP = 25
 
 #: How often the ranking is re-applied to the Job's process tree.
