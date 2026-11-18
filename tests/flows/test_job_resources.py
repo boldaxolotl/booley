@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import math
 import multiprocessing
@@ -26,6 +27,7 @@ from booley.flows.memory_admission import fixed_job_threads
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.synth.flow import AsicSynthesizeFlow
+from booley.flows.terminal_progress import TerminalProgress
 from booley.runtime import resource_history, runtime_context
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 from booley.runtime.supervised_execution import (
@@ -293,7 +295,7 @@ def test_synth_history_threads_equal_the_openroad_thread_count(tmp_path, monkeyp
 def test_unmeasurable_values_are_absent_not_zero(run, tmp_path, monkeypatch):
     monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: None)
     # Private seam: host readings; the test fixes what the kernel would report.
-    monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
+    monkeypatch.setattr(job_resources, "_children_rusage", lambda: None)
     monkeypatch.setattr(
         job_resources, "cgroup_memory_events", lambda: job_resources.MemoryEvents(None, None)
     )
@@ -306,6 +308,110 @@ def test_unmeasurable_values_are_absent_not_zero(run, tmp_path, monkeypatch):
         assert record[field] is None, field
     assert record["container_peak_delta_mb"] is None
     assert record["peak_tmp_mb"] == 0
+
+
+def _short_child_mib() -> int:
+    """A size that beats this process's own peak: a reaped child's peak counts its parent's."""
+    import resource  # POSIX only; the callers are Linux-only
+
+    return (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10) + 64
+
+
+def _short_child(mib: int) -> list[str]:
+    """A wrapper whose grandchild allocates and touches *mib* MiB and exits before it does."""
+    allocate = f'b = b"x" * ({mib} << 20)'
+    return _python(
+        f"import subprocess, sys; subprocess.run([sys.executable, '-c', {allocate!r}], check=True)"
+    )
+
+
+@linux_only
+@pytest.mark.parametrize(
+    ("sampled_extra_mib", "observed"),
+    [(None, False), (None, True), (256, False)],
+    ids=["short-child", "short-child-observed", "sampled-higher"],
+)
+def test_peak_folds_in_a_child_that_exited_between_samples(
+    flow, tmp_path, monkeypatch, sampled_extra_mib, observed
+):
+    child_mib = _short_child_mib()
+    sampled_mib = None if sampled_extra_mib is None else child_mib + sampled_extra_mib
+
+    def tree(pid, **_):
+        if sampled_mib is None:  # what a 0.25 s sampler sees of a child that exits between samples
+            return {}
+        return {pid: job_resources._Proc("python", sampled_mib << 20, 0, 0)}
+
+    # Private seam: the host /proc sample.
+    monkeypatch.setattr(job_resources, "process_tree", tree)
+    monkeypatch.setattr(job_resources, "tmpdir_in_memory", lambda _path: False)
+    monkeypatch.setattr(os, "sysconf", lambda _name: 100, raising=False)
+    progress = TerminalProgress("echo", "test", tmp_path, stream=io.StringIO())
+    with contextlib.ExitStack() as stack:
+        if observed:  # an installed progress sink makes the command reap through poll()
+            stack.enter_context(progress.installed())
+        stack.enter_context(job_resources.resource_phase("test", "short"))
+        assert _execute(flow, _short_child(child_mib)).returncode == 0
+
+    (record,) = _history(tmp_path)
+    for field in ("peak_rss_mb", "peak_memory_mb"):
+        if sampled_mib is None:
+            assert record[field] is not None and record[field] >= child_mib, field
+        else:
+            assert record[field] == float(sampled_mib), field
+
+
+@linux_only
+def test_concurrent_commands_keep_their_own_kernel_peaks(flow, tmp_path, monkeypatch):
+    monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: {})
+    monkeypatch.setattr(job_resources, "tmpdir_in_memory", lambda _path: False)
+    child_mib = _short_child_mib()
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    waiter = _python(
+        "import pathlib, time\n"
+        f"pathlib.Path({str(ready)!r}).write_text('go')\n"
+        f"end = time.monotonic() + {hang_guard_s()}\n"
+        f"while not pathlib.Path({str(release)!r}).exists() and time.monotonic() < end:\n"
+        "    time.sleep(0.02)\n"
+    )
+
+    def run_b() -> None:
+        with job_resources.resource_phase("test", "b"):
+            _execute(flow, waiter)
+
+    other = threading.Thread(target=run_b)
+    other.start()
+    try:
+        deadline = time.monotonic() + hang_guard_s()
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "the concurrent command never started"
+        with job_resources.resource_phase("test", "a"):
+            assert _execute(flow, _short_child(child_mib)).returncode == 0
+    finally:
+        release.write_text("go")
+        other.join(timeout=hang_guard_s())
+    assert not other.is_alive()
+
+    by_phase = {r["key"]["phase"]: r for r in _history(tmp_path)}
+    assert by_phase["a"]["peak_rss_mb"] >= child_mib
+    # B is reaped after A's child; a process-wide fold would hand B A's peak.
+    assert by_phase["b"]["peak_rss_mb"] is None
+
+
+@posix_only
+def test_a_child_reaped_by_someone_else_reports_no_kernel_peak():
+    child = job_resources.MeasuredPopen(_python("pass"))
+    os.waitpid(child.pid, 0)  # the reaper that wins the race
+
+    assert child.wait(timeout=hang_guard_s()) == 0
+    assert child.reaped_peak_bytes is None
+
+
+@linux_only
+def test_kernel_peak_is_reported_in_bytes_and_absent_when_zero():
+    assert job_resources._kernel_peak_bytes(0) is None
+    assert job_resources._kernel_peak_bytes(2048) == 2048 * 1024
 
 
 def test_swapped_job_records_peak_swap_and_its_next_estimate_includes_it(
