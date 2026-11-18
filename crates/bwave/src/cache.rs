@@ -2636,7 +2636,6 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // trigger in the requested range, not the first trigger in the store.
     trigger_ticks.sort_unstable();
     trigger_ticks.dedup();
-    // Sampled triggers are cycles; the others are ticks.
     let read = |transitions: &[(u64, String)], trigger: u64| {
         if sampled {
             grid.value(transitions, trigger)
@@ -4432,6 +4431,15 @@ impl SyncGrid {
         }
     }
 
+    /// Like `new`, but an unrepresentable cycle 1 edge is an error, not saturation.
+    fn checked(cache: &ColumnCache, cfg: &ExtractConfig, start: u64) -> Result<Self, String> {
+        let base = checked_cycle_base(cache.first_rise_tick, cache.clock_period_ticks, start)?;
+        Ok(Self {
+            base,
+            ..Self::new(cache, cfg, start)
+        })
+    }
+
     /// Edge tick of `cycle`; cycle 0's is the start tick. `None` past u64.
     pub(crate) fn edge(&self, cycle: u64) -> Option<u64> {
         if cycle == 0 {
@@ -4511,16 +4519,11 @@ pub fn resolve_time_token(
         return i64::try_from(effective_start)
             .map_err(|_| "cycle time is beyond signed tick range".to_string());
     }
-    let base = checked_cycle_base(
-        cache.first_rise_tick,
-        cache.clock_period_ticks,
-        effective_start,
-    )?;
+    let grid = SyncGrid::checked(cache, cfg, effective_start)?;
     match *token {
         TimeToken::Cycle(n) => {
-            let tick = (n as u64 - 1)
-                .checked_mul(cache.clock_period_ticks)
-                .and_then(|offset| base.checked_add(offset))
+            let tick = grid
+                .edge(n as u64)
                 .ok_or_else(|| "cycle time is beyond simulation tick range".to_string())?;
             i64::try_from(tick).map_err(|_| "cycle time is beyond signed tick range".to_string())
         }
@@ -4529,7 +4532,7 @@ pub fn resolve_time_token(
             if tick < 0 {
                 return Ok(0);
             }
-            i64::try_from(tick_to_cycle(tick as u64, base, cache.clock_period_ticks))
+            i64::try_from(tick_to_cycle(tick as u64, grid.base, grid.period))
                 .map_err(|_| "cycle number is beyond signed range".to_string())
         }
     }
