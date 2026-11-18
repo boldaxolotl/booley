@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -87,6 +88,7 @@ COCOTB_RESULTS_PREFIX = "[COCOTB_RESULTS] "
 # exception must not blow the [COCOTB_RESULTS] line (full text survives in
 # run.log next to result.json).
 _MAX_FAILURE_CHARS = 500
+_SKIP_LOG_MAX_LINES = 5_000
 
 RESULTS_PAYLOAD_VERSION: Final = 2
 """Version the encoder writes. Bump it when a reader must reject the new shape;
@@ -383,7 +385,7 @@ def _skip_log_entry(lines: Sequence[str], test: CocotbTest) -> tuple[str, str] |
     key = re.escape(f"{test.module}.{test.name}")
     pattern = re.compile(
         rf"^(?P<head>.*?cocotb\.regression\s+)skipping {key}"
-        r"(?:(?P<runtime>:) ?(?P<msg>.*)| \(\d+/\d+\))"
+        r"(?:(?P<runtime>:)(?: |$)(?P<msg>.*)| \(\d+/\d+\))"
     )
     for index, line in enumerate(lines):
         match = pattern.match(line)
@@ -399,6 +401,34 @@ def _skip_log_entry(lines: Sequence[str], test: CocotbTest) -> tuple[str, str] |
             parts.append(follower[len(indent) :])
         return "runtime", "\n".join(parts).strip()[:_MAX_FAILURE_CHARS]
     return None
+
+
+_SKIP_LOG_LINE: Final = re.compile(r"^(?P<head>.*?cocotb\.regression\s+)skipping ")
+
+
+class SkipLogCollector:
+    """Keeps cocotb's ``skipping`` log lines past the run output's tail cap.
+
+    The captured output keeps only its last lines, so a skip logged before a long
+    stretch of output would otherwise lose its message.
+    """
+
+    def __init__(self) -> None:
+        self._lines: deque[str] = deque(maxlen=_SKIP_LOG_MAX_LINES)
+        self._indent: str | None = None
+
+    def feed(self, line: str) -> None:
+        """Keep *line* when it starts a skip entry or continues the one before it."""
+        match = _SKIP_LOG_LINE.match(line)
+        if match is not None:
+            self._indent = " " * len(match.group("head"))
+        elif self._indent is None or not line.startswith(self._indent):
+            self._indent = None
+            return
+        self._lines.append(line)
+
+    def text(self) -> str:
+        return "".join(self._lines)
 
 
 def attach_skip_causes(results: CocotbResults, output: str) -> CocotbResults:
@@ -423,7 +453,7 @@ def attach_skip_causes(results: CocotbResults, output: str) -> CocotbResults:
 def _skip_detail(test: CocotbTest) -> str:
     """The inconclusive detail for a selected test cocotb reported as skipped."""
     if test.skip_cause == "decorator":
-        return "skipped by its decorator (skip=True or cocotb.skipif)"
+        return "skipped by its decorator (skip=True)"
     if test.skip_cause == "runtime":
         if test.skip_message:
             return f"skipped at runtime: {test.skip_message}"

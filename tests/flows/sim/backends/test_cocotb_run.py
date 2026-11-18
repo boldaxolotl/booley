@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import time
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
@@ -726,7 +727,7 @@ _RUNTIME_SKIPS = (
 _DECORATOR_SKIP = (
     "test_decorator_skip",
     "inconclusive",
-    "skipped by its decorator (skip=True or cocotb.skipif)",
+    "skipped by its decorator (skip=True)",
 )
 
 
@@ -767,6 +768,37 @@ def test_cocotb_skip_reasons_reach_adapter_result_and_results_json(
         json.loads((work / "cocotb_results.json").read_text(encoding="utf-8"))
     )
     assert tuple(cocotb_results.reconcile(selection, persisted)) == expected
+
+
+def test_a_skip_reason_survives_output_past_the_tail_cap(
+    tmp_path, fake_launch, monkeypatch
+) -> None:
+    """Issue #4848: a skip logged before 5,000 more lines keeps its message."""
+
+    def capped(launch):
+        lines, proc, termination = fake_launch(launch)
+        return deque(lines, maxlen=5_000), proc, termination  # the supervisor's tail cap
+
+    monkeypatch.setattr("booley.flows.sim.backends.cocotb.run_supervised", capped)
+    xml = (_SKIP_FIXTURES / "results-skip-filtered.xml").read_text(encoding="utf-8")
+    skip = (
+        "10.00ns INFO     cocotb.regression       skipping skip_cases.test_runtime_skip: early\n"
+    )
+    fake_launch.output = [skip, *["noise\n"] * 5_001]
+    fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+        xml, encoding="utf-8"
+    )
+    identity = _identity(tmp_path, ["test_runtime_skip"])
+
+    _run(
+        tmp_path,
+        tests=["test_runtime_skip"],
+        transport=identity,
+        cocotb_module="skip_cases",
+    )
+
+    (item,) = read_adapter_result(identity).test_results
+    assert item.detail == "skipped at runtime: early"
 
 
 @pytest.mark.parametrize("prefix", ["", "tests.counter."])

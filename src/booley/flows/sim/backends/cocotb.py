@@ -55,7 +55,7 @@ import subprocess
 import sys
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
@@ -76,6 +76,7 @@ from booley.flows.sim.backends.cocotb_results import (
     TIMEOUT_ACTIVE_DETAIL,
     VERDICT_PASS,
     CocotbResults,
+    SkipLogCollector,
     attach_skip_causes,
     compact_results,
     decode_results_payload,
@@ -603,6 +604,7 @@ class _CocotbRun:
     env: dict[str, str]
     command: list[str]
     current: CurrentRunTraces | None
+    skip_log: SkipLogCollector = field(default_factory=SkipLogCollector)
 
 
 def _persist_result_transport(
@@ -646,13 +648,17 @@ def _load_cocotb_results(
     output: str,
     timed_out: bool,
     tests: list[str],
+    skip_log: str = "",
 ) -> CocotbResults:
-    """Load current results and replace generic missing-file diagnostics."""
+    """Load current results and replace generic missing-file diagnostics.
+
+    *skip_log* is the skip lines kept past the output's tail cap; the tail follows it.
+    """
     results = _recover_partial_timeout_results(
         parse_results_xml(results_file), output, timed_out, tests
     )
     if results.state == STATE_OK:
-        return attach_skip_causes(results, output)
+        return attach_skip_causes(results, skip_log + output)
     detail = find_import_failure(output) or find_sim_time_stall(output)
     return replace(results, detail=detail) if detail else results
 
@@ -735,6 +741,7 @@ def _evaluate_verdict(
     result_verbosity: str = "compact",
     infrastructure_error: str = "",
     termination: RunTermination | None = None,
+    skip_log: str = "",
 ) -> tuple[str, bool, CocotbResults | None]:
     """Parse results.xml, print the verdict sentinels, persist result files.
 
@@ -751,7 +758,7 @@ def _evaluate_verdict(
         if timed_out
         else RunTermination()
     )
-    results = _load_cocotb_results(results_file, output, termination.aborted, tests)
+    results = _load_cocotb_results(results_file, output, termination.aborted, tests, skip_log)
     focused, assessment = _assess_verdict(
         results, output, returncode, termination, tests, infrastructure_error
     )
@@ -964,6 +971,13 @@ def _execute_cocotb_run(
     transport: AdapterTransportIdentity | None,
     runtime_inputs: tuple[str, ...],
 ):
+    publish = _partial_result_publisher(transport, run.tests, run.results_file)
+
+    def observe(line: str) -> None:
+        run.skip_log.feed(line)
+        if publish is not None:
+            publish(line)
+
     return run_supervised(
         SimulatorLaunch(
             label="cocotb",
@@ -975,7 +989,7 @@ def _execute_cocotb_run(
             max_rundir_bytes=max_rundir_bytes,
             runtime_inputs=runtime_inputs,
             sim_time_grace_s=sim_time_grace_s,
-            on_line=_partial_result_publisher(transport, run.tests, run.results_file),
+            on_line=observe,
         )
     )
 
@@ -997,7 +1011,9 @@ def _pending_trace_publisher(
     partial = partial_result_identity(transport)
 
     def publish(pending: AdapterTraceResult) -> None:
-        results = _load_cocotb_results(run.results_file, output, termination.aborted, run.tests)
+        results = _load_cocotb_results(
+            run.results_file, output, termination.aborted, run.tests, run.skip_log.text()
+        )
         ran_clean = returncode == 0 and not count_sva_errors(output)
         _publish_adapter_result(
             partial,
@@ -1048,6 +1064,7 @@ def _complete_cocotb_run(
         result_verbosity,
         trace_failure,
         termination=termination,
+        skip_log=run.skip_log.text(),
     )
     failure_kind = (
         termination.failure_kind

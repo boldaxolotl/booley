@@ -236,6 +236,29 @@ class TestAttachSkipCauses:
         (test,) = cr.attach_skip_causes(self._skipped("t"), log).tests
         assert (test.skip_cause, test.skip_message) == ("decorator", "")
 
+    def test_a_name_with_a_colon_is_not_taken_by_its_shorter_prefix(self):
+        log = (
+            "1.00ns INFO     cocotb.regression       skipping m.t:variant: other\n"
+            "2.00ns INFO     cocotb.regression       skipping m.t: own\n"
+        )
+        tests = cr.attach_skip_causes(self._skipped("t", "t:variant"), log).tests
+        assert [(t.name, t.skip_message) for t in tests] == [("t", "own"), ("t:variant", "other")]
+
+    def test_a_collector_keeps_skip_lines_and_their_continuation_only(self):
+        collector = cr.SkipLogCollector()
+        for line in (
+            "1.00ns INFO     cocotb.regression       running m.t (1/1)\n",
+            "1.00ns INFO     cocotb.regression       skipping m.t: first\n",
+            "                                        second\n",
+            "2.00ns INFO     user                    noise\n",
+            "                                        not a continuation\n",
+        ):
+            collector.feed(line)
+        assert collector.text() == (
+            "1.00ns INFO     cocotb.regression       skipping m.t: first\n"
+            "                                        second\n"
+        )
+
 
 class TestReconcile:
     def _ok(self) -> cr.CocotbResults:

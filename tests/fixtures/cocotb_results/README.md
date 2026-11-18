@@ -2,8 +2,9 @@
 
 `2.1.0/results.xml` is one complete producer-emitted document containing a
 passing test, an assertion failure, and an explicitly skipped test. It replaces
-the authored mixed-suite input in the result parser tests. Ordinary pytest runs
-read the XML and require neither Cocotb nor a simulator.
+the authored mixed-suite input in the result parser tests. The zero-match and
+skip samples below add an empty suite and the run logs that name skip reasons.
+Ordinary pytest runs read the XML and require neither Cocotb nor a simulator.
 
 ## Provenance
 
@@ -151,5 +152,5 @@ docker run --rm --network none --hostname cocotb-results \
 ```
 
 No substitutions were applied: the files are the emitted bytes. The suite
-timestamp, the `/capture/...` file property, and the wall-clock ratio column
-differ per capture, and no test reads them.
+timestamp, the `/capture/...` file property, and the log's REAL TIME and RATIO
+columns differ per capture.
