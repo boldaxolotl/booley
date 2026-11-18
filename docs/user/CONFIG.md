@@ -171,9 +171,9 @@ lint findings, is still `exit_zero`); for other commands they follow the exit
 code. Every entry keeps the exit code as `returncode`. Each Specialist run
 that calls its Agent CLI is measured too (the Agent CLI's processes, not
 Booley's own, and not their temporary files) and kept 20 per Specialist;
-Specialist runs do not change the figures of any Target. An entry with no run in the last 90 days is deleted the next time any Job
-records.
-Peak memory counts the Job's temporary files only when `TMPDIR` is on tmpfs;
+Specialist runs do not change the figures of any Target. An entry with no run
+in the last 90 days is deleted the next time any Job records. Peak memory
+counts the Job's temporary files only when `TMPDIR` is on tmpfs;
 runs recorded before that rule keep their earlier peak. `booley resources`
 prints the run count and the minimum, median, and maximum peak memory and
 wall-clock time for each, and the peak swap of an entry that swapped, with one
