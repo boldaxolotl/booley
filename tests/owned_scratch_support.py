@@ -7,15 +7,21 @@ simulated one. Every child is reaped before the helper returns.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
 import subprocess
 import sys
 import textwrap
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 # Creates a nested Codex home and a read-only Specialist workspace, prints both
 # paths, then SIGKILLs itself while the workspace is still open.
@@ -132,3 +138,34 @@ def make_repo(path: Path) -> Path:
     ):
         run_bounded_child(["git", *args], cwd=path, check=True)
     return path
+
+
+def run_together(*calls: Callable[[], Any]) -> list[Any]:
+    """Run each call on its own thread, released together; return results in order."""
+    start = threading.Barrier(len(calls))
+
+    def run(call: Callable[[], Any]) -> Any:
+        start.wait(timeout=hang_guard_s())
+        return call()
+
+    with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+        return list(pool.map(run, calls))
+
+
+def gate_marker_publishes(monkeypatch: Any, parties: int, deadline_s: float) -> None:
+    """Hold each owner-marker publication until *parties* publishers have arrived.
+
+    Orders the threads at the conflicting operation so a test cannot pass by the
+    scheduler running the calls one after another. A caller that never gets
+    company waits at most *deadline_s*, then proceeds.
+    """
+    barrier = threading.Barrier(parties)
+    real_replace = os.replace
+
+    def replace(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        if Path(dst).name == ".booley-owner.json":
+            with contextlib.suppress(threading.BrokenBarrierError):
+                barrier.wait(timeout=deadline_s)
+        real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", replace)
