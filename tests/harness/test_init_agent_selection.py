@@ -121,9 +121,9 @@ def test_nested_child_run_init_isolates_every_project_write(
     assert str(child.resolve()) in inventory.known_roots()
 
 
-def _stub_nested_init_services(tmp_path, monkeypatch):
+def _stub_nested_init_services(tmp_path, monkeypatch, image=_CURRENT):
     """Stand in for the Docker-backed services; return the Sandbox and Docker calls made."""
-    stub_host_images(monkeypatch, _CURRENT)
+    stub_host_images(monkeypatch, image)
     sandbox_calls = []
     # private: Sandbox Issuance needs Docker.
     monkeypatch.setattr(
@@ -140,6 +140,23 @@ def _stub_nested_init_services(tmp_path, monkeypatch):
         lambda *, read_only: False,
     )
     return sandbox_calls, docker_cli_absent(monkeypatch)
+
+
+def test_full_init_without_a_verified_image_probes_no_git_version(tmp_path, monkeypatch, capsys):
+    """A stale Sandbox Image has no verified ID: Sandbox Issuance gets none and Docker is not asked."""
+    stale = init_cmd.LifecycleResult(
+        "booley-sandbox-riscv", _SANDBOX_IMAGE, init_cmd.ImageLifecycleStatus.STALE
+    )
+    sandbox_calls, docker_calls = _stub_nested_init_services(tmp_path, monkeypatch, stale)
+    args = argparse.Namespace(
+        seed=False, provider="claude", auth="subscription", skip_credentials=True
+    )
+
+    init_cmd.run_init(args, tmp_path)
+
+    assert docker_calls == []
+    assert [call["runtime_image_id"] for call in sandbox_calls] == [None]
+    assert "trackability inspection incomplete" in capsys.readouterr().out
 
 
 def _initialize_nested_git_repositories(parent_booley_dir, child):
