@@ -1367,6 +1367,16 @@ def test_campaign_report_gives_the_typed_mutation_metrics(tmp_path: Path, monkey
         "mutants_detected": 3,
         "mutants_survived": 1,
     }
+    (survivor,) = [row for row in result.detail["classified"] if row["status"] == "not_detected"]
+    (mutant,) = [m for m in _candidates(tmp_path) if m.id == survivor["id"]]
+    original = " ".join(mutant.original_code.split())
+    mutated = " ".join(mutant.mutated_code.split())
+    assert values["lite"].counted_items == {
+        "mutants_survived": [
+            f"{mutant.id} {survivor['category']} {mutant.file}:{mutant.line}: "
+            f"{original!r} -> {mutated!r}"
+        ]
+    }
 
 
 def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, monkeypatch) -> None:

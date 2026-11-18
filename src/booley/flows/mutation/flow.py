@@ -1448,7 +1448,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                     "no Mutation Operator site in the scope files",
                     _no_site_hint(plan),
                 )
-                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
+                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
                 return outcome
             specs = [
                 _spec_of(index, mutant) for index, mutant in enumerate(selection.mutants, start=1)
@@ -1643,7 +1643,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         detail["equivalent_dropped"] = sweep.equivalent_dropped
         detail["invalid_dropped"] = sweep.invalid_dropped
-        detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
+        detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
         hint = (
             f"none of the Mutants of {', '.join(plan.scope_files)} changes what Target "
             f"'{plan.target}' builds; scope files whose modules '{plan.tb_top}' elaborates"
@@ -3068,7 +3068,16 @@ def _spec_of(index: int, mutant: Mutant) -> MutationSpec:
 
 def _summary_metrics(target: str, summary: MutationSummary) -> dict[str, dict[str, object]]:
     """The report's ``detail.metrics`` of a scored run: its valid Mutants, detected or not."""
-    return mutation_metrics_detail(target, summary.detected_count, summary.not_detected_count)
+    survivors = [_survivor_line(spec) for spec in summary.surviving_specs()]
+    return mutation_metrics_detail(target, summary.detected_count, survivors)
+
+
+def _survivor_line(spec: MutationSpec) -> str:
+    """One survived Mutant as ``ID category file:line: 'original' -> 'mutated'``."""
+    orig = " ".join(spec.original_code.split())
+    mut = " ".join(spec.mutated_code.split())
+    prefix = f"{spec.mutant_id} " if spec.mutant_id else ""
+    return f"{prefix}{spec.category} {spec.file}:{spec.line}: {orig!r} -> {mut!r}"
 
 
 def _mutation_detail(

@@ -238,7 +238,8 @@ the work is accepted:
 Failing rows come first, and the metric table follows. A simulation or
 coverage table with failing tests also lists up to 20 of them, each with the
 first line of its failure, and the path of the Flow's report with the full
-results.
+results. An unmet lint or mutation bound likewise lists the first lint findings
+or survived Mutants behind it.
 
 Tracked metrics that errored or were not evaluated are counted after the
 enforced total, not in it, as in

@@ -79,9 +79,10 @@ def test_failing_test_runs_keep_their_names_and_first_failure_line(tmp_path: Pat
 
     values = simulation_flow_metrics(outcome)
 
-    assert list(values.failing_tests) == ["a_verbose", *names[:19]]
-    assert values.failing_tests["t00"] == GIT_LINE
-    assert values.failing_tests["a_verbose"] == "x" * 200
+    listed = values.counted_items["tests_failed"]
+    assert [line.split(":")[0] for line in listed] == ["a_verbose", *names[:19]]
+    assert listed[1] == f"t00: {GIT_LINE}"
+    assert listed[0] == f"a_verbose: {'x' * 200}"
     assert values.plain == {"tests_failed": 25, "tests_total": 26}
     assert values.per_test == {}
     stored = {"records": {"sim_0": {"metrics": metrics_document(lambda: values)}}}
@@ -282,7 +283,7 @@ def test_coverage_run_with_timed_out_test_keeps_simulation_metrics(
 
     # Collection fails after a timeout: no coverage value, but the failing test is a value.
     assert values.plain == {"tests_failed": 1, "tests_total": 2}
-    assert list(values.failing_tests) == ["wrap@1"]
+    assert values.counted_items == {"tests_failed": ["wrap@1: coverage simulation timeout"]}
 
 
 def test_boolean_cycle_count_gives_no_value(tmp_path: Path) -> None:

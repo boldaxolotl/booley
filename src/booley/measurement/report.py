@@ -13,7 +13,8 @@ on the rules entry's metric); the 20-line cap counts file and submodule lines to
 while protected and constraint edits get their own uncapped lines; red and amber are
 words in Markdown, never colour (a rules change names its class, "loosened" and so on,
 in its text); integers print whole and floats with ``:.12g`` (Δ signed) so float noise
-never reaches the report; in Markdown, specials in user text are backslash-escaped.
+never reaches the report; in Markdown, specials in user text are backslash-escaped. An unmet
+lint or mutation bound lists the first findings or survived Mutants behind it after the failing tests.
 """
 
 from __future__ import annotations
@@ -380,15 +381,52 @@ def _failing_tests(document: Mapping[str, Any], names: _Names) -> _Section:
         )
         label = names.label(table["identity"], table["flow"])
         blocks.append(_Text(f"{label}: {failed} failed of {total} tests", "fail"))
-        listed = values.get("failing_tests", {})  # absent in a run stored before it was kept
-        if listed:
-            lines = [f"{name}: {line}" if line else name for name, line in listed.items()]
-            more = values["plain"]["tests_failed"] - len(listed)
-            blocks.append(
-                _Code("\n".join([*lines, *([f"... and {more} more"] if more > 0 else [])]))
-            )
-            blocks.extend(_flow_report_lines(document, table, label))
+        listed = values.get("counted_items", {}).get("tests_failed", [])  # absent in older runs
+        blocks.extend(_listed(document, table, label, listed, values["plain"]["tests_failed"]))
     return ("Failing tests", blocks)
+
+
+def _listed(
+    document: Mapping[str, Any], table: Mapping[str, Any], label: str, lines: list[str], count: int
+) -> list[_Block]:
+    """The *lines* behind *count*, ``... and N more`` when they are fewer, and the Flow's report."""
+    if not lines:
+        return []
+    more = count - len(lines)
+    code = _Code("\n".join([*lines, *([f"... and {more} more"] if more > 0 else [])]))
+    return [code, *_flow_report_lines(document, table, label)]
+
+
+# Per Flow, the bound metric whose unmet result lists items: (the metric whose items are
+# listed, the noun counted). A mutation score below its bound comes from the survived Mutants.
+_UNMET_ITEMS: dict[str, dict[str, tuple[str, str]]] = {
+    "lint": {"errors": ("errors", "error"), "warnings": ("warnings", "warning")},
+    "mutation": {
+        "mutants_survived": ("mutants_survived", "survived Mutant"),
+        "mutation_score": ("mutants_survived", "survived Mutant"),
+    },
+}
+
+
+def _unmet_items(document: Mapping[str, Any], names: _Names, flow: str, title: str) -> _Section:
+    """What an unmet *flow* bound counts: the stored items of each such table, then its report."""
+    blocks: list[_Block] = []
+    for table in document["tables"]:
+        if table["flow"] != flow:
+            continue
+        values = table["values"] or {"plain": {}}
+        label = names.label(table["identity"], flow)
+        unmet = (
+            _UNMET_ITEMS[flow].get(names.entry[(table["identity"], flow, result["key"])]["metric"])
+            for result in table["results"]
+            if result["verdict"] == "unmet"
+        )
+        for metric, noun in dict.fromkeys(item for item in unmet if item):
+            lines = values.get("counted_items", {}).get(metric, [])  # absent in older runs
+            count = values["plain"].get(metric, 0)
+            blocks.extend([_Text(f"{label}: {_count(count, noun)}", "fail")] if lines else [])
+            blocks.extend(_listed(document, table, label, lines, count))
+    return (title, blocks)
 
 
 def _flow_report_lines(
@@ -435,6 +473,8 @@ def _sections(document: Mapping[str, Any]) -> list[_Section]:
         ("Targets", targets),
         _changed(view),
         _failing_tests(document, names),
+        _unmet_items(document, names, "lint", "Lint findings"),
+        _unmet_items(document, names, "mutation", "Survived Mutants"),
         _footer(document, names),
     ]
     return [section for section in sections if section[1]]
