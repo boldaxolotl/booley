@@ -52,11 +52,12 @@ read-only, and delegating it would loosen the hardening.
   `memory`, capped at the swap the Docker host has (read from the host, or the
   Docker Desktop VM on Windows). Docker's default (swap equal to memory) never
   applies. The OOM kill, and so the single requeue, happens at memory plus
-  swap. With a swap allowance (read from the cgroup, capped at the host's swap)
-  the budget holds back no fixed headroom and memory estimates use a margin of
-  1.10, because swap absorbs a short overshoot. Without one (`swap = "0"`, no
-  swap accounting, no memory limit) the 2 GB headroom and the margin of 1.25
-  stay. Doctor warns when the host cannot back the setting.
+  swap. Doctor warns when the host cannot back the setting. With a swap
+  allowance (read from the cgroup, capped at the host's swap) swap absorbs a
+  short overshoot, so the budget holds back nothing beyond the reserve and
+  memory estimates use a margin of 1.10. Without one the budget holds back a
+  quarter of the memory instead, the room the default swap gives, and
+  estimates keep 1.25, so a Sandbox without swap runs fewer Jobs.
 - Queue priority by requester role: `interactive` first; background work last.
   Standalone Jobs (ADR 0086) are admitted like any Job at their priorities.
 - A Project that uses a licensed EDA tool must declare its Seat Cap in

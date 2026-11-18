@@ -21,11 +21,10 @@ MIB = 1024**2
 def budget_of(byte_count: int, *, swap_bytes: int = 0) -> MemoryBudget:
     """A computed-rule ``MemoryBudget`` of exactly *byte_count* bytes.
 
-    Without swap it is the limit minus the fixed headroom; with *swap_bytes* the
+    Without swap it is the limit minus a quarter of that limit as headroom; with *swap_bytes* the
     Sandbox holds no headroom back.
     """
     # Imported here: conftest imports this module before it puts ``src/`` on the path.
-    from booley.audit.resource_policy import MEMORY_HEADROOM_BYTES
     from booley.runtime.memory_budget import (
         BudgetRule,
         MemoryBudget,
@@ -36,9 +35,11 @@ def budget_of(byte_count: int, *, swap_bytes: int = 0) -> MemoryBudget:
 
     if swap_bytes:
         return MemoryBudget(byte_count, BudgetRule.LIMIT, byte_count, None, (), swap_bytes)
-    headroom = ReservePart(ReserveRole.HEADROOM, MEMORY_HEADROOM_BYTES, ReserveSource.FIXED, None)
+    # The limit is byte_count plus its quarter-of-the-limit headroom (a third of byte_count).
+    headroom_bytes = byte_count // 3
+    headroom = ReservePart(ReserveRole.HEADROOM, headroom_bytes, ReserveSource.FIXED, None)
     return MemoryBudget(
-        byte_count, BudgetRule.LIMIT, byte_count + MEMORY_HEADROOM_BYTES, None, (headroom,)
+        byte_count, BudgetRule.LIMIT, byte_count + headroom_bytes, None, (headroom,)
     )
 
 

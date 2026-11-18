@@ -116,10 +116,11 @@ memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes f
 
 The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
 reserve: the memory the running agents, the MCP server, and the Dashboard use,
-plus 2 GB when the Sandbox has no swap (`[sandbox].swap = "0"`, or a Docker
-host that cannot back swap). Without `[sandbox].memory` the Sandbox has no
-limit, so Booley starts from the machine's installed memory, which the Sandbox
-shares with everything else; `booley doctor` warns while it is unset.
+plus, when the Sandbox has no swap, a quarter of its memory: the room swap
+would otherwise give, so give the Sandbox swap. Without `[sandbox].memory` the
+Sandbox has no limit and no swap, so Booley starts from the machine's installed
+memory, which the Sandbox shares with everything else, and holds back a quarter
+of it; `booley doctor` warns while it is unset.
 
 Booley reserves the largest peak memory it recorded for a Job
 ([resource history](#job-resource-history)) plus the memory it swapped out,

@@ -3,7 +3,7 @@
 The budget is the container's memory limit (``[sandbox].memory``, or installed
 memory when the container has none) minus a reserve for what the Jobs do not own:
 the running Developer Agents, the MCP server, the Dashboard, and, without a swap
-allowance, fixed headroom.
+allowance, a quarter of the base as headroom.
 Memory admission holds each Job's Memory Reservation against this number; the
 module computes and explains it.
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from booley.audit.resource_policy import (
     GIB_BYTES,
-    MEMORY_HEADROOM_BYTES,
+    SWAP_SHARE_DIVISOR,
     cgroup_memory_limit_bytes,
     cgroup_swap_limit_bytes,
     parse_meminfo,
@@ -61,7 +61,7 @@ class ReserveSource(StrEnum):
     MEASURED = "measured"  # the process's current VmRSS
     UNREADABLE = "unreadable"  # found, but its memory could not be read: 1 GiB
     ABSENT = "absent"  # no such process is running: 0
-    FIXED = "fixed"  # the fixed headroom
+    FIXED = "fixed"  # the no-swap headroom, a quarter of the base
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +101,8 @@ def resolve_memory_budget(
     """Apply the budget rules to already-measured inputs (pure policy).
 
     A swap allowance counts only with a container limit; with one, swap absorbs
-    a short overshoot, so the fixed headroom is not held back.
+    a short overshoot, so no headroom is held back. Without one, a quarter of the
+    base is held back instead: the room the default swap would give.
     """
     if limit_bytes is not None:
         rule, base = BudgetRule.LIMIT, limit_bytes
@@ -113,7 +114,9 @@ def resolve_memory_budget(
     reserve = tuple(processes)
     if swap <= 0:
         reserve += (
-            ReservePart(ReserveRole.HEADROOM, MEMORY_HEADROOM_BYTES, ReserveSource.FIXED, None),
+            ReservePart(
+                ReserveRole.HEADROOM, base // SWAP_SHARE_DIVISOR, ReserveSource.FIXED, None
+            ),
         )
     # A reserve above the base clamps to 0; both stay in the result so it shows.
     budget = max(0, base - sum(part.bytes for part in reserve))

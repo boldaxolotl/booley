@@ -10,7 +10,9 @@ from pathlib import Path
 from booley.core.boundary import as_dict, as_str
 
 GIB_BYTES = 1024**3
-MEMORY_HEADROOM_BYTES = 2 * GIB_BYTES
+# The default swap beyond memory, and the headroom a Sandbox without swap holds
+# back: a quarter of memory.
+SWAP_SHARE_DIVISOR = 4
 
 CGROUP_MEMORY_LIMIT_PATHS = (
     Path("/sys/fs/cgroup/memory.max"),
@@ -144,7 +146,7 @@ def sandbox_swap_bytes(memory: str, swap: str, host_swap_bytes: int) -> int | No
     swap_limit = parse_memory_limit(swap)
     if swap_limit is not None:
         return swap_limit
-    return min(memory_bytes // 4, host_swap_bytes)
+    return min(memory_bytes // SWAP_SHARE_DIVISOR, host_swap_bytes)
 
 
 def memory_swap_limit(memory: str, swap: str, host_swap_bytes: int) -> str:

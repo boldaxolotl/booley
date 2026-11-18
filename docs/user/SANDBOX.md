@@ -91,7 +91,8 @@ of `memory`, but no more than the swap your Docker host has: `memory = "12g"`
 allows 3 GiB of swap. `swap = "0"` gives a Sandbox no swap, and `swap` has no
 effect without `memory`. `booley doctor` warns when the host cannot back the
 setting. The debug shell uses the same limits, with 4 GB of memory when
-`memory` is unset. `swap = "0"` lets fewer Jobs run at once; see
+`memory` is unset. With `swap = "0"` the Memory Budget holds back a
+quarter of `memory` instead, so fewer Jobs run at once; see
 [CONFIG.md](CONFIG.md#jobs--concurrency-jobs).
 
 Every `[sandbox]` change takes effect when you
