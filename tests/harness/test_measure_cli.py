@@ -836,6 +836,48 @@ def test_stored_text_reports_skip_symlinks(tmp_path: Path) -> None:
     assert [report.path.name for report in _flow_reports(outcome)] == ["report.json"]
 
 
+# kind: its metrics table; every Flow leaves progress and hidden temporaries beside its reports
+TABLE_OF_KIND = {
+    "lint": "[sim_core.lint]\nwarnings_max = 0\n",
+    "sim": "[sim_core.sim]\ntests_failed_max = 0\n",
+    "coverage": "[sim_core.coverage]\nline_coverage_min = 90\n",
+    "synth": "[synth_core.synth]\narea_kge_max = 60\n",
+    "fpga": "[synth_core.fpga]\nlut_count_max = 5000\n",
+    "mutation": "[sim_core.mutation]\nmutation_score_min = 50\ncount = 1\nseed = 1\n",
+}
+BOOKKEEPING = ("progress.json", ".progress.lock", ".report.json.1.tmp", ".progress-3")
+
+
+@pytest.mark.parametrize("kind", list(TABLE_OF_KIND))
+def test_only_report_artifacts_are_stored_listed_and_counted(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.measurement import run_store
+
+    reports = ("report.json", "lint_report.json") if kind == "lint" else ("report.json",)
+    project = committed_project(tmp_path, TABLE_OF_KIND[kind])
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    for name in (*reports, *BOOKKEEPING):
+        (invocation / name).write_bytes(b"{}")
+    # A counted bookkeeping file would push a real report out, or itself show as dropped.
+    monkeypatch.setattr(run_store, "REPORT_CAP_BYTES", 2 * len(reports))
+
+    def run(tables: Sequence[TableRules], _cancelled: Callable[[], bool]) -> ChildrenOutcome:
+        scripted = outcome_of(tables, [None])
+        measured = TableMeasurement(scripted.tables[0].run, (invocation / "report.json",), True)
+        return ChildrenOutcome(scripted.status, (measured,))
+
+    script_children(monkeypatch, run)
+    run_command(monkeypatch, project)
+
+    (path,) = stored_runs(project)
+    document = json.loads(path.read_text())
+    assert [entry["name"] for entry in document["reports"]] == list(reports)
+    assert document["dropped_reports"] == []
+    assert path.with_suffix(".md").read_text().count(" report: `") == len(reports)
+
+
 def test_the_signal_handlers_are_restored_after_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
