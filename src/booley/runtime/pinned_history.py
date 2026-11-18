@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -26,6 +27,26 @@ class PinnedPublication:
     path: str
     blob: str
     intended_commit: str | None = None
+
+
+class _GitExitError(FileCommitError):
+    """A Git child that exited nonzero; its message is its stderr, or how it ended."""
+
+    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str) -> None:
+        self.returncode = returncode
+        self.stderr = stderr
+        command = "git " + " ".join(args)
+        if stderr:
+            message = stderr
+        elif returncode < 0:
+            try:
+                name = signal.Signals(-returncode).name
+            except ValueError:  # a real-time signal has no name
+                name = f"signal {-returncode}"
+            message = f"{command} was killed by {name}"
+        else:
+            message = f"{command} failed with exit status {returncode} and no error output"
+        super().__init__(message)
 
 
 def raw_git(
@@ -61,7 +82,8 @@ def raw_git(
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise FileCommitError(f"Git publication command failed: {exc}") from exc
     if result.returncode:
-        raise FileCommitError(result.stderr.decode("utf-8", "replace").strip())
+        stderr = result.stderr.decode("utf-8", "replace").strip()
+        raise _GitExitError(args, result.returncode, stderr)
     return result.stdout
 
 
@@ -107,10 +129,11 @@ def require_branch(repository: Path, branch: str) -> str:
     """Check symbolic HEAD on every side of each publication boundary."""
     try:
         actual = raw_git(repository, "symbolic-ref", "-q", "HEAD").strip().decode("ascii")
-    except FileCommitError as exc:
-        raise FileCommitError(
-            str(exc) or f"publication needs branch {branch}; HEAD is detached"
-        ) from exc
+    except _GitExitError as exc:
+        if exc.returncode != 1 or exc.stderr:
+            raise
+        # Git's documented silent exit for ``symbolic-ref -q`` on a detached HEAD.
+        raise FileCommitError(f"publication needs branch {branch}; HEAD is detached") from exc
     if actual != branch:
         raise FileCommitError(f"publication needs {branch}; worktree is on {actual}")
     return raw_git(repository, "rev-parse", "HEAD").strip().decode("ascii")

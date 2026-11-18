@@ -46,6 +46,23 @@ def test_raw_proof_accepts_only_one_parent_exact_mode_blob_and_tree(repo, public
     assert proves_publication(repo, commit, publication)
 
 
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("rev-parse", "--verify", "-q", "refs/heads/nosuch"), "failed with exit status 1"),
+        pytest.param(
+            ("-c", "alias.die=!kill -KILL $PPID", "die"),
+            "killed by SIGKILL",
+            marks=pytest.mark.skipif(os.name == "nt", reason="POSIX signals"),
+        ),
+    ],
+    ids=["exit-status", "signal"],
+)
+def test_a_git_failure_without_stderr_names_how_git_ended(repo, args, message):
+    with pytest.raises(FileCommitError, match=message):
+        raw_git(repo, *args)
+
+
 @pytest.mark.parametrize("pin", ["HEAD", "HEAD~0", "a" * 39, "A" * 40, "0" * 40])
 def test_invalid_pin_refuses_before_writes(repo, publication, pin):
     before = (repo / ".git/index").read_bytes()
@@ -122,14 +139,23 @@ def test_preserves_unrelated_or_conflicting_staging_without_wedging(repo, public
         assert before.split(b"\0")[0] == after.split(b"\0")[0]
 
 
-def test_same_sha_manual_branch_switch_refuses_without_index_effect(repo, publication):
+@pytest.mark.parametrize(
+    ("switch_args", "message"),
+    [
+        (("checkout", "-qb", "sibling"), "worktree is on"),
+        (("checkout", "-q", "--detach"), "HEAD is detached"),
+    ],
+)
+def test_same_sha_manual_branch_switch_refuses_without_index_effect(
+    repo, publication, switch_args, message
+):
     before = (repo / ".git/index").read_bytes()
 
     def switch(branch):
         assert branch == publication.branch
-        _git(repo, "checkout", "-qb", "sibling")
+        _git(repo, *switch_args)
 
-    with pytest.raises(FileCommitError, match="worktree is on"):
+    with pytest.raises(FileCommitError, match=message):
         publish_pinned(repo, publication, "summary", lambda _: None, check_branch=switch)
     assert _git(repo, "rev-parse", "main") == publication.pin
     assert (repo / ".git/index").read_bytes() == before
