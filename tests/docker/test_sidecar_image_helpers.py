@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -10,6 +11,10 @@ from pathlib import Path
 
 import pytest
 from tests.sidecar_image_helpers import DockerClient, isolated_docker_daemon
+from tests.time_budget import scaled
+
+# Stall bound the bounded Docker child must hit (whole seconds: DockerClient takes int).
+_STALL_BOUND_S = math.ceil(scaled(1))
 
 
 class FakeDockerBoundary:
@@ -112,10 +117,10 @@ def test_docker_client_stall_fails_with_elapsed_time_and_partial_output(
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
 
     with pytest.raises(pytest.fail.Exception) as stalled:
-        DockerClient().run("info", timeout=1)
+        DockerClient().run("info", timeout=_STALL_BOUND_S)
 
     message = str(stalled.value)
-    assert "docker info timed out after 1 s" in message
+    assert f"docker info timed out after {_STALL_BOUND_S} s" in message
     assert "elapsed" in message
     assert "partial-docker-output" in message
 
@@ -236,7 +241,7 @@ def test_readiness_timeout_cleans_named_daemon(monkeypatch, tmp_path: Path) -> N
             "candidate",
             tmp_path,
             name_prefix="booley-test",
-            readiness_timeout=0.01,
+            readiness_timeout=scaled(0.01),
         ),
     ):
         pytest.fail("unready daemon was yielded")

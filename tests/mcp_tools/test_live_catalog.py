@@ -14,6 +14,7 @@ from mcp.types import TextContent
 
 from booley.mcp import server
 from booley.runtime.booley_dir import reset_cache
+from tests.time_budget import hang_guard_s, scaled
 
 
 @pytest.fixture
@@ -354,11 +355,11 @@ def test_poll_and_cancel_bypass_failed_and_waiting_catalog_refresh(project):
             # Holding the refresh lock proves poll and cancel never wait for a refresh.
             async with catalog._lock:
                 result = await asyncio.wait_for(
-                    client.call_tool("booley_poll", {"run_id": "absent"}), 1
+                    client.call_tool("booley_poll", {"run_id": "absent"}), hang_guard_s()
                 )
                 assert result.content
                 result = await asyncio.wait_for(
-                    client.call_tool("booley_cancel", {"run_id": "absent"}), 1
+                    client.call_tool("booley_cancel", {"run_id": "absent"}), hang_guard_s()
                 )
                 assert result.content
             (project / "booley.toml").write_text("[flows")
@@ -472,14 +473,14 @@ def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
     assert ready_at is not None
     assert ready_at - started < catalog_worker.DISCOVERY_TIMEOUT_SECONDS
     # Two taskkill calls (10s each), 0.2s grace, and a 5s reap are bounded.
-    assert time.monotonic() - ready_at < 26
+    assert time.monotonic() - ready_at < scaled(26)
     for pid in pid_file.read_text().split():
         assert_worker_pid_stopped(pid)
 
 
 # Upper bound for a queued SIGKILL to take effect on a loaded host; it matches
 # the worker's own 5 s reap bound and is only spent when the process lingers.
-_KILL_LANDS_SECONDS = 5
+_KILL_LANDS_SECONDS = scaled(5)
 
 
 def assert_worker_pid_stopped(pid):
@@ -489,7 +490,7 @@ def assert_worker_pid_stopped(pid):
 
     if os.name == "nt":
         result = run_bounded_child(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], timeout=10, check=True
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], check=True
         )
         assert all(len(row) < 2 or row[1] != pid for row in csv.reader(result.stdout.splitlines()))
     else:

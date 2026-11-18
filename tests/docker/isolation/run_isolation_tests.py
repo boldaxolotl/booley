@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 
+from tests.time_budget import hang_guard_s
+
 from .container_names import next_ci_container_name
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -14,6 +16,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 IMAGE = "booley-sandbox"
+# Hang guard for one command: a timeout makes assert_ok fail, nothing asserts it expires.
+_HANG_S = hang_guard_s()
 BASE_FLAGS = [
     "docker",
     "run",
@@ -44,7 +48,7 @@ def red(msg: str) -> None:
     print(f"\033[31m✗ {msg}\033[0m")
 
 
-def run(cmd_str: str, timeout: int = 30) -> tuple[int, str]:
+def run(cmd_str: str, timeout: int = _HANG_S) -> tuple[int, str]:
     command = list(BASE_FLAGS)
     container_name = next_ci_container_name()
     if container_name:

@@ -18,6 +18,7 @@ from booley.mcp.application import (
 )
 from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records
+from tests.time_budget import hang_guard_s, scaled
 
 
 class Observer:
@@ -151,7 +152,7 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
     peer = ProcessIdentity(98765, "fixture", 101)
 
     def resolve(_):
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return peer
 
     monkeypatch.setattr(session_observer, "observed_peer", resolve)
@@ -160,10 +161,10 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
         async def attribution(self, *args, **kwargs):
             fallback = await super().attribution(*args, **kwargs)
             release.set()
-            await asyncio.wait_for(self._pending, 2)
+            await asyncio.wait_for(self._pending, hang_guard_s())
             return fallback
 
-    observer = Deferred(budget=0.001)
+    observer = Deferred(budget=scaled(0.001))
     monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
     admitted = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
 
@@ -216,13 +217,13 @@ async def test_resolved_identity_survives_registry_publication_failure(
         release.set()
 
     def resolve(_observation):
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return peer
 
     def publish(*_):
         raise OSError("registry unavailable")
 
-    observer = SessionObserver(budget=0.001 if delayed else 1)
+    observer = SessionObserver(budget=scaled(0.001) if delayed else hang_guard_s())
     monkeypatch.setattr(observer, "_resolve", resolve)
     monkeypatch.setattr(observer, "_publish", publish)
     try:
@@ -236,7 +237,7 @@ async def test_resolved_identity_survives_registry_publication_failure(
         assert facts is peer
     finally:
         release.set()
-        await asyncio.wait_for(observer._pending, 2)
+        await asyncio.wait_for(observer._pending, hang_guard_s())
 
 
 def test_non_linux_pid_stamping_does_not_run_blocking_ps(tmp_path, monkeypatch):
