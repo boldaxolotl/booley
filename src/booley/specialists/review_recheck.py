@@ -7,7 +7,7 @@ judge the model's verdicts. ``reviewer.py`` runs the call and writes the new evi
 from __future__ import annotations
 
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +19,7 @@ from booley.evidence.review_vocabulary import (
     STATUS_CANT_TELL,
     STATUS_FIXED,
     STATUS_STILL_OPEN,
+    STATUS_WAIVED,
 )
 
 REASON_UNKNOWN_FINDING = "unknown_finding"
@@ -26,12 +27,14 @@ REASON_DUPLICATE_VERDICT = "duplicate_verdict"
 REASON_INVALID_VERDICT = "invalid_verdict"
 REASON_FIXED_WITHOUT_EVIDENCE = "fixed_without_evidence"
 REASON_OMITTED_FINDING = "omitted_finding"
+REASON_UNSOLICITED_WAIVER = "unsolicited_waiver"
 
 # How the report names each status a re-check writes.
 STATUS_LABELS = {
     STATUS_FIXED: "fixed",
     STATUS_STILL_OPEN: "still open",
     STATUS_CANT_TELL: "can't tell",
+    STATUS_WAIVED: "waived",
 }
 
 
@@ -62,6 +65,7 @@ class Verdict:
 
     status: str
     evidence: dict[str, Any] | None = None
+    ruling: str = ""
 
 
 def _obj(value: Any) -> dict[str, Any]:
@@ -125,11 +129,30 @@ def load_recheck_input(
     if not (focus in valid_focuses and is_str_list(scope) and scope):
         raise RecheckInputError(f"Reviewer evidence file {path} has no usable review contract")
     recheck = RecheckInput(path, contract, str(category), str(focus), tuple(scope), findings)
-    if not recheck.open_findings:
+    # A file whose last open finding was waived is still re-checked: it lists its waivers again.
+    if not recheck.open_findings and not any(row["status"] == STATUS_WAIVED for row in findings):
         raise RecheckInputError(
             f"Reviewer evidence file {path} has no open findings; nothing to re-check."
         )
     return recheck
+
+
+def validate_waivers(recheck: RecheckInput, waivers: Sequence[Sequence[str]]) -> dict[str, str]:
+    """The waiver proposals as ``{finding ID: reason}``; refuse one that cannot be judged."""
+    open_ids = {row["finding_id"] for row in recheck.open_findings}
+    proposals: dict[str, str] = {}
+    for finding_id, reason in waivers:
+        if finding_id not in open_ids:
+            problem = "not an open finding of the evidence file"
+        elif finding_id in proposals:
+            problem = "proposed more than once"
+        elif not reason.strip():
+            problem = "the reason is blank"
+        else:
+            proposals[finding_id] = reason.strip()
+            continue
+        raise RecheckInputError(f"--waive {finding_id}: {problem}")
+    return proposals
 
 
 def existing_scope(recheck: RecheckInput, work_dir: Path) -> tuple[list[str], list[str]]:
@@ -138,7 +161,15 @@ def existing_scope(recheck: RecheckInput, work_dir: Path) -> tuple[list[str], li
     return present, [name for name in recheck.scope if name not in present]
 
 
-def recheck_system_prompt(category: str, focus: str) -> str:
+_WAIVER_RULES = (
+    "- waived: only for a finding that lists a waiver proposal, and only when its reason "
+    "justifies leaving the code as it is. A reason that does not hold is refused: judge the "
+    "finding as fixed, still_open or cant_tell instead. Every finding with a waiver proposal "
+    'gets a "waiver_ruling": one sentence on why the waiver is accepted or refused.\n'
+)
+
+
+def recheck_system_prompt(category: str, focus: str, *, waivers: bool = False) -> str:
     """The system prompt: judge each listed finding, never report a new one."""
     label = "RTL" if category == "rtl" else "testbench"
     return (
@@ -152,11 +183,11 @@ def recheck_system_prompt(category: str, focus: str) -> str:
         "a line number in that file and one sentence on why that line settles it. A fixed "
         "verdict without that evidence counts as still_open.\n"
         "- still_open: the problem is still there, or the fix is incomplete.\n"
-        "- cant_tell: the sources do not let you decide.\n"
+        "- cant_tell: the sources do not let you decide.\n" + (_WAIVER_RULES if waivers else "")
     )
 
 
-def _finding_block(row: dict[str, Any]) -> str:
+def _finding_block(row: dict[str, Any], proposals: Mapping[str, str]) -> str:
     lines = [
         f"### {row['finding_id']}",
         f"- severity: {row['severity']}",
@@ -167,10 +198,17 @@ def _finding_block(row: dict[str, Any]) -> str:
         lines.append(f"- ticket_clause: {row['ticket_clause']}")
     if row.get("fix_suggestion"):
         lines.append(f"- fix_suggestion: {row['fix_suggestion']}")
+    if row["finding_id"] in proposals:
+        lines.append(f"- waiver proposal: {proposals[row['finding_id']]}")
     return "\n".join(lines)
 
 
-def recheck_prompt(recheck: RecheckInput, spec_section: str, work_dir: Path) -> str:
+def recheck_prompt(
+    recheck: RecheckInput,
+    spec_section: str,
+    work_dir: Path,
+    proposals: Mapping[str, str] | None = None,
+) -> str:
     """The user prompt: scope, specification, the open findings and the output schema."""
     present, removed = existing_scope(recheck, work_dir)
     sections = ["Re-check the findings below against the current sources.\n", "Files in scope:"]
@@ -183,13 +221,19 @@ def recheck_prompt(recheck: RecheckInput, spec_section: str, work_dir: Path) -> 
     if spec_section:
         sections.extend(["", spec_section])
     sections.extend(["", "## Findings to re-check", ""])
-    sections.extend(f"{_finding_block(row)}\n" for row in recheck.open_findings)
+    waivers = proposals or {}
+    sections.extend(f"{_finding_block(row, waivers)}\n" for row in recheck.open_findings)
+    verdicts = '"fixed" | "still_open" | "cant_tell"'
+    extra = ""
+    if waivers:
+        verdicts += ' | "waived"'
+        extra = ' Add "waiver_ruling": "<one sentence>" to every finding with a waiver proposal.'
     sections.append(
         "Emit one JSON object with a ``verdicts`` array holding one entry per finding above: "
-        '{"verdicts": [{"finding_id": "<id>", "verdict": "fixed" | "still_open" | "cant_tell", '
+        f'{{"verdicts": [{{"finding_id": "<id>", "verdict": {verdicts}, '
         '"evidence": {"file": "<path>", "line": <positive integer>, "reason": "<one sentence>"}}]}. '
-        "``evidence`` is required for ``fixed`` and omitted otherwise. Prose outside the JSON "
-        "does not count."
+        "``evidence`` is required for ``fixed`` and omitted otherwise." + extra + " Prose outside "
+        "the JSON does not count."
     )
     return "\n".join(sections)
 
@@ -225,10 +269,23 @@ def _row(ordinal: int, finding_id: str, reason: str, raw: Any) -> dict[str, Any]
     return {"ordinal": ordinal, "finding_id": finding_id, "reason": reason, "raw": raw}
 
 
+def _ruling(entry: dict[str, Any]) -> str:
+    ruling = entry.get("waiver_ruling")
+    return ruling.strip() if isinstance(ruling, str) else ""
+
+
 def judge_verdicts(
-    entries: list[Any], open_findings: list[dict[str, Any]], work_dir: Path
+    entries: list[Any],
+    open_findings: list[dict[str, Any]],
+    work_dir: Path,
+    proposals: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Verdict], list[dict[str, Any]]]:
-    """One verdict per open finding, and the audit rows of every entry dropped or demoted."""
+    """One verdict per open finding, and the audit rows of every entry dropped or demoted.
+
+    A ``waived`` verdict stands only for a finding with a waiver proposal; for any other it is
+    ``still_open``.
+    """
+    proposed = proposals or {}
     open_ids = {row["finding_id"] for row in open_findings}
     verdicts: dict[str, Verdict] = {}
     audit: list[dict[str, Any]] = []
@@ -241,21 +298,32 @@ def judge_verdicts(
             audit.append(_row(ordinal, finding_id, REASON_DUPLICATE_VERDICT, raw))
         elif not isinstance(entry.get("verdict"), str) or entry["verdict"] not in STATUS_LABELS:
             audit.append(_row(ordinal, finding_id, REASON_INVALID_VERDICT, raw))
+        elif entry["verdict"] == STATUS_WAIVED and finding_id not in proposed:
+            audit.append(_row(ordinal, finding_id, REASON_UNSOLICITED_WAIVER, raw))
+            verdicts[finding_id] = Verdict(STATUS_STILL_OPEN)
         elif entry["verdict"] != STATUS_FIXED:
-            verdicts[finding_id] = Verdict(entry["verdict"])
+            verdicts[finding_id] = Verdict(entry["verdict"], ruling=_ruling(entry))
         elif citation := _citation(entry, work_dir):
-            verdicts[finding_id] = Verdict(STATUS_FIXED, citation)
+            verdicts[finding_id] = Verdict(STATUS_FIXED, citation, _ruling(entry))
         else:
             audit.append(_row(ordinal, finding_id, REASON_FIXED_WITHOUT_EVIDENCE, raw))
-            verdicts[finding_id] = Verdict(STATUS_STILL_OPEN)
+            verdicts[finding_id] = Verdict(STATUS_STILL_OPEN, ruling=_ruling(entry))
     for finding_id in sorted(open_ids - verdicts.keys()):
         audit.append(_row(0, finding_id, REASON_OMITTED_FINDING, None))
         verdicts[finding_id] = Verdict(STATUS_CANT_TELL)
     return verdicts, audit
 
 
-def rechecked_records(recheck: RecheckInput, verdicts: dict[str, Verdict]) -> list[dict[str, Any]]:
-    """Every input record in input order; an open one takes its verdict, the rest are unchanged."""
+def rechecked_records(
+    recheck: RecheckInput,
+    verdicts: dict[str, Verdict],
+    proposals: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Every input record in input order; an open one takes its verdict, the rest are unchanged.
+
+    An accepted waiver also carries the user's reason and the Reviewer's ruling.
+    """
+    reasons = proposals or {}
     records: list[dict[str, Any]] = []
     for row in recheck.findings:
         record = dict(row)
@@ -264,5 +332,24 @@ def rechecked_records(recheck: RecheckInput, verdicts: dict[str, Verdict]) -> li
             record["status"] = verdict.status
             if verdict.evidence is not None:
                 record["recheck_evidence"] = verdict.evidence
+            if verdict.status == STATUS_WAIVED:
+                record["justification"] = reasons[row["finding_id"]]
+                if verdict.ruling:
+                    record["waiver_ruling"] = verdict.ruling
         records.append(record)
     return records
+
+
+def refused_waivers(
+    proposals: Mapping[str, str], verdicts: Mapping[str, Verdict]
+) -> list[dict[str, str]]:
+    """The proposals whose finding did not end ``waived``, with the Reviewer's ruling if any."""
+    return [
+        {
+            "finding_id": finding_id,
+            "justification": reason,
+            "ruling": verdicts[finding_id].ruling,
+        }
+        for finding_id, reason in proposals.items()
+        if verdicts[finding_id].status != STATUS_WAIVED
+    ]
