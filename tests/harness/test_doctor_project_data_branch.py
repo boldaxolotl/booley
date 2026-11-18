@@ -52,7 +52,7 @@ def test_missing_project_data_destination_warns_with_migration_choices(tmp_path:
     assert finding.subject == "project-data"
     assert "main" in finding.message
     assert str(booley_dir) in finding.message
-    assert f"git -C {quote_arg(str(booley_dir))} switch -c main" in finding.fix
+    assert f"git -C {quote_arg(str(booley_dir))} switch -c {quote_arg('main')}" in finding.fix
     assert "project_destination_ref" in finding.fix
 
 

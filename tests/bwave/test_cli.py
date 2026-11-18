@@ -2168,7 +2168,8 @@ def test_open_is_gone_and_says_so(monkeypatch, capsys):
     msg = str(exc.value)
     assert "`bwave open` is now `bwave gui`" in msg
     # …and hands back the exact command to rerun.
-    assert f"bwave gui @dut -s {quote_arg('tb.dut.fifo.*')}" in msg
+    retry_args = " ".join(quote_arg(arg) for arg in ["@dut", "-s", "tb.dut.fifo.*"])
+    assert f"bwave gui {retry_args}" in msg
 
 
 # ── venue guard ─────────────────────────────────────────────────────────────
