@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 _ROOT = Path(__file__).parents[2]
 _CONTEXT = "docker-image://ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64
@@ -421,7 +422,8 @@ def test_measurement_upload_marker_tracks_demo_attempt(
 
 def _wait_for_exit(pid: int) -> None:
     """Wait (bounded) for a backgrounded fake to finish writing its log."""
-    for _ in range(100):
+    deadline = time.monotonic() + hang_guard_s()
+    while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -468,7 +470,7 @@ def _run_prefetch_wait_step(tmp_path: Path, pid: int | None) -> subprocess.Compl
 def test_wait_returns_once_the_prefetch_has_exited(tmp_path: Path) -> None:
     # The test needs this exited child's PID, so it drives the Popen itself.
     done = subprocess.Popen(["true"])
-    done.wait(timeout=10)
+    done.wait(timeout=hang_guard_s())
 
     result = _run_prefetch_wait_step(tmp_path, done.pid)
 
@@ -485,7 +487,7 @@ def test_wait_gives_up_on_a_stuck_prefetch_without_failing(tmp_path: Path) -> No
         result = _run_prefetch_wait_step(tmp_path, stuck.pid)
     finally:
         stuck.kill()
-        stuck.wait(timeout=10)
+        stuck.wait(timeout=hang_guard_s())
 
     assert result.returncode == 0, result.stderr
     assert "::warning::RISC-V tooling prefetch still running" in result.stdout

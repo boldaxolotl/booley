@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
@@ -107,7 +108,7 @@ def _run_owned_simulation_record(
             work_dir=project,
             report_dir=report_root,
             test=tests,
-            timeout_ms=120_000,
+            timeout_ms=4 * hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text

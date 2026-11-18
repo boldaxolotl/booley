@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.time_budget import hang_guard_s
 
 from booley.flows.mutation.flow import MutationFlow
 from booley.flows.mutation.generator import generate_mutants
@@ -139,7 +140,7 @@ def test_real_verilator_build_drops_the_mutant_that_changes_nothing(tmp_path, mo
             count=_COUNT,
             seed=seed,
             min_detected=0,
-            timeout_ms=900_000,
+            timeout_ms=30 * hang_guard_s() * 1000,
             report_dir=tmp_path / "reports",
         )
     )

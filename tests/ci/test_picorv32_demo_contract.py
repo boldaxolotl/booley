@@ -426,7 +426,6 @@ def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
             str(contract.resolve()),
         ],
         check=False,
-        timeout=10,
     )
 
 
@@ -879,7 +878,6 @@ def test_demo_verifier_uses_explicit_directory_for_both_stages(tmp_path, monkeyp
     run_bounded_child(
         ["bash", str(VERIFY_SCRIPT.resolve())],
         check=True,
-        timeout=10,
     )
     calls = [json.loads(line) for line in commands.read_text().splitlines()]
     assert len(calls) == 2

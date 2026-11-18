@@ -21,6 +21,10 @@ import pytest
 
 from booley.bwave import vaporview_bridge as bridge
 from booley.runtime import vaporview
+from tests.time_budget import scaled
+
+# A live peer must answer inside the ping window; the frozen one must outlast it.
+_PING_S = scaled(0.2)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
@@ -234,11 +238,11 @@ def test_discover_without_directory_is_empty(tmp_path):
 
 
 def _frozen(req):
-    time.sleep(1.0)  # accepts the request, never answers in time
+    time.sleep(5 * _PING_S)  # accepts the request, never answers in time
 
 
 def test_discover_skips_half_working_and_frozen_windows(home, servers, monkeypatch):
-    monkeypatch.setattr(bridge, "PING_TIMEOUT", 0.2)
+    monkeypatch.setattr(bridge, "PING_TIMEOUT", _PING_S)
     live = _serve(servers, home, "window-1.sock", lambda req: _ok(_ping()))
     _serve(servers, home, "window-2.sock", lambda req: b"garbage\n")
     _serve(servers, home, "window-3.sock", _frozen)
@@ -251,7 +255,7 @@ def test_discover_skips_half_working_and_frozen_windows(home, servers, monkeypat
 
 
 def test_find_bridge_asks_the_terminal_window_first_and_alone(home, servers, monkeypatch):
-    monkeypatch.setattr(bridge, "PING_TIMEOUT", 0.2)
+    monkeypatch.setattr(bridge, "PING_TIMEOUT", _PING_S)
     frozen = _serve(servers, home, "window-1.sock", _frozen)
     own = _serve(servers, home, "window-2.sock", lambda req: _ok(_ping()))
 
@@ -269,7 +273,7 @@ def test_find_bridge_falls_back_when_the_terminal_window_is_gone(home, servers):
 
 
 def test_find_bridge_survives_a_frozen_peer(home, servers, monkeypatch):
-    monkeypatch.setattr(bridge, "PING_TIMEOUT", 0.2)
+    monkeypatch.setattr(bridge, "PING_TIMEOUT", _PING_S)
     _serve(servers, home, "window-1.sock", _frozen)
     live = _serve(servers, home, "window-2.sock", lambda req: _ok(_ping()))
 

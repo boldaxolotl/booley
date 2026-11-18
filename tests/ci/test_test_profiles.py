@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.dev_support import agent_readiness as readiness
 from booley.dev_support import test_profiles as profiles
@@ -258,7 +259,7 @@ def test_native_test_fixture_refuses_runtime_fallback(tmp_path: Path, consumer: 
             "result = subprocess.run([sys.executable, '-c', script, "
             "str(Path(__file__).with_name('fallback-bwave')), os.environ['BOOLEY_BWAVE_BIN'], "
             "'query', 'build', 'missing.vcd'], env={**os.environ, 'BOOLEY_CONTAINER': '1'}, "
-            "capture_output=True, text=True, timeout=30, check=False)\n"
+            f"capture_output=True, text=True, timeout={hang_guard_s()}, check=False)\n"
             "assert result.returncode != 0\n"
             "assert 'native B-Wave debug binary is missing' in result.stderr\n"
             "assert 'building from' not in result.stderr"
