@@ -185,7 +185,11 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
     _fusesoc_killed_by_sigkill(tmp_path, monkeypatch)
     # The container's OOM counter rises over every command, so each kill is blamed.
     counter = itertools.count()
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counter))
+    monkeypatch.setattr(
+        job_resources,
+        "cgroup_memory_events",
+        lambda: job_resources.MemoryEvents(*[next(counter)] * 2),
+    )
     flow = SimulateFlow()
     # What ``execute`` binds before preparing: the Flow reads its flags for the history key.
     # ``_execute_boundary`` is the ``invoke`` callback ``SimulationExecution`` takes; no public

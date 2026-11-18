@@ -19,6 +19,7 @@ from booley.flows.endpoint_events import (
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
+    HOST_OOM_KILL_NOTE,
     OOM_KILL_NOTE,
     OOM_REQUEUE_NOTE,
     EndpointOutcome,
@@ -483,8 +484,13 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     if not result.report_text:
         return
     witness = endpoint._stdout_witness
-    already_shown = witness is not None and witness.saw(result.report_text)
-    if already_shown:
+    # The host line leads the result; the Flow's own verdict, printed while it ran, follows it.
+    host_line, text = "", result.report_text
+    if text.startswith(HOST_OOM_KILL_NOTE):
+        host_line, _, text = text.partition("\n")
+    if witness is not None and witness.saw(text):
+        if host_line:
+            print(host_line, file=sys.stderr, flush=True)
         return
     # A note appended after the report the witness already saw is all that is new.
     for opening in (
@@ -492,9 +498,13 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
         f"\n{OOM_REQUEUE_NOTE}",
         f"\n{OOM_KILL_NOTE}",
     ):
-        original, separator, rest = result.report_text.partition(opening)
+        original, separator, rest = text.partition(opening)
         if separator and witness is not None and witness.saw(original):
-            print(f"{opening[1:]}{rest}", file=sys.stderr, flush=True)
+            print(
+                "\n".join(filter(None, (host_line, f"{opening[1:]}{rest}"))),
+                file=sys.stderr,
+                flush=True,
+            )
             return
     if result.exit_code != EXIT_SUCCESS:
         print(result.report_text, file=sys.stderr, flush=True)
