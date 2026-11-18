@@ -1,4 +1,4 @@
-"""Validate refusal of an unfinished aggregate coverage Simulation Campaign resume."""
+"""Validate refusal of an unfinished aggregate coverage Simulation Record resume."""
 
 from __future__ import annotations
 

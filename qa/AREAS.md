@@ -103,5 +103,7 @@ optional is not covered by a primary run.
 | Approved coverage waivers | [coverage/cov-waivers](missions/coverage/MISSION.md) |
 | Coverage bounds | [coverage/cov-closure](missions/coverage/MISSION.md), [coverage/cov-metrics](missions/coverage/MISSION.md) |
 | Coverage Record storage | [coverage/cov-numeric](missions/coverage/MISSION.md), [coverage/cov-retention](missions/coverage/MISSION.md), [coverage/cov-storage](missions/coverage/MISSION.md) |
+| Uncovered-point listing | [coverage/cov-numeric](missions/coverage/MISSION.md) |
+| Older-Booley Coverage Record refusal | [coverage/cov-storage](missions/coverage/MISSION.md) |
 | Coverage Analyst | [coverage/cov-analyst](missions/coverage/MISSION.md) |
 | Coverage Analyst evidence boundary | [coverage/cov-analyst](missions/coverage/MISSION.md) |

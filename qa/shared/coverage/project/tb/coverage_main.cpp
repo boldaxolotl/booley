@@ -16,6 +16,8 @@ static void native_fault(const std::string& test) {
     const char* name = std::getenv("BOOLEY_COVERAGE_FILE");
     if (!name || test.rfind("native-", 0) != 0) return;
     if (test == "native-missing") { std::remove(name); return; }
+    // A directory where the database belongs: present, but not a regular file.
+    if (test == "native-unsafe") { std::remove(name); std::filesystem::create_directory(name); return; }
     if (test == "native-malformed" || test == "native-incompatible") {
         std::ofstream out(name);
         out << (test == "native-incompatible" ? "# SystemC::Coverage-999\n" : "# SystemC::Coverage-3\ninvalid record\n");
