@@ -84,7 +84,9 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
 
     Raises :class:`MetricsUnavailableError` when the collector itself failed (an unreadable
     or incompatible native database, a failed or disagreeing merge): the run measured no
-    coverage. A design-caused abort returns ``{}``, so the test counts stay values.
+    coverage. It also raises when the coverage evaluation is blocked, naming its first
+    diagnostic: the run exits 2 and its rollups cannot be trusted. A design-caused abort
+    with an unblocked evaluation returns ``{}``, so the test counts stay values.
 
     Computed from the point counts, not the stored two-decimal ``percent``, which would
     round 20,000 of 20,001 points up to ``100.0`` where the coverage floor compares the
@@ -103,6 +105,13 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
                 raise MetricsUnavailableError(
                     f"the coverage collection did not complete: {diagnostic['message']}"
                 )
+    evaluation = coverage_record.evaluation
+    if evaluation["status"] == "blocked":
+        first = cast("Sequence[Mapping[str, Any]]", evaluation["diagnostics"])[0]
+        raise MetricsUnavailableError(
+            f"the coverage evaluation was blocked: {first['code']}: {first['message']}"
+        )
+    if collection["status"] != "complete":
         return {}
     return {
         COVERAGE_METRIC_NAMES[rollup.metric]: rollup.covered_points * 100 / rollup.eligible_points
@@ -162,8 +171,8 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     ``cycle_count`` is keyed by Test Run name and only for a Test Run that passed with
     a count. A coverage run adds the five coverage percentages, omitted when the
     coverage collection did not complete (a failing test is still a value).
-    A collector failure raises instead. ``failing_tests`` names the first failing Test Runs
-    with the first line of each reason.
+    A collector failure or a blocked coverage evaluation raises instead. ``failing_tests``
+    names the first failing Test Runs with the first line of each reason.
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
     Test Run: the Simulation Record did not finish, a Test Run ended in infrastructure error, or
