@@ -18,6 +18,30 @@ You own the exact `.core`, requirements-file, and configuration spelling. The fo
 
 Also configure persistent `synth_mac_10g_physical` for the same complete `taxi_eth_mac_10g` source closure and every approved parameter, using slang/Yosys followed by OpenROAD physical synthesis, explicit balanced PPA profile and flattening. It uses the same flat-port wrapper and synthesis-only copies as `synth_mac_10g`. Author and select the provided five-clock SDC in Project-owned configuration without editing existing Taxi files. Keep `synth_mac_10g` logical. Include both synthesis Targets in CLI/MCP discovery and appropriate deep Doctor checks. Preserve physical tool/library/recipe identities, SDC hash and clock/path coverage. Do not replace missing physical timing evidence with the logical frequency estimate, alter clock periods, disable enabled hardware, add timing waivers or replace the provided zero external-delay fixture with invented board I/O constraints.
 
+The provided five-clock SDC follows; use its text byte for byte:
+
+```tcl
+create_clock -name rx_clk         -period 6.4 [get_ports rx_clk]
+create_clock -name tx_clk         -period 6.4 [get_ports tx_clk]
+create_clock -name stat_clk       -period 6.4 [get_ports stat_clk]
+create_clock -name ptp_clk        -period 6.4 [get_ports ptp_clk]
+create_clock -name ptp_sample_clk -period 8.0 [get_ports ptp_sample_clk]
+# Fixture-only zero external delay, deliberately conservative across clocks.
+# Exclude clock ports from external data-input delay application.
+# Plain Tcl list filtering: OpenSTA has no remove_from_collection.
+set qa_clock_port_names {rx_clk tx_clk stat_clk ptp_clk ptp_sample_clk}
+set qa_data_inputs {}
+foreach qa_port [all_inputs] {
+    if {[lsearch -exact $qa_clock_port_names [get_full_name $qa_port]] < 0} {
+        lappend qa_data_inputs $qa_port
+    }
+}
+foreach qa_clock_name $qa_clock_port_names {
+    set_input_delay -clock [get_clocks $qa_clock_name] -add_delay 0.0 $qa_data_inputs
+    set_output_delay -clock [get_clocks $qa_clock_name] -add_delay 0.0 [all_outputs]
+}
+```
+
 ### Representative hardware and test configuration
 
 Use only the complete `taxi_eth_mac_10g`, instantiated by the flat-port wrapper where a Target needs one, with this fixed configuration:
