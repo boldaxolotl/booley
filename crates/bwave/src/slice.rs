@@ -118,3 +118,49 @@ pub fn slice_transitions(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal::compile_patterns;
+
+    fn signal(name: &str, width: u32, var_type: &str) -> CachedSignal {
+        let (name, var_type) = (name.to_string(), var_type.to_string());
+        CachedSignal {
+            name,
+            width,
+            var_type,
+            group_id: 0,
+            slice: None,
+        }
+    }
+
+    fn plan_for(signals: &[CachedSignal], text: &str) -> Result<Vec<String>, String> {
+        let pattern = compile_patterns(&[text.to_string()], "").unwrap().remove(0);
+        plan(signals, &pattern, text).map(|rows| rows.into_iter().map(|r| r.0).collect())
+    }
+
+    #[test]
+    fn plan_names_slices_and_refuses_unsliceable_vectors() {
+        let signals = [
+            signal("tb.addr[31:2]", 30, "wire"),
+            signal("tb.r", 8, "real"),
+            signal("tb.v[0:3]", 4, "wire"),
+            signal("tb.m[0]", 1, "wire"),
+        ];
+        assert_eq!(plan_for(&signals, "addr[3:2]").unwrap(), ["tb.addr[3:2]"]);
+        assert_eq!(
+            plan_for(&signals, "addr[31:2]").unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(plan_for(&signals, "r[3]").unwrap_err().contains("real"));
+        assert!(plan_for(&signals, "v[1:0]")
+            .unwrap_err()
+            .contains("ascending"));
+        assert!(plan_for(&signals, "addr[1:0]")
+            .unwrap_err()
+            .contains("30 bits"));
+        // A stored element is what `[N]` names; no slice is added.
+        assert!(plan_for(&signals, "m[0]").unwrap().is_empty());
+    }
+}
