@@ -363,10 +363,14 @@ class MemoryWait:
     """What one queued memory claim waits for, in the terms a queue report gives.
 
     ``position`` is 1-based among the blocked claims. ``free_mb`` is the Memory
-    Budget headroom the running holders leave (what admission judges), not host
-    free memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
-    taken. ``holders`` are up to three running claims that reserve memory, largest first
-    (run-alone first, shown with ``None`` for the whole budget).
+    Budget headroom left once the running holders and the waiters ahead that
+    start now hold their reservations (what admission judges), not host free
+    memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
+    taken. ``holders`` are up to three claims that reserve memory (the running
+    ones and the waiters ahead that start now), largest first (run-alone first,
+    shown with ``None`` for the whole budget). ``memory_fits`` is True when the
+    claim's memory fits beside those holders, seats aside. ``ahead`` names the
+    Job ahead whose place in queue order holds the claim, else ``None``.
     """
 
     position: int
@@ -375,33 +379,43 @@ class MemoryWait:
     seats: tuple[tuple[str, int, int], ...]
     holders: tuple[tuple[str, float | None], ...]
     reason: str | None = None  # why the claim exists again (a requeued Job), else None
+    memory_fits: bool = False
+    ahead: str | None = None
 
     def describe(self) -> str:
-        """One line: the need, the free memory, any blocked seat and the largest holders."""
-        claim = self.claim
-        if claim.run_alone:
-            if claim.budget_mb == 0:
-                reason = "Memory Budget unavailable"
-            elif claim.unmeasured:
-                reason = f"no memory measurement yet for {claim.unmeasured}"
-            else:
-                reason = "memory estimate unknown or above the Memory Budget"
-            text = f"waits to run alone ({reason})"
-        else:
-            text = (
-                f"needs {claim.reservation_mb or 0.0:,.0f} MiB; {self.free_mb:,.0f} MiB free "
-                f"of the {claim.budget_mb:,.0f} MiB Memory Budget"
-            )
-        text += "".join(
-            f"; waits for a {tool} seat ({held} of {cap} held)" for tool, held, cap in self.seats
-        )
+        """One line: what holds the claim, leading reason first, then the largest holders."""
+        memory = self._memory_clause()
+        others = [
+            f"waits for a {tool} seat ({held} of {cap} held)" for tool, held, cap in self.seats
+        ]
+        if self.ahead is not None:
+            others.append(f"waits in queue order behind {self.ahead}")
+        clauses = [memory, *others] if not (self.memory_fits and others) else [*others, memory]
         if self.holders:
             named = ", ".join(
                 f"{name} {'whole budget' if mb is None else f'{mb:,.0f} MiB'}"
                 for name, mb in self.holders
             )
-            text += f"; largest holders: {named}"
-        return text if self.reason is None else f"{text}; {self.reason}"
+            clauses.append(f"largest holders: {named}")
+        return "; ".join(clauses)
+
+    def _memory_clause(self) -> str:
+        """The run-alone wait with its reason, or the need and the free memory."""
+        claim = self.claim
+        if not claim.run_alone:
+            return (
+                f"needs {claim.reservation_mb or 0.0:,.0f} MiB; {self.free_mb:,.0f} MiB free "
+                f"of the {claim.budget_mb:,.0f} MiB Memory Budget"
+            )
+        if self.reason is not None:
+            why = self.reason
+        elif claim.budget_mb == 0:
+            why = "Memory Budget unavailable"
+        elif claim.unmeasured:
+            why = f"no memory measurement yet for {claim.unmeasured}"
+        else:
+            why = "memory estimate unknown or above the Memory Budget"
+        return f"waits to run alone ({why})"
 
 
 def _holder_name(token: SlotToken) -> str:
@@ -419,41 +433,77 @@ def memory_wait(
 ) -> MemoryWait | None:
     """What the memory waiter *own* waits for, or None when it holds no memory claim.
 
-    Position counts like the narrator always did: the blocked claims ahead of
-    *own* among the *waiters* ranked before it, behind the running *holders*.
-    "Free" is the Memory Budget minus the holders' reservations (nothing while
-    a run-alone Job runs); waiters ahead that are about to start are not
-    subtracted, so it can overstate what is free the instant a holder leaves.
+    Position counts the blocked claims ahead of *own* among the *waiters*
+    ranked before it, behind the running *holders*. The waiters ahead that
+    start now count as holders: "free" is the Memory Budget minus their
+    reservations and the holders' (nothing while a run-alone Job runs), so
+    position and free memory agree the instant a holder leaves.
     """
     claim = own.memory
     if claim is None:
         return None
-    ahead = [waiter.memory for waiter in waiters if waiter.path.name < own.path.name]
+    ahead = [waiter for waiter in waiters if waiter.path.name < own.path.name]
     running = [
         (held.memory, parse_stamp(held.promoted_at) or parse_stamp(held.created_at))
         for held in holders
     ]
-    _starts, blocked_ahead = _memory_queue(running, ahead, claim, now)
-    # Holders whose claim cannot be read say nothing about the budget: skip them.
-    claimed = [(held, held.memory) for held in holders if held.memory is not None]
-    alone = any(held_claim.run_alone for _held, held_claim in claimed)
-    used_mb = sum(held_claim.reservation_mb or 0.0 for _held, held_claim in claimed)
-    seats_held = Counter(tool for _held, held_claim in claimed for tool, _cap in held_claim.seats)
-    reserving = [pair for pair in claimed if _reserves(pair[1])]
-    largest = sorted(reserving, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    load, started, front = _project_ahead(running, [waiter.memory for waiter in ahead], claim, now)
+    admitted = [token for token, starts in zip(ahead, started, strict=True) if starts]
+    memory_fits = load.fits_memory(claim)
+    seats = tuple(
+        (tool, load.seats_used.get(tool, 0), cap)
+        for tool, cap in claim.seats
+        if load.seats_used.get(tool, 0) >= cap
+    )
+    free_mb = 0.0 if load.alone else max(0.0, claim.budget_mb - load.used_mb)
+    stopped = load.stopped
+    starts_now = load.admit(claim, now)
     return MemoryWait(
-        position=blocked_ahead + 1,
+        position=1 if starts_now else started.count(False) + 1,
         claim=claim,
         reason=own.queue_reason,
-        free_mb=0.0 if alone else max(0.0, claim.budget_mb - used_mb),
-        seats=tuple(
-            (tool, seats_held[tool], cap) for tool, cap in claim.seats if seats_held[tool] >= cap
-        ),
-        holders=tuple(
-            (_holder_name(held), None if held_claim.run_alone else held_claim.reservation_mb)
-            for held, held_claim in largest
-        ),
+        free_mb=free_mb,
+        seats=seats,
+        holders=_largest_holders(holders, admitted),
+        memory_fits=memory_fits,
+        ahead=_job_ahead(ahead, started, front, starts_now=starts_now, stopped=stopped),
     )
+
+
+def _largest_holders(
+    holders: list[SlotToken], started: list[SlotToken]
+) -> tuple[tuple[str, float | None], ...]:
+    """The largest reserving claims among the running *holders* and the *started* waiters."""
+    reserving = [
+        (token, token.memory)
+        for token in [*holders, *started]
+        if token.memory is not None and _reserves(token.memory)
+    ]
+    largest = sorted(reserving, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    return tuple(
+        (_holder_name(token), None if held.run_alone else held.reservation_mb)
+        for token, held in largest
+    )
+
+
+def _job_ahead(
+    ahead: list[SlotToken],
+    started: list[bool],
+    front: int | None,
+    *,
+    starts_now: bool,
+    stopped: bool,
+) -> str | None:
+    """The name of the Job whose place in queue order holds the claim, else ``None``.
+
+    A claim that starts now goes right after the nearest waiter ahead that
+    starts; one that does not is held by the front when that front is a
+    waiter ahead (not an unreadable holder, and not itself).
+    """
+    if starts_now:
+        nearest = [token for token, starts in zip(ahead, started, strict=True) if starts]
+        return _holder_name(nearest[-1]) if nearest else None
+    return _holder_name(ahead[front]) if stopped and front is not None else None
 
 
 def _holder_weight(claim: MemoryClaim) -> tuple[int, float]:
@@ -534,6 +584,10 @@ class _MemoryLoad:
             self.seats_used[tool] = self.seats_used.get(tool, 0) + 1
         self.finishes.append((finish, claim))
 
+    def fits_memory(self, claim: MemoryClaim) -> bool:
+        """True when *claim* fits the memory budget, whatever its seats."""
+        return self._fits(replace(claim, seats=()))
+
     def _fits(self, claim: MemoryClaim) -> bool:
         """True when *claim* fits the memory budget and a seat of each tool it holds is free."""
         if any(self.seats_used.get(tool, 0) >= cap for tool, cap in claim.seats):
@@ -604,16 +658,38 @@ def _memory_queue(
     first, and the claim starts); ``position`` counts the blocked claims ahead
     of it, and is 0 for a claim that fits.
     """
+    load, started_ahead, _front = _project_ahead(holders, ahead, claim, now)
+    fits = load.admit(claim, now)
+    blocked_ahead = started_ahead.count(False)
+    return (fits and not any(started_ahead), 0 if fits else blocked_ahead)
+
+
+def _project_ahead(
+    holders: list[tuple[MemoryClaim | None, float | None]],
+    ahead: list[MemoryClaim | None],
+    claim: MemoryClaim,
+    now: float,
+) -> tuple[_MemoryLoad, list[bool], int | None]:
+    """The load after the running *holders* and the waiters *ahead* of *claim* are walked.
+
+    Returns the load, which waiters ahead start, and the index of the front
+    (the waiter ahead that first blocked the queue; ``None`` when none did,
+    e.g. an unreadable holder stopped the walk).
+    """
     load = _MemoryLoad(claim.budget_mb)
     for held, started in holders:
         if held is None:
             load.stopped = True
         else:
             load.start(held, _finish(started, held.wall_s))
-    started_ahead = [load.admit(waiting, now) for waiting in ahead]
-    fits = load.admit(claim, now)
-    blocked_ahead = started_ahead.count(False)
-    return (fits and not any(started_ahead), 0 if fits else blocked_ahead)
+    started_ahead: list[bool] = []
+    front: int | None = None
+    for index, waiting in enumerate(ahead):
+        was_stopped = load.stopped
+        started_ahead.append(load.admit(waiting, now))
+        if load.stopped and not was_stopped:
+            front = index
+    return load, started_ahead, front
 
 
 @dataclass

@@ -856,7 +856,7 @@ def test_lint_and_custom_flow_jobs_queue_behind_a_run_alone_job(
             first.seq
         ]
     assert capsys.readouterr().err == (
-        f"[admission] {flow.name}: waiting for memory (position 1): needs {need_mb} MiB; "
+        f"[admission] {flow.name}: queued (position 1): needs {need_mb} MiB; "
         "0 MiB free of the 1,000 MiB Memory Budget; "
         "largest holders: run-1 (synth, t1) whole budget\n"
     )
@@ -944,9 +944,10 @@ def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(
             first.seq
         ]
     assert capsys.readouterr().err == (
-        "[admission] fpga: waiting for memory (position 1): "
+        "[admission] fpga: queued (position 1): "
+        "waits for a vivado seat (1 of 1 held); "
         "needs 500 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
-        f"waits for a vivado seat (1 of 1 held); largest holders: pid {os.getpid()} 100 MiB\n"
+        f"largest holders: pid {os.getpid()} 100 MiB\n"
     )
 
 
@@ -1153,12 +1154,12 @@ def test_requeued_job_narrates_the_requeue_reason_while_queued(
         line for line in capsys.readouterr().err.splitlines() if line.startswith("[admission]")
     ]
     assert len(lines) == 2
-    assert lines[0].startswith("[admission] synth: waiting for memory (position 1): needs 500 MiB")
+    assert lines[0].startswith("[admission] synth: queued (position 1): needs 500 MiB")
     assert lines[0].count(REQUEUE_REASON) == 0
     assert lines[1].startswith(
-        "[admission] synth: waiting for memory (position 1): waits to run alone"
+        f"[admission] synth: queued (position 1): waits to run alone ({REQUEUE_REASON})"
     )
-    assert lines[1].endswith(f"; {REQUEUE_REASON}")
+    assert "memory estimate unknown" not in lines[1]
 
 
 def test_requeue_never_waits_behind_its_own_claim(memory_runtime: Path, runtime: Path) -> None:
