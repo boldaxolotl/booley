@@ -280,7 +280,7 @@ def _swap_allowance_bytes(limit_bytes: int, proc_root: Path) -> int:
     """Return the swap the container may use: its cgroup allowance capped at the host's.
 
     0 when the cgroup states no swap limit (no swap accounting) or ``meminfo``
-    is unreadable, which keeps the fixed headroom.
+    is unreadable, which holds back a quarter of the base.
     """
     allowed = cgroup_swap_limit_bytes(limit_bytes)
     if allowed is None:
