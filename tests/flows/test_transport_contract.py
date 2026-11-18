@@ -15,6 +15,7 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
 from tests.flows.invocation_doubles import replace_run
 from tests.flows.report_headline import assert_paired_headline
+from tests.time_budget import hang_guard_s
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
 
@@ -187,7 +188,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))
-    monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "600")
+    monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", str(hang_guard_s()))
     cli = LintFlow().execute_cli(["--target", "lite"])
     assert cli.exit_code == 0
     cli_report = json.loads((runtime / "runtime/flow-reports/lint.json").read_text())
@@ -205,10 +206,9 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
         assert isinstance(content, tuple), content
         return content[1]["reports"][0]
 
-    # No wall-clock budget here: the child is a real Python process whose start-up
-    # is CPU-bound, so a fixed cap fails on a loaded host (a busy xdist run took
-    # more than 20 s for a ~3 s child). A hang is still bounded by the pytest
-    # timeout and the job supervisor's own timeout.
+    # The inline wait above is the only budget: a hang guard on the scaled policy,
+    # since the child is a real Python process whose CPU-bound start-up slows on a
+    # loaded host. A hang is also bounded by the job supervisor's own timeout.
     report = asyncio.run(dispatch())
     assert report["exit_code"] == 0
     assert "criterion_key" not in report and "criterion_met" not in report

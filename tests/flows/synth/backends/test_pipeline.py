@@ -781,7 +781,6 @@ def _run_fake_make(tmp_path: Path, monkeypatch, spec, scripts: dict[str, str]):
     result = run_bounded_child(
         ["make", "-C", str(plan.build_dir)],
         env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-        timeout=5,
     )
     return plan, result, started
 

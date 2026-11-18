@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -68,6 +69,7 @@ from tests.flows.synth.captured_yosys import load_capture
 from tests.fusesoc_test_support import relocated_project
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
+from tests.time_budget import hang_guard_s, scaled
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
 
@@ -2427,7 +2429,7 @@ class TestSingleConfigRun:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("live\n", encoding="utf-8")
             started.set()
-            if not release.wait(5.0):
+            if not release.wait(hang_guard_s()):
                 raise TimeoutError("test did not release held synthesis")
             return SubprocessResult(
                 returncode=0,
@@ -2443,14 +2445,14 @@ class TestSingleConfigRun:
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
             running = pool.submit(flow._run)
-            assert started.wait(5.0)
+            assert started.wait(hang_guard_s())
             try:
                 preview = dry_run._run()
                 assert marker.read_text(encoding="utf-8") == "live\n"
                 assert preview.exit_code == EXIT_SUCCESS
             finally:
                 release.set()
-            result = running.result(timeout=10.0)
+            result = running.result(timeout=hang_guard_s())
 
         assert result.exit_code == EXIT_SUCCESS
 
@@ -2486,10 +2488,10 @@ class TestSingleConfigRun:
         tmp_path: Path,
     ):
         flow, _ = flow_and_state
-        flow.args.timeout_ms = 1
+        flow.args.timeout_ms = math.ceil(scaled(1)) * 1000
         build_root = work_root_for(tmp_path, "synth", "lite")
 
-        with work_root_lease(build_root, timeout_s=1.0):
+        with work_root_lease(build_root, timeout_s=hang_guard_s()):
             result = flow._run()
 
         assert result.exit_code == EXIT_ERROR
