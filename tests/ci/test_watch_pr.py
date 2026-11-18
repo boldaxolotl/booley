@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.time_budget import hang_guard_s
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/watch_pr.py"
@@ -60,9 +60,12 @@ def write_fake_gh(tmp_path: Path, source: str) -> Path:
     return launcher
 
 
-def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_script(
+    *args: str, env: dict[str, str] | None = None, timeout: float = SUBPROCESS_TIMEOUT_S
+) -> subprocess.CompletedProcess[str]:
     return run_bounded_child(
         ["python3", str(SCRIPT), *args],
+        timeout=timeout,
         env=env,
         check=False,
     )
@@ -946,6 +949,7 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
         "--producer-registration-grace-seconds",
         str(hang_guard_s()),
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        timeout=2 * hang_guard_s(),
     )
 
     lines = result.stdout.splitlines()
@@ -1004,6 +1008,7 @@ def test_cli_reports_bounded_missing_check_evidence(tmp_path: Path) -> None:
         "--producer-registration-grace-seconds",
         str(hang_guard_s()),
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        timeout=2 * hang_guard_s(),
     )
 
     lines = result.stdout.splitlines()

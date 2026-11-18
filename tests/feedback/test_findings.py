@@ -24,7 +24,7 @@ from booley.feedback.findings import (
 )
 from tests.time_budget import hang_guard_s, scaled
 
-# Waits that a healthy run ends at once; twice the hang guard keeps them above the 10 s joins.
+# Waits that a healthy run ends at once; twice the hang guard keeps them above the hang-guard joins.
 _WAIT_S = 2 * hang_guard_s()
 
 

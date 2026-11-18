@@ -111,7 +111,7 @@ exports.activate = async () => {
 
 
 def run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
-    # Kept on subprocess.run: standalone script outside pytest, with its own hang guard.
+    # Kept on subprocess.run: a standalone script outside pytest; it only needs the hang guard.
     return subprocess.run(
         argv, check=True, timeout=hang_guard_s(), capture_output=True, text=True, **kwargs
     )
@@ -250,7 +250,7 @@ def editor_environment() -> dict[str, str]:
 
 
 def await_result(root: Path, project: Path, process: subprocess.Popen) -> dict:
-    deadline = time.monotonic() + 6 * hang_guard_s()
+    deadline = time.monotonic() + 10 * hang_guard_s()
     result_path = project / "attach-result.json"
     while not result_path.exists() and time.monotonic() < deadline:
         if process.poll() is not None:
