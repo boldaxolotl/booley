@@ -115,20 +115,48 @@ read-only, and delegating it would loosen the hardening.
 
 - While a Job holds a reservation, Booley ranks its processes for the kernel
   OOM killer through `oom_score_adj` by admission order: the newest running
-  Job's tools are killed first (it is the Job most likely to have tipped the
-  container), every Job's processes before the Developer Agent's, the MCP
+  Job's tools rank first (it is the Job most likely to have tipped the
+  container), then older Jobs' by age, then the Developer Agent's, the MCP
   server's and the Dashboard's. The Job's coordinator, the process holding
   its claim, ranks just below its own tools, so a kill takes a tool and leaves
   the coordinator able to report it or requeue the Job. The levels, the gap
   and the refresh interval live in the code, with a test that checks the
   ranking against the kernel's formula.
+- The ranking is a bound, not a guarantee. The kernel kills the highest
+  `1000 x share + oom_score_adj`, share being a process's share of the
+  Sandbox's OOM limit, so a higher-ranked process dies first only while the
+  other's share exceeds its own by less than their level difference over 1000.
+  The newest Job's tools die before an older Job's processes while the older
+  uses less than half the limit more. Older Jobs' tools die in age order while
+  within 5 % of the limit of each other (2.5 % for a coordinator against the
+  next older Job's tools; Jobs with five or more newer ones share one level).
+  A Job's processes die before the agent's while the agent uses less than
+  about a quarter of the limit more (27.5 % against a coordinator on the
+  lowest level). A coordinator dies after its own tools while it uses less
+  than 2.5 % of the limit more. Beyond a bound the larger process may die
+  first. A stronger guarantee is not possible: every level must fit between
+  the agent's 0 and the kernel's maximum 1000, since going below 0 needs
+  privilege and would rank Jobs below the agent, so widening one gap narrows
+  another, and an unconditional order needs a 1000-point gap at every step.
+  The larger process is the likelier over-user, so the bound is accepted.
+  `tests/runtime/test_oom_priority.py` checks these reference sizes against
+  the kernel's formula; change a size there and here together:
+
+  | Claim | Reference sizes |
+  |---|---|
+  | Newest Job's tools before the next older Job's | newest 0.1 %, older 45 % |
+  | Newer before older Job's tools, among older Jobs | newer 0.1 %, older 4.5 % |
+  | Job processes before the agent | Coordinator on the lowest level 0 %, agent 12 % |
+  | Coordinator below its own tools | coordinator 2 %, tool 0 % |
+
 - Raising `oom_score_adj` needs no privilege, so the Sandbox hardening is
   unchanged. The ranking assumes the container sets neither a starting score
   nor `memory.oom.group`, and that tools stay in the coordinator's process
   tree; where `/proc` is missing it does nothing.
 - Booley does not add a memory-pressure watcher: it is new always-on
   machinery, and the kernel's priority already gives "newest first, never the
-  agent". It would be added only if OOM kills turn out to be common.
+  agent" within those bounds. It would be added only if OOM kills turn out to
+  be common.
 - A Job killed by the OOM killer at the Sandbox's limit is requeued once, to
   run alone, with its estimate raised to at least its observed peak; a second
   kill while alone fails it. Results and evidence come only from the final
@@ -165,11 +193,11 @@ Every work item of a simulation or coverage record is admitted on its own,
 with its own key. The Flow's reservation covers preparation and build, then
 drops to zero, and admission decides how many items run at once. Each item
 ranks for the OOM killer as a Job newer than its Flow, so the newest item's
-simulator dies first. An item's own OOM kill at the Sandbox's limit stops
-only that item: it is requeued once, to run alone after the running items
-finish, and its second failure is its result. A host kill of an item is never
-requeued. A kill of an item running under the Flow's own claim
-requeues the whole Flow Job instead.
+simulator ranks first, within the bounds of the Out-of-memory guard. An item's
+own OOM kill at the Sandbox's limit stops only that item: it is requeued once,
+to run alone after the running items finish, and its second failure is its
+result. A host kill of an item is never requeued. A kill of an item running
+under the Flow's own claim requeues the whole Flow Job instead.
 
 ## Considered options
 

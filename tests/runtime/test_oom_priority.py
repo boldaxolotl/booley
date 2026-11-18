@@ -413,9 +413,9 @@ class TestProcOom:
 def test_values_hold_newest_first_and_never_the_agent_at_adr_reference_sizes() -> None:
     """The kernel kills the highest ``1000 x share + oom_score_adj``.
 
-    The shares are the reference sizes of ADR 0087 (Out-of-memory guard and
-    requeue): change one here and in the ADR together. Shares are fractions of
-    the memory limit (a 32 GiB container: 0.001 is 32 MiB).
+    The shares are the reference sizes listed in ADR 0087 (Out-of-memory
+    guard): change one here and in the ADR together. Shares are fractions of
+    the Sandbox's OOM limit (a 32 GiB limit: 0.001 is about 33 MiB).
     """
 
     def score(share: float, adj: int) -> float:
@@ -432,7 +432,7 @@ def test_values_hold_newest_first_and_never_the_agent_at_adr_reference_sizes() -
     # Newer against older among the older Jobs: 0.1 % against 4.5 %.
     for newer_level, older_level in itertools.pairwise(levels):
         assert score(0.001, newer_level) > score(0.045, older_level)
-    # Never the agent: a 12 % agent against a Job process at 0 % on the lowest level.
+    # Never the agent: a 12 % agent against a coordinator at 0 % on the lowest level.
     lowest_coordinator = oom_priority.LOWEST_COORDINATOR_ADJ
     assert score(0.0, levels[-1]) > score(0.12, 0)
     assert score(0.0, lowest_coordinator) > score(0.12, 0)
