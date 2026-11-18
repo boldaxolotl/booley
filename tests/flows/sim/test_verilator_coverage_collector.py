@@ -755,87 +755,74 @@ def test_invalid_start_hook_is_a_collector_error(
     assert result.runs[0].simulation_verdict == "pass"
 
 
-@pytest.mark.parametrize(
-    ("harness", "hooks", "reset_included", "expected_code", "expected_fix"),
-    [
-        (
-            "generated_main",
-            ("write_hook",),
-            True,
-            "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
-            "remove it",
-        ),
-        (
-            "custom_main",
-            ("write_hook", "write_hook"),
-            True,
-            "COV_CUSTOM_MAIN_HOOK_DUPLICATE",
-            "more than once",
-        ),
-        (
-            "custom_main",
-            ("write_hook", "mystery"),
-            True,
-            "COV_CUSTOM_MAIN_HOOK_UNKNOWN",
-            "['mystery']",
-        ),
-        (
-            "custom_main",
-            (),
-            True,
-            "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED",
-            "booley_coverage_write() once on every normal exit path",
-        ),
-        (
-            "custom_main",
-            ("write_hook",),
-            False,
-            "COV_CUSTOM_MAIN_START_HOOK_REQUIRED",
-            "booley_coverage_start() once after reset",
-        ),
-        (
-            "custom_main",
-            ("write_hook", "start_hook"),
-            True,
-            "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY",
-            "reset_included: false",
-        ),
-    ],
-    ids=[
-        "forbidden",
-        "duplicate",
-        "unknown",
-        "write_hook_required",
-        "start_hook_required",
-        "start_hook_unnecessary",
-    ],
-)
-def test_invalid_custom_main_hook_declarations_fail_before_execution(
-    tmp_path: Path,
-    harness: str,
-    hooks: tuple[str, ...],
-    reset_included: bool,
-    expected_code: str,
-    expected_fix: str,
-) -> None:
-    request = _request(
-        tmp_path,
-        "custom",
-        harness=harness,
-        hooks=hooks,
-        reset_included=reset_included,
-        sources=(),
-    )
+_INVALID_HOOK_CASES = [
+    (
+        "generated_main",
+        ("write_hook",),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
+        "remove it",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "write_hook"),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_DUPLICATE",
+        "more than once",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "mystery"),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_UNKNOWN",
+        "['mystery']",
+    ),
+    (
+        "custom_main",
+        (),
+        True,
+        "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED",
+        "booley_coverage_write() once on every normal exit path",
+    ),
+    (
+        "custom_main",
+        ("write_hook",),
+        False,
+        "COV_CUSTOM_MAIN_START_HOOK_REQUIRED",
+        "booley_coverage_start() once after reset",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "start_hook"),
+        True,
+        "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY",
+        "reset_included: false",
+    ),
+]
 
-    result = collect(request, _NoExecution())
 
-    assert result.status == "collector_error"
-    assert result.runs == ()
-    assert [finding.code for finding in result.findings] == [expected_code]
-    message = result.findings[0].message
-    assert message.startswith("sim_counter: ")
-    assert "flow_options.booley.coverage.custom_main_hooks" in message
-    assert expected_fix in message
+def test_invalid_custom_main_hook_declarations_fail_before_execution(tmp_path: Path) -> None:
+    for index, (harness, hooks, reset_included, expected_code, expected_fix) in enumerate(
+        _INVALID_HOOK_CASES
+    ):
+        request = _request(
+            tmp_path / str(index),
+            "custom",
+            harness=harness,
+            hooks=hooks,
+            reset_included=reset_included,
+            sources=(),
+        )
+
+        result = collect(request, _NoExecution())
+
+        assert result.status == "collector_error", expected_code
+        assert result.runs == ()
+        assert [finding.code for finding in result.findings] == [expected_code]
+        message = result.findings[0].message
+        assert message.startswith("sim_counter: "), expected_code
+        assert "flow_options.booley.coverage.custom_main_hooks" in message, expected_code
+        assert expected_fix in message, expected_code
 
 
 def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) -> None:
