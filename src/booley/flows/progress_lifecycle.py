@@ -59,7 +59,13 @@ def _publication() -> Iterator[None]:
         callback = _after_publication
         if _publication_depth == 0 and callback is not None:
             _after_publication = None
-            callback()
+            _run_marked(callback)
+
+
+def _run_marked(callback: Callable[[], None]) -> None:
+    """Run a signal's callback as a publication: a second signal during it waits for it."""
+    with _publication():
+        callback()
 
 
 def after_progress_publication(callback: Callable[[], None]) -> None:
@@ -67,11 +73,11 @@ def after_progress_publication(callback: Callable[[], None]) -> None:
 
     For a signal handler that ends the process: ending it mid-publication would keep the
     progress lock held and the document non-terminal. A call while one is pending keeps
-    the first.
+    the first, and a signal during *callback* itself waits for it.
     """
     global _after_publication
     if _publication_depth == 0:
-        callback()
+        _run_marked(callback)
     elif _after_publication is None:
         _after_publication = callback
 
