@@ -687,7 +687,13 @@ def test_unmet_lint_and_mutation_tables_list_their_items_and_report(tmp_path: Pa
     reports = []
     for identity, flows in sources.items():
         for flow in flows:
-            source = tmp_path / "sources" / identity / flow / "report.json"
+            source = (
+                tmp_path
+                / "sources"
+                / identity.replace(":", "_").replace("#", "_")
+                / flow
+                / "report.json"
+            )
             write(source, "{}")
             reports.append(FlowReport(identity, flow, source))
     stored = store.write(build_run(key_of(repo, head), "r1", (lint, mutation, other)), reports)
