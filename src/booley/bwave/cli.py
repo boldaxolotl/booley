@@ -194,10 +194,10 @@ def _no_trace_found_message(directory: str | Path, note: str = "") -> str:
 # import would raise "attempted relative import with no known parent package".
 from booley.bwave.sessions import (
     _DEFAULT_ALIAS,
+    MarkerLookup,
     _get_markers,
     _load_sessions,
     _save_sessions,  # noqa: F401  # re-exported for backward compatibility
-    _validate_marker_name,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
     current_session_store,
@@ -205,17 +205,19 @@ from booley.bwave.sessions import (
 )
 
 
-def _marker_cycle_token(token: str, markers: dict[str, int]) -> str:
+def _marker_cycle_token(token: str, markers: MarkerLookup) -> str:
     """Replace a persisted marker name with an explicit cycle token."""
-    return f"{markers[token]}c" if token in markers else token
+    cycle = markers.cycle(token)
+    return token if cycle is None else f"{cycle}c"
 
 
-def _marker_bare_cycle(token: str, markers: dict[str, int]) -> str:
+def _marker_bare_cycle(token: str, markers: MarkerLookup) -> str:
     """Replace a marker where the native option accepts only a bare integer."""
-    return str(markers[token]) if token in markers else token
+    cycle = markers.cycle(token)
+    return token if cycle is None else str(cycle)
 
 
-def _resolve_marker_range(value: str, markers: dict[str, int]) -> str:
+def _resolve_marker_range(value: str, markers: MarkerLookup) -> str:
     """Resolve persisted markers in a typed START:END time range."""
     if ":" not in value:
         return _marker_cycle_token(value, markers)
@@ -223,7 +225,7 @@ def _resolve_marker_range(value: str, markers: dict[str, int]) -> str:
     return f"{_marker_cycle_token(start, markers)}:{_marker_cycle_token(end, markers)}"
 
 
-def _rewrite_marker_bound(extra: list[str], markers: dict[str, int]) -> None:
+def _rewrite_marker_bound(extra: list[str], markers: MarkerLookup) -> None:
     """Express named --before/--after bounds as typed cycle ranges."""
     for flag, range_template, direction in (
         ("--before", ":{}c", "--last"),
@@ -232,29 +234,23 @@ def _rewrite_marker_bound(extra: list[str], markers: dict[str, int]) -> None:
         if flag not in extra:
             continue
         index = extra.index(flag)
-        if index + 1 < len(extra) and extra[index + 1] in markers:
-            cycle = markers[extra[index + 1]]
-            extra[index : index + 2] = ["-t", range_template.format(cycle), direction]
+        if index + 1 < len(extra):
+            cycle = markers.cycle(extra[index + 1])
+            if cycle is not None:
+                extra[index : index + 2] = ["-t", range_template.format(cycle), direction]
 
 
 def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
-    """Resolve persisted marker names in wrapper time arguments, in-place."""
-    markers = _get_markers(_load_sessions(), alias)
-    if not markers:
-        return
+    """Resolve persisted marker names in wrapper time arguments, in-place.
 
-    _rewrite_marker_bound(extra, markers)
+    Each typed argument is looked up once, so a token this function produced
+    (`start` -> `10c`) is never looked up again as a Marker name.
+    """
+    markers = MarkerLookup(alias, _get_markers(_load_sessions(), alias))
 
-    if extra:
-        sub = extra[0]
-        if sub == "diff" and len(extra) >= 3:
-            extra[1] = _marker_cycle_token(extra[1], markers)
-            extra[2] = _marker_cycle_token(extra[2], markers)
-        elif sub == "value":
-            for j, tok in enumerate(extra):
-                if tok == "--at" and j + 1 < len(extra):
-                    extra[j + 1] = _marker_cycle_token(extra[j + 1], markers)
-                    break
+    if extra and extra[0] == "diff" and len(extra) >= 3:
+        extra[1] = _marker_cycle_token(extra[1], markers)
+        extra[2] = _marker_cycle_token(extra[2], markers)
 
     i = 0
     while i < len(extra):
@@ -273,6 +269,8 @@ def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
             i += 3
         else:
             i += 1
+
+    _rewrite_marker_bound(extra, markers)
 
 
 def _inject_marker_flags(extra: list[str], alias: str) -> None:
@@ -1176,7 +1174,7 @@ class _TickResolver:
 
     def __init__(self, trace: str, alias: str):
         self.trace = trace
-        self.markers = _get_markers(_load_sessions(), alias)
+        self.markers = MarkerLookup(alias, _get_markers(_load_sessions(), alias))
         self._total_ticks: int | None = None
 
     def to_tick(self, token: str, *, option: str) -> int:
@@ -1191,8 +1189,9 @@ class _TickResolver:
         # Markers are stored as cycle numbers; make the unit explicit so the
         # token survives async traces' bare-integer rejection with a clear
         # error pointing at the cycle grammar rather than a mystery number.
-        if token in self.markers:
-            token = f"{self.markers[token]}c"
+        cycle = self.markers.cycle(token)
+        if cycle is not None:
+            token = f"{cycle}c"
         command = ["value", self.trace]
         # Tick and physical-time tokens are absolute file positions. Resolving
         # them in sync mode first quantizes them to a clock cycle and then maps
@@ -2405,7 +2404,8 @@ Actions:
   list               Show all markers sorted by cycle
   delete NAME        Remove a marker
 
-Marker names must contain at least one non-digit character.
+Marker names need a non-digit character and cannot be a time token (5c, 10ns)
+or contain ':'.
 Markers persist across queries in the session file.
 
 Once set, markers resolve anywhere a cycle number is accepted:

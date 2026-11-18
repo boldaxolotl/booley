@@ -50,6 +50,12 @@ alias, and each checkout has its own:
    `bwave @dut value --at err_start` or
    `bwave @dut diff err_start err_done`.
 
+A marker name needs a non-digit character and cannot start with `-`, contain
+whitespace or `:`, be a time token such as `5c` or `10ns`
+(`reference/time-tokens`), or be a bwave subcommand such as `wave`. So a typed
+time always means that time, and any name can end a `-t` range.
+`bwave markers set` refuses any other name and suggests one, such as `at_5c`.
+
 The wrapper substitutes those names into time arguments before invoking the
 native binary. Stored cycles are passed as explicit `Nc` tokens where the
 native command accepts typed time. For `wave`, the wrapper additionally passes

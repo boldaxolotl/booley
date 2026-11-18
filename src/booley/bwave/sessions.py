@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -466,17 +467,41 @@ def cmd_register(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 # Subcommand: markers
 # ---------------------------------------------------------------------------
+# The native time-token grammar (`TimeToken::parse` in crates/bwave/src/format.rs):
+# an integer with an optional sign (Rust's i64 parse accepts '+') and an optional
+# case-sensitive unit suffix. ASCII digits only, hence [0-9] and not \d.
+_TIME_TOKEN = re.compile(r"[+-]?[0-9]+(?:c|t|ns|us|ms|ps)?")
+
+
+def is_time_token(name: str) -> bool:
+    """True when *name* is a time token the native binary reads as a time."""
+    return _TIME_TOKEN.fullmatch(name) is not None
+
+
 def _validate_marker_name(name: str) -> bool:
     """Marker names must contain at least one non-digit character, no
-    whitespace, no leading dash (else they'd parse as a CLI flag downstream),
-    and must not collide with a known subcommand name."""
+    whitespace or ':' (it separates the ends of a -t range), no leading dash
+    (else they'd parse as a CLI flag downstream), must not be a time token, and
+    must not collide with a known subcommand name."""
     from booley.bwave import cli as bwave  # lazy: CLI subcommand tables live in bwave
 
-    if not name or name.isdigit():
+    if not name or is_time_token(name) or ":" in name:
         return False
     if name.startswith("-") or any(c.isspace() for c in name):
         return False
     return name not in bwave._V02_SUBCOMMANDS and name not in bwave._KNOWN_COMMANDS
+
+
+def _marker_name_hint(name: str) -> str:
+    """Suggest a valid name for a refused one."""
+    if name.isdigit():
+        # Pure-digit name was the common mistake: suggest a labelled form.
+        return f" (try 't{name}', 'cyc_{name}', or any non-digit prefix)"
+    if is_time_token(name):
+        return f" ('{name}' is a time token; try 'at_{name}' or a name such as 'irq_start')"
+    if ":" in name:
+        return f" (':' separates the ends of a -t range; try '{name.replace(':', '_')}')"
+    return ""
 
 
 # Sanity ceiling for a marker cycle — anything past this is almost certainly
@@ -490,6 +515,36 @@ def _get_markers(sessions: dict, alias: str) -> dict:
     return sessions.get(alias, {}).get("markers", {})
 
 
+class MarkerLookup:
+    """Resolve typed names against an alias's stored Markers.
+
+    A stored Marker whose name is a time token never replaces the time the user
+    typed: `cycle` returns None for it and warns once per name.
+    """
+
+    def __init__(self, alias: str, markers: dict[str, int]):
+        self._alias = alias
+        self._markers = markers
+        self._warned: set[str] = set()
+
+    def cycle(self, token: str) -> int | None:
+        """The stored cycle for *token*, or None when it names no usable Marker."""
+        if token not in self._markers:
+            return None
+        if is_time_token(token):
+            if token not in self._warned:
+                self._warned.add(token)
+                delete = f"bwave markers {quote_arg('@' + self._alias)} delete {quote_arg(token)}"
+                print(
+                    f"WARNING: marker '{token}' on @{self._alias} is ignored: "
+                    f"'{token}' is a time token and keeps its time meaning. "
+                    f"Delete the marker: {delete}",
+                    file=sys.stderr,
+                )
+            return None
+        return self._markers[token]
+
+
 def _marker_set(sessions: dict, alias: str, extra: list[str], store: SessionStore) -> None:
     if len(extra) < 3:
         sys.exit(
@@ -497,14 +552,11 @@ def _marker_set(sessions: dict, alias: str, extra: list[str], store: SessionStor
         )
     name = extra[1]
     if not _validate_marker_name(name):
-        hint = ""
-        if name.isdigit():
-            # Pure-digit name was the common mistake — suggest a labelled form.
-            hint = f" (try 't{name}', 'cyc_{name}', or any non-digit prefix)"
         sys.exit(
             f"ERROR: invalid marker name '{name}'. Names must contain a "
-            "non-digit char, have no whitespace, not start with '-', and "
-            "not collide with a bwave subcommand (e.g. 'wave', 'find', ...)." + hint
+            "non-digit char, have no whitespace or ':', not start with '-', not be "
+            "a time token such as '5c' or '10ns', and not collide with a bwave "
+            "subcommand (e.g. 'wave', 'find', ...)." + _marker_name_hint(name)
         )
     try:
         cycle = int(extra[2])

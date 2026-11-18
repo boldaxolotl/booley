@@ -1912,9 +1912,9 @@ def test_max_signals_raises_the_cap(tmp_path, monkeypatch, fake_rust):
     assert viewer.shown() == bus
 
 
-def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust):
+def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust, capsys):
     trace = _make_trace(tmp_path)
-    _write_sessions({"dut": _make_entry(str(trace), markers={"overflow": 1200})})
+    _write_sessions({"dut": _make_entry(str(trace), markers={"overflow": 1200, "1400c": 7})})
     viewer = _viewer_for(trace, monkeypatch)
 
     _gui("@dut", time="overflow:1400c")
@@ -1928,6 +1928,7 @@ def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust):
         "start": 1200 * _TICKS_PER_CYCLE,
         "end": 1400 * _TICKS_PER_CYCLE,
     }
+    assert "marker '1400c' on @dut is ignored" in capsys.readouterr().err
 
 
 def test_gui_ended_range_uses_list_total_ticks(tmp_path, monkeypatch, fake_rust):

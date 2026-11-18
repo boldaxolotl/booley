@@ -824,13 +824,56 @@ def test_register_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
     assert sessions["_last"]["markers"] == {"last_only": 99}
 
 
-def test_marker_name_validation():
+def _register_dut(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
-    for bad in ["", "123", "-bad", "has space", "wave", "register"]:
-        assert not bwave._validate_marker_name(bad), bad
-    for good in ["error_start", "t123"]:
-        assert bwave._validate_marker_name(good), good
+    use_store(monkeypatch, tmp_path / "sessions.json")
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
+    bwave.register_trace(trace, alias="dut")
+
+
+@pytest.mark.parametrize(
+    ("name", "hint"),
+    [
+        ("123", "t123"),
+        ("5c", "at_5c"),
+        ("10ns", "at_10ns"),
+        ("7t", "at_7t"),
+        ("3us", "at_3us"),
+        ("+5c", "at_+5c"),
+        ("a:b", "a_b"),
+        (":x", "_x"),
+        ("", None),
+        ("-bad", None),
+        ("has space", None),
+        ("wave", None),
+    ],
+)
+def test_markers_set_refuses_names_typed_arguments_claim(tmp_path, monkeypatch, name, hint):
+    from booley.bwave import cli as bwave
+
+    _register_dut(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", name, "10"]))
+
+    message = str(exc.value)
+    assert "invalid marker name" in message
+    if hint is not None:
+        assert f"'{hint}'" in message
+    assert "markers" not in bwave._load_sessions()["dut"]
+
+
+@pytest.mark.parametrize("name", ["t12", "irq_start", "cyc_5", "5C"])
+def test_markers_set_accepts_names_with_a_label(tmp_path, monkeypatch, name):
+    from booley.bwave import cli as bwave
+
+    _register_dut(tmp_path, monkeypatch)
+
+    bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", name, "10"]))
+
+    assert bwave._load_sessions()["dut"]["markers"] == {name: 10}
 
 
 def test_markers_set_list_delete(tmp_path, monkeypatch, capsys):
@@ -853,29 +896,61 @@ def test_markers_set_list_delete(tmp_path, monkeypatch, capsys):
     assert "start" not in bwave._load_sessions()["dut"]["markers"]
 
 
-def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch):
+def test_conflicting_marker_can_be_listed_and_deleted(tmp_path, monkeypatch, capsys):
+    from booley.bwave import cli as bwave
+
+    _register_dut(tmp_path, monkeypatch)
+    # A session written before `set` refused time-token names holds one.
+    sessions = bwave._load_sessions()
+    sessions["dut"]["markers"] = {"5c": 30}
+    bwave._save_sessions(sessions)
+
+    bwave.cmd_markers(argparse.Namespace(extra=["@dut", "list"]))
+    assert "5c" in capsys.readouterr().out
+
+    bwave.cmd_markers(argparse.Namespace(extra=["@dut", "delete", "5c"]))
+    assert bwave._load_sessions()["dut"]["markers"] == {}
+
+
+def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch, capsys):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
     use_store(monkeypatch, session_file)
-    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
+    markers = {"start": 10, "done": 20, "5c": 30, "10ns": 40, "10c": 50, "20c": 60}
+    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers=markers)})
 
     cases = [
-        (["-t", "start:done"], ["-t", "10c:20c"]),
-        (["--before", "done"], ["-t", ":20c", "--last"]),
-        (["--after", "start"], ["-t", "10c:", "--first"]),
+        (["-t", "start:done"], ["-t", "10c:20c"], None),
+        (["--before", "done"], ["-t", ":20c", "--last"], None),
+        (["--after", "start"], ["-t", "10c:", "--first"], None),
         (
             ["find", "sig", "1", "--before", "done", "--async"],
             ["find", "sig", "1", "-t", ":20c", "--last", "--async"],
+            None,
         ),
-        (["--diff", "start", "done"], ["--diff", "10c", "20c"]),
-        (["diff", "start", "done"], ["diff", "10c", "20c"]),
-        (["value", "--at", "start"], ["value", "--at", "10c"]),
-        (["-t", "unknown:done"], ["-t", "unknown:20c"]),
+        (["--diff", "start", "done"], ["--diff", "10c", "20c"], None),
+        (["diff", "start", "done"], ["diff", "10c", "20c"], None),
+        (["value", "--at", "start"], ["value", "--at", "10c"], None),
+        (["-t", "unknown:done"], ["-t", "unknown:20c"], None),
+        (["-t", "start:10ns"], ["-t", "10c:10ns"], "10ns"),
+        (["diff", "5c", "done"], ["diff", "5c", "20c"], "5c"),
+        (["--diff", "10ns", "start"], ["--diff", "10ns", "10c"], "10ns"),
+        (["--before", "5c"], ["--before", "5c"], "5c"),
+        (["--after", "10ns"], ["--after", "10ns"], "10ns"),
+        (["--at-cycle", "5c"], ["--at-cycle", "5c"], "5c"),
+        (["--at-time", "10ns"], ["--at-time", "10ns"], "10ns"),
+        (["find", "sig", "1", "--at", "5c"], ["find", "sig", "1", "--at", "5c"], "5c"),
     ]
-    for args, expected in cases:
+    for args, expected, warned in cases:
+        capsys.readouterr()
         bwave._resolve_markers_in_args(args, "dut")
         assert args == expected
+        err = capsys.readouterr().err
+        if warned is None:
+            assert err == "", args
+        else:
+            assert f"marker '{warned}' on @dut is ignored" in err, args
 
 
 def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
@@ -941,6 +1016,53 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
             "2000",
         ]
     ]
+
+
+@pytest.mark.parametrize(
+    ("alias", "argv", "flag", "typed", "name", "delete"),
+    [
+        (
+            "dut",
+            ["@dut", "wave", "-s", "top.dut.state", "-t", "5c:12c"],
+            "-t",
+            "5c:12c",
+            "5c",
+            "bwave markers @dut delete 5c",
+        ),
+        (
+            "my dut",
+            ["@my dut", "value", "--at", "10ns", "-s", "top.dut.state"],
+            "--at",
+            "10ns",
+            "10ns",
+            "bwave markers '@my dut' delete 10ns",
+        ),
+    ],
+    ids=["wave-range", "value-at-spaced-alias"],
+)
+def test_query_keeps_typed_time_over_a_conflicting_marker(
+    tmp_path, monkeypatch, capsys, alias, argv, flag, typed, name, delete
+):
+    from booley.bwave import cli as bwave
+
+    use_store(monkeypatch, tmp_path / "sessions.json")
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
+    _write_sessions({alias: _make_entry(str(trace), markers={"5c": 10, "10ns": 3})})
+    calls = []
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
+    monkeypatch.setattr(bwave, "_run", lambda cmd: calls.append(cmd) or 0)
+
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=argv))
+
+    assert exc.value.code == 0
+    (native,) = calls
+    assert native[native.index(flag) + 1] == typed
+    warnings = [x for x in capsys.readouterr().err.splitlines() if x.startswith("WARNING: marker")]
+    assert len(warnings) == 1
+    assert f"marker '{name}' on @{alias} is ignored" in warnings[0]
+    assert delete in warnings[0]
 
 
 def test_query_resolves_v02_diff_markers(tmp_path, monkeypatch):
