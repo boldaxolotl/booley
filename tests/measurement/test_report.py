@@ -154,6 +154,26 @@ def test_verdict_line_counts_tracked_errors_apart_from_enforced_bounds(tmp_path:
     assert "2 of 2 enforced met; 2 tracked errors" in terminal_report(view)
 
 
+def test_verdict_line_counts_tracked_not_evaluated_apart_from_enforced_bounds(
+    tmp_path: Path,
+) -> None:
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(repo / ".booley")
+    entries = (
+        Entry("cell_count_max", "cell_count", 90, bound=100),
+        Entry("area_um2", "area_um2", None, verdict=Verdict.NOT_EVALUATED),
+        Entry("wns_ns", "wns_ns", None, verdict=Verdict.NOT_EVALUATED),
+    )
+    run = build_run(
+        key_of(repo, head), "r1", (Table("synth", entries),), status=RunStatus.CANCELLED
+    )
+    view = view_of(repo, store, store.write(run, []), head)
+
+    line = "1 of 1 enforced met; 2 tracked not evaluated"
+    assert f"**{line}**" in markdown_report(view)
+    assert line in terminal_report(view)
+
+
 def agent_summary(view: dict[str, Any]) -> str:
     from booley.measurement.report import agent_summary as summarize
 
