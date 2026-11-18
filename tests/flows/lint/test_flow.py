@@ -2566,10 +2566,11 @@ class TestFlowMetrics:
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             return flow._run_lint_target(_target_handle("lite", eda_tool=family))
 
-    @pytest.mark.parametrize(
-        ("family", "output", "returncode", "expected"),
-        [
-            pytest.param(
+    def test_findings_return_unique_warning_and_error_counts(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        cases = [
+            (
                 "verilator",
                 _VERILATOR_FINDINGS,
                 2,
@@ -2583,9 +2584,8 @@ class TestFlowMetrics:
                         "rtl/b.v:9 WIDTH: Operator ASSIGNW expects 8 bits",
                     ],
                 },
-                id="verilator",
             ),
-            pytest.param(
+            (
                 "verible",
                 _VERIBLE_FINDINGS,
                 1,
@@ -2599,24 +2599,14 @@ class TestFlowMetrics:
                         "rtl/top.sv:9 line-length: Line length exceeds 100.",
                     ],
                 },
-                id="verible",
             ),
-        ],
-    )
-    def test_findings_return_unique_warning_and_error_counts(
-        self,
-        tmp_path: Path,
-        state_file: Path,
-        family: str,
-        output: str,
-        returncode: int,
-        expected: dict[str, list[str]],
-    ) -> None:
-        result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
+        ]
+        for family, output, returncode, expected in cases:
+            result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
 
-        values = result.flow_metrics()
-        assert values.plain == {"warnings": 2, "errors": 2}
-        assert values.counted_items == expected
+            values = result.flow_metrics()
+            assert values.plain == {"warnings": 2, "errors": 2}, family
+            assert values.counted_items == expected, family
 
     def test_listed_findings_are_capped_and_cut(self, tmp_path: Path, state_file: Path) -> None:
         output = "".join(
@@ -2671,33 +2661,28 @@ class TestFlowMetrics:
         with pytest.raises(MetricsUnavailableError, match="exited 3"):
             result.flow_metrics()
 
-    @pytest.mark.parametrize(
-        ("output", "expected"),
-        [
+    def test_lint_error_findings_verilator(self) -> None:
+        from booley.flows.lint.flow import lint_error_findings
+
+        cases = [
             # Two different errors on one line count twice; a rule-less, location-less one once.
-            pytest.param(
+            (
                 "%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n",
                 3,
-                id="same-line-and-locationless",
             ),
             # A repeated line counts once; the same message under another rule counts again.
-            pytest.param(
+            (
                 "%Error-UNSUPPORTED: a.v:2:1: nope\n%Error-UNSUPPORTED: a.v:2:1: nope\n"
                 "%Error: a.v:2:1: nope\n",
                 2,
-                id="repeated-and-other-rule",
             ),
             # Continuation lines of a multi-line message are not errors.
-            pytest.param(
+            (
                 "%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n",
                 1,
-                id="multi-line-message",
             ),
-            pytest.param("%Error: Exiting due to 1 error(s)\n", 0, id="epilogue-only"),
-            pytest.param("", 0, id="empty"),
-        ],
-    )
-    def test_lint_error_findings_verilator(self, output: str, expected: int) -> None:
-        from booley.flows.lint.flow import lint_error_findings
-
-        assert len(lint_error_findings(output, "verilator")) == expected
+            ("%Error: Exiting due to 1 error(s)\n", 0),
+            ("", 0),
+        ]
+        for output, expected in cases:
+            assert len(lint_error_findings(output, "verilator")) == expected, output
