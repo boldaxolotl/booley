@@ -678,7 +678,10 @@ def send(number: int) -> None:
 
 
 def test_cancelled_after_a_finished_child_is_stored_as_cancelled_and_not_measured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _measuring_environment: Path
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _measuring_environment: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = committed_project(tmp_path, TWO_LINT_TABLES)
     script_children(
@@ -693,6 +696,9 @@ def test_cancelled_after_a_finished_child_is_stored_as_cancelled_and_not_measure
 
     assert_cancelled_run_stored(project)
     assert not list(_measuring_environment.iterdir())  # the scratch checkout is gone
+    (path,) = stored_runs(project)
+    assert path.with_suffix(".md").is_file()
+    assert f"Run {path.stem}: cancelled" in capsys.readouterr().out
 
 
 def test_cancelled_before_any_child_finished_stores_nothing(
@@ -814,6 +820,94 @@ def test_a_signal_while_storing_leaves_a_complete_run_and_a_matching_exit(
     (path,) = stored_runs(project)
     assert json.loads(path.read_text())["status"] == "completed"
     assert MeasurementStore(project / ".booley").measured(key_of(project)) is not None
+
+
+class _BrokenPipe:
+    """A stdout whose reader is gone."""
+
+    def write(self, _text: str) -> int:
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        raise BrokenPipeError
+
+
+@pytest.mark.parametrize(
+    ("failing", "note"),
+    [
+        ("view", "the report of cancelled run {} cannot be built: "),
+        ("markdown", "the Markdown report of cancelled run {} cannot be written: "),
+        ("print", "the report of cancelled run {} cannot be printed: "),
+    ],
+    ids=["view", "markdown", "print"],
+)
+def test_a_cancelled_run_whose_report_fails_exits_130_with_a_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failing: str,
+    note: str,
+) -> None:
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+    aside = tmp_path / "git-aside"
+
+    def children(tables: Sequence[TableRules], _cancelled: object) -> ChildrenOutcome:
+        if failing == "view":  # a real Git failure: the store needs no Git, the view does
+            (project / ".git").rename(aside)
+        if failing == "print":  # the terminal is outside Booley: a closed pipe
+            monkeypatch.setattr(sys, "stdout", _BrokenPipe())
+        return outcome_of(tables, [0, 0], status=RunStatus.CANCELLED, finished=[True, False])
+
+    script_children(monkeypatch, children)
+    write = MeasurementStore.write
+
+    def write_with_blocked_markdown(store: MeasurementStore, *args: object, **kwargs: object):
+        stored = write(store, *args, **kwargs)  # type: ignore[arg-type]
+        if failing == "markdown":  # a directory in the way makes the atomic replace fail
+            stored.path.with_suffix(".md").mkdir()
+        return stored
+
+    # No public seam fails only the Markdown write, so the store's write is wrapped (as in the
+    # signal-while-storing test); the failure itself is a real OSError from the replace.
+    monkeypatch.setattr(MeasurementStore, "write", write_with_blocked_markdown)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command(monkeypatch, project)
+
+    if aside.exists():
+        aside.rename(project / ".git")
+    monkeypatch.undo()
+    assert_cancelled_run_stored(project)
+    captured = capsys.readouterr()
+    (path,) = stored_runs(project)
+    notes = [line for line in captured.err.splitlines() if line.startswith("note:")]
+    assert len(notes) == 1
+    assert notes[0].startswith("note: " + note.format(path.stem))
+    assert "Traceback" not in captured.err
+    assert "measurement failed" not in captured.err
+    assert (f"Run {path.stem}: cancelled" in captured.out) is (failing == "markdown")
+    assert path.with_suffix(".md").is_file() is (failing == "print")
+    if failing == "print":  # a bare exception still names what failed
+        assert notes[0].endswith(": BrokenPipeError")
+
+
+def test_a_cancelled_run_with_no_terminal_still_ends_as_a_ctrl_c(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+
+    def children(tables: Sequence[TableRules], _cancelled: object) -> ChildrenOutcome:
+        monkeypatch.setattr(sys, "stdout", _BrokenPipe())
+        monkeypatch.setattr(sys, "stderr", _BrokenPipe())  # the note cannot be written either
+        return outcome_of(tables, [0, 0], status=RunStatus.CANCELLED, finished=[True, False])
+
+    script_children(monkeypatch, children)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command(monkeypatch, project)
+
+    monkeypatch.undo()
+    assert_cancelled_run_stored(project)
 
 
 def test_stored_text_reports_skip_symlinks(tmp_path: Path) -> None:
