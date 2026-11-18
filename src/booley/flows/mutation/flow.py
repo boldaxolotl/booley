@@ -950,9 +950,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         filesets: in a layered Project the root fileset owns the harness while
         the DUT arrives through a dependency (see :meth:`_dut_files`).  Testbench,
         vendored and generated files, include headers, inputs outside the Project
-        and non-Verilog inputs are not mutable.  A Target that cannot be
-        inspected has no scope.  A list, or a Target that cannot be selected or
-        inspected, is refused with its own error.
+        and non-Verilog inputs are not mutable.  A list, or a Target that
+        cannot be selected or inspected, is refused with its own error.
         """
         if list_error := self._target_list_error(self.args.target):
             return list_error
