@@ -154,7 +154,7 @@ def ensure_http_server(
 ) -> str:
     """Start the Developer Agent's HTTP MCP server unless one is already serving.
 
-    Returns the status. The server is detached (own session, no stdio inheritance) so it outlives
+    The server is detached (own session, no stdio inheritance) so it outlives
     this registrar and the ``postStartCommand`` shell; it then runs for the
     container's lifetime. Returns ``"running"`` (already up), ``"started"``,
     or ``"failed"`` — a failure is reported but never raises, so registration

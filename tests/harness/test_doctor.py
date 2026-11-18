@@ -1697,6 +1697,7 @@ def test_doctor_warns_about_leftover_interactive_logs_and_keeps_them(
     leftover = main_dir / ".interactive_logs"
     (leftover / "s1").mkdir(parents=True)
     (leftover / "s1" / "a.log").write_bytes(b"old session\n")
+    # A temp project has no separate main checkout; the check derives it from git metadata.
     monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _root: main_dir)
 
     doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)

@@ -9,9 +9,9 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 
 # Inside ``.booley/`` we ignore transient state that should never be
-# committed (tmp scratch, runtime logs, lockfiles).  ``job_logs/`` is
-# new in ADR 0012 — per-session transcripts written by the MCP server when an
-# outer Claude Code / Codex tab calls Booley Flows and Specialists.
+# committed (tmp scratch, runtime logs, lockfiles).  ``job_logs/`` holds
+# per-session transcripts written by the MCP server when an outer Claude Code /
+# Codex tab calls Booley Flows and Specialists (ADR 0012), and Standalone Job logs.
 #
 # Only *fixed-name*, Booley-owned local output paths belong here — patterns that are
 # correct for every project. ``flow-reports/`` is durable Flow evidence that is

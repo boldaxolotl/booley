@@ -57,7 +57,6 @@ _HISTORY_PREFIXES = (
 # Doctor leftover check and its guarded behavior, and the Sandbox issued before the rename.
 _ALLOWED_HITS = {
     "src/booley/harness/doctor.py": 1,
-    "docs/user/DOCTOR.md": 1,
     "tests/harness/test_doctor.py": 1,
     "tests/runtime/test_session_issuance.py": 1,
 }
