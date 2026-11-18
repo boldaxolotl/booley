@@ -23,7 +23,9 @@ use bwave::cache::{
     list_signals_from_cache, sample_at_from_cache, snapshot_from_cache, stats_from_cache,
     trace_from_cache, wave_from_cache, ColumnCache,
 };
-use bwave::format::{parse_radix_suffix, parse_verilog_literal, TimeToken, TriggerMode};
+use bwave::format::{
+    parse_radix_suffix, parse_verilog_literal, TimeToken, TriggerMode, VerilogLiteral,
+};
 use bwave::parser::try_parse_header;
 use bwave::ExtractConfig;
 
@@ -566,13 +568,14 @@ fn split_patterns_and_radixes(
     (pats, rads)
 }
 
-/// Normalize a Verilog literal (or pass-through edge keyword) → canonical hex.
-fn normalize_value(val: &str) -> String {
+/// Normalize a Verilog literal (or pass-through edge keyword) → canonical hex,
+/// with the parsed literal when there is one.
+fn normalize_value(val: &str) -> (String, Option<VerilogLiteral>) {
     if TriggerMode::classify(val) != TriggerMode::Literal {
-        return val.to_string();
+        return (val.to_string(), None);
     }
     match parse_verilog_literal(val) {
-        Ok(hex) => hex,
+        Ok(lit) => (lit.hex.clone(), Some(lit)),
         Err(e) => {
             eprintln!("ERROR: {}", e);
             process::exit(2);
@@ -580,9 +583,9 @@ fn normalize_value(val: &str) -> String {
     }
 }
 
-fn normalize_stuck_value(value: &str) -> String {
+fn normalize_stuck_value(value: &str) -> (String, Option<VerilogLiteral>) {
     if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("z") {
-        return value.to_lowercase();
+        return (value.to_lowercase(), None);
     }
     if TriggerMode::classify(value) != TriggerMode::Literal {
         eprintln!("ERROR: stuck requires a constant Verilog literal, not an edge keyword");
@@ -1259,7 +1262,11 @@ fn run_find(args: FindArgs) {
     require_bwave(&args.bwave, "bwave find");
     let modifiers = args.modifiers.resolve();
 
-    let value = normalize_value(&args.value);
+    let (value, literal) = normalize_value(&args.value);
+    let value_literals = literal
+        .map(|lit| (vec![args.pattern.clone()], lit))
+        .into_iter()
+        .collect();
     let (patterns, signal_radixes) = (vec!["*".to_string()], Vec::new());
 
     let cfg = ExtractConfig {
@@ -1267,6 +1274,7 @@ fn run_find(args: FindArgs) {
         signal_radixes,
         find_pattern: Some(args.pattern),
         find_value: Some(value),
+        value_literals,
         include_stopped: args.include_stopped,
         first_match: modifiers.first_match,
         last_match: modifiers.last_match,
@@ -1296,12 +1304,17 @@ fn run_sample(args: SampleArgs) {
     let modifiers = args.modifiers.resolve();
 
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
-    let value = normalize_value(&args.value);
+    let (value, literal) = normalize_value(&args.value);
+    let value_literals = literal
+        .map(|lit| (vec![args.trigger.clone()], lit))
+        .into_iter()
+        .collect();
 
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
         explicit_selectors: !args.signals.is_empty(),
+        value_literals,
         sample_at_pattern: Some(args.trigger),
         sample_at_value: Some(value),
         include_stopped: args.include_stopped,
@@ -1361,11 +1374,14 @@ fn run_distance(args: DistanceArgs) {
     require_bwave(&args.bwave, "bwave distance");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
-    let value = normalize_value(&args.value);
+    let mut value_literals = Vec::new();
+    let (value, literal) = normalize_value(&args.value);
+    value_literals.extend(literal.map(|lit| (vec![args.pattern.clone()], lit)));
     let distance_a = Some((args.pattern, value));
     let distance_b = args.distance_to.map(|v| {
         let pat = v[0].clone();
-        let val = normalize_value(&v[1]);
+        let (val, literal) = normalize_value(&v[1]);
+        value_literals.extend(literal.map(|lit| (vec![pat.clone()], lit)));
         (pat, val)
     });
 
@@ -1375,6 +1391,7 @@ fn run_distance(args: DistanceArgs) {
         explicit_selectors: !args.signals.is_empty(),
         distance_a,
         distance_b,
+        value_literals,
         stats_mode: args.stats,
         async_mode: g.async_mode,
         pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
@@ -1424,18 +1441,23 @@ fn run_stuck(args: StuckArgs) {
     require_bwave(&args.bwave, "bwave stuck");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
     // Normalize constant literals; an empty filter means any stuck value.
-    let find_stuck = Some(
-        args.value
-            .as_deref()
-            .map(normalize_stuck_value)
-            .unwrap_or_default(),
-    );
+    let (find_stuck, literal) = args
+        .value
+        .as_deref()
+        .map(normalize_stuck_value)
+        .unwrap_or_default();
+    let find_stuck = Some(find_stuck);
+    let value_literals = literal
+        .map(|lit| (patterns.clone(), lit))
+        .into_iter()
+        .collect();
 
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
         explicit_selectors: !args.signals.is_empty(),
         find_stuck,
+        value_literals,
         async_mode: g.async_mode,
         pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,

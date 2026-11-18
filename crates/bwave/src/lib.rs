@@ -11,7 +11,7 @@ pub mod signal;
 pub mod vcd_chunk;
 pub mod virtual_signal;
 
-use format::{Radix, TimeToken};
+use format::{Radix, TimeToken, VerilogLiteral};
 
 #[derive(Clone)]
 pub struct ExtractConfig {
@@ -43,6 +43,9 @@ pub struct ExtractConfig {
     pub sample_at_value: Option<String>,
     pub count_only: bool,
     pub find_stuck: Option<String>,
+    /// Value literals the query compares against, each with the patterns it
+    /// is compared to; used to warn when a literal cannot fit a signal.
+    pub value_literals: Vec<(Vec<String>, VerilogLiteral)>,
     pub time_min: i64,
     pub time_max: Option<i64>,
     pub max_lines: usize,
@@ -105,6 +108,7 @@ impl Default for ExtractConfig {
             sample_at_value: None,
             count_only: false,
             find_stuck: None,
+            value_literals: Vec::new(),
             time_min: 0,
             time_max: None,
             max_lines: 2000,

@@ -111,12 +111,6 @@ The `value_hist` field tells you exactly which values
 the signal took and how often. If `'d5` isn't in the
 histogram, no match is possible.
 
-Also check radix: are you searching for `'d255` but the
-store holds `'hFF`? Both should match (they're the same
-value), but `255` vs `'hFF` with width prefixes can
-diverge if the stored width doesn't match the literal
-width. See `troubleshooting/radix-pitfalls`.
-
 ## 5. Wrong clock detected (sync mode only)
 
 If sync mode picked a non-toggling signal as "clock",

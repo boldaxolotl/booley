@@ -22,6 +22,10 @@ The base is `d`, `h` or `b`; any other base exits 2. Write the literal
 without spaces. `'d255`, `255`, `'hFF` and `8'd255` all match the same
 stored value.
 
+When the value needs more bits than its width prefix, or than a signal it
+is compared with, the query still runs and warns (printed to stderr;
+`find` and `distance` JSON also carry it in `warnings`).
+
 A character that is not a digit of the base exits 2, and the error names
 the literal: `'hG`, `'d1x`, `'h F` and `'h_F` are all rejected.
 
