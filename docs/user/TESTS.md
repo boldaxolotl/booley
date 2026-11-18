@@ -91,7 +91,8 @@ select = "--meminit=ram,{name}"
 <summary>With a cocotb testbench</summary>
 
 For a [Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) the Tests
-are the names of its cocotb test functions, and Booley selects them itself.
+are its cocotb test IDs, and Booley selects them itself: a test function's
+name, or the rendered ID of each parametrized or generated test.
 
 </details>
 

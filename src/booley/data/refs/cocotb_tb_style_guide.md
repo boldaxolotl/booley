@@ -17,8 +17,9 @@ SystemVerilog `tb_style_guide.md` does not apply to Python testbenches.
 ## 1. Module Layout
 
 One test module per Target (`flow_options.cocotb_module`), staged into the
-build root via `copyto`. One Booley test = one named `@cocotb.test()` function;
-`tests.toml` lists exactly those function names.
+build root via `copyto`. One Booley test = one cocotb test ID: a
+`@cocotb.test()` function's name, or the rendered ID of one generated case (see
+section 7); `tests.toml` lists exactly those IDs.
 
 ```python
 # tb/test_counter.py
@@ -130,9 +131,10 @@ Python** — the harness owns the trace lifecycle.
 
 Every `@cocotb.test()` meant to gate a criterion must be listed by its exact
 reported ID (the function name for a plain test). A listed ID absent from the
-results comes back **inconclusive** ("no matching test ID"), with reported IDs
-to help correct the registry. Generated tests use rendered IDs, and Doctor
-defers their static name check to the run-time results.
+results comes back **inconclusive** ("no matching test ID"), with the IDs
+cocotb did report, if any, to help correct the registry. Generated tests use
+rendered IDs, and Doctor defers their static name check to the run-time
+results.
 
 ```toml
 [sim_cocotb]                 # the .core Target name
