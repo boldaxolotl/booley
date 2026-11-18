@@ -843,6 +843,29 @@ fn beyond_range_message(at_time: &str) -> String {
     format!("value time {at_time} is beyond simulation range")
 }
 
+/// The sync `value --at` past-the-end hint. A bare integer is the one token
+/// whose cycle reading may be a mistaken timestamp, so only it gets an async
+/// suggestion, and only when that tick lies inside the trace.
+fn sync_range_hint(cache: &ColumnCache, requested: &str, effective_start: u64) -> String {
+    let total_cycles = cache
+        .sim_end_tick
+        .saturating_sub(cycle_base(cache, effective_start))
+        / cache.clock_period_ticks
+        + 1;
+    let start_ns = (effective_start as f64 * cache.ticks_to_ns) as i64;
+    let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
+    let range = format!(
+        "In sync mode, --at selects a clock cycle (0..{total_cycles}). \
+         Simulation time range: {start_ns}ns..{end_ns}ns"
+    );
+    match requested.parse::<u64>() {
+        Ok(tick) if tick <= cache.sim_end_tick => {
+            format!("did you mean --at {tick}t --async? {range}")
+        }
+        _ => range,
+    }
+}
+
 fn unmatched_pattern_message(pattern: &str) -> String {
     format!("no signals match '{}' — filter dropped", pattern)
 }
@@ -999,16 +1022,25 @@ pub fn no_signals_in_store_message() -> &'static str {
      sim traced via auto --main produces a header-only trace.fst)"
 }
 
+fn quoted_patterns(patterns: &[String]) -> String {
+    patterns
+        .iter()
+        .map(|p| format!("'{}'", p))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The `list` total-miss warning: the opening of `no_match_message`.
+fn list_miss_message(patterns: &[String]) -> String {
+    format!("no signals match pattern(s) {}", quoted_patterns(patterns))
+}
+
 /// The total-miss diagnostic line, shared between the stderr hard error and
 /// the JSON-envelope warning so both channels say the same thing. A glob that
 /// matches below some scope boundary gets the anchored full-path form before
 /// the generic hint.
 fn no_match_message(patterns: &[String], cache: &ColumnCache) -> String {
-    let listed = patterns
-        .iter()
-        .map(|p| format!("'{}'", p))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let listed = quoted_patterns(patterns);
     let bare_hint = if patterns.iter().any(|p| !explicit_glob(p)) {
         format!("; {BARE_NAME_HINT}")
     } else {
@@ -2617,6 +2649,11 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         Some(t) => t,
         None => return,
     };
+    // Errors show the token as typed ("500ns"), not the resolved number.
+    let requested = cfg
+        .at_str
+        .as_deref()
+        .map_or_else(|| at_time.to_string(), |s| s.trim().to_string());
 
     let resolved_virtuals = resolve_virtuals(cache, cfg);
     let virtual_names: Vec<String> = resolved_virtuals
@@ -2697,7 +2734,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let _ = err.flush();
     let unsigned_time = u64::try_from(at_time).unwrap_or_else(|_| {
-        eprintln!("ERROR: value time {at_time} is outside simulation range");
+        eprintln!("ERROR: value time {requested} is outside simulation range");
         std::process::exit(2);
     });
     let target_tick = if sync_mode {
@@ -2709,12 +2746,12 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     (unsigned_time - 1)
                         .checked_mul(cache.clock_period_ticks)
                         .unwrap_or_else(|| {
-                            eprintln!("ERROR: {}", beyond_range_message(&at_time.to_string()));
+                            eprintln!("ERROR: {}", beyond_range_message(&requested));
                             std::process::exit(2);
                         }),
                 )
                 .unwrap_or_else(|| {
-                    eprintln!("ERROR: {}", beyond_range_message(&at_time.to_string()));
+                    eprintln!("ERROR: {}", beyond_range_message(&requested));
                     std::process::exit(2);
                 })
         }
@@ -2729,16 +2766,12 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         )
     };
     if target_tick > cache.sim_end_tick {
-        eprintln!("ERROR: {}", beyond_range_message(&at_time.to_string()));
+        eprintln!("ERROR: {}", beyond_range_message(&requested));
         if sync_mode {
-            let total_cycles = cache
-                .sim_end_tick
-                .saturating_sub(cycle_base(cache, effective_start))
-                / cache.clock_period_ticks
-                + 1;
-            let start_ns = (effective_start as f64 * cache.ticks_to_ns) as i64;
-            let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
-            eprintln!("HINT: did you mean --at-time {at_time} with --async? In sync mode, --at-time expects a cycle number (0..{total_cycles}). Simulation time range: {start_ns}ns..{end_ns}ns");
+            eprintln!(
+                "HINT: {}",
+                sync_range_hint(cache, &requested, effective_start)
+            );
         }
         std::process::exit(2);
     }
@@ -4117,7 +4150,8 @@ pub fn list_signals_from_cache(
 
     // A total miss on a non-empty store: `list` stays exit 0, but names the
     // anchored form so the next query can paste it.
-    let total_miss_suggestion = if matched.is_empty() && !cache.signals.is_empty() {
+    let total_miss = matched.is_empty() && !cache.signals.is_empty();
+    let total_miss_suggestion = if total_miss {
         did_you_mean(&cache.anchored_suggestions(patterns))
     } else {
         None
@@ -4194,6 +4228,9 @@ pub fn list_signals_from_cache(
             &hits,
             matched.is_empty(),
         ));
+        if total_miss {
+            warnings.push(list_miss_message(patterns));
+        }
         warnings.extend(total_miss_suggestion);
         if stripped.len() > limit {
             warnings.push(limit_warning(limit));
@@ -4255,14 +4292,19 @@ pub fn list_signals_from_cache(
             matched.len()
         );
     } else {
+        if total_miss {
+            let _ = writeln!(stderr, "# WARNING: {}", list_miss_message(patterns));
+        }
         if let Some(suggestion) = &total_miss_suggestion {
             let _ = writeln!(stderr, "# {suggestion}");
         }
-        let _ = writeln!(
-            stderr,
-            "# {} signals — narrow with -s PATTERN or use --tree",
-            matched.len()
-        );
+        if !total_miss {
+            let _ = writeln!(
+                stderr,
+                "# {} signals — narrow with -s PATTERN or use --tree",
+                matched.len()
+            );
+        }
     }
     let _ = stderr.flush();
 }

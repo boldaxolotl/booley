@@ -186,7 +186,7 @@ impl ExtractConfig {
             let tok = TimeToken::parse(&s, self.async_mode)?;
             // Resolve once to a cycle in sync mode or a raw tick in async;
             // snapshot_from_cache must not apply the timescale a second time.
-            let v = resolve(&tok)?;
+            let v = resolve(&tok).map_err(|error| format!("--at {s}: {error}"))?;
             self.at_time = Some(v);
         }
 

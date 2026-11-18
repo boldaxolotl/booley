@@ -45,9 +45,10 @@ it. Any other suffix exits 2.
 
 ## Misses
 
-- Every `-s` pattern matches nothing: exit 2 with
+- A query whose every `-s` pattern matches nothing: exit 2 with
   `ERROR: no signals match pattern(s) ...`; a bare name adds a reminder that
-  it matches only the end of the full path.
+  it matches only the end of the full path. `list` instead exits 0 and prints
+  `# WARNING: no signals match pattern(s) ...` (JSON: `warnings`).
 - Some match, some don't: the query runs, and each miss prints
   `# WARNING: no signals match '<pat>' — filter dropped`. That signal's
   rows are missing from the result. If `bwave list` cannot find it either,
