@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from booley.bwave import vaporview_bridge as bwave_bridge
+from booley.core.host_shell import quote_arg
 from booley.runtime import vaporview
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
@@ -251,7 +252,7 @@ def test_gui_directory_without_trace_errors(tmp_path, launched):
 
 
 def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
-    sim_dir = tmp_path / "work"
+    sim_dir = tmp_path / "it's work"
     sim_dir.mkdir()
     dump = sim_dir / "sim.vcd"
     dump.write_bytes(b"")
@@ -262,8 +263,8 @@ def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
     message = str(exc.value)
     assert "not named trace.vcd: sim.vcd" in message
     assert "[flows.sim].trace_files" in message
-    assert f'bwave register "{dump}" --as ALIAS --build' in message
-    assert f'bwave gui "{dump}"' in message
+    assert f"bwave register {quote_arg(str(dump))} --as ALIAS --build" in message
+    assert f"bwave gui {quote_arg(str(dump))}" in message
     assert launched == []
 
 
@@ -2167,7 +2168,8 @@ def test_open_is_gone_and_says_so(monkeypatch, capsys):
     msg = str(exc.value)
     assert "`bwave open` is now `bwave gui`" in msg
     # …and hands back the exact command to rerun.
-    assert "bwave gui @dut -s tb.dut.fifo.*" in msg
+    retry_args = " ".join(quote_arg(arg) for arg in ["@dut", "-s", "tb.dut.fifo.*"])
+    assert f"bwave gui {retry_args}" in msg
 
 
 # ── venue guard ─────────────────────────────────────────────────────────────

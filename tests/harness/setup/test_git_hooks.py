@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.harness import init_cmd
 from booley.harness.setup import git_hooks, line_endings
 from booley.harness.setup import project_git_hook_reconcile as reconcile
@@ -59,6 +60,7 @@ from booley.harness.setup.project_git_hook_bundle import (
 )
 from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache, resolve_booley_dir
+from booley.runtime.sandbox_apply import shell_command
 from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.subprocess_budget import run_bounded_child
@@ -416,7 +418,7 @@ class TestProjectCommitMsgHookVendoring:
         assert rejected.returncode != 0
         assert _run_git(repo, "rev-parse", "HEAD").stdout.strip() == baseline
         assert kept.read_text(encoding="utf-8") == original
-        assert f'-v -e -F "{kept}"' in rejected.stderr
+        assert f"-v -e -F {quote_arg(str(kept))}" in rejected.stderr
         assert "-a" in rejected.stderr and "--amend" in rejected.stderr
         assert "'quokka' in the subject" in rejected.stderr
 
@@ -457,7 +459,7 @@ class TestProjectCommitMsgHookVendoring:
         # The merge is still in progress, so a message from -m is also a merge message.
         again = _run_git(repo, "commit", "-m", "fix(core): booley merge", check=False)
         assert again.returncode != 0
-        assert 'git commit -v -e -F "' in again.stderr
+        assert "git commit -v -e -F " in again.stderr
 
         _run_git(repo, "commit", "-m", "Merge feature work")
         parents = _run_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
@@ -1848,7 +1850,7 @@ def test_tracked_bundle_reports_untrack_command(
     ctx = InitContext(project_root=root, check_only=check_only)
     step_project_git_hooks(ctx)
     relative = bundle.relative_to(owner).as_posix()
-    command = shlex.join(["git", "-C", str(owner.resolve()), "rm", "--cached", "--", relative])
+    command = shell_command(["git", "-C", str(owner.resolve()), "rm", "--cached", "--", relative])
     assert command in capsys.readouterr().out
     # `booley init` exits 1 only for a check-mode `warn`, which an outdated bundle yields.
     expected = {
@@ -2045,7 +2047,7 @@ def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
         step_project_git_hooks(ctx)
     output = capsys.readouterr().out
     relative = bundle.relative_to(owner).as_posix()
-    command = shlex.join(["git", "-C", str(owner), "rm", "--cached", "--", relative])
+    command = shell_command(["git", "-C", str(owner), "rm", "--cached", "--", relative])
     assert command in output
     assert "Could not inspect" not in output
     assert [(r.name, r.status) for r in ctx.results] == [

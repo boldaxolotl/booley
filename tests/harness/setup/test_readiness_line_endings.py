@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from booley.audit.diagnostic_results import Severity
+from booley.core.host_shell import quote_arg
 from booley.harness.setup import readiness
 from booley.harness.setup.line_endings import (
     LineEndingActionResult,
@@ -178,22 +179,23 @@ def test_line_ending_findings_keep_exact_text(
     actions: tuple[LineEndingActionResult, ...],
     expected: tuple[Severity, str, str, str | None, str | None],
 ) -> None:
-    repository = LineEndingRepository(_ROLE, tmp_path)
+    root = tmp_path / "it's a root"
+    repository = LineEndingRepository(_ROLE, root)
     report = LineEndingReport(
         LineEndingStatus.UNSAFE,
         (RepositoryLineEndingReport(repository, LineEndingStatus.UNSAFE, observations, actions),),
         (),
     )
-    identity = f"Project Root ({tmp_path})"
+    identity = f"Project Root ({root})"
     severity, message, fix, check_id, subject = expected
 
-    findings = _inspect(tmp_path, report, monkeypatch).findings
+    findings = _inspect(root, report, monkeypatch).findings
 
     assert [(f.severity, f.message, f.fix, f.check_id, f.subject) for f in findings] == [
         (
             severity,
             message.format(id=identity),
-            fix.format(root=tmp_path),
+            fix.format(root=quote_arg(str(root))),
             check_id,
             subject,
         )

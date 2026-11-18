@@ -57,6 +57,7 @@ from booley.core.booley_dir import (
 )
 from booley.core.booley_dir_links import resolve_through_entry
 from booley.core.boundary import as_dict, is_str_list
+from booley.core.host_shell import quote_arg
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -2023,7 +2024,7 @@ def _raise_missing_target_sources(target: str, ref: TargetRef, missing: list[str
     )
     lines.extend(
         f"hint: '{root}' looks like a git worktree baseline; create it with: "
-        f"git worktree add {root} <commit-ish>"
+        f"git worktree add {quote_arg(root)} <commit-ish>"
         for root in worktree_roots
     )
     raise MissingSourceError("\n".join(lines))

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from booley.core.host_shell import quote_arg
 from booley.core.private_store import (
     PrivateStore,
 )
@@ -10,7 +11,7 @@ from booley.core.private_store import (
 def session_store_repair(path: Path, root: str) -> str:
     """Repair offered when a Session store file is not named for the Project Root it holds."""
     return (
-        f"remove {path}, then on the host run `booley init --seed --project {root}` "
+        f"remove {path}, then on the host run `booley init --seed --project {quote_arg(root)}` "
         "to reissue its Sandbox spec"
     )
 

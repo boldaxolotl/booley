@@ -38,6 +38,11 @@ if _DEV_SUPPORT_DIR not in sys.path:
 
 from commit_msg_utils import find_banned, stealth_enabled  # pyright: ignore[reportMissingImports]
 
+try:
+    from booley.core.host_shell import quote_arg
+except ImportError:  # the bundled hook carries host_shell.py beside this file
+    from host_shell import quote_arg  # pyright: ignore[reportMissingImports]
+
 # These existing structural forms are unambiguous attribution markers and are
 # rejected regardless of Project vocabulary, and the raw message is kept so the
 # author can correct it.
@@ -162,14 +167,15 @@ def _is_merge(msg_file: Path, project_root: Path | None) -> bool:
 def _print_kept_and_retry(msg_file: Path, *, merge: bool = False) -> None:
     """Say where the rejected message was kept and how to retry with it."""
     path = msg_file.resolve()
+    quoted = quote_arg(str(path))
     print(f'Your message was kept unchanged in "{path}".', file=sys.stderr)
     if merge:
         # The merge stays in progress after a rejection, so plain git commit finishes it.
-        print(f'To retry with the same text, run: git commit -v -e -F "{path}"', file=sys.stderr)
+        print(f"To retry with the same text, run: git commit -v -e -F {quoted}", file=sys.stderr)
         return
     print(
         "To retry with the same text, rerun your git commit command with the same "
-        f'options (-a, --amend, paths) and replace -m/-F with: -v -e -F "{path}"',
+        f"options (-a, --amend, paths) and replace -m/-F with: -v -e -F {quoted}",
         file=sys.stderr,
     )
 

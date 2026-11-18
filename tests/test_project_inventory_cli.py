@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.harness import projects_view
 from booley.presentation.terminal_table import render_table
 from booley.projects import cli as project_inventory_cli
@@ -234,13 +235,13 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
 ) -> None:
     from booley.config.sandbox import project_image_name
 
-    project = _remember(tmp_path)
+    project = _remember(tmp_path, "it's a project")
     family = project_image_name(project)
     unused, shared = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     keeper_host.tags.update({f"{family}:latest": unused, f"{family}-wheel:latest": shared})
     keeper_host.tags["mirror:x"] = shared
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
-    assert f"booley projects forget --purge {project}" in capsys.readouterr().out
+    assert f"booley projects forget --purge {quote_arg(str(project))}" in capsys.readouterr().out
     assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
     output = capsys.readouterr().out
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
@@ -462,8 +463,8 @@ def test_public_prune_preview_then_digest_confirmation(
     assert orphan not in keeper_host.tags and own in keeper_host.tags
 
 
-def _remember(tmp_path):
-    project = tmp_path / "project"
+def _remember(tmp_path, name="project"):
+    project = tmp_path / name
     (project / ".booley").mkdir(parents=True)
     project_inventory.remember_project(project)
     return project
