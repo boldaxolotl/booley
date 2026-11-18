@@ -161,8 +161,9 @@ Booley's MCP surface is designed for extension. The built-in Booley Flows and Sp
 
 Run each session in a separate linked worktree and branch inside the
 Sandbox. The Dashboard shows concurrent sessions and Jobs. The Memory
-Budget in `[jobs]` limits resource use; excess work queues and running
-Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
+Budget, the Sandbox's memory limit `[sandbox].memory` minus a reserve,
+limits resource use; excess work queues and running Jobs are never
+preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 
 ## Windows Support
 
