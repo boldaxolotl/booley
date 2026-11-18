@@ -24,6 +24,7 @@ from booley.runtime.sandbox_apply import Attachment
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 _LABEL = "fpga: Vivado batch startup"
 _DEPENDENCY_FIX = "verify Vivado runtime dependencies in the Sandbox Image"
@@ -214,13 +215,14 @@ def test_timeout_kills_child_process_group(tmp_path, monkeypatch):
         argv = captured[0]
         assert "timeout --kill-after=2s 27s" in argv[-1]
         assert "--foreground" not in argv[-1]
-        argv[-1] = argv[-1].replace("27s", "0.2s")
-        result = run_bounded_child(argv, timeout=5)
+        argv[-1] = argv[-1].replace("27s", f"{scaled(0.2):g}s")
+        result = run_bounded_child(argv)
         assert result.returncode == 124
         pid = int(pid_file.read_text())
         stat = Path(f"/proc/{pid}/stat")
         # timeout waits for its direct child; group members finish asynchronously.
-        deadline = time.monotonic() + 3
+        deadline_s = scaled(3)
+        deadline = time.monotonic() + deadline_s
         while time.monotonic() < deadline:
             try:
                 state = stat.read_text().split()[2]
@@ -230,5 +232,5 @@ def test_timeout_kills_child_process_group(tmp_path, monkeypatch):
                 break
             time.sleep(0.01)
         else:
-            pytest.fail(f"Vivado child {pid} did not terminate within 3 seconds")
+            pytest.fail(f"Vivado child {pid} did not terminate within {deadline_s:g} seconds")
         assert set(case.iterdir()) == {fake, pid_file}

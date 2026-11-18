@@ -243,7 +243,6 @@ def test_module_help_outside_project(tmp_path: Path) -> None:
         [sys.executable, "-m", "booley.flows.synth", "--help"],
         cwd=tmp_path,
         env=env,
-        timeout=20,
     )
     assert result.returncode == 0, result.stderr
     assert "Common:" in result.stdout and "Expert: OpenROAD:" in result.stdout

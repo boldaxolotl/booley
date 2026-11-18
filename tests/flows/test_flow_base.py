@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -20,6 +21,11 @@ from booley.flows import base as flow_base
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.endpoint_execution import ExecutionResult
+from tests.time_budget import hang_guard_s, scaled
+
+# A grandchild must outlive the tree wait, the flow timeout, the kill and the death poll,
+# so a broken kill cannot pass because the grandchild exited on its own.
+_GRANDCHILD_LIFETIME_S = math.ceil(scaled(120))
 
 
 def _flow_env(slug: str = "test") -> dict[str, str]:
@@ -239,7 +245,7 @@ class TestTimeoutKillsTheWholeTree:
 
     Private seam: the timeout clock must start only once the grandchild exists,
     which needs the ``_communicate_local_process`` seam; the drain bound is
-    patched to 1 s; and the Ctrl-C test needs the ``KeyboardInterrupt`` to leave
+    patched to 1 s (scaled); and the Ctrl-C test needs the ``KeyboardInterrupt`` to leave
     ``_execute`` raw (through ``execute_cli`` the lifecycle turns it into exit 130).
 
     ``subprocess.run(timeout=...)`` kills only the direct child, so the
@@ -264,7 +270,12 @@ class TestTimeoutKillsTheWholeTree:
         return stat.rsplit(")", 1)[1].split()[0] != "Z"
 
     def _grandchild_flow(
-        self, tmp_path: Path, pid_file: Path, *, own_session: bool = False, sleep_s: int = 120
+        self,
+        tmp_path: Path,
+        pid_file: Path,
+        *,
+        own_session: bool = False,
+        sleep_s: int = _GRANDCHILD_LIFETIME_S,
     ):
         """A Flow whose child spawns a long-lived grandchild, then hangs.
 
@@ -300,7 +311,7 @@ class TestTimeoutKillsTheWholeTree:
                 return McpToolResult(exit_code=EXIT_ERROR if result.timed_out else EXIT_SUCCESS)
 
             def _get_timeout(self) -> int:
-                return 2
+                return math.ceil(scaled(2))
 
         flow = HangFlow()
         with patch.dict(os.environ, _flow_env()):
@@ -328,7 +339,7 @@ class TestTimeoutKillsTheWholeTree:
             """
             nonlocal waited_for_tree
             waited_for_tree = True
-            deadline = time.monotonic() + 45
+            deadline = time.monotonic() + hang_guard_s()
             while not pid_file.exists() and proc.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.05)
             return real_communicate(cmd, proc, *rest, **kwargs)
@@ -339,10 +350,10 @@ class TestTimeoutKillsTheWholeTree:
         assert waited_for_tree, "the patched communicate was bypassed"
         assert result.timed_out is True, f"child did not time out: {result.stderr}"
         assert result.returncode == -1
-        assert pid_file.exists(), "the process tree never came up within 45s"
+        assert pid_file.exists(), f"the process tree never came up within {hang_guard_s()}s"
         grandchild = int(pid_file.read_text(encoding="utf-8"))
         # killpg is asynchronous; give the group a moment to actually die.
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + hang_guard_s()
         while self._alive(grandchild) and time.monotonic() < deadline:
             time.sleep(0.1)
         assert not self._alive(grandchild), (
@@ -359,7 +370,7 @@ class TestTimeoutKillsTheWholeTree:
             return
         with contextlib.suppress(ProcessLookupError):
             os.kill(escaped, signal.SIGKILL)
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + hang_guard_s()
         while self._alive(escaped) and time.monotonic() < deadline:
             time.sleep(0.05)
 
@@ -377,14 +388,16 @@ class TestTimeoutKillsTheWholeTree:
         now runs in its own session, modelling a descendant that survived the
         kill, so only the drain bound can return in time.
 
-        The drain bound is patched to 1 s to keep the idle runtime short; a
+        The drain bound is patched to 1 s (scaled) to keep the idle runtime short; a
         change to the constant's value is not covered, only the call-site bound.
         The final liveness assertion assumes the kill is group-scoped; a kill
         that reaches other sessions would need a different escape model.
         """
         pid_file = tmp_path / "grandchild.pid"
-        tree_wait_s = 15
-        flow = self._grandchild_flow(tmp_path, pid_file, own_session=True, sleep_s=40)
+        tree_wait_s = hang_guard_s()
+        flow = self._grandchild_flow(
+            tmp_path, pid_file, own_session=True, sleep_s=math.ceil(scaled(40))
+        )
         real_communicate = flow_base._communicate_local_process
         seen: dict[str, Any] = {}
 
@@ -415,7 +428,7 @@ class TestTimeoutKillsTheWholeTree:
                 patch.object(
                     flow_base, "_communicate_local_process", _wait_for_tree_then_communicate
                 ),
-                patch.object(flow_base, "_FLOW_KILL_DRAIN_TIMEOUT_S", 1),
+                patch.object(flow_base, "_FLOW_KILL_DRAIN_TIMEOUT_S", scaled(1)),
             ):
                 result = flow._execute(flow._build_command())
             if "clock_start" not in seen:
@@ -433,9 +446,11 @@ class TestTimeoutKillsTheWholeTree:
             assert seen["alive"], "grandchild was not alive when the clock started"
             assert seen["holds_stdout"], "grandchild did not hold the child's stdout"
             assert result.timed_out is True, result.stderr
-            # 2s budget + kill grace + 1s patched drain; a drain that blocks
-            # behind the grandchild lasts until its 40s sleep ends.
-            assert elapsed < 30, f"drain blocked {elapsed:.1f}s behind a grandchild holding stdout"
+            # 2 s budget + kill grace + 1 s patched drain (each scaled); a drain that blocks
+            # behind the grandchild lasts until its sleep ends.
+            assert elapsed < scaled(30), (
+                f"drain blocked {elapsed:.1f}s behind a grandchild holding stdout"
+            )
             grandchild = int(pid_file.read_text(encoding="utf-8"))
             assert self._alive(grandchild), (
                 "grandchild died, so the drain returned because the pipe closed, "
@@ -462,7 +477,7 @@ class TestTimeoutKillsTheWholeTree:
 
         def _interrupt(_self, *_args, **_kwargs):
             # Let the tree come up first, then behave like a tty Ctrl-C.
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + hang_guard_s()
             while not pid_file.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)
             raise KeyboardInterrupt
@@ -481,7 +496,7 @@ class TestTimeoutKillsTheWholeTree:
         assert killed.levelno == logging.INFO
 
         grandchild = int(pid_file.read_text(encoding="utf-8"))
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + hang_guard_s()
         while self._alive(grandchild) and time.monotonic() < deadline:
             time.sleep(0.1)
         assert not self._alive(grandchild), (
