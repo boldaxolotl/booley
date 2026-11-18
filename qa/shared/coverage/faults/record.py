@@ -1,4 +1,4 @@
-"""Single-field Campaign corruption on an explicitly marked disposable copy."""
+"""Single-field Coverage Record corruption on an explicitly marked disposable copy."""
 
 import argparse
 import gzip
@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 REFERENCE_SCHEMA = "booley.coverage-record-reference/v1"
-#: Booley's uncompressed point-store ceiling (coverage_campaign_store.MAX_UNCOMPRESSED_BYTES).
+#: Booley's uncompressed point-store ceiling (coverage_record_store.MAX_UNCOMPRESSED_BYTES).
 POINT_CEILING_BYTES = 512 * 1024 * 1024
 #: Faults that damage only the point store; the manifest and reference stay as published.
 POINT_FAULTS = frozenset(
@@ -24,6 +24,8 @@ POINT_FAULTS = frozenset(
 #: Coverage Campaign schema versions (Booley 0.4.0 and earlier) Booley no longer reads;
 #: each has an unsupported-schema mode.
 RETIRED_SCHEMAS = frozenset({"v1", "v2", "v3", "v4", "v5"})
+#: Directory Booley 0.4.0 and earlier gave the Target's Record (now ``record/``).
+OLDER_RECORD_DIRECTORY = "campaign"
 
 
 def canonical(value: object) -> bytes:
@@ -37,7 +39,7 @@ def canonical(value: object) -> bytes:
 
 
 def manifest_json(value: object) -> bytes:
-    """Encode a Campaign manifest in Booley's layout (coverage_json.MANIFEST_JSON)."""
+    """Encode a Coverage Record manifest in Booley's layout (coverage_json.MANIFEST_JSON)."""
     return (
         json.dumps(
             value,
@@ -92,8 +94,8 @@ def regular_owned(path: Path, owned: Path) -> None:
         raise ValueError("mutation destination must not share a hard link")
 
 
-def nested_campaign(reference: Path, owned: Path) -> tuple[Path, dict]:
-    """Follow a Target reference to its nested Campaign manifest inside the owned copy."""
+def nested_record(reference: Path, owned: Path) -> tuple[Path, dict]:
+    """Follow a Target reference to its nested Coverage Record manifest inside the owned copy."""
     document = json.loads(reference.read_text())
     if document.get("$schema") != REFERENCE_SCHEMA:
         raise ValueError(f"expected the Target coverage.json ({REFERENCE_SCHEMA})")
@@ -105,12 +107,27 @@ def nested_campaign(reference: Path, owned: Path) -> tuple[Path, dict]:
     return path, document
 
 
-def rebind_reference(reference: Path, document: dict, campaign: Path) -> None:
-    """Update the reference envelope so validation reaches the mutated Campaign."""
-    raw = campaign.read_bytes()
+def rebind_reference(reference: Path, document: dict, record: Path) -> None:
+    """Update the reference envelope so validation reaches the mutated Coverage Record."""
+    raw = record.read_bytes()
     document["coverage_record"].update(
         bytes=len(raw), sha256="sha256:" + hashlib.sha256(raw).hexdigest()
     )
+    reference.write_bytes(canonical(document))
+
+
+def older_layout(reference: Path, document: dict, owned: Path) -> None:
+    """Move the Target's ``record/`` to 0.4.0's ``campaign/`` and repoint the reference.
+
+    The manifest bytes stay unchanged, so only the 0.4.0 directory name can trigger
+    the refusal under test.
+    """
+    head, _, rest = document["coverage_record"]["path"].partition("/")
+    current = reference.parent / head
+    if head != "record" or current.is_symlink() or not current.resolve().is_relative_to(owned):
+        raise ValueError("older-layout needs the owned Target's record/ directory")
+    current.rename(reference.parent / OLDER_RECORD_DIRECTORY)
+    document["coverage_record"]["path"] = f"{OLDER_RECORD_DIRECTORY}/{rest}"
     reference.write_bytes(canonical(document))
 
 
@@ -120,11 +137,14 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
     if not (owned / ".qa-coverage-fault-copy").is_file():
         raise ValueError("explicit disposable-copy marker required")
     if not reference.resolve(strict=True).is_relative_to(owned) or reference.is_symlink():
-        raise ValueError("Campaign must be a regular file in the owned copy")
+        raise ValueError("Coverage Record must be a regular file in the owned copy")
     regular_owned(reference, owned)
-    path, reference_document = nested_campaign(reference, owned)
+    path, reference_document = nested_record(reference, owned)
     regular_owned(path.parent / "coverage-points.jsonl.gz", owned)
     points = path.parent / "coverage-points.jsonl.gz"
+    if mode == "older-layout":
+        older_layout(reference, reference_document, owned)
+        return
     if mode in POINT_FAULTS:
         # Only the point store changes; Booley trusts its recorded identity.
         corrupt_points(mode, points, owned)
@@ -147,16 +167,16 @@ def corrupt_manifest(mode: str, document: dict) -> None:
             raise ValueError("wrong-evaluation needs a blocked or not-requested evaluation")
         document["evaluation"]["status"] = "pass"
     else:
-        raise ValueError(f"unknown Campaign fault: {mode}")
+        raise ValueError(f"unknown Coverage Record fault: {mode}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode")
-    parser.add_argument("campaign", type=Path, help="Target coverage.json reference in the copy")
+    parser.add_argument("record", type=Path, help="Target coverage.json reference in the copy")
     parser.add_argument("--owned", type=Path, required=True)
     args = parser.parse_args()
-    mutate(args.campaign, args.owned, args.mode)
+    mutate(args.record, args.owned, args.mode)
 
 
 if __name__ == "__main__":

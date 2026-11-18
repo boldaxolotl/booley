@@ -48,10 +48,10 @@ def test_observed_hit_candidate_has_proof_to_isolate_contradiction():
 def test_cross_simulation_record_uses_actual_foreign_selector(tmp_path, monkeypatch):
     foreign = tmp_path / "coverage.json"
     foreign.write_text("{}")
-    monkeypatch.setenv("QA_FOREIGN_CAMPAIGN", str(foreign))
+    monkeypatch.setenv("QA_FOREIGN_RECORD", str(foreign))
     evidence = Recorder()
-    provider.query_fault(evidence, "cross-campaign")
-    assert evidence.requests[-1] == {"view": "overview", "campaign": str(foreign)}
+    provider.query_fault(evidence, "cross-record")
+    assert evidence.requests[-1] == {"view": "overview", "coverage_record": str(foreign)}
     provider.query_fault(evidence, "undelivered")
     assert evidence.requests[-1] == {"view": "source", "point_refs": ["point:999999999"]}
 
