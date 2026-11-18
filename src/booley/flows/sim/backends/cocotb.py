@@ -1029,6 +1029,12 @@ def _pending_trace_publisher(
     return publish
 
 
+def _failure_kind(termination: RunTermination, returncode: int, output: str) -> AdapterFailureKind:
+    if termination.aborted:
+        return termination.failure_kind
+    return "design" if returncode != 0 or count_sva_errors(output) else ""
+
+
 def _complete_cocotb_run(
     run: _CocotbRun,
     lines,
@@ -1066,13 +1072,7 @@ def _complete_cocotb_run(
         termination=termination,
         skip_log=run.skip_log.text(),
     )
-    failure_kind = (
-        termination.failure_kind
-        if termination.aborted
-        else "design"
-        if proc.returncode != 0 or count_sva_errors(output)
-        else ""
-    )
+    failure_kind = _failure_kind(termination, proc.returncode, output)
     _publish_adapter_result(
         transport,
         output,
