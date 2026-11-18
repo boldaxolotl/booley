@@ -89,8 +89,7 @@ def _inspect_target(
         findings.fail(
             f"cocotb Target '{name}' declares a tests.toml `select` plusarg template",
             "remove `select` — cocotb test selection is the "
-            "COCOTB_TEST_FILTER env var built from the `tests` list "
-            "(ADR 0034)",
+            "COCOTB_TEST_FILTER env var built from the `tests` list",
         )
     found = _module_file(target, module)
     if found is None:
@@ -106,7 +105,7 @@ def _inspect_target(
     if not tagged:
         findings.warn(
             f"cocotb Target '{name}': the fileset carrying {module}.py is not tagged tags:[tb]",
-            "tag it so Source Isolation partitions RTL vs TB (ADR 0022 dec 13 / ADR 0034 dec 4)",
+            "tag it so Source Isolation partitions RTL vs TB",
             check_id="cocotb.tb-tag-missing",
             subject=name,
         )

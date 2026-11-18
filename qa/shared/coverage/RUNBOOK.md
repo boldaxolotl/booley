@@ -205,9 +205,10 @@ must match the `expected.json` case `staged-union`: 4/8 per test and a
 complementary union of 8/8. Restore the prior configuration afterward.
 
 The cocotb case uses `sim_cocotb_staged` tests `gap` and `full` under the same
-configuration. The command runs once for the selected batch and writes both
-literal per-test vectors; each cocotb test reads and checks its own named
-vector. Keep the batch-stage log and the separate native run evidence. The
+configuration. Under `--coverage` each cocotb Test Run runs in its own
+simulator process, so the command runs once per test with that one name in
+`BOOLEY_TEST_NAMES`; each cocotb test reads and checks its own named vector.
+Keep both stage logs and the separate native run evidence. The
 negative control removes `full` from the vectors the script writes (after it
 validates the same selected list); the `full` test must then fail loading it.
 Restore the script and configuration bytes and rerun both tests. A pre-sim
@@ -306,16 +307,17 @@ authoritative evidence. Keep every failed transaction for inspection.
 
 ## Native and input corruption recipes
 
-Native missing, malformed and incompatible cases run `sim_custom` with the
-registered test `native-missing`, `native-malformed` or `native-incompatible`.
-The fixture main first runs the real simulation and coverage hook, then
-deletes its own raw file, writes a malformed record, or writes an incompatible
-header. These are controlled native inputs, not real EDA-success evidence.
-There is no stale-native case, and no unsafe-file case. Booley reports
-`COV_RAW_FILE_STALE` only when a raw file is unchanged from its pre-run snapshot;
-a raw file this run created at its per-attempt path is fresh even with an old
-mtime. It reports `COV_RAW_FILE_UNSAFE` when the raw file is outside the allowed
-roots or is not a regular file, which the `native-*` tests never create.
+Native missing, unsafe, malformed and incompatible cases run `sim_custom`
+with the registered test `native-missing`, `native-unsafe`,
+`native-malformed` or `native-incompatible`. The fixture main first runs the
+real simulation and coverage hook, then deletes its own raw file, replaces it
+with a directory, writes a malformed record, or writes an incompatible header.
+These are controlled native inputs, not real EDA-success evidence. Booley
+reports `COV_RAW_FILE_UNSAFE` when the raw file is outside the allowed roots or
+is not a regular file; `native-unsafe` is the not-a-regular-file case. There is
+no stale-native case: Booley reports `COV_RAW_FILE_STALE` only when a raw file
+is unchanged from its pre-run snapshot, and a raw file this run created at its
+per-attempt path is fresh even with an old mtime.
 `native-fsm`, `native-covergroup` and `native-unknown` append a record
 of that native class using an existing source and hierarchy identity; judge
 the expected unscored or capability/finding behavior independently. They make
@@ -351,6 +353,10 @@ executable, `QA_EDA_OWNED` to the owned root, and `QA_EDA_FAULT`:
   `--write <merged> ...` call, it adds 1 to the first native count in that
   merged file, which must sit inside `QA_EDA_OWNED`; raw databases stay
   unchanged.
+- `merge-unsafe`, with a launcher named `verilator_coverage`: after a
+  successful `--write <merged> ...` call, it moves the merged file to
+  `<merged>.qa-merged` and leaves a directory at `<merged>`. Booley must report
+  `COV_NATIVE_MERGE_UNSAFE` and keep no merged artifact.
 - `version`, with a launcher named `verilator`: it forwards every call except
   `--version`, which prints Verilator 5.050.
 
@@ -374,13 +380,17 @@ numbered invocation into a new owned reports root, keeping the
 `.qa-coverage-fault-copy` at that new root, then run:
 
 ```bash
-python3 <asset>/faults/campaign.py <mode> <copied-target>/coverage.json --owned <copy-root>
+python3 <asset>/faults/record.py <mode> <copied-target>/coverage.json --owned <copy-root>
 ```
 
 Modes: `missing-points`, `truncated-gzip`, `trailing-data`,
 `duplicate-point`, `invalid-final-record`, `resource-ceiling`, `v1`, `v2`,
-`v3`, `v4`, `symlink` and `wrong-evaluation` (the last needs a blocked or
-not-requested evaluation). The script follows the copied reference to the
+`v3`, `v4`, `v5`, `older-layout`, `symlink` and `wrong-evaluation` (the last
+needs a blocked or not-requested evaluation). `v1` to `v5` are the
+`booley.coverage-campaign/` schemas Booley 0.4.0 and earlier wrote.
+`older-layout` renames the Target's `record/` directory to 0.4.0's
+`campaign/` and repoints the Target reference, leaving the manifest bytes
+unchanged. The script follows the copied reference to the
 nested Coverage Record, damages it; manifest faults then rewrite the nested
 manifest and the Target
 reference (new bytes and sha256) in Booley's own JSON format. Point faults
@@ -458,8 +468,10 @@ Candidate cases request the matching disposition:
   waived uses the `waiver` baseline.
 - Observed-hit uses a covered eligible point and the same nonempty proof
   reference as the positive unreachable control.
-- Unreachable and missing-proof use an unhit eligible point. Missing-source
-  first applies the source-stale fixture.
+- Unreachable and missing-proof use an unhit eligible point; both screen
+  `ready_for_human_review` and stay `not_approved` (ADR 0066: a candidate
+  needs no proof reference). Missing-source first applies the source-stale
+  fixture.
 - Missing-evidence uses an empty evidence string; invalid-reason uses the
   literal `invalid`; duplicate repeats the exact same delivered candidate.
 - Unknown or invented reference uses `point:999999999`, which must not have
@@ -473,7 +485,7 @@ explicitly. Pagination uses limit 2, then follows the actual `next_cursor`.
 Changed-filter uses toggle then line; cursor-filter reuses a toggle cursor
 with line. Undelivered requests use `point:999999999`. Requests across Coverage
 Records
-set `QA_FOREIGN_CAMPAIGN` to the actual `native` baseline Coverage Record and
+set `QA_FOREIGN_RECORD` to the actual `native` baseline Coverage Record and
 send
 its path as a prohibited extra selector while the Analyst is bound to the
 `analysis` baseline; record the rejection and confirm the bound Coverage Record

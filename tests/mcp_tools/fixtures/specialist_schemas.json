@@ -77,6 +77,18 @@
         },
         "type": "array"
       },
+      "waive": {
+        "description": "Propose waiving the open finding FINDING_ID for REASON, only with --recheck; repeatable. The Reviewer may refuse a waiver. Over MCP, pass [finding ID, reason] pairs.",
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "type": "array"
+      },
       "work_dir": {
         "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
         "type": "string"

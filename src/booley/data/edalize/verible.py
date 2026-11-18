@@ -4,7 +4,7 @@
 #
 # Flow-API EDA-tool node for Verible lint (verible-verilog-lint).
 #
-# Authored in Booley (ADR 0033) for the Edalize `lint` flow and intended for
+# Authored in Booley for the Edalize `lint` flow and intended for
 # upstreaming to https://github.com/olofk/edalize — the EDA-tool option names
 # (`ruleset`, `rules`, `verible_lint_args`) and the `veribleLintRules` /
 # `veribleLintWaiver` file types match the legacy `edalize/veriblelint.py`

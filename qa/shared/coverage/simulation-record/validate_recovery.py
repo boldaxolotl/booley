@@ -34,11 +34,11 @@ def validate_corrupt_terminal(
     rejection, _ = _load(rejection_path)
     _need(rejection.get("exit_code") == 2, "corrupt resume did not exit 2")
     diagnostic = rejection.get("diagnostic")
+    # Booley validates Results on read but does not re-hash them (ADR 0064), so the
+    # diagnostic names the Simulation Result, not "integrity".
     _need(
-        isinstance(diagnostic, str)
-        and "integrity" in diagnostic.lower()
-        and "result" in diagnostic.lower(),
-        "corrupt resume lacks a precise integrity diagnostic",
+        isinstance(diagnostic, str) and "simulation result" in diagnostic.lower(),
+        "corrupt resume diagnostic does not name the Simulation Result",
     )
     attempts = rejection.get("attempts_before")
     _need(attempts == rejection.get("attempts_after"), "corrupt resume created an attempt")

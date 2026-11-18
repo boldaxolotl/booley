@@ -128,10 +128,17 @@ same Target, then anywhere in the Project. Only a step Booley has never measured
 makes the Job run alone. A Simulation Record runs independent tests in parallel
 while their reservations fit.
 
-If the kernel kills a Job for running out of memory (when the Sandbox has
+If the kernel kills a Job for running out of memory because the Sandbox has
 used `[sandbox].memory` plus its
-[swap](SANDBOX.md#project-settings-sandbox)), Booley runs it again once,
+[swap](SANDBOX.md#project-settings-sandbox), Booley runs it again once,
 alone. A second kill fails the Job.
+
+If the host itself runs out of memory while the Sandbox stays below that
+limit, running alone does not help, so Booley does not retry the Job. The
+result says the host ran out of memory: free memory on the host, or lower
+`[sandbox].memory` and recreate the Sandbox, then run the Job again. A kill
+Booley cannot see (inside a FuseSoC generator, a Pre-Sim Command or a mutation
+run, for example) is a plain failure.
 
 Limits apply to one Project.
 

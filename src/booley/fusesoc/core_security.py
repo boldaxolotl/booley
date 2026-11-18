@@ -83,7 +83,10 @@ class CoreViolation:
     """The ``.core`` that carries the offending section."""
 
     message: str
-    """Human-facing explanation + the decision-21/-8 remediation guidance."""
+    """Human-facing explanation of the rule the ``.core`` breaks."""
+
+    fix: str
+    """The concrete ``.core`` change that clears the violation."""
 
     target: str | None = None
     """The Target the violation belongs to, when target-scoped (hooks); ``None``
@@ -126,8 +129,11 @@ def _check_fpga_hooks(core_doc: Mapping[str, Any], core_file: Path) -> list[Core
                 message=(
                     f"fpga Target (resolution tool '{eda_tool}') declares hooks "
                     f"({', '.join(declared)}); implementation hooks are rejected "
-                    "at the design-description boundary. Move the work into a "
-                    "resolution-time generator or out of the .core entirely."
+                    "at the design-description boundary."
+                ),
+                fix=(
+                    f"delete `hooks:` from Target '{name}'; run that step from a "
+                    "`generators:` entry or outside the .core"
                 ),
             )
         )
@@ -163,8 +169,11 @@ def _check_expr_params(core_doc: Mapping[str, Any], core_file: Path) -> list[Cor
                     f"parameter '{name}' declares datatype '{datatype}', which is "
                     "not a CAPI2 literal (bool/file/int/real/str). An HDL "
                     "expression cannot be a faithful -G vlogparam and Booley ships "
-                    "no evaluator: resolve it to a literal, or convert it to a "
-                    "vlogdefine (decision 8)."
+                    "no evaluator."
+                ),
+                fix=(
+                    f"give parameter '{name}' a literal datatype (bool, file, int, "
+                    "real or str) and the literal value as its default"
                 ),
             )
         )
@@ -216,33 +225,50 @@ def _check_script_provenance(
         for rel in _script_paths(spec, core_file, project_root):
             if wildcard:
                 violations.append(
-                    CoreViolation(
-                        kind="unconfinable_script",
-                        core_file=core_file,
-                        message=(
-                            f"{section} '{spec_name}' references '{rel}', but the "
-                            "agent's write Scope is unrestricted ('*'), so the "
-                            "script cannot be guaranteed read-only/immutable. "
-                            "Imperative .core sections are only permitted with a "
-                            "bounded Scope that excludes the script (decision 21)."
-                        ),
-                    )
+                    _unconfinable_script_violation(core_file, section, spec_name, rel)
                 )
             elif scope_matches_file(scope, rel):
-                violations.append(
-                    CoreViolation(
-                        kind="in_scope_script",
-                        core_file=core_file,
-                        message=(
-                            f"{section} '{spec_name}' references '{rel}', which is "
-                            "inside the agent's write Scope and therefore mutable. "
-                            "generators/hooks scripts must be out-of-Scope and "
-                            "read-only-mounted so the agent cannot author or edit "
-                            "them (decision 21)."
-                        ),
-                    )
-                )
+                violations.append(_in_scope_script_violation(core_file, section, spec_name, rel))
     return violations
+
+
+def _unconfinable_script_violation(
+    core_file: Path, section: str, spec_name: str, rel: str
+) -> CoreViolation:
+    """The violation for a script referenced while the write Scope is ``*``."""
+    return CoreViolation(
+        kind="unconfinable_script",
+        core_file=core_file,
+        message=(
+            f"{section} '{spec_name}' references '{rel}', but the "
+            "agent's write Scope covers the whole Project ('*'), so the "
+            "script cannot be guaranteed read-only/immutable. "
+            "Imperative .core sections are only permitted with a "
+            "bounded Scope that excludes the script."
+        ),
+        fix=f"remove {section} '{spec_name}' and every reference to it from the .core",
+    )
+
+
+def _in_scope_script_violation(
+    core_file: Path, section: str, spec_name: str, rel: str
+) -> CoreViolation:
+    """The violation for a script that sits inside the agent's write Scope."""
+    return CoreViolation(
+        kind="in_scope_script",
+        core_file=core_file,
+        message=(
+            f"{section} '{spec_name}' references '{rel}', which is "
+            "inside the agent's write Scope and therefore mutable. "
+            "generator and hook scripts must sit outside the "
+            "agent's write Scope, so they are not files the agent "
+            "edits as part of its work."
+        ),
+        fix=(
+            f"move '{rel}' outside the agent's write Scope (for example to "
+            f"scripts/) and point {section} '{spec_name}' at the new path"
+        ),
+    )
 
 
 def _imperative_specs(

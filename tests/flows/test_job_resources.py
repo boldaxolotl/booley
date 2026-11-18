@@ -294,7 +294,9 @@ def test_unmeasurable_values_are_absent_not_zero(run, tmp_path, monkeypatch):
     monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: None)
     # Private seam: host readings; the test fixes what the kernel would report.
     monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: None)
+    monkeypatch.setattr(
+        job_resources, "cgroup_memory_events", lambda: job_resources.MemoryEvents(None, None)
+    )
     monkeypatch.setattr(job_resources, "_container_memory_bytes", lambda: None)
 
     assert run(_python("pass")).returncode == 0
@@ -367,9 +369,17 @@ def test_specialist_record_keeps_the_largest_swap_peaks():
     assert record["peak_memory_with_swap_mb"] == 400.0
 
 
-def _oom_counter(monkeypatch, counts) -> None:
-    """The container OOM counter reads *counts* in turn."""
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
+def _oom_counter(monkeypatch, counts, limit=None) -> None:
+    """The container reads *counts* of OOM kills in turn, and *limit* of Sandbox-limit events.
+
+    Without *limit* the Sandbox reached its limit as often as it saw a kill.
+    """
+
+    def events() -> job_resources.MemoryEvents:
+        kills = next(counts)
+        return job_resources.MemoryEvents(kills, kills if limit is None else next(limit))
+
+    monkeypatch.setattr(job_resources, "cgroup_memory_events", events)
 
 
 _MAKE_KILLED = (
@@ -411,6 +421,110 @@ def test_oom_blame_follows_the_commands_own_evidence(
 
 
 @posix_only
+def test_own_kill_without_a_sandbox_limit_oom_is_a_host_kill(flow, tmp_path, monkeypatch):
+    # The kill counter rose but the Sandbox never reached its own limit.
+    _oom_counter(monkeypatch, iter([0, 1]), iter([0, 0]))
+
+    result = _execute(flow, _python(SELF_SIGKILL))
+
+    assert result.oom_killed and result.host_oom_kill and result.oom_blamed
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "host_oom_kill"
+
+
+@posix_only
+def test_own_kill_with_a_sandbox_limit_oom_is_not_a_host_kill(flow, tmp_path, monkeypatch):
+    _oom_counter(monkeypatch, iter([0, 1]), iter([0, 1]))
+
+    result = _execute(flow, _python(SELF_SIGKILL))
+
+    assert result.oom_killed and not result.host_oom_kill
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "oom_kill"
+
+
+def test_unreadable_limit_count_is_not_a_host_kill():
+    assert job_resources.host_oom_kill(_measurement(limit=0))
+    assert not job_resources.host_oom_kill(_measurement(limit=2))
+    assert not job_resources.host_oom_kill(_measurement(limit=None))
+
+
+def test_nonzero_exit_without_a_kill_sign_is_no_kill_of_either_kind(flow, tmp_path, monkeypatch):
+    # The counter rose (another Job's kill), but this command only failed.
+    _oom_counter(monkeypatch, iter([0, 1]), iter([0, 0]))
+
+    result = _execute(flow, _python("raise SystemExit(1)"))
+
+    assert not result.oom_killed and not result.host_oom_kill
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "exit_nonzero"
+
+
+def test_shell_child_kill_report_is_a_kill_sign():
+    cases = [
+        ("/work/build.sh: line 12: 4242 Killed                  g++ -c a.cc\n", True),
+        ("/work/my scripts/build.sh: line 3: 99 Killed  sh x.sh\n", True),
+        ("bash: line 1: 2741064 Killed                     sh self.sh\n", True),
+        ("Killed\n", True),
+        # Only a whole line is a report; a mention mid-line proves nothing.
+        ("echo Killed the process\n", False),
+        ("note: Killed is a word\n", False),
+    ]
+    for stderr, expected in cases:
+        result = SubprocessResult(returncode=1, stderr=stderr)
+
+        killed = job_resources.own_oom_kill(_measurement(), result, cancelled=False)
+
+        assert killed is expected, stderr
+
+
+def test_fresh_kill_log_of_the_command_is_a_kill_sign(tmp_path):
+    log = tmp_path / "runme.log"
+    log.write_text('rdiArgs.sh: line 57: 77 Killed "$RDI_PROG"\n', encoding="utf-8", newline="\n")
+    result = SubprocessResult(returncode=1, stderr="make: *** Error 1")
+    now = time.time()
+
+    def killed(**options: Any) -> bool:
+        return job_resources.own_oom_kill(_measurement(), result, cancelled=False, **options)
+
+    assert killed(kill_logs=[log], since=now - 60)
+    # A previous run's log, a missing log and no log at all show no kill.
+    assert not killed(kill_logs=[log], since=now + 60)
+    assert not killed(kill_logs=[tmp_path / "absent.log"], since=0)
+    assert not killed()
+
+
+def test_a_run_log_the_command_wrote_makes_its_failure_an_own_kill(flow, tmp_path, monkeypatch):
+    # Vivado writes bash's kill report to runme.log, not to the command's streams.
+    _oom_counter(monkeypatch, iter([0, 1]), iter([0, 0]))
+    log = tmp_path / "runme.log"
+    writes_log = (
+        f"open({str(log)!r}, 'w').write('rdiArgs.sh: line 57: 77 Killed \"$RDI_PROG\"\\n');"
+        "raise SystemExit(1)"
+    )
+
+    with job_resources.resource_phase("test", "fpga_impl", kill_logs=(log,)):
+        result = _execute(flow, _python(writes_log))
+
+    assert result.oom_killed and result.host_oom_kill
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "host_oom_kill"
+
+
+def test_a_stale_run_log_does_not_blame_the_next_command(flow, tmp_path, monkeypatch):
+    _oom_counter(monkeypatch, iter([0, 1]), iter([0, 0]))
+    log = tmp_path / "runme.log"
+    log.write_text('rdiArgs.sh: line 57: 77 Killed "$RDI_PROG"\n', encoding="utf-8", newline="\n")
+    long_ago = time.time() - 3600
+    os.utime(log, (long_ago, long_ago))
+
+    with job_resources.resource_phase("test", "fpga_impl", kill_logs=(log,)):
+        result = _execute(flow, _python("raise SystemExit(1)"))
+
+    assert not result.oom_killed
+
+
+@posix_only
 def test_unreadable_counter_or_timeout_is_never_oom_killed(flow, monkeypatch):
     # An unreadable counter proves nothing, even for a command that killed itself.
     _oom_counter(monkeypatch, iter([None, None]))
@@ -424,7 +538,9 @@ def test_unreadable_counter_or_timeout_is_never_oom_killed(flow, monkeypatch):
     assert timed_out.timed_out and not timed_out.oom_killed
 
 
-def _measurement(delta: int | None = 1, kills: int = 0) -> job_resources.JobMeasurement:
+def _measurement(
+    delta: int | None = 1, kills: int = 0, limit: int | None = None
+) -> job_resources.JobMeasurement:
     return job_resources.JobMeasurement(
         interval_s=1.0,
         overall=job_resources.Usage(),
@@ -433,6 +549,7 @@ def _measurement(delta: int | None = 1, kills: int = 0) -> job_resources.JobMeas
         oom_kill_delta=delta,
         solo=None,
         descendant_kills=kills,
+        limit_oom_delta=limit,
     )
 
 
@@ -852,12 +969,19 @@ def test_report_shows_peak_swap_only_when_nonzero(tmp_path, capsys):
     assert by_key["b"]["max"] == 256.0 and by_key["c"] is None
 
 
-def test_cgroup_oom_counter_parser(tmp_path, monkeypatch):
+def test_memory_events_reads_both_counters_from_one_snapshot(tmp_path, monkeypatch):
     events = tmp_path / "memory.events"
-    events.write_text("low 0\nhigh 0\noom 3\noom_kill 2\n", encoding="utf-8")
     # Private seam: host readings; the test fixes what the kernel would report.
     monkeypatch.setattr(job_resources, "_CGROUP_MEMORY_EVENTS", events)
-    assert job_resources.cgroup_oom_kill_count() == 2
+    events.write_bytes(b"low 0\nhigh 0\noom 3\noom_kill 2\n")
+    assert job_resources.cgroup_memory_events() == job_resources.MemoryEvents(2, 3)
+    # A counter that is absent or garbled is unknown, the other stays known.
+    events.write_bytes(b"oom_kill x\noom 1\n")
+    assert job_resources.cgroup_memory_events() == job_resources.MemoryEvents(None, 1)
+    events.write_bytes(b"low 0\n")
+    assert job_resources.cgroup_memory_events() == job_resources.MemoryEvents(None, None)
+    events.unlink()
+    assert job_resources.cgroup_memory_events() == job_resources.MemoryEvents(None, None)
 
 
 def test_report_handles_empty_unreadable_and_unmeasured_history(tmp_path, capsys):

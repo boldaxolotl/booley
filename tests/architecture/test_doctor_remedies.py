@@ -84,7 +84,6 @@ _BASELINE: tuple[str, ...] = (
     'fail - harness/doctor.py::_prepare_selftest_invocation "f\'{label} could not enter the Sandbox: {"',
     'warn handles.map-size harness/doctor.py::_check_handle_map_size "job handle map"',
     'fail - audit/agent_schema.py::audit_agent_table "booley.toml [agent] uses retired key(s):"',
-    'fail - audit/core_tree_inspection.py::inspect_core_security ".core security ["',
     'fail - audit/host_environment.py::_run_container_probe "container runtime permission denied"',
     'fail - audit/project_schema.py::_feedback_field_findings "booley.toml [feedback].redact_identifier"',
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists."',
@@ -145,7 +144,6 @@ _BASELINE: tuple[str, ...] = (
     'warn config.project-metadata audit/project_schema.py::audit_project_table "booley.toml missing [project] table"',
     'warn config.unknown-table audit/project_schema.py::audit_known_tables "booley.toml ["',
     "warn core.interface-toplevel harness/doctor.py::_check_toplevel_interface_ports \"f\"{ref.flow} Target '{name}' toplevel '{\"",
-    'warn core.security-scope-advisory audit/core_tree_inspection.py::inspect_core_security ".core security ["',
     "warn flow.selftest-evidence-unvalidated harness/doctor.py::_grade_sim_bad_selftest \"f'{label} fail-path unvalidated - {exc}'\"",
     'warn flow.selftest-overlay-build-failed harness/doctor.py::_grade_sim_bad_selftest "f\'{label}: bad overlay no longer builds "',
     "warn git.autocrlf-risk harness/setup/readiness.py::_report_autocrlf_risk \"f'{identity}: {message}'\"",
@@ -190,6 +188,8 @@ _PURGE_COMMAND = "fix is a purge command joined at runtime"
 _SKIPPED_ENDPOINT = "fix is SkippedEndpoint.fix, built at runtime by endpoint validation"
 
 _UNRESOLVED: dict[str, str] = {
+    'fail - audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
+    'warn core.security-scope-advisory audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
     'fail - runtime/vaporview.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
     'fail - audit/core_tree_inspection.py::_check_schema ".core schema"': _SCHEMA_FINDINGS,
     'fail - audit/flow_schema.py::_flow_shape_findings "message"': _RUNTIME_TUPLE,

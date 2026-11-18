@@ -136,6 +136,11 @@ class _PreparedFpgaCommand:
     ppa_profile: VivadoProfile = VIVADO_PROFILES["balanced"]
     console_logs: tuple[Path, ...] = ()
 
+    @property
+    def kill_logs(self) -> tuple[Path, ...]:
+        """The run scripts' own logs: ISEWrap writes a killed step's bash report there only."""
+        return tuple(path for path in self.console_logs if path.name == "runme.log")
+
 
 def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
     """Resolve the per-target FPGA implementation budget for MCP and Flow callers."""
@@ -586,7 +591,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             f"fpga: Target {target!r} has no FPGA constraints. Add a "
             "`file_type: xdc` fileset (create_clock / set_property PACKAGE_PIN / "
             "false-paths) to the Target — an XDC is a design constraint, so it "
-            "lives with the design, not on [flows.fpga] (ADR 0031)."
+            "lives with the design, not on [flows.fpga]."
         )
 
     def _announce_vivado_run(self, prepared, target: str) -> None:
@@ -602,10 +607,14 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         )
 
     def _run_vivado(
-        self, target: str, run_cmd: list[str], source_bytes: int | None
+        self,
+        target: str,
+        run_cmd: list[str],
+        source_bytes: int | None,
+        kill_logs: tuple[Path, ...] = (),
     ) -> SubprocessResult:
         """Run the FPGA implementation command under its resource-history label."""
-        with resource_phase(target, "fpga_impl", source_bytes=source_bytes):
+        with resource_phase(target, "fpga_impl", source_bytes=source_bytes, kill_logs=kill_logs):
             return self._execute_boundary(run_cmd, timeout=self._get_timeout())
 
     def _run_single_target(self, target: str) -> FpgaMetrics:
@@ -656,7 +665,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         # The command is not path-remapped: ``make -C <rel>`` resolves from the
         # shared Sandbox workspace.
         self._announce_vivado_run(prepared, target)
-        result = self._run_vivado(target, run_cmd, prepared.source_bytes)
+        result = self._run_vivado(target, run_cmd, prepared.source_bytes, prepared.kill_logs)
         # The edalize project-mode vivado flow (launch_runs/wait_on_run) writes
         # its utilization/timing/DRC reports to *files*, not stdout — unlike the
         # legacy non-project tcl that printed report_* to the console. So the

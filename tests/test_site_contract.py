@@ -44,7 +44,7 @@ def test_readme_links_resolve_to_site_sections_and_pages():
 
 
 def test_generated_illustration_is_up_to_date():
-    """ide.css, ide-figure.html, and the architecture diagram match their sources."""
+    """ide.css, ide-figure.html, and the architecture and Features diagrams match their sources."""
     spec = importlib.util.spec_from_file_location(
         "site_illustration", WEBSITE / "illustration/build.py"
     )
@@ -58,6 +58,10 @@ def test_generated_illustration_is_up_to_date():
     assert build.ARCHITECTURE_DARK_OUT.read_text(encoding="utf-8") == build.architecture_svg(
         dark=True
     )
+    for name in build.FEATURE_DIAGRAMS:
+        for theme in build.THEME_RULES:
+            generated = build.feature_out(name, theme).read_text(encoding="utf-8")
+            assert generated == build.feature_svg(name, theme), (name, theme)
     assert '--8<-- "ide-figure.html"' in SITE
 
 
@@ -98,6 +102,7 @@ def test_colours_are_theme_tokens_only():
     colour_attribute = re.compile(r'\b(fill|stroke|stop-color|color|style)="([^"]*)"')
     markup = [*WEBSITE.glob("snippets/*.html"), *WEBSITE.glob("overrides/*.html")]
     markup += [*WEBSITE.glob("illustration/*.html"), *WEBSITE.glob("docs/**/*.md")]
+    markup += [*WEBSITE.glob("illustration/feature-*.svg")]
     for path in sorted(markup):
         for name, value in colour_attribute.findall(path.read_text(encoding="utf-8")):
             if re.search(_COLOUR, value):
@@ -149,6 +154,8 @@ _TEXT_PAIRS = [
     ("--paper", "--ink-2"),
     ("--paper", "--ink"),
     ("--quote-ink", "--paper"),
+    ("--review", "--paper"),
+    ("--fault", "--paper"),
     ("--series-on-dark", "--series-build"),
     ("--series-on-dark", "--series-hung"),
     ("--series-on-light", "--series-obs"),

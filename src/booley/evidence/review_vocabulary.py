@@ -17,8 +17,10 @@ ALL_DISPOSITIONS: frozenset[str] = frozenset(
     {DISPOSITION_CURRENT, DISPOSITION_ADVISORY, DISPOSITION_DEFERRED, DISPOSITION_OUT_OF_SCOPE}
 )
 PERSISTED_REVIEWER_DISPOSITIONS: frozenset[str] = ALL_DISPOSITIONS | {DISPOSITION_SUPERSEDED}
-# Statuses a re-check writes for a finding it judged; ``fixed`` is final, the other two stay open.
+# Statuses a re-check writes for a finding it judged; ``fixed`` and ``waived`` are final, the
+# other two stay open.
 STATUS_FIXED = "fixed"
+STATUS_WAIVED = "waived"
 STATUS_STILL_OPEN = "still_open"
 STATUS_CANT_TELL = "cant_tell"
 # The statuses a re-check sends to the model; every other status is carried over unchanged.

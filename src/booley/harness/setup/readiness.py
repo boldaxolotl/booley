@@ -727,7 +727,7 @@ def _check_stealth_cores(
         names = ", ".join(str(p.relative_to(booley_dir)) for p in sorted(stranded))
         report.fail(
             f"authored .core stranded in the Booley Directory, invisible to Booley and FuseSoC: {names}",
-            f"move it under {stealth_root} — the one scanned subtree of .booley/ (ADR 0036)",
+            f"move it under {stealth_root} — the one scanned subtree of .booley/",
         )
     else:
         report.pass_("no authored .core stranded outside .booley/cores/")

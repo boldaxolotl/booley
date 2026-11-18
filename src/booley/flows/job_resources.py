@@ -18,7 +18,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,11 +47,15 @@ _KILL_REPORT_NAME = ".booley-kills"
 # What a launcher prints, in the command's own output, for a child a signal
 # killed: GNU make (the recipe's ``Killed`` or the shell's ``Error 137``), the
 # GCC driver (``g++`` reporting ``cc1plus``), clang and the ``verilator`` driver
-# (its front end ``verilator_bin`` killed by signal 9). Another Job cannot write
-# into this output. Anything else (Vivado run scripts, a project's own scripts,
-# a non-GNU or localized make) is not detected.
+# (its front end ``verilator_bin`` killed by signal 9), bash's report of a child
+# (``script: line N: <pid> Killed cmd``, also ``bash: line 1: ...`` from ``-c``)
+# and dash's bare ``Killed`` line. Another Job cannot write into this output.
+# Anything else (a FuseSoC generator, which reports no signal; a wrapper that
+# reports nothing; a non-GNU or localized make) is not detected.
 _LAUNCHER_KILL_RE = re.compile(
     r"^(?:make(?:\[\d+\])?: \*\*\* (?:\[[^\]\n]*\] )?(?:Killed|Error 137)"
+    r"|[^\n]+?: line \d+: +\d+ Killed\b[^\n]*"
+    r"|Killed"
     r"|\S+: fatal error: Killed signal terminated program \S+"
     r"|\S+: error: unable to execute command: Killed"
     r"|%Error: Verilator threw signal 9\b[^\n]*?)[ \t\r]*$",
@@ -85,6 +89,9 @@ class ResourceLabel:
     split: Mapping[str, str] | None = None
     # Size of the Target's source files; recorded as data, not part of the key.
     source_bytes: int | None = None
+    # Files the labelled command writes that count as its own output when looking
+    # for a kill sign (Vivado's run scripts log to their own files).
+    kill_logs: tuple[Path, ...] = ()
 
 
 _label: ContextVar[ResourceLabel | None] = ContextVar("booley_resource_label", default=None)
@@ -129,9 +136,12 @@ def resource_phase(
     *,
     split: Mapping[str, str] | None = None,
     source_bytes: int | None = None,
+    kill_logs: tuple[Path, ...] = (),
 ) -> Iterator[None]:
     """Label the commands run inside the block."""
-    token = _label.set(ResourceLabel(target, phase, split=split, source_bytes=source_bytes))
+    token = _label.set(
+        ResourceLabel(target, phase, split=split, source_bytes=source_bytes, kill_logs=kill_logs)
+    )
     try:
         yield
     finally:
@@ -143,17 +153,31 @@ def current_label() -> ResourceLabel | None:
     return _label.get()
 
 
-def cgroup_oom_kill_count() -> int | None:
-    """Return this cgroup's cumulative OOM-kill count when available."""
+@dataclass(frozen=True)
+class MemoryEvents:
+    """Cumulative counters from one read of the cgroup's ``memory.events``.
+
+    ``oom_kill`` counts every process of the cgroup an OOM killer took, the
+    host's too; ``oom`` counts only the times the cgroup reached its own limit.
+    A counter that is absent or unreadable is ``None``.
+    """
+
+    oom_kill: int | None
+    oom: int | None
+
+
+def cgroup_memory_events() -> MemoryEvents:
+    """Read both OOM counters from a single snapshot of this cgroup's events."""
     try:
         text = _CGROUP_MEMORY_EVENTS.read_text(encoding="utf-8")
     except OSError:
-        return None
+        return MemoryEvents(None, None)
+    counters: dict[str, int | None] = {"oom_kill": None, "oom": None}
     for line in text.splitlines():
         key, _, raw = line.partition(" ")
-        if key == "oom_kill":
-            return int(raw) if raw.strip().isdigit() else None
-    return None
+        if key in counters:
+            counters[key] = int(raw) if raw.strip().isdigit() else None
+    return MemoryEvents(counters["oom_kill"], counters["oom"])
 
 
 def _container_memory_bytes() -> int | None:
@@ -414,6 +438,12 @@ def _other_jobs_hold_slots() -> bool | None:
     return any(token.pid not in own and is_pid_alive(token.pid) for token in holders)
 
 
+def _delta(before: int | None, after: int | None) -> int | None:
+    if before is None or after is None:
+        return None
+    return max(0, after - before)
+
+
 @dataclass(frozen=True)
 class JobMeasurement:
     """Everything measured over one command."""
@@ -426,6 +456,9 @@ class JobMeasurement:
     solo: bool | None
     # SIGKILL deaths a Booley-owned launcher inside the command reported.
     descendant_kills: int = 0
+    # How often the Sandbox reached its own memory limit while the command ran;
+    # ``None`` when unreadable.
+    limit_oom_delta: int | None = None
 
     @property
     def peak_rss_mb(self) -> float | None:
@@ -475,7 +508,7 @@ class JobResourceMonitor:
         self._include_root = not descendants_only
         self._ticket = _IN_PROCESS.enter()
         try:
-            self._oom_before = cgroup_oom_kill_count()
+            self._events_before = cgroup_memory_events()
             self._cpu_before = _children_cpu_s()
             self._container_start = _container_memory_bytes()
             self._others_before = _other_jobs_hold_slots()
@@ -501,14 +534,13 @@ class JobResourceMonitor:
     def _measure(self) -> JobMeasurement:
         alone = _IN_PROCESS.leave(self._ticket)
         others = (self._others_before, _other_jobs_hold_slots())
-        oom_after, cpu_after = cgroup_oom_kill_count(), _children_cpu_s()
+        events_after, cpu_after = cgroup_memory_events(), _children_cpu_s()
         # Exact children CPU when alone; otherwise the per-process samples.
         cpu = self._overall.sampled_cpu_s()
         if alone and self._cpu_before is not None and cpu_after is not None:
             cpu = (cpu_after[0] - self._cpu_before[0], cpu_after[1] - self._cpu_before[1])
-        oom = None
-        if self._oom_before is not None and oom_after is not None:
-            oom = max(0, oom_after - self._oom_before)
+        oom = _delta(self._events_before.oom_kill, events_after.oom_kill)
+        limit_oom = _delta(self._events_before.oom, events_after.oom)
         return JobMeasurement(
             interval_s=self._interval_s,
             overall=self._overall,
@@ -517,6 +549,7 @@ class JobResourceMonitor:
             oom_kill_delta=oom,
             solo=None if None in others else alone and not any(others),
             descendant_kills=self._count_descendant_kills(),
+            limit_oom_delta=limit_oom,
         )
 
     def _count_descendant_kills(self) -> int:
@@ -574,14 +607,22 @@ def report_descendant_kill() -> None:
         logger.debug("could not report a descendant kill to %s", path, exc_info=True)
 
 
-def own_oom_kill(measurement: JobMeasurement, result: Any, *, cancelled: bool) -> bool:
+def own_oom_kill(
+    measurement: JobMeasurement,
+    result: Any,
+    *,
+    cancelled: bool,
+    kill_logs: Sequence[Path] = (),
+    since: float = 0.0,
+) -> bool:
     """Whether the OOM killer took a process of this command's own tree.
 
     The container's OOM-kill counter rose while the command ran (an unreadable
     counter blames nothing), the command failed on its own (not Booley's timeout
     or cancellation), and one of its processes died by a SIGKILL Booley did not
     send: the root process, a launcher's report, or the kill line a launcher
-    printed. Another Job's kill moves the counter but leaves none of these.
+    printed, in the command's output or in a file of *kill_logs* written since
+    *since*. Another Job's kill moves the counter but leaves none of these.
     """
     if not measurement.oom_kill_delta:
         return False
@@ -589,7 +630,30 @@ def own_oom_kill(measurement: JobMeasurement, result: Any, *, cancelled: bool) -
         return False
     if result.returncode in _SIGKILL_STATUSES or measurement.descendant_kills > 0:
         return True
-    return any(_LAUNCHER_KILL_RE.search(text) for text in (result.stdout, result.stderr))
+    if any(_LAUNCHER_KILL_RE.search(text) for text in (result.stdout, result.stderr)):
+        return True
+    return any(_log_has_kill_sign(path, since) for path in kill_logs)
+
+
+def _log_has_kill_sign(path: Path, since: float) -> bool:
+    """Whether the command's own log, written since *since*, reports a kill."""
+    try:
+        if path.stat().st_mtime < since:
+            return False
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _LAUNCHER_KILL_RE.search(text) is not None
+
+
+def host_oom_kill(measurement: JobMeasurement) -> bool:
+    """Whether an own OOM kill came from the host, not the Sandbox's limit.
+
+    The Sandbox never reached its own limit while the command ran. An unreadable
+    count proves nothing, so it is not a host kill (it keeps the Sandbox-limit
+    handling).
+    """
+    return measurement.limit_oom_delta == 0
 
 
 def _mb(value: int | None) -> float | None:
@@ -611,7 +675,7 @@ def history_records(
     outcome = "exit_zero" if result.returncode == 0 else "exit_nonzero"
     # The OOM counter is container-wide: blame only a command whose own process was killed.
     if result.oom_killed:
-        outcome = "oom_kill"
+        outcome = "host_oom_kill" if result.host_oom_kill else "oom_kill"
     common = {
         "flow": flow,
         "outcome": "timeout" if result.timed_out else outcome,
