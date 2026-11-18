@@ -344,6 +344,7 @@ def isolate_session_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     """Isolate host state under *tmp_path* and skip the host-only and host-install gates."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    # Private: both gates read the test runner's install location, which no CLI argument sets.
     monkeypatch.setattr(cli, "_enforce_runtime_location", lambda _command: None)
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda _command: None)
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)

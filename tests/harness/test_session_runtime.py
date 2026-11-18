@@ -243,6 +243,11 @@ class TestExecArgv:
 
         assert argv == ["docker", "exec", *expected, "c1", "echo", "hi"]
 
+    def test_tty_never_forwards_an_exotic_host_term(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TERM", "xterm-kitty")
+
+        assert sr.exec_argv("c1", ["ls"], tty=True) == ["docker", "exec", "-t", "-i", "c1", "ls"]
+
 
 class TestContainerName:
     def test_same_basename_projects_do_not_collide(self, tmp_path: Path):
@@ -1116,6 +1121,8 @@ class TestUp:
 
         up_docker.images[RELAY_IMAGE] = {"Id": _test_issuance(workspace).relay_image_id}
         monkeypatch.setattr(runtime_spec, "requested_license", lambda *_a, **_k: _LICENSE_PROFILE)
+        # The refusal text under test is the admission's; the fake Docker cannot hold a
+        # host-wide session count, so the public boundary cannot make the real admission refuse.
         monkeypatch.setattr(
             session_admission,
             "admit_start",
@@ -1208,7 +1215,7 @@ class TestUp:
         up_docker.failing |= failing
 
         if running or failing:
-            with pytest.raises(sr.SessionError):
+            with pytest.raises(sr.SessionError, match=r"older host issuance|docker run failed"):
                 sr.up(workspace)
         else:
             sr.up(workspace)
@@ -1333,7 +1340,9 @@ class TestUp:
     def test_docker_run_failure_raises(self, workspace: Path, up_docker: SandboxDocker) -> None:
         up_docker.failing.add("run")
 
-        with pytest.raises(sr.SessionError, match="docker run failed"):
+        with pytest.raises(
+            sr.SessionError, match=r"docker run failed.*run failed: container is running"
+        ):
             sr.up(workspace)
 
     def test_failing_hook_warns_but_leaves_container_up(
@@ -1783,11 +1792,13 @@ class TestImageDriftWarning:
 
         expected = configured or project
         message = f"!= [sandbox].image '{expected}'"
-        assert (message in caplog.text) is warns
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert [message in r.getMessage() for r in warnings] == [True] * warns
         if warns:
-            assert sr.sandbox_remedy(workspace) in caplog.text
-        notes = [r for r in caplog.records if "equivalent Sandbox Image" in r.message]
-        assert len(notes) == moved
+            assert "`booley init" in caplog.text  # literal remedy text, not sandbox_remedy()
+            assert "`booley session " in caplog.text
+        notes = [r for r in caplog.records if "equivalent Sandbox Image" in r.getMessage()]
+        assert [r.levelname for r in notes] == ["DEBUG"] * moved
 
 
 class TestStaleBooleyBakeWarning:
@@ -2287,6 +2298,7 @@ class TestSessionRefresh:
         """A Project under isolated host state, and the Docker fake its commands reach."""
         (workspace / ".booley").mkdir()
         isolate_session_cli(monkeypatch, tmp_path)
+        # The Doctor-due check reads host health state that no session command can set up.
         monkeypatch.setattr(health, "due_reason", lambda _root: None)
         return serve_sandbox_docker(monkeypatch)
 
@@ -2333,6 +2345,8 @@ class TestSessionRefresh:
             RefreshImage("sha256:fresh", None, None, False), "replaced", "old", "new"
         )
         events: list[str] = []
+        # Only call order is pinned: the real refresh needs a Docker image rebuild, and the
+        # progress configuration has no public effect to observe before it runs.
         monkeypatch.setattr(
             setup_common, "configure_progress_output", lambda: events.append("configure")
         )
@@ -2350,6 +2364,7 @@ class TestSessionRefresh:
         self, workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         isolate_session_cli(monkeypatch, workspace.parent)
+        # The Doctor-due check reads host health state that no session command can set up.
         monkeypatch.setattr(health, "due_reason", lambda _root: None)
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
