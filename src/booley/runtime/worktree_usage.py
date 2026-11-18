@@ -37,8 +37,8 @@ _STAMP_DIR = ".last-used"
 # ``booley/<name>``, or ``wt/<name>`` under Stealth Mode so that no default banned
 # term reaches a branch name. The Versioned Booley Directory holds
 # ``booley-worktree/<name>`` whatever the setting.
-_WORKTREE_BRANCH_PREFIXES = ("booley/", "wt/")
-_BRANCH_PREFIXES = (*_WORKTREE_BRANCH_PREFIXES, "booley-worktree/")
+WORKTREE_BRANCH_PREFIXES = ("booley/", "wt/")
+_BRANCH_PREFIXES = (*WORKTREE_BRANCH_PREFIXES, "booley-worktree/")
 # Allocation runs under the Session writer lock that every tool call's registry
 # upsert waits on, so Git gets far less than the usual 30 s.
 _GIT_TIMEOUT_SECONDS = 5
