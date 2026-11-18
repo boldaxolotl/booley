@@ -571,7 +571,7 @@ def test_cocotb_core_audit_output_is_pinned(tmp_path):
             Severity.FAIL,
             "cocotb Target 'sim_a' declares a tests.toml `select` plusarg template",
             "remove `select` — cocotb test selection is the COCOTB_TEST_FILTER env var "
-            "built from the `tests` list (ADR 0034)",
+            "built from the `tests` list",
             None,
             None,
         ),
@@ -770,9 +770,9 @@ FuseSoC .core checks
   ✓  lint Target 'lint_fast' toplevel 'dut' elaborates standalone
   ✓  generic Target 'synth_fast' toplevel 'dut' elaborates standalone
   !  2 .core-referenced file(s) exist on disk but are untracked by git (rtl/dut.sv, tb/tb.sv) — if gitignored (vendored firmware / build artifact), force-add with `git add -f <file>` and verify with `git ls-files <file>`; a fresh clone or CI checkout will lack them  project.core-file-untracked:rtl/dut.sv,tb/tb.sv
-  ✗  .core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator: resolve it to a literal, or convert it to a vlogdefine (decision 8).
-     → ADR 0022 decision 21
-  ~  .core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generators/hooks scripts must be out-of-Scope and read-only-mounted so the agent cannot author or edit them (decision 21). (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)  core.security-scope-advisory:sec.core:-
+  ✗  .core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator.
+     → give parameter 'width' a literal datatype (bool, file, int, real or str) and the literal value as its default
+  ~  .core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generator and hook scripts must sit outside the agent's write Scope, so they are not files the agent edits as part of its work. (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)  core.security-scope-advisory:sec.core:-
      → reason: Accepted for this fixture
   ·  tests.toml not present (each sim Target runs its testbench's default test)
 """
@@ -815,14 +815,15 @@ _CORE_TREE_ROWS = [
     ),
     (
         Severity.FAIL,
-        ".core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator: resolve it to a literal, or convert it to a vlogdefine (decision 8).",
-        "ADR 0022 decision 21",
+        ".core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator.",
+        "give parameter 'width' a literal datatype (bool, file, int, real or str) "
+        "and the literal value as its default",
         None,
         None,
     ),
     (
         Severity.WAIVED,
-        ".core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generators/hooks scripts must be out-of-Scope and read-only-mounted so the agent cannot author or edit them (decision 21). (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)",
+        ".core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generator and hook scripts must sit outside the agent's write Scope, so they are not files the agent edits as part of its work. (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)",
         "Accepted for this fixture",
         "core.security-scope-advisory",
         "sec.core:-",

@@ -1604,7 +1604,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     if runtime_context.inside_session_runtime():
         print(
             "ERROR: `booley shell` cannot run inside the Booley container.\n\n"
-            "  The sandbox has no Docker access by design (ADR 0016), so it "
+            "  The sandbox has no Docker access by design, so it "
             "cannot spawn\n  another container. You are already inside a sandbox "
             "— just use this shell.\n"
             "  Run `booley shell` from a HOST terminal to get a fresh sandbox.",
