@@ -485,7 +485,7 @@ def _validate_marker_name(name: str) -> bool:
     must not collide with a known subcommand name."""
     from booley.bwave import cli as bwave  # lazy: CLI subcommand tables live in bwave
 
-    if not name or is_time_token(name) or ":" in name:
+    if not name or name.isdigit() or is_time_token(name) or ":" in name:
         return False
     if name.startswith("-") or any(c.isspace() for c in name):
         return False

@@ -844,6 +844,7 @@ def _register_dut(tmp_path, monkeypatch):
         ("+5c", "at_+5c"),
         ("a:b", "a_b"),
         (":x", "_x"),
+        ("\uff11\uff12\uff13", None),
         ("", None),
         ("-bad", None),
         ("has space", None),
