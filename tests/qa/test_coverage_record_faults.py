@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 SPEC = importlib.util.spec_from_file_location(
-    "qa_campaign_faults",
-    Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults/campaign.py",
+    "qa_record_faults",
+    Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults/record.py",
 )
 faults = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(faults)
@@ -138,12 +138,12 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
             monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", 4096)
             monkeypatch.setattr(faults, "POINT_CEILING_BYTES", 4096)
 
-        manifest_before = faults.nested_campaign(reference, owned)[0].read_bytes()
+        manifest_before = faults.nested_record(reference, owned)[0].read_bytes()
         reference_before = reference.read_bytes()
 
         faults.mutate(reference, owned, mode)
 
-        manifest_after = faults.nested_campaign(reference, owned)[0].read_bytes()
+        manifest_after = faults.nested_record(reference, owned)[0].read_bytes()
         if mode in faults.POINT_FAULTS:
             # A point fault damages only the point store.
             assert manifest_after == manifest_before
@@ -168,6 +168,23 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
         else:
             codes = {error.code}
         assert expected_codes <= codes
+
+
+def test_older_layout_reaches_the_older_booley_refusal(tmp_path: Path) -> None:
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
+    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
+
+    owned = tmp_path / "older-layout"
+    reference = _product_reference(owned, "older-layout")
+    manifest_before = faults.nested_record(reference, owned)[0].read_bytes()
+
+    faults.mutate(reference, owned, "older-layout")
+
+    # Only the 0.4.0 directory name differs; the manifest bytes are the published ones.
+    assert not (reference.parent / "record").exists()
+    assert faults.nested_record(reference, owned)[0].read_bytes() == manifest_before
+    with pytest.raises(UnsupportedSimulationRecordFormatError, match="older Booley"):
+        resolve_coverage_record_reference(reference)
 
 
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink", "outside"])
