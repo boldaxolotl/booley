@@ -161,7 +161,10 @@ for each, with one line per Specialist after the Targets (`--json` for
 scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation has its own entry
 (`tests=first+slow`; the default Variant keeps the bare Test name), and the
 seeds of one Variant share it. Flow runs that `booley doctor` starts are not
-recorded.
+recorded. If the history is not valid JSON or was written by another Booley
+version, the next Job keeps it as
+`.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
+one.
 
 ## Agent CLIs (`[agent]`)
 

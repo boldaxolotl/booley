@@ -55,6 +55,7 @@ from booley.core.boundary import BoundaryError
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.core.host_shell import quote_arg
+from booley.runtime.atomic_files import keep_unreadable
 from booley.runtime.project_discovery import session_store_checkout
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
 
@@ -134,6 +135,28 @@ def _load_sessions(store: SessionStore | None = None) -> dict:
         return {}
 
 
+def _sessions_for_update(store: SessionStore) -> dict:
+    """Load the sessions a registration extends; an unreadable store is kept aside.
+
+    The caller holds the store lock. ``OSError`` other than a missing file
+    propagates, so nothing is written over a store that could not be read.
+    """
+    try:
+        data = json.loads(store.path.read_text())
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    kept = keep_unreadable(store.path)
+    print(
+        f"[bwave] WARNING: session file {store.path} was unreadable; kept it as {kept}",
+        file=sys.stderr,
+    )
+    return {}
+
+
 def _save_sessions(data: dict, store: SessionStore | None = None) -> bool:
     """Publish the sessions file atomically (creates the directory if needed).
 
@@ -196,7 +219,7 @@ def register_trace(
 
 def _register_trace_locked(trace: Path, alias: str | None, store: SessionStore) -> str:
     """Load-modify-save one registration; the caller holds the store lock."""
-    sessions = _load_sessions(store)
+    sessions = _sessions_for_update(store)
     alias = alias or _DEFAULT_ALIAS
     entry = {
         "trace": store.record(trace),
