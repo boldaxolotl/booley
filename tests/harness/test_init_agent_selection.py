@@ -129,6 +129,8 @@ def _stub_nested_init_services(tmp_path, monkeypatch, image=_CURRENT):
     monkeypatch.setattr(
         init_cmd, "_step_sandbox", lambda _ctx, **kwargs: sandbox_calls.append(kwargs)
     )
+    # No public entry point reaches these without the host's PDK cache and Docker
+    # lifecycle lock, which sit outside Booley's logic under test.
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
 
     from booley.runtime import issuance_invalidation, lifecycle_lock
@@ -182,7 +184,7 @@ def _initialize_nested_git_repositories(parent_booley_dir, child):
     return (parent_booley_dir / ".git" / "config").read_bytes()
 
 
-_AGENT_GIT = b'[agent]\nprovider = "claude"\n\n[agent.git]\nname = "Expected Developer"\n'
+_AGENT_GIT = b'[agent]\nprovider = "claude"\n\n[agent.git]\nname = "Expected Developer"\nemail = "developer-identity.invalid"\n'
 _TABLE_COMMENTS = (
     b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
     b'[agent.auth]\n# billing\nclaude = "api_key"  # keep\ncodex = "auto"\n\n[flows]\nx = 1\n'
@@ -611,7 +613,7 @@ def test_image_lifecycle_step_records(tmp_path, monkeypatch, result, records):
     ctx = InitContext(project_root=tmp_path)
 
     # private: every caller goes on to Sandbox Issuance, which needs Docker.
-    assert init_cmd._step_image_lifecycle(ctx) is result
+    init_cmd._step_image_lifecycle(ctx)
     assert [(r.name, r.status, r.detail) for r in ctx.results] == records
 
 

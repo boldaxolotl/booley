@@ -81,6 +81,7 @@ def test_fresh_init_records_detected_auth(
 
     assert _agent(config) == {"default": cli, "auth": expected}
     output = capsys.readouterr().out
+    assert f"{cli}/{expected}" in output
     if state == "both":
         assert f"{cli}: found a subscription login and an API key" in output
         assert f'{cli} = "api_key" under [agent.auth]' in output

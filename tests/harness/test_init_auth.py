@@ -6,6 +6,7 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime import auth_token
 from tests.harness.init_agent_support import (
     api_key,
     credential_reads,
@@ -122,8 +123,6 @@ def test_auth_step_reports_the_credential_that_bills(
 def test_issued_policy_uses_authorized_source_not_ambient_auth_handoff(
     tmp_path, monkeypatch, external
 ):
-    from booley.runtime import auth_token
-
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_SECRET")
     data = tmp_path / "project" / ".booley"
