@@ -159,6 +159,8 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "key": group[0]["key"],
                 "runs": len(group),
                 "peak_memory_mb": _spread([r["peak_memory_mb"] for r in group]),
+                # Records written before swap was measured lack the field.
+                "peak_swap_mb": _spread([r.get("peak_swap_mb") for r in group]),
                 "wall_s": _spread([r["wall_s"] for r in group]),
                 "solo_runs": len(solo),
                 # Paired per run: a max of each column could come from different runs.
@@ -184,9 +186,17 @@ def _line(summary: dict[str, Any]) -> str:
         tests = f" tests={key['test_run']}" if key["test_run"] else ""
         head = f"{key['target'] or '(no Target)'} {key['phase']}{flags}{tests}: {runs}"
     parts = [head]
-    for label, field, unit in (("peak memory", "peak_memory_mb", "MiB"), ("wall", "wall_s", "")):
+    for label, field, unit in (
+        ("peak memory", "peak_memory_mb", "MiB"),
+        ("peak swap", "peak_swap_mb", "MiB"),
+        ("wall", "wall_s", ""),
+    ):
         spread = summary[field]
-        if spread is None:
+        if field == "peak_swap_mb":
+            # Swap is shown only for a key that swapped; a missing figure is not "unmeasured".
+            if spread is None or spread["max"] <= 0:
+                continue
+        elif spread is None:
             parts.append(f"{label} unmeasured")
             continue
         shown = [
@@ -214,6 +224,7 @@ def render_report(summaries: list[dict[str, Any]]) -> str:
         [
             *(_line(summary) for summary in summaries),
             "Peak memory = process-tree RSS, plus the Job's own TMPDIR files when "
-            "TMPDIR is on tmpfs; files a tool writes outside TMPDIR are not counted.",
+            "TMPDIR is on tmpfs; files a tool writes outside TMPDIR are not counted. "
+            "Peak swap = the process tree's memory swapped out; estimates count it.",
         ]
     )

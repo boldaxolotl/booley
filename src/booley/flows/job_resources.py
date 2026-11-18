@@ -203,6 +203,21 @@ class _Proc:
     rss_bytes: int
     user_ticks: int
     sys_ticks: int
+    swap_bytes: int | None = None  # VmSwap; None when the status file has no such line
+
+
+def _read_swap_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Return the process's ``VmSwap`` in bytes, or ``None`` when it cannot be read."""
+    try:
+        text = (proc_root / str(pid) / "status").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("VmSwap:"):
+            fields = line.split()
+            if len(fields) == 3 and fields[1].isdigit() and fields[2].lower() == "kb":
+                return int(fields[1]) * 1024
+    return None
 
 
 def _read_proc(pid: int) -> _Proc | None:
@@ -219,6 +234,7 @@ def _read_proc(pid: int) -> _Proc | None:
             int(fields[21]) * os.sysconf("SC_PAGE_SIZE"),
             int(fields[11]),
             int(fields[12]),
+            _read_swap_bytes(pid),
         )
     except (IndexError, ValueError):
         return None
@@ -320,6 +336,8 @@ class Usage:
     peak_rss: int | None = None
     peak_tmp: int | None = None
     peak_memory: int | None = None
+    peak_swap: int | None = None  # the tree's summed VmSwap; None when none reported it
+    peak_with_swap: int | None = None  # per-sample peak_memory's sum plus that sample's swap
     container_peak: int | None = None  # growth of the container's cgroup memory
     first_seen: float | None = None
     last_seen: float | None = None
@@ -341,7 +359,15 @@ class Usage:
         rss = sum(proc.rss_bytes for proc in procs.values())
         # An empty tree (the command already exited) still counts its TMPDIR files
         # when they are tmpfs pages.
-        self.peak_memory = _peak(self.peak_memory, rss + ((tmp or 0) if tmp_in_memory else 0))
+        resident = rss + ((tmp or 0) if tmp_in_memory else 0)
+        self.peak_memory = _peak(self.peak_memory, resident)
+        swaps = [proc.swap_bytes for proc in procs.values() if proc.swap_bytes is not None]
+        if swaps:
+            # Per sample, so a Job pushed into swap after its resident peak is not counted twice.
+            self.peak_swap = _peak(self.peak_swap, sum(swaps))
+            self.peak_with_swap = _peak(self.peak_with_swap, resident + sum(swaps))
+        else:
+            self.peak_with_swap = _peak(self.peak_with_swap, resident)
         if procs:
             self.peak_rss = _peak(self.peak_rss, rss)
             self.first_seen = now if self.first_seen is None else self.first_seen
@@ -706,6 +732,10 @@ def _measured_columns(
     return {
         # RSS never seen (the command exited before a sample): memory unknown.
         "peak_memory_mb": _mb(usage.peak_memory) if usage.peak_rss is not None else None,
+        "peak_swap_mb": _mb(usage.peak_swap) if usage.peak_rss is not None else None,
+        "peak_memory_with_swap_mb": (
+            _mb(usage.peak_with_swap) if usage.peak_rss is not None else None
+        ),
         "peak_rss_mb": _mb(usage.peak_rss),
         "peak_tmp_mb": _mb(usage.peak_tmp),
         "cpu_user_s": _seconds(cpu[0]) if cpu else None,
@@ -779,6 +809,8 @@ def specialist_record(
             usage = measurement.overall
             merged.peak_rss = _peak(merged.peak_rss, usage.peak_rss)
             merged.peak_memory = _peak(merged.peak_memory, usage.peak_memory)
+            merged.peak_swap = _peak(merged.peak_swap, usage.peak_swap)
+            merged.peak_with_swap = _peak(merged.peak_with_swap, usage.peak_with_swap)
             merged.peak_tmp = _peak(merged.peak_tmp, usage.peak_tmp)
             merged.container_peak = _peak(merged.container_peak, usage.container_peak)
     cpus = [m.cpu_s if m is not None else None for m in measured]

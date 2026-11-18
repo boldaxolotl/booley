@@ -5,8 +5,9 @@ Read-only and in memory: the caller reads the records with
 its phase keys (the keys the Flow's recorder writes), and each phase is
 estimated from the retained records:
 
-* **own**: the largest value over all records of the phase's key, times
-  :data:`ESTIMATE_MARGIN`;
+* **own**: the largest value over all records of the phase's key, times the
+  margin (:func:`memory_margin` for memory, :data:`ESTIMATE_MARGIN` for
+  wall-clock time);
 * **borrowed**: with no own record, the largest estimate for the same Target
   and phase (any Test Run or flags), else for that phase anywhere in the
   Project;
@@ -16,7 +17,8 @@ Pre-Sim Commands (``sim_pre_run``) are the exception to the Project borrowing:
 they run per Target, so with no record of their own and none for the Target they
 take the Target's ``sim_build`` estimate instead.
 
-Memory and wall-clock time follow the same rules, each on its own values. Every
+Memory and wall-clock time follow the same rules, each on its own values; a
+record's memory value counts what the Job swapped out. Every
 outcome counts: an OOM-killed or timed-out run is a lower bound, so it can
 raise an estimate but never lower it.
 """
@@ -24,7 +26,7 @@ raise an estimate but never lower it.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, TypeVar
@@ -33,8 +35,17 @@ from booley.flows.target_test_plan import TargetTestPlan, batch_test_runs
 from booley.flows.test_runs import TestRun
 from booley.runtime.resource_history import HistoryKey, history_key, specialist_name
 
-#: Headroom over the largest value seen (ADR 0087).
+#: Headroom over the largest value seen (ADR 0087); also the memory margin
+#: without a swap allowance.
 ESTIMATE_MARGIN = 1.25
+#: The memory margin when the Sandbox has a swap allowance, which absorbs a short overshoot.
+SWAP_MEMORY_MARGIN = 1.10
+
+
+def memory_margin(swap_bytes: int) -> float:
+    """The memory estimate margin for a Sandbox with *swap_bytes* of swap allowance."""
+    return SWAP_MEMORY_MARGIN if swap_bytes > 0 else ESTIMATE_MARGIN
+
 
 #: Flow names with their own phase keys; any other name is a Custom Flow.
 _SIM_FLOW = "sim"
@@ -229,15 +240,31 @@ class JobEstimate:
         return Fit.FITS
 
 
-class _Maxima:
-    """The largest value of one record field, by key, by Target and phase, and by phase."""
+def _memory_mb(record: dict[str, Any]) -> Any:
+    """A record's memory value: resident plus swap, else the resident peak older records hold."""
+    with_swap = record.get("peak_memory_with_swap_mb")
+    return record["peak_memory_mb"] if with_swap is None else with_swap
 
-    def __init__(self, records: Iterable[dict[str, Any]], field: str) -> None:
+
+def _wall_s(record: dict[str, Any]) -> Any:
+    return record["wall_s"]
+
+
+class _Maxima:
+    """The largest value of one record measure, by key, by Target and phase, and by phase."""
+
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        value_of: Callable[[dict[str, Any]], Any],
+        margin: float,
+    ) -> None:
+        self._margin = margin
         self._own: dict[HistoryKey, float] = {}
         self._target: dict[tuple[str, str], float] = {}
         self._project: dict[str, float] = {}
         for record in records:
-            raw = record[field]
+            raw = value_of(record)
             # Unmeasured says nothing; a Specialist's run is no Target's.
             if raw is None or specialist_name(record) is not None:
                 continue
@@ -260,7 +287,7 @@ class _Maxima:
             (Source.PROJECT, None if pre_sim else self._project.get(key.phase)),
         ):
             if found is not None:
-                return Estimate(found * ESTIMATE_MARGIN, source)
+                return Estimate(found * self._margin, source)
         if pre_sim:
             return self.estimate(key._replace(phase=_BUILD_PHASE))
         return Estimate(None, Source.UNKNOWN)
@@ -275,9 +302,11 @@ def _raise_to(largest: dict[_K, float], key: _K, value: float) -> None:
 class ResourceEstimator:
     """Estimates Jobs from a snapshot of Resource History records."""
 
-    def __init__(self, records: Sequence[dict[str, Any]]) -> None:
-        self._memory = _Maxima(records, "peak_memory_mb")
-        self._wall = _Maxima(records, "wall_s")
+    def __init__(
+        self, records: Sequence[dict[str, Any]], *, memory_margin: float = ESTIMATE_MARGIN
+    ) -> None:
+        self._memory = _Maxima(records, _memory_mb, memory_margin)
+        self._wall = _Maxima(records, _wall_s, ESTIMATE_MARGIN)
 
     def estimate(self, requests: Sequence[JobRequest]) -> JobEstimate:
         """Estimate a Job: one request per Target, phases concatenated in order."""
@@ -293,16 +322,18 @@ class ResourceEstimator:
         )
 
 
-def specialist_memory_mb(records: Iterable[dict[str, Any]], name: str) -> float | None:
+def specialist_memory_mb(
+    records: Iterable[dict[str, Any]], name: str, *, margin: float = ESTIMATE_MARGIN
+) -> float | None:
     """The reservation in MiB a Specialist's own history asks for, or ``None``.
 
-    The largest measured peak among the records of Specialist *name*, times
-    :data:`ESTIMATE_MARGIN`, as a Flow phase's estimate does. ``None`` when the
-    history holds no measured peak for it.
+    The largest measured peak among the records of Specialist *name* (resident
+    plus swap), times *margin*, as a Flow phase's estimate does. ``None`` when
+    the history holds no measured peak for it.
     """
     peaks = [
-        float(record["peak_memory_mb"])
+        float(value)
         for record in records
-        if specialist_name(record) == name and record["peak_memory_mb"] is not None
+        if specialist_name(record) == name and (value := _memory_mb(record)) is not None
     ]
-    return max(peaks) * ESTIMATE_MARGIN if peaks else None
+    return max(peaks) * margin if peaks else None

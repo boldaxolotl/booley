@@ -52,6 +52,8 @@ RECORD_FIELDS = {
     "solo",
     "sample_interval_s",
     "peak_memory_mb",
+    "peak_memory_with_swap_mb",
+    "peak_swap_mb",
     "peak_rss_mb",
     "peak_tmp_mb",
     "cpu_user_s",
@@ -147,6 +149,8 @@ def test_command_records_every_field_and_keeps_its_exit_code(run, tmp_path):
     assert record["outcome"] == "exit_nonzero" and record["returncode"] == 3
     assert record["peak_rss_mb"] >= 16
     assert record["peak_memory_mb"] >= record["peak_rss_mb"]
+    assert record["peak_swap_mb"] is not None
+    assert record["peak_memory_with_swap_mb"] >= record["peak_memory_mb"]
     assert record["cpu_user_s"] is not None and record["wall_s"] >= 0.6
     assert record["sample_interval_s"] == 0.25
 
@@ -302,6 +306,69 @@ def test_unmeasurable_values_are_absent_not_zero(run, tmp_path, monkeypatch):
         assert record[field] is None, field
     assert record["container_peak_delta_mb"] is None
     assert record["peak_tmp_mb"] == 0
+
+
+def test_swapped_job_records_peak_swap_and_its_next_estimate_includes_it(
+    run, tmp_path, monkeypatch
+):
+    from booley.flows.job_estimates import ResourceEstimator
+    from booley.runtime.resource_history import HistoryKey
+
+    mib = 1 << 20
+    samples = iter([(400 * mib, 0)])  # then every sample: 200 resident, 300 swapped out
+
+    def tree(pid, **_):
+        resident, swapped = next(samples, (200 * mib, 300 * mib))
+        return {pid: job_resources._Proc("echo", resident, 0, 0, swapped)}
+
+    # Private seam: the host /proc sample; the test fixes what the kernel would report.
+    monkeypatch.setattr(job_resources, "process_tree", tree)
+    monkeypatch.setattr(job_resources, "tmpdir_in_memory", lambda _path: False)
+    # Windows has no os.sysconf; the sampled CPU ticks need the clock rate.
+    monkeypatch.setattr(os, "sysconf", lambda _name: 100, raising=False)
+
+    assert run(_python("pass")).returncode == 0
+
+    (record,) = _history(tmp_path)
+    assert record["peak_rss_mb"] == 400.0
+    assert record["peak_swap_mb"] == 300.0
+    # Per sample (200 + 300), not the sum of the two peaks (400 + 300).
+    assert record["peak_memory_with_swap_mb"] == 500.0
+    estimate = ResourceEstimator(_history(tmp_path), memory_margin=1.25).estimate_keys(
+        [HistoryKey("test", "echo_tool", (), "")]
+    )
+    assert estimate.phases[0].memory_mb.value == 625.0
+
+
+def test_read_swap_bytes_parses_vmswap(tmp_path):
+    (tmp_path / "42").mkdir()
+    status = tmp_path / "42" / "status"
+    status.write_bytes(b"Name:\tx\nVmRSS:\t  10 kB\nVmSwap:\t    2048 kB\n")
+
+    assert job_resources._read_swap_bytes(42, proc_root=tmp_path) == 2 * 1024 * 1024
+
+    status.write_bytes(b"Name:\tx\nVmRSS:\t  10 kB\n")  # a kernel thread has no VmSwap
+    assert job_resources._read_swap_bytes(42, proc_root=tmp_path) is None
+    assert job_resources._read_swap_bytes(43, proc_root=tmp_path) is None
+
+
+def test_specialist_record_keeps_the_largest_swap_peaks():
+    mib = 1 << 20
+
+    def window(swap: int, with_swap: int) -> job_resources.AgentCallUsage:
+        usage = job_resources.Usage(
+            peak_rss=300 * mib,
+            peak_memory=300 * mib,
+            peak_swap=swap * mib,
+            peak_with_swap=with_swap * mib,
+        )
+        measurement = job_resources.JobMeasurement(0.25, usage, {}, None, None, None)
+        return job_resources.AgentCallUsage(measurement, 1.0)
+
+    record = job_resources.specialist_record("reviewer", [window(50, 400), window(120, 380)], 0)
+
+    assert record["peak_swap_mb"] == 120.0
+    assert record["peak_memory_with_swap_mb"] == 400.0
 
 
 def _oom_counter(monkeypatch, counts, limit=None) -> None:
@@ -881,6 +948,27 @@ def test_report_shows_spread_ratio_and_solo_calibration(tmp_path, capsys):
     assert "outside TMPDIR" in text
     assert resources_cli.run(type("Args", (), {"json": True})(), tmp_path) == 0
     assert json.loads(capsys.readouterr().out) == [summary]
+
+
+def test_report_shows_peak_swap_only_when_nonzero(tmp_path, capsys):
+    from booley.harness import resources_cli
+
+    resource_history.append_records(
+        tmp_path,
+        [
+            _record("a", peak_memory_mb=100.0, wall_s=1.0, peak_swap_mb=0.0),
+            _record("b", peak_memory_mb=100.0, wall_s=1.0, peak_swap_mb=256.0),
+            _record("c", peak_memory_mb=100.0, wall_s=1.0),  # recorded before swap was measured
+        ],
+    )
+
+    assert resources_cli.run(type("Args", (), {"json": False})(), tmp_path) == 0
+    lines = {line.split(" p:")[0]: line for line in capsys.readouterr().out.splitlines()}
+    assert "peak swap 256 MiB / 256 MiB / 256 MiB (max/median 1.00)" in lines["b"]
+    assert "swap" not in lines["a"] and "swap" not in lines["c"]
+    assert resources_cli.run(type("Args", (), {"json": True})(), tmp_path) == 0
+    by_key = {s["key"]["target"]: s["peak_swap_mb"] for s in json.loads(capsys.readouterr().out)}
+    assert by_key["b"]["max"] == 256.0 and by_key["c"] is None
 
 
 def test_memory_events_reads_both_counters_from_one_snapshot(tmp_path, monkeypatch):
