@@ -26,10 +26,9 @@ from booley.config.tests_toml_rules import (
 from booley.core.booley_dir import in_checkout_booley_dir
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import edam as edam_layer
-from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
-from booley.flows.job_resources import resolved_source_bytes
+from booley.flows.job_resources import repeated_commands, resolved_source_bytes
 from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -817,7 +816,7 @@ class SimulationExecution:
             self._build_session = session
             group: PreparedOrdinaryGroup | None = None
             try:
-                with nullcontext() if planning else job_resources.repeated_commands():
+                with nullcontext() if planning else repeated_commands():
                     attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
                 _require_attempt_log(handle, attempt)
                 group = PreparedOrdinaryGroup(

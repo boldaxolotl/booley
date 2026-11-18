@@ -863,19 +863,20 @@ def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
 
 
 def test_history_counts_and_keeps_jobs_not_records(tmp_path):
-    def job(name: str, count: int) -> list[dict[str, Any]]:
-        return [_record("k", job=name, seq=n) for n in range(count)]
+    def job(n: int, count: int) -> list[dict[str, Any]]:
+        # Job ids sort by start, as execute_endpoint's do.
+        return [_record("k", job=f"{n:03d}", seq=i) for i in range(count)]
 
-    resource_history.append_records(tmp_path, job("j0", 1))
+    resource_history.append_records(tmp_path, job(0, 1))
     for n in range(1, 20):
-        resource_history.append_records(tmp_path, job(f"j{n}", 2))
-    # A long Job ranks by its first record: its later record does not make it newest.
-    resource_history.append_records(tmp_path, job("j0", 1))
-    resource_history.append_records(tmp_path, [*job("j20", 2), _record("old")])
+        resource_history.append_records(tmp_path, job(n, 2))
+    resource_history.append_records(tmp_path, [*job(20, 2), _record("old")])
+    # Job 0 is already evicted: a late record of it neither returns nor evicts Job 1.
+    resource_history.append_records(tmp_path, job(0, 1))
 
     records = _history(tmp_path)
     kept = [r for r in records if r["key"]["target"] == "k"]
-    assert {r["job"] for r in kept} == {f"j{n}" for n in range(1, 21)}
+    assert {r["job"] for r in kept} == {f"{n:03d}" for n in range(1, 21)}
     assert len(kept) == 40
     assert {s["key"]["target"]: s["runs"] for s in resource_history.summarize(records)} == {
         "k": 20,

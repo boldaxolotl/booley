@@ -236,7 +236,7 @@ _JOB_ID: ContextVar[str | None] = ContextVar("booley_job_id", default=None)
 
 
 def current_job() -> str | None:
-    """The opaque id of the Job this code runs in, shared by its attempts and threads."""
+    """The id of the Job this code runs in, shared by its attempts and threads; it sorts by start."""
     return _JOB_ID.get()
 
 
@@ -441,7 +441,8 @@ def execute_endpoint(
     result comes from that attempt only.
     """
     # A fresh id, not BOOLEY_RUN_ID: an inherited one could merge separate invocations.
-    token = _JOB_ID.set(uuid.uuid4().hex)
+    # It starts with the time, so ids sort by Job start.
+    token = _JOB_ID.set(f"{time.time_ns():020d}-{uuid.uuid4().hex[:8]}")
     try:
         first = _attempt_endpoint(endpoint, request, requeued=False)
         if first is not None:

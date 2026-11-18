@@ -83,26 +83,33 @@ def _job(record: dict[str, Any], position: int) -> object:
     return record.get("job", position)
 
 
+def _age_rank(job: object) -> tuple[int, int, str]:
+    """Order Jobs oldest first: records without a Job id by position, then Job ids by time."""
+    return (0, job, "") if isinstance(job, int) else (1, 0, str(job))
+
+
 def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep each key's records of its newest Jobs, minus keys idle for longer than ``MAX_KEY_AGE``.
 
-    Jobs rank by their earliest record, so a Job ranked out never comes back
+    Job ids sort by start time, so a Job already ranked out never returns
     through a later record.
     """
-    started: dict[tuple[str | None, HistoryKey], dict[object, int]] = {}
+    seen: dict[tuple[str | None, HistoryKey], set[object]] = {}
     newest_run: dict[tuple[str | None, HistoryKey], datetime] = {}
     for position, record in enumerate(records):
         key = _group(record)
-        started.setdefault(key, {}).setdefault(_job(record, position), position)
+        seen.setdefault(key, set()).add(_job(record, position))
         # The max, not the position: concurrent appends can land slightly out of order.
         finished = parse_timestamp(record["finished_at"])
         newest_run[key] = max(finished, newest_run.get(key, finished))
     cutoff = datetime.now(UTC) - MAX_KEY_AGE
-    newest = {key: set(sorted(jobs.values())[-MAX_JOBS_PER_KEY:]) for key, jobs in started.items()}
+    newest = {
+        key: set(sorted(jobs, key=_age_rank)[-MAX_JOBS_PER_KEY:]) for key, jobs in seen.items()
+    }
     return [
         record
         for position, record in enumerate(records)
-        if started[_group(record)][_job(record, position)] in newest[_group(record)]
+        if _job(record, position) in newest[_group(record)]
         and newest_run[_group(record)] >= cutoff
     ]
 
