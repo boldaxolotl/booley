@@ -19,6 +19,7 @@ from fusesoc.vlnv import Vlnv
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
+from booley.flows.job_estimates import sim_resource_flags
 from booley.flows.job_resources import resolved_source_bytes
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -352,7 +353,7 @@ class VerilatorCoverageExecution:
         work = self._prepare_work(request, prepared, transport)
         before = _snapshot_pre_sim_state(self._handle, prepared, request, self._artifact_paths)
         pre_sim = self._run_pre_sim(
-            evidence_root, prepared, test_names, work.run_cwd, work.test_runs
+            evidence_root, prepared, test_names, work.run_cwd, work.test_runs, trace=work.trace
         )
         sink = getattr(self, "_pre_sim_evidence_sink", None)
         if pre_sim is not None and sink is not None:
@@ -409,6 +410,8 @@ class VerilatorCoverageExecution:
         test_names: tuple[str, ...],
         run_cwd: str,
         test_runs: tuple[TestRun, ...] = (),
+        *,
+        trace: bool = False,
     ) -> PreSimEvidence | None:
         return run_pre_sim_commands(
             self._handle,
@@ -422,6 +425,7 @@ class VerilatorCoverageExecution:
             working_directory=self._handle.project_root,
             expose_build_root=False,
             test_runs=test_runs,
+            resource_flags=sim_resource_flags(coverage=True, trace=trace),
         )
 
     def _execute_run(

@@ -27,7 +27,7 @@ from booley.config.project_config import (
 from booley.flows.cli_help import CliHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.job_estimates import JobRequest, sim_job_request
+from booley.flows.job_estimates import JobRequest, sim_job_request, sim_resource_flags
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
     ProgressLifecycle,
@@ -372,11 +372,13 @@ class SimulateFlow(
             return None
         flags = self._resource_flags()
         try:
+            pre_sim_commands = bool(resolve_pre_sim_commands(self.args.work_dir))
             return tuple(
                 sim_job_request(
                     self._registered_test_plan(target, prepared.test_names_map),
                     self._resolve_test_runs(target, prepared.test_names_map),
                     flags=flags,
+                    pre_sim_commands=pre_sim_commands,
                 )
                 for target in prepared.selected_targets
             )
@@ -657,11 +659,7 @@ class SimulateFlow(
 
     def _resource_flags(self) -> tuple[str, ...]:
         """Coverage and tracing change a simulation's footprint; key history by them."""
-        return tuple(
-            flag
-            for flag, enabled in (("coverage", self.args.coverage), ("trace", self.args.trace))
-            if enabled
-        )
+        return sim_resource_flags(coverage=self.args.coverage, trace=self.args.trace)
 
     def _get_timeout(self) -> int:
         """Wrapper timeout in seconds, derived from the effective timeout (ms).

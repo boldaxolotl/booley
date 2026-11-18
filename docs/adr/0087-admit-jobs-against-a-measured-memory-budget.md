@@ -83,6 +83,14 @@ read-only, and delegating it would loosen the hardening.
   then for that phase anywhere in the Project; with neither, the Job runs
   alone. (Always running unknown Jobs alone would serialize a fresh
   Project's first regression.)
+- Pre-Sim Commands are a measured phase of their own, `sim_pre_run`, keyed per
+  Target like preparation and build and recorded for every firing. A Job or
+  Simulation Record item that runs them reserves the larger of their estimate
+  and its simulation's. They never borrow across Targets: with no record for
+  the Target, their estimate is the Target's build estimate, the safe side,
+  since they may build as much as the build does. The build phase ends once
+  the build settles, with or without Pre-Sim Commands, so the reservation
+  drops to the pending phases.
 - A Job estimated over the whole budget waits until nothing else runs, then
   runs alone with a warning. It is never refused: estimates are padded and
   RSS double-counts shared pages, so such Jobs often fit.
@@ -185,14 +193,18 @@ read-only, and delegating it would loosen the hardening.
   Detection is deliberately conservative: a kill hidden behind a wrapper that
   reports none of these (a FuseSoC generator names no signal) is a plain
   failure and is not requeued, as is a kill in a Pre-Sim Command or a
-  mutation run, which are not measured commands.
+  mutation run. A Pre-Sim Command is measured but not blamed for a kill: its
+  failure stays the hook's result, as the Simulation's tests see it.
 
 ### Simulation Records
 
 Every work item of a simulation or coverage record is admitted on its own,
 with its own key. The Flow's reservation covers preparation and build, then
-drops to zero, and admission decides how many items run at once. Each item
-ranks for the OOM killer as a Job newer than its Flow, so the newest item's
+drops to zero, and admission decides how many items run at once. An item
+reserves the larger of its Pre-Sim Commands and simulation estimates, and its
+build too when it builds inside itself (a private build, a coverage aggregate
+or a shared build not yet settled). Each item ranks for the OOM killer as a
+Job newer than its Flow, so the newest item's
 simulator ranks first, within the bounds of the Out-of-memory guard. An item's
 own OOM kill at the Sandbox's limit stops only that item: it is requeued once,
 to run alone after the running items finish, and its second failure is its

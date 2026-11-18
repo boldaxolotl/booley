@@ -10,6 +10,7 @@ queue place (#4482): a Job submitted after the Record does not start before that
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -19,7 +20,7 @@ from booley.flows.memory_admission import MemorySizing
 from booley.flows.test_runs import TestRun
 from booley.runtime.job_slots import MemoryClaim, SlotToken
 
-from .model import SimulationRecordManifest
+from .model import SimulationRecordManifest, frozen_resource_flags
 from .test_run_binding import work_item_test_runs
 
 #: Sizes a work item from its Target selector, Test Runs and flags (``None``: runs alone).
@@ -99,7 +100,9 @@ class FlowClaim:
         """The claim *item* takes before it runs; ``None`` while it runs under the Flow's.
 
         An item reserves its build when it builds inside itself: a private build,
-        a coverage aggregate, Pre-Sim Commands, or a shared build nobody expected.
+        a coverage aggregate, or a shared build nobody expected. One with Pre-Sim
+        Commands reserves their estimate (the Target's build estimate until
+        they are measured).
         While the Flow still reserves, the returned claim takes over its reservation
         and queue place (``SimulationRecordCapacity.child_permit``), so the Flow counts as dropped.
         """
@@ -113,10 +116,13 @@ class FlowClaim:
         build = (
             item["kind"] not in _SHARED_BUILD_KINDS
             or workload["pre_sim_build_access"] != "immutable"
-            or bool(recipe["pre_sim_commands"])
             or (store_root, cast(str, item["build_variant_id"])) not in self._settled
         )
-        flags = tuple(flag for flag in ("coverage", "trace") if workload[flag] is True)
         selector = cast(Mapping[str, str], document["target"])["selector"]
-        request = self._work_item_request(selector, work_item_test_runs(item), flags)
+        request = self._work_item_request(
+            selector, work_item_test_runs(item), frozen_resource_flags(manifest)
+        )
+        if request is not None:
+            # The frozen recipe is authoritative, also on a resume.
+            request = replace(request, pre_sim_commands=bool(recipe["pre_sim_commands"]))
         return self._sizing.plan_work_item(request, build=build)

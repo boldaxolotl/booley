@@ -43,6 +43,7 @@ def _fire_supervised(tmp_path: Path, monkeypatch, scope, popen):
         build_root=tmp_path / "build",
         eda_tool="icarus",
         timeout_s=1,
+        resource_flags=(),
         commands=("true",),
     )
 
@@ -50,7 +51,9 @@ def _fire_supervised(tmp_path: Path, monkeypatch, scope, popen):
 def test_supervised_pre_sim_process_propagates_identity_and_unregisters(
     tmp_path: Path, monkeypatch
 ) -> None:
-    process = SimpleNamespace(returncode=0, communicate=lambda timeout=None: ("out", "err"))
+    process = SimpleNamespace(
+        pid=4_194_305, returncode=0, communicate=lambda timeout=None: ("out", "err")
+    )
     processes = _Processes()
     scope = SimpleNamespace(
         cancelled=lambda: False,
@@ -85,7 +88,7 @@ def test_supervised_pre_sim_process_kills_after_communication_failure(
             raise RuntimeError("failed")
         return "", ""
 
-    process = SimpleNamespace(returncode=1, communicate=communicate)
+    process = SimpleNamespace(pid=4_194_305, returncode=1, communicate=communicate)
     processes = _Processes()
     scope = SimpleNamespace(cancelled=lambda: False, execution_id=None, processes=processes)
     killed: list[object] = []
