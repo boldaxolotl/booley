@@ -119,14 +119,21 @@ _HOME_PATTERNS = (
 _EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 
 
+#: A design name ends where a letter or digit stops: `_` joins identifiers
+#: (`picorv32_wb`, FuseSoC's `vendor__name_version` build directory), so unlike
+#: `\b` it separates components; `.`, `/` and `-` already do.
+_COMPONENT_EDGE = r"(?<![^\W_])", r"(?![^\W_])"
+
+
 @dataclass
 class RedactionPlan:
     """The concrete substitutions to apply, plus what they map to.
 
     ``literals`` are normally matched as plain substrings (URLs and identities),
     while keys named by ``path_literals`` require path-token boundaries.
-    ``identifiers`` match on word boundaries (module names, which must not
-    match inside a longer name). ``stealth_terms`` and ``stealth_substrings``
+    ``identifiers`` match whole identifier components (module names: letters
+    and digits continue a name; ``_``, ``.``, ``/`` and other punctuation
+    separate it). ``stealth_terms`` and ``stealth_substrings``
     carry explicitly configured privacy terms with their shared matching rules.
     """
 
@@ -431,9 +438,10 @@ def _plan_spans(text: str, plan: RedactionPlan) -> list[tuple[int, int, int, str
             else re.compile(re.escape(secret))
         )
         rules.append((pattern, plan.literals[secret]))
+    leading, trailing = _COMPONENT_EDGE
     for secret in sorted(plan.identifiers, key=len, reverse=True):
         rules.append(
-            (re.compile(r"\b" + re.escape(secret) + r"\b", re.I), plan.identifiers[secret])
+            (re.compile(leading + re.escape(secret) + trailing, re.I), plan.identifiers[secret])
         )
     spans = [
         (match.start(), match.end(), priority, placeholder)
