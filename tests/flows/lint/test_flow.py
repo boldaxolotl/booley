@@ -2558,7 +2558,7 @@ _VERIBLE_FINDINGS = (
     "rtl/top.sv:9:1: Line length exceeds 100. [line-length]\n"
     'rtl/top.sv:3:1: syntax error at token "endmodule"\n'
     'rtl/top.sv:5:1: syntax error at token "foo"\n'
-    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+    'rtl/top.sv:5:7: syntax error at token "bar"\n'  # same line: counted once, first message
 )
 
 
@@ -2592,24 +2592,68 @@ class TestFlowMetrics:
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             return flow._run_lint_target(_target_handle("lite", eda_tool=family))
 
-    @pytest.mark.parametrize(
-        ("family", "output", "returncode"),
-        [
-            pytest.param("verilator", _VERILATOR_FINDINGS, 2, id="verilator"),
-            pytest.param("verible", _VERIBLE_FINDINGS, 1, id="verible"),
-        ],
-    )
     def test_findings_return_unique_warning_and_error_counts(
-        self, tmp_path: Path, state_file: Path, family: str, output: str, returncode: int
+        self, tmp_path: Path, state_file: Path
     ) -> None:
-        result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
+        cases = [
+            (
+                "verilator",
+                _VERILATOR_FINDINGS,
+                2,
+                {
+                    "errors": [
+                        "rtl/x.v:1: Can't find definition of variable: 'zzz'",
+                        "rtl/x.v:9: second diagnostic",
+                    ],
+                    "warnings": [
+                        "rtl/a.v:3 UNUSEDSIGNAL: Signal is not used: 'x'",
+                        "rtl/b.v:9 WIDTH: Operator ASSIGNW expects 8 bits",
+                    ],
+                },
+            ),
+            (
+                "verible",
+                _VERIBLE_FINDINGS,
+                1,
+                {
+                    "errors": [
+                        'rtl/top.sv:3: syntax error at token "endmodule"',
+                        'rtl/top.sv:5: syntax error at token "foo"',
+                    ],
+                    "warnings": [
+                        "rtl/top.sv:4 interface-name-style: Interface names must end with _if.",
+                        "rtl/top.sv:9 line-length: Line length exceeds 100.",
+                    ],
+                },
+            ),
+        ]
+        for family, output, returncode, expected in cases:
+            result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
 
-        assert result.flow_metrics().plain == {"warnings": 2, "errors": 2}
+            values = result.flow_metrics()
+            assert values.plain == {"warnings": 2, "errors": 2}, family
+            assert values.counted_items == expected, family
+
+    def test_listed_findings_are_capped_and_cut(self, tmp_path: Path, state_file: Path) -> None:
+        output = "".join(
+            f"%Warning-WIDTH: rtl/w.v:{line}:1: {'long ' * 60 if line == 1 else 'wide'}\n"
+            for line in range(1, 26)
+        )
+
+        values = self._lint(tmp_path, "verilator", stdout=output, returncode=0).flow_metrics()
+
+        assert values.plain["warnings"] == 25
+        listed = values.counted_items["warnings"]
+        assert len(listed) == 20
+        assert listed[1] == "rtl/w.v:2 WIDTH: wide"
+        assert len(listed[0]) == 200
 
     def test_clean_run_returns_zero_counts(self, tmp_path: Path, state_file: Path) -> None:
         result = self._lint(tmp_path, "verilator", stdout="", returncode=0)
 
-        assert result.flow_metrics().plain == {"warnings": 0, "errors": 0}
+        values = result.flow_metrics()
+        assert values.plain == {"warnings": 0, "errors": 0}
+        assert values.counted_items == {}
 
     def test_warnings_only_run_does_not_count_the_epilogue_as_an_error(
         self, tmp_path: Path, state_file: Path
@@ -2643,33 +2687,28 @@ class TestFlowMetrics:
         with pytest.raises(MetricsUnavailableError, match="exited 3"):
             result.flow_metrics()
 
-    @pytest.mark.parametrize(
-        ("output", "expected"),
-        [
+    def test_lint_error_findings_verilator(self) -> None:
+        from booley.flows.lint.flow import lint_error_findings
+
+        cases = [
             # Two different errors on one line count twice; a rule-less, location-less one once.
-            pytest.param(
+            (
                 "%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n",
                 3,
-                id="same-line-and-locationless",
             ),
             # A repeated line counts once; the same message under another rule counts again.
-            pytest.param(
+            (
                 "%Error-UNSUPPORTED: a.v:2:1: nope\n%Error-UNSUPPORTED: a.v:2:1: nope\n"
                 "%Error: a.v:2:1: nope\n",
                 2,
-                id="repeated-and-other-rule",
             ),
             # Continuation lines of a multi-line message are not errors.
-            pytest.param(
+            (
                 "%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n",
                 1,
-                id="multi-line-message",
             ),
-            pytest.param("%Error: Exiting due to 1 error(s)\n", 0, id="epilogue-only"),
-            pytest.param("", 0, id="empty"),
-        ],
-    )
-    def test_count_lint_errors_verilator(self, output: str, expected: int) -> None:
-        from booley.flows.lint.flow import count_lint_errors
-
-        assert count_lint_errors(output, "verilator") == expected
+            ("%Error: Exiting due to 1 error(s)\n", 0),
+            ("", 0),
+        ]
+        for output, expected in cases:
+            assert len(lint_error_findings(output, "verilator")) == expected, output
