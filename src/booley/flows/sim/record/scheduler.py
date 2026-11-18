@@ -38,9 +38,14 @@ def _item_tests(item: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(str(name) for name in names) if isinstance(names, list | tuple) else ()
 
 
+def work_item_label(item: Mapping[str, object]) -> str:
+    """Name a work item by its test(s), else its ID."""
+    return short_test_list(_item_tests(item)) or str(item.get("work_item_id", ""))
+
+
 def _lane_label(attempt: ScheduledAttempt) -> str:
     """Name a lane by its test(s) and attempt, e.g. ``alpha/1a2b3c4d`` (no whitespace)."""
-    test = short_test_list(_item_tests(attempt.item)) or str(attempt.item.get("work_item_id", ""))
+    test = work_item_label(attempt.item)
     short_attempt = attempt.attempt_id[:8]
     return "".join((f"{test}/{short_attempt}" if test else short_attempt).split())
 

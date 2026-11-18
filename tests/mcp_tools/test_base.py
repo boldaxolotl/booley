@@ -232,6 +232,32 @@ def test_self_printed_verdict_gets_only_the_requeue_note(capsys) -> None:
     assert captured.err == f"{note}\n"
 
 
+def test_self_printed_verdict_gets_only_the_oom_kill_note(capsys) -> None:
+    """The OOM-kill line follows a verdict the Flow already printed: the verdict is not shown twice."""
+    from types import SimpleNamespace
+
+    from booley.flows.endpoint_reporting import _publish_console_verdict
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    note = (
+        "Killed for out-of-memory: this Job may not be requeued after an OOM kill, "
+        "so it is not retried."
+    )
+    endpoint = SimpleNamespace(
+        _stdout_witness=SimpleNamespace(saw=lambda text: text == "design failed"),
+        endpoint_kind="flow",
+        announce_success_report=False,
+    )
+
+    _publish_console_verdict(
+        endpoint, EndpointOutcome(exit_code=EXIT_FAILURE, report_text=f"design failed\n{note}")
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"{note}\n"
+
+
 def test_console_failure_is_normalized_and_recovery_is_attempted() -> None:
     endpoint = ConcreteMcpTool()
     with (

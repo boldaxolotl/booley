@@ -33,6 +33,8 @@ _MAX_COMPLETION_MESSAGE_CHARS = 500
 OOM_REQUEUE_REASON = "requeued after out-of-memory"
 #: Opens the note a requeued Job's final result ends with.
 OOM_REQUEUE_NOTE = "Requeued after out-of-memory"
+#: Opens each line a Job's final result adds for an OOM kill that is not retried.
+OOM_KILL_NOTE = "Killed for out-of-memory"
 #: Printed to stdout between the killed attempt's output and the final attempt's.
 OOM_REQUEUE_MARKER = f"[requeue] {OOM_REQUEUE_REASON}; the output above is from the killed attempt"
 #: What a command that was not started because the attempt's earlier command was OOM-killed reports.
@@ -214,6 +216,9 @@ class _JobAttempt:
     work_item: bool = False
     oom_killed: threading.Event = field(default_factory=threading.Event)
     stopped: threading.Event = field(default_factory=threading.Event)
+    # Work items whose last attempt inside this one died of its own OOM kill (lanes append).
+    final_item_kills: list[str] = field(default_factory=list[str])
+    _kills_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 # The current attempt; shared by the Job's threads (Simulation Record lanes copy the context).
@@ -239,6 +244,28 @@ def note_job_oom_kill() -> None:
     attempt = _JOB_ATTEMPT.get()
     if attempt is not None:
         attempt.oom_killed.set()
+
+
+def note_final_work_item_oom_kill(name: str, *, passed: bool, raised: bool = False) -> None:
+    """Record that work item *name*'s last attempt died of its own OOM kill, on its Job's attempt.
+
+    Only an unarmed work item attempt that was killed and failed counts: an
+    armed one is requeued, and a passed one keeps its result, unless *raised*:
+    the attempt's execution failed after the kill, so nothing requeues it.
+    Nothing outside a work item attempt.
+    """
+    attempt = _JOB_ATTEMPT.get()
+    if (
+        attempt is None
+        or not attempt.work_item
+        or (attempt.stop_on_oom and not raised)
+        or not attempt.oom_killed.is_set()
+        or passed
+        or attempt.parent is None
+    ):
+        return
+    with attempt.parent._kills_lock:
+        attempt.parent.final_item_kills.append(name)
 
 
 def job_stopped_after_oom() -> bool:
@@ -285,7 +312,27 @@ def _name_requeue(outcome: EndpointOutcome, *, started_again: bool) -> None:
     outcome.report_text = "\n".join(filter(None, (outcome.report_text, line)))
 
 
-def _is_requeued(outcome: EndpointOutcome, attempt: _JobAttempt) -> bool:
+def _name_final_oom_kills(
+    outcome: EndpointOutcome, attempt: _JobAttempt, *, requeued: bool
+) -> None:
+    """Tell the caller which OOM kills ended this Job's final attempt, and that none is retried."""
+    if outcome.exit_code == EXIT_CANCELLED:
+        return
+    lines: list[str] = []
+    if _killed_for_oom(outcome, attempt):
+        lines.append(
+            f"{OOM_KILL_NOTE}: the second attempt was OOM-killed too, so the Job is not retried again."
+            if requeued
+            else f"{OOM_KILL_NOTE}: this Job may not be requeued after an OOM kill, so it is not retried."
+        )
+    lines.extend(
+        f"{OOM_KILL_NOTE}: work item {name}'s last attempt was OOM-killed, so it is not retried again."
+        for name in attempt.final_item_kills
+    )
+    outcome.report_text = "\n".join(filter(None, (outcome.report_text, *lines)))
+
+
+def _killed_for_oom(outcome: EndpointOutcome, attempt: _JobAttempt) -> bool:
     """Whether *attempt* ended with an own OOM kill that its result does not survive.
 
     A cancelled Job is never requeued. A Job that succeeded is requeued only
@@ -323,11 +370,12 @@ def _attempt_endpoint(
         with job_attempt(stop_on_oom=armed) as attempt:
             outcome = endpoint.invoke_endpoint(request, admission=borrowed, started=started)
         outcome.oom_killed = attempt.oom_killed.is_set()
-        if armed and _is_requeued(outcome, attempt):
+        if armed and _killed_for_oom(outcome, attempt):
             endpoint.begin_requeued_attempt()
             return None
         if requeued:
             _name_requeue(outcome, started_again=True)
+        _name_final_oom_kills(outcome, attempt, requeued=requeued)
         return _publish_and_finish(endpoint, request, outcome, started=started)
 
 

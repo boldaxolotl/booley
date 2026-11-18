@@ -1021,8 +1021,53 @@ def test_oom_killed_item_is_requeued_once_alone_and_never_a_third_time(
         assert attempts["alpha"][0] == 1
     else:
         assert second[2] and result["state"] == "crash" and result["grade"] != "pass"
+    # Only an item killed again while alone is named, by its tests, on the Flow's attempt.
+    assert flow_attempt.final_item_kills == (["gamma"] if times == 2 else [])
     # The Flow's own attempt saw no kill: it is not requeued.
     assert not flow_attempt.oom_killed.is_set() and not flow_attempt.stopped.is_set()
+
+
+def _item_killed_then_execution_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, times: int
+) -> list[str]:
+    """Kill item gamma's first *times* launches and fail its executor after the last; return the names."""
+    with _scenario(tmp_path, monkeypatch, history=_history("sim"), cores=2) as scenario:
+        _kill_item_run_beside_another(scenario, "gamma", "beta", times)
+        record = scenario.simulation_record()
+        assert record._executor is not None
+        execute = record._executor.execute
+
+        # The executor's evidence I/O is not reachable from a public entry point on demand.
+        def execute_then_fail(request):
+            before = len(scenario.launches.get("gamma", []))
+            result = execute(request)
+            launches = len(scenario.launches.get("gamma", []))
+            if launches > before and launches == times and scenario.kills["gamma"] == 0:
+                raise OSError("evidence write failed")
+            return result
+
+        monkeypatch.setattr(record._executor, "execute", execute_then_fail)
+        with (
+            job_attempt(stop_on_oom=True) as flow_attempt,
+            _deadline(scenario),
+            pytest.raises(OSError, match="evidence write failed"),
+        ):
+            record.run(scenario.request(_manifest_for(NAMES)))
+    return flow_attempt.final_item_kills
+
+
+def test_item_killed_again_whose_execution_raises_is_still_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second kill is named even when the executor then fails (for example on evidence I/O)."""
+    assert _item_killed_then_execution_fails(tmp_path, monkeypatch, 2) == ["gamma"]
+
+
+def test_item_killed_once_whose_execution_raises_is_named_as_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first attempt that dies and then fails is not requeued, so its kill is named too."""
+    assert _item_killed_then_execution_fails(tmp_path, monkeypatch, 1) == ["gamma"]
 
 
 def test_oom_kill_under_the_flow_claim_keeps_the_flow_requeue(
