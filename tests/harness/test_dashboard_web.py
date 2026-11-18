@@ -6,7 +6,15 @@ import argparse
 import html
 import json
 import os
+import re
 import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -22,6 +30,8 @@ from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
 from tests.git_support import git
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
+from tests.uvicorn_support import capture_serving
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -208,20 +218,65 @@ def _dashboard_args(*words: str) -> argparse.Namespace:
     return tlr._build_parser().parse_args(["dashboard", *words])
 
 
-@pytest.mark.parametrize(("words", "port"), [([], 8090), (["--port", "9123"], 9123)])
-def test_web_flag_serves_loopback_on_8090_or_port(world, monkeypatch, capsys, words, port):
-    import uvicorn
-    from starlette.applications import Starlette
+_SERVE_SCRIPT = "import sys; from pathlib import Path; from booley.harness.dashboard import web; raise SystemExit(web.serve(Path(sys.argv[1]), 0))"
 
-    served: list[tuple[object, dict]] = []
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: served.append((app, kwargs)))
 
-    assert tlr._cmd_dashboard(_dashboard_args("--web", *words), world.main) == 0
+@pytest.mark.skipif(sys.platform == "win32", reason="stops the child with SIGINT, a POSIX signal")
+def test_web_flag_serves_loopback_after_binding(world):
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _SERVE_SCRIPT, str(world.main)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    guard = threading.Timer(hang_guard_s(), proc.kill)
+    guard.start()
+    try:
+        assert proc.stdout is not None
+        banner = proc.stdout.readline()
+        match = re.fullmatch(r"Booley Dashboard \(web\): http://127\.0\.0\.1:(\d+)\n", banner)
+        assert match, banner
+        port = int(match.group(1))
+        base = f"http://127.0.0.1:{port}"
+        with urllib.request.urlopen(f"{base}/", timeout=hang_guard_s()) as page:
+            assert page.status == 200
+            assert "html" in page.headers["Content-Type"]
+        query = urllib.parse.urlencode({"worktree": str(world.main)})
+        with urllib.request.urlopen(
+            f"{base}/api/snapshot?{query}", timeout=hang_guard_s()
+        ) as snapshot:
+            assert snapshot.status == 200
+            assert {"header", "now", "results"} <= set(json.load(snapshot))
+        proc.send_signal(signal.SIGINT)
+        _out, err = proc.communicate(timeout=hang_guard_s())
+        assert proc.returncode == 0
+        assert "Traceback" not in err
+    finally:
+        guard.cancel()
+        proc.kill()
+        proc.wait()
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
 
-    ((app, kwargs),) = served
-    assert isinstance(app, Starlette)
-    assert (kwargs["host"], kwargs["port"]) == ("127.0.0.1", port)
-    assert f"http://127.0.0.1:{port}" in capsys.readouterr().out
+
+def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
+    served = capture_serving(monkeypatch)
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+
+        assert tlr._cmd_dashboard(_dashboard_args("--web", "--port", str(port)), world.main) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"127.0.0.1:{port}" in captured.err
+    assert "--port" in captured.err
+    assert len(captured.err.splitlines()) == 1
+    for noise in ("Errno", "Traceback", "ERROR:"):
+        assert noise not in captured.err
+    assert served == []
 
 
 def test_dashboard_help_documents_web_and_port(capsys):
