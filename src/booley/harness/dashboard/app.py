@@ -90,7 +90,7 @@ REFRESH_SECONDS = 2
 CURSOR_POSITION_REQUEST = "\x1b[6n"
 # "Finished" lists this many newest Jobs; "All" lists everything the snapshot retains.
 FINISHED_JOBS = 50
-# Fits a queued claim's leading reason, need, free memory, a blocked seat and three holders.
+# Fits a queued claim's need, free memory, a blocked seat and three named holders.
 _QUEUE_DETAIL_LIMIT = 400
 HELP = (
     "↑↓ move through the list · Enter opens the selected row · Esc goes back one level\n"
