@@ -3272,6 +3272,7 @@ fn test_time_token_exact_cli_overflow() {
                 "beyond simulation range"
             };
             assert!(err.contains(discriminator), "{token}: {err}");
+            assert!(err.contains(token), "{token}: {err}");
         }
     }
 }
