@@ -203,7 +203,10 @@ _REVIEWER_RECHECK = (
     "tell`, and no new finding is reported. `fixed` needs current code that shows "
     "it. Category, focus, and scope come from the file, so `scope`, `base`, "
     "`category`, `focus`, `spec`, `spec_text`, and `steer` are refused. With "
-    "`fail_on`, only `still open` and `can't tell` findings count."
+    "`fail_on`, only `still open` and `can't tell` findings count. To leave a "
+    'finding as it is, pass `waive=[["<finding-id>", "<reason>"]]` (CLI: `--waive '
+    '<finding-id> "<reason>"`) with `recheck`; the Reviewer accepts or refuses '
+    "each proposal, and an accepted `waived` finding never counts for `fail_on`."
 )
 
 

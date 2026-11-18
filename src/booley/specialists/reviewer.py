@@ -18,12 +18,13 @@ import json
 import logging
 import posixpath
 import time
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from uuid import uuid4
 
 from booley.core.boundary import as_dict, as_str_list
@@ -48,9 +49,11 @@ from booley.evidence.review_vocabulary import (
     OPEN_STATUSES,
     ORIGIN_PRE_EXISTING,
     STATUS_CANT_TELL,
+    STATUS_FIXED,
     STATUS_STILL_OPEN,
+    STATUS_WAIVED,
 )
-from booley.flows.cli_help import CliHelp
+from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -81,6 +84,8 @@ from .review_recheck import (
     recheck_prompt,
     recheck_system_prompt,
     rechecked_records,
+    refused_waivers,
+    validate_waivers,
 )
 from .review_simulators import render_simulation_context, resolve_scope_simulators
 from .specialist import Specialist
@@ -938,7 +943,8 @@ class ReviewerSpecialist(Specialist):
     description: str = (
         "Single-focus code review: reports issues by severity. Run one full review, then pass "
         "its evidence file as recheck until its findings are fixed; run another full review "
-        "only on purpose, not as the check that ends the loop."
+        "only on purpose, not as the check that ends the loop. A recheck may propose waivers "
+        "with waive, [finding ID, reason] pairs; the Reviewer accepts or refuses each."
     )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
@@ -1111,6 +1117,22 @@ class ReviewerSpecialist(Specialist):
                 "earlier review or re-check wrote, against the current sources: each becomes "
                 "fixed, still open or can't tell, and no new finding is reported. Category, "
                 "focus and scope come from the file."
+            ),
+        )
+        parser.add_argument(
+            "--waive",
+            nargs=2,
+            action="append",
+            default=None,
+            metavar=("FINDING_ID", "REASON"),
+            help=SurfaceHelp(
+                "Propose waiving the open finding FINDING_ID for REASON, only with --recheck; "
+                "repeatable. The Reviewer may refuse a waiver. Over MCP, pass [finding ID, "
+                "reason] pairs.",
+                cli=(
+                    "Propose waiving the open finding FINDING_ID for REASON, only with "
+                    "--recheck; repeatable. The Reviewer may refuse a waiver."
+                ),
             ),
         )
 
@@ -1610,6 +1632,14 @@ object, even after calling the capability.
         self._simulation_context = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         self._review_evidence_written = False
+        if self.args.waive and not self.args.recheck:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "--waive needs --recheck: a waiver is proposed for an open finding of "
+                    "an earlier Reviewer evidence file"
+                ),
+            )
         if self.args.recheck:
             return self._run_recheck()
         if error := self._prepare_invocation():
@@ -2516,6 +2546,10 @@ object, even after calling the capability.
         recheck = self._load_recheck()
         if isinstance(recheck, McpToolResult):
             return recheck
+        try:
+            proposals = validate_waivers(recheck, self.args.waive or [])
+        except RecheckInputError as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         # The file's contract drives the tag, the snapshot's category and its scope grant. A scope
         # file removed since the review is not granted: the snapshot refuses a missing one.
         self.args.category, self.args.focus = recheck.category, recheck.focus
@@ -2529,7 +2563,7 @@ object, even after calling the capability.
         )
         # The input's contract, so a later --recheck reads the same category, focus and scope.
         self._sampled_contract = deepcopy(recheck.contract)
-        return self._publish_review_evidence(self._execute_recheck(recheck))
+        return self._publish_review_evidence(self._execute_recheck(recheck, proposals))
 
     def _recheck_dry_run(self, recheck: RecheckInput) -> McpToolResult:
         """Describe the re-check without calling the model or writing evidence."""
@@ -2561,17 +2595,21 @@ object, even after calling the capability.
             return _render_spec_section(*resolve_spec_content(spec_source))
         return ""
 
-    def _recheck_params(self, recheck: RecheckInput) -> AgentCallParams:
+    def _recheck_params(
+        self, recheck: RecheckInput, proposals: Mapping[str, str]
+    ) -> AgentCallParams:
         """One agent call: the re-check prompts, read-only, with no ``ReportFindings`` mirror."""
         return AgentCallParams(
             prompt=recheck_prompt(
-                recheck, self._recheck_spec_section(recheck), Path(self.args.work_dir)
+                recheck, self._recheck_spec_section(recheck), Path(self.args.work_dir), proposals
             ),
             model=self._resolve_model(),
             cwd=self.args.work_dir,
             allowed_agent_capabilities=list(self.agent_capabilities),
             disallowed_agent_capabilities=[*self.READ_ONLY_DENY, REPORT_FINDINGS_CAPABILITY],
-            system_prompt=recheck_system_prompt(recheck.category, recheck.focus),
+            system_prompt=recheck_system_prompt(
+                recheck.category, recheck.focus, waivers=bool(proposals)
+            ),
             max_turns=self.args.max_turns,
             timeout_seconds=self.timeout_seconds(),
             transcript_path=self.transcript_path(),
@@ -2580,15 +2618,15 @@ object, even after calling the capability.
             reasoning_effort=self._resolve_effort(),
         )
 
-    def _execute_recheck(self, recheck: RecheckInput) -> McpToolResult:
-        """Call the model once and turn its verdicts into the re-check's result."""
-        start = time.monotonic()
+    def _recheck_entries(
+        self, recheck: RecheckInput, proposals: Mapping[str, str]
+    ) -> list[Any] | McpToolResult:
+        """Call the model once; its verdict entries, or the error result of a failed call."""
         self._attempt_id = f"{self._review_run_id}-{uuid4().hex}"
         self._audit_phase = "recheck"
         self.emit_progress(f"re-checking {recheck.category}/{recheck.focus}")
         try:
-            params = self._recheck_params(recheck)
-            output = self._invoke_agent(params).output
+            output = self._invoke_agent(self._recheck_params(recheck, proposals)).output
         except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -2606,13 +2644,73 @@ object, even after calling the capability.
                     "the re-check is incomplete, not a clean pass"
                 ),
             )
-        verdicts, rows = judge_verdicts(entries, recheck.open_findings, Path(self.args.work_dir))
+        return cast("list[Any]", entries)
+
+    def _execute_recheck(
+        self, recheck: RecheckInput, proposals: Mapping[str, str]
+    ) -> McpToolResult:
+        """Call the model once (when a finding is open) and turn its verdicts into the result."""
+        start = time.monotonic()
+        entries: list[Any] | McpToolResult = []
+        if recheck.open_findings:
+            entries = self._recheck_entries(recheck, proposals)
+        if isinstance(entries, McpToolResult):
+            return entries
+        verdicts, rows = judge_verdicts(
+            entries, recheck.open_findings, Path(self.args.work_dir), proposals
+        )
         self._record_rejections(rows, "recheck")
-        records = rechecked_records(recheck, verdicts)
-        return self._recheck_result(recheck, records, elapsed=time.monotonic() - start)
+        records = rechecked_records(recheck, verdicts, proposals)
+        refused = refused_waivers(proposals, verdicts)
+        return self._recheck_result(recheck, records, refused, elapsed=time.monotonic() - start)
+
+    @staticmethod
+    def _recheck_lines(
+        recheck: RecheckInput,
+        records: list[dict[str, Any]],
+        judged: list[dict[str, Any]],
+        refused: list[dict[str, str]],
+    ) -> list[str]:
+        """The report: one line per judged finding, the accepted waivers, then the RESULT."""
+        rulings = {
+            row["finding_id"]: row["ruling"] or "the Reviewer gave no reason" for row in refused
+        }
+        lines = [
+            f"Re-check of {recheck.path}: {len(judged)} open finding(s), "
+            f"{len(records) - len(judged)} carried over",
+            *(
+                f"  [{_SEVERITY_TAG[row['severity'].upper()]}] {row['file']}:{row['line']} — "
+                f"{row['summary']} (ID: {row['finding_id']}) — {STATUS_LABELS[row['status']]}"
+                + (
+                    f" — waiver refused: {rulings[row['finding_id']]}"
+                    if row["finding_id"] in rulings
+                    else ""
+                )
+                for row in judged
+            ),
+        ]
+        accepted = [row for row in records if row["status"] == STATUS_WAIVED]
+        if accepted:
+            lines.append("ACCEPTED WAIVERS (user-visible):")
+            lines.extend(
+                f"  [{row['severity'].upper()}] {row['file']}:{row['line']} — {row['summary']} "
+                f"(ID: {row['finding_id']}) — reason: {row['justification']}"
+                for row in accepted
+            )
+        counts = Counter(row["status"] for row in judged)
+        lines.append(
+            f"RESULT: {counts[STATUS_FIXED]} fixed, {counts[STATUS_WAIVED]} waived, "
+            f"{counts[STATUS_STILL_OPEN] + counts[STATUS_CANT_TELL]} still open or can't tell"
+        )
+        return lines
 
     def _recheck_result(
-        self, recheck: RecheckInput, records: list[dict[str, Any]], *, elapsed: float
+        self,
+        recheck: RecheckInput,
+        records: list[dict[str, Any]],
+        refused: list[dict[str, str]],
+        *,
+        elapsed: float,
     ) -> McpToolResult:
         """Report each re-checked finding; ``--fail-on`` counts only those still open."""
         # Records keep the input's order, so an open input record and its result pair up by
@@ -2625,17 +2723,7 @@ object, even after calling the capability.
         still_open = [
             row for row in judged if row["status"] in (STATUS_STILL_OPEN, STATUS_CANT_TELL)
         ]
-        lines = [
-            f"Re-check of {recheck.path}: {len(judged)} open finding(s), "
-            f"{len(records) - len(judged)} carried over",
-            *(
-                f"  [{_SEVERITY_TAG[row['severity'].upper()]}] {row['file']}:{row['line']} — "
-                f"{row['summary']} (ID: {row['finding_id']}) — {STATUS_LABELS[row['status']]}"
-                for row in judged
-            ),
-            f"RESULT: {len(judged) - len(still_open)} fixed, "
-            f"{len(still_open)} still open or can't tell",
-        ]
+        lines = self._recheck_lines(recheck, records, judged, refused)
         exit_code = self._completed_exit_code([row["severity"] for row in still_open])
         report_text = "\n".join(lines)
         print(report_text)
@@ -2654,6 +2742,7 @@ object, even after calling the capability.
             "review_outcome": "corrective" if still_open else "advisory",
             "contract": self._review_contract_detail(),
             "recheck_of": str(recheck.path),
+            "refused_waivers": refused,
         }
         self._attach_review_evidence(detail, exit_code)
         return McpToolResult(

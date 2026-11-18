@@ -76,6 +76,14 @@ the findings that are still open, against the current files, and reports each as
 a `can't tell` finding counts as open. A new full review replaces the earlier
 findings, so run one only when you want fresh findings.
 
+To leave a finding as it is on purpose, propose a waiver with the re-check:
+*"Re-check the review's findings and waive finding `<ID>` because
+`<reason>`."* The Reviewer accepts or refuses each proposal. An accepted
+waiver marks the finding `waived`: it does not fail a gated run, the report
+lists it under `ACCEPTED WAIVERS` with your reason, and later re-checks keep it
+waived. A refused waiver leaves the finding judged as
+`fixed`, `still open` or `can't tell`, and the report says why it was refused.
+
 ### Reviewing only a change
 
 Ask for a review of what changed since a commit or branch, for example
@@ -121,6 +129,7 @@ booley specialist reviewer --category rtl --focus spec --scope rtl/fifo.sv --spe
 | `--base <commit>` | [Review only the change](#reviewing-only-a-change) since the merge-base of `<commit>` and HEAD, uncommitted changes included. Pass every file of the category as `--scope` so the Reviewer also reads the files that use the changed ones. |
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. With `--recheck`, only `still open` and `can't tell` findings count. |
 | `--recheck <evidence file>` | [Re-check the open findings](#checking-your-fixes) of the saved review report at that path. It takes the category, focus and files from the report, so it refuses `--category`, `--focus`, `--scope`, `--base`, `--spec`, `--spec-text` and `--steer`. |
+| `--waive <finding ID> "<reason>"` | With `--recheck` only: [propose a waiver](#checking-your-fixes) for an open finding. Repeat it for more findings. A reason that starts with `-` is not accepted. |
 | `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, `security`, `optimization` or testbench `quality` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).

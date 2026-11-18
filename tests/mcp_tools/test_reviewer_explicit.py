@@ -33,24 +33,18 @@ def discovery(project: Path, focus: str = "bugs") -> EndpointOutcome:
     return run_review([*argv, "--focus", focus])[0]
 
 
-@pytest.mark.parametrize("flag", ["--verify", "--waive"])
-def test_verify_and_waive_are_unknown_options(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str
-) -> None:
-    argv = ["--work-dir", str(tmp_path), flag, *(["id", "why"] if flag == "--waive" else [])]
+def test_verify_is_an_unknown_option(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["--work-dir", str(tmp_path), "--verify"]
     with pytest.raises(SystemExit) as raised:
         ReviewerSpecialist().parse_args(argv)
     assert raised.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "name,value", [("verify", True), ("waive", [["id", "why"]])], ids=["verify", "waive"]
-)
-def test_mcp_schema_refuses_verify_and_waive(name: str, value: object) -> None:
+def test_mcp_schema_refuses_verify() -> None:
     # Private seam: the parser is the accessor `mcp/flow_adapter.py` feeds the schema extractor.
     validator = Draft202012Validator(extract_schema(ReviewerSpecialist()._parser))
-    messages = [error.message for error in validator.iter_errors({name: value})]
+    messages = [error.message for error in validator.iter_errors({"verify": True})]
     assert any("Additional properties are not allowed" in message for message in messages)
 
 

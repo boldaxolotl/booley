@@ -577,9 +577,18 @@ def test_recheck_reads_only_the_given_file_and_writes_only_its_evidence(
     assert not list((booley_dir / "reviewer-evidence").glob("*.json"))
     before = {p for p in booley_dir.rglob("*") if p.is_file()}
 
-    result, _ = recheck(project, monkeypatch, elsewhere, [verdict(ids[RESET], "fixed")])
+    result, _ = recheck(
+        project,
+        monkeypatch,
+        elsewhere,
+        [waived(ids[RESET]), verdict(ids[ENABLE], "fixed", line=5)],
+        "--waive",
+        ids[RESET],
+        "Chosen by the integration",
+    )
 
     assert result.exit_code == 0, result.report_text
+    assert statuses(result)[RESET] == "waived"
     after = {p for p in booley_dir.rglob("*") if p.is_file()}
     assert after - before == {Path(result.detail["audit_evidence"])}
     assert before - after == set()
@@ -597,3 +606,190 @@ def test_recheck_reports_an_open_finding_that_shares_its_id_with_an_advisory_one
     assert result.exit_code == 0, result.report_text
     assert result.report_text.count(ids[RESET]) == 1
     assert [row["status"] for row in result.detail["issue_list"]] == ["still_open", "advisory"]
+
+
+# --- --waive on a re-check (#4523) ---
+
+WHY = "The reset value is chosen by the integration"
+
+
+def waived(finding_id: str, ruling: str = "The reason holds.") -> dict[str, Any]:
+    return {"finding_id": finding_id, "verdict": "waived", "waiver_ruling": ruling}
+
+
+def test_waive_without_recheck_is_refused(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result, invoke = run_tool(
+        project, monkeypatch, [*BASE_ARGS, "--waive", "0123456789abcdef", WHY], {"issues": []}
+    )
+
+    assert result.exit_code == 2
+    assert "--waive needs --recheck" in result.report_text
+    invoke.assert_not_called()
+
+
+def test_invalid_waiver_proposal_is_refused(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence, ids = two_findings(project, monkeypatch)
+    cases = {
+        "unknown": (["--waive", "0123456789abcdef", WHY], "0123456789abcdef"),
+        "advisory": (["--waive", ids[NAMING], WHY], ids[NAMING]),
+        "repeated": (
+            ["--waive", ids[RESET], WHY, "--waive", ids[RESET], "Again"],
+            ids[RESET],
+        ),
+        "blank": (["--waive", ids[RESET], "  "], ids[RESET]),
+    }
+    for case, (flags, named) in cases.items():
+        result, invoke = recheck(project, monkeypatch, evidence, [], *flags)
+
+        assert result.exit_code == 2, case
+        assert f"--waive {named}" in result.report_text, case
+        invoke.assert_not_called()
+    result, invoke = recheck(
+        project, monkeypatch, evidence, [], "--waive", "0123456789abcdef", WHY, "--dry-run"
+    )
+    assert result.exit_code == 2
+    invoke.assert_not_called()
+
+
+def test_accepted_waiver_is_waived_excluded_from_fail_on_and_listed(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence, ids = two_findings(project, monkeypatch)
+    result, invoke = recheck(
+        project,
+        monkeypatch,
+        evidence,
+        [waived(ids[RESET]), verdict(ids[ENABLE], "still_open")],
+        "--waive",
+        ids[RESET],
+        WHY,
+        "--fail-on",
+        "major",
+    )
+
+    assert result.exit_code == 0, result.report_text
+    prompt = invoke.call_args.args[0].prompt
+    assert f"waiver proposal: {WHY}" in prompt
+    assert '"waived"' in prompt
+    assert statuses(result) == {RESET: "waived", ENABLE: "still_open", NAMING: "advisory"}
+    record = next(r for r in result.detail["issue_list"] if r["summary"] == RESET)
+    assert record["justification"] == WHY
+    assert record["waiver_ruling"] == "The reason holds."
+    assert result.detail["issues"] == 1
+    assert f"{RESET} (ID: {ids[RESET]}) — waived" in result.report_text
+    assert "ACCEPTED WAIVERS" in result.report_text
+    assert (
+        f"[MAJOR] rtl/dut.sv:3 — {RESET} (ID: {ids[RESET]}) — reason: {WHY}" in result.report_text
+    )
+    assert "RESULT: 0 fixed, 1 waived, 1 still open or can't tell" in result.report_text
+
+
+def test_refused_waiver_is_judged_as_usual_and_reported(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence, ids = two_findings(project, monkeypatch)
+    ruling = "The cited reset is still wrong."
+    result, _ = recheck(
+        project,
+        monkeypatch,
+        evidence,
+        [
+            {**verdict(ids[RESET], "still_open"), "waiver_ruling": ruling},
+            verdict(ids[ENABLE], "fixed", line=5),
+        ],
+        "--waive",
+        ids[RESET],
+        WHY,
+        "--waive",
+        ids[ENABLE],
+        "Not needed",
+        "--fail-on",
+        "major",
+    )
+
+    assert result.exit_code == 1, result.report_text
+    assert statuses(result) == {RESET: "still_open", ENABLE: "fixed", NAMING: "advisory"}
+    assert f"still open — waiver refused: {ruling}" in result.report_text
+    assert "fixed — waiver refused: the Reviewer gave no reason" in result.report_text
+    assert "ACCEPTED WAIVERS" not in result.report_text
+    assert result.detail["refused_waivers"] == [
+        {"finding_id": ids[RESET], "justification": WHY, "ruling": ruling},
+        {"finding_id": ids[ENABLE], "justification": "Not needed", "ruling": ""},
+    ]
+    assert all("justification" not in row for row in result.detail["issue_list"])
+
+
+def test_unsolicited_waived_verdict_is_still_open(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence, ids = two_findings(project, monkeypatch)
+    for extra in ([], ["--waive", ids[ENABLE], WHY]):
+        result, _ = recheck(
+            project,
+            monkeypatch,
+            evidence,
+            [waived(ids[RESET]), verdict(ids[ENABLE], "still_open")],
+            *extra,
+        )
+
+        assert statuses(result)[RESET] == "still_open", extra
+        assert [row["reason"] for row in result.detail["rejected"]] == ["unsolicited_waiver"]
+        assert "ACCEPTED WAIVERS" not in result.report_text
+
+
+def test_waived_finding_carries_over_without_rejudging(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence, ids = two_findings(project, monkeypatch)
+    first, _ = recheck(
+        project,
+        monkeypatch,
+        evidence,
+        [waived(ids[RESET]), verdict(ids[ENABLE], "still_open")],
+        "--waive",
+        ids[RESET],
+        WHY,
+    )
+    second, invoke = recheck(
+        project,
+        monkeypatch,
+        Path(first.detail["audit_evidence"]),
+        [verdict(ids[ENABLE], "fixed", line=5)],
+    )
+
+    assert second.exit_code == 0, second.report_text
+    assert ids[RESET] not in invoke.call_args.args[0].prompt
+    assert statuses(second)[RESET] == "waived"
+    assert (
+        next(r for r in second.detail["issue_list"] if r["summary"] == RESET)["justification"]
+        == WHY
+    )
+    assert "ACCEPTED WAIVERS" in second.report_text
+    assert f"(ID: {ids[RESET]}) — reason: {WHY}" in second.report_text
+
+    third, invoke = recheck(project, monkeypatch, Path(second.detail["audit_evidence"]), [])
+
+    assert third.exit_code == 0, third.report_text
+    invoke.assert_not_called()
+    assert statuses(third) == {RESET: "waived", ENABLE: "fixed", NAMING: "advisory"}
+    assert f"(ID: {ids[RESET]}) — reason: {WHY}" in third.report_text
+    assert Path(third.detail["audit_evidence"]).is_file()
+
+
+def test_mcp_waive_argument_runs_the_same_waiver(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence, ids = two_findings(project, monkeypatch)
+    argv = _params_to_argv({"recheck": str(evidence), "waive": [[ids[RESET], WHY]]})
+    reviewer, _ = _reviewer(
+        project,
+        monkeypatch,
+        argv,
+        json.dumps({"verdicts": [waived(ids[RESET]), verdict(ids[ENABLE], "still_open")]}),
+    )
+    result = reviewer._run()
+
+    assert statuses(result)[RESET] == "waived"
+    assert "ACCEPTED WAIVERS" in result.report_text
