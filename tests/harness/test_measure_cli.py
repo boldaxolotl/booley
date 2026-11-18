@@ -836,6 +836,62 @@ def test_stored_text_reports_skip_symlinks(tmp_path: Path) -> None:
     assert [report.path.name for report in _flow_reports(outcome)] == ["report.json"]
 
 
+_PROGRESS = ("progress.json", ".progress.lock")
+# kind: (its metrics table, its report artifacts, the bookkeeping its Flow leaves beside them)
+REPORT_DIRECTORY_OF_KIND = {
+    "lint": (
+        "[sim_core.lint]\nwarnings_max = 0\n",
+        ("report.json", "lint_report.json"),
+        (".report.json.1.tmp", ".lint_report.json.2.booley-staged"),
+    ),
+    "sim": (
+        "[sim_core.sim]\ntests_failed_max = 0\n",
+        ("report.json",),
+        (*_PROGRESS, ".progress-3"),
+    ),
+    "coverage": ("[sim_core.coverage]\nline_coverage_min = 90\n", ("report.json",), _PROGRESS),
+    "synth": ("[synth_core.synth]\narea_kge_max = 60\n", ("report.json",), _PROGRESS),
+    "fpga": ("[synth_core.fpga]\nlut_count_max = 5000\n", ("report.json",), _PROGRESS),
+    "mutation": (
+        "[sim_core.mutation]\nmutation_score_min = 50\ncount = 1\nseed = 1\n",
+        ("report.json",),
+        (".report.json.1.tmp",),
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", list(REPORT_DIRECTORY_OF_KIND))
+def test_only_report_artifacts_are_stored_listed_and_counted(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.measurement import run_store
+
+    table, reports, bookkeeping = REPORT_DIRECTORY_OF_KIND[kind]
+    project = committed_project(tmp_path, table)
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    for name in (*reports, *bookkeeping):
+        (invocation / name).write_bytes(b"{}")
+    # A counted bookkeeping file would push a real report out, or itself show as dropped.
+    monkeypatch.setattr(run_store, "REPORT_CAP_BYTES", 2 * len(reports))
+
+    def run(tables: Sequence[TableRules], _cancelled: Callable[[], bool]) -> ChildrenOutcome:
+        scripted = outcome_of(tables, [None])
+        measured = TableMeasurement(scripted.tables[0].run, (invocation / "report.json",), True)
+        return ChildrenOutcome(scripted.status, (measured,))
+
+    script_children(monkeypatch, run)
+    run_command(monkeypatch, project)
+
+    (path,) = stored_runs(project)
+    document = json.loads(path.read_text())
+    assert [entry["name"] for entry in document["reports"]] == list(reports)
+    assert document["dropped_reports"] == []
+    markdown = path.with_suffix(".md").read_text()
+    assert markdown.count(" report: `") == len(reports)
+    assert "not kept" not in markdown
+
+
 def test_the_signal_handlers_are_restored_after_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
