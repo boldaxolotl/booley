@@ -6,7 +6,8 @@ time and the container's cgroup memory. TMPDIR counts toward peak memory only
 when it is on tmpfs (its pages are charged to the container's memory limit);
 the temporary-file peak is always recorded on its own. Measurement only observes:
 it never changes a Job's verdict, scheduling or exit code, and a value that
-could not be measured is recorded as absent (``None``), never as zero.
+could not be measured is recorded as absent (``None``), never as zero. A Flow may
+hold its commands' records until it has judged them (``judged_commands``).
 """
 
 from __future__ import annotations
@@ -95,6 +96,51 @@ class ResourceLabel:
 
 
 _label: ContextVar[ResourceLabel | None] = ContextVar("booley_resource_label", default=None)
+
+
+_judged: ContextVar[JudgedCommands | None] = ContextVar("booley_judged_commands", default=None)
+
+
+class JudgedCommands:
+    """Records a Flow holds until it says whether each command succeeded."""
+
+    def __init__(self) -> None:
+        self._builders: list[Callable[[], list[dict[str, Any]]]] = []
+        self._verdicts: dict[int, bool] = {}
+
+    def judge(self, succeeded: bool, command: int | None = None) -> None:
+        """Record the Flow's judgment of every held command, or of the one at *command*.
+
+        An index with no held command is ignored: a command that never started
+        holds no record, and judging must not raise in a Flow.
+        """
+        indexes = range(len(self._builders)) if command is None else [command]
+        for index in indexes:
+            with contextlib.suppress(IndexError):
+                self._verdicts[range(len(self._builders))[index]] = succeeded
+
+    def records(self) -> list[dict[str, Any]]:
+        """Build the records; a judged exit outcome follows the judgment, a stop stays."""
+        rows: list[dict[str, Any]] = []
+        for index, build in enumerate(self._builders):
+            for row in build():
+                if index in self._verdicts and row["outcome"] in ("exit_zero", "exit_nonzero"):
+                    row["outcome"] = "exit_zero" if self._verdicts[index] else "exit_nonzero"
+                rows.append(row)
+        return rows
+
+
+@contextlib.contextmanager
+def judged_commands() -> Iterator[JudgedCommands]:
+    """Hold the records of the commands run inside the block; write them when it ends."""
+    held = JudgedCommands()
+    token = _judged.set(held)
+    try:
+        yield held
+    finally:
+        _judged.reset(token)
+        if held._builders:
+            _append_to_history(held.records)
 
 
 def label_commands(
@@ -849,9 +895,18 @@ def record_command(
     """Append the command's records to the Project history; never raise.
 
     Flow runs that Doctor starts (self-tests, smoke and deep checks) write
-    nothing: they would pollute the Project's real keys.
+    nothing: they would pollute the Project's real keys. Inside ``judged_commands``
+    the records are held until the block ends.
     """
-    _append_to_history(lambda: history_records(flow, label, flags, measurement, result))
+
+    def build() -> list[dict[str, Any]]:
+        return history_records(flow, label, flags, measurement, result)
+
+    held = _judged.get()
+    if held is None:
+        _append_to_history(build)
+    else:
+        held._builders.append(build)
 
 
 def record_specialist(name: str, calls: list[AgentCallUsage], returncode: int | None) -> None:

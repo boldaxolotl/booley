@@ -422,6 +422,41 @@ def test_oom_blame_follows_the_commands_own_evidence(
     assert (record["outcome"], record["oom_kill_delta"]) == (outcome, 1)
 
 
+@pytest.mark.parametrize(
+    ("judged", "result", "outcome"),
+    [
+        (None, {"returncode": 3}, "exit_nonzero"),
+        (True, {"returncode": 3, "timed_out": True}, "timeout"),
+        (True, {"returncode": 3, "oom_killed": True}, "oom_kill"),
+        (True, {"returncode": 3}, "exit_zero"),
+        (False, {"returncode": 0}, "exit_nonzero"),
+    ],
+    ids=["unjudged", "timeout", "oom-kill", "judged-success", "judged-failure"],
+)
+def test_judged_commands_follow_the_judgment_except_for_stops(tmp_path, judged, result, outcome):
+    label = job_resources.ResourceLabel("test", "echo_tool")
+    process = SimpleNamespace(
+        **{
+            "timed_out": False,
+            "oom_killed": False,
+            "host_oom_kill": False,
+            "duration_s": 1.0,
+            **result,
+        }
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    with job_resources.judged_commands() as commands:
+        job_resources.record_command("flow", label, (), measurement, process)
+        assert _history(tmp_path) == []  # held until the block ends
+        if judged is not None:
+            commands.judge(judged)
+            commands.judge(not judged, command=5)  # no such command: ignored
+
+    (record,) = _history(tmp_path)
+    assert (record["outcome"], record["returncode"]) == (outcome, result["returncode"])
+
+
 @posix_only
 def test_own_kill_without_a_sandbox_limit_oom_is_a_host_kill(flow, tmp_path, monkeypatch):
     # The kill counter rose but the Sandbox never reached its own limit.

@@ -53,7 +53,13 @@ from booley.flows.eda_failures import (
     strip_failure_markers,
 )
 from booley.flows.flow_config import expected_count
-from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
+from booley.flows.job_resources import (
+    SYNTH_PHASES,
+    JudgedCommands,
+    judged_commands,
+    resolved_source_bytes,
+    resource_phase,
+)
 from booley.flows.memory_admission import job_thread_count
 from booley.flows.metric_declarations import (
     Better,
@@ -81,7 +87,7 @@ from booley.flows.result_table import (
     status_cell,
 )
 from booley.flows.synth import openroad_reuse
-from booley.flows.synth.backends.pipeline import openroad_thread_assignment
+from booley.flows.synth.backends.pipeline import BoundaryOutcome, openroad_thread_assignment
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
@@ -1185,6 +1191,23 @@ def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -
     return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
 
 
+def _judge_stage_commands(
+    commands: JudgedCommands, plan: Any, metrics: SynthMetrics, outcome: BoundaryOutcome
+) -> None:
+    """Judge the run's commands: only the one whose own output failed the run is failed."""
+    if metrics.returncode == 0:
+        commands.judge(True)
+    elif not runs_openroad(plan.spec.timing.mode):
+        commands.judge(False)
+    else:
+        yosys_owned = (
+            outcome.forced_failure is not None
+            or not outcome.yosys_complete
+            or (metrics.termination == "design_failure" and outcome.openroad_diagnostic is None)
+        )
+        commands.judge(False, 0 if yosys_owned else 1)
+
+
 class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
@@ -1555,12 +1578,13 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         self, target: str, plan: Any, source_bytes: int | None
     ) -> tuple[SynthMetrics, str]:
         """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
-        start = time.monotonic()
-        run = self._run_synth_make(target, plan, source_bytes)
-        elapsed = time.monotonic() - start
-        metrics, output = self._interpret_boundary_run(
-            target, plan, run.result, elapsed, producer=run.producer
-        )
+        with judged_commands() as commands:
+            start = time.monotonic()
+            run = self._run_synth_make(target, plan, source_bytes)
+            elapsed = time.monotonic() - start
+            metrics, output = self._interpret_boundary_run(
+                target, plan, run.result, elapsed, producer=run.producer, commands=commands
+            )
         metrics = self._attach_recipe_evidence(target, metrics)
         self._store_openroad_result(target, plan, metrics, run)
         return metrics, output
@@ -1918,8 +1942,12 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         proc_result: SubprocessResult,
         elapsed: float,
         producer: openroad_reuse.Producer | None = None,
+        *,
+        commands: JudgedCommands,
     ) -> tuple[SynthMetrics, str]:
         """Interpret a boundary result from its freshness-gated artifacts.
+
+        The run's recorded commands are judged from that interpretation.
 
         A *producer* means the OpenROAD outputs were restored from the reuse
         slot; they are interpreted exactly as a fresh run's, and labelled.
@@ -1937,6 +1965,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                 "producer_started_at": producer.started_at,
             }
         self._apply_boundary_completion(metrics, outcome, proc_result, output)
+        _judge_stage_commands(commands, plan, metrics, outcome)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
 
         return metrics, output

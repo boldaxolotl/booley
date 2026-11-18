@@ -30,7 +30,7 @@ from booley.flows.eda_failures import (
     new_attempt_token,
     render_failure_marker,
 )
-from booley.flows.job_resources import resolved_source_bytes, resource_phase
+from booley.flows.job_resources import judged_commands, resolved_source_bytes, resource_phase
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
 from booley.flows.metric_declarations import (
@@ -1062,7 +1062,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
         target_results: list[LintConfigResult] = []
         for target in targets:
             unit = prepared[target.identity] if prepared is not None else None
-            cr = self._run_lint_target(target, unit)
+            with judged_commands() as commands:
+                cr = self._run_lint_target(target, unit)
+                commands.judge(not cr.error)
             target_results.append(cr)
             line = _target_summary_line(cr)
             print(line)

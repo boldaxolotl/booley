@@ -32,6 +32,7 @@ from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.server import _params_to_argv
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 pytestmark = pytest.mark.skipif(
@@ -79,6 +80,10 @@ class Bench:
     on_yosys: Callable[[], None] | None = None
     #: Runs in place of the OpenROAD stage's file writes when set; may return a result.
     on_openroad: Callable[[Path], SubprocessResult | None] | None = None
+    #: Send each stage's result through a real child process and the measured run,
+    #: which writes the resource history record (the flow under run is in ``flow``).
+    measured: bool = False
+    flow: AsicSynthesizeFlow | None = None
 
     @property
     def lib(self) -> Path:
@@ -123,6 +128,15 @@ class Bench:
         )
 
     def boundary(self, cmd: list[str], **_kwargs) -> SubprocessResult:
+        """Emulate a make stage, as a real measured process when ``measured``."""
+        result = self._emulate(cmd)
+        if not self.measured or self.flow is None or result.returncode == -1:
+            return result  # -1: the command never started, as the real run returns it
+        real = self.flow._execute(canned_command(result))
+        real.dispatched_unix = result.dispatched_unix  # the stale guard sees the bench's files
+        return real
+
+    def _emulate(self, cmd: list[str]) -> SubprocessResult:
         """Emulate ``make -C <dir> [yosys|openroad]``; a bare make runs both stages."""
         # Stamped before writing: the stale guard stays active while the coarse
         # file clock cannot make this call's own writes look stale.
@@ -173,7 +187,7 @@ class Bench:
 
     def run(self, *argv: str, target: str = TARGET) -> tuple[object, dict]:
         """One fresh ``booley flow synth`` invocation; returns (outcome, Target report)."""
-        flow = AsicSynthesizeFlow()
+        flow = self.flow = AsicSynthesizeFlow()
         flow.parse_args(
             [
                 "--target",
@@ -555,3 +569,50 @@ def test_logical_mode_creates_no_slot_and_never_reports_reuse(bench: Bench) -> N
     assert not work_root_for(
         bench.root, "synth", LOGICAL_TARGET, variant="openroad_reuse"
     ).exists()
+
+
+def _fail_yosys(bench: Bench, **files: str) -> None:
+    def write() -> None:
+        for name, text in files.items():
+            with (bench.root / bench.commands[-1][2] / name).open("a", encoding="utf-8") as out:
+                out.write(text)
+
+    bench.on_yosys = write
+
+
+_CONFLICTING_DRIVERS = (
+    "Warning: multiple conflicting drivers for dut.sig:\n"
+    "    port Q[0] of cell $procdff$1 ($dff)\n"
+    "Found and reported 1 problem.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("target", "files", "openroad_never_starts", "outcomes"),
+    [
+        (LOGICAL_TARGET, {"yosys.log": "ERROR: boom\n"}, False, ["exit_nonzero"]),
+        (TARGET, {"yosys.log": "ERROR: boom\n"}, False, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {"check_dut.txt": _CONFLICTING_DRIVERS}, False, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {}, True, ["exit_zero"]),
+    ],
+    ids=["logical", "physical-yosys-log", "physical-structural", "physical-openroad-not-started"],
+)
+def test_synth_record_outcome_follows_the_failing_stage(
+    bench: Bench,
+    tmp_path: Path,
+    target: str,
+    files: dict[str, str],
+    openroad_never_starts: bool,
+    outcomes: list[str],
+) -> None:
+    from booley.runtime import resource_history
+
+    bench.measured = True
+    _fail_yosys(bench, **files)
+    if openroad_never_starts:
+        bench.on_openroad = lambda _build: SubprocessResult(returncode=-1)
+
+    bench.run(target=target)
+
+    records = resource_history.load_records(tmp_path)
+    assert [r["outcome"] for r in records if r["key"]["phase"] == "synth"] == outcomes
