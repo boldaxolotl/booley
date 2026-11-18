@@ -8,6 +8,7 @@ that polls the snapshot, and its assets come from ``/assets/``.
 
 from __future__ import annotations
 
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -25,7 +26,7 @@ from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.harness.dashboard.web_snapshot import find_report, read_snapshot
 from booley.harness.worktree_list import WorktreeListError, worktree_registrations
-from booley.runtime import job_slots
+from booley.runtime import job_slots, loopback_http
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8090
@@ -151,11 +152,14 @@ def create_app(
 
 def serve(project_root: Path, port: int) -> int:
     """Serve the Project's Jobs on ``127.0.0.1:<port>`` until stopped."""
-    import uvicorn
-
     app = create_app(
         resolve_main_checkout_root(project_root), resolve_common_booley_dir(project_root)
     )
-    print(f"Booley Dashboard (web): http://{HOST}:{port}", flush=True)
-    uvicorn.run(app, host=HOST, port=port, log_level="warning")
+    try:
+        sock = loopback_http.listen(HOST, port)
+    except loopback_http.PortUnavailableError as exc:
+        print(f"booley dashboard: {exc}; choose another port with --port", file=sys.stderr)
+        return 2
+    print(f"Booley Dashboard (web): http://{HOST}:{sock.getsockname()[1]}", flush=True)
+    loopback_http.serve(app, sock)
     return 0
