@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 from tests.docker.isolation.container_names import next_ci_container_name
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 
@@ -82,6 +83,11 @@ def _run_in_sandbox(
     return run_bounded_child(cmd, timeout=timeout)
 
 
+# Image-probe bound per platform: Windows uses a short probe that skips when slow
+# (a deadline); POSIX only stops a hang around a legitimately slow docker call.
+_IMAGE_PROBE_TIMEOUT_S = {"nt": scaled(10), "posix": 2 * hang_guard_s()}
+
+
 def _require_verible_sandbox() -> None:
     if _docker() is None:
         pytest.skip("docker not available")
@@ -91,7 +97,7 @@ def _require_verible_sandbox() -> None:
             [_docker(), "image", "inspect", _IMAGE],
             capture_output=True,
             text=True,
-            timeout=10 if os.name == "nt" else 60,
+            timeout=_IMAGE_PROBE_TIMEOUT_S["nt" if os.name == "nt" else "posix"],
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
@@ -252,7 +258,7 @@ def test_unavailable_image_probe_respects_platform_requirement(monkeypatch, fail
 
     def fail_probe(command, **kwargs):
         assert command == ["docker", "image", "inspect", _IMAGE]
-        assert kwargs["timeout"] == (10 if platform == "nt" else 60)
+        assert kwargs["timeout"] == _IMAGE_PROBE_TIMEOUT_S[platform]
         if failure == "timeout":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         raise OSError("docker unavailable")
