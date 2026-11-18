@@ -6,6 +6,11 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+# The CI step runs this on the runner's bare Python, where ``booley`` is not installed;
+# the shared time-budget policy imports it, so put the source tree on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 
 from tests.time_budget import hang_guard_s
 
