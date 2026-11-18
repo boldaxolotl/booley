@@ -104,7 +104,7 @@ Every Flow or Specialist run is a **Job**. Every Job is admitted against a
 budget has left, and otherwise waits in a queue instead of failing. The queue
 has no limit: a Job waits until it runs or you cancel it. Specialists and mutation
 campaigns are admitted by memory too, and a Specialist waits when the budget is
-full. Running Jobs are never interrupted. The defaults:
+full. Running Jobs are never interrupted. For example:
 
 ```toml
 [sandbox]
