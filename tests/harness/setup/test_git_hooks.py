@@ -2070,8 +2070,16 @@ def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
         step_project_git_hooks(ctx)
     output = capsys.readouterr().out
     relative = bundle.relative_to(owner).as_posix()
-    command = shlex.join(["git", "-C", str(owner), "rm", "--cached", "--", relative])
-    assert command in output
+    advice = output.split("untrack it with: ", 1)[1].split(". ", 1)[0]
+    assert split_host_command(advice) == [
+        "git",
+        "-C",
+        str(owner),
+        "rm",
+        "--cached",
+        "--",
+        relative,
+    ]
     assert "Could not inspect" not in output
     assert [(r.name, r.status) for r in ctx.results] == [
         ("project_git_hook_tracking", "skip"),

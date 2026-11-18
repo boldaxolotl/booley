@@ -168,7 +168,7 @@ def _print_kept_and_retry(msg_file: Path, *, merge: bool = False) -> None:
     """Say where the rejected message was kept and how to retry with it."""
     path = msg_file.resolve()
     quoted = quote_arg(str(path))
-    print(f"Your message was kept unchanged in {quoted}.", file=sys.stderr)
+    print(f'Your message was kept unchanged in "{path}".', file=sys.stderr)
     if merge:
         # The merge stays in progress after a rejection, so plain git commit finishes it.
         print(f"To retry with the same text, run: git commit -v -e -F {quoted}", file=sys.stderr)
