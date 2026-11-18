@@ -24,6 +24,40 @@ pub fn strip_bit_select(name: &str) -> &str {
     }
 }
 
+/// A trailing bit select of a pattern: `[N]` (`single`) or `[M:N]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitSelect {
+    pub msb: u32,
+    pub lsb: u32,
+    pub single: bool,
+}
+
+impl BitSelect {
+    /// The select as written, e.g. `[5:4]` or `[3]`.
+    pub fn text(&self) -> String {
+        match self.single {
+            true => format!("[{}]", self.lsb),
+            false => format!("[{}:{}]", self.msb, self.lsb),
+        }
+    }
+}
+
+/// Parse the inside of a trailing index (`5:4`, `3`); None when it is not one
+/// or two numbers.
+fn parse_select(inner: &str) -> Option<BitSelect> {
+    let mut parts = inner.split(':');
+    let msb: u32 = parts.next()?.parse().ok()?;
+    let lsb = match parts.next() {
+        Some(low) => low.parse().ok()?,
+        None => msb,
+    };
+    let single = !inner.contains(':');
+    parts
+        .next()
+        .is_none()
+        .then_some(BitSelect { msb, lsb, single })
+}
+
 /// One compiled `-s` pattern: the full-path matchers plus the common scope it
 /// is also allowed to match relative to.
 #[derive(Debug, Clone)]
@@ -32,9 +66,10 @@ pub struct SignalPattern {
     full: GlobMatcher,
     /// Matches the name with its bit-select removed.
     stripped: GlobMatcher,
-    /// The pattern ends in an all-digit element index (`dmem_wr[0]`), so
-    /// `stripped` only stands in for a signal dumped with no bit-select.
-    element: bool,
+    /// Matches the name with only the trailing select removed (`qa.data`).
+    base: GlobMatcher,
+    /// The trailing `[N]` or `[M:N]`, when the pattern has one.
+    select: Option<BitSelect>,
     /// `common_scope_prefix` of the store (trailing `.`), or empty for none.
     scope: String,
 }
@@ -48,7 +83,52 @@ impl SignalPattern {
     /// same signals as before; only anchored globs gain matches. A signal
     /// outside the scope has no relative path and is never reached.
     fn is_match(&self, name: &str) -> bool {
-        self.in_full_or_relative(name, |matcher, path| matcher.matches_stripped(path))
+        self.selects(name, None, false)
+    }
+
+    /// The trailing select of the pattern, if any.
+    pub fn select(&self) -> Option<BitSelect> {
+        self.select
+    }
+
+    /// Whether `name` is a stored signal this pattern names as written.
+    pub fn names_exactly(&self, name: &str) -> bool {
+        self.in_full_or_relative(name, |matcher, path| matcher.full.is_match(path))
+    }
+
+    /// Whether the signal `name` (of `width` bits, when known) is selected
+    /// whole. A `slice_row` is a bit-slice row, matched only by a
+    /// pattern that carries a select. A select that covers every bit of a
+    /// vector selects the whole signal; a partial one selects a slice instead.
+    pub fn selects(&self, name: &str, width: Option<u32>, slice_row: bool) -> bool {
+        if slice_row {
+            return self.select.is_some() && self.names_exactly(name);
+        }
+        match self.select {
+            None => self.in_full_or_relative(name, |matcher, path| matcher.matches_stripped(path)),
+            Some(select) => {
+                self.names_exactly(name)
+                    || width.is_some_and(|w| {
+                        crate::slice::bits_of(name, w)
+                            == crate::slice::Bits::Descending(select.msb, select.lsb)
+                            && self.base_matches(name)
+                    })
+            }
+        }
+    }
+
+    /// The vector `name` names without its own range, when this pattern's
+    /// base selects it and the pattern does not name `name` itself.
+    pub fn bit_select<'a>(&self, name: &'a str) -> Option<(&'a str, BitSelect)> {
+        let select = self.select?;
+        let base = vector_base(name)?;
+        (!self.names_exactly(name) && self.base_matches(name)).then_some((base, select))
+    }
+
+    fn base_matches(&self, name: &str) -> bool {
+        vector_base(name).is_some_and(|base| {
+            self.in_full_or_relative(base, |matcher, path| matcher.base.is_match(path))
+        })
     }
 
     /// Like `is_match`, but tests `name` as given instead of stripping its
@@ -66,17 +146,25 @@ impl SignalPattern {
     }
 
     /// Test one path against the original form and the bit-select-stripped
-    /// form. An element pattern uses the stripped form only for a path with
-    /// no bit-select, so it never selects a sibling element or a ranged vector.
+    /// form (a pattern without a select).
     fn matches_stripped(&self, path: &str) -> bool {
-        let bare = strip_bit_select(path);
-        self.full.is_match(path)
-            || ((!self.element || bare == path) && self.stripped.is_match(bare))
+        self.full.is_match(path) || self.stripped.is_match(strip_bit_select(path))
     }
 
     /// Test one path against both matchers without stripping the path.
     fn matches_as_given(&self, path: &str) -> bool {
         self.full.is_match(path) || self.stripped.is_match(path)
+    }
+}
+
+/// `name` without its own trailing range, when it is a vector: no trailing
+/// bracket, or a range `[H:L]`. A name ending in `[N]` is an element.
+pub fn vector_base(name: &str) -> Option<&str> {
+    match name.strip_suffix(']').and_then(|head| head.rfind('[')) {
+        None => (!name.ends_with(']')).then_some(name),
+        Some(open) => name[open + 1..name.len() - 1]
+            .contains(':')
+            .then_some(&name[..open]),
     }
 }
 
@@ -145,12 +233,25 @@ pub fn compile_patterns(patterns: &[String], scope: &str) -> Result<Vec<SignalPa
     patterns
         .iter()
         .map(|p| {
-            let wrapped = auto_wrap_pattern(p);
+            let mut wrapped = auto_wrap_pattern(p);
             // A trailing Verilog index is compiled as a literal; the stripped
             // matcher below covers only a simulator that dumped the whole
             // vector under its plain base name.
             let index = index_suffix_start(&wrapped);
-            let element = index.is_some_and(|open| !wrapped[open..].contains(':'));
+            // The select is rewritten without leading zeros, as slice rows
+            // and stored names spell it.
+            let select = match index {
+                Some(open) => {
+                    let inner = &wrapped[open + 1..wrapped.len() - 1];
+                    let select = parse_select(inner).ok_or_else(|| {
+                        format!("invalid bit select '[{inner}]' in '{p}': use [N] or [M:N]")
+                    })?;
+                    wrapped.truncate(open);
+                    wrapped.push_str(&select.text());
+                    Some(select)
+                }
+                None => None,
+            };
             let orig_pat = match index {
                 Some(open) => escape_index_bracket(&wrapped, open),
                 None => wrapped.clone(),
@@ -162,10 +263,14 @@ pub fn compile_patterns(patterns: &[String], scope: &str) -> Result<Vec<SignalPa
             let stripped = Glob::new(stripped_pat)
                 .map_err(|e| format!("invalid glob pattern '{}': {}", p, e))?
                 .compile_matcher();
+            let base = Glob::new(&wrapped[..index.unwrap_or(wrapped.len())])
+                .map_err(|e| format!("invalid glob pattern '{}': {}", p, e))?
+                .compile_matcher();
             Ok(SignalPattern {
                 full,
                 stripped,
-                element,
+                base,
+                select,
                 scope: scope.to_string(),
             })
         })
