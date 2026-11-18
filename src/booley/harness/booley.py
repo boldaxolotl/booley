@@ -1485,12 +1485,16 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     raw = list(getattr(args, "exec_cmd", []) or [])
     if raw and raw[0] == "--":
         raw = raw[1:]
-    return sr.enter(
-        project_root,
-        raw or None,
-        tty=sys.stdin.isatty() and sys.stdout.isatty(),
-        cwd=getattr(args, "_session_cwd", None),
-    )
+    try:
+        return sr.enter(
+            project_root,
+            raw or None,
+            tty=sys.stdin.isatty() and sys.stdout.isatty(),
+            cwd=getattr(args, "_session_cwd", None),
+        )
+    except KeyboardInterrupt:
+        print("interrupted; session enter cancelled", file=sys.stderr)
+        raise _CancelledRun from None
 
 
 def _warn_standalone_jobs(sandbox: Sandbox | None) -> None:
@@ -1775,7 +1779,7 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
 
 
 class _CancelledRun(KeyboardInterrupt):
-    """A Ctrl-C the Standalone Job runner already recorded as cancelled and reported."""
+    """A Ctrl-C the command already reported."""
 
 
 def _quiet_keyboard_interrupt(

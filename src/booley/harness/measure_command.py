@@ -20,7 +20,9 @@ rule to follow next (:mod:`booley.measurement.measuring_rules`, #4133).
 Cancellation has three phases. Before any child starts, a signal raises ``KeyboardInterrupt``
 at once: every step cleans up after itself and nothing is stored. While the children run,
 and after, a signal only sets a flag: the scheduler stops the children within its grace
-period and the run is stored as cancelled, never as a Measured one.
+period and the run is stored as cancelled, never as a Measured one. After the run is stored, its
+report is best effort: a failure to build, write or print it is a ``note:`` line on stderr and the
+exit stays 130.
 """
 
 from __future__ import annotations
@@ -33,12 +35,13 @@ import tempfile
 import time
 import traceback
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, NoReturn, TypeVar
 
 from booley.harness.checkout_flow import CheckoutFlowError
 from booley.harness.measure_children import (
@@ -460,25 +463,78 @@ def _measure_commit(
         stored = MeasurementStore(kept).write(run, flow_reports)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    view = run_view(
-        project_root,
-        MeasurementStore(main),
-        stored,
-        commit,
-        base=request.base,
-        target=preflight.scope,
-    )
-    write_markdown_report(view)
+    build_view = _view_builder(project_root, main, stored, commit, request, preflight.scope)
     # A signal while storing leaves a complete run: the exit must agree with what is stored.
     if status is RunStatus.CANCELLED:
-        _print_report(view, request)
-        raise KeyboardInterrupt
+        _report_cancelled(stored.run_id, build_view, request)
+    view = build_view()
+    write_markdown_report(view)
     code = measure_exit_code(
         result.verdict for table in outcome.tables for result in table.run.results
     )
     _publish(hooks, code, view)  # before the print: a server that is gone cannot lose it
     _print_report(view, request)
     return code
+
+
+_T = TypeVar("_T")
+
+
+def _view_builder(
+    project_root: Path,
+    main: Path,
+    stored: StoredRun,
+    commit: str,
+    request: MeasureRequest,
+    target: str | None,
+) -> Callable[[], dict[str, Any]]:
+    """The call that builds the report view of the run just stored."""
+    return partial(
+        run_view,
+        project_root,
+        MeasurementStore(main),
+        stored,
+        commit,
+        base=request.base,
+        target=target,
+    )
+
+
+def _report_cancelled(
+    run_id: str, build_view: Callable[[], dict[str, Any]], request: MeasureRequest
+) -> NoReturn:
+    """Report a cancelled run that is already stored, then end as a Ctrl-C.
+
+    No failure to report may change the exit: the run is stored as cancelled.
+    """
+    view = _best_effort(f"the report of cancelled run {run_id} cannot be built", build_view)
+    if view is not None:
+        _report_view(run_id, view, request)
+    raise KeyboardInterrupt
+
+
+def _report_view(run_id: str, view: dict[str, Any], request: MeasureRequest) -> None:
+    """Write the Markdown report of a cancelled run, then print it; each failure is a note."""
+    _best_effort(
+        f"the Markdown report of cancelled run {run_id} cannot be written",
+        lambda: write_markdown_report(view),
+    )
+    _best_effort(
+        f"the report of cancelled run {run_id} cannot be printed",
+        lambda: _print_report(view, request),
+    )
+
+
+def _best_effort(what: str, step: Callable[[], _T]) -> _T | None:
+    """Return ``step()``; on a failure print ``note: <what>: <reason>`` and return ``None``."""
+    try:
+        return step()
+    except Exception as exc:  # noqa: BLE001 - the run is stored: a report failure must not replace exit 130
+        reason = " ".join(str(exc).split()) or type(exc).__name__
+        # A closed terminal must not turn the note into the failure that replaces exit 130.
+        with suppress(OSError):
+            print(f"note: {what}: {reason}", file=sys.stderr)
+        return None
 
 
 def _flow_reports(outcome: ChildrenOutcome) -> list[FlowReport]:
