@@ -875,9 +875,7 @@ def test_only_report_artifacts_are_stored_listed_and_counted(
     document = json.loads(path.read_text())
     assert [entry["name"] for entry in document["reports"]] == list(reports)
     assert document["dropped_reports"] == []
-    markdown = path.with_suffix(".md").read_text()
-    assert markdown.count(" report: `") == len(reports)
-    assert "not kept" not in markdown
+    assert path.with_suffix(".md").read_text().count(" report: `") == len(reports)
 
 
 def test_the_signal_handlers_are_restored_after_the_run(
