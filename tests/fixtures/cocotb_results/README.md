@@ -101,3 +101,55 @@ docker run --rm --network none --hostname cocotb-results \
 
 No substitutions were applied: the file is the emitted bytes (two lines, no
 trailing newline; no timestamp, path, or hostname appears in it).
+
+## Skip samples
+
+`2.1.0/results-skip-unfiltered.xml` and `2.1.0/results-skip-filtered.xml`, with
+their run logs `2.1.0/skip-unfiltered.log` and `2.1.0/skip-filtered.log`, show
+how Cocotb 2.1.0 reports a skip. Every `<testcase>` carries the same fixed
+`<skipped message="Test was skipped" />`; the cause and the user's message
+appear only in the log line `skipping <module>.<name>`.
+
+Captured on 18 NOV 2026 from `skip_cases.py`, `capture.sv`, and `Makefile`:
+
+- `test_runtime_skip`: `pytest.skip("feature not present in this
+  configuration")`, logged as
+  `skipping skip_cases.test_runtime_skip: <message>`.
+- `test_runtime_skip_bare`: `pytest.skip()`, logged with an empty message.
+- `test_runtime_skip_multiline`: a message of three lines (the first empty);
+  Cocotb writes the later lines with no prefix, indented to the column where
+  `skipping` starts.
+- `test_decorator_skip`: `@cocotb.test(skip=True)`, logged as
+  `skipping skip_cases.test_decorator_skip (4/4)`. Only the unfiltered run
+  skips it: with `COCOTB_TEST_FILTER` set Cocotb runs a selected decorated test.
+
+The unfiltered run is Cocotb's regression mode (`TESTS=4 PASS=0 FAIL=0 SKIP=4`);
+the filtered run uses the filter Booley builds for the three runtime-skip
+tests (`TESTS=3 PASS=0 FAIL=0 SKIP=3`), shown in the command below. Both exit 0.
+
+- Cocotb **2.1.0**, verified with `cocotb-config --version`.
+- Local Sandbox Image `booley-sandbox:latest`, image ID
+  `sha256:434acae01dbc78416c762555f08842e3e96e547e86eaa2ed3b1682ce56d1ad0b`.
+
+```sh
+capture_dir=$(mktemp -d)
+docker run --rm --network none --hostname cocotb-results \
+  --user "$(id -u):$(id -g)" --entrypoint sh \
+  --mount type=bind,src="$PWD/tests/fixtures/cocotb_results",dst=/source,readonly \
+  --mount type=bind,src="$capture_dir",dst=/capture \
+  booley-sandbox:latest -c '
+    cp /source/skip_cases.py /source/capture.sv /source/Makefile /capture/ &&
+    cd /capture &&
+    test "$(cocotb-config --version)" = 2.1.0 &&
+    COCOTB_RANDOM_SEED=1 make COCOTB_TEST_MODULES=skip_cases \
+      > skip-unfiltered.log 2>&1;
+    mv results.xml results-skip-unfiltered.xml &&
+    COCOTB_RANDOM_SEED=1 make COCOTB_TEST_MODULES=skip_cases \
+      "COCOTB_TEST_FILTER='\''^skip_cases\.(test_runtime_skip|test_runtime_skip_bare|test_runtime_skip_multiline)\$$'\''" \
+      > skip-filtered.log 2>&1;
+    mv results.xml results-skip-filtered.xml'
+```
+
+No substitutions were applied: the files are the emitted bytes. The suite
+timestamp, the `/capture/...` file property, and the wall-clock ratio column
+differ per capture, and no test reads them.

@@ -76,6 +76,7 @@ from booley.flows.sim.backends.cocotb_results import (
     TIMEOUT_ACTIVE_DETAIL,
     VERDICT_PASS,
     CocotbResults,
+    attach_skip_causes,
     compact_results,
     decode_results_payload,
     find_import_failure,
@@ -651,7 +652,7 @@ def _load_cocotb_results(
         parse_results_xml(results_file), output, timed_out, tests
     )
     if results.state == STATE_OK:
-        return results
+        return attach_skip_causes(results, output)
     detail = find_import_failure(output) or find_sim_time_stall(output)
     return replace(results, detail=detail) if detail else results
 

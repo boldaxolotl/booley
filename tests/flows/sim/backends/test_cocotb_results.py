@@ -211,6 +211,32 @@ class TestParseResultsXml:
         assert len(res.tests[0].failure_text) <= 500
 
 
+class TestAttachSkipCauses:
+    def _skipped(self, *names: str) -> cr.CocotbResults:
+        return cr.CocotbResults(
+            state=cr.STATE_OK, tests=tuple(cr.CocotbTest(n, "m", "skipped") for n in names)
+        )
+
+    def test_exact_name_match_keeps_a_prefix_name_from_taking_the_line(self):
+        log = "1.00ns INFO     cocotb.regression       skipping m.t_extra: other\n"
+        assert cr.attach_skip_causes(self._skipped("t"), log) == self._skipped("t")
+
+    def test_a_message_ends_at_the_next_timestamped_line(self):
+        log = (
+            "1.00ns INFO     cocotb.regression       skipping m.t: first\n"
+            "                                        second\n"
+            "2.00ns INFO     cocotb.regression       running m.u (2/2)\n"
+            "                                        not part of it\n"
+        )
+        (test,) = cr.attach_skip_causes(self._skipped("t"), log).tests
+        assert (test.skip_cause, test.skip_message) == ("runtime", "first\nsecond")
+
+    def test_a_decorator_skip_line_has_no_message(self):
+        log = "1.00ns INFO     cocotb.regression       skipping m.t (1/2)\n"
+        (test,) = cr.attach_skip_causes(self._skipped("t"), log).tests
+        assert (test.skip_cause, test.skip_message) == ("decorator", "")
+
+
 class TestReconcile:
     def _ok(self) -> cr.CocotbResults:
         return cr.parse_results_xml(_RESULTS_XML)
@@ -228,7 +254,8 @@ class TestReconcile:
         assert verdicts[1][2] == (
             "AssertionError: deliberate failure: compatibility sample\nassert 1 == 0"
         )
-        assert "skipped" in verdicts[2][2]
+        # The XML alone names no cause: the detail says so instead of guessing.
+        assert verdicts[2][2] == "reported skipped by cocotb; the run log names no skip reason"
 
     def test_absent_expected_name_is_inconclusive_with_actionable_message(self):
         # decision 7: a tests.toml name with no matching @cocotb.test never
@@ -398,9 +425,20 @@ class TestResultsLineRoundTrip:
         assert "\n" not in detail and "\x1b" not in detail
         assert "more" in detail and "cocotb_results.json" in detail
 
-    def test_round_trip_preserves_everything(self):
-        res = cr.parse_results_xml(_RESULTS_XML)
+    @pytest.mark.parametrize("skip_capture", [False, True], ids=["mixed", "skip-causes"])
+    def test_round_trip_preserves_everything(self, skip_capture):
+        if skip_capture:
+            fixtures = _RESULTS_XML.parent
+            res = cr.attach_skip_causes(
+                cr.parse_results_xml(fixtures / "results-skip-unfiltered.xml"),
+                (fixtures / "skip-unfiltered.log").read_text(encoding="utf-8"),
+            )
+            assert {t.skip_cause for t in res.tests} == {"runtime", "decorator"}
+        else:
+            res = cr.parse_results_xml(_RESULTS_XML)
         payload = cr.results_payload(res)
+        # Persisted-format contract: readers reject any version but 1 and 2.
+        assert payload["version"] == 2
         assert cr.decode_results_payload(payload) == res
         line = cr.format_results_line(payload)
         assert line.startswith(cr.COCOTB_RESULTS_PREFIX)
@@ -425,6 +463,11 @@ class TestResultsLineRoundTrip:
             '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":-1}]}',
             '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":1e999}]}',
             '{"state":7,"tests":[]}',
+            '{"version":3,"tests":[]}',
+            '{"version":"2","tests":[]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"skipped","skip_cause":"x"}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"skipped",'
+            '"skip_cause":"runtime","skip_message":7}]}',
             '{"state":"unknown","tests":[]}',
             '{"detail":{},"tests":[]}',
             '{"skipped_unselected":true,"tests":[]}',

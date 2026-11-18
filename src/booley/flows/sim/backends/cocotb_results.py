@@ -25,7 +25,12 @@ Empirical XML states this parser is frozen against (spike S4, cocotb 2.0.1 and 2
   :func:`_failure_message` rather than one hard-coded attribute (F-36);
 * skipped — ``<skipped/>`` child, a ``skip=True`` test on both versions; cocotb
   2.0.1 also lists every test excluded by ``COCOTB_TEST_FILTER`` this way (a
-  zero-match filter there gives a file where *every* test is skipped);
+  zero-match filter there gives a file where *every* test is skipped). cocotb
+  2.1 writes the fixed message ``Test was skipped`` for every skip; the cause
+  and the user's message come from the run log (:func:`attach_skip_causes`):
+  ``skipping <module>.<name>: <message>`` for a runtime skip and
+  ``skipping <module>.<name> (<n>/<total>)`` for a decorator skip, which a
+  filtered 2.1 run never produces because cocotb runs selected decorated tests;
 * empty — no ``<testcase>``; cocotb 2.1 omits excluded tests, so a filter
   matching nothing writes ``<testsuites name="cocotb tests" />`` at rc=0;
 * absent — a ``tests.toml`` ID not reported by cocotb never appears in the XML
@@ -82,6 +87,13 @@ COCOTB_RESULTS_PREFIX = "[COCOTB_RESULTS] "
 # exception must not blow the [COCOTB_RESULTS] line (full text survives in
 # run.log next to result.json).
 _MAX_FAILURE_CHARS = 500
+
+RESULTS_PAYLOAD_VERSION: Final = 2
+"""Version the encoder writes. Bump it when a reader must reject the new shape;
+version 2 only adds skip keys, which a reader of version 1 ignores."""
+
+_SUPPORTED_PAYLOAD_VERSIONS: Final = frozenset({1, RESULTS_PAYLOAD_VERSION})
+_SKIP_CAUSES: Final = frozenset({"", "runtime", "decorator"})
 
 # Keep absent-ID details below the record's 1536-character tail and 2048-byte
 # canonical JSON detail limits, including escaping when the detail is serialized.
@@ -157,6 +169,13 @@ class CocotbTest:
     status: str
     """``"pass"`` / ``"fail"`` / ``"skipped"`` / ``"not_run"`` — the raw state, before
     selected-set reconciliation (a *selected* skipped test is inconclusive)."""
+
+    skip_cause: str = ""
+    """``"runtime"`` (the test skipped itself), ``"decorator"``, or ``""`` when the
+    run log named no cause. Only a skipped test carries one."""
+
+    skip_message: str = ""
+    """The message of a runtime skip (``""`` for a bare skip or a decorator skip)."""
 
     failure_text: str = ""
     """``error_type: error_msg`` from the ``<failure>`` child, "" otherwise."""
@@ -359,6 +378,59 @@ def _parse_testcase(el: ElementTree.Element) -> CocotbTest:
     )
 
 
+def _skip_log_entry(lines: Sequence[str], test: CocotbTest) -> tuple[str, str] | None:
+    """The ``(cause, message)`` cocotb logged when it skipped *test*, if any."""
+    key = re.escape(f"{test.module}.{test.name}")
+    pattern = re.compile(
+        rf"^(?P<head>.*?cocotb\.regression\s+)skipping {key}"
+        r"(?:(?P<runtime>:) ?(?P<msg>.*)| \(\d+/\d+\))"
+    )
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+        if match is None:
+            continue
+        if match.group("runtime") is None:
+            return "decorator", ""
+        indent = " " * len(match.group("head"))
+        parts = [match.group("msg")]
+        for follower in lines[index + 1 :]:
+            if not follower.startswith(indent):
+                break
+            parts.append(follower[len(indent) :])
+        return "runtime", "\n".join(parts).strip()[:_MAX_FAILURE_CHARS]
+    return None
+
+
+def attach_skip_causes(results: CocotbResults, output: str) -> CocotbResults:
+    """Add the skip cause and message the run log names to each skipped test.
+
+    cocotb 2.1 writes a fixed message for every skip, so the cause comes from the
+    ``cocotb.regression  skipping <module>.<name>`` log line. A multiline message
+    continues on following lines indented to the column where ``skipping`` starts.
+    A skipped test with no such line is returned unchanged.
+    """
+    lines = output.splitlines()
+    tests: list[CocotbTest] = []
+    for test in results.tests:
+        entry = _skip_log_entry(lines, test) if test.status == "skipped" else None
+        if entry is None:
+            tests.append(test)
+        else:
+            tests.append(replace(test, skip_cause=entry[0], skip_message=entry[1]))
+    return replace(results, tests=tuple(tests))
+
+
+def _skip_detail(test: CocotbTest) -> str:
+    """The inconclusive detail for a selected test cocotb reported as skipped."""
+    if test.skip_cause == "decorator":
+        return "skipped by its decorator (skip=True or cocotb.skipif)"
+    if test.skip_cause == "runtime":
+        if test.skip_message:
+            return f"skipped at runtime: {test.skip_message}"
+        return "skipped at runtime without a reason"
+    return "reported skipped by cocotb; the run log names no skip reason"
+
+
 def _status_for_name(results: CocotbResults, name: str) -> CocotbTest | None:
     """The verdict-bearing entry for *name* (fail > pass > skipped).
 
@@ -438,8 +510,8 @@ def reconcile(
     * other non-OK file state → every test inconclusive, carrying the state detail;
     * name absent from the XML → inconclusive with reported IDs and a
       correction hint (typo'd, undecorated, or generating function base name);
-    * present but ``skipped`` → inconclusive (the filter Booley built did not
-      actually select it — a filter/name mismatch, never a pass);
+    * present but ``skipped`` → inconclusive with the skip cause and message the
+      run log named (:func:`attach_skip_causes`), never a pass;
     * fail → fail with the cocotb failure text;
     * pass → pass.
 
@@ -460,14 +532,7 @@ def reconcile(
         elif entry.status == VERDICT_FAIL:
             out.append((name, VERDICT_FAIL, entry.failure_text))
         elif entry.status == "skipped":
-            out.append(
-                (
-                    name,
-                    VERDICT_INCONCLUSIVE,
-                    "selected but reported skipped by cocotb — the test filter "
-                    "did not match it (name/filter mismatch)",
-                )
-            )
+            out.append((name, VERDICT_INCONCLUSIVE, _skip_detail(entry)))
         elif entry.status == "not_run":
             out.append((name, VERDICT_INCONCLUSIVE, TIMEOUT_NOT_RUN_DETAIL))
         else:
@@ -505,21 +570,27 @@ def compact_results(results: CocotbResults, selected: Sequence[str]) -> CocotbRe
     )
 
 
+def _encode_test(test: CocotbTest) -> dict[str, object]:
+    encoded: dict[str, object] = {
+        "name": test.name,
+        "module": test.module,
+        "status": test.status,
+        "failure": test.failure_text,
+        "elapsed_s": test.elapsed_s,
+    }
+    if test.skip_cause:
+        encoded["skip_cause"] = test.skip_cause
+        encoded["skip_message"] = test.skip_message
+    return encoded
+
+
 def results_payload(results: CocotbResults) -> dict[str, object]:
     """Encode *results* as the JSON-ready transport payload."""
     payload: dict[str, object] = {
+        "version": RESULTS_PAYLOAD_VERSION,
         "state": results.state,
         "detail": results.detail,
-        "tests": [
-            {
-                "name": t.name,
-                "module": t.module,
-                "status": t.status,
-                "failure": t.failure_text,
-                "elapsed_s": t.elapsed_s,
-            }
-            for t in results.tests
-        ],
+        "tests": [_encode_test(t) for t in results.tests],
         "skipped_unselected": results.skipped_unselected,
     }
     if results.reported_names:
@@ -549,12 +620,17 @@ def _transport_test(raw_test: object) -> CocotbTest:
     elapsed_s = require_finite_number(test.get("elapsed_s", 0), field="elapsed_s")
     if elapsed_s < 0:
         raise BoundaryError(f"elapsed_s must be non-negative, got {elapsed_s!r}")
+    skip_cause = _transport_string(test, "skip_cause")
+    if skip_cause not in _SKIP_CAUSES:
+        raise BoundaryError(f"unknown skip_cause: {skip_cause!r}")
     return CocotbTest(
         name=_transport_string(test, "name"),
         module=_transport_string(test, "module"),
         status=status,
         failure_text=_transport_string(test, "failure"),
         elapsed_s=elapsed_s,
+        skip_cause=skip_cause,
+        skip_message=_transport_string(test, "skip_message"),
     )
 
 
@@ -562,9 +638,14 @@ def decode_results_payload(raw_payload: object) -> CocotbResults:
     """Validate and decode an encoded results payload; the one payload decoder.
 
     Raises :class:`BoundaryError` for any payload :func:`results_payload` could
-    not have produced (wrong types, unknown state or status, non-finite time).
+    not have produced (wrong types, unknown state or status, non-finite time, a
+    ``version`` other than 1 or 2). A missing ``version`` is 1: a payload from a
+    release that did not record skip causes.
     """
     payload = cast(dict[str, object], require_dict(raw_payload, field="COCOTB_RESULTS"))
+    version = require_int(payload.get("version", 1), field="version")
+    if version not in _SUPPORTED_PAYLOAD_VERSIONS:
+        raise BoundaryError(f"unsupported cocotb results payload version: {version}")
     state = _transport_string(payload, "state", default=STATE_UNPARSEABLE)
     if state not in _RESULT_STATES:
         raise BoundaryError(f"unknown results state: {state!r}")
