@@ -249,7 +249,7 @@ _CHANGES = {
     # Init appends to .gitignore and writes untracked state on every run.
     "init-owned": {".gitignore": "goals/*/\n", ".managed/project-git-hooks.pyz": ""},
     # Init records the agent choice when the published file leaves it open.
-    "agent-choice": {"booley.toml": CONFIGURED_TOML + '[agent]\ndefault = "claude"\n'},
+    "agent-choice": {"booley.toml": CONFIGURED_TOML + '[agent]\ndefault="claude"\nauth="api"\n'},
     # Reports and notes from ordinary use are not setup changes.
     "setup-notes": {"SETUP-NOTES.md": "x\n"},
     "edit-toml": {"booley.toml": CONFIGURED_TOML + "\n[flows.formal]\n"},
@@ -323,6 +323,7 @@ def test_configured_project_send_off_routes_through_doctor(
         def gone(*_args: object, **_kwargs: object) -> None:
             raise OSError("Booley Directory is gone")
 
+        # private: no public route makes the stamp read raise; init must survive it.
         monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp_advisory", gone)
 
     off = send_off()
