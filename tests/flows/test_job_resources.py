@@ -429,6 +429,36 @@ def test_fresh_kill_log_of_the_command_is_a_kill_sign(tmp_path):
     assert not killed()
 
 
+def test_a_run_log_the_command_wrote_makes_its_failure_an_own_kill(flow, tmp_path, monkeypatch):
+    # Vivado writes bash's kill report to runme.log, not to the command's streams.
+    _oom_counter(monkeypatch, iter([0, 1]), iter([0, 0]))
+    log = tmp_path / "runme.log"
+    writes_log = (
+        f"open({str(log)!r}, 'w').write('rdiArgs.sh: line 57: 77 Killed \"$RDI_PROG\"\\n');"
+        "raise SystemExit(1)"
+    )
+
+    with job_resources.resource_phase("test", "fpga_impl", kill_logs=(log,)):
+        result = _execute(flow, _python(writes_log))
+
+    assert result.oom_killed and result.host_oom_kill
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "host_oom_kill"
+
+
+def test_a_stale_run_log_does_not_blame_the_next_command(flow, tmp_path, monkeypatch):
+    _oom_counter(monkeypatch, iter([0, 1]), iter([0, 0]))
+    log = tmp_path / "runme.log"
+    log.write_text('rdiArgs.sh: line 57: 77 Killed "$RDI_PROG"\n', encoding="utf-8", newline="\n")
+    long_ago = time.time() - 3600
+    os.utime(log, (long_ago, long_ago))
+
+    with job_resources.resource_phase("test", "fpga_impl", kill_logs=(log,)):
+        result = _execute(flow, _python("raise SystemExit(1)"))
+
+    assert not result.oom_killed
+
+
 @posix_only
 def test_unreadable_counter_or_timeout_is_never_oom_killed(flow, monkeypatch):
     # An unreadable counter proves nothing, even for a command that killed itself.

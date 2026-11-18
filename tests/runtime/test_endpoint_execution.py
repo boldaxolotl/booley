@@ -468,10 +468,38 @@ def test_host_oom_kill_of_a_work_item_is_named_and_not_requeued() -> None:
 
     assert result.outcome.report_text == (
         "Killed for host out-of-memory: the host ran out of memory while the Sandbox stayed "
-        "within its [sandbox].memory limit, so work item alpha, work item beta is not retried. "
+        "within its [sandbox].memory limit, so work item alpha, work item beta are not retried. "
         "Free memory on the host, or lower [sandbox].memory and recreate the Sandbox, "
         "then run it again.\nverdict"
     )
+
+
+def test_a_host_kill_vetoes_the_requeue_of_a_limit_kill_in_the_same_attempt() -> None:
+    from booley.runtime.endpoint_execution import (
+        job_attempt,
+        job_stopped_after_oom,
+        note_job_oom_kill,
+        work_item_attempt_requeues,
+    )
+
+    def host_then_limit() -> EndpointOutcome:
+        note_job_oom_kill(host=True)
+        note_job_oom_kill()
+        # The host's pressure stays, so the attempt neither stops nor requeues.
+        assert not job_stopped_after_oom()
+        with job_attempt(stop_on_oom=True, work_item=True):
+            note_job_oom_kill(host=True)
+            note_job_oom_kill()
+            assert not work_item_attempt_requeues(passed=False)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text="attempt 1 verdict")
+
+    endpoint = _RequeueEndpoint(host_then_limit, _final_success)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events.count("invoke") == 1
+    assert result.outcome.report_text == f"{_HOST_JOB_LINE}\nattempt 1 verdict"
+    assert "oom_requeue" not in result.outcome.detail
 
 
 def test_a_host_kill_the_job_survived_adds_no_line() -> None:

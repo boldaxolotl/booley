@@ -278,6 +278,15 @@ def note_final_work_item_oom_kill(name: str, *, passed: bool, raised: bool = Fal
         attempt.parent.final_item_kills.append(name)
 
 
+def _limit_killed(attempt: _JobAttempt) -> bool:
+    """Whether *attempt* has a Sandbox-limit kill to requeue.
+
+    A host kill anywhere in the attempt vetoes it: the host's pressure stays,
+    so a rerun cannot help, whatever other command hit the limit.
+    """
+    return attempt.oom_killed.is_set() and not attempt.host_oom_killed.is_set()
+
+
 def job_stopped_after_oom() -> bool:
     """Whether the current attempt must start no more commands.
 
@@ -287,7 +296,7 @@ def job_stopped_after_oom() -> bool:
     """
     attempt = _JOB_ATTEMPT.get()
     while attempt is not None:
-        if attempt.stop_on_oom and attempt.oom_killed.is_set():
+        if attempt.stop_on_oom and _limit_killed(attempt):
             attempt.stopped.set()
             return True
         attempt = attempt.parent
@@ -305,7 +314,7 @@ def work_item_attempt_requeues(*, passed: bool) -> bool:
     attempt = _JOB_ATTEMPT.get()
     if attempt is None or not attempt.work_item or not attempt.stop_on_oom:
         return False
-    return attempt.oom_killed.is_set() and (not passed or attempt.stopped.is_set())
+    return _limit_killed(attempt) and (not passed or attempt.stopped.is_set())
 
 
 def _name_requeue(outcome: EndpointOutcome, *, started_again: bool) -> None:
@@ -355,9 +364,10 @@ def _host_killed(outcome: EndpointOutcome, attempt: _JobAttempt) -> list[str]:
 
 def _host_oom_line(names: list[str]) -> str:
     subjects = ", ".join(name if name == "the Job" else f"work item {name}" for name in names)
+    verb = "is" if len(names) == 1 else "are"
     return (
         f"{HOST_OOM_KILL_NOTE}: the host ran out of memory while the Sandbox stayed within its "
-        f"[sandbox].memory limit, so {subjects} is not retried. Free memory on the host, "
+        f"[sandbox].memory limit, so {subjects} {verb} not retried. Free memory on the host, "
         "or lower [sandbox].memory and recreate the Sandbox, then run it again."
     )
 
@@ -368,7 +378,7 @@ def _killed_for_oom(outcome: EndpointOutcome, attempt: _JobAttempt) -> bool:
     A cancelled Job is never requeued. A Job that succeeded is requeued only
     when the kill made it skip a command, because its result then misses work.
     """
-    if not attempt.oom_killed.is_set() or outcome.exit_code == EXIT_CANCELLED:
+    if not _limit_killed(attempt) or outcome.exit_code == EXIT_CANCELLED:
         return False
     return outcome.exit_code != EXIT_SUCCESS or attempt.stopped.is_set()
 
