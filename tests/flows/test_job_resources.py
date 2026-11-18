@@ -324,6 +324,8 @@ def test_swapped_job_records_peak_swap_and_its_next_estimate_includes_it(
     # Private seam: the host /proc sample; the test fixes what the kernel would report.
     monkeypatch.setattr(job_resources, "process_tree", tree)
     monkeypatch.setattr(job_resources, "tmpdir_in_memory", lambda _path: False)
+    # Windows has no os.sysconf; the sampled CPU ticks need the clock rate.
+    monkeypatch.setattr(os, "sysconf", lambda _name: 100, raising=False)
 
     assert run(_python("pass")).returncode == 0
 
