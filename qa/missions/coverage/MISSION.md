@@ -114,13 +114,24 @@ Try:
   harness, window keys in `[flows.sim]`, per-call window override.
 - Runtime hook faults (collection invalid): missing/duplicate start, missing/duplicate write, write before
   start, unwritable output file (run as the non-root runtime user, mode 0400).
-- Native faults via `sim_custom` tests `native-missing`, `native-malformed`, `native-incompatible`
-  (rc2, sim truth kept; `COV_RAW_FILE_STALE` and `COV_RAW_FILE_UNSAFE` are not exercised here); merged-file tamper via a
-  `verilator_coverage` PATH wrapper;
+- Native faults via `sim_custom` tests `native-missing`, `native-unsafe`
+  (`COV_RAW_FILE_UNSAFE`), `native-malformed`, `native-incompatible` (rc2, sim
+  truth kept; `COV_RAW_FILE_STALE` is not exercised here); merged-file tamper
+  and an unsafe merge output (`COV_NATIVE_MERGE_UNSAFE`, no merged artifact
+  kept) via a `verilator_coverage` PATH wrapper (RUNBOOK.md "Native and input
+  corruption recipes");
   first Target fails collection → second still runs, rc2; pre-sim edit of `rtl/coverage_dut.sv` or
   `coverage.core` after planning → drift rejected.
+- `booley coverage uncovered <t>/coverage.json` on the quarter, half and full
+  `sim_toggle` records lists exactly the toggle points `expected.json` leaves
+  unhit (none for full), sorted by source, line and metric; `--metric` and
+  `--source` filter by exact match; waived (area 4) and unscored (area 3)
+  points are never listed; a record whose collection failed lists with a
+  WARNING that it is not a coverage result. The nested manifest, a Target name
+  or `latest` → exit 2 with the `coverage.json` hint.
 Look for: averaged per-test percentages, reset-inflated counts, float rounding, stale or tampered data
-accepted, a zero that looks like "blocked".
+accepted, a zero that looks like "blocked", an uncovered list that disagrees
+with the measured numbers.
 Depends on: baseline.native, baseline.custom.
 
 ### 3. cov-metrics — Coverage bounds: exact verdicts, `error`s and eligibility (~55 min)
@@ -183,10 +194,20 @@ Try:
   the point store and recompute totals; `sim_multi` source rollups group by source path, not instance, for
   line/branch/expression/toggle. `sim_scale`: valid, compact sim response (pointer only); note
   bytes/time/RSS.
-- Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
-  (Target reference; manifest faults rebind it, point faults leave it unchanged), then run the Analyst CLI on that reference → rejected before
-  the model: v1, v2, v3, v4, missing points, truncated gzip, trailing data, symlink, invalid final record,
-  duplicate point, wrong evaluation (forged pass), resource ceiling (over-ceiling decompression).
+- Corrupt copies with
+  `../../shared/coverage/faults/record.py <mode> <copy>/coverage.json --owned <root>`
+  (Target reference; manifest faults rebind it, point faults leave it
+  unchanged), then run the Analyst CLI on that reference → rejected before the
+  model: v1, v2, v3, v4, v5, missing points, truncated gzip, trailing data,
+  symlink, invalid final record, duplicate point, wrong evaluation (forged
+  pass), resource ceiling (over-ceiling decompression).
+- Older Booley (#3684): `older-layout` (0.4.0's `campaign/` Record
+  directory) and `v5` (0.4.0's `booley.coverage-campaign/v5`) copies → the
+  Analyst CLI, `booley coverage uncovered` and `booley flow sim --resume-from`
+  on the copy's Manifest each say an older Booley wrote it and is no longer
+  supported, name the Simulation invocation directory to delete, and never call
+  it corrupt. When the 0.4.0 wheel is at hand, a real 0.4.0 `--coverage` run in
+  a separate disposable Project beats the copies.
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage-record/coverage.json`, `rename
   …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
