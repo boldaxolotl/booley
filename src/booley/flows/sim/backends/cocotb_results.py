@@ -170,18 +170,18 @@ class CocotbTest:
     """``"pass"`` / ``"fail"`` / ``"skipped"`` / ``"not_run"`` — the raw state, before
     selected-set reconciliation (a *selected* skipped test is inconclusive)."""
 
+    failure_text: str = ""
+    """``error_type: error_msg`` from the ``<failure>`` child, "" otherwise."""
+
+    elapsed_s: float = 0.0
+    """Wall-clock seconds cocotb reports for the test (the ``time`` attribute)."""
+
     skip_cause: str = ""
     """``"runtime"`` (the test skipped itself), ``"decorator"``, or ``""`` when the
     run log named no cause. Only a skipped test carries one."""
 
     skip_message: str = ""
     """The message of a runtime skip (``""`` for a bare skip or a decorator skip)."""
-
-    failure_text: str = ""
-    """``error_type: error_msg`` from the ``<failure>`` child, "" otherwise."""
-
-    elapsed_s: float = 0.0
-    """Wall-clock seconds cocotb reports for the test (the ``time`` attribute)."""
 
 
 @dataclass(frozen=True)
