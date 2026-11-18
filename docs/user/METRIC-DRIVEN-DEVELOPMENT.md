@@ -236,9 +236,9 @@ the work is accepted:
     stored", and a cancelled run shows its status.
 
 Failing rows come first, and the metric table follows. A simulation or
-coverage table with failing tests also lists up to 20 of them, each with the
-first line of its failure, and the path of the Flow's report with the full
-results.
+coverage table with failing tests lists them, and an unmet lint or mutation
+bound lists the lint findings or survived Mutants behind it, each with the path
+of the Flow's report holding the full results.
 
 Tracked metrics that errored or were not evaluated are counted after the
 enforced total, not in it, as in

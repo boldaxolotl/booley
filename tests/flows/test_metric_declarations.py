@@ -145,7 +145,7 @@ def _coverage_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     """Lint values of one Target with a warning and an error."""
-    from booley.flows.lint.flow import LintConfigResult, count_lint_errors, parse_warnings
+    from booley.flows.lint.flow import LintConfigResult, lint_error_findings, parse_warnings
 
     output = (
         "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
@@ -154,7 +154,7 @@ def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     return LintConfigResult(
         target="lite",
         warnings=parse_warnings(output, "lite"),
-        error_count=count_lint_errors(output, "verilator"),
+        error_findings=lint_error_findings(output, "verilator"),
     ).flow_metrics()
 
 
@@ -162,7 +162,7 @@ def _mutation_values() -> Any:
     """Mutation values of a run that scored four valid Mutants and detected three."""
     from booley.flows.mutation.metrics import mutation_metric_values
 
-    return mutation_metric_values(3, 1)
+    return mutation_metric_values(3, ["MUT-1 negate a.v:4: 'a' -> 'b'"])
 
 
 # Flows with no report reader of their own: ``coverage`` has no Flow, the ``sim`` reader serves it.
