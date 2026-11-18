@@ -10,13 +10,18 @@ import argparse
 import os
 import time
 
+import pytest
+
+from booley.harness import booley as cli
 from booley.harness import chat_cmd, worktree_cmd
 from booley.harness.worktree_rm import remove_worktree
+from booley.runtime import booley_dir
 from booley.runtime.worktree_usage import last_used
 from tests.harness.test_chat_checkout import (  # noqa: F401  (fixtures)
     _inline_claude_launch,
     _start,
     _worktrees,
+    _write_toml,
     project,
 )
 from tests.harness.test_chat_exit import (  # noqa: F401  (fixtures)
@@ -80,3 +85,16 @@ def test_interrupted_forced_removal_hints_force(repo, terminal, monkeypatch, cap
     assert capsys.readouterr().err.endswith(
         "Removal interrupted; run booley worktree rm s1 --force to finish it.\n"
     )
+
+
+@pytest.mark.parametrize("retired", ["[jobs]\nmax_heavy = 2\n", "[goals]\nquiet_after = 60\n"])
+def test_chat_opens_while_booley_toml_is_retired(project, monkeypatch, retired):  # noqa: F811
+    # Bug caught: the retired-config refusal also refused the chat that runs /booley-heal.
+    _write_toml(project, retired)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    booley_dir.reset_cache()
+    execs: list[list[str]] = []
+    monkeypatch.setattr(chat_cmd.os, "execvp", lambda _exe, argv: execs.append(argv) or 0)
+    monkeypatch.setattr("sys.argv", ["booley", "chat"])
+    cli.main()  # a real execvp never returns
+    assert execs == [["S1", "-n", "S1"]]

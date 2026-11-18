@@ -44,7 +44,7 @@ def test_project_commands_refuse_retired_jobs_keys(
         assert "max_heavy (line 5: memory admission replaced it)" in err, argv
         assert "heavy_memory (line 6: memory admission replaced it)" in err, argv
         assert "delete these lines" in err, argv
-        assert "booley-heal" in err, argv
+        assert "type /booley-heal in a Developer Agent chat" in err, argv
 
 
 def test_queue_max_is_refused_with_its_own_reason(
@@ -73,17 +73,20 @@ def test_max_light_is_refused_with_its_own_reason(
     assert "booley-heal" in err
 
 
-def test_doctor_and_upgrade_are_not_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_heal_route_is_not_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _project(tmp_path / "proj")
     reached: list[str] = []
     monkeypatch.setattr(
         cli, "_dispatch_selected", lambda _args, command, *_rest: reached.append(command) or 0
     )
-    for argv in (("doctor",), ("upgrade", "status", "--json")):
+    for argv in (
+        ("doctor",),
+        ("upgrade", "status", "--json"),
+        ("session", "enter", "--", "true"),
+        ("session", "prepare"),
+    ):
         assert _run(root, monkeypatch, *argv) == 0, argv
-    assert reached == ["doctor", "upgrade"]
+    assert reached == ["doctor", "upgrade", "session", "session"]
 
 
 def test_a_linked_worktree_copy_is_not_read(
