@@ -40,6 +40,8 @@
   --diff-add: #d9ebe4;     /* listing: added or highlighted line */
   --diff-del: #f6e1dc;     /* listing: removed line */
   --hatch: #cfe3da;        /* AN-001 "hunting" segment stripes */
+  --review: #2f5d8a;       /* Features diagrams: the Reviewer path, 6.9:1 on paper */
+  --fault: #b8402c;        /* Features diagrams: risk and blocked exits, 5.5:1 on paper */
   --shadow: rgb(0 0 0 / 0.18);
   /* AN-001 data series: one palette for both themes, so a colour keeps its
      meaning. Labels on dark series use --series-on-dark, on light series
@@ -75,6 +77,8 @@
   --diff-add: #173229;
   --diff-del: #3a201b;
   --hatch: #1f4236;
+  --review: #8db6e0;       /* 8.6:1 on paper */
+  --fault: #ef8b77;        /* 7.5:1 on paper */
   --shadow: rgb(0 0 0 / 0.5);
 }
 * { box-sizing: border-box; }
@@ -135,13 +139,18 @@ p { margin: 0 0 14px; }
 .front .desc p { max-width: 62ch; }
 .front .order { margin-top: 70px; }
 
-/* ---- Features: two columns, one heading + paragraph per feature ---- */
-/* Two independent stacks, so each item sits a fixed gap below the one above. */
-.feat { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; align-items: start; }
-.feat__col > div + div { margin-top: 24px; }
-.feat h3 { margin: 6px 0 8px; padding-left: 18px; position: relative; }
+/* ---- Features: three rows, text left, its diagram right ----
+   Two equal columns: about 500px for the diagram at full page width, and the
+   text keeps half the row on narrower screens. Diagram styles: features.css.
+   Below 860px the diagram stacks under the text. */
+.feat__card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 48px; align-items: center;
+  padding: 26px 0; border-top: 1px solid var(--rule-soft); }
+.feat__card:first-child { border-top: 0; padding-top: 4px; }
+.feat__card:last-child { padding-bottom: 0; }
+.feat h3 { margin: 0 0 10px; padding-left: 18px; position: relative; }
 .feat h3::before { content: ""; position: absolute; left: 2px; top: 0.4em; width: 7px; height: 7px; background: var(--mask); }
-.feat p { font-size: 16.5px; margin: 0; }
+.feat p { font-size: 16.5px; margin: 0 0 12px; }
+.feat p:last-child { margin-bottom: 0; }
 
 /* ordering information box */
 .order { border: 1px solid var(--rule); margin: 18px 0 0; font-family: var(--sans); }
@@ -283,9 +292,10 @@ td.st { white-space: nowrap; }
   .theme { order: 1; margin-left: auto; width: 44px; height: 44px; }
   .hdr nav { order: 2; }
   .mast { grid-template-columns: 1fr; padding-top: 28px; }
-  .front, .feat, .an { grid-template-columns: 1fr; }
+  .front, .feat__card, .an { grid-template-columns: 1fr; }
   .front .order { margin-top: 18px; }
-  .feat__col + .feat__col { margin-top: 24px; }
+  .feat__card { gap: 20px 0; }
+  .feat__fig { max-width: 500px; }
     .an__fig { border-left: 0; border-top: 1px solid var(--rule); }
   .foot__in { grid-template-columns: 1fr 1fr; gap: 12px 24px; }
   h2.sec { margin-top: 40px; }
