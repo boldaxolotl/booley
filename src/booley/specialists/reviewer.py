@@ -53,7 +53,7 @@ from booley.evidence.review_vocabulary import (
     STATUS_STILL_OPEN,
     STATUS_WAIVED,
 )
-from booley.flows.cli_help import CliHelp
+from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -1125,10 +1125,14 @@ class ReviewerSpecialist(Specialist):
             action="append",
             default=None,
             metavar=("FINDING_ID", "REASON"),
-            help=(
+            help=SurfaceHelp(
                 "Propose waiving the open finding FINDING_ID for REASON, only with --recheck; "
                 "repeatable. The Reviewer may refuse a waiver. Over MCP, pass [finding ID, "
-                "reason] pairs."
+                "reason] pairs.",
+                cli=(
+                    "Propose waiving the open finding FINDING_ID for REASON, only with "
+                    "--recheck; repeatable. The Reviewer may refuse a waiver."
+                ),
             ),
         )
 
@@ -2690,7 +2694,7 @@ object, even after calling the capability.
             lines.append("ACCEPTED WAIVERS (user-visible):")
             lines.extend(
                 f"  [{row['severity'].upper()}] {row['file']}:{row['line']} — {row['summary']} "
-                f"(ID: {row['finding_id']}) — reason: {row.get('justification', '')}"
+                f"(ID: {row['finding_id']}) — reason: {row['justification']}"
                 for row in accepted
             )
         counts = Counter(row["status"] for row in judged)

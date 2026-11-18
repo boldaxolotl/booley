@@ -169,7 +169,7 @@ _WAIVER_RULES = (
 )
 
 
-def recheck_system_prompt(category: str, focus: str, *, waivers: bool = False) -> str:
+def recheck_system_prompt(category: str, focus: str, *, waivers: bool) -> str:
     """The system prompt: judge each listed finding, never report a new one."""
     label = "RTL" if category == "rtl" else "testbench"
     return (
@@ -207,7 +207,7 @@ def recheck_prompt(
     recheck: RecheckInput,
     spec_section: str,
     work_dir: Path,
-    proposals: Mapping[str, str] | None = None,
+    proposals: Mapping[str, str],
 ) -> str:
     """The user prompt: scope, specification, the open findings and the output schema."""
     present, removed = existing_scope(recheck, work_dir)
@@ -221,7 +221,7 @@ def recheck_prompt(
     if spec_section:
         sections.extend(["", spec_section])
     sections.extend(["", "## Findings to re-check", ""])
-    waivers = proposals or {}
+    waivers = proposals
     sections.extend(f"{_finding_block(row, waivers)}\n" for row in recheck.open_findings)
     verdicts = '"fixed" | "still_open" | "cant_tell"'
     extra = ""
@@ -278,14 +278,14 @@ def judge_verdicts(
     entries: list[Any],
     open_findings: list[dict[str, Any]],
     work_dir: Path,
-    proposals: Mapping[str, str] | None = None,
+    proposals: Mapping[str, str],
 ) -> tuple[dict[str, Verdict], list[dict[str, Any]]]:
     """One verdict per open finding, and the audit rows of every entry dropped or demoted.
 
     A ``waived`` verdict stands only for a finding with a waiver proposal; for any other it is
     ``still_open``.
     """
-    proposed = proposals or {}
+    proposed = proposals
     open_ids = {row["finding_id"] for row in open_findings}
     verdicts: dict[str, Verdict] = {}
     audit: list[dict[str, Any]] = []
@@ -317,13 +317,13 @@ def judge_verdicts(
 def rechecked_records(
     recheck: RecheckInput,
     verdicts: dict[str, Verdict],
-    proposals: Mapping[str, str] | None = None,
+    proposals: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Every input record in input order; an open one takes its verdict, the rest are unchanged.
 
     An accepted waiver also carries the user's reason and the Reviewer's ruling.
     """
-    reasons = proposals or {}
+    reasons = proposals
     records: list[dict[str, Any]] = []
     for row in recheck.findings:
         record = dict(row)

@@ -79,12 +79,10 @@ findings, so run one only when you want fresh findings.
 To leave a finding as it is on purpose, propose a waiver with the re-check:
 *"Re-check the review's findings and waive finding `<ID>` because
 `<reason>`."* The Reviewer accepts or refuses each proposal. An accepted
-waiver marks the finding `waived`: `--fail-on` does not count it, the report
+waiver marks the finding `waived`: it does not fail a gated run, the report
 lists it under `ACCEPTED WAIVERS` with your reason, and later re-checks keep it
-waived without judging it again. A refused waiver leaves the finding judged as
+waived. A refused waiver leaves the finding judged as
 `fixed`, `still open` or `can't tell`, and the report says why it was refused.
-A proposal for a finding that is not open, one made twice, or one without a
-reason is refused before the Reviewer runs.
 
 ### Reviewing only a change
 
