@@ -27,7 +27,6 @@ map of the docs; each topic below is one `bwave docs show <topic>` away.
 ## Troubleshooting
 
 - `troubleshooting/empty-results`: query returned nothing.
-- `troubleshooting/radix-pitfalls`: hex/decimal mismatch.
 - `troubleshooting/clock-detection`: wrong clock picked.
 
 `bwave docs topics` lists every topic and `bwave docs search <text>`

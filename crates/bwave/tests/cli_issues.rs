@@ -5218,3 +5218,179 @@ fn issue_4703_underscores_are_ignored_in_every_command() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+// -- Issue 4698: warn on value literals that cannot fit ---------------
+
+/// Warnings of a `--format json` run (exit 0), plus its stdout.
+fn issue_4698_json(args: &[&str]) -> (serde_json::Value, Vec<String>) {
+    let mut full = args.to_vec();
+    full.extend(["--format", "json"]);
+    let (out, err, code) = run(&full);
+    assert_eq!(code, 0, "{args:?}: {err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let warnings = json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect();
+    (json, warnings)
+}
+
+#[test]
+fn issue_4698_oversized_literals_warn_in_every_command() {
+    let (dir, fst) = issue_4703_store("4698-every");
+    let p = fst.to_str().unwrap();
+    for (lit, both) in [("8'd300", true), ("'h1FF", false)] {
+        let expected = if both {
+            format!(
+                "{lit} needs 9 bits, more than its 8-bit width, and never matches tb.data (8-bit)"
+            )
+        } else {
+            format!("{lit} needs 9 bits and never matches tb.data (8-bit)")
+        };
+        for (name, (_, err, code)) in issue_4703_runs(p, lit) {
+            assert_eq!(code, 0, "{name} {lit}: {err}");
+            let lead = if name == "--virtual" {
+                format!(
+                    "# WARNING: virtual 'v': tb.data == {lit} never matches: {lit} needs 9 bits"
+                )
+            } else {
+                format!("# WARNING: {lit} needs 9 bits")
+            };
+            assert!(err.contains(&lead), "{name} {lit}: {err}");
+            assert!(
+                err.lines()
+                    .filter(|line| line.starts_with("# WARNING"))
+                    .all(|line| !line.contains("12C")),
+                "{name} {lit}: {err}"
+            );
+        }
+        let (_, find) = issue_4698_json(&["find", p, "data", lit, "--async"]);
+        assert_eq!(find, vec![expected.clone()]);
+        let (_, dist) =
+            issue_4698_json(&["distance", p, "data", lit, "--to", "data", "'hF", "--async"]);
+        assert!(dist.contains(&expected), "{dist:?}");
+        let def = format!("v = *data == {lit}");
+        let (_, virt) = issue_4698_json(&["find", p, "v", "'h1", "--virtual", &def, "--async"]);
+        assert_eq!(virt.len(), 1, "{virt:?}");
+        assert!(
+            virt[0].starts_with(&format!(
+                "virtual 'v': tb.data == {lit} never matches: {lit} needs 9 bits"
+            )),
+            "{virt:?}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4698_literal_over_its_own_prefix_warns_and_still_matches() {
+    let (dir, fst) = issue_4703_store("4698-prefix");
+    let p = fst.to_str().unwrap();
+    let expected = "1'd255 needs 8 bits, more than its 1-bit width; it is compared untruncated";
+    let (json, warnings) = issue_4698_json(&["find", p, "hi", "1'd255", "--async", "--count"]);
+    assert_eq!(json["data"]["count"], 1, "{json}");
+    assert_eq!(warnings, vec![expected.to_string()]);
+    let (json, warnings) = issue_4698_json(&[
+        "find",
+        p,
+        "v",
+        "'h1",
+        "--virtual",
+        "v = *hi == 1'd255",
+        "--async",
+        "--count",
+    ]);
+    assert_eq!(json["data"]["count"], 1, "{json}");
+    assert_eq!(warnings, vec![format!("virtual 'v': {expected}")]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4698_one_warning_lists_only_signals_the_literal_cannot_fit() {
+    let fst = build_bwave("small_clocked.vcd", "4698_multi");
+    let p = fst.to_str().unwrap();
+    let (_, warnings) = issue_4698_json(&["find", p, "*a*", "'h1F"]);
+    assert_eq!(
+        warnings,
+        vec!["'h1F needs 5 bits and never matches tb.dut.enable (1-bit), tb.dut.flag (1-bit), tb.dut.state[3:0] (4-bit)".to_string()]
+    );
+    let _ = std::fs::remove_file(fst);
+
+    let (dir, fst) = issue_4703_store("4698-multi");
+    let p = fst.to_str().unwrap();
+    let (_, warnings) =
+        issue_4698_json(&["find", p, "v", "'h1FF", "--virtual", "v = *data", "--async"]);
+    assert_eq!(
+        warnings,
+        vec!["'h1FF needs 9 bits and never matches v (1-bit)".to_string()]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4698_virtual_comparison_with_oversized_literal_states_its_result() {
+    let (dir, fst) = issue_4703_store("4698-virtual");
+    let p = fst.to_str().unwrap();
+    let base = "needs 9 bits and tb.data is 8-bit";
+    for (op, claim, ones, zeros) in [
+        ("==", "never matches", 0, 1),
+        ("!=", "is always true", 1, 0),
+        (">", "is always false", 0, 1),
+        (">=", "is always false", 0, 1),
+        (
+            "<",
+            "is always true, except while tb.data has X or Z bits",
+            1,
+            1,
+        ),
+        (
+            "<=",
+            "is always true, except while tb.data has X or Z bits",
+            1,
+            1,
+        ),
+    ] {
+        let def = format!("v = *data {op} 'h1FF");
+        let expected = format!("virtual 'v': tb.data {op} 'h1FF {claim}: 'h1FF {base}");
+        for (value, count) in [("'h1", ones), ("'h0", zeros)] {
+            let (json, warnings) = issue_4698_json(&[
+                "find",
+                p,
+                "v",
+                value,
+                "--virtual",
+                &def,
+                "--async",
+                "--count",
+            ]);
+            assert_eq!(warnings, vec![expected.clone()], "{op}");
+            assert_eq!(json["data"]["count"], count, "{op} {value}: {json}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4698_wide_prefix_literal_that_fits_matches_without_warning() {
+    let fst = build_bwave("small_clocked.vcd", "4698_fits");
+    let p = fst.to_str().unwrap();
+    let (json, warnings) = issue_4698_json(&["find", p, "flag", "8'd1", "--count"]);
+    assert_eq!(json["data"]["count"], 22, "{json}");
+    assert!(warnings.iter().all(|w| !w.contains("8'd1")), "{warnings:?}");
+    let _ = std::fs::remove_file(fst);
+}
+
+#[test]
+fn issue_4698_hex_literal_of_ones_and_zeros_compares_as_hex() {
+    let fst = build_bwave("small_clocked.vcd", "4698_hex");
+    let p = fst.to_str().unwrap();
+    let (json, warnings) = issue_4698_json(&["find", p, "addr", "'h100", "--count"]);
+    assert_eq!(json["data"]["count"], 0, "{json}");
+    assert_eq!(
+        warnings,
+        vec!["'h100 needs 9 bits and never matches tb.dut.addr[7:0] (8-bit)".to_string()]
+    );
+    let _ = std::fs::remove_file(fst);
+}
