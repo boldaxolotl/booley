@@ -1540,9 +1540,11 @@ def test_checkout_flow_refuses_when_the_preflight_cannot_resolve(
     use_fusesoc(monkeypatch)
     world = make_world(files={"probe.core": PROBE_CORE.format(files="missing.v")})
 
-    with pytest.raises(CheckoutFlowError, match=r"could not resolve Target probe"):
+    with pytest.raises(CheckoutFlowError, match=r"could not resolve Target probe") as refused:
         run_checkout_flow(world.request("probe"))
 
+    assert "missing.v" in str(refused.value)
+    assert "only through the post-setup hook" in str(refused.value)
     assert_refused_before_any_run(world)
 
 

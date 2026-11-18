@@ -292,6 +292,28 @@ def test_a_preflight_refusal_exits_two_and_stores_nothing(
     assert "checkout run refused: unsafe path" in job_log(project)
 
 
+def test_a_failing_post_setup_hook_refuses_with_its_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    hook = tmp_path / "proj" / ".booley" / "hooks" / "post-setup.py"
+    hook.parent.mkdir(parents=True)
+    hook.write_bytes(b"import sys\nprint('hook-output')\nsys.exit(3)\n")
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"))
+
+    assert run_command(monkeypatch, project) == 2
+
+    run_id = job_record(project).run_id
+    log = standalone_log_root(project / ".booley") / run_id / "post-setup.log"
+    err = capsys.readouterr().err
+    assert ".booley/hooks/post-setup.py" in err.replace("\\", "/")
+    assert f"post-setup hook failed (rc=3); log: {log}" in err
+    assert "hook-output" in log.read_text(encoding="utf-8")
+    assert steps == []
+    assert not (project / ".booley" / "measurements").exists()
+    assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
+
+
 def test_a_first_child_that_cannot_launch_is_a_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -14,6 +14,10 @@ with HEAD, falling back to upstream only without a recorded base. A detached
 paired HEAD uses its checked-out commit; explicit pins use their exact commit.
 That preserves the baseline revision's Target definitions and recipe instead of
 mirroring the live contents of the Booley Directory into both comparisons.
+
+The Project's post-setup hook runs in the finished checkout, so an input the Project
+builds (and the git-excluded checkout lacks) exists there; a failing hook fails the
+baseline.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.flows.terminal_progress import announce_unit
@@ -38,6 +43,7 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.runtime.project_gitignore import is_project_transient_path
+from booley.runtime.project_prepare import find_post_setup_hook, prepare_project
 from booley.runtime.project_repositories import (
     is_standalone_git_repository,
     paired_project_repository,
@@ -97,13 +103,35 @@ def baseline_worktree(
             paired_project or PairedProjectBaseline.standalone(),
         )
         _materialize_baseline_submodules(project_root, wt_dir, ref)
-        if paired_baseline is None:
-            _mirror_booley_directory(project_root, wt_dir, ref)
+        dangling = (
+            _mirror_booley_directory(project_root, wt_dir, ref) if paired_baseline is None else []
+        )
         _copy_root_quarantine_marker(project_root, wt_dir)
+        _run_post_setup(wt_dir, ref)
+        _refuse_dangling_links(dangling, wt_dir, ref)
         prepare_core_library_plan(wt_dir)
         yield wt_dir
     finally:
         _cleanup_baseline_worktree(project_root, wt_dir, paired_baseline)
+
+
+def _run_post_setup(wt_dir: Path, ref: str) -> None:
+    """Run the Project's post-setup hook in the baseline checkout, as ``booley worktree new`` does."""
+    hook = find_post_setup_hook(wt_dir)
+    if hook is None:
+        return
+    try:
+        result = prepare_project(
+            wt_dir, wt_dir, slug=wt_dir.name, sim_flow_enabled=flow_enabled("sim", wt_dir)
+        )
+    except FlowConfigError as exc:
+        raise BaselineWorktreeError(
+            f"cannot read the Flow settings of the baseline checkout of {ref!r}: {exc}"
+        ) from exc
+    if not result.ok:
+        raise BaselineWorktreeError(
+            f"{result.error} (hook {hook.name}) in the baseline checkout of {ref!r}"
+        )
 
 
 def baseline_worktree_path(project_root: Path, ref: str) -> Path:
@@ -293,7 +321,7 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
         shutil.copy2(marker, wt_dir / marker.name)
 
 
-def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None:
+def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> list[Path]:
     """Mirror the checkout's own Booley Directory's authored files into the worktree.
 
     ``.booley/`` is git-excluded, so a fresh ``git worktree add`` checkout
@@ -328,6 +356,9 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     relative path resolves inside the worktree, i.e. against the baseline
     ref's RTL.
 
+    Returns the resolution links whose target is missing from the checkout, for
+    :func:`_refuse_dangling_links` to check once the post-setup hook has run.
+
     Raises :class:`BaselineWorktreeError` on copy failure: a partial copy
     would produce silently-wrong baseline metrics, the one thing delta mode
     exists to prevent.
@@ -347,7 +378,7 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
         and in_checkout_booley_dir(project_root) == project_root / BOOLEY_DIR_NAME
     )
     if not (src / "cores").is_dir() and resolved_without_copy and walk_up_finds_it:
-        return
+        return []
     try:
         for relative in _authored_booley_paths(src):
             _copy_entry(src / relative, dst / relative)
@@ -356,12 +387,19 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
         raise BaselineWorktreeError(
             f"copying Booley Directory {src} into baseline worktree failed: {exc}"
         ) from exc
+    return [dst / relative for relative in missing]
+
+
+def _refuse_dangling_links(links: list[Path], wt_dir: Path, ref: str) -> None:
+    """Refuse the baseline when a resolution link's target is still missing after the hook."""
+    missing = [str(link.relative_to(wt_dir)) for link in links if not link.exists()]
     if missing:
         raise BaselineWorktreeError(
             f"baseline ref {ref!r} has no source for stealth-core resolution "
             f"link(s) {', '.join(missing)}: the target exists in the working tree "
             "but not in the checkout, so the baseline cannot be built from that "
-            "ref. Commit the target paths, or pick a ref that contains them."
+            "ref. Commit the target paths, build them in the post-setup hook, or "
+            "pick a ref that contains them."
         )
 
 

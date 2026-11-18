@@ -1,7 +1,8 @@
 """``booley measure [<sha>]``: measure one commit in a clean checkout and store the run (#3953).
 
 The command composes the measurement building blocks: it exports the commit, reads the
-checkout's own ``metrics.toml``, preflights and runs one child Flow per rules table inside
+checkout's own ``metrics.toml``, runs the Project's post-setup hook there (an input the Project
+builds is not in the export), preflights and runs one child Flow per rules table inside
 the admission queue (:mod:`booley.harness.measure_children`), stores the Measurement Run in
 the Main Booley Directory, writes the Markdown report and prints the report. A commit that is
 already Measured is not measured again: its stored run is shown, unless ``--again`` is given. The run is a
@@ -40,7 +41,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from booley.harness.checkout_flow import CheckoutFlowError
+from booley.harness.checkout_flow import CheckoutFlowError, run_post_setup_hook
 from booley.harness.measure_children import (
     ChildrenOutcome,
     PreparedChild,
@@ -284,6 +285,9 @@ def _preflight(
 ) -> _Preflight:
     """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child."""
     try:
+        run_post_setup_hook(
+            checkout, main, slug=run_id, log=standalone_log_root(main) / run_id / "post-setup.log"
+        )
         catalog = TargetCatalog.build(checkout)
         scope = None
         if target is not None:
