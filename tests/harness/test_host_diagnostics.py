@@ -22,6 +22,7 @@ from booley.runtime import (
 )
 from booley.runtime.host_install import HostInstallationIdentity
 from booley.runtime.private_store import session_store_repair
+from tests.host_shell_support import split_host_command
 
 
 def _identity() -> HostInstallationIdentity:
@@ -376,7 +377,7 @@ def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
     monkeypatch.setattr(inventory, "_authority_grants", lambda: (grant,))
     seeded = tmp_path / "seeded-worktree"
     seeded.mkdir()
-    deleted = [str(tmp_path / "gone-a"), str(tmp_path / "gone-b")]
+    deleted = [str(tmp_path / "it's gone"), str(tmp_path / "gone-b")]
     stamps = session_issuance.stamp_store()
     for root in (remembered, remembered_gone, granted_gone, str(seeded), *deleted):
         stamps.write(root, json.dumps({"project_root": root}))
@@ -389,8 +390,9 @@ def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
     warning = warnings[0]
     assert warning.severity is Severity.WARN
     assert warning.message.startswith("2 ")
-    for root in deleted:
-        assert f"booley projects forget --purge {root}" in warning.fix
+    assert [split_host_command(command) for command in warning.fix.split("; ")] == [
+        ["booley", "projects", "forget", "--purge", root] for root in sorted(deleted)
+    ]
     for kept in (remembered, remembered_gone, granted_gone, str(seeded)):
         assert kept not in warning.fix
 

@@ -7,18 +7,22 @@ import json
 import ntpath
 import os
 import posixpath
+import re
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
+from tests.host_shell_support import split_host_command
 
-from booley.core import private_store
+from booley.core import host_shell, private_store
 from booley.runtime import (
     issuance_invalidation,
     session_admission,
     session_issuance,
 )
+from booley.runtime.private_store import session_store_repair
 
 if TYPE_CHECKING:
     from booley.core.private_store import ProjectStore
@@ -99,6 +103,27 @@ def test_store_scan_rejects_symlinked_entry(project: Path, tmp_path: Path) -> No
 
         assert str(link) in str(caught.value)
         link.unlink()
+
+
+@pytest.mark.parametrize(
+    ("os_name", "root"),
+    [("posix", "/work/My Project's root"), ("nt", r"C:\Work\My Project's root")],
+    ids=["posix", "windows"],
+)
+def test_session_store_repair_command_parses_back(
+    monkeypatch: pytest.MonkeyPatch, os_name: str, root: str
+) -> None:
+    # os.name is the host-OS boundary: quote for the named shell on every CI host.
+    monkeypatch.setattr(host_shell, "os", SimpleNamespace(name=os_name))
+
+    message = session_store_repair(Path("store.json"), root)
+
+    match = re.search(r"`([^`]+)`", message)
+    assert match is not None
+    command = split_host_command(match.group(1), windows=os_name == "nt")
+    assert command == ["booley", "init", "--seed", "--project", root], (
+        f"printed command does not parse back: {message}"
+    )
 
 
 def test_store_names_project_root_by_platform_case_rule(monkeypatch: pytest.MonkeyPatch) -> None:

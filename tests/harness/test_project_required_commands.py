@@ -10,6 +10,7 @@ import pytest
 from booley.harness import booley as cli
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.docs_links import SITE_URL
+from tests.host_shell_support import split_host_command
 
 
 def _command_paths(parser, prefix=()):
@@ -343,6 +344,17 @@ def test_explicit_sandbox_commands_still_refuse_host(command, cli_project, monke
         cli.main()
     assert error.value.code == 2
     assert "runs inside the Booley Sandbox" in capsys.readouterr().err
+
+
+def test_sandbox_refusal_quotes_the_arguments(cli_project, tmp_path, monkeypatch, capsys):
+    path = tmp_path / "it's x"
+    monkeypatch.setattr(sys, "argv", ["booley", "chat", str(path)])
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setitem(cli._EARLY_COMMANDS, "chat", _unexpected_runtime_work)
+    with pytest.raises(SystemExit):
+        cli.main()
+    retry = capsys.readouterr().err.split("session enter -- ", 1)[1].splitlines()[0]
+    assert split_host_command(retry) == ["booley", "chat", str(path)]
 
 
 @pytest.mark.parametrize("location", ["plain", "orphan-worktree"])

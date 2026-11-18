@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -12,9 +13,11 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.dev_support.test_profiles import native_test_binary
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 from tests.bwave.session_store_support import isolate_temporary_store, use_store
+from tests.host_shell_support import split_host_command
 from tests.subprocess_budget import run_bounded_child
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -287,9 +290,25 @@ def test_register_dir_names_stray_vcd_dump(tmp_path):
         "VCD dumps here that are not named trace.vcd: sim.vcd\n"
         "Declare the dump in [flows.sim].trace_files and re-run the sim, "
         "or pass the file directly (a raw VCD needs --build to register):\n"
-        f'  bwave register "{dump}" --as ALIAS --build\n'
-        f'  bwave gui "{dump}"'
+        f"  bwave register {quote_arg(str(dump))} --as ALIAS --build\n"
+        f"  bwave gui {quote_arg(str(dump))}"
     )
+
+
+def test_stray_vcd_hint_quotes_a_dollar_and_a_quote(tmp_path):
+    from booley.bwave import cli as bwave
+
+    folder = tmp_path / "it's $HOME"
+    folder.mkdir()
+    dump = folder / "sim.vcd"
+    dump.write_bytes(b"")
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_register(argparse.Namespace(sim_dir=str(folder), alias="dut"))
+    lines = [line.strip() for line in str(exc.value).splitlines() if "bwave " in line]
+    assert [split_host_command(line) for line in lines] == [
+        ["bwave", "register", str(dump), "--as", "ALIAS", "--build"],
+        ["bwave", "gui", str(dump)],
+    ]
 
 
 def test_register_lists_five_stray_vcds_and_counts_the_rest(tmp_path):
@@ -435,10 +454,47 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
     msg = capsys.readouterr().err
     assert "refusing to overwrite" in msg
     assert "--scope" in msg
-    assert f"bwave register {existing}" in msg  # the register-it-as-is way out
+    assert f"bwave register {quote_arg(str(existing))}" in msg  # the register-it-as-is way out
     assert not called, "build ran despite the refusal"
     assert existing.read_bytes() == b"precious-scoped-store"
     assert not sessions.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake bwave binary is a POSIX script")
+@pytest.mark.parametrize("case", ["no-build", "existing-store", "build-failed"])
+def test_raw_vcd_commands_quote_paths(case, tmp_path, monkeypatch, capsys, fake_bwave):
+    """Every `bwave` command the raw-VCD refusals print parses back to literal paths."""
+    from booley.bwave import sessions
+
+    folder = tmp_path / "it's dir"
+    folder.mkdir()
+    trace = folder / "trace.vcd"
+    trace.write_text("$enddefinitions $end\n", encoding="utf-8")
+    store = trace.with_suffix(".fst")
+    if case == "existing-store":
+        store.write_bytes(b"precious")
+    monkeypatch.setenv("FAKE_BWAVE_MODE", "exit_early")
+
+    with pytest.raises(SystemExit) as exc:
+        sessions._resolve_raw_vcd(trace, build=case != "no-build")
+
+    text = str(exc.value) if case == "build-failed" else capsys.readouterr().err
+    commands = [
+        split_host_command(match)
+        for match in re.findall(r"bwave (?:build|register) [^`\n]+", text)
+    ]
+    build = ["bwave", "build", str(trace), "-o", str(store)]
+    register = ["bwave", "register", str(store), "--as", "ALIAS"]
+    expected = {
+        "no-build": [
+            build,
+            register,
+            ["bwave", "register", str(trace), "--as", "ALIAS", "--build"],
+        ],
+        "existing-store": [register, build],
+        "build-failed": [build],
+    }
+    assert commands == expected[case]
 
 
 def test_register_sim_dir_falling_back_to_vcd_shows_why_conversion_failed(

@@ -31,6 +31,7 @@ from booley.audit.diagnostic_results import (
     Findings,
     Severity,
 )
+from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import (
@@ -72,6 +73,7 @@ from tests.docker_cli_guard import (
 )
 from tests.docker_host_support import fake_docker_host
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.host_shell_support import split_host_command
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
@@ -2455,8 +2457,31 @@ def test_worktree_prune_guard(row, tmp_path, monkeypatch):
     else:
         (fail,) = fails
         assert fail.severity is Severity.FAIL
-        assert fail.fix == f"git -C {tmp_path} config gc.worktreePruneExpire never"
+        assert fail.fix == (
+            f"git -C {quote_arg(str(tmp_path))} config gc.worktreePruneExpire never"
+        )
         assert ("'3.months.ago'" in fail.message) is (row == "wrong-value")
+
+
+def test_worktree_prune_guard_fix_quotes_the_repository(tmp_path, monkeypatch):
+    project = tmp_path / "it's a project"
+    project.mkdir()
+    booley_dir = _write_project(project)
+    _patch_environment(monkeypatch, project, booley_dir)
+    _answer_command(monkeypatch, lambda cmd: "gc.worktreePruneExpire" in cmd, returncode=1)
+
+    result = _doctor_run(project)
+
+    (fail,) = [f for f in result.findings if "gc.worktreePruneExpire" in f.message]
+    assert fail.fix is not None
+    assert split_host_command(fail.fix) == [
+        "git",
+        "-C",
+        str(project),
+        "config",
+        "gc.worktreePruneExpire",
+        "never",
+    ]
 
 
 _SHADOW_CORE = "CAPI=2:\nname: ::demo:0\n"

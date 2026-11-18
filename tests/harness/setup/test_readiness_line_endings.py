@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from booley.audit.diagnostic_results import Severity
+from booley.core.host_shell import quote_arg
 from booley.harness.setup import readiness
 from booley.harness.setup.line_endings import (
     LineEndingActionResult,
@@ -18,6 +19,8 @@ from booley.harness.setup.line_endings import (
     RepositoryDiscoveryFailure,
     RepositoryLineEndingReport,
 )
+from tests.host_shell_support import split_host_command
+from tests.subprocess_budget import run_bounded_child
 
 Code = LineEndingObservationCode
 _ROLE = "project-checkout"
@@ -193,7 +196,7 @@ def test_line_ending_findings_keep_exact_text(
         (
             severity,
             message.format(id=identity),
-            fix.format(root=tmp_path),
+            fix.format(root=quote_arg(str(tmp_path))),
             check_id,
             subject,
         )
@@ -224,4 +227,25 @@ def test_discovery_failure_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             _UNREADABLE,
             "project-data",
         )
+    ]
+
+
+def test_autocrlf_fix_quotes_the_repository_root(tmp_path: Path) -> None:
+    root = tmp_path / "it's a root"
+    root.mkdir()
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
+
+    findings = readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root)).findings
+
+    (risk,) = [f for f in findings if f.check_id == "git.autocrlf-risk"]
+    assert risk.fix is not None
+    command = risk.fix.split("   (or re-run", 1)[0]
+    assert split_host_command(command) == [
+        "git",
+        "-C",
+        str(root),
+        "config",
+        "--local",
+        "core.autocrlf",
+        "false",
     ]

@@ -19,6 +19,7 @@ from booley.projects import inventory
 from booley.runtime import project_worktree_pairing
 from tests.diagnostic_helpers import _Rec
 from tests.flows.test_baseline_worktree import _init_repo, _paired_checkout_without_upstream
+from tests.host_shell_support import split_host_command
 from tests.test_guidance_links import _make_project
 
 
@@ -116,13 +117,16 @@ def test_missing_booley_directory_prevents_agent_selection_write(tmp_path, capsy
 
 
 def test_inventory_failure_retains_actionable_retry(tmp_path, monkeypatch, capsys):
-    ctx = InitContext(project_root=tmp_path)
+    root = tmp_path / "it's a root"
+    root.mkdir()
+    ctx = InitContext(project_root=root)
     monkeypatch.setattr(
         init_cmd, "remember_project", Mock(side_effect=inventory.ProjectInventoryError("denied"))
     )
     init_cmd._step_project_inventory(ctx)
     assert ctx.results[-1].status == "err"
-    assert "booley projects discover" in ctx.results[-1].detail
+    command = ctx.results[-1].detail.split("`")[1]
+    assert split_host_command(command) == ["booley", "projects", "discover", str(root)]
     assert "could not remember Project Root" in capsys.readouterr().out
 
 

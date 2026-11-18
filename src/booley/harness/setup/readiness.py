@@ -21,6 +21,7 @@ from booley.audit import agent_schema, config_common, configs_schema, flow_schem
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig, parse_eda_config
 from booley.core.config_paths import resolve_toml
+from booley.core.host_shell import quote_arg
 from booley.fusesoc import core_projection, fusesoc_registry
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.harness.bootstrap import RELATIVE_WORKTREE_MIN_GIT_VERSION, parse_git_version
@@ -226,7 +227,7 @@ def _report_autocrlf_risk(
         message = "core.autocrlf is not set locally — the effective value is false today, but a global config change can re-create CRLF checkouts"
     report.warn(
         f"{identity}: {message}",
-        f"git -C {repository.repository.root} config --local core.autocrlf false   (or re-run {runtime_context.booley_init_hint(code=True)})",
+        f"git -C {quote_arg(str(repository.repository.root))} config --local core.autocrlf false   (or re-run {runtime_context.booley_init_hint(code=True)})",
         check_id="git.autocrlf-risk",
         subject=repository.repository.role,
     )
