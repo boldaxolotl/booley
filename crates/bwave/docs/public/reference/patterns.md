@@ -38,23 +38,20 @@ character class. `mem[0-3]` is still a class.
 
 ## Bit ranges and indexes
 
-A trailing `[N]` or `[M:N]` selects by name first: `dmem_wr[0]` is the
-array element `dmem_wr[0]`, and `counter[7:0]` is the signal listed under
-that name.
-
-On a vector, a range selects those bits. With an 8-bit `qa.data`,
-`-s "qa.data[5:4]"` is a 2-bit signal named `qa.data[5:4]`, and
+Select some bits of a vector with a trailing `[N]` or `[M:N]`. With an 8-bit
+`qa.data`, `-s "qa.data[5:4]"` is a 2-bit signal named `qa.data[5:4]`, and
 `find "qa.data[5:4]" "2'b11"` compares only those bits. `qa.data[3]` is bit
 3, and `[7:0]` is the whole signal. Bits are numbered from 0, or by the
 vector's own range: `[3:2]` on `addr[31:2]` is its two lowest bits.
 
+A stored name wins: `dmem_wr[0]` is the array element `dmem_wr[0]`, and
+`counter[7:0]` is the signal listed under that name.
+
 - A range outside the vector, or reversed (`[4:5]`), exits 2 and names the
-  vector's width. A glob slices every vector it matches, so a vector too
-  narrow for the range is the same error.
-- A partial range on an ascending vector (`v[0:3]`) exits 2.
-- Radix suffixes work: `-s "qa.data[5:4]%b"`.
+  vector's width. A glob slices every vector it matches.
+- A partial range of a vector declared low-to-high, such as `v[1:0]` on
+  `v[0:3]`, exits 2.
 - `--clock`, `--reset` and `bwave gui` take whole signals, so a slice exits 2.
-- `--virtual` has its own bit-slice grammar.
 
 ## Display radix suffix
 

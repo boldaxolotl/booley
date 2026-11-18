@@ -97,7 +97,7 @@ impl SignalPattern {
     }
 
     /// Whether the signal `name` (of `width` bits, when known) is selected
-    /// whole. A `slice_row` is a derived bit-slice row, matched only by a
+    /// whole. A `slice_row` is a bit-slice row, matched only by a
     /// pattern that carries a select. A select that covers every bit of a
     /// vector selects the whole signal; a partial one selects a slice instead.
     pub fn selects(&self, name: &str, width: Option<u32>, slice_row: bool) -> bool {
@@ -233,12 +233,25 @@ pub fn compile_patterns(patterns: &[String], scope: &str) -> Result<Vec<SignalPa
     patterns
         .iter()
         .map(|p| {
-            let wrapped = auto_wrap_pattern(p);
+            let mut wrapped = auto_wrap_pattern(p);
             // A trailing Verilog index is compiled as a literal; the stripped
             // matcher below covers only a simulator that dumped the whole
             // vector under its plain base name.
             let index = index_suffix_start(&wrapped);
-            let select = index.and_then(|open| parse_select(&wrapped[open + 1..wrapped.len() - 1]));
+            // The select is rewritten without leading zeros, as slice rows
+            // and stored names spell it.
+            let select = match index {
+                Some(open) => {
+                    let inner = &wrapped[open + 1..wrapped.len() - 1];
+                    let select = parse_select(inner).ok_or_else(|| {
+                        format!("invalid bit select '[{inner}]' in '{p}': use [N] or [M:N]")
+                    })?;
+                    wrapped.truncate(open);
+                    wrapped.push_str(&select.text());
+                    Some(select)
+                }
+                None => None,
+            };
             let orig_pat = match index {
                 Some(open) => escape_index_bracket(&wrapped, open),
                 None => wrapped.clone(),

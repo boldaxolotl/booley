@@ -91,7 +91,7 @@ pub struct CachedSignal {
     /// Alias-group key (the FST handle index): aliases of the same
     /// underlying signal share it, and queries dedup alias groups by it.
     pub group_id: u64,
-    /// Set for a derived bit-slice row (`add_slices`): what it reads.
+    /// Set for a bit-slice row (`add_slices`): what it reads.
     pub slice: Option<crate::slice::SliceOf>,
 }
 

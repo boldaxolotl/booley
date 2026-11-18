@@ -1452,15 +1452,21 @@ fn bit_range_pattern_selects_the_slice() {
         rows.contains("7 data[3] 1") && rows.contains("8 data[3] 0"),
         "{rows}"
     );
-    for whole in ["qa.data[7:0]", "qa.addr[15:8]"] {
+    for (whole, value) in [("qa.data[7:0]", "33"), ("qa.addr[15:8]", "A5")] {
         let (out, _, _) = sig(whole);
-        assert!(out.contains("33") || out.contains("A5"), "{whole}: {out}");
+        assert!(out.contains(value), "{whole}: {out}");
         assert!(
             !out.contains("[7:0]") && !out.contains("data["),
             "{whole}: {out}"
         );
     }
     assert!(sig("qa.addr[11:8]").0.contains("addr[11:8] 5"));
+    // Leading zeros name the same slice.
+    assert_eq!(sig("qa.data[05:04]").0, sig("qa.data[5:4]").0);
+    let (out, _, _) = run(&["signal", &b, "-s", "qa.data[5:4]", "--format", "json"]);
+    assert!(out.contains("\"name\": \"data[5:4]\""), "{out}");
+    let (out, _, _) = run(&["wave", &b, "-s", "qa.data[5:4]", "-t", "0:9"]);
+    assert!(out.contains("data[5:4]  0  0  0  0  3  3  3"), "{out}");
     let (out, _, _) = run(&[
         "wave",
         &b,
@@ -1491,12 +1497,18 @@ fn bit_range_pattern_in_every_option() {
     let br = build_bwave("test_bit_range.vcd", "bit_range_opts");
     let b = br.to_string_lossy();
     let ok: [(&[&str], &str); 7] = [
-        (&["value", "--at", "5", "-s", "qa.data[5:4]"], "= 3"),
+        (
+            &["value", "--at", "5", "-s", "qa.data[5:4]"],
+            "data[5:4]                                = 3\n",
+        ),
         (
             &["sample", "qa.data[5:4]", "2'b11", "-s", "qa.data[3]"],
             "data[3] 0",
         ),
-        (&["diff", "1", "4", "-s", "qa.data[5:4]"], "3"),
+        (
+            &["diff", "1", "4", "-s", "qa.data[5:4]"],
+            "@1=0            @4=3\n",
+        ),
         (
             &[
                 "distance",
@@ -1506,7 +1518,7 @@ fn bit_range_pattern_in_every_option() {
                 "qa.data[3]",
                 "1'b1",
             ],
-            "3",
+            "@ 4 -> @ 7  d=3",
         ),
         (
             &["stats", "-s", "qa.data[5:4]", "--format", "json"],
@@ -1522,7 +1534,12 @@ fn bit_range_pattern_in_every_option() {
         assert_eq!(code, 0, "{args:?}: {err}");
         assert!(out.contains(want), "{args:?}: {out}");
     }
-    let bad: [(&[&str], &str); 10] = [
+    let bad: [(&[&str], &str); 12] = [
+        (
+            &["signal", "-s", "qa.data[4294967296:0]"],
+            "invalid bit select",
+        ),
+        (&["signal", "-s", "qa.data[5::4]"], "invalid bit select"),
         (&["signal", "-s", "qa.data[9:8]"], "8 bits"),
         (&["signal", "-s", "qa.data[4:5]"], "8 bits"),
         (&["signal", "-s", "qa.addr[7:0]"], "[15:8]"),
@@ -1548,6 +1565,7 @@ fn bit_range_pattern_in_every_option() {
     let (dir, fst) = issue_1108_store("slice-alias");
     let f = fst.to_string_lossy();
     let count = |p: &str| run(&["find", &f, p, "change", "--async", "--count"]).0;
+    assert!(count("tb.a[0]").contains(char::is_numeric));
     assert_eq!(count("tb.a*[0]"), count("tb.a[0]"));
     let _ = std::fs::remove_dir_all(dir);
 }

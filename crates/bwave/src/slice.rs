@@ -1,6 +1,6 @@
 //! Bit slices of stored vectors: `-s "qa.data[5:4]"` selects bits 5..4.
 //!
-//! A slice is a derived row appended after the stored signals; it reads its
+//! A slice is a row appended after the stored signals; it reads its
 //! source signal and maps every value through `format::slice_value`.
 
 use crate::cache::CachedSignal;
@@ -52,10 +52,6 @@ pub fn plan(
     let Some(select) = pattern.select() else {
         return Ok(Vec::new());
     };
-    // A stored element (`dmem_wr[0]`) is what `[N]` names when one exists.
-    if select.single && signals.iter().any(|s| pattern.names_exactly(&s.name)) {
-        return Ok(Vec::new());
-    }
     let mut rows = Vec::new();
     for (source, signal) in signals
         .iter()
@@ -66,13 +62,19 @@ pub fn plan(
             continue;
         };
         let (name, width) = (&signal.name, signal.width);
+        // A stored element (`dmem_wr[0]`) is what `[N]` names when one exists.
+        let element = format!("{base}{}", select.text());
+        if select.single && signals.iter().any(|s| s.name == element) {
+            continue;
+        }
         let (msb, lsb) = (select.msb, select.lsb);
         let Bits::Descending(high, low) = bits_of(name, width) else {
             return Err(format!(
                 "'{text}': '{name}' has an ascending range; only its whole range can be selected"
             ));
         };
-        let range = format!("{width} bits wide ([{high}:{low}])");
+        let bits = if width == 1 { "bit" } else { "bits" };
+        let range = format!("{width} {bits} wide ([{high}:{low}])");
         if msb < lsb {
             return Err(format!(
                 "'{text}' has a reversed range [{msb}:{lsb}]; '{base}' is {range}"
@@ -80,7 +82,8 @@ pub fn plan(
         }
         if lsb < low || msb > high {
             return Err(format!(
-                "'{text}' selects bits [{msb}:{lsb}] of '{base}', which is {range}"
+                "'{text}' selects {} of '{base}', which is {range}",
+                select.text()
             ));
         }
         if signal.var_type == "real" || signal.var_type == "realtime" {
@@ -101,7 +104,7 @@ pub fn plan(
 }
 
 /// Map a source's transitions to a slice's, dropping the ones that leave the
-/// slice unchanged. `before` is the slice's value entering the range.
+/// slice unchanged. `previous` is the slice's value entering the range.
 pub fn slice_transitions(
     source: Vec<(u64, String)>,
     width: u32,
@@ -162,5 +165,8 @@ mod tests {
             .contains("30 bits"));
         // A stored element is what `[N]` names; no slice is added.
         assert!(plan_for(&signals, "m[0]").unwrap().is_empty());
+        // A glob index slices the vectors that have no such element.
+        let mixed = [signal("tb.m[0]", 1, "wire"), signal("tb.d", 8, "wire")];
+        assert_eq!(plan_for(&mixed, "*[0]").unwrap(), ["tb.d[0]"]);
     }
 }
