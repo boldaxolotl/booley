@@ -149,6 +149,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 - `aho-corasick 1.1.4`, `globset 0.4.21`, and `memchr 2.8.3` — Copyright (c) 2015 Andrew Gallant
 - `include_dir 0.7.4` and `include_dir_macros 0.7.4`
 - `lz4_flex 0.11.6` and `lz4_flex 0.13.1` — Copyright (c) 2020 Pascal Seitz
+- `schemars 1.2.3` and `schemars_derive 1.2.3` — Copyright (c) 2019 Graham Esau
 - `strsim 0.11.1` — Copyright (c) 2015 Danny Guo; Copyright (c) 2016 Titus Wormer; Copyright (c) 2018 Akash Kurdekar
 - `twox-hash 2.1.2` — Copyright (c) 2015 Jake Goulding
 - `winnow 1.0.3`
@@ -186,6 +187,7 @@ Apache-2.0 terms are in the repository's `LICENSE` file.
 - `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.18`, and `crossbeam-utils 0.8.21`
 - `fastrand 2.4.1`, `getrandom 0.4.2`, `libc 0.2.191`, `once_cell 1.21.4`, and `tempfile 3.27.0`
 - `rustix 1.1.4` and `linux-raw-sys 0.12.1`
+- `dyn-clone 1.0.20`, `ref-cast 1.0.27`, `ref-cast-impl 1.0.27`, and `serde_derive_internals 0.30.0`
 - `either 1.15.0`, `equivalent 1.0.2`, `hashbrown 0.17.1`, `heck 0.5.0`, and `indexmap 2.14.0`
 - `itoa 1.0.18`, `log 0.4.29`, `miniz_oxide 0.8.9`, and `miniz_oxide 0.9.1`
 - `num_enum 0.7.6`, `num_enum_derive 0.7.6`, `proc-macro-crate 3.5.0`, `proc-macro2 1.0.106`, `quote 1.0.45`, `syn 2.0.117`, and `syn 3.0.10`

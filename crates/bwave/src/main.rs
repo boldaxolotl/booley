@@ -1490,14 +1490,10 @@ fn resolve_time_tokens_or_exit(cfg: &mut ExtractConfig, cache: &ColumnCache) {
 //   main()
 // ===================================================================
 
-/// Print the embedded JSON Schema for `--format json` envelopes.
-/// The schema is baked into the binary at build time (see schema/bwave.json).
+/// Print the JSON Schema for `--format json` envelopes, generated from the
+/// output structs (`schema/bwave.json` is its committed copy).
 fn run_schema() {
-    const SCHEMA: &str = include_str!("../schema/bwave.json");
-    print!("{}", SCHEMA);
-    if !SCHEMA.ends_with('\n') {
-        println!();
-    }
+    print!("{}", bwave::output::schema_json());
 }
 
 fn run_docs(args: DocsArgs) {

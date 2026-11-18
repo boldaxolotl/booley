@@ -2209,6 +2209,28 @@ fn test_schema_subcommand() {
 }
 
 #[test]
+fn test_schema_subcommand_prints_generated_schema() {
+    let (stdout, _stderr, code) = run_bwave(&["schema"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout == bwave::output::schema_json(),
+        "`bwave schema` should print the schema generated from the output structs"
+    );
+}
+
+#[test]
+fn test_committed_schema_matches_generated() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/schema/bwave.json");
+    let committed = std::fs::read_to_string(path).expect("read schema/bwave.json");
+    assert!(
+        committed == bwave::output::schema_json(),
+        "schema/bwave.json differs from the schema generated from the output structs; \
+         regenerate it with `cargo run -q --manifest-path crates/bwave/Cargo.toml -- schema > \
+         crates/bwave/schema/bwave.json`"
+    );
+}
+
+#[test]
 fn test_envelope_list() {
     let bwave = build_bwave("test_basic.vcd", "env_list");
     let bp = bwave.to_string_lossy().to_string();
