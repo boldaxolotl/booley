@@ -382,19 +382,17 @@ def _failing_tests(document: Mapping[str, Any], names: _Names) -> _Section:
         label = names.label(table["identity"], table["flow"])
         blocks.append(_Text(f"{label}: {failed} failed of {total} tests", "fail"))
         listed = values.get("counted_items", {}).get("tests_failed", [])  # absent in older runs
-        blocks.extend(_listed(document, table, label, listed, values["plain"]["tests_failed"]))
+        blocks.extend(_listed(listed, values["plain"]["tests_failed"]))
+        blocks.extend(_flow_report_lines(document, table, label) if listed else [])
     return ("Failing tests", blocks)
 
 
-def _listed(
-    document: Mapping[str, Any], table: Mapping[str, Any], label: str, lines: list[str], count: int
-) -> list[_Block]:
-    """The *lines* behind *count*, ``... and N more`` when they are fewer, and the Flow's report."""
+def _listed(lines: list[str], count: int) -> list[_Block]:
+    """The *lines* behind *count*, ``... and N more`` when they are fewer."""
     if not lines:
         return []
     more = count - len(lines)
-    code = _Code("\n".join([*lines, *([f"... and {more} more"] if more > 0 else [])]))
-    return [code, *_flow_report_lines(document, table, label)]
+    return [_Code("\n".join([*lines, *([f"... and {more} more"] if more > 0 else [])]))]
 
 
 # Per Flow, the bound metric whose unmet result lists items: (the metric whose items are
@@ -421,11 +419,13 @@ def _unmet_items(document: Mapping[str, Any], names: _Names, flow: str, title: s
             for result in table["results"]
             if result["verdict"] == "unmet"
         )
+        listed: list[_Block] = []
         for metric, noun in dict.fromkeys(item for item in unmet if item):
             lines = values.get("counted_items", {}).get(metric, [])  # absent in older runs
             count = values["plain"].get(metric, 0)
-            blocks.extend([_Text(f"{label}: {_count(count, noun)}", "fail")] if lines else [])
-            blocks.extend(_listed(document, table, label, lines, count))
+            listed.extend([_Text(f"{label}: {_count(count, noun)}", "fail")] if lines else [])
+            listed.extend(_listed(lines, count))
+        blocks.extend([*listed, *(_flow_report_lines(document, table, label) if listed else [])])
     return (title, blocks)
 
 

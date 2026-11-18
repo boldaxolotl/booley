@@ -668,7 +668,7 @@ def test_unmet_lint_and_mutation_tables_list_their_items_and_report(tmp_path: Pa
         "mutation",
         (
             Entry("mutation_score_min", "mutation_score", 50, bound=80, verdict=Verdict.UNMET),
-            Entry("mutants_survived_max", "mutants_survived", 2, bound=5),
+            Entry("mutants_survived_max", "mutants_survived", 2, bound=1, verdict=Verdict.UNMET),
         ),
         FlowMetricValues(
             {"mutation_score": 50, "mutants_survived": 2},
@@ -705,13 +705,16 @@ def test_unmet_lint_and_mutation_tables_list_their_items_and_report(tmp_path: Pa
     assert f"- core lint report: `{stored.path.parent / 'r1' / '0-lint' / 'report.json'}`" in found
     assert "other" not in found
     survived = section(markdown, "Survived Mutants")
-    assert "- core mutation: 2 survived Mutants" in survived
     assert all(line in survived for line in survivors)
     assert "... and" not in survived
-    assert "core mutation report: `" in survived
+    assert survived.count("core mutation report: `") == 1
+    assert (
+        survived.count("- core mutation: 2 survived Mutants") == 1
+    )  # both bounds unmet, one list
+    assert found.count("core lint report: `") == 1  # errors and warnings unmet, one path
     assert f"    {errors[0]}" in terminal
     assert all(f"    {line}" in terminal for line in survivors)
-    assert "**3 unmet of 5 enforced**" in markdown
+    assert "**4 unmet of 5 enforced**" in markdown
     old: dict[str, Any] = json.loads(json.dumps(view))
     for table in old["tables"]:
         del table["values"]["counted_items"]

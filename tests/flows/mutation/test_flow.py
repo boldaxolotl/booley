@@ -31,6 +31,7 @@ from booley.flows.mutation.flow import (
     MutationSpec,
     MutationSummary,
     UnsupportedSimTargetError,
+    _survivor_line,
     generate_results_markdown,
 )
 from booley.flows.mutation.memory_claims import CampaignClaims
@@ -1377,6 +1378,20 @@ def test_campaign_report_gives_the_typed_mutation_metrics(tmp_path: Path, monkey
             f"{original!r} -> {mutated!r}"
         ]
     }
+
+
+def test_survivor_line_keeps_both_sides_of_a_long_source_line() -> None:
+    """A survived Mutant on a long line is listed with its mutated text, not cut off before it."""
+    short = MutationSpec(1, "operator_change", "rtl/a.sv", 7, "a  +\nb", "a - b", "abc123")
+    assert _survivor_line(short) == "abc123 operator_change rtl/a.sv:7: 'a + b' -> 'a - b'"
+
+    original = "x = " + " + ".join(["term"] * 80)
+    long = MutationSpec(2, "operator_change", "rtl/a.sv", 9, original, original + " + 1", "def456")
+    line = _survivor_line(long)
+    assert len(line) <= 200
+    assert line.startswith("def456 operator_change rtl/a.sv:9: 'x = term + term")
+    assert "...' -> 'x = term + term" in line
+    assert line.endswith("...'")
 
 
 def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, monkeypatch) -> None:

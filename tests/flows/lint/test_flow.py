@@ -2532,7 +2532,7 @@ _VERIBLE_FINDINGS = (
     "rtl/top.sv:9:1: Line length exceeds 100. [line-length]\n"
     'rtl/top.sv:3:1: syntax error at token "endmodule"\n'
     'rtl/top.sv:5:1: syntax error at token "foo"\n'
-    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+    'rtl/top.sv:5:7: syntax error at token "bar"\n'  # same line: counted once, first message
 )
 
 
