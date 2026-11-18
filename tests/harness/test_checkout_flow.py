@@ -31,6 +31,7 @@ from booley.runtime.commit_export import export_commit
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.resource_history import load_records
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 if TYPE_CHECKING:
     from booley.harness.checkout_flow import CheckoutFlowRequest, CheckoutFlowResult
@@ -42,7 +43,10 @@ linux_only = pytest.mark.skipif(
 )
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
-TIMEOUT_S = 30
+TIMEOUT_S = hang_guard_s()
+# A run that must time out, and a preflight that must overrun its bound (real clock).
+WAIT_DEADLINE_S = scaled(2)
+PREFLIGHT_DEADLINE_S = scaled(20)
 FLOW = "checkout_stub"
 
 # The stub Flow's behavior follows ``--target``: ``pass`` runs one real command,
@@ -104,7 +108,7 @@ class CheckoutStub(BooleyFlow):
             work = Path(self.args.work_dir)
             handle = TargetCatalog.build(work).select("probe")
             evidence = run_pre_sim_commands(
-                handle, test_names=("t",), build_root=work / "b", eda_tool="icarus", timeout_s=30
+                handle, test_names=("t",), build_root=work / "b", eda_tool="icarus", timeout_s={hang_s}
             )
             (CTL / "presim.json").write_text(
                 json.dumps(
@@ -129,7 +133,7 @@ class CheckoutStub(BooleyFlow):
             signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
             (CTL / "ignoring").write_text("1", encoding="utf-8")
         if target.startswith("wait") or target in ("stubborn", "linger"):
-            deadline = time.monotonic() + 45
+            deadline = time.monotonic() + {outer_s}
             while not (CTL / "release").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
         else:
@@ -247,7 +251,11 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         tools.mkdir(parents=True)
         settings = "[jobs]\nmax_tickets = SLOTS\n" + config.replace("{live}", str(live))
         (live / ".booley" / "booley.toml").write_bytes(settings.replace("SLOTS", "4").encode())
-        (tools / f"{FLOW}.py").write_bytes(STUB_FLOW.format(ctl=str(ctl)).encode())
+        (tools / f"{FLOW}.py").write_bytes(
+            STUB_FLOW.format(
+                ctl=str(ctl), hang_s=hang_guard_s(), outer_s=2 * hang_guard_s()
+            ).encode()
+        )
         for relative, text in (files or {}).items():
             path = live / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -393,7 +401,12 @@ def test_failed_crashed_or_timed_out_flow_returns_an_excerpt_that_errors_every_v
     cases = [
         ("crash", {}, CheckoutFlowStatus.FAILED, "RuntimeError: stub crashed"),
         ("abort", {}, CheckoutFlowStatus.FAILED, "stub aborted"),
-        ("wait", {"timeout_s": 2}, CheckoutFlowStatus.TIMED_OUT, "the run timed out after 2 s"),
+        (
+            "wait",
+            {"timeout_s": WAIT_DEADLINE_S},
+            CheckoutFlowStatus.TIMED_OUT,
+            f"the run timed out after {WAIT_DEADLINE_S:g} s",
+        ),
     ]
     for target, changes, status, expected in cases:
         result = run_checkout_flow(world.request(target, **changes))
@@ -790,7 +803,7 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
         target, timeout_s = {
             "passed": ("pass", TIMEOUT_S),
             "failed": ("fail", TIMEOUT_S),
-            "timed_out": ("wait", 2),
+            "timed_out": ("wait", WAIT_DEADLINE_S),
         }[outcome]
         result = run_checkout_flow(world.request(target, timeout_s=timeout_s))
 
@@ -811,13 +824,14 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
 
 
 # Runs the entry point in its own process so the test can interrupt it like a Ctrl-C.
-CALLER = """
+CALLER = f"""
 import json, sys
 from pathlib import Path
 from booley.harness.checkout_flow import CheckoutFlowRequest, run_checkout_flow
 
 checkout, main, reports = (Path(arg) for arg in sys.argv[1:4])
-run_checkout_flow(CheckoutFlowRequest(checkout, main, reports, "checkout_stub", "wait", 60))
+request = CheckoutFlowRequest(checkout, main, reports, "checkout_stub", "wait", {hang_guard_s()})
+run_checkout_flow(request)
 """
 
 
@@ -922,7 +936,7 @@ def test_flow_that_ignores_the_stop_is_killed_after_the_grace(
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import run_checkout_flow
 
-    monkeypatch.setattr(checkout_flow, "STOP_GRACE_S", 1)
+    monkeypatch.setattr(checkout_flow, "STOP_GRACE_S", scaled(1))
 
     def interrupt_once_ignoring() -> None:
         poll((world.ctl / "ignoring").exists, "the Flow to ignore SIGINT")
@@ -1546,13 +1560,15 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
         files={
             "probe.core": GENERATOR_CORE,
             # Outlives the bound and the poll below: only a group kill ends it in time.
-            "gen.py": GENERATOR.format(ctl="{ctl}", wait=120),
+            "gen.py": GENERATOR.format(ctl="{ctl}", wait=6 * PREFLIGHT_DEADLINE_S),
             "top.v": "module top; endmodule\n",
         }
     )
 
-    with pytest.raises(CheckoutFlowError, match=r"did not finish within 20 s"):
-        run_checkout_flow(world.request("probe", timeout_s=20))
+    with pytest.raises(
+        CheckoutFlowError, match=rf"did not finish within {PREFLIGHT_DEADLINE_S:g} s"
+    ):
+        run_checkout_flow(world.request("probe", timeout_s=PREFLIGHT_DEADLINE_S))
 
     assert_refused_before_any_run(world)
     assert (world.ctl / "generator.pid").exists(), "the generator never started within the bound"
@@ -1690,7 +1706,9 @@ def test_a_callers_interrupt_ends_the_preflight_child(tmp_path: Path) -> None:
     threading.Timer(1.0, _thread.interrupt_main).start()
 
     with pytest.raises(KeyboardInterrupt):
-        _run_preflight_child(command, tmp_path, dict(os.environ), 30.0, tmp_path / "log", "t")
+        _run_preflight_child(
+            command, tmp_path, dict(os.environ), hang_guard_s(), tmp_path / "log", "t"
+        )
 
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid_file.read_text()), 0)

@@ -31,6 +31,7 @@ from tests.harness.test_dashboard_sessions import stamp
 from tests.measurement.test_base_run import Entry, Table, build_run
 from tests.measurement.test_run_store import in_tree_repository, key_of, make_run
 from tests.runtime.test_commit_export import commit_all, git, write
+from tests.time_budget import hang_guard_s
 
 
 def reader():
@@ -43,7 +44,7 @@ ONE_TABLE = "[sim_core.lint]\nwarnings_max = 0\n"
 
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
 
 

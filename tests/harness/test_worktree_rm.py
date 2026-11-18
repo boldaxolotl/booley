@@ -19,6 +19,7 @@ from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
 from tests.git_support import git
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -216,7 +217,7 @@ def test_rm_ignores_a_handle_whose_holder_has_exited(
         assert identity is not None
         assert _hold_handle(repo, identity) == "S1"
     finally:
-        holder.communicate(b"\n", timeout=30)
+        holder.communicate(b"\n", timeout=hang_guard_s())
     path = _add(repo, "s1")
 
     assert _rm(repo, "s1") == 0

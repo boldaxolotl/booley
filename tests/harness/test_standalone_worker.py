@@ -28,6 +28,7 @@ from booley.runtime import job_records, job_slots
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux",
@@ -35,7 +36,9 @@ linux_only = pytest.mark.skipif(
 )
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
-TIMEOUT_S = 60
+TIMEOUT_S = hang_guard_s()
+# A child's own deadline outlasts the parent's wait of TIMEOUT_S.
+OUTER_S = 2 * hang_guard_s()
 
 # Session identity seeded into the submitter: none may reach the worker.
 SESSION_ENV = {
@@ -45,12 +48,14 @@ SESSION_ENV = {
 }
 
 # Both stubs wait, bounded, for the test's ``release`` marker; ``wait`` is shared source.
-STUB_WAIT = """
+STUB_WAIT = f"""
 import os, time
 from pathlib import Path
 
+OUTER_S = {OUTER_S}
+
 def wait(ctl):
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + OUTER_S
     while not (ctl / "release").exists() and time.monotonic() < deadline:
         time.sleep(0.02)
 """
@@ -117,7 +122,7 @@ class StubSpecialist(Specialist):
         with parent_death_watchdog(self.name, interval=0.02):
             parent = os.getppid()
             (ctl / "armed").write_text("1", encoding="utf-8")
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + OUTER_S
             while os.getppid() == parent and time.monotonic() < deadline:  # submitter exits
                 time.sleep(0.02)
             time.sleep(0.5)  # 25 polls: an armed watchdog has aborted this run by now
@@ -128,7 +133,7 @@ class StubSpecialist(Specialist):
 )
 
 # Runs in the submitter: submit, report the run id, wait for the stub's marker, then exit.
-SUBMITTER = """
+SUBMITTER = f"""
 import json, sys, time
 from pathlib import Path
 from booley.harness.standalone_worker import StandaloneRequest, submit
@@ -139,7 +144,7 @@ run_id = submit(
     StandaloneRequest(Path(request["worktree"]), request["kind"], request["name"], tuple(request["argv"])),
 )
 print(run_id, flush=True)
-deadline = time.monotonic() + 60
+deadline = time.monotonic() + {OUTER_S}
 while marker and not Path(marker).exists() and time.monotonic() < deadline:
     time.sleep(0.02)
 """

@@ -16,6 +16,7 @@ from booley.harness import worktree_cmd
 from booley.runtime import runtime_context
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 # ---------------------------------------------------------------------------
 # Parser and venue
@@ -182,7 +183,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert head == _git(project, "rev-parse", "HEAD").stdout
     # Discard the disposable Snapshot's copied and generated files before removal.
     assert _git(worktree, "clean", "-fdx").returncode == 0
-    run_bounded_child(shlex.split(command), check=True, timeout=10)
+    run_bounded_child(shlex.split(command), check=True)
     assert not worktree.exists()
     assert str(worktree) not in _git(project, "worktree", "list", "--porcelain").stdout
 
@@ -513,12 +514,12 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
     assert git(source, "config", "extensions.worktreeConfig") == "true"
     assert git(source, "config", "gc.worktreePruneExpire") == "never"
     for command, removed in zip(commands[:2], (paired, worktree), strict=True):
-        run_bounded_child(shlex.split(command), check=True, timeout=10)
+        run_bounded_child(shlex.split(command), check=True)
         assert not removed.exists()
     assert str(paired) not in git(source, "worktree", "list", "--porcelain")
     assert str(worktree) not in git(root, "worktree", "list", "--porcelain")
     assert git(source, "rev-parse", "booley-worktree/real-paired")
-    run_bounded_child(shlex.split(commands[2]), check=True, timeout=10)
+    run_bounded_child(shlex.split(commands[2]), check=True)
     assert _git(source, "rev-parse", "--verify", "booley-worktree/real-paired").returncode != 0
 
 
@@ -1009,7 +1010,7 @@ def test_post_setup_hook_runs_outside_the_layout_gate(
     entered = []
 
     def probe(root, worktree, name):
-        with layout_gate(root, timeout_s=1):  # raises if the creation still holds the gate
+        with layout_gate(root, timeout_s=scaled(1)):  # raises if the creation still holds the gate
             entered.append(name)
 
     monkeypatch.setattr(worktree_cmd, "_run_post_setup", probe)
@@ -1389,7 +1390,7 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     )
     assert command in capsys.readouterr().out
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
-    run_bounded_child(shlex.split(command), check=True, timeout=10)
+    run_bounded_child(shlex.split(command), check=True)
     assert bundle.is_file()
     _managed_git(data, "commit", "-qm", "intentional generated bundle removal")
     _step_booley_dir(InitContext(project_root=root))

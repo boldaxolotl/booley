@@ -23,12 +23,13 @@ from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import WAITING_USER, WORKING, Activity
 from tests.harness.test_dashboard_sessions import NOW, STARTED, stamp, standalone_job, world
+from tests.time_budget import hang_guard_s
 
 
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """A slow worker must finish the first read before any key press."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 def detail_text(app) -> str:

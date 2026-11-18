@@ -722,7 +722,7 @@ def _track_scaffold(root: Path) -> None:
             "scaffold",
         ],
     ):
-        run_bounded_child(["git", *args], cwd=root, check=True, timeout=10)
+        run_bounded_child(["git", *args], cwd=root, check=True)
 
 
 def _seed_doctor_init_state(root: Path) -> None:
@@ -747,7 +747,7 @@ def _seed_doctor_init_state(root: Path) -> None:
         ("worktree.useRelativePaths", "true"),
         ("core.autocrlf", "false"),
     ):
-        run_bounded_child(["git", "config", key, value], cwd=root, check=True, timeout=10)
+        run_bounded_child(["git", "config", key, value], cwd=root, check=True)
     config = booley_dir / "booley.toml"
     config.write_text(
         config.read_text() + '\n[agent]\ndefault = "claude"\nauth = "subscription"\n'
@@ -1059,7 +1059,6 @@ def _git(root: Path, *args: str) -> str:
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
         cwd=root,
         check=True,
-        timeout=10,
     )
     return result.stdout
 

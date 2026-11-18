@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
 from booley.runtime._codex_live_usage import CodexLiveUsage
+from tests.time_budget import hang_guard_s
 
 
 def _token_record(
@@ -81,9 +83,8 @@ async def test_watcher_finds_thread_rollout_and_drains_it(tmp_path):
     rollout.write_text(_token_record(100, 80, 20, 90) + "\n", encoding="utf-8")
 
     usage.start(thread_id)
-    for _ in range(20):
-        if events:
-            break
+    deadline = time.monotonic() + hang_guard_s()
+    while not events and time.monotonic() < deadline:
         await asyncio.sleep(0.02)
     await usage.close()
 

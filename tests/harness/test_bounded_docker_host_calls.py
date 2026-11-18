@@ -12,6 +12,7 @@ descendant left running.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -40,6 +41,7 @@ from booley.mcp import server_inspection
 from booley.runtime import host_docker, session_runtime
 from booley.runtime.session_admission import Sandbox
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.time_budget import scaled
 
 _IMAGE_ID = "sha256:" + "a" * 64
 _OUTCOMES = ("ok", "nonzero", "missing", "timeout")
@@ -623,13 +625,14 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
     with heartbeat_tree(tmp_path) as paths:
         cmd = parent_argv(tmp_path, sys.executable, paths, "live")
         # The helper's documented worst case after the 2 s timeout: +12 s POSIX, +32 s Windows.
-        limit = 40 if os.name == "nt" else 25
+        limit = scaled(40 if os.name == "nt" else 25)
+        timeout_s = math.ceil(scaled(2))
         start = time.monotonic()
         result = doctor._execute_selftest(
             SimpleNamespace(project_root=tmp_path),  # type: ignore[arg-type]
             cmd,
             dict(os.environ),
-            2,
+            timeout_s,
             "selftest",
             "sim",
             _fail=events.fail,
@@ -637,10 +640,10 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
         elapsed = time.monotonic() - start
         assert result is None
         assert [message for kind, message in events.log if kind == "fail"] == [
-            "selftest timed out after 2s"
+            f"selftest timed out after {timeout_s}s"
         ]
         assert elapsed < limit, f"self-test hung {elapsed:.1f}s on a pipe held by a grandchild"
         assert paths["heartbeat"].exists(), "grandchild never started"
-        assert wait_until_heartbeat_stops(paths["heartbeat"], window=5), (
+        assert wait_until_heartbeat_stops(paths["heartbeat"], window=scaled(5)), (
             "grandchild still running after the timeout"
         )

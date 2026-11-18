@@ -28,6 +28,7 @@ from booley.runtime.agent_config import (
     set_backend_config,
 )
 from booley.runtime.agent_errors import AgentProviderError
+from tests.time_budget import scaled
 
 
 def _capturing_successful_query():
@@ -1030,9 +1031,9 @@ class TestIdleStreamTimeout:
         self._run_stream(
             backend,
             items=sentinels,
-            gap=0.06,
+            gap=scaled(0.06),
             initial_delay=0.0,
-            timeout=0.3,
+            timeout=scaled(0.3),
         )
 
     def test_genuine_stall_times_out(self):
@@ -1043,8 +1044,8 @@ class TestIdleStreamTimeout:
                 backend,
                 items=[object()],
                 gap=0.0,
-                initial_delay=0.4,
-                timeout=0.15,
+                initial_delay=scaled(0.4),
+                timeout=scaled(0.15),
             )
 
 

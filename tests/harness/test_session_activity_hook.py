@@ -31,6 +31,7 @@ from tests.booley_checkouts_support import (
     paired_checkout,
     snapshot,
 )
+from tests.time_budget import hang_guard_s
 
 NOW = 1791454200.0
 SCRIPT = Path(__file__).parents[2] / "src/booley/data/docker/session_activity_hook.py"
@@ -373,7 +374,7 @@ def test_worktree_hook_writes_main_activity(tmp_path, monkeypatch):
         capture_output=True,
         cwd=worktree,
         env={},
-        timeout=30,
+        timeout=hang_guard_s(),
         check=False,
     )
     assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
@@ -430,7 +431,7 @@ def test_script_runs_standalone_without_site_packages_or_booley(tmp_path):
         capture_output=True,
         cwd=tmp_path,
         env={},
-        timeout=30,
+        timeout=hang_guard_s(),
         check=False,
     )
     assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
@@ -698,7 +699,7 @@ def test_session_start_from_a_real_worktree_records_via_main(tmp_path, monkeypat
         capture_output=True,
         cwd=worktree,
         env={},
-        timeout=30,
+        timeout=hang_guard_s(),
         check=False,
     )
     assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")

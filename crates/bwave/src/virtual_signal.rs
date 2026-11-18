@@ -1,7 +1,9 @@
 //! Virtual signal definitions: boolean predicates over existing signals.
 //! Syntax: a Verilog subset documented in the bundled B-Wave reference.
 
-use crate::format::{hex_slice, hex_to_u128, parse_verilog_literal, slice_bits, values_match};
+use crate::format::{
+    hex_slice, hex_to_u128, parse_verilog_literal, slice_bits, values_match, VerilogLiteral,
+};
 use crate::signal::{common_scope_prefix, compile_patterns, match_signal};
 
 // -- AST (parsed from --virtual "name = expr") --------------------------------
@@ -31,7 +33,7 @@ impl SliceSpec {
 /// Right-hand side of a comparison: literal value or signal reference.
 #[derive(Debug, Clone)]
 pub enum Rhs {
-    Value(String),                     // hex literal (from Verilog literal parse)
+    Value(VerilogLiteral),             // Verilog literal, kept as typed
     Signal(String, Option<SliceSpec>), // signal pattern + optional slice
 }
 
@@ -127,6 +129,9 @@ pub enum ResolvedExpr {
 pub struct ResolvedVirtual {
     pub name: String,
     pub expr: ResolvedExpr,
+    /// Literal comparisons that cannot behave as written (see
+    /// `literal_comparison_warning`).
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,7 +192,7 @@ impl ResolvedVirtual {
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Signal(String, Option<SliceSpec>),
-    Literal(String),
+    Literal(VerilogLiteral),
     CmpEq,
     CmpNeq,
     CmpGt,
@@ -798,10 +803,18 @@ fn resolve_expr(
     signal_names: &[String],
     signal_widths: &[u32],
     prior_virtuals: &[String],
+    warnings: &mut Vec<String>,
 ) -> Result<ResolvedExpr, String> {
     match expr {
         Expr::Atom(atom) => {
-            let ra = resolve_atom(virt_name, atom, signal_names, signal_widths, prior_virtuals)?;
+            let ra = resolve_atom(
+                virt_name,
+                atom,
+                signal_names,
+                signal_widths,
+                prior_virtuals,
+                warnings,
+            )?;
             Ok(ResolvedExpr::Atom(ra))
         }
         Expr::Not(inner) => {
@@ -811,13 +824,23 @@ fn resolve_expr(
                 signal_names,
                 signal_widths,
                 prior_virtuals,
+                warnings,
             )?;
             Ok(ResolvedExpr::Not(Box::new(resolved)))
         }
         Expr::Combine(op, children) => {
             let resolved: Result<Vec<_>, _> = children
                 .iter()
-                .map(|c| resolve_expr(virt_name, c, signal_names, signal_widths, prior_virtuals))
+                .map(|c| {
+                    resolve_expr(
+                        virt_name,
+                        c,
+                        signal_names,
+                        signal_widths,
+                        prior_virtuals,
+                        warnings,
+                    )
+                })
                 .collect();
             Ok(ResolvedExpr::Combine(*op, resolved?))
         }
@@ -830,6 +853,7 @@ fn resolve_atom(
     signal_names: &[String],
     signal_widths: &[u32],
     prior_virtuals: &[String],
+    warnings: &mut Vec<String>,
 ) -> Result<ResolvedAtom, String> {
     let sig_pattern = atom.signal_pattern();
     let lhs_slice = atom.lhs_slice();
@@ -862,7 +886,7 @@ fn resolve_atom(
 
     let resolve_rhs = |rhs: &Rhs| -> Result<ResolvedRhs, String> {
         match rhs {
-            Rhs::Value(v) => Ok(ResolvedRhs::Value(v.clone())),
+            Rhs::Value(v) => Ok(ResolvedRhs::Value(v.hex.clone())),
             Rhs::Signal(pat, rhs_slice) => {
                 let (rhs_idx, rhs_width, rhs_resolved_slice) = resolve_signal_with_slice(
                     virt_name,
@@ -884,49 +908,109 @@ fn resolve_atom(
         }
     };
 
-    match atom {
-        Atom::NonZero(_, _) => Ok(ResolvedAtom::NonZero(
-            lhs_idx,
-            lhs_width,
-            lhs_resolved_slice,
-        )),
-        Atom::Equal(_, _, rhs) => Ok(ResolvedAtom::Equal(
-            lhs_idx,
-            lhs_width,
-            lhs_resolved_slice,
-            resolve_rhs(rhs)?,
-        )),
-        Atom::NotEqual(_, _, rhs) => Ok(ResolvedAtom::NotEqual(
-            lhs_idx,
-            lhs_width,
-            lhs_resolved_slice,
-            resolve_rhs(rhs)?,
-        )),
-        Atom::Gt(_, _, rhs) => Ok(ResolvedAtom::Gt(
-            lhs_idx,
-            lhs_width,
-            lhs_resolved_slice,
-            resolve_rhs(rhs)?,
-        )),
-        Atom::Gte(_, _, rhs) => Ok(ResolvedAtom::Gte(
-            lhs_idx,
-            lhs_width,
-            lhs_resolved_slice,
-            resolve_rhs(rhs)?,
-        )),
-        Atom::Lt(_, _, rhs) => Ok(ResolvedAtom::Lt(
-            lhs_idx,
-            lhs_width,
-            lhs_resolved_slice,
-            resolve_rhs(rhs)?,
-        )),
-        Atom::Lte(_, _, rhs) => Ok(ResolvedAtom::Lte(
-            lhs_idx,
-            lhs_width,
-            lhs_resolved_slice,
-            resolve_rhs(rhs)?,
-        )),
+    let resolved = match atom {
+        Atom::NonZero(_, _) => ResolvedAtom::NonZero(lhs_idx, lhs_width, lhs_resolved_slice),
+        Atom::Equal(_, _, rhs) => {
+            ResolvedAtom::Equal(lhs_idx, lhs_width, lhs_resolved_slice, resolve_rhs(rhs)?)
+        }
+        Atom::NotEqual(_, _, rhs) => {
+            ResolvedAtom::NotEqual(lhs_idx, lhs_width, lhs_resolved_slice, resolve_rhs(rhs)?)
+        }
+        Atom::Gt(_, _, rhs) => {
+            ResolvedAtom::Gt(lhs_idx, lhs_width, lhs_resolved_slice, resolve_rhs(rhs)?)
+        }
+        Atom::Gte(_, _, rhs) => {
+            ResolvedAtom::Gte(lhs_idx, lhs_width, lhs_resolved_slice, resolve_rhs(rhs)?)
+        }
+        Atom::Lt(_, _, rhs) => {
+            ResolvedAtom::Lt(lhs_idx, lhs_width, lhs_resolved_slice, resolve_rhs(rhs)?)
+        }
+        Atom::Lte(_, _, rhs) => {
+            ResolvedAtom::Lte(lhs_idx, lhs_width, lhs_resolved_slice, resolve_rhs(rhs)?)
+        }
+    };
+
+    if let Some((op, lit)) = atom_literal(atom) {
+        let lhs = LiteralLhs {
+            parent: signal_names[lhs_idx].clone(),
+            name: match lhs_resolved_slice {
+                Some((m, l)) if m == l => format!("{}[{m}]", signal_names[lhs_idx]),
+                Some((m, l)) => format!("{}[{m}:{l}]", signal_names[lhs_idx]),
+                None => signal_names[lhs_idx].clone(),
+            },
+            width: effective_width(lhs_resolved_slice, lhs_width),
+        };
+        let atom_result = |fill: &dyn Fn(usize) -> String| eval_atom(&resolved, fill, &|_| false);
+        let on_zero = atom_result(&|_| "0".to_string());
+        let on_unknown = atom_result(&|i| "x".repeat(signal_widths[i] as usize));
+        if let Some(w) = literal_comparison_warning(virt_name, &lhs, op, lit, on_zero, on_unknown) {
+            warnings.push(w);
+        }
     }
+    Ok(resolved)
+}
+
+/// The operator as typed and the literal of a signal-to-literal comparison.
+fn atom_literal(atom: &Atom) -> Option<(&'static str, &VerilogLiteral)> {
+    let (op, rhs) = match atom {
+        Atom::NonZero(..) => return None,
+        Atom::Equal(_, _, rhs) => ("==", rhs),
+        Atom::NotEqual(_, _, rhs) => ("!=", rhs),
+        Atom::Gt(_, _, rhs) => (">", rhs),
+        Atom::Gte(_, _, rhs) => (">=", rhs),
+        Atom::Lt(_, _, rhs) => ("<", rhs),
+        Atom::Lte(_, _, rhs) => ("<=", rhs),
+    };
+    match rhs {
+        Rhs::Value(lit) => Some((op, lit)),
+        Rhs::Signal(..) => None,
+    }
+}
+
+/// The left side of a literal comparison, as shown in a warning.
+struct LiteralLhs {
+    /// The whole signal: any X or Z bit in it, inside the slice or not, makes
+    /// a relational atom false.
+    parent: String,
+    name: String,
+    width: u32,
+}
+
+/// Warning for a literal that overflows its width prefix or needs more bits
+/// than the left side. `on_zero` and `on_unknown` are the atom's result with
+/// every signal reading 0 and all X: a literal wider than the left side gives
+/// every known value the same result, so `on_zero` is the result.
+fn literal_comparison_warning(
+    virt_name: &str,
+    lhs: &LiteralLhs,
+    op: &str,
+    lit: &VerilogLiteral,
+    on_zero: bool,
+    on_unknown: bool,
+) -> Option<String> {
+    let bits = lit.bits()?;
+    if bits <= lhs.width {
+        let clause = lit.overflow_clause()?;
+        return Some(format!(
+            "virtual '{virt_name}': {} {clause}; it is compared untruncated",
+            lit.text
+        ));
+    }
+    let claim = match (op, on_zero) {
+        ("==", _) => "never matches",
+        (_, true) => "is always true",
+        (_, false) => "is always false",
+    };
+    let except = if on_unknown == on_zero {
+        String::new()
+    } else {
+        format!(", except while {} has X or Z bits", lhs.parent)
+    };
+    let needs = lit.needs_and(&format!("{} is {}-bit", lhs.name, lhs.width))?;
+    Some(format!(
+        "virtual '{virt_name}': {} {op} {} {claim}{except}: {} {needs}",
+        lhs.name, lit.text, lit.text
+    ))
 }
 
 pub fn resolve_virtual(
@@ -948,16 +1032,19 @@ pub fn resolve_virtual(
         ));
     }
 
+    let mut warnings = Vec::new();
     let resolved = resolve_expr(
         &def.name,
         &def.expr,
         signal_names,
         signal_widths,
         prior_virtuals,
+        &mut warnings,
     )?;
     Ok(ResolvedVirtual {
         name: def.name.clone(),
         expr: resolved,
+        warnings,
     })
 }
 
@@ -1278,6 +1365,22 @@ fn value_at_tick_slice(transitions: &[(u64, String)], tick: u64) -> String {
 mod virtual_tests {
     use super::*;
 
+    #[test]
+    fn issue_4698_slice_warning_blames_x_bits_anywhere_in_the_signal() {
+        let lhs = LiteralLhs {
+            parent: "tb.data".to_string(),
+            name: "tb.data[3:0]".to_string(),
+            width: 4,
+        };
+        let lit = parse_verilog_literal("'h1F").unwrap();
+        let warning = literal_comparison_warning("v", &lhs, "<", &lit, true, false).unwrap();
+        assert_eq!(
+            warning,
+            "virtual 'v': tb.data[3:0] < 'h1F is always true, except while tb.data has X or Z \
+             bits: 'h1F needs 5 bits and tb.data[3:0] is 4-bit"
+        );
+    }
+
     // ---- Parser tests: Verilog-subset syntax ----
 
     #[test]
@@ -1342,7 +1445,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::Equal(s, None, Rhs::Value(v))) => {
                 assert_eq!(s, "sig");
-                assert_eq!(v, "FF");
+                assert_eq!(v.hex, "FF");
             }
             _ => panic!("expected Equal atom with Value RHS"),
         }
@@ -1391,7 +1494,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::Gt(s, None, Rhs::Value(v))) => {
                 assert_eq!(s, "*sig");
-                assert_eq!(v, "5");
+                assert_eq!(v.hex, "5");
             }
             _ => panic!("expected Gt atom"),
         }
@@ -1403,7 +1506,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::Gte(s, None, Rhs::Value(v))) => {
                 assert_eq!(s, "*sig");
-                assert_eq!(v, "0");
+                assert_eq!(v.hex, "0");
             }
             _ => panic!("expected Gte atom"),
         }
@@ -1415,7 +1518,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::Lt(s, None, Rhs::Value(v))) => {
                 assert_eq!(s, "*sig");
-                assert_eq!(v, "64"); // 100 decimal = 0x64
+                assert_eq!(v.hex, "64"); // 100 decimal = 0x64
             }
             _ => panic!("expected Lt atom"),
         }
@@ -1427,7 +1530,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::Lte(s, None, Rhs::Value(v))) => {
                 assert_eq!(s, "*sig");
-                assert_eq!(v, "FF");
+                assert_eq!(v.hex, "FF");
             }
             _ => panic!("expected Lte atom"),
         }
@@ -1439,7 +1542,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::NotEqual(s, None, Rhs::Value(v))) => {
                 assert_eq!(s, "*sig");
-                assert_eq!(v, "0");
+                assert_eq!(v.hex, "0");
             }
             _ => panic!("expected NotEqual atom"),
         }
@@ -1495,7 +1598,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::Gt(s, Some(SliceSpec::Range(15, 8)), Rhs::Value(v))) => {
                 assert_eq!(s, "*data");
-                assert_eq!(v, "0");
+                assert_eq!(v.hex, "0");
             }
             _ => panic!("expected Gt with Range(15,8), got {:?}", def.expr),
         }
@@ -1565,7 +1668,7 @@ mod virtual_tests {
     fn test_parse_hex_literal() {
         let def = parse_virtual_def("v = *sig == 'hFF").unwrap();
         match &def.expr {
-            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v, "FF"),
+            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v.hex, "FF"),
             _ => panic!("expected Value RHS"),
         }
     }
@@ -1574,7 +1677,7 @@ mod virtual_tests {
     fn test_parse_decimal_literal() {
         let def = parse_virtual_def("v = *sig == 'd255").unwrap();
         match &def.expr {
-            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v, "FF"),
+            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v.hex, "FF"),
             _ => panic!("expected Value RHS"),
         }
     }
@@ -1583,7 +1686,7 @@ mod virtual_tests {
     fn test_parse_binary_literal() {
         let def = parse_virtual_def("v = *sig == 'b11111111").unwrap();
         match &def.expr {
-            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v, "FF"),
+            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v.hex, "FF"),
             _ => panic!("expected Value RHS"),
         }
     }
@@ -1592,7 +1695,7 @@ mod virtual_tests {
     fn test_parse_width_prefixed_literal() {
         let def = parse_virtual_def("v = *sig == 8'd255").unwrap();
         match &def.expr {
-            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v, "FF"),
+            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v.hex, "FF"),
             _ => panic!("expected Value RHS"),
         }
     }
@@ -1601,7 +1704,7 @@ mod virtual_tests {
     fn test_parse_xz_literal() {
         let def = parse_virtual_def("v = *sig == 'hx").unwrap();
         match &def.expr {
-            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v, "X"),
+            Expr::Atom(Atom::Equal(_, None, Rhs::Value(v))) => assert_eq!(v.hex, "X"),
             _ => panic!("expected x/z Value RHS"),
         }
     }
@@ -1657,14 +1760,14 @@ mod virtual_tests {
                 match &children[0] {
                     Expr::Atom(Atom::Gt(s, None, Rhs::Value(v))) => {
                         assert_eq!(s, "*a");
-                        assert_eq!(v, "0");
+                        assert_eq!(v.hex, "0");
                     }
                     _ => panic!("expected Gt atom"),
                 }
                 match &children[1] {
                     Expr::Atom(Atom::Lt(s, None, Rhs::Value(v))) => {
                         assert_eq!(s, "*b");
-                        assert_eq!(v, "A"); // 10 decimal = 0xA
+                        assert_eq!(v.hex, "A"); // 10 decimal = 0xA
                     }
                     _ => panic!("expected Lt atom"),
                 }
@@ -2007,6 +2110,7 @@ mod virtual_tests {
         ]];
         let resolved = ResolvedVirtual {
             name: "gt5".into(),
+            warnings: Vec::new(),
             expr: ResolvedExpr::Atom(ResolvedAtom::Gt(0, 8, None, ResolvedRhs::Value("5".into()))),
         };
         let trans = build_virtual_transitions(&resolved, &[], &real_transitions, 0, 400);
@@ -2025,6 +2129,7 @@ mod virtual_tests {
         ]];
         let resolved = ResolvedVirtual {
             name: "msb".into(),
+            warnings: Vec::new(),
             expr: ResolvedExpr::Atom(ResolvedAtom::NonZero(0, 8, Some((7, 7)))),
         };
         let trans = build_virtual_transitions(&resolved, &[], &real_transitions, 0, 300);
@@ -2042,6 +2147,7 @@ mod virtual_tests {
         ];
         let resolved = ResolvedVirtual {
             name: "eq".into(),
+            warnings: Vec::new(),
             expr: ResolvedExpr::Atom(ResolvedAtom::Equal(
                 0,
                 8,
@@ -2065,7 +2171,7 @@ mod virtual_tests {
         match &def.expr {
             Expr::Atom(Atom::Equal(s, None, Rhs::Value(v))) => {
                 assert_eq!(s, "*a");
-                assert_eq!(v, "1");
+                assert_eq!(v.hex, "1");
             }
             _ => panic!(
                 "expected Equal atom after paren-wrapped LHS, got {:?}",
