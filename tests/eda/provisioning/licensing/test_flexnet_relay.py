@@ -11,6 +11,7 @@ import socket
 import pytest
 from tests.time_budget import hang_guard_s, scaled
 
+from booley.eda.provisioning.licensing import flexnet_relay
 from booley.eda.provisioning.licensing.flexnet_relay import (
     ENV_CONNECT_TIMEOUT,
     ENV_IDLE_TIMEOUT,
@@ -306,3 +307,18 @@ async def test_unreachable_upstream_fails_closed_without_destination_in_logs(cap
         reservation.close()
     assert "upstream failed" in caplog.text
     assert "127.0.0.1" not in caplog.text
+
+
+def test_relay_that_cannot_listen_logs_the_address_and_exits_2(monkeypatch, caplog) -> None:
+    with socket.socket() as holder:
+        holder.bind(("0.0.0.0", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+        for name, value in _env(**{ENV_LMGRD_PORT: str(port)}).items():
+            monkeypatch.setenv(name, value)
+
+        with caplog.at_level(logging.ERROR):
+            assert flexnet_relay.main([]) == 2
+
+    (record,) = [r for r in caplog.records if "relay could not listen" in r.getMessage()]
+    assert str(port) in record.getMessage()

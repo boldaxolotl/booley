@@ -109,7 +109,7 @@ from booley.mcp.session_peer import PeerBoundary
 from booley.mcp.session_registry import Attribution
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
-from booley.runtime import pid, runtime_context
+from booley.runtime import loopback_http, pid, runtime_context
 from booley.runtime.booley_dir import (
     own_booley_dir_repo_path,
     resolve_booley_dir,
@@ -2474,8 +2474,6 @@ def _run_http(port: int) -> None:
     a container stop→start transparently brings the endpoint back — the agent
     apps hold only a URL, not a child process.
     """
-    import uvicorn
-
     _maybe_configure_interactive_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
@@ -2486,8 +2484,13 @@ def _run_http(port: int) -> None:
     handle_pruning.prune_at_start()
     app = _streamable_http_app(server)
     app = SessionMaintenanceApp(app, lifetime.sessions)
-    logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
-    uvicorn.run(app, host=_HTTP_HOST, port=port, log_level="warning")
+    try:
+        sock = loopback_http.listen(_HTTP_HOST, port)
+    except loopback_http.PortUnavailableError as exc:
+        print(f"ERROR: {exc}; choose another port with --port or {HTTP_PORT_ENV}", file=sys.stderr)
+        raise SystemExit(2) from None
+    logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, sock.getsockname()[1])
+    loopback_http.serve(app, sock)
 
 
 def _streamable_http_app(server: Server):

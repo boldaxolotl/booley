@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import socket
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +22,7 @@ from booley.runtime.session_paths import session_jobs_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.mcp_tools.test_mcp_dispatch import _FakeLifetime, _run_id_from
 from tests.time_budget import hang_guard_s, scaled
+from tests.uvicorn_support import capture_serving
 
 SERVER = "mcp-stdio:developer:pid:test:1:1"
 
@@ -312,7 +315,25 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch):
     assert stored.read_at is not None
 
 
-def test_http_server_passes_stable_owner(monkeypatch):
+def _stub_http_server(monkeypatch, build=None):
+    """Stub everything but the bind and announcement of ``_run_http``; return the served list."""
+    monkeypatch.setattr(mcp_server, "_interactive_session_id", lambda: "box")
+    monkeypatch.setattr(mcp_server, "_maybe_configure_interactive_logs_dir", lambda: None)
+    monkeypatch.setattr(mcp_server, "_load_agent_settings_from_toml", lambda: None)
+    monkeypatch.setattr(mcp_server, "_build_server", build or (lambda *_a, **_k: (object(), [])))
+    monkeypatch.setattr(mcp_server.handle_pruning, "prune_at_start", lambda: None)
+    monkeypatch.setattr(mcp_server, "_streamable_http_app", lambda _server: object())
+    monkeypatch.setattr(mcp_server, "SessionMaintenanceApp", lambda app, _sessions: app)
+    return capture_serving(monkeypatch)
+
+
+def _announcements(caplog):
+    return [
+        r.getMessage() for r in caplog.records if "Interactive MCP server (HTTP)" in r.getMessage()
+    ]
+
+
+def test_http_server_passes_stable_owner(monkeypatch, caplog):
     from booley.mcp import job_ownership
 
     assert job_ownership.http_server_identity("box", 8765) == job_ownership.http_server_identity(
@@ -328,20 +349,36 @@ def test_http_server_passes_stable_owner(monkeypatch):
         seen["identity"] = server_identity
         return object(), []
 
-    import uvicorn
+    served = _stub_http_server(monkeypatch, build)
 
-    monkeypatch.setattr(mcp_server, "_interactive_session_id", lambda: "box")
-    monkeypatch.setattr(mcp_server, "_maybe_configure_interactive_logs_dir", lambda: None)
-    monkeypatch.setattr(mcp_server, "_load_agent_settings_from_toml", lambda: None)
-    monkeypatch.setattr(mcp_server, "_build_server", build)
-    monkeypatch.setattr(mcp_server.handle_pruning, "prune_at_start", lambda: None)
-    monkeypatch.setattr(mcp_server, "_streamable_http_app", lambda _server: object())
-    monkeypatch.setattr(mcp_server, "SessionMaintenanceApp", lambda app, _sessions: app)
-    monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
+    with caplog.at_level(logging.INFO, logger="booley.mcp.server"):
+        mcp_server._run_http(0)
 
-    mcp_server._run_http(8765)
+    assert seen["identity"] == job_ownership.http_server_identity("box", 0)
+    ((_app, (_host, port)),) = served
+    assert port != 0
+    assert _announcements(caplog) == [f"Interactive MCP server (HTTP) on 127.0.0.1:{port}"]
 
-    assert seen["identity"] == job_ownership.http_server_identity("box", 8765)
+
+def test_http_server_on_a_held_port_exits_2_without_announcing(monkeypatch, caplog, capsys):
+    served = _stub_http_server(monkeypatch)
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+
+        with (
+            caplog.at_level(logging.INFO, logger="booley.mcp.server"),
+            pytest.raises(SystemExit) as stop,
+        ):
+            mcp_server._run_http(port)
+
+    assert stop.value.code == 2
+    err = capsys.readouterr().err
+    assert f"127.0.0.1:{port}" in err
+    assert "--port" in err
+    assert _announcements(caplog) == []
+    assert served == []
 
 
 def test_legacy_record_falls_back_to_session_key():
