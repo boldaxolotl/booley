@@ -2413,8 +2413,12 @@ def _dispatch_main() -> int:
     if binding is ProjectBinding.REQUIRED:
         assert project_root is not None, "a REQUIRED command resolves a Project Root"
         _require_command_project(command, project_root)
-    # Doctor reports the retired keys as a FAIL; upgrade is booley-heal's first step.
-    exempt = command in {"doctor", "upgrade"} or binding is ProjectBinding.INDEPENDENT
+    # Doctor reports retired config as a FAIL; upgrade, session and chat open the
+    # Developer Agent chat where booley-heal removes it. Flows and MCP tools refuse.
+    exempt = (
+        command in {"doctor", "upgrade", "session", "chat"}
+        or binding is ProjectBinding.INDEPENDENT
+    )
     if project_root is not None and not exempt:
         refuse_retired_config(project_root)
 
