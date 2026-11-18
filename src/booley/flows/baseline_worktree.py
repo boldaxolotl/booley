@@ -549,7 +549,8 @@ def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> l
             _repoint(link, mirrored if os.path.lexists(mirrored) else target)
             continue
         in_worktree = wt_dir / target.relative_to(project_root)
-        _repoint(link, in_worktree)
+        # The hook may still build the target; Windows must know now whether it is a directory.
+        _repoint(link, in_worktree, as_directory=target.is_dir())
         if not in_worktree.exists() and target.exists():
             missing.append(str(rel))
     return sorted(missing)
@@ -560,7 +561,7 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
-def _repoint(link: Path, target: Path) -> None:
+def _repoint(link: Path, target: Path, *, as_directory: bool | None = None) -> None:
     """Replace *link* with a relative symlink to *target*.
 
     Relative rather than absolute so the link keeps meaning the same thing
@@ -568,7 +569,10 @@ def _repoint(link: Path, target: Path) -> None:
     project.
     """
     link.unlink()
-    link.symlink_to(os.path.relpath(target, link.parent), target_is_directory=target.is_dir())
+    link.symlink_to(
+        os.path.relpath(target, link.parent),
+        target_is_directory=target.is_dir() if as_directory is None else as_directory,
+    )
 
 
 def _git(cwd: Path, *args: str, timeout: int) -> subprocess.CompletedProcess[str]:

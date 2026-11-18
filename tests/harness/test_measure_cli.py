@@ -43,6 +43,9 @@ from tests.time_budget import scaled
 def _measure(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) -> int:
     """Run the real entry point as ``booley -C <project> measure <arguments>`` in a Sandbox."""
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    # Windows has no mountinfo, which reads as an issued Sandbox that mounts no ``/work``.
+    hand_written = cli.runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
+    monkeypatch.setattr(cli.runtime_context, "runtime_location", lambda: hand_written)
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(project), "measure", *arguments])
     return cli._dispatch_main()
