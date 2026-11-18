@@ -34,7 +34,8 @@ def keep_unreadable(path: Path) -> Path:
     The copy is named ``<name>.unreadable-<UTC time>``, with ``-2``, ``-3``, ...
     appended when that name is taken, so an earlier kept copy is never replaced.
     The caller holds the lock that serializes writers of *path*. ``OSError``
-    propagates, leaving *path* in place.
+    propagates; one raised by the rename leaves *path* in place, one raised by
+    the directory sync after it leaves the file at the kept path.
     """
     stem = f"{path.name}.unreadable-{timefmt.compact_utc_now()}"
     kept = path.with_name(stem)
