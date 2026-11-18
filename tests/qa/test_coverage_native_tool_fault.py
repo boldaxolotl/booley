@@ -6,19 +6,11 @@ import sys
 from pathlib import Path
 
 TOOL = Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults/native_tool.py"
-
-
-def _fake_merge_tool(directory: Path) -> Path:
-    """A stand-in `verilator_coverage` that writes one native count to its `--write` path."""
-    tool = directory / "verilator_coverage"
-    tool.write_text(
-        "#!/usr/bin/env python3\n"
-        "import sys\n"
-        "out = sys.argv[sys.argv.index('--write') + 1]\n"
-        "open(out, 'w').write(\"C 'point' 3\\n\")\n"
-    )
-    tool.chmod(0o755)
-    return tool
+#: Stands in for `verilator_coverage`: Python itself is the real executable, and this
+#: code, forwarded first, writes one native count to the `--write` path.
+_FAKE_MERGE = (
+    "import sys; open(sys.argv[sys.argv.index('--write') + 1], 'w').write(\"C 'p' 3\\n\")"
+)
 
 
 def test_merge_unsafe_leaves_a_directory_where_the_merged_file_was(tmp_path: Path) -> None:
@@ -27,14 +19,16 @@ def test_merge_unsafe_leaves_a_directory_where_the_merged_file_was(tmp_path: Pat
     merged = owned / "merged.dat"
     environment = {
         **os.environ,
-        "QA_REAL_EDA": str(_fake_merge_tool(tmp_path)),
+        "QA_REAL_EDA": sys.executable,
         "QA_EDA_OWNED": str(owned),
         "QA_EDA_FAULT": "merge-unsafe",
     }
 
     subprocess.run(
-        [sys.executable, str(TOOL), "--write", str(merged)], env=environment, check=True
+        [sys.executable, str(TOOL), "-c", _FAKE_MERGE, "--write", str(merged)],
+        env=environment,
+        check=True,
     )
 
     assert merged.is_dir()
-    assert (owned / "merged.dat.qa-merged").read_text() == "C 'point' 3\n"
+    assert (owned / "merged.dat.qa-merged").read_text() == "C 'p' 3\n"
