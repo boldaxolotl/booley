@@ -647,7 +647,7 @@ def test_cli_analysis_writes_no_development_state(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert list(tmp_path.rglob("state.json")) == []
     assert not (tmp_path / "reviewer-state").exists()
-    assert not (tmp_path / ".interactive_logs").exists()
+    assert not (tmp_path / "job_logs").exists()
 
 
 @pytest.mark.parametrize("failure", ["timed_out", "max_turns_exhausted"])

@@ -9,7 +9,7 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 
 # Inside ``.booley/`` we ignore transient state that should never be
-# committed (tmp scratch, runtime logs, lockfiles).  ``.interactive_logs/`` is
+# committed (tmp scratch, runtime logs, lockfiles).  ``job_logs/`` is
 # new in ADR 0012 — per-session transcripts written by the MCP server when an
 # outer Claude Code / Codex tab calls Booley Flows and Specialists.
 #
@@ -51,7 +51,7 @@ PROJECT_GITIGNORE_PATTERNS = (
     "tickets/waiver-candidates/",
     "tickets/logs/",
     "tickets/locks/",
-    ".interactive_logs/",
+    "job_logs/",
     ".runtime/",
     "runtime/",
     "worktrees/",

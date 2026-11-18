@@ -309,7 +309,7 @@ def _backfill_config_skeletons(
 def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
     """Ensure ``.booley/.gitignore`` covers every required ignore pattern.
 
-    Pre-existing projects predate later ignore lines (``.interactive_logs/``,
+    Pre-existing projects predate later ignore lines (``job_logs/``,
     ``.runtime/``, ``worktrees/``).  Rather than only creating the file when it's
     absent, we *self-heal*: any required pattern that isn't already present is
     appended.  This is non-destructive — existing (possibly user-customised)

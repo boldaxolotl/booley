@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import overload
 
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
+from booley.core.booley_layout import JOB_LOGS_DIR_NAME
 
 RUNTIME_DIR = ".runtime"
 JOBS_DIR = "jobs"
@@ -58,7 +58,7 @@ def project_job_roots(booley_dir: Path) -> tuple[Path, ...]:
     for pattern in (
         "logs/*/.runtime/jobs",
         "logs/.runtime/jobs",
-        f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs",
+        f"{JOB_LOGS_DIR_NAME}/*/.runtime/jobs",
         "runtime/sessions/*/.runtime/jobs",
     ):
         roots.update(booley_dir.glob(pattern))

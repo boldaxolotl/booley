@@ -31,10 +31,10 @@ def worktree(tmp_path, monkeypatch) -> Iterator[tuple[Path, Path]]:
 
 def test_worktree_mcp_server_jobs_are_visible_from_main(worktree, monkeypatch):
     from booley.mcp import handle_pruning
-    from booley.mcp.server import _maybe_configure_interactive_logs_dir
+    from booley.mcp.server import _maybe_configure_job_logs_dir
 
     main, _worktree = worktree
-    _maybe_configure_interactive_logs_dir()
+    _maybe_configure_job_logs_dir()
     record = job_records.JobRecord("run-1", "sim", rfc3339_from_epoch(1_800_000_000.0), 60)
     root = session_jobs_dir()
     job_records.write_record(record, root)
@@ -47,18 +47,18 @@ def test_worktree_mcp_server_jobs_are_visible_from_main(worktree, monkeypatch):
 
 
 def test_servers_of_different_checkouts_keep_separate_logs(worktree, monkeypatch):
-    from booley.mcp.server import _maybe_configure_interactive_logs_dir
+    from booley.mcp.server import _maybe_configure_job_logs_dir
 
     main, _tree = worktree
-    _maybe_configure_interactive_logs_dir()
+    _maybe_configure_job_logs_dir()
     worktree_logs = Path(os.environ["BOOLEY_LOGS_DIR"])
     monkeypatch.setenv("BOOLEY_LOGS_DIR", "")
     monkeypatch.chdir(main.parent)
     reset_cache()
-    _maybe_configure_interactive_logs_dir()
+    _maybe_configure_job_logs_dir()
     main_logs = Path(os.environ["BOOLEY_LOGS_DIR"])
     # Both servers share the host's name, yet neither sees the other's Jobs or sessions.
-    assert worktree_logs.parent == main_logs.parent == main / ".interactive_logs"
+    assert worktree_logs.parent == main_logs.parent == main / "job_logs"
     assert worktree_logs != main_logs
 
 

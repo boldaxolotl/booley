@@ -251,7 +251,7 @@ def main() -> None:
     invalidation = _invalidate_health() if choice_changed else ""
     worktrees = _repair_worktrees()
     clis = agent.sandbox_agent_clis()
-    server = incontainer_setup.ensure_http_server(mode="interactive") if clis else "skipped"
+    server = incontainer_setup.ensure_http_server() if clis else "skipped"
     trust = sandbox_trust_paths(_hook_start_directory()) if clis else ()
     status = _hide_issued_gateway(_register_clis(clis, trust))
     upgrade = observe_upgrade()

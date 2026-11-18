@@ -406,7 +406,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
                     "sim",
                 ],
                 "errors": [],
-                "logs_dir": "/work/.booley/.interactive_logs/session",
+                "logs_dir": "/work/.booley/job_logs/session",
                 "logs_dir_ok": True,
             }
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
@@ -1663,17 +1663,17 @@ def test_riscv_image_with_a_missing_document_fails_with_the_rebuild_fix(tmp_path
     assert "riscv32-unknown-elf-gcc" in _messages(result, Severity.PASS)
 
 
-def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsys):
+def test_doctor_fails_when_job_logs_tracked(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[:4] == ["git", "ls-files", "--", ".interactive_logs"]:
+        if cmd[:4] == ["git", "ls-files", "--", "job_logs"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
-                stdout=".interactive_logs/session/a0f4\n",
+                stdout="job_logs/session/a0f4\n",
                 stderr="",
             )
         return base_run(cmd, **kwargs)
@@ -1684,8 +1684,32 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
 
     output = capsys.readouterr().out
     assert rc == 1
-    assert ".interactive_logs/ has 1 tracked file(s)" in output
-    assert "git rm -r --cached .interactive_logs" in output
+    assert "job_logs/ has 1 tracked file(s)" in output
+    assert "git rm -r --cached job_logs" in output
+
+
+def test_doctor_warns_about_leftover_interactive_logs_and_keeps_them(
+    tmp_path, monkeypatch, capsys
+):
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    main_dir = tmp_path / "main-booley"
+    leftover = main_dir / ".interactive_logs"
+    (leftover / "s1").mkdir(parents=True)
+    (leftover / "s1" / "a.log").write_bytes(b"old session\n")
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _root: main_dir)
+
+    doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    output = " ".join(colors.strip_ansi(capsys.readouterr().out).split())
+    command = (
+        f"Remove-Item -LiteralPath '{leftover}' -Recurse -Force"
+        if os.name == "nt"
+        else f"rm -rf {leftover}"
+    )
+    assert f"{leftover} holds session logs from an earlier Booley version" in output
+    assert f"delete it: `{command}`" in output
+    assert (leftover / "s1" / "a.log").read_bytes() == b"old session\n"
 
 
 @pytest.mark.skipif(

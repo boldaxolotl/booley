@@ -190,7 +190,7 @@ class TestDockerRunArgv:
 
     def test_remote_env_becomes_e_flags(self, workspace: Path):
         env = _flag_values(_argv(_spec(), workspace), "-e")
-        assert "BOOLEY_MCP_MODE=interactive" in env
+        assert "BOOLEY_MCP_DEVELOPER_AGENT=1" in env
         assert "BOOLEY_DIR=/booley" in env
         assert "BOOLEY_AGENT_APP=claude" in env
         assert "HTTP_PROXY=http://booley-proxy:8080" in env

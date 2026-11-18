@@ -399,7 +399,7 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
 class Exposure:
     """One immutable exposure value; only server wiring reads the environment."""
 
-    interactive: bool = True
+    developer_agent: bool = True
     nested: frozenset[str] | None = None
     explicit: frozenset[str] | None = None
     debug: bool = False
@@ -408,6 +408,7 @@ class Exposure:
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> Exposure:
+        from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
         from booley.targets.flow_names import canonical_set
 
         def names(key: str) -> frozenset[str]:
@@ -416,7 +417,7 @@ class Exposure:
             )
 
         return cls(
-            interactive=values.get("BOOLEY_MCP_MODE", "").strip().lower() == "interactive",
+            developer_agent=values.get(DEVELOPER_AGENT_ENV) == "1",
             nested=names("BOOLEY_NESTED_MCP_TOOLS")
             if values.get("BOOLEY_NESTED_AGENT") == "1"
             else None,
@@ -466,7 +467,9 @@ def report_visible(exposure: Exposure) -> bool:
 def _interactive_utility_visible(name: str, exposure: Exposure) -> bool:
     if exposure.nested is not None:
         return name in exposure.nested
-    return exposure.interactive or (exposure.explicit is not None and name in exposure.explicit)
+    return exposure.developer_agent or (
+        exposure.explicit is not None and name in exposure.explicit
+    )
 
 
 def utilities_visible(exposure: Exposure) -> bool:

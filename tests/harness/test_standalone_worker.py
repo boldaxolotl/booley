@@ -357,9 +357,7 @@ def test_specialist_job_gets_a_transcript_dir_and_keeps_its_command(
 ) -> None:
     run_id, seen = run_stub_specialist(project, ctl)
 
-    transcripts = (
-        booley_dir_of(project) / ".interactive_logs" / "standalone" / run_id / "transcripts"
-    )
+    transcripts = booley_dir_of(project) / "job_logs" / "standalone" / run_id / "transcripts"
     assert seen["argv"] == ["--ctl", str(ctl), "--transcript-dir", str(transcripts)]
     record = job_records.read_record(run_id, jobs_root_of(project))
     assert record is not None

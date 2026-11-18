@@ -35,7 +35,7 @@ ADR_0082_SAMPLES = {
     "runtime/sessions/s1.json": "common",
     "runtime/session_activity/a": "common",
     "runtime/dashboard-task.lock": "common",
-    ".interactive_logs/a.log": "common",
+    "job_logs/a.log": "common",
     "runtime/doctor_stamp.json": "common",
     "runtime/doctor_deep_stamp.json": "common",
     "runtime/upgrade_review.json": "common",

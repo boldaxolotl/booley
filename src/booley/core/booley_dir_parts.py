@@ -119,7 +119,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/sessions/": _COMMON,
         "runtime/session_activity/": _COMMON,
         "runtime/dashboard-task.lock": _COMMON,
-        ".interactive_logs/": _COMMON,
+        "job_logs/": _COMMON,
         "runtime/doctor_stamp.json": _COMMON,
         "runtime/doctor_deep_stamp.json": _COMMON,
         "runtime/upgrade_review.json": _COMMON,

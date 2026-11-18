@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
+from booley.core.booley_layout import JOB_LOGS_DIR_NAME
 from booley.core.boundary import as_dict, as_float
 from booley.harness.standalone_job import (
     standalone_jobs_dir,
@@ -96,7 +96,7 @@ def retained_job_roots(booley_dir: Path, *, interactive_root: Path | None = None
     """
     roots = [] if interactive_root is None else [interactive_root]
     sessions = []
-    for path in booley_dir.glob(f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs"):
+    for path in booley_dir.glob(f"{JOB_LOGS_DIR_NAME}/*/.runtime/jobs"):
         try:
             sessions.append((path.stat().st_mtime_ns, path))
         except OSError:

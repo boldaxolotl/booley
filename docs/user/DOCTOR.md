@@ -73,6 +73,12 @@ To fix a problem yourself, follow the `→` hint under it.
 | `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section. Delete its tables, or ask the Developer Agent to run `/booley-heal`. |
 | `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
 
+### Old session logs
+
+| Check ID | Level | Meaning and fix |
+|---|---|---|
+| `job-logs.leftover` | `!` | A `.interactive_logs/` directory from an earlier Booley version is still in the main checkout's Booley Directory. Booley no longer reads it and does not move its logs; delete it with the command Doctor prints. |
+
 ## Automatic checks
 
 Booley runs plain Doctor in the background when the Sandbox starts, if the

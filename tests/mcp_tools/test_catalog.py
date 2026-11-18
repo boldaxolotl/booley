@@ -12,13 +12,13 @@ from booley.mcp.registry import discover_mcp_tools
 
 MODES = (
     {},
-    {"BOOLEY_MCP_MODE": "interactive"},
-    {"BOOLEY_MCP_MODE": "interactive", "BOOLEY_MCP_DEBUG_TOOLS": "1"},
+    {"BOOLEY_MCP_DEVELOPER_AGENT": "1"},
+    {"BOOLEY_MCP_DEVELOPER_AGENT": "1", "BOOLEY_MCP_DEBUG_TOOLS": "1"},
     {"BOOLEY_NESTED_AGENT": "1", "BOOLEY_NESTED_MCP_TOOLS": "sim"},
     {"BOOLEY_MCP_TOOLS": "lint"},
     {"BOOLEY_MCP_TOOLS": ""},
     {"BOOLEY_NESTED_AGENT": "1", "BOOLEY_NESTED_MCP_TOOLS": "sim", "BOOLEY_MCP_TOOLS": "lint"},
-    {"BOOLEY_MCP_MODE": "interactive", "BOOLEY_MCP_TOOLS": "lint"},
+    {"BOOLEY_MCP_DEVELOPER_AGENT": "1", "BOOLEY_MCP_TOOLS": "lint"},
     {
         "BOOLEY_NESTED_AGENT": "1",
         "BOOLEY_NESTED_MCP_TOOLS": "coverage_evidence",
@@ -86,7 +86,7 @@ def test_server_uses_catalog_owner():
 def test_utility_tool_schemas_validate_arguments_before_dispatch(tool, arguments, accepted):
     """Malformed utility-tool input gets a schema error and no dispatched call."""
     exposure = catalog.Exposure.from_mapping(
-        {"BOOLEY_MCP_MODE": "interactive", "BOOLEY_MCP_DEBUG_TOOLS": "1"}
+        {"BOOLEY_MCP_DEVELOPER_AGENT": "1", "BOOLEY_MCP_DEBUG_TOOLS": "1"}
     )
     definition = next(d for d in catalog.visible_definitions(exposure, []) if d["name"] == tool)
     calls: list[tuple[str, dict]] = []

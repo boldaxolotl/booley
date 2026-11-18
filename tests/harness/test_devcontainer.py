@@ -90,7 +90,7 @@ class TestBuildSpec:
         env = build_spec(dc.APP_NONE)["remoteEnv"]
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert env[key] == dc.PROXY_URL
-        assert env["BOOLEY_MCP_MODE"] == "interactive"
+        assert env["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
         assert env["BOOLEY_DIR"] == dc.BOOLEY_DIR_TARGET
 
     def test_agent_app_env_matches_app(self):

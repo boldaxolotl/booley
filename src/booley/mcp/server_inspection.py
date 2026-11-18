@@ -33,6 +33,7 @@ from booley.audit.output_excerpt import output_excerpt_lines
 from booley.config.flow_enablement import flow_enabled_from_config
 from booley.core.boundary import is_str_list
 from booley.runtime.booley_dir import sandbox_booley_dir
+from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, run_captured_bounded
 from booley.targets.flow_names import config_section
 
@@ -70,7 +71,7 @@ def inspect_mcp_server(request: McpServerInspectionRequest) -> DiagnosticReport:
     findings = Findings()
     env = os.environ.copy()
     env["BOOLEY_DIR"] = str(request.booley_dir)
-    env["BOOLEY_MCP_MODE"] = "interactive"
+    env[DEVELOPER_AGENT_ENV] = "1"
     try:
         result = run_captured_bounded(
             _probe_command(request),
@@ -98,7 +99,7 @@ def _probe_command(request: McpServerInspectionRequest) -> list[str]:
         "-e",
         f"BOOLEY_DIR={sandbox_booley_dir(request.project_root)}",
         "-e",
-        "BOOLEY_MCP_MODE=interactive",
+        f"{DEVELOPER_AGENT_ENV}=1",
         request.image,
         "python",
         "-m",
