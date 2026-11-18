@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.time_budget import scaled
 
 from booley.runtime import (
     booley_dir_migration,
@@ -306,7 +307,7 @@ def test_hung_vaporview_probe_kills_the_tree_and_returns_promptly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A probe whose command hangs ends soon as ``None`` and leaves no descendant running."""
-    monkeypatch.setattr(vaporview, "_PROBE_TIMEOUT_S", 2, raising=False)
+    monkeypatch.setattr(vaporview, "_PROBE_TIMEOUT_S", scaled(2), raising=False)
     with heartbeat_tree(tmp_path) as paths:
         # The parent script ignores the trailing ``python3 -c pass`` the probe appends.
         prefix = parent_argv(tmp_path, sys.executable, paths, "live")
@@ -314,7 +315,7 @@ def test_hung_vaporview_probe_kills_the_tree_and_returns_promptly(
         result = vaporview._run_probe(prefix, "pass")
         elapsed = time.monotonic() - start
         assert result is None
-        assert elapsed < 25, f"probe hung {elapsed:.1f}s on a pipe held by a grandchild"
+        assert elapsed < scaled(25), f"probe hung {elapsed:.1f}s on a pipe held by a grandchild"
         assert paths["heartbeat"].exists(), "grandchild never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), (
             "grandchild still running after the timeout"

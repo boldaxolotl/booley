@@ -15,7 +15,6 @@ from tests.subprocess_budget import run_bounded_child
 from booley.runtime.pinned_history import raw_git
 from booley.targets.catalog import TargetCatalog
 
-GIT_TIMEOUT_S = 30
 FAKE_OID = "a" * 40
 
 CORE_TEMPLATE = (
@@ -51,7 +50,7 @@ def git(cwd: Path, *args: str) -> str:
         "protocol.file.allow=always",
         *args,
     ]
-    return run_bounded_child(command, cwd=cwd, timeout=GIT_TIMEOUT_S, check=True).stdout.strip()
+    return run_bounded_child(command, cwd=cwd, check=True).stdout.strip()
 
 
 def new_repository(path: Path) -> Path:

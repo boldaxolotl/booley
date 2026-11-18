@@ -13,6 +13,7 @@ import pytest
 from tests.oom_priority_support import FakeProc, oom_priority
 from tests.subprocess_budget import run_bounded_child
 from tests.test_job_slots import FakeWorld, make_store
+from tests.time_budget import hang_guard_s
 
 import booley
 from booley.runtime import job_slots
@@ -270,7 +271,7 @@ class TestJobOomRankingLifecycle:
         with oom_priority.JobOomRanking(store, token, proc):  # type: ignore[arg-type]
             assert proc.values[101] == 1000 - oom_priority.COORDINATOR_GAP
             late_tool = proc.add(5000, parent=tool, value=3)
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + hang_guard_s()
             while proc.values[late_tool] != 1000 and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert proc.values[late_tool] == 1000
@@ -296,7 +297,7 @@ class TestJobOomRankingLifecycle:
 
         with oom_priority.JobOomRanking(store, token, proc):  # type: ignore[arg-type]
             monkeypatch.setattr(store, "observe", flaky)
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + hang_guard_s()
             while failures and time.monotonic() < deadline:
                 time.sleep(0.01)  # a pass has hit the failure
             assert failures == []
@@ -466,7 +467,7 @@ token = store.acquire(
 start = adj(os.getpid())
 with oom_priority.job_oom_priority(store, token):
     tool = subprocess.Popen(["sleep", "60"])
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + float(sys.argv[2])
     while adj(tool.pid) <= adj(os.getpid()) and time.monotonic() < deadline:
         time.sleep(0.05)
     seen = {"coordinator": adj(os.getpid()), "tool": adj(tool.pid)}
@@ -478,7 +479,8 @@ print(json.dumps({"start": start, "end": adj(os.getpid()), **seen}))
     source_root = str(Path(booley.__file__).resolve().parents[1])
     environment = os.environ | {"PYTHONPATH": source_root}
     completed = run_bounded_child(
-        [sys.executable, "-c", script, str(tmp_path / "slots")], env=environment
+        [sys.executable, "-c", script, str(tmp_path / "slots"), str(hang_guard_s())],
+        env=environment,
     )
     assert completed.returncode == 0, completed.stderr
     seen = json.loads(completed.stdout.strip().splitlines()[-1])

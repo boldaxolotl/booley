@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 from tests.gateway_command_support import count_runs, write_token_command
+from tests.time_budget import hang_guard_s
 
 from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
@@ -441,7 +442,7 @@ async def test_gateway_repeated_auth_failure_stops_after_one_refresh(
     assert count_runs(launches) == 2
 
 
-_HOLD_BACK_DEADLINE_SECONDS = 30
+_HOLD_BACK_DEADLINE_SECONDS = hang_guard_s()
 
 
 @pytest.mark.asyncio

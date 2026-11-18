@@ -20,6 +20,7 @@ import pytest
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.runtime import dockerfile_syntax
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 DIND_IMAGE = (
     "docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121"
@@ -58,7 +59,9 @@ class DockerClient:
 
     command_prefix: tuple[str, ...] = ()
 
-    def run(self, *args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, *args: str, timeout: float = 2 * hang_guard_s()
+    ) -> subprocess.CompletedProcess[str]:
         """Run one Docker command, killing its process tree after *timeout* seconds."""
         return run_bounded_child(["docker", *self.command_prefix, *args], timeout=timeout)
 
@@ -74,7 +77,7 @@ class IsolatedDockerDaemon:
     image_id: str
 
 
-def docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+def docker(*args: str, timeout: float = 2 * hang_guard_s()) -> subprocess.CompletedProcess[str]:
     """Run Docker without raising so tests can report stdout and stderr."""
     return HOST_DOCKER.run(*args, timeout=timeout)
 
@@ -123,11 +126,11 @@ def _start_dind(name: str) -> None:
     assert_ok(result)
 
 
-def _wait_for_dind(client: DockerClient, *, timeout: float = 30.0) -> str:
+def _wait_for_dind(client: DockerClient, *, timeout: float = hang_guard_s()) -> str:
     deadline = time.monotonic() + timeout
     captured = ""
     while time.monotonic() < deadline:
-        result = client.run("info", "--format", "{{.ID}}", timeout=5)
+        result = client.run("info", "--format", "{{.ID}}", timeout=scaled(5))
         captured = result.stdout + result.stderr
         daemon_id = result.stdout.strip()
         if result.returncode == 0 and daemon_id:
@@ -225,7 +228,7 @@ def isolated_docker_daemon(
     archive_dir: Path,
     *,
     name_prefix: str | None = None,
-    readiness_timeout: float = 30.0,
+    readiness_timeout: float = hang_guard_s(),
 ) -> Iterator[IsolatedDockerDaemon]:
     """Load *candidate* into a networkless disposable Docker daemon."""
     if readiness_timeout <= 0:

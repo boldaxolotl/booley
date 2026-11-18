@@ -21,9 +21,10 @@ from booley.runtime.execution_records import (
     execution_paths,
     read_json,
 )
+from tests.time_budget import hang_guard_s, scaled
 
 _SRC_ROOT = Path(__file__).parents[1] / "src"
-_WAIT_SECONDS = 5.0
+_WAIT_SECONDS = hang_guard_s()
 _T = TypeVar("_T")
 
 
@@ -104,9 +105,9 @@ def start_supervisor_with_detached_descendant(
             "--execution-id",
             execution_id,
             "--grace-seconds",
-            "0.1",
+            str(scaled(0.1)),
             "--attachment-timeout-seconds",
-            "60",
+            str(2 * hang_guard_s()),
             "--",
             sys.executable,
             "-c",
@@ -150,7 +151,9 @@ class _RecoveryInterleaving:
             self.reads += 1
             if self.reads == 1:
                 self.thread.start()
-                assert self.settled.wait(10), "recovery neither finished nor met the record lock"
+                assert self.settled.wait(hang_guard_s()), (
+                    "recovery neither finished nor met the record lock"
+                )
         return raw
 
     def replace(self, source: Path, destination: Path) -> None:
@@ -186,7 +189,7 @@ def run_with_recovery_between_read_and_write(
     monkeypatch.setattr(execution_records, "replace_file", hooks.replace)
     monkeypatch.setattr(file_lock, "acquire_file_lock", hooks.acquire)
     interrupted()
-    hooks.thread.join(10)
+    hooks.thread.join(hang_guard_s())
     assert not hooks.thread.is_alive()
     assert hooks.reads >= 1
     assert hooks.failures == []

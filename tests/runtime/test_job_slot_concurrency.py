@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tests.time_budget import hang_guard_s
+
 from booley.runtime import job_slots
 
 # One run-alone claim at a time: the single-holder vehicle for mutual exclusion.
@@ -44,7 +46,7 @@ def _hold_single_slot(
     counter_lock: Any,
 ) -> None:
     store = job_slots.SlotStore(Path(root))
-    start.wait(timeout=10)
+    start.wait(timeout=hang_guard_s())
     token = store.acquire(
         job_slots.CLASS_MEMORY,
         pid=os.getpid(),
@@ -80,7 +82,7 @@ def test_single_slot_never_has_multiple_process_holders(tmp_path: Path) -> None:
         worker.start()
     try:
         for worker in workers:
-            worker.join(timeout=20)
+            worker.join(timeout=2 * hang_guard_s())
             assert not worker.is_alive(), "slot worker exceeded its bounded join"
             assert worker.exitcode == 0
     finally:
@@ -88,7 +90,7 @@ def test_single_slot_never_has_multiple_process_holders(tmp_path: Path) -> None:
             if worker.is_alive():
                 worker.terminate()
         for worker in workers:
-            worker.join(timeout=5)
+            worker.join(timeout=hang_guard_s())
 
     assert active.value == 0
     assert maximum.value == 1

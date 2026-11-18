@@ -194,9 +194,9 @@ with open(sys.argv[1], 'r+') as handle:
     ]
     with path.open("r+") as handle:
         file_lock.wait_for_file_lock(handle, timeout_s=0, preserve_contents=True)
-        blocked = run_bounded_child(command, check=True, timeout=20)
+        blocked = run_bounded_child(command, check=True)
         assert blocked.stdout.strip() == "busy"
         file_lock.release_file_lock(handle)
-    available = run_bounded_child(command, check=True, timeout=20)
+    available = run_bounded_child(command, check=True)
     assert available.stdout.strip() == "acquired"
     assert path.read_bytes() == b""
