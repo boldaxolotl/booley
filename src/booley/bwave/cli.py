@@ -996,8 +996,12 @@ def _list_envelope(trace: str, globs: list[str]) -> dict:
     signal set, the clock, the end of the trace — rides on this one call.
     """
     flags = [flag for glob in globs for flag in ("-s", glob)]
-    cmd_args = ["list", trace, *flags, "--format", "json", "--limit", "10000"]
-    return _capture_envelope(_run_query(cmd_args), cmd_args)
+    cmd_args = ["list", trace, *flags, "--no-bit-slices", "--format", "json", "--limit", "10000"]
+    result = _run_query(cmd_args)
+    if result.returncode == EXIT_USAGE:
+        # The viewer takes whole signals: a bit-slice selector is refused.
+        _exit_usage(_inner_message(result))
+    return _capture_envelope(result, cmd_args)
 
 
 def _list_query(trace: str, globs: list[str]) -> dict:

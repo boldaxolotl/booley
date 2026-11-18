@@ -2450,3 +2450,17 @@ def test_clock_grid_options_forward_to_registered_store(args):
         "trace.fst",
         *args[1:],
     ]
+
+
+def test_list_envelope_refuses_native_usage_error(monkeypatch, capsys):
+    """#4898: a native exit 2 (a bit-slice selector) makes ``gui`` exit 2."""
+    from booley.bwave import cli as bwave
+
+    failed = subprocess.CompletedProcess([], 2, "", "bit range [9:8] exceeds width 8")
+    monkeypatch.setattr(bwave, "_run_query", lambda _args: failed)
+
+    with pytest.raises(SystemExit) as raised:
+        bwave._list_envelope("trace.fst", ["data[9:8]"])
+
+    assert raised.value.code == 2
+    assert "exceeds width 8" in capsys.readouterr().err

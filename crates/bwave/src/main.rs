@@ -281,6 +281,10 @@ struct ListArgs {
     #[arg(long)]
     tree: bool,
 
+    /// Refuse a pattern that selects bits of a vector (set by `bwave gui`)
+    #[arg(long, hide = true)]
+    no_bit_slices: bool,
+
     #[command(flatten)]
     global: GlobalOpts,
 }
@@ -946,6 +950,14 @@ fn select_reset_or_exit(cache: &mut ColumnCache, pattern: Option<&str>) {
     }
 }
 
+/// Add the bit-slice rows `patterns` ask for; a refused slice is caller input.
+fn add_slices_or_exit(cache: &mut ColumnCache, patterns: &[String]) {
+    if let Err(error) = cache.add_slices(patterns) {
+        eprintln!("ERROR: {error}");
+        process::exit(2);
+    }
+}
+
 /// Run a query through ColumnCache (loads the store file directly).
 fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
     let mut cache = load_store_or_exit(bwave_path);
@@ -979,6 +991,7 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
             }
         }
     }
+    add_slices_or_exit(&mut cache, &cfg.signal_patterns());
     if cfg.pre_edge && cache.clock_period_ticks == 0 {
         eprintln!("ERROR: --sample-mode pre-edge requires a usable clock");
         process::exit(2);
@@ -1092,6 +1105,16 @@ fn run_list(args: ListArgs) {
                 process::exit(2);
             }
         }
+    }
+    if args.no_bit_slices {
+        for pattern in &patterns {
+            if let Err(error) = cache.refuse_slice(pattern, "bwave gui") {
+                eprintln!("ERROR: {error}");
+                process::exit(2);
+            }
+        }
+    } else {
+        add_slices_or_exit(&mut cache, &patterns);
     }
     list_signals_from_cache(
         &cache,

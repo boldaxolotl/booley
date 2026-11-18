@@ -235,3 +235,23 @@ def test_gui_keeps_anchored_and_bare_matching(
 ) -> None:
     """AC2/AC4: ``gui`` resolves full-path, ``*``-led and bare names as before."""
     assert _resolve_gui(store, glob, monkeypatch) == expected
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_gui_refuses_bit_slice(
+    store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    group: bool,
+) -> None:
+    """#4898: ``gui`` takes whole signals, so a bit-slice selector exits 2."""
+    monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    with pytest.raises(SystemExit) as raised:
+        if group:
+            cli._resolve_signal_groups(str(store), ["G=dut.count[3:0]"], 100)
+        else:
+            cli._resolve_signal_globs(str(store), ["dut.count[3:0]"], 100)
+    assert raised.value.code == 2
+    err = capsys.readouterr().err
+    assert "bwave gui" in err
+    assert "TOP.tb.dut.count" in err

@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cache::CachedSignal;
-use crate::signal::{match_signal, SignalPattern};
+use crate::signal::SignalPattern;
 
 /// The reset a store resolved to, for loading and for queries.
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ pub fn candidate(signals: &[CachedSignal], matchers: Option<&[SignalPattern]>) -
         .enumerate()
         .filter(|(_, s)| s.width == 1 && s.var_type != "real" && s.var_type != "realtime")
         .filter(|(_, s)| match matchers {
-            Some(m) => match_signal(&s.name, m),
+            Some(m) => s.matches(m),
             None => {
                 let leaf = leaf(&s.name);
                 leaf.contains("rst") || leaf.contains("reset")

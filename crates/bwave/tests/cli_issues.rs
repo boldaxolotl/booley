@@ -1418,17 +1418,156 @@ fn indexed_element_pattern_selects_only_its_element() {
         assert!(present.iter().all(|n| out.contains(n)), "{pattern}: {out}");
         assert!(!absent.iter().any(|n| out.contains(n)), "{pattern}: {out}");
     }
-    // A nonexistent element, or an index into a ranged vector, is a miss.
-    for (store, pattern, other) in [
-        (&ua_s, "imem_wr[1]", "imem_wr"),
-        (&ps_s, "counter[3]", "counter"),
-    ] {
-        let (out, err, code) = run(&issue_4767_query("signal", store, &[pattern]));
-        assert_eq!(code, 2, "{pattern}: {out}");
-        assert!(err.contains("no signals match"), "{pattern}: {err}");
-        assert!(!out.contains(other), "{pattern}: {out}");
-    }
+    // A nonexistent element is a miss.
+    let (out, err, code) = run(&issue_4767_query("signal", &ua_s, &["imem_wr[1]"]));
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        err.contains("no signals match") && !out.contains("imem_wr"),
+        "{err}"
+    );
     let _ = (std::fs::remove_file(&ua), std::fs::remove_file(&ps));
+}
+
+// #4898: a bit range or index on a vector selects those bits, in every
+// command that takes a signal pattern.
+#[test]
+fn bit_range_pattern_selects_the_slice() {
+    let br = build_bwave("test_bit_range.vcd", "bit_range");
+    let ps = build_bwave("test_ps_timescale.vcd", "bit_range_ps");
+    let (b, p) = (br.to_string_lossy(), ps.to_string_lossy());
+    let sig = |sel: &str| run(&["signal", &b, "-s", sel, "-t", "0:9"]);
+    let (out, err, code) = run(&["find", &b, "qa.data[5:4]", "2'b11"]);
+    assert_eq!(code, 0, "{err}");
+    for c in ["cycle 4 ", "cycle 5 ", "cycle 6 "] {
+        assert!(out.contains(&format!("{c}qa.data[5:4] 3")), "{out}");
+    }
+    let (out, _, _) = run(&["find", &b, "qa.data[3:0]", "8'h33"]);
+    assert!(!out.contains("cycle"), "{out}");
+    let (out, _, _) = sig("qa.data[5:4]");
+    let rows: Vec<_> = out.lines().filter(|l| !l.starts_with('#')).collect();
+    assert_eq!(rows, ["1 data[5:4] 0", "4 data[5:4] 3", "7 data[5:4] 0"]);
+    assert!(sig("qa.data[5:4]%b").0.contains("data[5:4] 11"));
+    let rows = sig("qa.data[3]").0;
+    assert!(
+        rows.contains("7 data[3] 1") && rows.contains("8 data[3] 0"),
+        "{rows}"
+    );
+    for (whole, value) in [("qa.data[7:0]", "33"), ("qa.addr[15:8]", "A5")] {
+        let (out, _, _) = sig(whole);
+        assert!(out.contains(value), "{whole}: {out}");
+        assert!(
+            !out.contains("[7:0]") && !out.contains("data["),
+            "{whole}: {out}"
+        );
+    }
+    assert!(sig("qa.addr[11:8]").0.contains("addr[11:8] 5"));
+    // Leading zeros name the same slice.
+    assert_eq!(sig("qa.data[05:04]").0, sig("qa.data[5:4]").0);
+    let (out, _, _) = run(&["signal", &b, "-s", "qa.data[5:4]", "--format", "json"]);
+    assert!(out.contains("\"name\": \"data[5:4]\""), "{out}");
+    let (out, _, _) = run(&["wave", &b, "-s", "qa.data[5:4]", "-t", "0:9"]);
+    assert!(out.contains("data[5:4]  0  0  0  0  3  3  3"), "{out}");
+    let (out, _, _) = run(&[
+        "wave",
+        &b,
+        "-s",
+        "qa.data[5:4]",
+        "-t",
+        "0:9",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.contains("\"data[5:4]\"") && !out.contains("\"33\""),
+        "{out}"
+    );
+    let (out, _, _) = run(&["list", &b, "-s", "*data[5:4]", "--format", "json"]);
+    assert!(
+        out.contains("\"name\": \"data[5:4]\"") && out.contains("\"width\": 2"),
+        "{out}"
+    );
+    let (out, _, _) = run(&["list", &p, "-s", "counter[3]"]);
+    assert!(out.contains("counter[3]"), "{out}");
+    let _ = (std::fs::remove_file(&br), std::fs::remove_file(&ps));
+}
+
+// #4898: every pattern-taking option either slices or exits 2.
+#[test]
+fn bit_range_pattern_in_every_option() {
+    let br = build_bwave("test_bit_range.vcd", "bit_range_opts");
+    let b = br.to_string_lossy();
+    let ok: [(&[&str], &str); 7] = [
+        (
+            &["value", "--at", "5", "-s", "qa.data[5:4]"],
+            "data[5:4]                                = 3\n",
+        ),
+        (
+            &["sample", "qa.data[5:4]", "2'b11", "-s", "qa.data[3]"],
+            "data[3] 0",
+        ),
+        (
+            &["diff", "1", "4", "-s", "qa.data[5:4]"],
+            "@1=0            @4=3\n",
+        ),
+        (
+            &[
+                "distance",
+                "qa.data[5:4]",
+                "2'b11",
+                "--to",
+                "qa.data[3]",
+                "1'b1",
+            ],
+            "@ 4 -> @ 7  d=3",
+        ),
+        (
+            &["stats", "-s", "qa.data[5:4]", "--format", "json"],
+            "\"qa.data[5:4]\"",
+        ),
+        (&["stuck", "-s", "qa.data[7:6]"], "data[7:6]"),
+        (&["list", "-s", "qa.data[3]"], "data[3]"),
+    ];
+    for (args, want) in ok {
+        let mut full = vec![args[0], &b];
+        full.extend(&args[1..]);
+        let (out, err, code) = run(&full);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.contains(want), "{args:?}: {out}");
+    }
+    let bad: [(&[&str], &str); 12] = [
+        (
+            &["signal", "-s", "qa.data[4294967296:0]"],
+            "invalid bit select",
+        ),
+        (&["signal", "-s", "qa.data[5::4]"], "invalid bit select"),
+        (&["signal", "-s", "qa.data[9:8]"], "8 bits"),
+        (&["signal", "-s", "qa.data[4:5]"], "8 bits"),
+        (&["signal", "-s", "qa.addr[7:0]"], "[15:8]"),
+        (&["signal", "-s", "qa.v[1:0]"], "ascending"),
+        (&["list", "-s", "*[5:4]"], "wide"),
+        (
+            &["distance", "qa.data[5:4]", "2'b11", "-s", "qa.data[5:4]"],
+            "does not support -s",
+        ),
+        (&["signal", "--clock", "qa.data[0]"], "--clock"),
+        (&["signal", "--reset", "qa.data[1]"], "--reset"),
+        (&["overview", "--clock", "qa.data[0]"], "qa.data"),
+        (&["list", "--reset", "qa.data[1]"], "qa.data"),
+    ];
+    for (args, want) in bad {
+        let mut full = vec![args[0], &b];
+        full.extend(&args[1..]);
+        let (_, err, code) = run(&full);
+        assert_eq!(code, 2, "{args:?}: {err}");
+        assert!(err.contains(want), "{args:?}: {err}");
+    }
+    let _ = std::fs::remove_file(&br);
+    let (dir, fst) = issue_1108_store("slice-alias");
+    let f = fst.to_string_lossy();
+    let count = |p: &str| run(&["find", &f, p, "change", "--async", "--count"]).0;
+    assert!(count("tb.a[0]").contains(char::is_numeric));
+    assert_eq!(count("tb.a*[0]"), count("tb.a[0]"));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 // A real character class keeps class semantics — the index fix must not
