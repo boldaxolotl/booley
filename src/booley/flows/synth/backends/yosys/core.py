@@ -731,7 +731,7 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
         if key in _MIGRATED_CONSTRAINT_KEYS:
             sys.exit(
                 f"ERROR: [flows.synth.timing] {key!r} is no longer "
-                "read (ADR 0029). ASIC design constraints moved into a "
+                "read. ASIC design constraints moved into a "
                 "`file_type: SDC` fileset on the FuseSoC Target. Put "
                 "create_clock / set_input_delay / set_output_delay / "
                 "set_false_path into an SDC file, add it to the Target's "

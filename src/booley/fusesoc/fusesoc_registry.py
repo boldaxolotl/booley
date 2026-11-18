@@ -1062,7 +1062,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
             raise CoreCollisionError(
                 f"core VLNV {_vlnv_key(vlnv)!r} is authored in both core roots: "
                 f"{repo_file} (repo tree) and {state_file} ({stealth_root.relative_to(root).as_posix()}/); "
-                "rename or delete one — cross-root precedence is never silent (ADR 0036)"
+                "rename or delete one — cross-root precedence is never silent"
             )
         seen.setdefault(zone, core_file)
         for name in core_target_names(doc):

@@ -5,7 +5,7 @@ Two transports (``--transport``, or ``BOOLEY_MCP_TRANSPORT``):
 - ``stdio`` (default) — spawned by the agent app / SDK as a child process
   inside the Sandbox. The agent client owns the child process lifetime.
 - ``http`` — a streamable-HTTP server on ``127.0.0.1``. Used by
-  the Sandbox (ADR 0023): the devcontainer ``postStartCommand`` starts it
+  the Sandbox: the devcontainer ``postStartCommand`` starts it
   on every container start (including resume), and the agent app *connects*
   to a URL instead of owning a child process — so a devcontainer stop→start
   no longer strands the client with a dead stdio pipe it never re-spawns.

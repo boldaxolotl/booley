@@ -700,8 +700,8 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
         # are gone (ADR 0028), so tiers have nothing to size. Keep a usable
         # limit when one is derivable, but tell the user to migrate.
         logger.warning(
-            "[sandbox] memory tier table is retired (ADR 0028: container-only, "
-            'one memory limit); use a single string, e.g. memory = "8g"',
+            "[sandbox] memory tier table is retired (Booley runs one container "
+            'with one memory limit); use a single string, e.g. memory = "8g"',
         )
         legacy_default = mem_val.get("default", "")
         if isinstance(legacy_default, str):
@@ -710,8 +710,8 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
         logger.warning("Invalid [sandbox] memory %r; ignoring", mem_val)
     if "memory_tiers" in section:
         logger.warning(
-            "[sandbox] memory_tiers is retired (ADR 0028: container-only, one "
-            'memory limit); use memory = "8g" — ignoring',
+            "[sandbox] memory_tiers is retired (Booley runs one container with "
+            'one memory limit); use memory = "8g" — ignoring',
         )
 
     swap = ""
