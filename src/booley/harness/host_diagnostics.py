@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
-from booley.core.host_shell import quote_arg
 from booley.core.private_store import ProjectStore, ProjectStoreEntry
 from booley.harness import bootstrap
 from booley.projects import inventory
@@ -153,7 +155,8 @@ def _root_is_gone(root: str) -> bool:
 
 def _forget_purge_command(root: str) -> str:
     """Quote the remedy for the host shell so a root with spaces stays copyable."""
-    return f"booley projects forget --purge {quote_arg(root)}"
+    argv = ["booley", "projects", "forget", "--purge", root]
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
 
 
 def _inspect_sandbox_egress(host_egress: str, docker_ready: bool, report: Findings) -> None:

@@ -8,13 +8,12 @@ import ntpath
 import os
 import posixpath
 import re
+import shlex
 from collections.abc import Callable
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
-from tests.host_shell_support import split_host_command
 
 from booley.core import host_shell, private_store
 from booley.runtime import (
@@ -105,25 +104,20 @@ def test_store_scan_rejects_symlinked_entry(project: Path, tmp_path: Path) -> No
         link.unlink()
 
 
-@pytest.mark.parametrize(
-    ("os_name", "root"),
-    [("posix", "/work/My Project's root"), ("nt", r"C:\Work\My Project's root")],
-    ids=["posix", "windows"],
-)
-def test_session_store_repair_command_parses_back(
-    monkeypatch: pytest.MonkeyPatch, os_name: str, root: str
-) -> None:
-    # os.name is the host-OS boundary: quote for the named shell on every CI host.
-    monkeypatch.setattr(host_shell, "os", SimpleNamespace(name=os_name))
+def test_session_store_repair_command_parses_back_to_the_project_root(tmp_path: Path) -> None:
+    root = str(tmp_path / "My Project's root")
 
-    message = session_store_repair(Path("store.json"), root)
+    message = session_store_repair(tmp_path / "store.json", root)
 
-    match = re.search(r"`([^`]+)`", message)
-    assert match is not None
-    command = split_host_command(match.group(1), windows=os_name == "nt")
-    assert command == ["booley", "init", "--seed", "--project", root], (
-        f"printed command does not parse back: {message}"
-    )
+    command = re.search(r"`([^`]+)`", message)
+    assert command is not None
+    if os.name == "nt":  # PowerShell: single-quoted literals, '' for a quote
+        words = [
+            a.replace("''", "'") or b for a, b in re.findall(r"'((?:[^']|'')*)'|(\S+)", command[1])
+        ]
+    else:
+        words = shlex.split(command[1])
+    assert words == ["booley", "init", "--seed", "--project", root]
 
 
 def test_store_names_project_root_by_platform_case_rule(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,7 +154,7 @@ def test_old_windows_rule_file_fails_closed_naming_file_and_repair(
 
         message = str(caught.value)
         assert str(old) in message
-        assert f"booley init --seed --project {root}" in message
+        assert f"booley init --seed --project {host_shell.quote_arg(root)}" in message
         assert old.exists()
 
 

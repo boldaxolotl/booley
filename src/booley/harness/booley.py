@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Any
 from booley.config.agent import AGENT_CLIS
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.egress_modes import EGRESS_MODES
-from booley.core.host_shell import quote_arg
 from booley.feedback import cli as feedback_cli
 from booley.harness import (
     cheatsheet,
@@ -2173,7 +2172,8 @@ def _enforce_runtime_location(command: str | None) -> None:
     error: str | None = None
     location = COMMAND_LOCATIONS.get(command)
     if location is CommandLocation.SESSION_RUNTIME:
-        invocation = "booley " + " ".join(quote_arg(arg) for arg in sys.argv[1:])
+        argv = ["booley", *sys.argv[1:]]
+        invocation = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         error = runtime_context.container_only_error(invocation)
     elif location is CommandLocation.HOST:
         error = runtime_context.host_only_error(f"booley {command}")

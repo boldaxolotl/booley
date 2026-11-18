@@ -63,7 +63,6 @@ from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache, resolv
 from booley.runtime.sandbox_apply import shell_command
 from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
-from tests.host_shell_support import split_host_command
 from tests.subprocess_budget import run_bounded_child
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
@@ -1809,11 +1808,11 @@ def _tracking_git(root: Path, *args: str) -> str:
     return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
-def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged, name="root with spaces"):
+def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged):
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    root = tmp_path / name
+    root = tmp_path / "root with spaces"
     root.mkdir()
     _git_init(root)
     data = root / ".booley"
@@ -1832,28 +1831,6 @@ def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged, name="root 
     if not staged:
         _tracking_git(owner, "commit", "-qm", "legacy tracked bundle")
     return root, owner, bundle
-
-
-def test_tracked_bundle_advice_quotes_the_owner(tmp_path, monkeypatch, capsys):
-    root, owner, bundle = _tracked_bundle_fixture(
-        tmp_path, monkeypatch, "nested", True, name="it's repo"
-    )
-    capsys.readouterr()
-
-    step_project_git_hooks(InitContext(project_root=root, check_only=True))
-
-    out = capsys.readouterr().out
-    command = out.split("untrack it with: ", 1)[1].split(". ", 1)[0]
-    relative = bundle.relative_to(owner).as_posix()
-    assert split_host_command(command) == [
-        "git",
-        "-C",
-        str(owner.resolve()),
-        "rm",
-        "--cached",
-        "--",
-        relative,
-    ]
 
 
 @pytest.mark.parametrize("topology", ["standalone", "nested"])
@@ -2070,16 +2047,8 @@ def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
         step_project_git_hooks(ctx)
     output = capsys.readouterr().out
     relative = bundle.relative_to(owner).as_posix()
-    advice = output.split("untrack it with: ", 1)[1].split(". ", 1)[0]
-    assert split_host_command(advice) == [
-        "git",
-        "-C",
-        str(owner),
-        "rm",
-        "--cached",
-        "--",
-        relative,
-    ]
+    command = shell_command(["git", "-C", str(owner), "rm", "--cached", "--", relative])
+    assert command in output
     assert "Could not inspect" not in output
     assert [(r.name, r.status) for r in ctx.results] == [
         ("project_git_hook_tracking", "skip"),

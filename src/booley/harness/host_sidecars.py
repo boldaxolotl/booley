@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
@@ -32,7 +34,6 @@ from booley.runtime.docker_capacity import (
 )
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.platform_paths import host_path_from_docker_mount
-from booley.runtime.sandbox_apply import shell_command
 
 IMAGE_SCHEMA = "1"
 POLICY_SCHEMA = 1
@@ -1005,7 +1006,7 @@ def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
             # `session down` always refuses an editor-owned Sandbox; name its owner's remedy.
             remedy = "close its VS Code window or stop it with Dev Containers"
         else:
-            command = shell_command(
+            command = _shell_command(
                 ["booley", "session", "down", "--project", session.project_root]
             )
             remedy = f"run `{command}`"
@@ -1018,13 +1019,18 @@ def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...]) -> str:
     descriptions = []
     for sandbox in parked:
         original = sandbox.name.removesuffix(legacy.REFRESH_BACKUP_SUFFIX)
-        rename = shell_command(["docker", "rename", sandbox.name, original])
+        rename = _shell_command(["docker", "rename", sandbox.name, original])
         descriptions.append(
             f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted "
             "`booley session up --rebuild` or an older refresh: rename it back with "
             f"`{rename}` when that name is free, or remove it after inspection)"
         )
     return ", ".join(descriptions)
+
+
+def _shell_command(argv: list[str]) -> str:
+    """Quote ``argv`` as one copyable command for the host shell."""
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
 
 
 def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:

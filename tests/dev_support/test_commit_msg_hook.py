@@ -12,9 +12,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from tests.host_shell_support import split_host_command
 from tests.subprocess_budget import run_bounded_child
 
+from booley.core.host_shell import quote_arg
 from booley.dev_support.commit_msg_hook import main
 
 
@@ -178,9 +178,7 @@ class TestBannedTermRejection:
         rc, err, _ = _run_hook(folder, "Merge branch 'llm-fix'\n", name="MERGE_MSG")
         assert rc == 1
         assert "git commit -m" in err and "git merge" in err
-        retry = err.split("run: ", 1)[1].splitlines()[0]
-        kept = (folder / "MERGE_MSG").resolve()
-        assert split_host_command(retry) == ["git", "commit", "-v", "-e", "-F", str(kept)]
+        assert f"git commit -v -e -F {quote_arg(str((folder / 'MERGE_MSG').resolve()))}" in err
 
     def test_plain_rejection_has_no_merge_hint(self, tmp_path: Path):
         _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")

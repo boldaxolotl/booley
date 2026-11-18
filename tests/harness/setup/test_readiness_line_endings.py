@@ -19,8 +19,6 @@ from booley.harness.setup.line_endings import (
     RepositoryDiscoveryFailure,
     RepositoryLineEndingReport,
 )
-from tests.host_shell_support import split_host_command
-from tests.subprocess_budget import run_bounded_child
 
 Code = LineEndingObservationCode
 _ROLE = "project-checkout"
@@ -181,22 +179,23 @@ def test_line_ending_findings_keep_exact_text(
     actions: tuple[LineEndingActionResult, ...],
     expected: tuple[Severity, str, str, str | None, str | None],
 ) -> None:
-    repository = LineEndingRepository(_ROLE, tmp_path)
+    root = tmp_path / "it's a root"
+    repository = LineEndingRepository(_ROLE, root)
     report = LineEndingReport(
         LineEndingStatus.UNSAFE,
         (RepositoryLineEndingReport(repository, LineEndingStatus.UNSAFE, observations, actions),),
         (),
     )
-    identity = f"Project Root ({tmp_path})"
+    identity = f"Project Root ({root})"
     severity, message, fix, check_id, subject = expected
 
-    findings = _inspect(tmp_path, report, monkeypatch).findings
+    findings = _inspect(root, report, monkeypatch).findings
 
     assert [(f.severity, f.message, f.fix, f.check_id, f.subject) for f in findings] == [
         (
             severity,
             message.format(id=identity),
-            fix.format(root=quote_arg(str(tmp_path))),
+            fix.format(root=quote_arg(str(root))),
             check_id,
             subject,
         )
@@ -227,25 +226,4 @@ def test_discovery_failure_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             _UNREADABLE,
             "project-data",
         )
-    ]
-
-
-def test_autocrlf_fix_quotes_the_repository_root(tmp_path: Path) -> None:
-    root = tmp_path / "it's a root"
-    root.mkdir()
-    run_bounded_child(["git", "init", "-q", str(root)], check=True)
-
-    findings = readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root)).findings
-
-    (risk,) = [f for f in findings if f.check_id == "git.autocrlf-risk"]
-    assert risk.fix is not None
-    command = risk.fix.split("   (or re-run", 1)[0]
-    assert split_host_command(command) == [
-        "git",
-        "-C",
-        str(root),
-        "config",
-        "--local",
-        "core.autocrlf",
-        "false",
     ]

@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
 from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
@@ -22,7 +23,6 @@ from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.devcontainer_spec_support import build_spec
-from tests.host_shell_support import split_host_command
 from tests.subprocess_budget import run_bounded_child
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
@@ -465,11 +465,11 @@ class TestDoctorCheck:
                 claude if provider == "claude" else codex, None
             ),
         )
-        sink: dict[str, list[str]] = {"pass": [], "warn": [], "skip": []}
+        sink: dict[str, list[str]] = {"pass": [], "warn": [], "skip": [], "fix": []}
         doctor._check_oauth_token(
             provider,
             sink["pass"].append,
-            lambda msg, fix=None: sink["warn"].append(msg),
+            lambda msg, fix=None: (sink["warn"].append(msg), sink["fix"].append(fix or "")),
             sink["skip"].append,
             auth_token.VISITOR_AUTH,
         )
@@ -509,38 +509,15 @@ class TestDoctorCheck:
         assert any("outranks" in m for m in sink["pass"])
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
-    def test_warns_when_stored_token_is_world_readable(self, isolated_home, monkeypatch):
-        auth_token.store_token(_TOKEN).chmod(0o644)
+    def test_warns_when_stored_token_is_world_readable(self, isolated_home, home, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "it's cfg"))
+        path = auth_token.store_token(_TOKEN)
+        path.chmod(0o644)
 
         sink = self._run(monkeypatch)
 
         assert any("readable by others" in m for m in sink["warn"])
-
-    @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
-    def test_readable_token_fix_quotes_the_path(self, isolated_home, home, monkeypatch):
-        from booley.harness import doctor
-
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "it's cfg"))
-        auth_token.store_token(_TOKEN).chmod(0o644)
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-        monkeypatch.setattr(
-            doctor.host_environment,
-            "inspect_agent_installation",
-            lambda _provider: doctor.host_environment.AgentInstallation(True, None),
-        )
-        fixes: list[str | None] = []
-
-        doctor._check_oauth_token(
-            "claude",
-            lambda _msg: None,
-            lambda _msg, fix=None: fixes.append(fix),
-            lambda _msg: None,
-            auth_token.VISITOR_AUTH,
-        )
-
-        (fix,) = fixes
-        assert fix is not None
-        assert split_host_command(fix) == ["chmod", "600", str(auth_token.token_path())]
+        assert sink["fix"] == [f"chmod 600 {quote_arg(str(path))}"]
 
     def test_codex_is_checked_on_a_codex_project(self, isolated_home, monkeypatch):
         # Claude covered, Codex not: on a codex project the warning is Codex's.

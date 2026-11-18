@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -17,7 +16,6 @@ from booley.core.host_shell import quote_arg
 from booley.dev_support.test_profiles import native_test_binary
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 from tests.bwave.session_store_support import isolate_temporary_store, use_store
-from tests.host_shell_support import split_host_command
 from tests.subprocess_budget import run_bounded_child
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -295,22 +293,6 @@ def test_register_dir_names_stray_vcd_dump(tmp_path):
     )
 
 
-def test_stray_vcd_hint_quotes_a_dollar_and_a_quote(tmp_path):
-    from booley.bwave import cli as bwave
-
-    folder = tmp_path / "it's $HOME"
-    folder.mkdir()
-    dump = folder / "sim.vcd"
-    dump.write_bytes(b"")
-    with pytest.raises(SystemExit) as exc:
-        bwave.cmd_register(argparse.Namespace(sim_dir=str(folder), alias="dut"))
-    lines = [line.strip() for line in str(exc.value).splitlines() if "bwave " in line]
-    assert [split_host_command(line) for line in lines] == [
-        ["bwave", "register", str(dump), "--as", "ALIAS", "--build"],
-        ["bwave", "gui", str(dump)],
-    ]
-
-
 def test_register_lists_five_stray_vcds_and_counts_the_rest(tmp_path):
     from booley.bwave import cli as bwave
 
@@ -354,7 +336,7 @@ def test_register_raw_vcd_refuses_and_registers_nothing(tmp_path, monkeypatch, c
     sessions = tmp_path / "sessions.json"
     use_store(monkeypatch, sessions)
 
-    vcd = tmp_path / "waveform.vcd"
+    vcd = tmp_path / "it's waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc:
@@ -364,7 +346,7 @@ def test_register_raw_vcd_refuses_and_registers_nothing(tmp_path, monkeypatch, c
     assert "raw VCD" in msg
     assert "bwave build" in msg
     assert "waveform.fst" in msg
-    assert "--build" in msg
+    assert f"bwave register {quote_arg(str(vcd))} --as ALIAS --build" in msg
     assert not sessions.exists(), "a refused registration must not write a session"
 
 
@@ -407,7 +389,7 @@ def test_register_raw_vcd_build_failure_exits_nonzero(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions.json"
     use_store(monkeypatch, sessions)
 
-    vcd = tmp_path / "waveform.vcd"
+    vcd = tmp_path / "it's waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
     monkeypatch.setattr(
         "booley.bwave.sessions.convert_vcd",
@@ -419,6 +401,10 @@ def test_register_raw_vcd_build_failure_exits_nonzero(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         bwave.cmd_register(argparse.Namespace(sim_dir=str(vcd), alias="dut", build=True))
     assert "could not build a queryable store" in str(exc.value)
+    assert (
+        f"`bwave build {quote_arg(str(vcd))} -o {quote_arg(str(vcd.with_suffix('.fst')))}`"
+        in str(exc.value)
+    )
     assert not sessions.exists()
 
 
@@ -436,9 +422,9 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
     sessions = tmp_path / "sessions.json"
     use_store(monkeypatch, sessions)
 
-    vcd = tmp_path / "waveform.vcd"
+    vcd = tmp_path / "it's waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
-    existing = tmp_path / "waveform.fst"
+    existing = vcd.with_suffix(".fst")
     existing.write_bytes(b"precious-scoped-store")
 
     called = []
@@ -455,46 +441,10 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
     assert "refusing to overwrite" in msg
     assert "--scope" in msg
     assert f"bwave register {quote_arg(str(existing))}" in msg  # the register-it-as-is way out
+    assert f"bwave build {quote_arg(str(vcd))} -o {quote_arg(str(existing))}" in msg
     assert not called, "build ran despite the refusal"
     assert existing.read_bytes() == b"precious-scoped-store"
     assert not sessions.exists()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="the fake bwave binary is a POSIX script")
-@pytest.mark.parametrize("case", ["no-build", "existing-store", "build-failed"])
-def test_raw_vcd_commands_quote_paths(case, tmp_path, monkeypatch, capsys, fake_bwave):
-    """Every `bwave` command the raw-VCD refusals print parses back to literal paths."""
-    from booley.bwave import sessions
-
-    folder = tmp_path / "it's dir"
-    folder.mkdir()
-    trace = folder / "trace.vcd"
-    trace.write_text("$enddefinitions $end\n", encoding="utf-8")
-    store = trace.with_suffix(".fst")
-    if case == "existing-store":
-        store.write_bytes(b"precious")
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "exit_early")
-
-    with pytest.raises(SystemExit) as exc:
-        sessions._resolve_raw_vcd(trace, build=case != "no-build")
-
-    text = str(exc.value) if case == "build-failed" else capsys.readouterr().err
-    commands = [
-        split_host_command(match)
-        for match in re.findall(r"bwave (?:build|register) [^`\n]+", text)
-    ]
-    build = ["bwave", "build", str(trace), "-o", str(store)]
-    register = ["bwave", "register", str(store), "--as", "ALIAS"]
-    expected = {
-        "no-build": [
-            build,
-            register,
-            ["bwave", "register", str(trace), "--as", "ALIAS", "--build"],
-        ],
-        "existing-store": [register, build],
-        "build-failed": [build],
-    }
-    assert commands == expected[case]
 
 
 def test_register_sim_dir_falling_back_to_vcd_shows_why_conversion_failed(

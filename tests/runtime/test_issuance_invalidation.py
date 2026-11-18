@@ -16,6 +16,7 @@ import pytest
 from tests.lifecycle_lock_support import observe_lifecycle_contention
 
 from booley.audit.diagnostic_results import Findings, Severity
+from booley.core.host_shell import quote_arg
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing import flexnet_docker
@@ -167,7 +168,7 @@ def test_misnamed_journal_repair_names_the_cleanup_it_still_owes(tmp_path: Path)
         for args in list_calls:
             assert "docker " + " ".join(args) + ")" in message
         assert str(journal) in message
-        assert f"booley init --seed --project {different_identity}" in message
+        assert f"booley init --seed --project {quote_arg(different_identity)}" in message
         assert message.index(container_rm) < message.index(f"remove {journal}")
         assert message.index(network_rm) < message.index(f"remove {journal}")
         assert "keep the file and retry" in message

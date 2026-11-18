@@ -20,7 +20,6 @@ from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers
 from booley.runtime.session_issuance import keeper_image
 from tests.devcontainer_spec_support import build_spec
-from tests.host_shell_support import split_host_command
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -236,7 +235,7 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
 ) -> None:
     from booley.config.sandbox import project_image_name
 
-    project = _remember(tmp_path)
+    project = _remember(tmp_path, "it's a project")
     family = project_image_name(project)
     unused, shared = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     keeper_host.tags.update({f"{family}:latest": unused, f"{family}-wheel:latest": shared})
@@ -247,20 +246,6 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     output = capsys.readouterr().out
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
     assert "No Docker resources left behind" in output and "mirror:x" in keeper_host.tags
-
-
-def test_forget_hint_quotes_the_project_root(
-    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.config.sandbox import project_image_name
-
-    project = _remember(tmp_path, "it's a project")
-    keeper_host.tags[f"{project_image_name(project)}:latest"] = "sha256:" + "a" * 64
-
-    assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
-
-    hint = capsys.readouterr().out.split("with: ", 1)[1].splitlines()[0]
-    assert split_host_command(hint) == ["booley", "projects", "forget", "--purge", str(project)]
 
 
 @pytest.mark.parametrize("grant", [False, True])

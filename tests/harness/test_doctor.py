@@ -73,7 +73,6 @@ from tests.docker_cli_guard import (
 )
 from tests.docker_host_support import fake_docker_host
 from tests.harness import test_session_runtime as resolution_fixtures
-from tests.host_shell_support import split_host_command
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
@@ -2426,8 +2425,10 @@ def _git_init(root: Path) -> None:
 @pytest.mark.parametrize("row", ["never", "unset", "wrong-value", "not-a-repo"])
 def test_worktree_prune_guard(row, tmp_path, monkeypatch):
     """Worktrees hold container paths; a host `git gc` prunes them unless the guard is `never`."""
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    project = tmp_path / "it's a project"
+    project.mkdir()
+    booley_dir = _write_project(project)
+    _patch_environment(monkeypatch, project, booley_dir)
     answers = {
         "never": {"stdout": "never\n"},
         "unset": {"returncode": 1},
@@ -2437,14 +2438,14 @@ def test_worktree_prune_guard(row, tmp_path, monkeypatch):
         _answer_command(
             monkeypatch,
             lambda cmd: (
-                cmd[:3] == ["git", "-C", str(tmp_path)] and cmd[-2:] == ["rev-parse", "--git-dir"]
+                cmd[:3] == ["git", "-C", str(project)] and cmd[-2:] == ["rev-parse", "--git-dir"]
             ),
             returncode=128,
         )
     else:
         _answer_command(monkeypatch, lambda cmd: "gc.worktreePruneExpire" in cmd, **answers[row])
 
-    result = _doctor_run(tmp_path)
+    result = _doctor_run(project)
 
     fails = [f for f in result.findings if "gc.worktreePruneExpire" in f.message]
     if row == "never":
@@ -2457,31 +2458,8 @@ def test_worktree_prune_guard(row, tmp_path, monkeypatch):
     else:
         (fail,) = fails
         assert fail.severity is Severity.FAIL
-        assert fail.fix == (
-            f"git -C {quote_arg(str(tmp_path))} config gc.worktreePruneExpire never"
-        )
+        assert fail.fix == f"git -C {quote_arg(str(project))} config gc.worktreePruneExpire never"
         assert ("'3.months.ago'" in fail.message) is (row == "wrong-value")
-
-
-def test_worktree_prune_guard_fix_quotes_the_repository(tmp_path, monkeypatch):
-    project = tmp_path / "it's a project"
-    project.mkdir()
-    booley_dir = _write_project(project)
-    _patch_environment(monkeypatch, project, booley_dir)
-    _answer_command(monkeypatch, lambda cmd: "gc.worktreePruneExpire" in cmd, returncode=1)
-
-    result = _doctor_run(project)
-
-    (fail,) = [f for f in result.findings if "gc.worktreePruneExpire" in f.message]
-    assert fail.fix is not None
-    assert split_host_command(fail.fix) == [
-        "git",
-        "-C",
-        str(project),
-        "config",
-        "gc.worktreePruneExpire",
-        "never",
-    ]
 
 
 _SHADOW_CORE = "CAPI=2:\nname: ::demo:0\n"
