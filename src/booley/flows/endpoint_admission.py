@@ -59,8 +59,8 @@ class AdmissionContext:
     A Simulation Record sizes lanes from the container's cores and admits
     each work item by its own claim, once ``memory_sizing`` is set.
     ``memory_warning`` is the warning that Job's result carries (it ran alone
-    because its estimate exceeded the Memory Budget, or the budget was
-    unavailable). ``memory_sizing`` lets a Job give each Simulation Record work item
+    because its estimate exceeded the Memory Budget, the budget was
+    unavailable, or its Target had no measurement of a size-dependent phase). ``memory_sizing`` lets a Job give each Simulation Record work item
     its own claim, and is set for every managed admission (a Job's work items,
     such as a mutation campaign's builds and simulations, take claims too).
     """

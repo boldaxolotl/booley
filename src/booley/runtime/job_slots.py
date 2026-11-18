@@ -232,6 +232,9 @@ class MemoryClaim:
     seats: tuple[tuple[str, int], ...] = ()
     wall_s: float | None = None
     companion: bool = False
+    #: The phases a run-alone claim has no measurement of; shown in the wait line,
+    #: never read by admission.
+    unmeasured: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_alone, bool):
@@ -267,6 +270,7 @@ class MemoryClaim:
             "seats": dict(self.seats),
             "wall_s": self.wall_s,
             "companion": self.companion,
+            "unmeasured": self.unmeasured,
         }
 
     @staticmethod
@@ -285,6 +289,7 @@ class MemoryClaim:
                 seats=tuple(seats.items()),
                 wall_s=value.get("wall_s"),
                 companion=value.get("companion") is True,
+                unmeasured=_optional_text(value.get("unmeasured")),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -375,11 +380,12 @@ class MemoryWait:
         """One line: the need, the free memory, any blocked seat and the largest holders."""
         claim = self.claim
         if claim.run_alone:
-            reason = (
-                "Memory Budget unavailable"
-                if claim.budget_mb == 0
-                else "memory estimate unknown or above the Memory Budget"
-            )
+            if claim.budget_mb == 0:
+                reason = "Memory Budget unavailable"
+            elif claim.unmeasured:
+                reason = f"no memory measurement yet for {claim.unmeasured}"
+            else:
+                reason = "memory estimate unknown or above the Memory Budget"
             text = f"waits to run alone ({reason})"
         else:
             text = (

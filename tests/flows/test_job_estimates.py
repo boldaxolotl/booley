@@ -73,6 +73,11 @@ def _borrow_records() -> list[dict[str, Any]]:
         _record("t1", "sim_build", memory=20000),
         # FuseSoC setup is a measured phase of every sim request (#3787).
         _record("t1", "sim_prepare", memory=500),
+        # Size-dependent phases borrow within a Target only (#4536); lint borrows anywhere.
+        _record("t1", "synth", memory=3000, flags=("trace",)),
+        _record("t2", "synth", memory=8000),
+        _record("t2", "fpga_impl", memory=8000),
+        _record("t2", "lint", memory=600),
     ]
 
 
@@ -93,8 +98,16 @@ def test_missing_key_borrows_from_target_then_project() -> None:
     assert (build.value, build.source) == (25000.0, estimates.Source.PROJECT)
 
     lint = estimator.estimate([estimates.JobRequest("lint", "t1")])
-    unknown = _phase(lint, "lint").memory_mb
-    assert (unknown.value, unknown.source) == (None, estimates.Source.UNKNOWN)
+    lint_memory = _phase(lint, "lint").memory_mb
+    assert (lint_memory.value, lint_memory.source) == (750.0, estimates.Source.PROJECT)
+
+    synth = estimator.estimate([estimates.JobRequest("synth", "t1")])
+    same_target = _phase(synth, "synth").memory_mb
+    assert (same_target.value, same_target.source) == (3750.0, estimates.Source.TARGET)
+    for flow, phase in (("synth", "synth"), ("fpga", "fpga_impl")):
+        other = estimator.estimate([estimates.JobRequest(flow, "t3")])
+        size_dependent = _phase(other, phase).memory_mb
+        assert (size_dependent.value, size_dependent.source) == (None, estimates.Source.UNKNOWN)
 
 
 def test_wall_clock_unknown_and_independent_of_memory() -> None:

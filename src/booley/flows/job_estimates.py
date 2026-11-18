@@ -9,7 +9,8 @@ estimated from the retained records:
   :data:`ESTIMATE_MARGIN`;
 * **borrowed**: with no own record, the largest estimate for the same Target
   and phase (any Test Run or flags), else for that phase anywhere in the
-  Project;
+  Project (ASIC synthesis and FPGA implementation never borrow from another
+  Target: their memory grows with the design);
 * **unknown**: with neither, the phase has no estimate.
 
 Memory and wall-clock time follow the same rules, each on its own values. Every
@@ -36,6 +37,11 @@ ESTIMATE_MARGIN = 1.25
 _SIM_FLOW = "sim"
 _SINGLE_PHASE_FLOWS = {"lint": "lint", "fpga": "fpga_impl", "synth": "synth"}
 _COVERAGE_FLAG = "coverage"
+
+#: Phases that borrow only within a Target: their memory grows with the design, so
+#: another Target's peak can be an order of magnitude off (ADR 0087). The split
+#: synthesis keys are left out: a Custom Flow may share one as its name.
+_TARGET_ONLY_PHASES = frozenset({"synth", "fpga_impl"})
 
 _K = TypeVar("_K")
 
@@ -195,6 +201,15 @@ class JobEstimate:
             total += wall_s
         return total
 
+    @property
+    def unmeasured(self) -> tuple[HistoryKey, ...]:
+        """The size-dependent phases whose Target has no memory record of them."""
+        return tuple(
+            p.key
+            for p in self.phases
+            if p.key.phase in _TARGET_ONLY_PHASES and p.memory_mb.source is Source.UNKNOWN
+        )
+
     def fit(self, budget_mb: float) -> Fit:
         """Compare the reservation with *budget_mb*; over-budget wins so a caller can warn."""
         reservation = self.reservation_mb
@@ -224,11 +239,15 @@ class _Maxima:
             _raise_to(self._project, key.phase, value)
 
     def estimate(self, key: HistoryKey) -> Estimate:
-        """Own, else the Target's, else the Project's largest for *key*'s phase, with margin."""
+        """Own, else the Target's, else the Project's largest for *key*'s phase, with margin.
+
+        A phase in :data:`_TARGET_ONLY_PHASES` skips the Project step.
+        """
+        project = None if key.phase in _TARGET_ONLY_PHASES else self._project.get(key.phase)
         for source, found in (
             (Source.OWN, self._own.get(key)),
             (Source.TARGET, self._target.get((key.target, key.phase))),
-            (Source.PROJECT, self._project.get(key.phase)),
+            (Source.PROJECT, project),
         ):
             if found is not None:
                 return Estimate(found * ESTIMATE_MARGIN, source)
