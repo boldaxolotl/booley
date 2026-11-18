@@ -171,7 +171,6 @@ def test_owner_cli_imports_with_only_standard_library():
     result = run_bounded_child(
         [sys.executable, "-S", "-m", "booley.runtime.host_base_acquisition", "--help"],
         env=dict(os.environ, PYTHONPATH=str(root / "src")),
-        timeout=15,
     )
     assert result.returncode == 0, result.stderr
     assert "--refresh" in result.stdout

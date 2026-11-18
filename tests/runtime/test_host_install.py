@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.time_budget import scaled
 
 from booley.runtime import host_install
 from booley.runtime.host_install import HostInstallationError, HostInstallationIdentity
@@ -552,7 +553,7 @@ def test_mismatch_lists_unreadable_version_as_unknown(tmp_path, monkeypatch, pro
     started = tmp_path / "probe-started"
     hang = f": > '{started}'; exec '{sys.executable}' -c 'import time; time.sleep(60)'"
     body = "exit 3" if probe == "failing" else hang
-    monkeypatch.setattr(host_install, "_VERSION_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(host_install, "_VERSION_TIMEOUT_S", scaled(1.0))
     old, _new, state = _two_installs(tmp_path, monkeypatch, body)
 
     message = host_install.host_install_error(tmp_path, path=state)

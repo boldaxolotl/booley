@@ -408,7 +408,7 @@ def _fake_runtime_inspect(project, prepared):
 
 
 def _init_git_project(project_root: Path) -> None:
-    run_bounded_child(["git", "init", str(project_root)], timeout=10, check=True)
+    run_bounded_child(["git", "init", str(project_root)], check=True)
 
 
 def _stub_full_init_dependencies(

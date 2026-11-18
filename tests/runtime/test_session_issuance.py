@@ -28,6 +28,7 @@ from tests.session_issuance_support import (
     stub_keeper,
 )
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import host_config_path
@@ -500,7 +501,7 @@ def test_builder_issuance_serializes_with_concurrent_grant_revoke(
 
     def persist(*_args, **_kwargs):
         persistence_entered.set()
-        if not allow_persistence.wait(2):
+        if not allow_persistence.wait(2 * hang_guard_s()):
             raise runtime_spec.RuntimeSpecError("test persistence gate timed out")
         return object()
 
@@ -525,13 +526,13 @@ def test_builder_issuance_serializes_with_concurrent_grant_revoke(
 
     issuer = threading.Thread(target=run_issue)
     issuer.start()
-    assert persistence_entered.wait(2)
+    assert persistence_entered.wait(hang_guard_s())
     revoker = threading.Thread(target=run_revoke)
     revoker.start()
     assert not revoke_done.wait(0.2)
     allow_persistence.set()
-    issuer.join(2)
-    revoker.join(2)
+    issuer.join(hang_guard_s())
+    revoker.join(hang_guard_s())
 
     assert issue_done.is_set() and revoke_done.is_set()
     assert errors == []
@@ -2998,7 +2999,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
 
     def git(*args, env=environment):
         return run_bounded_child(
-            [_HOST_GIT, "-C", str(project), *args], timeout=10, env=env, check=True
+            [_HOST_GIT, "-C", str(project), *args], env=env, check=True
         ).stdout.strip()
 
     git("init", "-q")
@@ -3016,7 +3017,6 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         [sys.executable, *dc.git_identity_command().split()[1:]],
         cwd=project,
         env=sandbox,
-        timeout=10,
     )
     assert applied.returncode == 0, applied.stderr
     for env, expected in (

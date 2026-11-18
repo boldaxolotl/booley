@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.time_budget import hang_guard_s
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime.heartbeat import Heartbeat
 
@@ -52,7 +54,7 @@ class TestHeartbeat:
 
         hb = Heartbeat("sim", render=render, interval=0.01)
         hb.start()
-        assert fired.wait(timeout=1)
+        assert fired.wait(timeout=hang_guard_s())
         hb.stop()
         assert calls[0][0] == "sim"
 
@@ -65,7 +67,7 @@ class TestHeartbeat:
             interval=0.01,
         )
         hb.start()
-        assert fired.wait(timeout=1)
+        assert fired.wait(timeout=hang_guard_s())
         hb.stop()
 
         assert mock_touch.call_count >= 2  # immediate touch plus at least one tick
@@ -87,7 +89,7 @@ class TestHeartbeat:
             status_fn=status_fn,
         )
         hb.start()
-        assert fired.wait(timeout=1)
+        assert fired.wait(timeout=hang_guard_s())
         hb.stop()
         assert status_fn.call_count >= 1
         assert "stage: planning" in extras
@@ -106,7 +108,7 @@ class TestHeartbeat:
             status_fn=bad_fn,
         )
         hb.start()
-        assert fired.wait(timeout=1)
+        assert fired.wait(timeout=hang_guard_s())
         hb.stop()
 
 
@@ -156,7 +158,7 @@ class TestTouchReaperHeartbeat:
 
             def __enter__(self):
                 ready.set()
-                assert release.wait(timeout=1)
+                assert release.wait(timeout=hang_guard_s())
                 return self._file.__enter__()
 
             def __exit__(self, *exc):
@@ -175,7 +177,7 @@ class TestTouchReaperHeartbeat:
         def delayed_replace(source, destination):
             if Path(destination) == hb:
                 ready.set()
-                assert release.wait(timeout=1)
+                assert release.wait(timeout=hang_guard_s())
             real_replace(source, destination)
 
         monkeypatch.setattr(Path, "open", delayed_open)
@@ -190,10 +192,10 @@ class TestTouchReaperHeartbeat:
 
         writer = threading.Thread(target=publish)
         writer.start()
-        assert ready.wait(timeout=1)
+        assert ready.wait(timeout=hang_guard_s())
         observed = hb.read_text(encoding="ascii")
         release.set()
-        writer.join(timeout=1)
+        writer.join(timeout=hang_guard_s())
 
         assert not writer.is_alive()
         assert not errors
@@ -211,10 +213,10 @@ class TestTouchReaperHeartbeat:
         def delayed_time():
             if threading.current_thread().name == "newer":
                 newer_sampled.set()
-                assert allow_newer.wait(timeout=1)
+                assert allow_newer.wait(timeout=hang_guard_s())
                 return 200.0
             older_sampled.set()
-            assert allow_older.wait(timeout=1)
+            assert allow_older.wait(timeout=hang_guard_s())
             return 100.0
 
         monkeypatch.setattr("booley.runtime.heartbeat.wall_clock", delayed_time)
@@ -229,13 +231,13 @@ class TestTouchReaperHeartbeat:
         newer = threading.Thread(target=publish, name="newer")
         older = threading.Thread(target=publish, name="older")
         newer.start()
-        assert newer_sampled.wait(timeout=1)
+        assert newer_sampled.wait(timeout=hang_guard_s())
         older.start()
         older_sampled.wait(timeout=0.2)
         allow_newer.set()
-        newer.join(timeout=1)
+        newer.join(timeout=hang_guard_s())
         allow_older.set()
-        older.join(timeout=1)
+        older.join(timeout=hang_guard_s())
 
         assert not newer.is_alive()
         assert not older.is_alive()

@@ -20,6 +20,7 @@ from booley.runtime import project_worktree_pairing
 from tests.diagnostic_helpers import _Rec
 from tests.flows.test_baseline_worktree import _init_repo, _paired_checkout_without_upstream
 from tests.test_guidance_links import _make_project
+from tests.time_budget import hang_guard_s
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +61,9 @@ def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, m
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     reset_cache()
     head = baseline.git_full_sha("HEAD", tmp_path)
-    before = baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout
+    before = baseline._git(
+        tmp_path, "worktree", "list", "--porcelain", timeout=hang_guard_s()
+    ).stdout
     with (
         pytest.raises(baseline.BaselineWorktreeError, match="Paired Checkout is unavailable"),
         baseline.baseline_worktree(
@@ -69,7 +72,10 @@ def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, m
     ):
         pytest.fail("missing paired inputs were accepted")
     assert baseline.git_full_sha("HEAD", tmp_path) == head
-    assert baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout == before
+    assert (
+        baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=hang_guard_s()).stdout
+        == before
+    )
 
 
 def test_absent_pairing_policy_refuses_existing_paired_inputs(tmp_path, monkeypatch):

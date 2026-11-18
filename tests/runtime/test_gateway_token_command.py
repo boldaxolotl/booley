@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import math
 import shlex
 import sys
 
 import pytest
 from tests.gateway_command_support import count_runs, write_token_command
+from tests.time_budget import scaled
 
 from booley.config import gateway as gateway_config
 from booley.runtime import gateway_token
@@ -75,14 +77,15 @@ def test_token_command_timeout_fails_with_stderr_verbatim(monkeypatch):
     # The backgrounded sleep inherits the pipes: only a process-group kill closes
     # them, so stderr is collected only when the kill worked (the short reap
     # bound makes a missing kill show as lost stderr, not as a slow test).
-    monkeypatch.setattr(gateway_token, "_REAP_TIMEOUT_S", 2)
+    monkeypatch.setattr(gateway_token, "_REAP_TIMEOUT_S", scaled(2))
+    timeout_s = math.ceil(scaled(3))
     command = "sh -c 'echo \"claim a token first\" >&2; echo SYNTHETIC_STDOUT; sleep 30 & wait'"
 
     with pytest.raises(gateway_token.GatewayTokenCommandError) as caught:
-        gateway_token.run_token_command(command, timeout_s=3)
+        gateway_token.run_token_command(command, timeout_s=timeout_s)
 
     message = str(caught.value)
-    assert "BOOLEY_GATEWAY_TOKEN_COMMAND timed out after 3 s" in message
+    assert f"BOOLEY_GATEWAY_TOKEN_COMMAND timed out after {timeout_s} s" in message
     assert "claim a token first" in message
     assert "SYNTHETIC_STDOUT" not in message
     assert caught.value.__context__ is None  # TimeoutExpired would carry argv and stdout

@@ -29,10 +29,12 @@ from booley.core import file_lock
 from booley.runtime import job_slots
 from booley.runtime.job_slots import SlotStore
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
+from tests.time_budget import hang_guard_s
 
 CLOCK_START = 1_000_000.0
-# Inner deadline: the CI per-test budget is 60 s, and Windows fails a test above 0.8 of it.
-STEP_DEADLINE_SECONDS = 10.0
+# Inner deadline: the scaled hang guard, which the per-test limit stays above
+# (see ``.github/ci/README.md#test-time-budgets``).
+STEP_DEADLINE_SECONDS = hang_guard_s()
 _POLL_SECONDS = 0.002
 MAX_FAULTS_PER_THREAD = 3
 DRAIN_STEP_CAP = 50_000

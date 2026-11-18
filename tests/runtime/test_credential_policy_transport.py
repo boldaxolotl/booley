@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
@@ -26,7 +27,7 @@ def transport_image():
         found = subprocess.run(
             ["docker", "image", "inspect", "booley-sandbox:latest"],
             capture_output=True,
-            timeout=20,
+            timeout=hang_guard_s(),
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -225,9 +226,9 @@ def test_transport_prerequisite_timeout_skips_only_unavailable_inspection(monkey
 
     def docker(command, **kwargs):
         if command[1:3] == ["image", "inspect"]:
-            assert kwargs["timeout"] == 20
+            assert kwargs["timeout"] == hang_guard_s()
             if phase == "inspect":
-                raise subprocess.TimeoutExpired(command, 20)
+                raise subprocess.TimeoutExpired(command, hang_guard_s())
             return subprocess.CompletedProcess(command, 0)
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
