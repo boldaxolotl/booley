@@ -163,12 +163,9 @@ Seat Caps don't share commercial license seats between Projects. See
 
 Booley measures every Job's peak memory, peak swap, CPU time, and wall-clock
 time, and keeps the newest 20 runs per Target and Job phase, with no overall
-cap. Each Job entry records an outcome: `timeout`, `oom_kill`, or
-`host_oom_kill` when the run was stopped, otherwise `exit_zero` or
-`exit_nonzero`. For `booley flow fpga`, `lint`, and `synth`, those two say
-whether the Flow judged the command succeeded after reading its output (a route
-that misses timing, or lint findings, is still `exit_zero`); for other commands
-they follow the exit code. Every entry keeps the exit code as `returncode`.
+cap. Each Job entry's outcome says whether the Flow judged the run successful,
+so a lint run with only warnings, or a boardless `booley flow fpga` run that
+completed its route, shows as a success.
 Each Specialist run that calls its Agent CLI is measured too (the Agent CLI's
 processes, not Booley's own, and not their temporary files) and kept 20 per
 Specialist; Specialist runs do not change the figures of any Target. An entry
