@@ -31,7 +31,6 @@ from booley.flows.progress_lifecycle import retire_progress_of_requeued_attempt
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import (
-    EXIT_CANCELLED,
     OOM_REQUEUE_MARKER,
     EndpointOutcome,
     ExecutionResult,
@@ -161,16 +160,6 @@ class EndpointState(ABC):
     def refresh_report_detail(self, result: EndpointOutcome) -> None:
         """Refresh derived report detail before it is written; most endpoints have none."""
         return
-
-    def publish_flow_records(self, outcome: EndpointOutcome) -> None:
-        """Publish the Flow's own records for *outcome*; the default publishes none."""
-        return
-
-    def publish_records(self, prepared: PreparedExecution, outcome: EndpointOutcome) -> None:
-        """Publish this run's records unless it was a non-persisting dry run or cancelled."""
-        if prepared.non_persisting_dry_run or outcome.exit_code == EXIT_CANCELLED:
-            return
-        self.publish_flow_records(outcome)
 
     def transcript_path(self) -> Path | None:
         """Path of this invocation's agent transcript, or ``None`` when it keeps none."""
@@ -356,11 +345,8 @@ class EndpointState(ABC):
         outcome: EndpointOutcome,
         *,
         started: float | None,
-        records_published: bool,
     ) -> ExecutionResult:
-        return endpoint_session.finish_execution(
-            self, prepared, outcome, started=started, records_published=records_published
-        )
+        return endpoint_session.finish_execution(self, prepared, outcome, started=started)
 
     def _finish_main(
         self,
@@ -369,7 +355,6 @@ class EndpointState(ABC):
         display_label: str | None,
         started: float | None,
         *,
-        records_published: bool,
         dry_run: bool,
         non_persisting_dry_run: bool,
     ) -> int:
@@ -379,7 +364,6 @@ class EndpointState(ABC):
             display_target,
             display_label,
             started,
-            records_published=records_published,
             dry_run=dry_run,
             non_persisting_dry_run=non_persisting_dry_run,
         )

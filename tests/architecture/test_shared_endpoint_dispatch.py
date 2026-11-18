@@ -21,7 +21,6 @@ DECLARED_NAMES = frozenset(
         "_eda_tools",
         "prepare_target_endpoint",
         "_skip_report_detail_refresh",
-        "publish_flow_records",
         "prepare_endpoint_invocation",
         "manifest_names_targets",
     }
