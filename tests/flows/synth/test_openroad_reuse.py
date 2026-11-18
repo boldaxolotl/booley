@@ -590,7 +590,7 @@ _CONFLICTING_DRIVERS = (
 @pytest.mark.parametrize(
     ("target", "files", "openroad_exit", "outcomes"),
     [
-        (LOGICAL_TARGET, {"yosys.log": "ERROR: boom\n"}, None, ["exit_nonzero"]),
+        (LOGICAL_TARGET, {"yosys.log": "ERROR: boom\n"}, 0, ["exit_nonzero"]),
         (TARGET, {"yosys.log": "ERROR: boom\n"}, None, ["exit_nonzero", "exit_zero"]),
         (TARGET, {"check_dut.txt": _CONFLICTING_DRIVERS}, None, ["exit_nonzero", "exit_zero"]),
         (TARGET, {}, -1, ["exit_zero"]),
