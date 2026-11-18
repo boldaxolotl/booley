@@ -25,6 +25,7 @@ from pathlib import Path
 
 from booley.core.process_identity import ProcessIdentity
 
+from .atomic_files import atomic_replace_bytes
 from .filesystem_utils import safe_rmtree
 from .pid import DEAD, REUSED, ZOMBIE, capture_process_identity, observe_process
 
@@ -65,10 +66,9 @@ def mark_owned(directory: Path) -> None:
         logger.debug("No process identity; %s stays unmarked", directory)
         return
     marker = {"kind": MARKER_KIND, "version": MARKER_VERSION, "owner": identity.to_payload()}
-    staging = directory / f"{OWNER_MARKER}.tmp"
-    staging.write_text(json.dumps(marker), encoding="utf-8")
-    # Publish atomically so a concurrent sweep never reads a partial marker.
-    staging.replace(directory / OWNER_MARKER)
+    # Publish atomically (each call stages under its own name) so a concurrent
+    # sweep never reads a partial marker and parallel marks never collide.
+    atomic_replace_bytes(directory / OWNER_MARKER, json.dumps(marker).encode("utf-8"))
 
 
 def remove_owned(directory: Path) -> None:
