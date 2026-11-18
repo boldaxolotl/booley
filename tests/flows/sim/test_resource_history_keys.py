@@ -97,6 +97,10 @@ def test_sim_history_keys_name_variants_not_seeds(
     assert builds, "the changed source forces at least one measured build"
     assert {r["source_bytes"] for r in runs[:3] + builds[:1]} == {initial_bytes}
     assert runs[-1]["source_bytes"] == initial_bytes + len(appended)
+    # One setup per run, counted as one run each (#4538).
+    assert len([r for r in records if r["key"]["phase"] == "sim_prepare"]) == 4
+    report = resource_history.render_report(resource_history.summarize(records))
+    assert any(line.startswith("sim sim_prepare: 4 runs") for line in report.splitlines())
 
 
 @pytest.mark.parametrize("elab_only", [False, True], ids=["sim-run", "elab-only"])
@@ -133,8 +137,9 @@ def test_request_maps_to_recorded_keys(
     )
     assert result.exit_code == 0, result.outcome.report_text
 
+    records = resource_history.load_records(booley_dir)
     recorded: list[resource_history.HistoryKey] = []
-    for record in resource_history.load_records(booley_dir):
+    for record in records:
         key = resource_history.history_key(record)
         if key not in recorded:
             recorded.append(key)
@@ -143,6 +148,8 @@ def test_request_maps_to_recorded_keys(
         assert [key.phase for key in recorded] == ["sim_prepare", "sim_build"]
         return
     assert [key.phase for key in recorded] == ["sim_prepare", "sim_build", "sim_run", "sim_run"]
+    # Two simulator groups of one Job count as one run of every key (#4538).
+    assert {s["runs"] for s in resource_history.summarize(records)} == {1}
     plan = load_checkout_target_test_plan(flow_project, "sim")
     request = sim_job_request(plan, plan.resolve(selectors))
     assert list(phase_keys(request)) == recorded
