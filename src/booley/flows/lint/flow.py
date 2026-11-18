@@ -2,7 +2,8 @@
 
 Runs the resolved lint Target's EDA tool (Verilator ``--lint-only`` or
 Verible ``verible-verilog-lint``, ADR 0033) per build config, parses
-warnings, and deduplicates warnings across configs.
+warnings, names each finding by its Project path, and deduplicates warnings
+across configs.
 
 Exit codes: 0 = clean, 1 = the design failed (warnings remain, or the
 linter rejected the RTL), 2 = the linter could not run at all (missing
@@ -53,6 +54,7 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.run_log import write_run_log
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
@@ -216,6 +218,7 @@ class _PreparedLintTarget:
     resolved: fusesoc_registry.ResolvedTarget
     result: LintConfigResult
     attempt_token: str = ""
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
 
 @dataclass(frozen=True)
@@ -225,6 +228,7 @@ class _PreparedLintCommand:
     command: list[str]
     resolved: fusesoc_registry.ResolvedTarget
     attempt_token: str
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
 
 def parse_warnings(output: str, target: str) -> list[LintWarning]:
@@ -242,6 +246,35 @@ def parse_warnings(output: str, target: str) -> list[LintWarning]:
             )
         )
     return warnings
+
+
+def _parse_findings(
+    output: str, family: str, target: str, project_paths: ProjectSourcePaths
+) -> list[LintWarning]:
+    """Parse one Target's findings and name each file by its Project path."""
+    parse = parse_verible_warnings if family == "verible" else parse_warnings
+    return [
+        replace(warning, file=project_paths.project_path(warning.file))
+        for warning in parse(output, target)
+    ]
+
+
+_VERIBLE_LOCATION_RE = re.compile(r"^(?P<file>[^\s:][^:\n]*):\d+:\d+")
+
+
+def _project_error_line(line: str, family: str, project_paths: ProjectSourcePaths) -> str:
+    """``line`` with the file its location names replaced by the Project path.
+
+    A line without a file location comes back unchanged.
+    """
+    if family == "verible":
+        match = _VERIBLE_LOCATION_RE.match(line)
+    else:
+        match = eda_parsers.VERILATOR_ERROR_FINDING_RE.match(line)
+    if match is None or not match.group("file"):
+        return line
+    start, end = match.span("file")
+    return line[:start] + project_paths.project_path(match.group("file")) + line[end:]
 
 
 def parse_verible_warnings(output: str, target: str) -> list[LintWarning]:
@@ -681,7 +714,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
             f"command -v {shlex.quote(executable)} >/dev/null 2>&1 || "
             f"{{ echo {shlex.quote(marker)}; exit 127; }}; exec {shlex.join(command)}"
         )
-        return _PreparedLintCommand(["sh", "-c", script], resolved, token)
+        return _PreparedLintCommand(
+            ["sh", "-c", script], resolved, token, ProjectSourcePaths.for_target(target, resolved)
+        )
 
     def _run_linter(
         self, selector: str, cmd: list[str], source_bytes: int | None
@@ -869,13 +904,13 @@ class LintFlow(BuiltinFlow[LintRequest]):
         if stopped := self._linter_stop_reason(proc):
             result.error, result.error_is_eda_tool_failure = stopped, True
             return result
-        if family == "verible":
-            result.warnings = parse_verible_warnings(combined, selector)
-        else:
-            result.warnings = parse_warnings(combined, selector)
+        paths = prepared.project_paths
+        result.warnings = _parse_findings(combined, family, selector, paths)
         result.error_count = count_lint_errors(combined, family)
         if not result.error:
             _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
+            if result.error and not result.error_is_eda_tool_failure:
+                result.error = _project_error_line(result.error, family, paths)
             if result.error and evidence_log is not None:
                 # The classified error cites only the FIRST error line; the
                 # rest of the linter's output was already persisted above, so
@@ -916,15 +951,12 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 )
                 errors.append(result)
                 continue
-            if isinstance(prepared_command, _PreparedLintCommand):
-                command = prepared_command.command
-                resolved = prepared_command.resolved
-                attempt_token = prepared_command.attempt_token
-            else:
+            if not isinstance(prepared_command, _PreparedLintCommand):
                 # Compatibility for focused tests that replace the preparation
                 # boundary with the historical two-tuple.
-                command, resolved = prepared_command
-                attempt_token = ""
+                prepared_command = _PreparedLintCommand(*prepared_command, "")
+            command = prepared_command.command
+            resolved = prepared_command.resolved
             try:
                 family = _lint_eda_tool_family(resolved.configured_eda_tool)
             except ValueError as exc:
@@ -936,7 +968,11 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 errors.append(result)
                 continue
             prepared[target.identity] = _PreparedLintTarget(
-                command, resolved, result, attempt_token
+                command,
+                resolved,
+                result,
+                prepared_command.attempt_token,
+                prepared_command.project_paths,
             )
         return prepared, errors
 
@@ -1129,15 +1165,15 @@ class LintFlow(BuiltinFlow[LintRequest]):
     ) -> list[str]:
         """Sorted unique file paths a ``--scope`` entry can be checked against.
 
-        Two sources, both in the form ``filter_by_scope`` compares: the EDAM
-        ``name`` of every HDL file the Targets lint (includes and TB-tagged
+        Two sources, both in the form ``filter_by_scope`` compares: the Project
+        path of every HDL file the Targets lint (includes and TB-tagged
         files too), and every file path the linters reported. Warning paths
         keep any scope that matches a warning today accepted even when the
         linter prints a path absent from the EDAM list. Non-HDL EDAM entries
         are never linted, so they are excluded.
         """
         paths = {
-            entry.name
+            unit.project_paths.project_path(entry.name)
             for unit in prepared.values()
             for entry in unit.resolved.files
             if entry.is_hdl
