@@ -395,9 +395,8 @@ def test_nonzero_exit_without_a_kill_sign_is_no_kill_of_either_kind(flow, tmp_pa
     assert record["outcome"] == "exit_nonzero"
 
 
-@pytest.mark.parametrize(
-    ("stderr", "expected"),
-    [
+def test_shell_child_kill_report_is_a_kill_sign():
+    cases = [
         ("/work/build.sh: line 12: 4242 Killed                  g++ -c a.cc\n", True),
         ("/work/my scripts/build.sh: line 3: 99 Killed  sh x.sh\n", True),
         ("bash: line 1: 2741064 Killed                     sh self.sh\n", True),
@@ -405,13 +404,13 @@ def test_nonzero_exit_without_a_kill_sign_is_no_kill_of_either_kind(flow, tmp_pa
         # Only a whole line is a report; a mention mid-line proves nothing.
         ("echo Killed the process\n", False),
         ("note: Killed is a word\n", False),
-    ],
-    ids=["bash-script", "bash-script-with-spaces", "bash-c", "dash", "mid-line-not", "word"],
-)
-def test_shell_child_kill_report_is_a_kill_sign(stderr, expected):
-    result = SubprocessResult(returncode=1, stderr=stderr)
+    ]
+    for stderr, expected in cases:
+        result = SubprocessResult(returncode=1, stderr=stderr)
 
-    assert job_resources.own_oom_kill(_measurement(), result, cancelled=False) is expected
+        killed = job_resources.own_oom_kill(_measurement(), result, cancelled=False)
+
+        assert killed is expected, stderr
 
 
 def test_fresh_kill_log_of_the_command_is_a_kill_sign(tmp_path):

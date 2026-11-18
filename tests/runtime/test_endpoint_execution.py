@@ -486,15 +486,11 @@ def test_a_host_kill_the_job_survived_adds_no_line() -> None:
     assert result.outcome.report_text == "attempt 2 verdict"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
-@pytest.mark.parametrize(
-    ("limit_events", "requeued"),
-    [([0, 1, 1, 1], True), ([0, 0], False)],
-    ids=["sandbox-limit", "host"],
-)
-def test_sandbox_limit_kill_requeues_and_host_kill_does_not(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit_events: list[int], requeued: bool
-) -> None:
+def _run_killed_command_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit_events: list[int]
+) -> tuple[list[str], ExecutionResult]:
+    """A Job whose first command kills itself, with the Sandbox limit events given."""
+    tmp_path.mkdir()
     import itertools
 
     from tests.flows.test_flow_base import EchoFlow, _flow_env
@@ -525,15 +521,24 @@ def test_sandbox_limit_kill_requeues_and_host_kill_does_not(
 
     endpoint = _RequeueEndpoint(command(killed), command("raise SystemExit(0)"))
 
-    result = execute_endpoint(endpoint, "prepared")
+    return runs, execute_endpoint(endpoint, "prepared")
 
-    assert (len(runs) == 2) is requeued
-    if requeued:
-        assert result.exit_code == EXIT_SUCCESS
-        assert result.outcome.detail["oom_requeue"]["attempts"] == 2
-    else:
-        assert result.exit_code == EXIT_ERROR
-        assert result.outcome.report_text.startswith("Killed for host out-of-memory")
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_sandbox_limit_kill_requeues_and_host_kill_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Sandbox reached its limit during the kill: requeued once, alone.
+    runs, result = _run_killed_command_job(tmp_path / "limit", monkeypatch, [0, 1, 1, 1])
+    assert len(runs) == 2
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.outcome.detail["oom_requeue"]["attempts"] == 2
+
+    # The Sandbox stayed below its limit: the host's kill, never retried.
+    runs, result = _run_killed_command_job(tmp_path / "host", monkeypatch, [0, 0])
+    assert len(runs) == 1
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text.startswith("Killed for host out-of-memory")
 
 
 def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> None:
