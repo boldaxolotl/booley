@@ -30,6 +30,7 @@ from booley.targets.domain import TargetHandle
 from .contract import PreSimEvidence, PreSimScopeStoppedError
 
 TAIL_MAX_BYTES = 8192
+_KILL_DRAIN_TIMEOUT_S = 5  # how long a killed hook's pipes may stay open
 
 
 def bounded_pre_sim_text(value: str | bytes | None) -> str:
@@ -287,10 +288,15 @@ def _await_pre_sim(process, command, timeout, monitor, owners):
     if observer is not None:
         # Only a spawned hook counts as started in the progress record.
         observer.begin_command()
-    monitor.start(process.pid)
     timed_out = False
     settled = False
     try:
+        try:
+            monitor.start(process.pid)
+        except BaseException:
+            # A hook that spawned must not outlive a monitor that cannot start.
+            _reap_pre_sim(process)
+            raise
         try:
             stdout, stderr = _communicate_pre_sim(process, command, timeout, observer)
         except subprocess.TimeoutExpired:
@@ -328,15 +334,26 @@ def _communicate_pre_sim(process, command, timeout, observer):
     try:
         return process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        kill_process_tree(process)
-        stdout, stderr = process.communicate()
+        stdout, stderr = _reap_pre_sim(process)
         exc.output = stdout or exc.output
         exc.stderr = stderr or exc.stderr
         raise
     except BaseException:
-        kill_process_tree(process)
-        process.communicate()
+        _reap_pre_sim(process)
         raise
+
+
+def _reap_pre_sim(process):
+    """Kill the hook's tree and collect its output, giving up on escaped holders."""
+    kill_process_tree(process)
+    try:
+        return process.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        # A descendant that left the group still holds a pipe: drop its output.
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        return None, None
 
 
 __all__ = ["run_pre_sim_commands"]

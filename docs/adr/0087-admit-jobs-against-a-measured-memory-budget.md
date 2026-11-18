@@ -193,17 +193,18 @@ read-only, and delegating it would loosen the hardening.
   Detection is deliberately conservative: a kill hidden behind a wrapper that
   reports none of these (a FuseSoC generator names no signal) is a plain
   failure and is not requeued, as is a kill in a Pre-Sim Command or a
-  mutation run. A Pre-Sim Command is measured but not blamed for a kill.
+  mutation run. A Pre-Sim Command is measured but not blamed for a kill: its
+  failure stays the hook's result, as the Simulation's tests see it.
 
 ### Simulation Records
 
 Every work item of a simulation or coverage record is admitted on its own,
 with its own key. The Flow's reservation covers preparation and build, then
 drops to zero, and admission decides how many items run at once. An item
-reserves the larger of its Pre-Sim Commands and simulation estimates, plus its
-build only when it builds inside itself (a private build or a coverage
-aggregate). Each item
-ranks for the OOM killer as a Job newer than its Flow, so the newest item's
+reserves the larger of its Pre-Sim Commands and simulation estimates, and its
+build too when it builds inside itself (a private build, a coverage aggregate
+or a shared build not yet settled). Each item ranks for the OOM killer as a
+Job newer than its Flow, so the newest item's
 simulator ranks first, within the bounds of the Out-of-memory guard. An item's
 own OOM kill at the Sandbox's limit stops only that item: it is requeued once,
 to run alone after the running items finish, and its second failure is its

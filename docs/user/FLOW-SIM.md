@@ -570,8 +570,8 @@ Booley measures each firing's memory and time per Target, and `booley resources`
 lists them as `sim_pre_run`. A Target's tests reserve memory for the larger of
 the commands and the simulation. Until the commands are measured for a Target,
 each test reserves as much as that Target's build. Each firing gets its own
-temporary directory (`TMPDIR`), deleted when the firing ends, so the commands
-can't leave files there for the next firing.
+empty `TMPDIR`, deleted when the firing ends, before the tests it prepared run:
+keep files the tests read under `$BOOLEY_RUN_CWD` or the Project.
 
 By default the commands can't change the simulator build: they run after it is
 built and see only run-time inputs, so the build can be reused across tests.

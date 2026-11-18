@@ -12,6 +12,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TypeAlias, cast
 
+from booley.flows.job_estimates import sim_resource_flags
+
 JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
 
@@ -137,7 +139,9 @@ def frozen_pre_sim_commands(manifest: SimulationRecordManifest) -> tuple[str, ..
 def frozen_resource_flags(manifest: SimulationRecordManifest) -> tuple[str, ...]:
     """The instrumentation flags the manifest froze, as the Resource History keys them."""
     workload = cast(Mapping[str, object], manifest.document["workload"])
-    return tuple(flag for flag in ("coverage", "trace") if workload[flag] is True)
+    return sim_resource_flags(
+        coverage=workload["coverage"] is True, trace=workload["trace"] is True
+    )
 
 
 @dataclass(frozen=True)

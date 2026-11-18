@@ -19,6 +19,7 @@ from fusesoc.vlnv import Vlnv
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
+from booley.flows.job_estimates import sim_resource_flags
 from booley.flows.job_resources import resolved_source_bytes
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -424,8 +425,7 @@ class VerilatorCoverageExecution:
             working_directory=self._handle.project_root,
             expose_build_root=False,
             test_runs=test_runs,
-            # The flags SimulateFlow gives a coverage Job.
-            resource_flags=("coverage", "trace") if trace else ("coverage",),
+            resource_flags=sim_resource_flags(coverage=True, trace=trace),
         )
 
     def _execute_run(

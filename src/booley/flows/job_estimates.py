@@ -46,6 +46,13 @@ _BUILD_PHASE = "sim_build"
 _K = TypeVar("_K")
 
 
+def sim_resource_flags(*, coverage: bool, trace: bool) -> tuple[str, ...]:
+    """Coverage and tracing change a simulation's footprint; history keys carry them."""
+    return tuple(
+        flag for flag, enabled in ((_COVERAGE_FLAG, coverage), ("trace", trace)) if enabled
+    )
+
+
 @dataclass(frozen=True)
 class JobRequest:
     """What a Job will run, in the terms the Resource History keys use."""
@@ -126,10 +133,10 @@ def phase_occurrences(request: JobRequest) -> tuple[HistoryKey, ...]:
     if request.flow == _SIM_FLOW:
         coverage = _COVERAGE_FLAG in request.flags
         # FuseSoC setup runs once per prepared build, coverage or not.
-        keys = [key("sim_prepare"), key("sim_build")]
+        keys = [key("sim_prepare"), key(_BUILD_PHASE)]
         if request.pre_sim_commands and request.test_runs:
             # Listed once, whatever the number of firings, and never reported ended.
-            keys.append(key("sim_pre_run"))
+            keys.append(key(_PRE_SIM_PHASE))
         keys.extend(key("sim_run", name) for name in request.test_runs)
         if coverage:
             keys.append(key("sim_postprocess"))

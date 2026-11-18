@@ -45,6 +45,7 @@ class _HookProcess:
         timeout: subprocess.TimeoutExpired | None = None,
     ) -> None:
         self.returncode = returncode
+        self.stdout, self.stderr = MagicMock(), MagicMock()
         self._answers: list[Any] = [timeout] if timeout is not None else []
         self._output = (stdout, stderr)
         self.communicate = MagicMock(side_effect=self._communicate)
@@ -63,6 +64,16 @@ def _fire(
     **overrides: Any,
 ) -> tuple[Any, MagicMock]:
     """Run the Pre-Sim Commands of *handle* with a mocked ``subprocess.Popen``."""
+    return _fire_with(handle, process, spawn_error, overrides)[:2]
+
+
+def _fire_with(
+    handle: TargetHandle,
+    process: _HookProcess | None,
+    spawn_error: OSError | None,
+    overrides: dict[str, Any],
+) -> tuple[Any, MagicMock, MagicMock, MagicMock]:
+    """:func:`_fire` that also returns the mocked tree kill and the history record call."""
     spawn = MagicMock(return_value=process or _HookProcess(), side_effect=spawn_error)
     options: dict[str, Any] = {
         "test_names": ("smoke",),
@@ -74,9 +85,10 @@ def _fire(
     }
     with (
         patch("booley.flows.sim.execution.pre_sim.subprocess.Popen", spawn),
-        patch("booley.flows.sim.execution.pre_sim.kill_process_tree"),
+        patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
+        patch("booley.flows.sim.execution.pre_sim.record_command") as record,
     ):
-        return run_pre_sim_commands(handle, **options), spawn
+        return run_pre_sim_commands(handle, **options), spawn, kill, record
 
 
 def test_single_test_environment_is_project_scoped_and_reserved_values_win(
@@ -456,3 +468,70 @@ def test_pre_sim_commands_do_not_run_after_the_jobs_oom_kill(tmp_path: Path) -> 
         ran = run_hook()
     assert ran is not None and ran.status == "passed", ran
     assert marker.exists()
+
+
+def test_a_timed_out_firing_is_recorded_as_a_lower_bound(tmp_path: Path) -> None:
+    hook = _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))
+
+    evidence, _spawn, _kill, record = _fire_with(_handle(tmp_path), hook, None, {})
+
+    assert evidence is not None and evidence.status == "timed_out"
+    (_flow, label, flags, _measurement, result), _ = record.call_args
+    assert (label.phase, flags, result.timed_out) == ("sim_pre_run", (), True)
+
+
+def test_a_firing_that_never_spawned_records_nothing(tmp_path: Path) -> None:
+    evidence, _spawn, _kill, record = _fire_with(
+        _handle(tmp_path), None, OSError("resource temporarily unavailable"), {}
+    )
+
+    assert evidence is not None and evidence.status == "failed"
+    record.assert_not_called()
+
+
+def test_each_firing_gets_a_private_tmpdir_removed_afterwards(tmp_path: Path) -> None:
+    _evidence, spawn, _kill, _record = _fire_with(_handle(tmp_path), None, None, {})
+
+    private = Path(spawn.call_args.kwargs["env"]["TMPDIR"])
+    assert private.name and not private.exists()
+
+
+def test_an_escaped_descendant_holding_the_pipes_cannot_hang_the_timeout(
+    tmp_path: Path,
+) -> None:
+    """The drain after the tree kill is bounded; the pipes are dropped and the firing recorded."""
+    hook = _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))
+    hook._answers.insert(0, subprocess.TimeoutExpired("bash", 5))  # the drain times out too
+
+    evidence, _spawn, kill, record = _fire_with(_handle(tmp_path), hook, None, {})
+
+    assert evidence is not None and evidence.status == "timed_out"
+    kill.assert_called_once()
+    hook.stdout.close.assert_called_once()
+    hook.stderr.close.assert_called_once()
+    record.assert_called_once()
+
+
+def test_a_monitor_that_cannot_start_does_not_leave_the_hook_running(tmp_path: Path) -> None:
+    hook = _HookProcess()
+    with (
+        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen", return_value=hook),
+        patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
+        patch("booley.flows.sim.execution.pre_sim.record_command") as record,
+        patch(
+            "booley.flows.sim.execution.pre_sim.JobResourceMonitor.start",
+            side_effect=RuntimeError("can't start new thread"),
+        ),
+        pytest.raises(RuntimeError, match="can't start new thread"),
+    ):
+        run_pre_sim_commands(
+            _handle(tmp_path),
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+            resource_flags=(),
+        )
+
+    kill.assert_called_once_with(hook)
+    record.assert_not_called()

@@ -187,3 +187,18 @@ def test_every_sim_request_starts_with_sim_prepare() -> None:
         key.phase for key in estimates.phase_keys(_sim("t", pre_sim_commands=True))
     }
     assert "sim_postprocess" not in {key.phase for key in estimates.phase_keys(ordinary)}
+
+
+@pytest.mark.parametrize(
+    ("coverage", "trace", "flags"),
+    [
+        (False, False, ()),
+        (True, False, ("coverage",)),
+        (False, True, ("trace",)),
+        (True, True, ("coverage", "trace")),
+    ],
+)
+def test_sim_resource_flags_name_the_enabled_instrumentation(
+    coverage: bool, trace: bool, flags: tuple[str, ...]
+) -> None:
+    assert estimates.sim_resource_flags(coverage=coverage, trace=trace) == flags
