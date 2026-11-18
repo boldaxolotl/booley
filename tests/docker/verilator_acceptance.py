@@ -17,7 +17,17 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
+# Standalone script run as /work/tests/docker/verilator_acceptance.py: put the
+# repository root on sys.path so the shared time-budget policy imports.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tests.time_budget import hang_guard_s, scaled
+
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
+
+# Hang guard for waits that only stop a hang; a build or compile gets a longer one.
+_HANG_S = hang_guard_s()
+_BUILD_S = 10 * hang_guard_s()
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "verilator_acceptance"
 FLAGS = [
@@ -45,7 +55,7 @@ def expected_cocotb_version() -> str:
 
 
 def run(
-    args: list[str], cwd: Path, *, timeout: int = 300, success: bool = True
+    args: list[str], cwd: Path, *, timeout: float = _BUILD_S, success: bool = True
 ) -> subprocess.CompletedProcess[str]:
     """Run a bounded command, retaining output even when it fails."""
     # Unbounded child: standalone acceptance script run in the image, outside pytest
@@ -80,7 +90,7 @@ def metadata(key: str) -> dict[str, str]:
     return dict(part.split("\x02", 1) for part in key.split("\x01") if "\x02" in part)
 
 
-def terminate_and_reap(child: subprocess.Popen, *, timeout: float = 5) -> int:
+def terminate_and_reap(child: subprocess.Popen, *, timeout: float = _HANG_S) -> int:
     """Preserve a failed graceful stop while bounding forced cleanup as well."""
     try:
         child.terminate()
@@ -90,7 +100,7 @@ def terminate_and_reap(child: subprocess.Popen, *, timeout: float = 5) -> int:
         if child.poll() is None:
             child.kill()
             # Unbounded child: signal control: this code drives the Popen's terminate/kill itself
-            child.wait(timeout=5)
+            child.wait(timeout=_HANG_S)
 
 
 def assert_per_instance(points: dict[str, int]) -> None:
@@ -133,10 +143,10 @@ class Acceptance(unittest.TestCase):
 
     def test_01_nested_shift_custom_untimed(self) -> None:
         executable = self.build("shift.sv", main="shift.cpp")
-        run([executable], self.work, timeout=30)
+        run([executable], self.work, timeout=_HANG_S)
 
     def test_02_force_unpacked_timed(self) -> None:
-        run([self.build("force.sv")], self.work, timeout=30)
+        run([self.build("force.sv")], self.work, timeout=_HANG_S)
 
     def test_03_lint_elaboration_and_hard_diagnostic(self) -> None:
         for mode in ("--lint-only", "--cc"):
@@ -158,7 +168,7 @@ class Acceptance(unittest.TestCase):
             result = run(
                 [executable, "+verilator+seed+123", f"+verilator+coverage+file+{name}"],
                 self.work,
-                timeout=30,
+                timeout=_HANG_S,
             )
             outputs.append(re.search(r"RANDOM=\d+", result.stdout).group())
             records(self.work / name)
@@ -167,13 +177,13 @@ class Acceptance(unittest.TestCase):
         failed = run(
             [executable, "+fail", "+verilator+coverage+file+failed.dat"],
             self.work,
-            timeout=30,
+            timeout=_HANG_S,
             success=False,
         )
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("intentional failure", failed.stdout + failed.stderr)
         with self.assertRaises(subprocess.TimeoutExpired):
-            run([executable, "+hang"], self.work, timeout=1)
+            run([executable, "+hang"], self.work, timeout=scaled(1))
         child = subprocess.Popen(
             [executable, "+hang"],
             cwd=self.work,
@@ -183,7 +193,7 @@ class Acceptance(unittest.TestCase):
         try:
             try:
                 # Unbounded child: signal control: this code drives the Popen's terminate/kill itself
-                child.wait(timeout=0.2)
+                child.wait(timeout=scaled(0.2))
                 self.fail("hang fixture exited before termination")
             except subprocess.TimeoutExpired:
                 self.assertEqual(terminate_and_reap(child), -signal.SIGTERM)
@@ -191,12 +201,12 @@ class Acceptance(unittest.TestCase):
             if child.poll() is None:
                 child.kill()
                 # Unbounded child: signal control: this code drives the Popen's terminate/kill itself
-                child.wait(timeout=5)
+                child.wait(timeout=_HANG_S)
 
     def test_05_native_per_instance_reset_and_merge(self) -> None:
         executable = self.build("coverage source.sv", main="coverage.cpp", coverage=True)
         for name in ("first.dat", "second.dat"):
-            run([executable, f"+verilator+coverage+file+{name}"], self.work, timeout=30)
+            run([executable, f"+verilator+coverage+file+{name}"], self.work, timeout=_HANG_S)
         self.assertTrue(all(count == 0 for count in records(self.work / "zero.dat").values()))
         first = records(self.work / "first.dat")
         second = records(self.work / "second.dat")
@@ -246,7 +256,7 @@ class Acceptance(unittest.TestCase):
         run(
             [str(self.work / "obj" / "Vharness"), "+verilator+coverage+file+generated.dat"],
             self.work,
-            timeout=30,
+            timeout=_HANG_S,
         )
         points = records(self.work / "generated.dat")
         assert_per_instance(points)
@@ -283,7 +293,7 @@ class Acceptance(unittest.TestCase):
                 str(self.work / "flows"),
             ],
             self.work,
-            timeout=900,
+            timeout=30 * hang_guard_s(),
         )
 
 

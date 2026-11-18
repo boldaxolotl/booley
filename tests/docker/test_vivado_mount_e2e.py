@@ -22,6 +22,7 @@ import pytest
 from tests import eda_grant_support
 from tests.devcontainer_spec_support import build_spec
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
@@ -35,6 +36,8 @@ _IMAGE = os.environ.get("BOOLEY_VIVADO_E2E_IMAGE", "booley-sandbox")
 _VIVADO_ENV = "BOOLEY_VIVADO_ROOT"
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_mount_poc"
 _DEVCONTAINER_ENV = "BOOLEY_DEVCONTAINER_E2E"
+# Default bound for a command in the Session container: a hang guard for a real operation.
+_EXEC_S = 4 * hang_guard_s()
 
 
 def _require_prerequisites() -> tuple[str, Path]:
@@ -52,7 +55,7 @@ def _require_prerequisites() -> tuple[str, Path]:
     for kind, name in (("image", _IMAGE), ("network", dc.EGRESS_NETWORK)):
         probe = run_bounded_child(
             [docker, kind, "inspect", name],
-            timeout=60,
+            timeout=2 * hang_guard_s(),
         )
         if probe.returncode != 0:
             pytest.skip(f"Docker {kind} {name!r} is absent; run `booley init --force`")
@@ -71,7 +74,7 @@ def _require_prerequisites() -> tuple[str, Path]:
 
 
 def _exec(
-    docker: str, container: str, *command: str, timeout: int = 120
+    docker: str, container: str, *command: str, timeout: int = _EXEC_S
 ) -> subprocess.CompletedProcess[str]:
     return run_bounded_child(
         [docker, "exec", container, *command],
@@ -143,7 +146,6 @@ def test_runtime_boundary_guard_rejects_successful_writes(command: str) -> None:
             "-c",
             "set -eu\n" + _expect_denied_script() + f"\nexpect_denied {command}\nprintf finished",
         ],
-        timeout=10,
     )
     assert (result.returncode == 0) is (command == "false"), result.stdout + result.stderr
     assert ("finished" in result.stdout) is (command == "false")
@@ -153,7 +155,7 @@ def _assert_host_gateway_is_unreachable(docker: str, container: str) -> None:
     """Prove a process listening on every host address is unreachable from Session."""
     inspected = run_bounded_child(
         [docker, "network", "inspect", dc.EGRESS_NETWORK],
-        timeout=60,
+        timeout=2 * hang_guard_s(),
     )
     assert inspected.returncode == 0, inspected.stderr
     network = json.loads(inspected.stdout)[0]
@@ -195,8 +197,8 @@ def _run_flow(docker: str, container: str, report_dir: str) -> None:
         "--report-dir",
         report_dir,
         "--timeout-ms",
-        "600000",
-        timeout=660,
+        str(20 * hang_guard_s() * 1000),
+        timeout=22 * hang_guard_s(),
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
@@ -269,7 +271,7 @@ def _vscode_up(command: list[str], workspace: Path) -> subprocess.CompletedProce
     environment["PATH"] = f"{venv_bin}{os.pathsep}{environment.get('PATH', '')}"
     return run_bounded_child(
         [*command, "up", "--workspace-folder", str(workspace), "--include-configuration"],
-        timeout=300,
+        timeout=10 * hang_guard_s(),
         env=environment,
     )
 
@@ -299,7 +301,7 @@ def _create_stale_vscode_container(
             "sleep",
             "infinity",
         ],
-        timeout=60,
+        timeout=2 * hang_guard_s(),
     )
     assert stale.returncode == 0, stale.stdout + stale.stderr
     stale_container = stale.stdout.strip()
@@ -310,7 +312,7 @@ def _create_stale_vscode_container(
 def _single_project_container(docker: str, project_id: str) -> str:
     listed = run_bounded_child(
         [docker, "ps", "-aq", "--filter", f"label=booley.project-id={project_id}"],
-        timeout=60,
+        timeout=2 * hang_guard_s(),
     )
     assert listed.returncode == 0, listed.stdout + listed.stderr
     containers = [line for line in listed.stdout.splitlines() if line]
@@ -323,7 +325,7 @@ def _remove_containers(docker: str, *containers: str) -> None:
         if container:
             run_bounded_child(
                 [docker, "rm", "-f", container],
-                timeout=60,
+                timeout=2 * hang_guard_s(),
             )
 
 
@@ -341,7 +343,7 @@ def _assert_vscode_lifecycle(docker: str, command: list[str], workspace: Path) -
         assert created.returncode == 0, created.stdout + created.stderr
         stale_inspect = run_bounded_child(
             [docker, "inspect", stale_container],
-            timeout=60,
+            timeout=2 * hang_guard_s(),
         )
         assert stale_inspect.returncode != 0, "stopped stale container was not reconciled"
         container = _single_project_container(docker, project_id)
@@ -360,7 +362,7 @@ def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
     container = session_runtime.up(workspace)
     try:
         for arguments in (("doctor",), ("doctor", "--deep")):
-            checked = _exec(docker, container, "booley", *arguments, timeout=300)
+            checked = _exec(docker, container, "booley", *arguments, timeout=10 * hang_guard_s())
             output = checked.stdout + checked.stderr
             assert (
                 "mounted Vivado 2025.2 wrapper, read-only release, and identity verified" in output
@@ -375,7 +377,7 @@ def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
 
         stopped = run_bounded_child(
             [docker, "stop", container],
-            timeout=60,
+            timeout=2 * hang_guard_s(),
         )
         assert stopped.returncode == 0, stopped.stdout + stopped.stderr
         assert session_runtime.up(workspace) == container
@@ -418,7 +420,6 @@ def test_host_provisioned_vivado_completes_issued_session_runtime_flow_twice(
     shutil.copytree(_FIXTURE, workspace, ignore=shutil.ignore_patterns("Dockerfile", "README.md"))
     initialized = run_bounded_child(
         ["git", "-c", "init.templateDir=", "init", str(workspace)],
-        timeout=10,
         env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
     )
     assert initialized.returncode == 0, initialized.stdout + initialized.stderr
@@ -432,7 +433,7 @@ def test_host_provisioned_vivado_completes_issued_session_runtime_flow_twice(
     host_doctor = run_bounded_child(
         ["booley", "doctor"],
         cwd=workspace,
-        timeout=300,
+        timeout=10 * hang_guard_s(),
     )
     host_output = host_doctor.stdout + host_doctor.stderr
     assert "Sandbox spec has valid host issuance" in host_output, host_output
@@ -471,7 +472,7 @@ cat /etc/os-release
     assert result.returncode == 0, result.stdout + result.stderr
     inspected = run_bounded_child(
         [docker, "inspect", container, "--format", "{{.Image}}"],
-        timeout=60,
+        timeout=2 * hang_guard_s(),
     )
     assert inspected.returncode == 0, inspected.stderr
     print("Vivado acceptance image:", inspected.stdout.strip())
@@ -522,7 +523,6 @@ def test_vivado_library_guard_rejects_system_workarounds(tmp_path: Path, workaro
             "PATH": str(tools) + os.pathsep + os.environ["PATH"],
             "WORKAROUND": workaround,
         },
-        timeout=10,
     )
     assert (result.returncode == 0) is (workaround == "none"), result.stdout + result.stderr
     assert ("finished" in result.stdout) is (workaround == "none")
@@ -578,7 +578,7 @@ def _run_packaged_vivado_wrapper(docker: str, release: Path) -> subprocess.Compl
             "/usr/local/bin/vivado",
             "argument with spaces",
         ],
-        timeout=60,
+        timeout=2 * hang_guard_s(),
     )
 
 

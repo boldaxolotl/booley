@@ -24,6 +24,7 @@ from tests.mcp_tools.reviewer_support import (
     open_findings,
     run_review,
 )
+from tests.time_budget import hang_guard_s
 
 BASE_ARGS = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
 SPEC_ARGS = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "spec"]
@@ -187,7 +188,7 @@ def test_bugs_review_runs_checklist_and_hunt_concurrently(
     project: Path, agent: ScriptedAgent
 ) -> None:
     """Both guide calls run at once and their usage sums."""
-    barrier = threading.Barrier(2, timeout=20)  # sequential calls would break it
+    barrier = threading.Barrier(2, timeout=hang_guard_s())  # sequential calls would break it
 
     def meet(_params: AgentCallParams) -> None:
         barrier.wait()

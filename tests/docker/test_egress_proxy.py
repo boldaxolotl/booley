@@ -6,6 +6,7 @@ import asyncio
 import base64
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.docker.egress_proxy import DEFAULT_ALLOWLIST, EgressProxy
 
@@ -138,7 +139,7 @@ class TestDefaultAllowlist:
 
 
 async def _drain_line(reader: asyncio.StreamReader) -> bytes:
-    return await asyncio.wait_for(reader.readline(), timeout=5)
+    return await asyncio.wait_for(reader.readline(), timeout=hang_guard_s())
 
 
 class TestTunnelIdleDirection:
@@ -225,7 +226,7 @@ class TestTunnelIdleDirection:
 
             received = b""
             while b"chunk2" not in received:
-                data = await asyncio.wait_for(reader.read(1024), timeout=5)
+                data = await asyncio.wait_for(reader.read(1024), timeout=hang_guard_s())
                 if not data:
                     break
                 received += data
