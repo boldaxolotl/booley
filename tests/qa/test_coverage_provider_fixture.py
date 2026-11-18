@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.time_budget import scaled
 
 ROOT = Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults"
 SPEC = importlib.util.spec_from_file_location("qa_provider", ROOT / "provider.py")
@@ -21,7 +22,7 @@ def test_burst_messages_do_not_wait_for_more_fd_input():
     os.write(writer, b'{"id":1}\n{"id":2}\n')
     with os.fdopen(reader) as stream:
         try:
-            deadline = time.monotonic() + 0.1
+            deadline = time.monotonic() + scaled(0.1)
             assert provider.receive(stream, deadline) == {"id": 1}
             assert provider.receive(stream, deadline) == {"id": 2}
         finally:

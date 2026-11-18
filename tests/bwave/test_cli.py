@@ -29,6 +29,7 @@ from booley.runtime import vaporview
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -773,7 +774,7 @@ def fake_rust(monkeypatch):
     monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-rust"])
     # The viewer model answers synchronously, so only a genuine drop waits out
     # the settle poll; keep that wait short enough not to drag the suite.
-    monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", 0.3)
+    monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", scaled(0.3))
     state = {"signals": list(_CANNED_SIGNALS), "total_ticks": 1_000_000, "clock": "tb.clk"}
     calls: list[list[str]] = []
 

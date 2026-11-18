@@ -16,10 +16,15 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.runtime import auth_token, dashboard_extension, dashboard_tasks, devcontainer
 
@@ -27,6 +32,9 @@ OBSERVER = r"""
 const vscode = require('vscode');
 const fs = require('fs');
 const {execFileSync} = require('child_process');
+const GUARD_MS = __GUARD_MS__;
+const SETTLE_MS = __SETTLE_MS__;
+const CLOSE_SETTLE_MS = __CLOSE_SETTLE_MS__;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 function running() {
     return fs.readdirSync('/proc').filter(name => /^\d+$/.test(name)).filter(name => {
@@ -43,10 +51,10 @@ exports.activate = async () => {
         namespace: fs.readlinkSync('/proc/self/ns/pid'),
         automaticPermission: vscode.workspace.getConfiguration('task').get('allowAutomaticTasks')};
     try {
-        for (let i = 0; i < 100; i++) {
+        for (const end = Date.now() + GUARD_MS; Date.now() < end;) {
             const terminal = vscode.window.terminals.find(t => t.name === 'Booley Dashboard');
             if (terminal && await terminal.processId && running().length === 1) {
-                await wait(1500);
+                await wait(SETTLE_MS);
                 result.active = vscode.window.activeTerminal === terminal;
                 await vscode.commands.executeCommand('workbench.action.terminal.selectAll');
                 await vscode.commands.executeCommand('workbench.action.terminal.copySelection');
@@ -58,7 +66,7 @@ exports.activate = async () => {
                 result.processes = running().length;
                 try {
                     execFileSync('/usr/local/bin/booley', ['dashboard', '--on-attach'],
-                        {cwd:'/work', timeout:10000});
+                        {cwd:'/work', timeout:GUARD_MS});
                     result.duplicateExit = 0;
                 } catch (error) { result.duplicateExit = error.status; }
                 let duplicateClosed = false;
@@ -68,13 +76,17 @@ exports.activate = async () => {
                 const duplicate = vscode.window.createTerminal({name:'Booley duplicate probe',
                     shellPath:'/usr/local/bin/booley', shellArgs:['dashboard', '--on-attach'],
                     cwd:'/work', isTransient:true});
-                for (let j = 0; j < 40 && !duplicateClosed; j++) { await wait(100); }
+                for (const end = Date.now() + GUARD_MS; Date.now() < end && !duplicateClosed;) {
+                    await wait(100);
+                }
                 result.duplicateTerminalClosed = duplicateClosed;
                 listener.dispose();
                 duplicate.dispose();
                 terminal.sendText('q', false);
-                for (let j = 0; j < 40 && running().length; j++) { await wait(100); }
-                await wait(500);
+                for (const end = Date.now() + GUARD_MS; Date.now() < end && running().length;) {
+                    await wait(100);
+                }
+                await wait(CLOSE_SETTLE_MS);
                 result.afterClose = running().length;
                 break;
             }
@@ -99,8 +111,10 @@ exports.activate = async () => {
 
 
 def run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
-    # Kept on subprocess.run: standalone script outside pytest, cannot import the test helper.
-    return subprocess.run(argv, check=True, timeout=30, capture_output=True, text=True, **kwargs)
+    # Kept on subprocess.run: standalone script outside pytest, with its own hang guard.
+    return subprocess.run(
+        argv, check=True, timeout=hang_guard_s(), capture_output=True, text=True, **kwargs
+    )
 
 
 def observer_vsix(path: Path, *, reload_window: bool = False) -> None:
@@ -117,7 +131,10 @@ def observer_vsix(path: Path, *, reload_window: bool = False) -> None:
     }
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("extension/package.json", json.dumps(manifest))
-        script = OBSERVER.replace(
+        script = OBSERVER.replace("__GUARD_MS__", str(hang_guard_s() * 1000))
+        script = script.replace("__SETTLE_MS__", str(round(scaled(1.5) * 1000)))
+        script = script.replace("__CLOSE_SETTLE_MS__", str(round(scaled(0.5) * 1000)))
+        script = script.replace(
             "if (result.visible && stage === 0)",
             "if (result.visible && stage === 0 && " + str(reload_window).lower() + ")",
         )
@@ -233,7 +250,7 @@ def editor_environment() -> dict[str, str]:
 
 
 def await_result(root: Path, project: Path, process: subprocess.Popen) -> dict:
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 6 * hang_guard_s()
     result_path = project / "attach-result.json"
     while not result_path.exists() and time.monotonic() < deadline:
         if process.poll() is not None:
@@ -275,10 +292,10 @@ def main() -> None:
             check_result(result, reload_window=args.reload)
         finally:
             try:
-                process.wait(timeout=10)
+                process.wait(timeout=hang_guard_s())
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=10)
+                process.wait(timeout=hang_guard_s())
             ids = run(
                 ["docker", "ps", "-aq", "--filter", f"label=devcontainer.local_folder={project}"]
             ).stdout.split()

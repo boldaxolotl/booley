@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import SimulationOptions
@@ -32,7 +33,7 @@ pytestmark = pytest.mark.skipif(
     shutil.which("verilator") is None or shutil.which("verilator_coverage") is None,
     reason="real smoke runs inside the pinned Booley Sandbox Image",
 )
-_TOOL_TIMEOUT_S = 120
+_TOOL_TIMEOUT_S = 4 * hang_guard_s()
 
 
 class _RealVerilatorExecution:
@@ -265,7 +266,7 @@ def _collect_target(root: Path, test: str):
         selected_tests=(test,),
         artifact_root=root / "record",
         invoke=_invoke,
-        options=SimulationOptions(timeout_ms=30_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 ROOT = Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults"
 SPEC = importlib.util.spec_from_file_location("qa_filesystem", ROOT / "filesystem.py")
@@ -62,7 +63,7 @@ os.link(p/'source',p/'coverage.json')
         "link",
         "/coverage.json",
         "any",
-        20,
+        hang_guard_s(),
     )
     assert code == 0
     assert (tmp_path / "coverage.json").read_text() == "unchanged"
@@ -88,7 +89,7 @@ for complete in [False,True]:
             "rename",
             "/progress.json",
             "complete",
-            20,
+            hang_guard_s(),
         )
         == 0
     )
@@ -147,7 +148,7 @@ for complete in [False,True]:
             "rename",
             "/progress.json",
             "complete",
-            20,
+            hang_guard_s(),
         )
         == 0
     )
@@ -222,7 +223,7 @@ finally: os.close(fd)
             "unlink",
             "/payload",
             "any",
-            20,
+            hang_guard_s(),
         )
         == 0
     )
@@ -230,7 +231,6 @@ finally: os.close(fd)
     # Restoration is a new ordinary operation without any injected environment.
     run_bounded_child(
         [sys.executable, "-c", "import os,sys;os.unlink(sys.argv[1])", str(tmp_path / "payload")],
-        timeout=10,
         check=True,
     )
     assert not (tmp_path / "payload").exists()
@@ -246,7 +246,7 @@ def test_missing_interception_cannot_report_fault_success(tmp_path, library):
             "link",
             "/coverage.json",
             "any",
-            10,
+            hang_guard_s(),
         )
 
 
@@ -261,7 +261,7 @@ def test_controller_does_not_change_parent_environment(tmp_path, library):
             "link",
             "/absent",
             "any",
-            10,
+            hang_guard_s(),
         )
     assert dict(os.environ) == before
 
@@ -277,7 +277,7 @@ def test_interrupt_reaps_producer_before_publication(tmp_path, library):
         "link",
         "/coverage.json",
         "interrupt",
-        20,
+        hang_guard_s(),
     )
     assert code == -15
     assert not (tmp_path / "coverage.json").exists()
@@ -295,7 +295,7 @@ def test_shutdown_kills_descendant_after_group_leader_exits(tmp_path):
         [sys.executable, "-c", leader_script, grandchild], start_new_session=True
     )
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + hang_guard_s()
         while not marker.exists():
             assert time.monotonic() < deadline
             time.sleep(0.01)
@@ -318,7 +318,7 @@ def test_any_gate_preserves_attempted_publication_bytes(tmp_path, library):
             "link",
             "/coverage.json",
             "any",
-            20,
+            hang_guard_s(),
         )
         == 0
     )

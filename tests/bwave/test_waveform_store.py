@@ -11,6 +11,7 @@ import pytest
 
 from booley.bwave import waveform_store as stores
 from tests.conftest import FST_HEADER_BYTES, MINIMAL_FST_BYTES
+from tests.time_budget import hang_guard_s
 
 
 @pytest.mark.parametrize(
@@ -623,7 +624,7 @@ def test_close_input_keeps_a_path_the_writer_replaced(tmp_path: Path, fake_bwave
     fifo.unlink()
     fifo.write_text("replacement", encoding="utf-8")
 
-    result = conversion.finish(timeout_s=10)
+    result = conversion.finish(timeout_s=hang_guard_s())
 
     assert fifo.read_text(encoding="utf-8") == "replacement"
     assert result.success is False

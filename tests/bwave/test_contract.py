@@ -31,6 +31,7 @@ from booley.bwave.contract import (
 from booley.flows.sim.trace_session import TraceSession
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -45,7 +46,7 @@ EMPTY_VCD = (
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    return run_bounded_child([str(_native_bwave_binary()), *args], timeout=60)
+    return run_bounded_child([str(_native_bwave_binary()), *args], timeout=2 * hang_guard_s())
 
 
 def _build_store(vcd: Path, out: Path) -> Path:

@@ -16,6 +16,7 @@ from booley.dev_support.test_profiles import native_test_binary
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 from tests.bwave.session_store_support import isolate_temporary_store, use_store
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -40,7 +41,7 @@ def _ensure_bwave_fixture() -> None:
     if not src.exists():
         pytest.skip("test_distance.vcd fixture missing")
     result = run_bounded_child(
-        [str(native_bwave), "build", str(src), "-o", str(BWAVE)], timeout=60
+        [str(native_bwave), "build", str(src), "-o", str(BWAVE)], timeout=2 * hang_guard_s()
     )
     if result.returncode != 0:
         pytest.fail(f"failed to build {BWAVE}: {result.stderr}")

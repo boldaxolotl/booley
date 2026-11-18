@@ -22,6 +22,10 @@ from booley.feedback.findings import (
     read_log,
     rewrite,
 )
+from tests.time_budget import hang_guard_s, scaled
+
+# Waits that a healthy run ends at once; twice the hang guard keeps them above the 10 s joins.
+_WAIT_S = 2 * hang_guard_s()
 
 
 @pytest.fixture
@@ -220,7 +224,7 @@ class TestFilability:
 def _publication_barrier(connection, publish):
     def paused_publish(*args, **kwargs):
         connection.send("read")
-        assert connection.poll(60), "parent did not release publication"
+        assert connection.poll(_WAIT_S), "parent did not release publication"
         assert connection.recv() == "continue"
         return publish(*args, **kwargs)
 
@@ -247,7 +251,7 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
 
     from booley.feedback import cli, findings, materialize
 
-    findings._LOCK_TIMEOUT_S = 60
+    findings._LOCK_TIMEOUT_S = _WAIT_S
     original = findings.read_log
     wait_for_lock = getattr(findings, "wait_for_file_lock", None)
     if wait_for_lock is not None and attempted is not None:
@@ -266,7 +270,7 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
         if first and operation not in ("materialize", "cleanup_apply"):
             first = False
             connection.send("read")
-            assert connection.poll(60), "parent did not release writer"
+            assert connection.poll(_WAIT_S), "parent did not release writer"
             assert connection.recv() == "continue"
         return log
 
@@ -308,13 +312,13 @@ def _sidecar_is_held(directory):
 
 
 def _receive(connection, expected):
-    assert connection.poll(60), f"worker did not send {expected}"
+    assert connection.poll(_WAIT_S), f"worker did not send {expected}"
     assert connection.recv() == expected
 
 
 def _finish_workers(workers):
     for process, connection in workers:
-        process.join(60)
+        process.join(_WAIT_S)
         assert process.exitcode == 0
         connection.close()
 
@@ -323,7 +327,7 @@ def _stop_workers(workers):
     for process, connection in workers:
         if process.is_alive():
             process.terminate()
-        process.join(10)
+        process.join(hang_guard_s())
         connection.close()
 
 
@@ -346,7 +350,7 @@ def test_concurrent_append_allocates_distinct_ids(booley_dir):
         # A locked reader excludes the other seven; the old API admits all eight.
         from multiprocessing.connection import wait
 
-        ready = wait([connection for _, connection in workers], timeout=60)
+        ready = wait([connection for _, connection in workers], timeout=_WAIT_S)
         assert ready
         first = ready[0]
         _receive(first, "read")
@@ -356,7 +360,7 @@ def test_concurrent_append_allocates_distinct_ids(booley_dir):
             _receive(first, "done")
             remaining = [connection for _, connection in workers if connection is not first]
             for _ in range(7):
-                ready = wait(remaining, timeout=60)
+                ready = wait(remaining, timeout=_WAIT_S)
                 assert ready
                 connection = ready[0]
                 _receive(connection, "read")
@@ -391,7 +395,7 @@ def _race_feedback_append(directory, operation, addition_operation="append"):
         attempted = context.Event()
         addition = _start_writer(context, directory, addition_operation, attempted)
         workers.append(addition)
-        assert attempted.wait(60), "appender did not attempt the transaction"
+        assert attempted.wait(_WAIT_S), "appender did not attempt the transaction"
         assert _sidecar_is_held(directory) == held
         if held:
             # Probe proves the writer really owns the shared sidecar, then let
@@ -427,7 +431,7 @@ def _hold_findings_lock(directory, connection):
         acquire_file_lock(handle)
         connection.send("held")
         try:
-            assert connection.poll(60), "parent did not release holder"
+            assert connection.poll(_WAIT_S), "parent did not release holder"
             connection.recv()
         finally:
             release_file_lock(handle)
@@ -446,7 +450,7 @@ def holding_findings_lock(directory):
     finally:
         if process.is_alive():
             parent.send("release")
-            process.join(10)
+            process.join(hang_guard_s())
         _stop_workers([(process, parent)])
 
 
@@ -459,7 +463,7 @@ def test_timeout_changes_neither_log_nor_caller_and_killed_holder_recovers(
     path = log_path(booley_dir)
     before = path.read_bytes()
     candidate = Finding(title="waiting")
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
     with holding_findings_lock(booley_dir) as holder:
         with pytest.raises(findings.FindingsLockTimeoutError, match=r"append.*findings.lock"):
             append(candidate, booley_dir)
@@ -469,7 +473,7 @@ def test_timeout_changes_neither_log_nor_caller_and_killed_holder_recovers(
         assert path.read_bytes() == before
         assert not path.with_suffix(".jsonl.tmp").exists()
         holder.terminate()
-        holder.join(10)
+        holder.join(hang_guard_s())
         assert not holder.is_alive()
         assert append(candidate, booley_dir).id == "F-2"
     assert (booley_dir / ".runtime" / "findings.lock").is_file()
