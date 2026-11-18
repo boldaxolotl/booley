@@ -2673,6 +2673,23 @@ def _author_cross_core_project(root: Path) -> None:
     )
 
 
+def _author_alias_project(root: Path) -> None:
+    """Core ``a`` lists the file through a symlink and a ``copyto`` named like an export."""
+    _author_cross_core_project(root)
+    try:
+        (root / "alias").symlink_to(root / "ip/b/rtl", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    (root / "a.core").write_bytes(
+        b"CAPI=2:\nname: ::a:0\nfilesets:\n  rtl:\n"
+        b"    files:\n      - alias/top.sv\n"
+        b"      - ip/b/rtl/top.sv: {copyto: src/a_0/staged.sv}\n"
+        b"    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_a:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+    )
+
+
 def _author_demo_project(root: Path) -> None:
     """The stealth demo layout: its core lives in ``.booley/cores`` and lists ``picorv32.v``."""
     (root / ".booley/cores").mkdir(parents=True)
@@ -2708,6 +2725,25 @@ _GENERATED = "%Warning-WIDTH: gen/generated.sv:2:3: Operator ASSIGN expects 8 bi
             ],
             ["[lint]   %Warning-UNUSEDSIGNAL: ip/b/rtl/top.sv:1:8 Signal is not used: 'x'"],
             id="cross-core",
+        ),
+        pytest.param(
+            "alias",
+            "lint_a,lint_b",
+            (),
+            (
+                _process(
+                    stdout="%Warning-UNUSEDSIGNAL: src/a_0/alias/top.sv:1:8: Signal is not used: 'x'\n"
+                    "%Warning-WIDTH: src/a_0/staged.sv:2:3: Operator ASSIGN expects 8 bits\n"
+                ),
+                _process(stdout=_UNUSED_B),
+            ),
+            EXIT_FAILURE,
+            [
+                ("UNUSEDSIGNAL", "ip/b/rtl/top.sv", ["lint_a", "lint_b"]),
+                ("WIDTH", "src/a_0/staged.sv", ["lint_a"]),
+            ],
+            [],
+            id="alias-and-copyto",
         ),
         pytest.param(
             "cross",
@@ -2798,7 +2834,11 @@ def test_lint_reports_project_paths(
     pytest.importorskip("edalize")
     work_dir = tmp_path / "proj"
     work_dir.mkdir()
-    (_author_demo_project if project == "demo" else _author_cross_core_project)(work_dir)
+    {
+        "demo": _author_demo_project,
+        "alias": _author_alias_project,
+        "cross": _author_cross_core_project,
+    }[project](work_dir)
     _real_lint_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, "verible"), tmp_path)
 
     result, _ = run_lint(

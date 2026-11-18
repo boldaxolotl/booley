@@ -66,8 +66,11 @@ class ProjectSourcePaths:
             if not name.startswith(prefix):
                 continue
             source = Path(os.path.normpath(roots[item.core] / name[len(prefix) :]))
-            if source.is_relative_to(root):
-                by_name[_normalized(item.name)] = source.relative_to(root).as_posix()
+            if not source.is_file():
+                continue  # a name FuseSoC staged (copyto) or generated has no source
+            project_path = fusesoc_registry.canonical_project_path(root, source)
+            if not Path(project_path).is_absolute():
+                by_name[_normalized(item.name)] = project_path
         return cls(by_name)
 
     def project_path(self, reported: str) -> str:
