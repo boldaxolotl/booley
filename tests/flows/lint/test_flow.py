@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from booley.flows import artifacts as flow_artifacts
-from booley.flows.base import SubprocessResult
+from booley.flows.base import FlowMechanics, SubprocessResult
 from booley.flows.lint.flow import (
     LintConfigResult,
     LintFlow,
@@ -32,6 +32,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
+from tests.canned_process_support import canned_command
 from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
@@ -145,7 +146,8 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
     returns the result and the command of every linter run. The Targets run in
     order and take the processes in order (the last repeats). ``resolved(handle,
     build_root)`` stands for ``resolve_target_handle``; ``resolved=None`` keeps
-    the resolver the test installed.
+    the resolver the test installed. ``measured=True`` runs each canned result as a
+    real child process through the measured run, so a history record is written.
     """
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
@@ -159,12 +161,16 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
         resolved: Callable[..., object] | None = lambda handle, build_root: _stub_resolved(
             build_root=tmp_path / handle.selector
         ),
+        measured: bool = False,
     ) -> tuple[ExecutionResult, list[list[str]]]:
         commands: list[list[str]] = []
 
         def execute(_flow: LintFlow, cmd: list[str], **_kwargs: object) -> SubprocessResult:
             commands.append(cmd)
-            return processes[min(len(commands), len(processes)) - 1]
+            process = processes[min(len(commands), len(processes)) - 1]
+            if measured:  # the real measured run, which writes the history record
+                return FlowMechanics._execute_local(_flow, canned_command(process))
+            return process
 
         # Unit tests have no Verilator: the linter subprocess is the one
         # private seam the public Flow entry cannot replace.
@@ -750,6 +756,26 @@ _DESIGN_FAIL_STDERR = (
     "%Error: Exiting due to 1 error(s)\n"
 )
 _NON_BLOCKING_KNOB = "[flows.lint]\nwarnings_as_errors = false\n"
+
+
+@pytest.mark.parametrize(
+    ("process", "outcome"),
+    [
+        pytest.param(_process(2, stderr=_WARNINGS_ONLY_STDERR), "exit_zero", id="warnings-only"),
+        pytest.param(
+            _process(0, stderr=_DESIGN_FAIL_STDERR), "exit_nonzero", id="exit-zero-error"
+        ),
+    ],
+)
+def test_lint_record_outcome_follows_the_linter_error(
+    run_lint: _LintRun, tmp_path: Path, process: SubprocessResult, outcome: str
+) -> None:
+    from booley.runtime import resource_history
+
+    run_lint(process, measured=True)
+
+    (record,) = resource_history.load_records(tmp_path)
+    assert (record["outcome"], record["returncode"]) == (outcome, process.returncode)
 
 
 @pytest.mark.parametrize(

@@ -46,7 +46,7 @@ from booley.flows.edam import EdamFile
 from booley.flows.flow_config import expected_count
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
-from booley.flows.job_resources import resolved_source_bytes, resource_phase
+from booley.flows.job_resources import judged_commands, resolved_source_bytes, resource_phase
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -626,7 +626,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         Reservation.
         """
         try:
-            return self._implement_target(target)
+            with judged_commands() as commands:
+                metrics = self._implement_target(target)
+                commands.judge(metrics.returncode == 0)
+            return metrics
         finally:
             if getattr(self, "_execution_role", "candidate") != "baseline":
                 report_phase_end(target, "fpga_impl")
