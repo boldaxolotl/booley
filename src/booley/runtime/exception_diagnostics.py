@@ -130,6 +130,14 @@ def write_exception_diagnostic(
     return path
 
 
+def with_diagnostic(text: str, diagnostic_path: Path | None) -> str:
+    """Append the diagnostic path to ``text`` with exactly one period before it."""
+    if diagnostic_path is None:
+        return text
+    separator = " " if text.endswith(".") else ". "
+    return f"{text}{separator}Diagnostic: {diagnostic_path}"
+
+
 def exception_report_text(
     endpoint_name: str,
     exc: Exception,
@@ -137,6 +145,4 @@ def exception_report_text(
 ) -> str:
     """Build the stable human-facing failure surface for an unexpected exception."""
     text = f"{endpoint_name} failed: {type(exc).__name__}: {bounded_exception_message(exc)}"
-    if diagnostic_path is not None:
-        text += f". Diagnostic: {diagnostic_path}"
-    return text
+    return with_diagnostic(text, diagnostic_path)
