@@ -11,7 +11,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from claude_agent_sdk import ClaudeSDKError
 
@@ -34,6 +34,7 @@ from booley.flows.sim.coverage_record_store import (
     publish_coverage_record,
 )
 from booley.flows.sim.record_reports import target_report_directory
+from booley.flows.terminal_progress import sanitize
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime.agent_errors import (
     AgentProviderError,
@@ -42,6 +43,7 @@ from booley.runtime.agent_errors import (
     TransientAPIError,
     UsageLimitError,
 )
+from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.runtime.exception_diagnostics import (
     provider_exception_message,
     write_exception_diagnostic,
@@ -96,6 +98,7 @@ class CoverageAnalystSpecialist(Specialist):
 
     def __init__(self, *, model: Callable[[AgentCallParams], AgentResult] | None = None) -> None:
         self._model = model
+        self._analysis_lines: list[str] = []
         super().__init__()
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
@@ -310,6 +313,10 @@ class CoverageAnalystSpecialist(Specialist):
                 exit_code=EXIT_ERROR, report_text=f"Coverage analysis rejected: {exc}"
             )
         document = report.to_dict()
+        invocation = self.reserve_invocation_dir()
+        self._analysis_lines = _analysis_lines(
+            document, None if invocation is None else (invocation / "report.json").resolve()
+        )
         summary = f"Coverage advisory: {document['closure_recommendation']} ({document['eligibility']}, {document['source_access']})"
         lines = [summary]
         return McpToolResult(
@@ -319,11 +326,39 @@ class CoverageAnalystSpecialist(Specialist):
             display_lines=lines,
         )
 
+    def _publish_console_report(self, result: EndpointOutcome) -> None:
+        super()._publish_console_report(result)
+        if (
+            self._console_publication_requested
+            and result.exit_code == EXIT_SUCCESS
+            and self._analysis_lines
+        ):
+            print("\n".join(self._analysis_lines), flush=True)
+
     def _build_prompt(self) -> str:
         raise NotImplementedError("Coverage analysis uses the validated Coverage Record seam")
 
     def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
         raise NotImplementedError("Coverage analysis validates output in its deep module")
+
+
+def _analysis_lines(document: dict[str, Any], report: Path | None) -> list[str]:
+    """Console summary of one analysis: hypotheses, recommendations, limitations, report path."""
+    sections = (
+        ("Hypotheses", [item["explanation"] for item in document["hypotheses"]]),
+        ("Recommendations", [item["action"] for item in document["recommendations"]]),
+        ("Limitations", list(document["limitations"])),
+    )
+    lines: list[str] = []
+    for title, items in sections:
+        if not items:
+            lines.append(f"{title}: none")
+            continue
+        lines.append(f"{title}:")
+        lines.extend(f"  - {sanitize(' '.join(str(item).split()))}" for item in items)
+    if report is not None:
+        lines.append(f"Report: {report}")
+    return lines
 
 
 def coverage_analyst(coverage_record: Path, instruction: str = "") -> CoverageAnalysisReport:
