@@ -114,20 +114,17 @@ memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes f
 # vivado = 1             # licensed seats Booley may use at once; required for Vivado
 ```
 
-The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus what
-the running agents, the MCP server, and the Dashboard use. Without swap it also
-holds back a quarter of the limit, so give the Sandbox
-[swap](SANDBOX.md#project-settings-sandbox) to use all of it. Without
-`[sandbox].memory` Booley starts from the machine's installed memory and holds
-back a quarter of it; `booley doctor` warns while it is unset.
+The Memory Budget comes from the Sandbox's memory limit, `[sandbox].memory`,
+less what the running agents, the MCP server, and the Dashboard use. Without
+`[sandbox].memory` the Sandbox has no limit, so Booley starts from the machine's
+installed memory; `booley doctor` warns while it is unset.
 
 Booley reserves what the Job used on earlier runs
 ([resource history](#job-resource-history)), memory and swap together, plus a
-safety margin that is smaller when the Sandbox has swap. With no record of its
-own, the Job borrows from the same step on the same Target, then anywhere in
-the Project. Only a step Booley has never measured makes the Job run alone. A
-Simulation Record runs independent tests in parallel while their reservations
-fit.
+margin. With no record of its own, the Job borrows from the same step on the
+same Target, then anywhere in the Project. Only a step Booley has never measured
+makes the Job run alone. A Simulation Record runs independent tests in parallel
+while their reservations fit.
 
 If the kernel kills a Job for running out of memory (when the Sandbox has
 used `[sandbox].memory` plus its
