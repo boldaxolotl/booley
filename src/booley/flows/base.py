@@ -149,7 +149,7 @@ def _start_local_process(cmd, cwd, env, scope):
     if scope is not None and scope.cancelled():
         return None
     try:
-        proc = subprocess.Popen(
+        proc = job_resources.MeasuredPopen(
             cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
@@ -388,9 +388,12 @@ class FlowMechanics:
             # Only a spawned tool counts as started in the progress record.
             observer.begin_command()
         monitor.start(proc.pid)
-        if observer is not None:
-            return _observe_local_process(proc, observer, scope, start, timeout)
-        return _communicate_local_process(cmd, proc, scope, start, timeout)
+        try:
+            if observer is not None:
+                return _observe_local_process(proc, observer, scope, start, timeout)
+            return _communicate_local_process(cmd, proc, scope, start, timeout)
+        finally:
+            monitor.finish(proc.reaped_peak_bytes)  # the child is reaped by now
 
     def _resource_flags(self) -> tuple[str, ...]:
         """Instrumentation flags that key this Flow's resource history."""

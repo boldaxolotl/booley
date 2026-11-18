@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.flows import job_resources
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.targets.domain import TargetHandle
 from tests.time_budget import hang_guard_s
@@ -35,6 +37,7 @@ class _HookProcess:
     """A spawned hook: the pid is above the kernel limit, so sampling it finds nothing."""
 
     pid = 4_194_305
+    reaped_peak_bytes = None
 
     def __init__(
         self,
@@ -63,7 +66,7 @@ def _fire(
     spawn_error: OSError | None = None,
     **overrides: Any,
 ) -> tuple[Any, MagicMock]:
-    """Run the Pre-Sim Commands of *handle* with a mocked ``subprocess.Popen``."""
+    """Run the Pre-Sim Commands of *handle* with a mocked ``MeasuredPopen``."""
     return _fire_with(handle, process, spawn_error, overrides)[:2]
 
 
@@ -84,7 +87,7 @@ def _fire_with(
         **overrides,
     }
     with (
-        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen", spawn),
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen", spawn),
         patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
         patch("booley.flows.sim.execution.pre_sim.record_command") as record,
     ):
@@ -143,7 +146,7 @@ def test_invalid_pre_run_commands_spawn_nothing(tmp_path: Path, value: str) -> N
     handle = _handle(tmp_path)
     _write_pre_run_commands(tmp_path, value)
     with (
-        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen") as spawn,
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen") as spawn,
         pytest.raises(
             ValueError, match=r"\[flows\.sim\]\.pre_run_commands must be a list of strings"
         ),
@@ -382,7 +385,7 @@ def test_pre_cancelled_scope_does_not_spawn_or_fabricate_a_firing(tmp_path: Path
     scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: True)
     with (
         supervised_execution_scope(scope),
-        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen") as spawn,
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen") as spawn,
         pytest.raises(PreSimScopeStoppedError),
     ):
         run_pre_sim_commands(
@@ -404,7 +407,7 @@ def test_pre_sim_spawn_failure_records_no_command_start(tmp_path: Path) -> None:
     with (
         sink.installed(),
         patch(
-            "booley.flows.sim.execution.pre_sim.subprocess.Popen",
+            "booley.flows.sim.execution.pre_sim.MeasuredPopen",
             side_effect=OSError("resource temporarily unavailable"),
         ),
     ):
@@ -520,7 +523,7 @@ def test_an_escaped_descendant_holding_the_pipes_cannot_hang_the_timeout(
 def test_a_monitor_that_cannot_start_does_not_leave_the_hook_running(tmp_path: Path) -> None:
     hook = _HookProcess()
     with (
-        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen", return_value=hook),
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen", return_value=hook),
         patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
         patch("booley.flows.sim.execution.pre_sim.record_command") as record,
         patch(
@@ -540,3 +543,36 @@ def test_a_monitor_that_cannot_start_does_not_leave_the_hook_running(tmp_path: P
 
     kill.assert_called_once_with(hook)
     record.assert_not_called()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_a_firing_records_the_peak_of_a_child_that_exited_between_samples(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Private seam: the host /proc sample; an empty tree is what a 0.25 s sampler
+    # sees of a child that exits between samples.
+    monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: {})
+    import resource  # POSIX only; the test is Linux-only
+
+    # Bigger than this process's own peak: a reaped child's peak counts its parent's.
+    mib = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10) + 64
+    allocate = f'b = b"x" * ({mib} << 20)'
+    child = f"{shlex.quote(sys.executable)} -c {shlex.quote(allocate)}"
+
+    with patch("booley.flows.sim.execution.pre_sim.record_command") as record:
+        evidence = run_pre_sim_commands(
+            cast(
+                TargetHandle,
+                SimpleNamespace(project_root=tmp_path.resolve(), selector="lite"),
+            ),
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=hang_guard_s(),
+            resource_flags=(),
+            commands=(child,),
+        )
+
+    assert evidence is not None and evidence.status == "passed"
+    measurement = record.call_args.args[3]
+    assert measurement.peak_rss_mb is not None and measurement.peak_rss_mb >= mib
