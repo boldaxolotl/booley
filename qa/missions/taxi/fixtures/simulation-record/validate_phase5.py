@@ -1,4 +1,4 @@
-"""Validate retained Taxi Cocotb-batch and MCP Simulation Campaign evidence."""
+"""Validate retained Taxi Cocotb-batch and MCP Simulation Record evidence."""
 
 from __future__ import annotations
 
@@ -19,16 +19,19 @@ _OBSERVATION_FIELDS = {
     "assertion_count",
     "cycle_count",
     "detail",
+    # Paths of the Test Run's own log and trace, relative to its ``simulation.json``.
+    "log",
+    "trace",
 }
 _ARTIFACT_FIELDS = {"path_base", "path", "bytes", "sha256", "kind", "owner"}
-# Campaign artifact name -> typed reference kind; ``coverage`` exists only for coverage runs.
+# Simulation Record artifact name -> typed reference kind; ``coverage`` exists only for coverage runs.
 _REQUIRED_ARTIFACTS = {
-    "manifest": "simulation_campaign_manifest",
+    "manifest": "simulation_record_manifest",
     "simulation": "simulation_projection",
 }
-_OPTIONAL_ARTIFACTS = {"coverage": "coverage_campaign_reference"}
-_ATTEMPT_SCHEMA = "booley.simulation-attempt/v1"
-_RESULT_SCHEMA = "booley.simulation-result/v2"
+_OPTIONAL_ARTIFACTS = {"coverage": "coverage_record_reference"}
+_ATTEMPT_SCHEMA = "booley.simulation-attempt/v2"
+_RESULT_SCHEMA = "booley.simulation-result/v5"
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -82,7 +85,8 @@ def _selected_tests(manifest: dict[str, object]) -> list[object]:
 def validate_cocotb_batch(simulation_record_path: Path, interrupted_attempt_path: Path) -> None:
     """Require one interrupted batch attempt followed by one whole-batch retry.
 
-    ``campaign_path`` is the Campaign directory after the resume.
+    ``simulation_record_path`` is the Simulation Record directory after the
+    resume.
     ``interrupted_attempt_path`` is the copy of the first attempt's
     ``attempt.json`` taken after the interruption and before the resume.
     """
@@ -90,20 +94,21 @@ def validate_cocotb_batch(simulation_record_path: Path, interrupted_attempt_path
     manifest = _decode(manifest_raw, "manifest")
     work_item = _batch_work_item(manifest)
     identity = {
-        "campaign_id": manifest.get("campaign_id"),
+        "simulation_record_id": manifest.get("simulation_record_id"),
         "manifest_sha256": _manifest_digest(manifest_raw),
         "workload_sha256": _workload_digest(manifest),
         "work_item_id": work_item.get("work_item_id"),
     }
     _need(
-        isinstance(identity["campaign_id"], str) and isinstance(identity["work_item_id"], str),
+        isinstance(identity["simulation_record_id"], str)
+        and isinstance(identity["work_item_id"], str),
         "manifest identity is missing",
     )
     directory = _work_item_directory(simulation_record_path, work_item)
     first, second = _attempt_pair(directory, identity)
     _need(
         interrupted_attempt_path.read_bytes() == (first / "attempt.json").read_bytes(),
-        "interrupted attempt copy differs from the Campaign's first attempt",
+        "interrupted attempt copy differs from the Simulation Record's first attempt",
     )
     # A work item publishes one terminal result, and it binds its final attempt.
     result = _load(directory / "result.json")
@@ -140,7 +145,7 @@ def _workload_digest(manifest: dict[str, object]) -> object:
 
 
 def _work_item_directory(simulation_record_path: Path, work_item: dict[str, object]) -> Path:
-    """Locate the work item where the Campaign layout places it."""
+    """Locate the work item where the Simulation Record layout places it."""
     ordinal = work_item.get("ordinal")
     _need(_is_count(ordinal), "work-item ordinal is invalid")
     suffix = str(work_item["work_item_id"]).rsplit(":", 1)[-1]
@@ -207,8 +212,8 @@ def validate_mcp_response(
 
     ``report_invocation`` is the retained numbered invocation directory of the
     MCP run (``.../flow-reports/sim/<n>``). ``external_origin_target`` is the
-    origin Campaign's Target directory, needed only when the response refers
-    to a Campaign another invocation produced.
+    origin Simulation Record's Target directory, needed only when the response
+    refers to a Simulation Record another invocation produced.
     """
     raw = response_path.read_bytes()
     _need(0 < len(raw) <= max_bytes, "MCP response exceeds the declared bound")
@@ -230,10 +235,10 @@ def validate_mcp_response(
     _need(f"EXIT_CODE: {exit_code}" in text, "MCP text card exit code differs")
     detail = report.get("detail")
     _need(isinstance(detail, dict), "MCP report detail is missing")
-    simulation_records = detail.get("campaigns")
+    simulation_records = detail.get("records")
     _need(
         isinstance(simulation_records, dict) and simulation_records,
-        "MCP campaign details are missing",
+        "MCP Simulation Record details are missing",
     )
     bases = {
         "report_invocation": report_invocation,
@@ -245,12 +250,12 @@ def validate_mcp_response(
 
 
 def _validate_mcp_simulation_record(value: object, bases: dict[str, Path | None]) -> None:
-    _need(isinstance(value, dict), "MCP campaign detail is invalid")
+    _need(isinstance(value, dict), "MCP Simulation Record detail is invalid")
     _need(
         value.get("grade") in {"pass", "fail", "error", "inconclusive"},
-        "MCP campaign grade is invalid",
+        "MCP Simulation Record grade is invalid",
     )
-    _need(isinstance(value.get("complete"), bool), "MCP campaign completion is missing")
+    _need(isinstance(value.get("complete"), bool), "MCP Simulation Record completion is missing")
     _validate_mcp_observations(value)
     retained = _read_mcp_artifacts(value, bases)
     _validate_mcp_manifest_binding(value, retained)
@@ -259,13 +264,13 @@ def _validate_mcp_simulation_record(value: object, bases: dict[str, Path | None]
 def _read_mcp_artifacts(
     simulation_record: dict[str, object], bases: dict[str, Path | None]
 ) -> dict[str, bytes]:
-    """Authenticate every Campaign artifact reference and return the retained bytes."""
-    owner = simulation_record.get("campaign_id")
-    _need(isinstance(owner, str) and owner, "MCP campaign identity is missing")
+    """Authenticate every Simulation Record artifact reference and return the retained bytes."""
+    owner = simulation_record.get("simulation_record_id")
+    _need(isinstance(owner, str) and owner, "MCP Simulation Record identity is missing")
     artifacts = simulation_record.get("artifacts")
-    _need(isinstance(artifacts, dict), "MCP campaign artifacts are missing")
+    _need(isinstance(artifacts, dict), "MCP Simulation Record artifacts are missing")
     known = _REQUIRED_ARTIFACTS | _OPTIONAL_ARTIFACTS
-    _need(set(artifacts) <= set(known), "MCP campaign artifacts are unexpected")
+    _need(set(artifacts) <= set(known), "MCP Simulation Record artifacts are unexpected")
     for key in _REQUIRED_ARTIFACTS:
         _need(key in artifacts, f"MCP {key} artifact reference is missing")
     return {
@@ -306,10 +311,10 @@ def _validate_mcp_manifest_binding(
 ) -> None:
     """Bind the response to the authenticated manifest's identity and selected tests."""
     manifest = _decode(retained["manifest"], "MCP manifest artifact")
-    simulation_record_id = simulation_record["campaign_id"]
+    simulation_record_id = simulation_record["simulation_record_id"]
     _need(
-        manifest.get("campaign_id") == simulation_record_id,
-        "MCP response names a foreign Campaign",
+        manifest.get("simulation_record_id") == simulation_record_id,
+        "MCP response names a foreign Simulation Record",
     )
     _need(
         simulation_record.get("manifest_sha256") == _manifest_digest(retained["manifest"]),
@@ -317,8 +322,8 @@ def _validate_mcp_manifest_binding(
     )
     projection = _decode(retained["simulation"], "MCP simulation artifact")
     _need(
-        projection.get("campaign_id") == simulation_record_id,
-        "MCP projection names a foreign Campaign",
+        projection.get("simulation_record_id") == simulation_record_id,
+        "MCP projection names a foreign Simulation Record",
     )
     selected = _selected_tests(manifest)
     _need(
@@ -404,3 +409,16 @@ def _validate_mcp_observation(value: object) -> None:
     cycles = value["cycle_count"]
     _need(cycles is None or _is_count(cycles), "MCP cycle count is invalid")
     _need(isinstance(value["detail"], dict), "MCP observation detail is invalid")
+    for key in ("log", "trace"):
+        # ``None`` means the Test Run left no such file.
+        path = value[key]
+        _need(
+            path is None
+            or (
+                isinstance(path, str)
+                and bool(path)
+                and not PurePosixPath(path).is_absolute()
+                and ".." not in PurePosixPath(path).parts
+            ),
+            f"MCP observation {key} path is invalid",
+        )
