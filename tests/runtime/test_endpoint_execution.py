@@ -325,6 +325,89 @@ def test_requeue_releases_the_claim_before_publishing_the_final_attempt() -> Non
     assert result.outcome.oom_killed is False
 
 
+_REQUEUE_NOTE = (
+    "Requeued after out-of-memory: this result is from the Job's second attempt, which ran alone."
+)
+_SECOND_KILL_LINE = "Killed for out-of-memory: the second attempt was OOM-killed too, so the Job is not retried again."
+_UNARMED_KILL_LINE = "Killed for out-of-memory: this Job may not be requeued after an OOM kill, so it is not retried."
+
+
+def _second_oom_failure() -> EndpointOutcome:
+    """The requeued attempt, OOM-killed too."""
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    note_job_oom_kill()
+    return EndpointOutcome(exit_code=EXIT_ERROR, report_text="attempt 2 verdict")
+
+
+def test_job_oom_killed_on_both_attempts_names_the_second_kill() -> None:
+    endpoint = _RequeueEndpoint(_oom_failure, _second_oom_failure)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events.count("invoke") == 2
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text == f"attempt 2 verdict\n{_REQUEUE_NOTE}\n{_SECOND_KILL_LINE}"
+    assert result.outcome.detail["oom_requeue"]["attempts"] == 2
+    assert result.outcome.oom_killed is True
+
+
+def test_unarmed_job_oom_kill_names_the_kill_and_no_retry() -> None:
+    endpoint = _RequeueEndpoint(_oom_failure)
+    endpoint.requeue_after_oom = False
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events.count("invoke") == 1
+    assert result.outcome.report_text == f"attempt 1 verdict\n{_UNARMED_KILL_LINE}"
+    assert "oom_requeue" not in result.outcome.detail
+
+
+def test_requeued_job_that_passes_keeps_todays_text() -> None:
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    def survived_kill() -> EndpointOutcome:
+        note_job_oom_kill()  # a command was killed, yet the Job succeeded
+        return _final_success()
+
+    for second in (_final_success, survived_kill):
+        endpoint = _RequeueEndpoint(_oom_failure, second)
+        result = execute_endpoint(endpoint, "prepared")
+        assert result.outcome.report_text == f"attempt 2 verdict\n{_REQUEUE_NOTE}"
+
+
+def test_final_work_item_oom_kill_is_named_in_the_job_result() -> None:
+    from booley.runtime.endpoint_execution import (
+        job_attempt,
+        note_final_work_item_oom_kill,
+        note_job_oom_kill,
+    )
+
+    def run_items() -> EndpointOutcome:
+        note_final_work_item_oom_kill("outside-item", passed=False)  # no work item attempt
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill()
+            note_final_work_item_oom_kill("gamma", passed=False)
+        with job_attempt(stop_on_oom=True, work_item=True):
+            note_job_oom_kill()  # armed: it is requeued, not final
+            note_final_work_item_oom_kill("armed", passed=False)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill()
+            note_final_work_item_oom_kill("passed", passed=True)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_final_work_item_oom_kill("unkilled", passed=False)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text="verdict")
+
+    endpoint = _RequeueEndpoint(run_items)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert result.outcome.report_text == (
+        "verdict\nKilled for out-of-memory: work item gamma's second attempt was OOM-killed too, "
+        "so it is not retried again."
+    )
+
+
 def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> None:
     endpoint = _RequeueEndpoint(_oom_failure)
     real_admission = endpoint.admission
@@ -392,6 +475,7 @@ def test_only_a_failed_or_stopped_oom_killed_job_is_requeued() -> None:
         result = execute_endpoint(endpoint, "prepared")
         assert endpoint.events.count("invoke") == 1, name
         assert "oom_requeue" not in result.outcome.detail, name
+        assert "Killed for out-of-memory" not in result.outcome.report_text, name
 
     # Contrast: succeeding after a skipped command is requeued, so the result is attempt 2's.
     endpoint = _RequeueEndpoint(stopped_but_succeeded, _final_success)

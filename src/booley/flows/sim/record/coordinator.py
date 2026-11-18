@@ -23,7 +23,10 @@ from booley.flows.sim.execution.contract import PreSimScopeStoppedError, Simulat
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY, RECORD_DIRECTORY
 from booley.flows.sim.record_reports import simulation_booley_dir, target_report_directory
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
-from booley.runtime.endpoint_execution import work_item_attempt_requeues
+from booley.runtime.endpoint_execution import (
+    note_final_work_item_oom_kill,
+    work_item_attempt_requeues,
+)
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -60,7 +63,7 @@ from .run_directory import (
     literal_run_path,
     require_literal_run_directory,
 )
-from .scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt
+from .scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt, work_item_label
 from .store import SimulationRecordRecovery, SimulationRecordStore, collect_pre_sim_firings
 from .test_run_binding import observation_test_runs
 
@@ -736,7 +739,12 @@ class SimulationRecord:
             )
         except PreSimScopeStoppedError as signal:
             raise SimulationRecordCapacityError(str(signal)) from signal
-        if work_item_attempt_requeues(passed=result.document["grade"] == "pass"):
+        except BaseException:
+            # A killed final attempt is still named when its execution then fails.
+            note_final_work_item_oom_kill(work_item_label(work_item), passed=False)
+            raise
+        passed = result.document["grade"] == "pass"
+        if work_item_attempt_requeues(passed=passed):
             raise_if_cancelled_before_publication()  # a cancelled attempt is never requeued
             return True
         if self._flow_claim is not None:
@@ -744,6 +752,7 @@ class SimulationRecord:
             self._flow_claim.settle(store.root, work_item)
             self._flow_claim.release(store.root)
         raise_if_cancelled_before_publication()
+        note_final_work_item_oom_kill(work_item_label(work_item), passed=passed)
         try:
             self._publish_scheduled_result(store, attempt, work_item_id, result)
         except (OSError, ValueError, RuntimeError) as exc:
