@@ -235,6 +235,11 @@ the work is accepted:
     shows as "rules loosened" or "tests changed"; a `--target` run shows "not
     stored", and a cancelled run shows its status.
 
+The verdict line counts the enforced bounds that are unmet, errored or not
+evaluated, as in `1 unmet of 4 enforced`. Tracked metrics that errored or
+were not evaluated follow it on their own, as in `3 of 3 enforced met; 3
+tracked not evaluated`.
+
 Failing rows come first, and the metric table follows.
 
 The report also compares your rules with the Base's. A loosened bound is

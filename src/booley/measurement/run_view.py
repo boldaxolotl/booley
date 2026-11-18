@@ -192,10 +192,12 @@ def _counts_block(document: Mapping[str, Any]) -> dict[str, int]:
     tally = Counter(result["verdict"] for result in results)
     counts = {verdict.value: tally[verdict] for verdict in Verdict}
     counts["enforced"] = sum(result["bound"] is not None for result in results)
-    counts["enforced_error"] = sum(
-        result["verdict"] == Verdict.ERROR and result["bound"] is not None for result in results
-    )
-    counts["tracked_error"] = counts[Verdict.ERROR.value] - counts["enforced_error"]
+    for verdict in (Verdict.ERROR, Verdict.NOT_EVALUATED):
+        enforced = sum(
+            result["verdict"] == verdict and result["bound"] is not None for result in results
+        )
+        counts[f"enforced_{verdict.value}"] = enforced
+        counts[f"tracked_{verdict.value}"] = counts[verdict.value] - enforced
     return counts
 
 
