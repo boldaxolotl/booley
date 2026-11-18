@@ -4200,7 +4200,7 @@ fn issue_1423_text_byte_oracles() {
         (&["list", "-s", "tb.a", "-s", "tb.b"], "a                              wire     1-bit\nb                              wire     1-bit\n", "# scope: tb\n# 2 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["list", "-s", "tb.a", "-s", "missing"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["list", "-s", "tb.a", "-s", "missing*"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
-        (&["list", "-s", "missing"], "", "# 0 signals — narrow with -s PATTERN or use --tree\n", 0),
+        (&["list", "-s", "missing"], "", "# WARNING: no signals match pattern(s) 'missing'\n", 0),
         (&["list", "-s", "tb.a", "-s", "mem[56]", "-s", "mem[57]"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["list", "-s", "[oops"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["list", "-s", "tb.a%b", "-s", "tb.a%h"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
@@ -4725,6 +4725,12 @@ fn issue_1423_data_and_total_miss_policies() {
             .unwrap()
             .iter()
             .any(|w| w.as_str().unwrap().contains("filter dropped")));
+        if command == "list" {
+            assert_eq!(
+                empty["warnings"],
+                serde_json::json!(["no signals match pattern(s) 'missing'"])
+            );
+        }
     }
 }
 
@@ -5553,5 +5559,55 @@ fn issue_4698_hex_literal_of_ones_and_zeros_compares_as_hex() {
         warnings,
         vec!["'h100 needs 9 bits and never matches tb.dut.addr[7:0] (8-bit)".to_string()]
     );
+    let _ = std::fs::remove_file(fst);
+}
+
+#[test]
+fn issue_4705_wave_help_time_is_optional() {
+    let (help, _, code) = run(&["wave", "--help"]);
+    assert_eq!(code, 0);
+    let option = help
+        .split("-t, --time <TIME>")
+        .nth(1)
+        .and_then(|rest| rest.lines().nth(1))
+        .expect("wave --help lists -t");
+    assert!(!option.contains("required"), "{option}");
+    assert!(option.contains("Optional"), "{option}");
+}
+
+#[test]
+fn issue_4705_value_past_end_names_at_and_the_typed_time() {
+    let fst = build_bwave("test_basic.vcd", "issue4705");
+    let p = fst.to_str().unwrap();
+    let range = "In sync mode, --at selects a clock cycle (0..19). \
+                 Simulation time range: 15ns..200ns";
+    let rows: [(&[&str], &str, Option<String>); 5] = [
+        (
+            &["--at", "30"],
+            "30",
+            Some(format!("did you mean --at 30t --async? {range}")),
+        ),
+        (&["--at", "500"], "500", Some(range.to_string())),
+        (&["--at", "5000c"], "5000c", Some(range.to_string())),
+        (&["--at", "5000ns"], "5000ns", Some(range.to_string())),
+        (&["--at", "500ns", "--async"], "500ns", None),
+    ];
+    for (extra, typed, hint) in rows {
+        let mut args = vec!["value", p, "-s", "*"];
+        args.extend(extra);
+        let (_, err, code) = run(&args);
+        assert_eq!(code, 2, "{err}");
+        let error = format!("ERROR: value time {typed} is beyond simulation range");
+        assert!(err.lines().any(|line| line == error), "{err}");
+        let hints: Vec<&str> = err.lines().filter(|l| l.starts_with("HINT:")).collect();
+        match hint {
+            Some(text) => assert_eq!(hints, [format!("HINT: {text}")], "{err}"),
+            None => assert!(hints.is_empty(), "{err}"),
+        }
+        assert!(!err.contains("--at-time"), "{err}");
+    }
+    let (out, err, code) = run(&["value", p, "--at", "30t", "--async", "-s", "*"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("# Snapshot at 30"), "{out}");
     let _ = std::fs::remove_file(fst);
 }
