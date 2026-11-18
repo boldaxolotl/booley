@@ -393,7 +393,7 @@ class FlowMechanics:
                 return _observe_local_process(proc, observer, scope, start, timeout)
             return _communicate_local_process(cmd, proc, scope, start, timeout)
         finally:
-            monitor.finish(proc.reaped_peak_bytes)  # the child is reaped by now
+            monitor.finish(proc.reaped_peak_bytes)
 
     def _resource_flags(self) -> tuple[str, ...]:
         """Instrumentation flags that key this Flow's resource history."""
