@@ -111,8 +111,8 @@ signals are different widths; there is no implicit
 zero-extension. Slice one side to match: `*sig_a ==
 *sig_b[7:0]`.
 
-Signal-to-literal comparisons coerce the literal to the
-signal width.
+A literal that needs more bits than the signal triggers a
+warning; see `reference/verilog-literals`.
 
 ## Boolean operators
 
