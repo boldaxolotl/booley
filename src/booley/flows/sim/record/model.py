@@ -134,6 +134,12 @@ def frozen_pre_sim_commands(manifest: SimulationRecordManifest) -> tuple[str, ..
     return tuple(cast(tuple[str, ...], recipe["pre_sim_commands"]))
 
 
+def frozen_resource_flags(manifest: SimulationRecordManifest) -> tuple[str, ...]:
+    """The instrumentation flags the manifest froze, as the Resource History keys them."""
+    workload = cast(Mapping[str, object], manifest.document["workload"])
+    return tuple(flag for flag in ("coverage", "trace") if workload[flag] is True)
+
+
 @dataclass(frozen=True)
 class SimulationAttempt(SimulationRecordDocument):
     pass

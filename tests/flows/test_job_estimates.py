@@ -28,8 +28,12 @@ def _record(
     }
 
 
-def _sim(target: str, *tests: str, flags: tuple[str, ...] = ()) -> Any:
-    return estimates.JobRequest("sim", target, test_runs=tests, flags=flags)
+def _sim(
+    target: str, *tests: str, flags: tuple[str, ...] = (), pre_sim_commands: bool = False
+) -> Any:
+    return estimates.JobRequest(
+        "sim", target, test_runs=tests, flags=flags, pre_sim_commands=pre_sim_commands
+    )
 
 
 def _phase(job: Any, phase: str, test_run: str = "") -> Any:
@@ -73,6 +77,8 @@ def _borrow_records() -> list[dict[str, Any]]:
         _record("t1", "sim_build", memory=20000),
         # FuseSoC setup is a measured phase of every sim request (#3787).
         _record("t1", "sim_prepare", memory=500),
+        # Pre-Sim Commands are measured per Target (#4534).
+        _record("t2", "sim_pre_run", memory=3000),
     ]
 
 
@@ -91,6 +97,19 @@ def test_missing_key_borrows_from_target_then_project() -> None:
     assert (run.value, run.source) == (11250.0, estimates.Source.PROJECT)
     build = _phase(new_target, "sim_build").memory_mb
     assert (build.value, build.source) == (25000.0, estimates.Source.PROJECT)
+
+    # Pre-Sim Commands: the Target's own measurement, else the Target's build, never
+    # another Target's measurement.
+    measured = estimator.estimate([_sim("t2", "x", pre_sim_commands=True)])
+    pre_sim = _phase(measured, "sim_pre_run").memory_mb
+    assert (pre_sim.value, pre_sim.source) == (3750.0, estimates.Source.OWN)
+    unmeasured = estimator.estimate([_sim("t1", "x", pre_sim_commands=True)])
+    fallback = _phase(unmeasured, "sim_pre_run")
+    assert (fallback.memory_mb.value, fallback.memory_mb.source) == (
+        25000.0,
+        estimates.Source.OWN,
+    )
+    assert fallback.key.phase == "sim_pre_run"
 
     lint = estimator.estimate([estimates.JobRequest("lint", "t1")])
     unknown = _phase(lint, "lint").memory_mb
@@ -155,4 +174,16 @@ def test_every_sim_request_starts_with_sim_prepare() -> None:
     assert [key.phase for key in estimates.phase_keys(elab_only)] == ["sim_prepare", "sim_build"]
     # Only coverage post-processes.
     assert [key.phase for key in estimates.phase_keys(coverage)][-1] == "sim_postprocess"
+    # Pre-Sim Commands are a phase of a Job that runs Tests (#4534).
+    hooked = _sim("t", "a", "b", pre_sim_commands=True)
+    assert [key.phase for key in estimates.phase_keys(hooked)] == [
+        "sim_prepare",
+        "sim_build",
+        "sim_pre_run",
+        "sim_run",
+        "sim_run",
+    ]
+    assert "sim_pre_run" not in {
+        key.phase for key in estimates.phase_keys(_sim("t", pre_sim_commands=True))
+    }
     assert "sim_postprocess" not in {key.phase for key in estimates.phase_keys(ordinary)}

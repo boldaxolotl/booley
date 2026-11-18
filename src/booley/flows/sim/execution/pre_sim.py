@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from booley.core.file_lock import active_child_lease_fd
 from booley.flows.eda_failures import find_missing_executable
+from booley.flows.job_resources import JobResourceMonitor, ResourceLabel, record_command
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.test_runs import TestRun
@@ -43,6 +45,7 @@ def run_pre_sim_commands(
     build_root: Path,
     eda_tool: str,
     timeout_s: int,
+    resource_flags: tuple[str, ...],
     simulator_environment: Mapping[str, str] | None = None,
     commands: tuple[str, ...] | None = None,
     run_cwd: str | None = None,
@@ -53,7 +56,9 @@ def run_pre_sim_commands(
     """Run the hook once for a native test or once for a Cocotb batch.
 
     *test_runs* are the concrete Test Runs the firing prepares; the hook sees
-    them through the ``BOOLEY_TEST_RUN_*`` variables.
+    them through the ``BOOLEY_TEST_RUN_*`` variables. Each firing that spawns is
+    measured and appended to the Resource History as the Target's ``sim_pre_run``
+    phase under *resource_flags*, the flags that key every sim record of the Job.
     """
     root = handle.project_root
     resolved_commands = tuple(resolve_pre_sim_commands(root)) if commands is None else commands
@@ -79,6 +84,7 @@ def run_pre_sim_commands(
         working_directory or root,
         environment,
         timeout_s,
+        (ResourceLabel(handle.selector, "sim_pre_run"), resource_flags),
     )
 
 
@@ -170,6 +176,7 @@ def _invoke_pre_sim(
     root: Path,
     environment: Mapping[str, str],
     timeout_s: int,
+    resource: tuple[ResourceLabel, tuple[str, ...]],
 ) -> PreSimEvidence:
     """Execute one prepared hook and normalize its result."""
     if job_stopped_after_oom():
@@ -187,6 +194,7 @@ def _invoke_pre_sim(
             cwd=root,
             env=environment,
             timeout=timeout_s,
+            resource=resource,
             **child_kwargs,
         )
     except subprocess.TimeoutExpired as exc:
@@ -236,52 +244,59 @@ def _completed_pre_sim_evidence(
     )
 
 
-def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
+def _run_pre_sim_process(command, *, cwd, env, timeout, resource, **child_kwargs):
     from booley.flows.terminal_progress import current_progress
 
-    observer = current_progress()
     scope = current_supervised_execution()
-    if scope is None and observer is None:
-        return subprocess.run(
+    if scope is not None and scope.cancelled():
+        raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
+    # Each firing gets the private TMPDIR of every measured command, so temporary
+    # files on a tmpfs count toward its peak.
+    monitor = JobResourceMonitor()
+    supervised_env = {**env, **monitor.temp_env()}
+    if scope is not None and scope.execution_id is not None:
+        supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
+    try:
+        process = subprocess.Popen(
             command,
             cwd=cwd,
-            env=env,
-            capture_output=True,
+            env=supervised_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
-            check=False,
+            **popen_new_group_kwargs(),
             **child_kwargs,
         )
-    return _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer)
+        return _await_pre_sim(
+            process, command, timeout, monitor, (scope, current_progress(), resource)
+        )
+    finally:
+        monitor.finish()  # stops the sampling thread, also when the spawn failed
+        if monitor.tmp_dir is not None:
+            shutil.rmtree(monitor.tmp_dir, ignore_errors=True)
 
 
-def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer):
-    if scope is not None and scope.cancelled():
-        raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
-    supervised_env = dict(env)
-    if scope is not None and scope.execution_id is not None:
-        supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=supervised_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **popen_new_group_kwargs(),
-        **child_kwargs,
-    )
+def _await_pre_sim(process, command, timeout, monitor, owners):
+    """Wait for a spawned hook; a firing that finished or timed out is recorded."""
+    scope, observer, (label, flags) = owners
+    started = time.monotonic()
     if scope is not None:
         scope.processes.register(process)
     if observer is not None:
         # Only a spawned hook counts as started in the progress record.
         observer.begin_command()
+    monitor.start(process.pid)
+    timed_out = False
+    settled = False
     try:
-        stdout, stderr = _communicate_pre_sim(process, command, timeout, observer)
+        try:
+            stdout, stderr = _communicate_pre_sim(process, command, timeout, observer)
+        except subprocess.TimeoutExpired:
+            timed_out = settled = True  # a lower bound, recorded as a timeout
+            raise
+        settled = True
     finally:
         if scope is not None:
             scope.processes.unregister(process)
@@ -289,6 +304,16 @@ def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer
             assert process.stdout is not None and process.stderr is not None  # spawned with PIPE
             process.stdout.close()
             process.stderr.close()
+        measurement = monitor.finish()
+        if settled:
+            from booley.flows.base import SubprocessResult
+
+            result = SubprocessResult(
+                returncode=process.returncode,
+                timed_out=timed_out,
+                duration_s=time.monotonic() - started,
+            )
+            record_command("sim", label, flags, measurement, result)
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 

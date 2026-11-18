@@ -352,7 +352,7 @@ class VerilatorCoverageExecution:
         work = self._prepare_work(request, prepared, transport)
         before = _snapshot_pre_sim_state(self._handle, prepared, request, self._artifact_paths)
         pre_sim = self._run_pre_sim(
-            evidence_root, prepared, test_names, work.run_cwd, work.test_runs
+            evidence_root, prepared, test_names, work.run_cwd, work.test_runs, trace=work.trace
         )
         sink = getattr(self, "_pre_sim_evidence_sink", None)
         if pre_sim is not None and sink is not None:
@@ -409,6 +409,8 @@ class VerilatorCoverageExecution:
         test_names: tuple[str, ...],
         run_cwd: str,
         test_runs: tuple[TestRun, ...] = (),
+        *,
+        trace: bool = False,
     ) -> PreSimEvidence | None:
         return run_pre_sim_commands(
             self._handle,
@@ -422,6 +424,8 @@ class VerilatorCoverageExecution:
             working_directory=self._handle.project_root,
             expose_build_root=False,
             test_runs=test_runs,
+            # The flags SimulateFlow gives a coverage Job.
+            resource_flags=("coverage", "trace") if trace else ("coverage",),
         )
 
     def _execute_run(

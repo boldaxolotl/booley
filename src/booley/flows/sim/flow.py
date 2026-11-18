@@ -372,11 +372,13 @@ class SimulateFlow(
             return None
         flags = self._resource_flags()
         try:
+            pre_sim_commands = bool(resolve_pre_sim_commands(self.args.work_dir))
             return tuple(
                 sim_job_request(
                     self._registered_test_plan(target, prepared.test_names_map),
                     self._resolve_test_runs(target, prepared.test_names_map),
                     flags=flags,
+                    pre_sim_commands=pre_sim_commands,
                 )
                 for target in prepared.selected_targets
             )
