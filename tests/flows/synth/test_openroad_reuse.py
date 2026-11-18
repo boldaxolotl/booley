@@ -571,6 +571,17 @@ _PHASE_HISTORY = {
 }
 
 
+_PHASE_RECORDS = [
+    {
+        "key": {"target": target, "phase": phase, "flags": [], "test_run": ""},
+        "peak_memory_mb": peak,
+        "wall_s": 1.0,
+    }
+    for target, phases in _PHASE_HISTORY.items()
+    for phase, peak in phases.items()
+]
+
+
 class _RecordingShrinker(ReservationShrinker):
     """Records the held reservation after every reported end, and whether core reused OpenROAD yet."""
 
@@ -586,24 +597,25 @@ class _RecordingShrinker(ReservationShrinker):
         self.ends.append((target, phase, self._held(), reused))
 
 
-@pytest.mark.parametrize("scenario", ["reuse", "yosys_fails"])
-def test_reservation_follows_the_synthesis_phases(bench: Bench, scenario: str) -> None:
-    """A synthesis Job holds each tool's estimate and drops it as the tool, or its Target, ends."""
+def test_reservation_follows_the_synthesis_phases(bench: Bench) -> None:
+    """A synthesis Job holds each tool's estimate and drops it as the tool, or its Target, ends.
+
+    Two cases of one Project: core fails in Yosys, then core reuses OpenROAD.
+    """
+    for scenario in ("yosys_fails", "reuse"):
+        _check_reservation(bench, scenario)
+
+
+def _check_reservation(bench: Bench, scenario: str) -> None:
     from booley.flows import reservation_phases
     from booley.flows.memory_admission import plan_memory_claim
     from booley.runtime import job_slots
     from tests.test_job_slots import FakeWorld, make_store, spawn
 
-    bench.run_fresh()  # core's OpenROAD slot now matches a rerun
-    history = [
-        {
-            "key": {"target": target, "phase": phase, "flags": [], "test_run": ""},
-            "peak_memory_mb": peak,
-            "wall_s": 1.0,
-        }
-        for target, phases in _PHASE_HISTORY.items()
-        for phase, peak in phases.items()
-    ]
+    # core2 has no slot, so its OpenROAD runs; core's slot matches a rerun.
+    shutil.rmtree(work_root_for(bench.root, "synth", "core2", variant="openroad_reuse"), True)
+    bench.run_fresh("--no-cache")
+    commands_before = len(bench.commands)
     flow = AsicSynthesizeFlow()
     flow.parse_args(
         [
@@ -618,11 +630,11 @@ def test_reservation_follows_the_synthesis_phases(bench: Bench, scenario: str) -
     requests = flow.memory_job_requests(
         tuple(TargetCatalog.build(bench.root).select(t) for t in (TARGET, "core2"))
     )
-    plan = plan_memory_claim(requests, history, 10_000.0, None)
+    plan = plan_memory_claim(requests, _PHASE_RECORDS, 10_000.0, None)
     assert plan.claim.reservation_mb == 2500.0
 
     world = FakeWorld()
-    store = make_store(bench.root / "slots", world)
+    store = make_store(bench.root / f"slots-{scenario}", world)
     spawn(world, 101)
     token = store.submit(job_slots.CLASS_MEMORY, pid=101, memory=plan.claim)
     assert store.refresh(token).state == job_slots.HOLDING
@@ -662,7 +674,8 @@ def test_reservation_follows_the_synthesis_phases(bench: Bench, scenario: str) -
     ):
         flow._run()
 
-    stages = [cmd[3:4] for cmd in bench.commands[1:]]
+    bench.on_yosys = None
+    stages = [cmd[3:4] for cmd in bench.commands[commands_before:]]
     # core's yosys, then (core's OpenROAD ended at the reuse, or never ran) core2's two stages.
     assert dispatched == [2500.0, 500.0, 125.0]
     assert stages[-3:] == [["yosys"], ["yosys"], ["openroad"]]
