@@ -48,6 +48,7 @@ from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.memory_admission import MemoryAdmissionPlan, measure_coordinator_claim
+from booley.flows.metric_declarations import COUNTED_ITEM_CHARS
 from booley.flows.mutation import workspace
 from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
@@ -170,6 +171,9 @@ _SIMULATOR_DEFINES = {
 }
 #: Tags (besides the testbench role) that take a Target input out of the default scope.
 _UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
+
+# The least of a survived Mutant's source text kept on each side of its listed line.
+_MIN_SNIPPET_CHARS = 20
 
 #: Said only when the Target's own RTL was the scope, where choosing files can fix the run.
 _PASS_SCOPE_HINT = "pass --scope to choose the files to mutate"
@@ -1448,7 +1452,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                     "no Mutation Operator site in the scope files",
                     _no_site_hint(plan),
                 )
-                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
+                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
                 return outcome
             specs = [
                 _spec_of(index, mutant) for index, mutant in enumerate(selection.mutants, start=1)
@@ -1643,7 +1647,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         detail["equivalent_dropped"] = sweep.equivalent_dropped
         detail["invalid_dropped"] = sweep.invalid_dropped
-        detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
+        detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
         hint = (
             f"none of the Mutants of {', '.join(plan.scope_files)} changes what Target "
             f"'{plan.target}' builds; scope files whose modules '{plan.tb_top}' elaborates"
@@ -3068,7 +3072,28 @@ def _spec_of(index: int, mutant: Mutant) -> MutationSpec:
 
 def _summary_metrics(target: str, summary: MutationSummary) -> dict[str, dict[str, object]]:
     """The report's ``detail.metrics`` of a scored run: its valid Mutants, detected or not."""
-    return mutation_metrics_detail(target, summary.detected_count, summary.not_detected_count)
+    survivors = [_survivor_line(spec) for spec in summary.surviving_specs()]
+    return mutation_metrics_detail(target, summary.detected_count, survivors)
+
+
+def _survivor_line(spec: MutationSpec) -> str:
+    """One survived Mutant as ``ID category file:line: 'original' -> 'mutated'``.
+
+    Each snippet is shortened to share what the line may hold, so a long source line keeps
+    both sides of the change instead of losing the mutated one to the line's cut.
+    """
+    prefix = f"{spec.mutant_id} " if spec.mutant_id else ""
+    head = f"{prefix}{spec.category} {spec.file}:{spec.line}: "
+    room = max((COUNTED_ITEM_CHARS - len(head) - len("'' -> ''")) // 2, _MIN_SNIPPET_CHARS)
+    orig = _snippet(spec.original_code, room)
+    mut = _snippet(spec.mutated_code, room)
+    return f"{head}{orig!r} -> {mut!r}"
+
+
+def _snippet(code: str, room: int) -> str:
+    """*code* on one line, cut with ``...`` to at most *room* characters shown."""
+    text = " ".join(code.split())
+    return text if len(text) <= room else text[: room - 3] + "..."
 
 
 def _mutation_detail(
