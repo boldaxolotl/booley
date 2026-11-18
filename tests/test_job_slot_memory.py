@@ -774,13 +774,27 @@ def test_queued_run_alone_claim_says_it_waits_to_run_alone(root, world):
     holder = join(store, world, 101, claim(500), job=label("run-1", "sim", "a"))
     alone = join(store, world, 102, claim(run_alone=True))
     unsized = join(store, world, 103, claim(run_alone=True, budget_mb=0.0))
+    unmeasured = join(
+        store,
+        world,
+        104,
+        job_slots.MemoryClaim(
+            budget_mb=BUDGET_MB, run_alone=True, unmeasured="synth on Target chip"
+        ),
+    )
     assert store.refresh(holder).state == HOLDING
     assert store.refresh(alone).state == QUEUED and store.refresh(unsized).state == QUEUED
+    assert store.refresh(unmeasured).state == QUEUED
 
     wait = store.memory_wait(102)
     no_budget = store.memory_wait(103)
+    no_measurement = store.memory_wait(104)
 
-    assert wait is not None and no_budget is not None
+    assert wait is not None and no_budget is not None and no_measurement is not None
+    assert no_measurement.describe() == (
+        "waits to run alone (no memory measurement yet for synth on Target chip); "
+        "largest holders: run-1 (sim, a) 500 MiB"
+    )
     assert wait.describe() == (
         "waits to run alone (memory estimate unknown or above the Memory Budget); "
         "largest holders: run-1 (sim, a) 500 MiB"

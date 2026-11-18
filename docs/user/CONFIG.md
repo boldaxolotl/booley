@@ -124,9 +124,12 @@ Sandbox has no limit, so Booley starts from the machine's installed memory;
 Booley reserves what the Job used on earlier runs
 ([resource history](#job-resource-history)), memory and swap together, plus a
 margin. With no record of its own, the Job borrows from the same step on the
-same Target, then anywhere in the Project. Only a step Booley has never measured
-makes the Job run alone. A Simulation Record runs independent tests in parallel
-while their reservations fit. A Target's
+same Target, then anywhere in the Project. ASIC synthesis and FPGA
+implementation borrow only from the same Target, because their memory grows
+with the design: the first run of such a Target runs alone, and Booley says
+it has no measurement yet. A step with no record at all also runs alone. A
+Simulation Record runs independent tests in parallel while their reservations
+fit. A Target's
 [Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
 reserve as much as that Target's build until Booley has measured them.
 

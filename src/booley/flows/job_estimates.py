@@ -10,7 +10,8 @@ estimated from the retained records:
   wall-clock time);
 * **borrowed**: with no own record, the largest estimate for the same Target
   and phase (any Test Run or flags), else for that phase anywhere in the
-  Project;
+  Project (ASIC synthesis and FPGA implementation never borrow from another
+  Target: their memory grows with the design);
 * **unknown**: with neither, the phase has no estimate.
 
 Pre-Sim Commands (``sim_pre_run``) are the exception to the Project borrowing:
@@ -53,6 +54,11 @@ _SINGLE_PHASE_FLOWS = {"lint": "lint", "fpga": "fpga_impl", "synth": "synth"}
 _COVERAGE_FLAG = "coverage"
 _PRE_SIM_PHASE = "sim_pre_run"
 _BUILD_PHASE = "sim_build"
+
+#: Phases that borrow only within a Target: their memory grows with the design, so
+#: another Target's peak can be an order of magnitude off (ADR 0087). The split
+#: synthesis keys are left out: a Custom Flow may share one as its name.
+_TARGET_ONLY_PHASES = frozenset({"synth", "fpga_impl"})
 
 _K = TypeVar("_K")
 
@@ -230,6 +236,15 @@ class JobEstimate:
             total += wall_s
         return total
 
+    @property
+    def unmeasured(self) -> tuple[HistoryKey, ...]:
+        """The size-dependent phases whose Target has no memory record of them."""
+        return tuple(
+            p.key
+            for p in self.phases
+            if p.key.phase in _TARGET_ONLY_PHASES and p.memory_mb.source is Source.UNKNOWN
+        )
+
     def fit(self, budget_mb: float) -> Fit:
         """Compare the reservation with *budget_mb*; over-budget wins so a caller can warn."""
         reservation = self.reservation_mb
@@ -277,14 +292,17 @@ class _Maxima:
     def estimate(self, key: HistoryKey) -> Estimate:
         """Own, else the Target's, else the Project's largest for *key*'s phase, with margin.
 
-        Pre-Sim Commands skip the Project's: with no record of their own or the
-        Target's, the Target's ``sim_build`` estimate stands in.
+        A phase in :data:`_TARGET_ONLY_PHASES` skips the Project step. Pre-Sim
+        Commands skip it too: with no record of their own or the Target's, the
+        Target's ``sim_build`` estimate stands in.
         """
         pre_sim = key.phase == _PRE_SIM_PHASE
+        skip_project = pre_sim or key.phase in _TARGET_ONLY_PHASES
+        project = None if skip_project else self._project.get(key.phase)
         for source, found in (
             (Source.OWN, self._own.get(key)),
             (Source.TARGET, self._target.get((key.target, key.phase))),
-            (Source.PROJECT, None if pre_sim else self._project.get(key.phase)),
+            (Source.PROJECT, project),
         ):
             if found is not None:
                 return Estimate(found * self._margin, source)
