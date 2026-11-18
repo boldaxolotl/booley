@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from contextvars import ContextVar
@@ -230,6 +231,15 @@ class _JobAttempt:
 _JOB_ATTEMPT: ContextVar[_JobAttempt | None] = ContextVar("booley_job_attempt", default=None)
 
 
+# The running Job's opaque id; ``None`` outside ``execute_endpoint``.
+_JOB_ID: ContextVar[str | None] = ContextVar("booley_job_id", default=None)
+
+
+def current_job() -> str | None:
+    """The id of the Job this code runs in, shared by its attempts and threads; it sorts by start."""
+    return _JOB_ID.get()
+
+
 @contextmanager
 def job_attempt(*, stop_on_oom: bool, work_item: bool = False) -> Iterator[_JobAttempt]:
     """Run one attempt of a Job; with *stop_on_oom* its commands stop after an OOM kill.
@@ -430,8 +440,14 @@ def execute_endpoint(
     first attempt was OOM-killed gets one more attempt, run alone, and its
     result comes from that attempt only.
     """
-    first = _attempt_endpoint(endpoint, request, requeued=False)
-    if first is not None:
-        return first
-    # The requeued attempt is never armed, so it always finishes.
-    return cast(ExecutionResult, _attempt_endpoint(endpoint, request, requeued=True))
+    # A fresh id, not BOOLEY_RUN_ID: an inherited one could merge separate invocations.
+    # It starts with the time, so ids sort by Job start.
+    token = _JOB_ID.set(f"{time.time_ns():020d}-{uuid.uuid4().hex[:8]}")
+    try:
+        first = _attempt_endpoint(endpoint, request, requeued=False)
+        if first is not None:
+            return first
+        # The requeued attempt is never armed, so it always finishes.
+        return cast(ExecutionResult, _attempt_endpoint(endpoint, request, requeued=True))
+    finally:
+        _JOB_ID.reset(token)

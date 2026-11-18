@@ -85,6 +85,12 @@ read-only, and delegating it would loosen the hardening.
   revisions share keys with current runs. Records also store source input
   size as data for testing size-based scaling later; it is not policy,
   because source bytes track netlist size poorly.
+- A key keeps every record of its newest Jobs, and `booley resources` counts
+  Jobs, not records. One Job may measure a phase several times (a setup per
+  simulator process, each Pre-Sim Command firing, the seeds of one Variant);
+  records stay per command so estimates see each, and counting Jobs keeps run
+  counts and retention true. A Simulation Record's execution records its
+  repeat of the setup planning already measured only when the repeat fails.
 - No history: borrow the largest estimate for the same Target and phase,
   then for that phase anywhere in the Project; with neither, the Job runs
   alone. (Always running unknown Jobs alone would serialize a fresh

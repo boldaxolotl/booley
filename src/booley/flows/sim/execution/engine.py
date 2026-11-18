@@ -9,7 +9,7 @@ import re
 import shlex
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeGuard
@@ -28,7 +28,7 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
-from booley.flows.job_resources import resolved_source_bytes
+from booley.flows.job_resources import repeated_commands, resolved_source_bytes
 from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -772,15 +772,19 @@ class SimulationExecution:
         handle: TargetHandle,
         test_names: tuple[str, ...],
         test_runs: tuple[TestRun, ...] | None = None,
+        *,
+        planning: bool = False,
     ) -> Iterator[PreparedOrdinaryGroup]:
         """Observe preparation and compilation within one owned group.
 
         *test_runs* are the concrete Test Runs the group launches; without
         them each Test runs its default Variant at the Default Seed.
+        Unless *planning*, the group repeats the preparation this Job's
+        planning already recorded: only a failed repeat is recorded again.
         """
         with (
             attempt_scope(handle.selector, identity=handle.identity, tests=test_names),
-            self._ordinary_group(handle, test_names, test_runs) as group,
+            self._ordinary_group(handle, test_names, test_runs, planning=planning) as group,
         ):
             yield group
 
@@ -790,6 +794,8 @@ class SimulationExecution:
         handle: TargetHandle,
         test_names: tuple[str, ...],
         test_runs: tuple[TestRun, ...] | None = None,
+        *,
+        planning: bool = False,
     ) -> Iterator[PreparedOrdinaryGroup]:
         """Prepare one ordinary-HDL group for separately controlled build and launch.
 
@@ -810,7 +816,8 @@ class SimulationExecution:
             self._build_session = session
             group: PreparedOrdinaryGroup | None = None
             try:
-                attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
+                with nullcontext() if planning else repeated_commands():
+                    attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
                 _require_attempt_log(handle, attempt)
                 group = PreparedOrdinaryGroup(
                     self,
@@ -872,7 +879,7 @@ class SimulationExecution:
         *test_runs* are the concrete Test Runs the group launches; without
         them each Test is prepared as its default Variant at the Default Seed.
         """
-        with self.ordinary_group(handle, test_names, test_runs) as group:
+        with self.ordinary_group(handle, test_names, test_runs, planning=True) as group:
             disclosure = group.planning_disclosure()
             group.discard_prepared_generation()
         return disclosure

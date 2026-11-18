@@ -169,14 +169,14 @@ per Specialist; Specialist runs do not change the figures of any Target. An
 entry with no run in the last 90 days is deleted the next time any Job records.
 Peak memory counts the Job's temporary files only when `TMPDIR` is on tmpfs;
 runs recorded before that rule keep their earlier peak. `booley resources`
-prints the run count and the minimum, median, and maximum peak memory and
-wall-clock time for each, and the peak swap of an entry that swapped, with one
-line per Specialist after the Targets (`--json` for scripts). Use it to choose
-`[sandbox].memory`. Each Test Variant of a simulation has its own entry
-(`tests=first+slow`; the default Variant keeps the bare Test name), and the
-seeds of one Variant share it. Flow runs that `booley doctor` starts are not
-recorded. If the history is not valid JSON or was written by another Booley
-version, the next Job keeps it as
+prints the run count, which counts each Job once, and the minimum, median, and
+maximum peak memory and wall-clock time for each, and the peak swap of an entry
+that swapped, with one line per Specialist after the Targets (`--json` for
+scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation
+has its own entry (`tests=first+slow`; the default Variant keeps the bare Test
+name), and the seeds of one Variant share it. Flow runs that `booley doctor`
+starts are not recorded. If the history is not valid JSON or was written by
+another Booley version, the next Job keeps it as
 `.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
 one.
 
