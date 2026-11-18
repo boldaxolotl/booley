@@ -3588,6 +3588,42 @@ fn issue_1108_sync_signal_limits_changed_records() {
 }
 
 #[test]
+fn clockless_sync_queries_warn_once_with_next_step() {
+    let store = build_bwave("test_no_clock.vcd", "clockless_warns");
+    let store = store.to_str().unwrap();
+    let text = "no usable clock: fewer than two rising edges; queries fall back to ticks; \
+                select a clock with --clock PATTERN or use --async";
+    for (command, args, has_json) in [
+        ("signal", vec!["-s", "count"], true),
+        ("wave", vec!["-s", "count"], true),
+        ("value", vec!["--at", "10"], true),
+        ("find", vec!["enable", "'h1"], true),
+        ("sample", vec!["enable", "'h1", "--count"], false),
+        ("distance", vec!["enable", "'h1"], true),
+    ] {
+        let mut tokens = vec![command, store];
+        tokens.extend(&args);
+        let (_, err, code) = run(&tokens);
+        assert_eq!(code, 0, "{command}: {err}");
+        assert_eq!(err.matches("# WARNING:").count(), 1, "{command}: {err}");
+        assert!(
+            err.lines().any(|l| l == format!("# WARNING: {text}")),
+            "{command}: {err}"
+        );
+        if has_json {
+            tokens.extend(["--format", "json"]);
+            let (out, err, code) = run(&tokens);
+            assert_eq!(code, 0, "{command}: {err}");
+            let json: serde_json::Value = serde_json::from_str(&out).expect(&out);
+            assert_eq!(json["warnings"], serde_json::json!([text]), "{command}");
+        }
+    }
+    let (out, err, code) = run(&["overview", store]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("# clock: <not detected>\n"), "{out}");
+}
+
+#[test]
 fn issue_1108_point_errors_preserve_buffered_diagnostics() {
     let (dir, fst) = issue_1108_store("point-error-diagnostics");
     let p = fst.to_str().unwrap();
@@ -3596,9 +3632,7 @@ fn issue_1108_point_errors_preserve_buffered_diagnostics() {
         assert_eq!(code, 2, "{err}");
         assert!(out.is_empty(), "{out}");
         assert!(err.contains("# scope: tb"), "{err}");
-        let warning = err
-            .find("no clock signal found, falling back to async mode")
-            .expect(&err);
+        let warning = err.find("no usable clock").expect(&err);
         let error = err.find("ERROR: value time").expect(&err);
         assert!(warning < error, "{err}");
     }

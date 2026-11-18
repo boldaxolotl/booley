@@ -120,16 +120,19 @@ do nothing meaningful.
 Header:
 
 ```
-# clock: tb.dut.maybe_clk  period=0ns
+# clock: tb.dut.maybe_clk (auto-detected; --clock PATTERN to override)
+# clock regularity: unavailable (insufficient_edges)
 ```
 
-`period=0ns` is the smoking gun. Override:
+`unavailable` means the picked clock has no period. Sync queries then fall
+back to ticks and warn. Override:
 
 ```bash
 bwave find sim.fst "*error*" 'h1 --clock "*real_clk*"
 ```
 
-See `troubleshooting/clock-detection`.
+See `reference/sync-vs-async` for how the clock is picked and what each
+verdict means.
 
 ## 6. Edge keyword vs. value confusion
 
