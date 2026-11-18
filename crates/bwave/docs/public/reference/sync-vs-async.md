@@ -14,6 +14,14 @@ selected clock:
 - Each later cycle is one period further on, whether or not the clock rose
   there. Cycle distances stay proportional to elapsed time, even across a
   clock stop.
+- Cycle 0 is not a grid point. It reads strictly before the reset
+  deassertion tick and before cycle 1's read, in both sample modes. Its
+  `target_tick` stays the reset deassertion tick. Cycle 0 is omitted
+  when no such tick exists: no reset was found, `--with-reset` is set,
+  or a pre-edge read of cycle 1 already sits on tick 0. `wave` then
+  starts at cycle 1, and `value --at 0` returns `x` with a null
+  `sample_tick`. Cycle 0 is not an edge, so `rising`, `falling` and
+  `change` skip it and `find` reports only level matches there.
 
 ### Clock selection
 
@@ -93,9 +101,6 @@ Pre-edge details:
   read as `sample_tick`.
 - An edge at tick 0 has nothing before it: values are unknown and
   `sample_tick` is null.
-- Cycle 0 is a snapshot taken before the reset-dependent start tick, not a
-  grid edge. The first pre-edge read can precede reset deassertion by one
-  tick.
 - Pre-edge needs a usable clock. `--sample-mode` is rejected with `--async`
   and by `list`, `overview`, and `stuck`.
 

@@ -1466,7 +1466,7 @@ fn bit_range_pattern_selects_the_slice() {
     let (out, _, _) = run(&["signal", &b, "-s", "qa.data[5:4]", "--format", "json"]);
     assert!(out.contains("\"name\": \"data[5:4]\""), "{out}");
     let (out, _, _) = run(&["wave", &b, "-s", "qa.data[5:4]", "-t", "0:9"]);
-    assert!(out.contains("data[5:4]  0  0  0  0  3  3  3"), "{out}");
+    assert!(out.contains("data[5:4]  0  0  0  3  3  3"), "{out}");
     let (out, _, _) = run(&[
         "wave",
         &b,
@@ -5129,6 +5129,8 @@ const ALL: &[&str] = &["signal", "find", "wave", "sample", "stats", "distance"];
 const BOUND_FLAGS: &[&str] = &["find", "sample"];
 const SYNC_PAST_END: &str = "lies outside the trace: counted cycles are 1..19 \
      (counted after reset), and the trace ends at 200ns";
+const SYNC_WITH_RESET_PAST_END: &str = "lies outside the trace: counted cycles are 1..20 \
+     (counted from the first clock edge), and the trace ends at 200ns";
 const TICK_PAST_END: &str = "lies outside the trace: the trace ends at tick 200 (200ns)";
 
 /// (fixture, commands, window args, flag as typed when a warning is expected).
@@ -5152,8 +5154,22 @@ fn window_rows() -> Vec<WindowRow> {
         (0, ALL, &["-t", "0:999999"], None),
         (0, ALL, &["-t", "0:5"], None),
         (0, ALL, &["-t", "0t:999999t", "--async"], None),
-        (0, &["signal", "wave"], &["-t", "0:0"], Some("-t 0:0 ")),
-        (0, BOUND_FLAGS, &["--before", "0"], Some("--before 0 ")),
+        // Cycle 0 exists after a detected reset, so `-t 0:0` is inside the trace.
+        (0, &["signal", "wave"], &["-t", "0:0"], None),
+        (
+            0,
+            &["signal", "wave"],
+            &["-t", "0:0", "--with-reset"],
+            Some("-t 0:0 "),
+        ),
+        // `--before 0` ends at cycle 0, which exists after a detected reset.
+        (0, BOUND_FLAGS, &["--before", "0"], None),
+        (
+            0,
+            BOUND_FLAGS,
+            &["--before", "0", "--with-reset"],
+            Some("--before 0 "),
+        ),
         (0, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
         (1, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
         (
@@ -5175,6 +5191,7 @@ fn window_rows() -> Vec<WindowRow> {
 /// The warning each row expects: the flag as typed plus the trace's extent.
 fn window_expected(fixture: usize, window: &[&str], flag: &str) -> String {
     let extent = match (fixture, window.contains(&"--async")) {
+        (0, false) if window.contains(&"--with-reset") => SYNC_WITH_RESET_PAST_END,
         (0, false) => SYNC_PAST_END,
         (2, _) => "lies outside the trace: the trace ends at tick 52962 (529620ns)",
         _ => TICK_PAST_END,
