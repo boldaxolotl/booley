@@ -187,17 +187,19 @@ def _history_block(store: MeasurementStore, run: StoredRun) -> dict[str, Any]:
     }
 
 
+def _enforced_count(results: list[dict[str, Any]], verdict: Verdict) -> int:
+    return sum(result["verdict"] == verdict and result["bound"] is not None for result in results)
+
+
 def _counts_block(document: Mapping[str, Any]) -> dict[str, int]:
     results = _results(document)
     tally = Counter(result["verdict"] for result in results)
     counts = {verdict.value: tally[verdict] for verdict in Verdict}
     counts["enforced"] = sum(result["bound"] is not None for result in results)
-    for verdict in (Verdict.ERROR, Verdict.NOT_EVALUATED):
-        enforced = sum(
-            result["verdict"] == verdict and result["bound"] is not None for result in results
-        )
-        counts[f"enforced_{verdict.value}"] = enforced
-        counts[f"tracked_{verdict.value}"] = counts[verdict.value] - enforced
+    counts["enforced_error"] = _enforced_count(results, Verdict.ERROR)
+    counts["tracked_error"] = counts["error"] - counts["enforced_error"]
+    counts["enforced_not_evaluated"] = _enforced_count(results, Verdict.NOT_EVALUATED)
+    counts["tracked_not_evaluated"] = counts["not_evaluated"] - counts["enforced_not_evaluated"]
     return counts
 
 
