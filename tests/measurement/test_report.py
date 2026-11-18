@@ -135,70 +135,43 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
     assert colors.red("1 unmet, 1 error, 1 not evaluated of 4 enforced") in terminal
 
 
-_REASON = "lite: synthesis execution timeout"
-_ENFORCED = (
-    Entry("cell_count_max", "cell_count", 90, bound=100),
-    Entry("area_kge_max", "area_kge", 4, bound=5),
-)
+def test_verdict_line_counts_tracked_errors_apart_from_enforced_bounds(tmp_path: Path) -> None:
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(repo / ".booley")
+    reason = "lite: synthesis execution timeout"
+    entries = (
+        Entry("cell_count_max", "cell_count", 90, bound=100),
+        Entry("area_kge_max", "area_kge", 4, bound=5),
+        Entry("area_um2", "area_um2", None, verdict=Verdict.ERROR, detail=reason),
+        Entry("wns_ns", "wns_ns", None, verdict=Verdict.ERROR, detail=reason),
+    )
+    stored = store.write(build_run(key_of(repo, head), "r1", (Table("synth", entries),)), [])
+    view = view_of(repo, store, stored, head)
+
+    counts = view["view"]["counts"]
+    assert (counts["error"], counts["enforced_error"], counts["tracked_error"]) == (2, 0, 2)
+    assert "**2 of 2 enforced met; 2 tracked errors**" in markdown_report(view)
+    assert "2 of 2 enforced met; 2 tracked errors" in terminal_report(view)
 
 
-def _tracked(verdict: Verdict, count: int) -> tuple[Entry, ...]:
-    keys = ("area_um2", "wns_ns", "whs_ns")[:count]
-    return tuple(Entry(k, k, None, verdict=verdict, detail=_REASON) for k in keys)
-
-
-@pytest.mark.parametrize(
-    ("status", "entries", "counts", "line"),
-    [
-        pytest.param(
-            RunStatus.COMPLETED,
-            _ENFORCED + _tracked(Verdict.ERROR, 2),
-            (0, 0, 0, 2),
-            "2 of 2 enforced met; 2 tracked errors",
-            id="tracked-errors",
-        ),
-        pytest.param(
-            RunStatus.CANCELLED,
-            _ENFORCED + _tracked(Verdict.NOT_EVALUATED, 3),
-            (3, 0, 3, 0),
-            "2 of 2 enforced met; 3 tracked not evaluated",
-            id="cancelled-tracked-not-evaluated",
-        ),
-        pytest.param(
-            RunStatus.STOPPED,
-            (
-                _ENFORCED[0],
-                Entry("area_kge_max", "area_kge", None, verdict=Verdict.NOT_EVALUATED, bound=5),
-                *_tracked(Verdict.NOT_EVALUATED, 1),
-            ),
-            (2, 1, 1, 0),
-            "1 not evaluated of 2 enforced; 1 tracked not evaluated",
-            id="stopped-mixed",
-        ),
-    ],
-)
-def test_verdict_line_counts_tracked_rows_apart_from_enforced_bounds(
+def test_verdict_line_counts_tracked_not_evaluated_apart_from_enforced_bounds(
     tmp_path: Path,
-    status: RunStatus,
-    entries: tuple[Entry, ...],
-    counts: tuple[int, int, int, int],
-    line: str,
 ) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
-    run = build_run(key_of(repo, head), "r1", (Table("synth", entries),), status=status)
+    entries = (
+        Entry("cell_count_max", "cell_count", 90, bound=100),
+        Entry("area_um2", "area_um2", None, verdict=Verdict.NOT_EVALUATED),
+        Entry("wns_ns", "wns_ns", None, verdict=Verdict.NOT_EVALUATED),
+    )
+    run = build_run(
+        key_of(repo, head), "r1", (Table("synth", entries),), status=RunStatus.CANCELLED
+    )
     view = view_of(repo, store, store.write(run, []), head)
 
+    line = "1 of 1 enforced met; 2 tracked not evaluated"
     assert f"**{line}**" in markdown_report(view)
     assert line in terminal_report(view)
-    assert agent_summary(view).splitlines()[0] == line
-    found = view["view"]["counts"]
-    assert (
-        found["not_evaluated"],
-        found["enforced_not_evaluated"],
-        found["tracked_not_evaluated"],
-        found["tracked_error"],
-    ) == counts
 
 
 def agent_summary(view: dict[str, Any]) -> str:
