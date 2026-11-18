@@ -8,7 +8,8 @@ types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import dataclasses
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -116,6 +117,28 @@ def _observation_reason(row: Mapping[str, object], limit: int | None = 500) -> s
     return reason if limit is None else reason[:limit]
 
 
+# Bounds on the stored map of failing Test Runs, so a Measurement Run stays small.
+_FAILING_TESTS_CAP = 20
+_FAILURE_LINE_CHARS = 200
+
+
+def _failing_tests(grades: Sequence[tuple[Mapping[str, object], str]]) -> dict[str, str]:
+    """The first ``_FAILING_TESTS_CAP`` non-passing Test Runs by name, each with its first reason line."""
+    failing = [(str(row["test_run"]), row) for row, grade in grades if grade != "pass"]
+    failing.sort(key=lambda item: item[0])
+    return {
+        name: next(
+            (
+                line.strip()
+                for line in _observation_reason(row, limit=None).splitlines()
+                if line.strip()
+            ),
+            "",
+        )[:_FAILURE_LINE_CHARS]
+        for name, row in failing[:_FAILING_TESTS_CAP]
+    }
+
+
 def simulation_report_metric_values(
     detail: dict[str, Any],
 ) -> dict[str, FlowMetricValues | MetricsUnavailable]:
@@ -139,7 +162,8 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     ``cycle_count`` is keyed by Test Run name and only for a Test Run that passed with
     a count. A coverage run adds the five coverage percentages, omitted when the
     coverage collection did not complete (a failing test is still a value).
-    A collector failure raises instead.
+    A collector failure raises instead. ``failing_tests`` names the first failing Test Runs
+    with the first line of each reason.
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
     Test Run: the Simulation Record did not finish, a Test Run ended in infrastructure error, or
@@ -172,6 +196,7 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
         if grade == "pass" and count is not None:
             cycles[str(row["test_run"])] = count
     declarations = COVERAGE_METRIC_DECLARATIONS if is_coverage_run else SIM_METRIC_DECLARATIONS
-    return metric_values(
+    values = metric_values(
         declarations, plain, per_test={} if is_coverage_run else {"cycle_count": cycles}
     )
+    return dataclasses.replace(values, failing_tests=_failing_tests(grades))

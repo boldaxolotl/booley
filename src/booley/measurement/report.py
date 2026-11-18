@@ -365,12 +365,37 @@ def _changed(view: Mapping[str, Any]) -> _Section:
 def _failing_tests(document: Mapping[str, Any], names: _Names) -> _Section:
     blocks: list[_Block] = []
     for table in document["tables"]:
-        plain = {} if table["values"] is None else table["values"]["plain"]
-        if plain.get("tests_failed", 0) > 0:
-            failed, total = _num(plain["tests_failed"]), _num(plain.get("tests_total"))
-            label = names.label(table["identity"], table["flow"])
-            blocks.append(_Text(f"{label}: {failed} failed of {total} tests", "fail"))
+        values = table["values"] or {"plain": {}}
+        if values["plain"].get("tests_failed", 0) <= 0:
+            continue
+        failed, total = (
+            _num(values["plain"]["tests_failed"]),
+            _num(values["plain"].get("tests_total")),
+        )
+        label = names.label(table["identity"], table["flow"])
+        blocks.append(_Text(f"{label}: {failed} failed of {total} tests", "fail"))
+        listed = values.get("failing_tests", {})  # absent in a run stored before it was kept
+        if listed:
+            lines = [f"{name}: {line}" if line else name for name, line in listed.items()]
+            more = values["plain"]["tests_failed"] - len(listed)
+            blocks.append(
+                _Code("\n".join([*lines, *([f"... and {more} more"] if more > 0 else [])]))
+            )
+            blocks.extend(_flow_report_lines(document, table, label))
     return ("Failing tests", blocks)
+
+
+def _flow_report_lines(
+    document: Mapping[str, Any], table: Mapping[str, Any], label: str
+) -> list[_Block]:
+    """The path of *table*'s kept ``report.json``, where the failures not listed are."""
+    return [
+        _Text(f"{label} report: `{path}`")
+        for item in document["view"]["evidence"]
+        if (item["identity"], item["flow"]) == (table["identity"], table["flow"])
+        for path in item["reports"]
+        if Path(path).name == "report.json"
+    ]
 
 
 def _footer(document: Mapping[str, Any], names: _Names) -> _Section:

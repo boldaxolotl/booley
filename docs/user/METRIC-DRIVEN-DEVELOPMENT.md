@@ -235,7 +235,10 @@ the work is accepted:
     shows as "rules loosened" or "tests changed"; a `--target` run shows "not
     stored", and a cancelled run shows its status.
 
-Failing rows come first, and the metric table follows.
+Failing rows come first, and the metric table follows. A simulation or
+coverage table with failing tests also lists up to 20 of them, each with the
+first line of its failure, and the path of the Flow's report that holds the
+rest.
 
 The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer

@@ -7,12 +7,15 @@ the test bodies so a missing module fails the test, not collection.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from booley.flows.sim.execution.contract import SimulationTestOutcome
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record.serial_execution import observation_document
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
@@ -52,6 +55,37 @@ def test_failing_and_timed_out_tests_count_as_failed(tmp_path: Path) -> None:
 
     # Exact equality: a plain run carries no coverage metric.
     assert values.plain == {"tests_failed": 2, "tests_total": 3}
+
+
+GIT_LINE = "booley: git rev-parse HEAD: the measurement checkout is not a git repository"
+
+
+def _setup_failure_row(name: str, tail: str) -> dict[str, object]:
+    """The row a failing Pre-Sim Command leaves for *name*, built as production builds it."""
+    outcome = SimulationTestOutcome(
+        name=name, verdict="elab_error", passed=False, elab_failed=True, error_tail=tail
+    )
+    return _row(name) | observation_document(outcome, execution="setup_error")
+
+
+def test_failing_test_runs_keep_their_names_and_first_failure_line(tmp_path: Path) -> None:
+    from booley.flows.metric_declarations import metrics_document
+    from booley.flows.sim.metrics import simulation_flow_metrics, simulation_report_metric_values
+
+    names = [f"t{index:02d}" for index in range(24)]
+    rows = [_setup_failure_row(name, f"\n{GIT_LINE}\nsecond line") for name in names]
+    rows += [_setup_failure_row("a_verbose", "x" * 300 + "\nsecond line"), _row("ok")]
+    outcome = _simulation_outcome(tmp_path, rows, required=(*names, "a_verbose", "ok"))
+
+    values = simulation_flow_metrics(outcome)
+
+    assert list(values.failing_tests) == ["a_verbose", *names[:19]]
+    assert values.failing_tests["t00"] == GIT_LINE
+    assert values.failing_tests["a_verbose"] == "x" * 200
+    assert values.plain == {"tests_failed": 25, "tests_total": 26}
+    assert values.per_test == {}
+    stored = {"records": {"sim_0": {"metrics": metrics_document(lambda: values)}}}
+    assert simulation_report_metric_values(json.loads(json.dumps(stored)))["sim_0"] == values
 
 
 def test_inconclusive_test_counts_as_failed_and_its_cycles_are_not_a_value(
