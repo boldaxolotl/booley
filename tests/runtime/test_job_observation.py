@@ -361,6 +361,51 @@ def test_observer_reports_the_memory_wait_of_a_queued_claim(tmp_path, monkeypatc
     assert files(tmp_path) == before
 
 
+def test_observer_reports_the_queue_order_wait_of_a_claim_that_fits(tmp_path, monkeypatch):
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    stamp = "2026-10-08T10:00:00Z"
+    claims = (("h", 1, 7, 700.0, "run-1"), ("w", 2, 8, 400.0, "run-2"))
+    for kind, seq, pid, mib, run_id in claims:
+        _memory_entry(
+            slots,
+            kind,
+            seq,
+            pid,
+            {
+                "created_at": stamp,
+                "memory": job_slots.MemoryClaim(1000.0, reservation_mb=mib).to_payload(),
+                "job": job_slots.JobLabel(run_id, "synth", "a").to_payload(),
+            },
+        )
+    _memory_entry(
+        slots,
+        "w",
+        3,
+        99,
+        json.loads(
+            own_claim(
+                identity, memory=job_slots.MemoryClaim(1000.0, reservation_mb=100.0).to_payload()
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+
+    assert view.queue_position == 2
+    assert view.queue == (
+        "position 2: waits in queue order behind run-2 (synth, a); "
+        "needs 100 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-1 (synth, a) 700 MiB"
+    )
+
+
 def test_slot_queued_job_has_no_queue_detail(tmp_path, monkeypatch):
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
