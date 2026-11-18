@@ -104,7 +104,7 @@ with a `--test` that already names a seed, with an elaboration check, or with
 
 Tests run in the order you name them; with `--coverage`, in order of Test name.
 They run in parallel while their memory reservations fit the Memory Budget
-(see [`[jobs]`](CONFIG.md#jobs--concurrency-jobs)).
+(see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs)).
 
 ## Cocotb Targets (Python testbenches)
 
