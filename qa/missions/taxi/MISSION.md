@@ -52,7 +52,8 @@ Try:
   Expect Targets `sim_mac_10g`, `lint_mac_10g`, `lint_mac_10g_verible`, `synth_mac_10g`,
   `synth_mac_10g_physical`; a derived image from the
   pinned `tox.ini` stack with cocotb at 2.1.0;
-  explicit `[stealth] enabled = false`; `fixtures/taxi_mac_10g.sdc` as Project-owned config.
+  explicit `[stealth] enabled = false`; the prompt's inlined SDC as
+  Project-owned config, byte-identical to `fixtures/taxi_mac_10g.sdc`.
 - Copy the full text of `prompts/setup.md` into outer `docs/taxi-contract.md`
   and verify the bytes match: the spec reviewer inlines this file, not linked
   documents. Commit it as the immutable visible spec for the later spec reviews.
@@ -254,8 +255,9 @@ Try:
   new files are `qa/taxi_eth_mac_10g/test_observability.{py,sv}` and the
   ordinary Target `sim_mac_10g_observability`; existing Taxi source/tests must
   stay unchanged.
-- Tests check bad RX FCS (`tuser`, bad-FCS flag, counter 34); all 8 PFC classes
-  with quanta 10…80 (exact TX/RX bitmap and quanta, counters 25/57); four-cycle
+- Tests check bad RX FCS (`tuser`, bad-FCS flag, counter 34); each PFC class
+  alone (one-hot request) and all 8 together, quanta 10…80 (exact TX/RX bitmap
+  and the requested classes' quanta, counters 25/57); four-cycle
   underrun (XGMII error termination, counter 3); 16-bit completion tags and
   timestamp vs SFD; `tuser=0` counters vs `tuser=1` strings. Elab, full sim and
   clean TB-quality evidence must bind to the new Target.
@@ -267,6 +269,12 @@ Try:
   report shows a pristine baseline, 8 Mutants each built and tested in
   isolation, each detected Mutant's first killing test, and an unchanged source
   tree afterward.
+- Before accepting the oracle, check that it sees area 11's fault: on a
+  disposable copy of the child's commit, apply `fixtures/pfc-fault.md`, run
+  the new exact-PFC test, and confirm it fails with a class mismatch. Save the
+  result under `evidence/observability/`, then delete the copy. If the test
+  passes, do not accept: send the child back to the prompt's Exact PFC
+  requirement it misses. Never reveal the seed to the child.
 - Integrate the worktree's branch using the shared rules. The new Target stays
   selectable for the repair.
 Look for: weakened upstream tests, a source tree changed by mutation, a table
@@ -381,6 +389,9 @@ results passed off as fresh.
 
 ## Known traps
 - Integrate the observability worktree's branch before starting repair.
+- The area-11 seed rotates PFC classes, so an all-classes (0xFF) request is
+  unchanged by it; only one-hot class checks catch it. Area 10 confirms the
+  new test fails on the seed before acceptance.
 - Gearbox off follows the pinned pytest driver, not the Makefile default; RX/TX keep IFG 12 and 0.
 - `src/*/lib/taxi` symlinks point to the Project Root (infinite walks); use `FUSESOC_IGNORE` or real
   paths, not `.f` hops.
