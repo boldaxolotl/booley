@@ -69,8 +69,8 @@ from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import (
     _coverage_failed_target,
     _coverage_preflight_findings_outcome,
+    _coverage_target_outcome,
     _CoverageTargetError,
-    _retain_coverage_record,
     _simulation_record_recovery_detail,
 )
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
@@ -111,16 +111,24 @@ def _fresh_simulation_record_recovery_detail(
 
 
 def _checkpoint_coverage_record(
-    progress: CoverageProgress, outcome: SimulationRecordOutcome, evaluation: str
-) -> None:
+    progress: CoverageProgress,
+    outcome: SimulationRecordOutcome,
+    evaluation: str,
+    publish: Callable[[SimulationRecordOutcome], bool],
+) -> bool:
+    """Retain one completed Target once its projection is published; ``False`` keeps it pending."""
     try:
-        _retain_coverage_record(progress, outcome)
+        target = _coverage_target_outcome(outcome)
     except (OSError, ValueError) as error:
         detail = _coverage_failed_target(
             str(outcome.target["selector"]), error, evaluation, outcome
         )
         raise _CoverageTargetError(str(error), detail) from error
+    if not publish(outcome):
+        return False
+    progress.outcomes.append(target)
     progress.checkpoint()
+    return True
 
 
 class SimulationRecordResumeMixin:
@@ -154,6 +162,7 @@ class SimulationRecordResumeMixin:
         def _simulation_record_endpoint_outcome(
             self, outcomes: list[SimulationRecordOutcome]
         ) -> EndpointOutcome: ...
+        def _publish_projection(self, outcome: SimulationRecordOutcome) -> bool: ...
         def work_item_job_request(
             self, selector: str, runs: Sequence[TestRun], flags: tuple[str, ...]
         ) -> JobRequest | None: ...
@@ -404,10 +413,11 @@ class SimulationRecordResumeMixin:
                 validated, invocation, admission, coverage_plan, manifest_published
             )
             self._capture_cycle_report((outcome,))
-            _checkpoint_coverage_record(
+            published = _checkpoint_coverage_record(
                 progress,
                 outcome,
                 "not_requested" if coverage_plan.criterion is None else "blocked",
+                self._publish_projection,
             )
             supersede_progress(
                 validated.path.parents[3] / "progress.json",
@@ -415,7 +425,7 @@ class SimulationRecordResumeMixin:
                 new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
                 booley_dir=validated.booley_dir,
             )
-            return self._resumed_endpoint_outcome(outcome)
+            return self._resumed_endpoint_outcome(outcome, published=published)
 
         return _SimulationRecordSteps(
             lambda phase: progress.checkpoint(complete=True, phase=phase), run
@@ -444,11 +454,13 @@ class SimulationRecordResumeMixin:
                 outcome = self._run_validated_resume_simulation_record(
                     validated, invocation, admission, None, manifest_published
                 )
-            outcomes.append(outcome)
-            self._write_simulation_record_progress(
-                (selector,), outcomes, phase="running", complete=False
-            )
-            return self._resumed_endpoint_outcome(outcome)
+            published = self._publish_projection(outcome)
+            if published:
+                outcomes.append(outcome)
+                self._write_simulation_record_progress(
+                    (selector,), outcomes, phase="running", complete=False
+                )
+            return self._resumed_endpoint_outcome(outcome, published=published)
 
         return _SimulationRecordSteps(
             lambda phase: self._write_simulation_record_progress(
@@ -457,8 +469,11 @@ class SimulationRecordResumeMixin:
             run,
         )
 
-    def _resumed_endpoint_outcome(self, outcome: SimulationRecordOutcome) -> EndpointOutcome:
-        result = self._simulation_record_endpoint_outcome([outcome])
+    def _resumed_endpoint_outcome(
+        self, outcome: SimulationRecordOutcome, *, published: bool
+    ) -> EndpointOutcome:
+        """Report the resumed Target; one whose projection failed has no card entry."""
+        result = self._simulation_record_endpoint_outcome([outcome] if published else [])
         result.detail.update(_simulation_record_recovery_detail(outcome.recovery))
         return result
 

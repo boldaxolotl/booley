@@ -948,7 +948,8 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
     result = _coverage(tmp_path, _SplitMetricsExecution(), target="sim_custom")
 
     assert result.exit_code == 2
-    assert result.outcome.detail["targets"]["sim_custom"]["simulation"] == "pass"
+    # The Target whose projection failed stays pending: no card entry, no Coverage Record line.
+    assert result.outcome.detail["pending_targets"] == ["sim_custom"]
     assert result.outcome.detail["completion_error"]["operation"] == (
         "publish Simulation Record projections"
     )

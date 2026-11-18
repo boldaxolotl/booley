@@ -186,7 +186,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path):
     assert f"\n  {reason}\n  y\n  one: cycles=7" in rendered
 
 
-@pytest.mark.parametrize("failure", [None, "retention", "supersede"])
+@pytest.mark.parametrize("failure", [None, "retention", "supersede", "projection"])
 def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch, failure):
     # Private seam: a resumed run that fails after completing can only be made to fail by
     # patching `_checkpoint_coverage_record` or `supersede_progress`, and
@@ -197,9 +197,13 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     execution = NativeExecution()
     if failure:
-        symbol = "_checkpoint_coverage_record" if failure == "retention" else "supersede_progress"
+        target = {
+            "retention": "booley.flows.sim.flow_resume._checkpoint_coverage_record",
+            "supersede": "booley.flows.sim.flow_resume.supersede_progress",
+            "projection": "booley.flows.sim.acceptance.write_compatibility_projection",
+        }[failure]
         monkeypatch.setattr(
-            "booley.flows.sim.flow_resume." + symbol,
+            target,
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
         )
     resumed = tmp_path / "resumed"
@@ -215,6 +219,10 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     assert report == json.loads((resumed / "sim.json").read_text())
     progress = json.loads((resumed / "sim/1/progress.json").read_text())
     assert "cycle_counts" not in json.dumps(progress)
+    if failure == "projection":
+        # The Target stays pending: no Coverage Record line names an unpublished projection.
+        assert progress["phase"] == "aborted" and progress["pending_targets"] == ["sim_0"]
+        assert "Coverage Record:" not in result.outcome.report_text
     if failure:
         assert flow._simulation_record_outcomes == ()
     else:

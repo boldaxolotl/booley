@@ -234,9 +234,8 @@ def finish_execution(
     outcome: EndpointOutcome,
     *,
     started: float | None,
-    records_published: bool,
 ) -> ExecutionResult:
-    """Publish completion; the report refreshes its detail once records are published."""
+    """Publish completion: the report refreshes its detail, then the display event ends."""
     for cleanup_error in endpoint._requeue_cleanup_errors:
         normalize_completion_error(outcome, cleanup_error, "retire the killed attempt's progress")
     endpoint._requeue_cleanup_errors.clear()
@@ -245,7 +244,6 @@ def finish_execution(
         prepared.display_target,
         outcome.display_label or prepared.display_label,
         started=started,
-        records_published=records_published,
         dry_run=prepared.dry_run,
         non_persisting_dry_run=prepared.non_persisting_dry_run,
     )

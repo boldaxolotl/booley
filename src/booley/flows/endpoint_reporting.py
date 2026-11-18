@@ -520,7 +520,6 @@ def _finish_main(
     display_label: str | None,
     started: float | None,
     *,
-    records_published: bool,
     dry_run: bool,
     non_persisting_dry_run: bool,
 ) -> int:
@@ -528,7 +527,7 @@ def _finish_main(
     duration = (time.monotonic() - started) if started is not None else 0.0
     try:
         if not non_persisting_dry_run:
-            _finish_publication(endpoint, result, records_published)
+            _publish_report_with_recovery(endpoint, result)
     finally:
         try:
             try:
@@ -564,30 +563,13 @@ def _finish_main(
     return result.exit_code
 
 
-def _finish_publication(
-    endpoint: EndpointState,
-    result: EndpointOutcome,
-    records_published: bool,
-) -> None:
-    _publish_report_with_recovery(endpoint, result, refresh_detail=records_published)
-
-
-def _publish_report_with_recovery(
-    endpoint: EndpointState,
-    result: EndpointOutcome,
-    *,
-    refresh_detail: bool = True,
-) -> None:
-    previous = endpoint._skip_report_detail_refresh
-    endpoint._skip_report_detail_refresh = not refresh_detail
+def _publish_report_with_recovery(endpoint: EndpointState, result: EndpointOutcome) -> None:
     try:
         _publish_report(endpoint, result)
     except Exception as exc:
         logger.debug("Endpoint report publication failed", exc_info=True)
         normalize_completion_error(result, exc, "publish report.json")
         _recover_report_publication(endpoint, result)
-    finally:
-        endpoint._skip_report_detail_refresh = previous
 
 
 def _recover_report_publication(endpoint: EndpointState, result: EndpointOutcome) -> None:
