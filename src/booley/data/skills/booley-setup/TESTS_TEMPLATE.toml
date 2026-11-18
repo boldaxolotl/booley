@@ -53,7 +53,9 @@ test_list = "smoke"          # reference a shared list instead of inlining
 
 # --- Cocotb Target ---------------------------------------------------------
 # For a Target whose .core flow options declare a `cocotb_module`, `tests`
-# lists the @cocotb.test() FUNCTION NAMES in that module. Do NOT declare
+# lists the cocotb test IDs in that module: the @cocotb.test() function name, or
+# for generated cases the rendered ID ("run_test_tx/ifg=12"); the bare function
+# name of a generated test matches no test. Do NOT declare
 # `select` — cocotb selection is an env-var filter Booley builds from this
 # list (a plusarg template here is a setup-time error). `skip` works as usual.
 #

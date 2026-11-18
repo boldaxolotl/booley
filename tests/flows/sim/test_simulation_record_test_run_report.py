@@ -241,7 +241,7 @@ def test_failed_discovered_tests_share_one_batch_rerun_command(tmp_path: Path):
     lines = simulation_record_test_run_lines("sim", outcome, default_seed=1)
     assert lines[-2:] == [
         "  Rerun the whole batch with the same seed "
-        "(register its test functions as Tests in tests.toml to rerun one alone):",
+        "(register its test IDs as Tests in tests.toml to rerun one alone):",
         "    booley flow sim --target sim --seed 9",
     ]
     assert "  Rerun a failed Test Run with the same seed:" not in lines
