@@ -80,8 +80,8 @@ warn in queries:
 - `off_grid_edge`, `non_integer_period` and `unknown_clock` warn on every
   sync query, and on async queries that use cycle tokens.
 - `insufficient_edges` gives the one no-clock warning on sync queries.
-- `multiple_clock_periods` shows only in the `build`, `overview` and `stats`
-  header.
+- `multiple_clock_periods` never warns in queries. It shows in the `build`,
+  `overview` and `stats` header and in JSON `clock_regularity`.
 
 JSON carries the verdict in `clock_regularity` and the warnings in
 `warnings`. On `off_grid_edge`, `non_integer_period` or `unknown_clock`,

@@ -113,9 +113,9 @@ histogram, no match is possible.
 
 ## 5. Wrong clock detected (sync mode only)
 
-If sync mode picked a non-toggling signal as "clock",
-every cycle gets the same tick and find/sample silently
-do nothing meaningful.
+If sync mode picked a signal that does not toggle as the "clock",
+it has no period: queries fall back to ticks and print a
+`no usable clock` warning.
 
 Header:
 
