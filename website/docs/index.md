@@ -39,7 +39,7 @@ document: Booley product datasheet
       <div class="feat__card">
         <div class="feat__txt">
           <h3>Agents equipped for hardware work</h3>
-          <p>A general-purpose coding agent knows little about EDA tools, so Booley gives it one short command per job: simulate, synthesize, lint, build for FPGA.</p>
+          <p>A general-purpose coding agent knows little about EDA tools, so Booley gives it one short command per job: simulate, synthesize, lint, build for FPGA. The same commands work whichever EDA tool runs underneath, such as Verilator or Icarus Verilog for simulation.</p>
           <p>It also gets tools for checking its own work. Waveform queries let it ask questions about real simulation traces (“when did <code>data_o</code> equal <code>0xDEADBEEF</code>?”) instead of guessing from the RTL. Mutation testing plants small bugs in the RTL and counts how many the testbench catches, which shows whether the tests would notice a real bug.</p>
           <p>For a second opinion, the agent can call an independent reviewer that didn’t write the code. Reviewers follow guides written by hardware engineers, covering common RTL bugs, style rules and typical optimization opportunities. Each review looks for one kind of problem, so nothing gets skimmed.</p>
         </div>
