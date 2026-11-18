@@ -70,7 +70,8 @@ targets:
   # for a cocotb one. The ONLY thing that marks a Target as cocotb is
   # `cocotb_module` in its flow_options. Requires the Python TB in a `tags: [tb]`
   # fileset with `file_type: user` + `copyto:` (staged into the build root), and
-  # `tests.toml` listing the @cocotb.test() FUNCTION names with NO `select`.
+  # `tests.toml` listing the cocotb test IDs (function name, or the rendered ID of
+  # each generated case) with NO `select`.
   # sim_cocotb:
   #   flow: sim
   #   flow_options:

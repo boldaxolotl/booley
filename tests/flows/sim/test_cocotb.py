@@ -145,9 +145,7 @@ _ALL_PASS = {name: "pass" for name, _status, _text in _PASSING}
 _ALL_FAIL = dict.fromkeys(_ALL_PASS, "fail")
 _ALL_INCONCLUSIVE = dict.fromkeys(_ALL_PASS, "inconclusive")
 _SVA_LINE = "ERROR: rtl/counter.sv:18: counter reached error trap\n"
-_NO_MATCH_XML = (
-    Path(__file__).parents[2] / "fixtures/cocotb_results/2.1.0/results-no-match.xml"
-)
+_NO_MATCH_XML = Path(__file__).parents[2] / "fixtures/cocotb_results/2.1.0/results-no-match.xml"
 _ZERO_MATCH_IDS = ["test_reset/ifg=12", "test_reset/ifg=0"]
 # The cocotb 2.0.1 shape: tests the filter excluded are listed as skipped.
 _ZERO_MATCH_RESULTS = cr.CocotbResults(

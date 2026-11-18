@@ -621,9 +621,11 @@ Rules that differ from SV Targets:
   lint/synth — a different wrapper, with plain signal ports; see the
   non-scalar-toplevel-ports determinant in `0-plan.md`. Packed-struct ports are
   *not* this case and need no wrapper.)
-- **`tests.toml` lists cocotb test-function names**, and must **not** declare
-  a `select` plusarg template — selection is an env-var filter Booley builds;
-  a `select` on a Cocotb Target is a setup-time error (see
+- **`tests.toml` lists cocotb test IDs** (a plain test's function name; a
+  generated test's rendered ID, such as `run_test_tx/ifg=12`; its bare function
+  name matches no test and the run comes back inconclusive), and must **not**
+  declare a `select` plusarg template — selection is an env-var filter Booley
+  builds; a `select` on a Cocotb Target is a setup-time error (see
   TESTS_TEMPLATE.toml's cocotb section). `skip` works unchanged.
 - **No sentinels.** The verdict comes from cocotb's `results.xml`; do not add
   `pass_sentinels`/`fail_sentinels` for a Cocotb Target's sake.
