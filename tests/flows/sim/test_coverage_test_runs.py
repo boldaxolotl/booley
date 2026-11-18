@@ -175,6 +175,7 @@ def test_preflight_refuses_runs_of_an_unregistered_test(tmp_path, monkeypatch):
 
     assert prepared.plan is None
     assert [finding.code for finding in prepared.findings] == ["COV_SUITE_INVALID"]
+    assert prepared.findings[0].message.endswith("does not register for the Target: ghost")
 
 
 def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeypatch):

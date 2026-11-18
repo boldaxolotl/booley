@@ -22,7 +22,12 @@ def _snapshot(root: Path) -> dict[str, bytes]:
 
 
 def _interrupted_simulation_record(
-    root, monkeypatch, *, parameter_datatype="int", parameter_default="1"
+    root,
+    monkeypatch,
+    *,
+    parameter_datatype="int",
+    parameter_default="1",
+    tests_toml='[sim_0]\ntests=["reset", "wrap"]\n',
 ):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
@@ -44,7 +49,7 @@ def _interrupted_simulation_record(
     )
     data = root / ".booley"
     data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests=["reset", "wrap"]\n')
+    (data / "tests.toml").write_text(tests_toml, newline="\n")
     reports = root / "reports"
 
     executions = []
@@ -72,6 +77,16 @@ def _interrupted_simulation_record(
     return reports, manifest, executions
 
 
+def _resume_until_execution(monkeypatch):
+    """Make a resume that reaches execution raise instead of running."""
+
+    def resumed(executor, request):
+        executor.prepare_attempt(request)
+        raise KeyboardInterrupt("resume reached execution")
+
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
+
+
 def test_resume_accepts_attempts_recorded_with_the_diagnostic_policy(tmp_path, monkeypatch):
     reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     old = sorted(manifest.parent.rglob("attempt.json"))
@@ -81,11 +96,7 @@ def test_resume_accepts_attempts_recorded_with_the_diagnostic_policy(tmp_path, m
         path.write_bytes(canonical_json_bytes(document))
     before = {path: path.read_bytes() for path in old}
 
-    def resumed(executor, request):
-        executor.prepare_attempt(request)
-        raise KeyboardInterrupt("resume reached execution")
-
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
+    _resume_until_execution(monkeypatch)
     with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
         SimulateFlow().execute(
             SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
@@ -95,6 +106,59 @@ def test_resume_accepts_attempts_recorded_with_the_diagnostic_policy(tmp_path, m
     new = [path for path in manifest.parent.rglob("attempt.json") if path not in before]
     assert new
     assert all("diagnostic" not in json.loads(path.read_bytes())["policy"] for path in new)
+
+
+_OWN_SECTION = '[sim_0]\ntests=["reset", "wrap"]\n'
+
+
+@pytest.mark.parametrize(
+    ("tests_toml", "summary"),
+    [
+        pytest.param(_OWN_SECTION + "# unrelated comment\n", None, id="unrelated-comment"),
+        pytest.param('[sim_1]\ntests=["other"]\n' + _OWN_SECTION, None, id="other-target"),
+        pytest.param(
+            '[sim_0]\ntests=["reset", "wrap", "extra"]\n',
+            ["suite changed: +extra"],
+            id="test-added",
+        ),
+        pytest.param(
+            _OWN_SECTION + '[sim_0.variants.wrap]\ndefault = "short"\nshort = ["+n=1"]\n',
+            ["suite Test changed: wrap"],
+            id="variant-added",
+        ),
+        pytest.param(
+            '[sim_0]\ntests=["wrap", "reset"]\n', ["suite order changed"], id="order-changed"
+        ),
+        pytest.param(
+            _OWN_SECTION + 'skip = ["wrap"]\n', ["suite Test changed: wrap"], id="skip-added"
+        ),
+        pytest.param(
+            _OWN_SECTION + 'env = { FLAVOR = "b" }\n',
+            ["suite setting changed: env"],
+            id="env-changed",
+        ),
+    ],
+)
+def test_resume_compares_only_the_resumed_targets_tests(
+    tmp_path, monkeypatch, tests_toml, summary
+):
+    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+    (tmp_path / ".booley/tests.toml").write_text(tests_toml, newline="\n")
+    before = _snapshot(manifest.parent)
+    _resume_until_execution(monkeypatch)
+    request = SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    refused = None  # the resume reached execution
+    try:
+        result = SimulateFlow().execute(request)
+    except KeyboardInterrupt:
+        pass
+    else:
+        assert result.exit_code == 2
+        refused = result.outcome.detail["mismatch_summary"]
+    assert refused == summary
+    if summary is not None:
+        assert len(executions) == 1
+        assert _snapshot(manifest.parent) == before
 
 
 def _prime_prior_refusal(root, reports, manifest, executions):
@@ -159,7 +223,6 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     ("changed", "line"),
     [
         ("parameter", "parameter WIDTH:"),
-        ("suite", "suite changed: .booley/tests.toml"),
         ("option", "build command model changed"),
     ],
 )
@@ -167,17 +230,13 @@ def test_public_resume_parameters_suite_content_and_opaque_options(
     tmp_path, monkeypatch, changed, line
 ):
     reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
-    if changed == "suite":
-        path = tmp_path / ".booley/tests.toml"
-        path.write_text(path.read_text() + "# catalog bytes changed, names remain frozen\n")
-    else:
-        path = tmp_path / "counter.core"
-        old, new = (
-            ("default: 1", "default: 2")
-            if changed == "parameter"
-            else ("tool: verilator}", "tool: verilator, verilator_options: [--Wall]}")
-        )
-        path.write_text(path.read_text().replace(old, new))
+    path = tmp_path / "counter.core"
+    old, new = (
+        ("default: 1", "default: 2")
+        if changed == "parameter"
+        else ("tool: verilator}", "tool: verilator, verilator_options: [--Wall]}")
+    )
+    path.write_text(path.read_text().replace(old, new))
     before = _snapshot(manifest.parent)
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
@@ -209,7 +268,7 @@ def test_missing_input_distinguishes_source_planning_error_from_suite_comparison
         assert "mismatch_summary" not in result.outcome.detail
         assert "record workload mismatch" not in result.outcome.report_text
     else:
-        assert result.outcome.detail["mismatch_summary"] == ["suite changed: .booley/tests.toml"]
+        assert result.outcome.detail["mismatch_summary"] == ["suite changed: -reset"]
     assert len(executions) == 1
 
 
@@ -238,26 +297,35 @@ def test_public_resume_bool_to_int_names_parameter_and_explains_command_digest(
     assert _snapshot(manifest.parent) == before
 
 
+def _rewrite_manifest(manifest, edit):
+    """Rewrite the planned manifest through *edit* and re-bind the interrupted attempts."""
+    document = json.loads(manifest.read_bytes())
+    document.pop("fingerprints")
+    edit(document)
+    rewritten = finalize_manifest(document)
+    manifest.write_bytes(rewritten.canonical_bytes())
+    # The interrupted attempt names the manifest it started under; re-bind it to the rewrite.
+    for attempt in manifest.parent.rglob("attempt.json"):
+        record = json.loads(attempt.read_bytes())
+        record["manifest_sha256"] = manifest_digest(rewritten)
+        record["workload_sha256"] = rewritten.document["fingerprints"]["workload_sha256"]
+        attempt.write_bytes(canonical_json_bytes(record))
+
+
 def test_legacy_interrupted_simulation_record_new_source_mapping_refuses_before_attempt(
     tmp_path, monkeypatch
 ):
     reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+
     # Rewrite the planned manifest as an older planner wrote it: contract version 1 and no
     # source mapping on the generated files. The attempt directory stays as it was.
-    document = json.loads(manifest.read_bytes())
-    document.pop("fingerprints")
-    for disclosure in document["planning_disclosures"]:
-        disclosure["tool_provenance"]["contract_version"] = "1"
-        for entry in disclosure["generated_files"]:
-            entry.pop("source_path", None)
-    legacy = finalize_manifest(document)
-    manifest.write_bytes(legacy.canonical_bytes())
-    # The interrupted attempt names the manifest it started under; re-bind it to the rewrite.
-    for attempt in manifest.parent.rglob("attempt.json"):
-        record = json.loads(attempt.read_bytes())
-        record["manifest_sha256"] = manifest_digest(legacy)
-        record["workload_sha256"] = legacy.document["fingerprints"]["workload_sha256"]
-        attempt.write_bytes(canonical_json_bytes(record))
+    def as_older_planner(document):
+        for disclosure in document["planning_disclosures"]:
+            disclosure["tool_provenance"]["contract_version"] = "1"
+            for entry in disclosure["generated_files"]:
+                entry.pop("source_path", None)
+
+    _rewrite_manifest(manifest, as_older_planner)
     document = json.loads(manifest.read_bytes())
     assert document["$schema"] == "booley.simulation-record-manifest/v1"
     assert "source_path" not in document["planning_disclosures"][0]["generated_files"][0]
@@ -268,6 +336,49 @@ def test_legacy_interrupted_simulation_record_new_source_mapping_refuses_before_
     assert result.exit_code == 2
     assert len(executions) == 1
     assert any("source_path" in line for line in result.outcome.detail["mismatch_summary"])
+    assert _snapshot(manifest.parent) == before
+
+
+_LEGACY_HINT = (
+    "this Simulation Record predates per-Target Test fingerprints: "
+    "restore tests.toml or start a new run"
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "summary"),
+    [
+        ("registered-unchanged", None),
+        ("registered-comment", ["suite changed: .booley/tests.toml", _LEGACY_HINT]),
+        ("unnamed-tests-added", ["suite changed: +reset", _LEGACY_HINT]),
+    ],
+)
+def test_legacy_record_resumes_only_against_an_unchanged_suite(
+    tmp_path, monkeypatch, case, summary
+):
+    unnamed = case == "unnamed-tests-added"
+    reports, manifest, executions = _interrupted_simulation_record(
+        tmp_path,
+        monkeypatch,
+        **({"tests_toml": "# no Tests for sim_0\n"} if unnamed else {}),
+    )
+    _rewrite_manifest(manifest, lambda document: document["required_suite"].pop("target_tests"))
+    path = tmp_path / ".booley/tests.toml"
+    if unnamed:
+        path.write_text('[sim_0]\ntests=["reset"]\n', newline="\n")
+    elif case == "registered-comment":
+        path.write_text(path.read_text() + "# comment\n", newline="\n")
+    before = _snapshot(manifest.parent)
+    _resume_until_execution(monkeypatch)
+    request = SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    if summary is None:
+        with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
+            SimulateFlow().execute(request)
+        return
+    result = SimulateFlow().execute(request)
+    assert result.exit_code == 2
+    assert result.outcome.detail["mismatch_summary"] == summary
+    assert len(executions) == 1
     assert _snapshot(manifest.parent) == before
 
 

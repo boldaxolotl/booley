@@ -200,3 +200,49 @@ def test_target_input_under_symlinked_booley_dir_is_project_relative(
     document = _plan(handle, planned, preview, ("reset", "count"))
     closure = document["build_variants"][0]["source_closure"]  # type: ignore[index]
     assert [entry_["path"] for entry_ in closure] == [".booley/cores/dut.sv"]
+
+
+_VARIANTS = (
+    '[sim.variants.reset]\ndefault = "a"\n'
+    'b = { args = ["+n=2"], env = { Y = "2", X = "1" } }\na = ["+n=1"]\n'
+)
+_SECTION = '[sim]\ntests = ["reset", "count"]\n'
+
+
+def _target_tests(handle, inspection, preview, tmp_path: Path, text: str):
+    (tmp_path / ".booley" / "tests.toml").write_bytes(text.encode())
+    return _plan(handle, inspection, preview, ("reset", "count"))["required_suite"][  # type: ignore[index]
+        "target_tests"
+    ]
+
+
+def test_target_tests_fingerprint_only_the_targets_own_resolved_section(tmp_path: Path) -> None:
+    _, handle, inspection, preview = _planning_fixture(tmp_path)
+
+    def fingerprint(text: str):
+        return _target_tests(handle, inspection, preview, tmp_path, text)
+
+    base = fingerprint(_SECTION + _VARIANTS)
+    assert [item["name"] for item in base["tests"]] == ["reset", "count"]
+    assert base["settings"] == {"select": None, "env": None, "seed": None, "default_seed": None}
+    reordered = _VARIANTS.replace(
+        'b = { args = ["+n=2"], env = { Y = "2", X = "1" } }\na = ["+n=1"]\n',
+        'a = ["+n=1"]\nb = { args = ["+n=2"], env = { X = "1", Y = "2" } }\n',
+    )
+    unrelated = '# note\n[other]\ntests = ["x"]\n[test_lists]\nunused = ["y"]\n'
+    assert fingerprint(unrelated + _SECTION + reordered) == base
+    skipped = fingerprint(_SECTION + 'skip = ["count"]\n' + _VARIANTS)
+    assert [item["sha256"] for item in skipped["tests"]] != [
+        item["sha256"] for item in base["tests"]
+    ]
+    assert skipped["tests"][0] == base["tests"][0]
+    seeded = fingerprint(_SECTION + 'seed = "+seed={seed}"\ndefault_seed = 3\n' + _VARIANTS)
+    assert seeded["tests"] == base["tests"]
+    assert seeded["settings"]["seed"] == "+seed={seed}"
+    assert seeded["settings"]["default_seed"] == 3
+
+
+def test_malformed_tests_toml_is_refused_naming_the_cause(tmp_path: Path) -> None:
+    _, handle, inspection, preview = _planning_fixture(tmp_path)
+    with pytest.raises(SimulationRecordIntegrityError, match=r"cannot read the Target's Tests"):
+        _target_tests(handle, inspection, preview, tmp_path, "[sim\n")
