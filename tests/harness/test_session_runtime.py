@@ -20,7 +20,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -51,6 +51,14 @@ from booley.runtime.session_refresh import RefreshImage
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.booley_dir_support import select_booley_dir
+from tests.harness.session_docker_fake import (
+    SandboxDocker,
+    attach_commands,
+    headless_session_entry,
+    isolate_session_cli,
+    run_cli,
+    serve_sandbox_docker,
+)
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
@@ -94,13 +102,6 @@ def test_session_up_waits_for_lifecycle_lock(
 ) -> None:
     lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
     waiting = observe_lifecycle_contention(monkeypatch)
-    invoked: list[str] = []
-    monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
-    monkeypatch.setattr(
-        sr,
-        "_up_unlocked",
-        lambda *_args, **_kwargs: invoked.append("up") or "sandbox",
-    )
 
     with (
         held_lifecycle_lock(lock_path) as holder,
@@ -108,11 +109,12 @@ def test_session_up_waits_for_lifecycle_lock(
     ):
         result = executor.submit(sr.up, workspace)
         assert waiting.wait(2)
+        # Without a spec `up` refuses at once, so only a held lock keeps it pending.
         assert not result.done()
         holder.release()
-        assert result.result(timeout=5) == "sandbox"
+        with pytest.raises(sr.SessionError, match="run `booley init`"):
+            result.result(timeout=5)
 
-    assert invoked == ["up"]
     assert "host Docker lifecycle is busy" in caplog.text
 
 
@@ -138,32 +140,20 @@ def _flag_values(argv: list[str], flag: str) -> list[str]:
 
 
 class TestSubstitute:
-    def test_workspace_folder(self, workspace: Path):
-        from booley.runtime.platform_paths import docker_mount_path
-
-        out = sr.substitute("source=${localWorkspaceFolder},target=/work", workspace)
-        assert out == f"source={docker_mount_path(workspace)},target=/work"
-
-    def test_basename_is_not_eaten_by_the_shorter_key(self, workspace: Path):
-        # "${localWorkspaceFolder}" is a prefix of "${localWorkspaceFolderBasename}".
-        out = sr.substitute("booley-claude-state-${localWorkspaceFolderBasename}", workspace)
-        assert out == "booley-claude-state-i2c"
-
-    def test_local_env_resolves_from_host_env(self, workspace: Path, monkeypatch):
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-tok")
-        assert sr.substitute("${localEnv:CLAUDE_CODE_OAUTH_TOKEN}", workspace) == "sk-tok"
-
-    def test_local_env_unset_is_empty(self, workspace: Path, monkeypatch, tmp_path):
-        # Isolate the `booley auth` stored credential too: on a dev machine
-        # with a real token at ~/.config/booley/ it would resolve and defeat
-        # the unset case under test.
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("${localEnv:CLAUDE_CODE_OAUTH_TOKEN}", ""),
+            # Fail loudly at docker, rather than silently mounting the wrong path.
+            ("${containerEnv:HOME}", "${containerEnv:HOME}"),
+        ],
+        ids=["unset-local-env", "unknown-variable"],
+    )
+    def test_unresolved_variables(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, value: str, expected: str
+    ) -> None:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        assert sr.substitute("${localEnv:CLAUDE_CODE_OAUTH_TOKEN}", workspace) == ""
-
-    def test_unknown_variable_is_left_alone(self, workspace: Path):
-        # Fail loudly at docker, rather than silently mounting the wrong path.
-        assert sr.substitute("${containerEnv:HOME}", workspace) == "${containerEnv:HOME}"
+        assert sr.substitute(value, workspace) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -233,52 +223,28 @@ class TestDockerRunArgv:
         assert argv.environment["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-tok"
 
 
-class TestHookArgv:
-    def test_runs_the_hook_string_through_a_shell(self):
-        argv = sr.hook_argv("c1", "a; b")
-        assert argv == ["docker", "exec", "c1", "bash", "-lc", "a; b"]
-
-    def test_post_create_hook_from_a_real_spec_is_a_shell_string(self):
-        spec = _spec(login_source="/c/home/.credentials.json")
-        # `;`-joined, so it cannot be exec'd as argv — the shell is required.
-        assert ";" in spec["postCreateCommand"]
-        assert sr.hook_argv("c1", spec["postCreateCommand"])[3:5] == ["bash", "-lc"]
-
-
 class TestExecArgv:
-    def test_non_tty_sets_dumb_terminal(self):
-        assert sr.exec_argv("c1", ["python3", "-V"], tty=False) == [
-            "docker",
-            "exec",
-            "-e",
-            "TERM=dumb",
-            "-i",
-            "c1",
-            "python3",
-            "-V",
-        ]
+    @pytest.mark.parametrize(
+        ("tty", "env", "expected"),
+        [
+            # F-43a: only the non-tty branch lacked TERM, and only it gets a value.
+            pytest.param(False, None, ["-e", "TERM=dumb", "-i"], id="non-tty-dumb-term"),
+            # `docker exec -t` sets TERM itself; a forwarded host TERM has no terminfo in the image.
+            pytest.param(True, None, ["-t", "-i"], id="tty-leaves-term"),
+            pytest.param(
+                True, {"BOOLEY_TEST": "bad"}, ["-t", "-e", "BOOLEY_TEST=bad", "-i"], id="env"
+            ),
+        ],
+    )
+    def test_terminal_and_environment_flags(
+        self, tty: bool, env: dict[str, str] | None, expected: list[str]
+    ) -> None:
+        argv = sr.exec_argv("c1", ["echo", "hi"], tty=tty, env=env)
 
-    def test_injects_explicit_command_environment(self):
-        argv = sr.exec_argv("c1", ["booley", "doctor"], env={"BOOLEY_TEST": "bad"})
-        assert argv == [
-            "docker",
-            "exec",
-            "-t",
-            "-e",
-            "BOOLEY_TEST=bad",
-            "-i",
-            "c1",
-            "booley",
-            "doctor",
-        ]
+        assert argv == ["docker", "exec", *expected, "c1", "echo", "hi"]
 
 
 class TestContainerName:
-    def test_derived_from_canonical_project(self, workspace: Path):
-        assert sr.session_container_name(workspace) == (
-            f"booley-session-{dc.canonical_project_id(workspace)}"
-        )
-
     def test_same_basename_projects_do_not_collide(self, tmp_path: Path):
         first = tmp_path / "one" / "i2c"
         second = tmp_path / "two" / "i2c"
@@ -359,79 +325,9 @@ def _vscode_container(
     }
 
 
-class _SandboxDocker:
-    """Serve the inventory, inspect, `docker stop` and `docker rm` calls of the Sandbox checks.
-
-    A container state that is a string is inspect output Docker could not encode.
-    *failing* names the verbs and containers whose calls fail. A stop or remove
-    names a container or its ``Id``.
-    """
-
-    def __init__(self) -> None:
-        self.containers: dict[str, dict | str] = {}
-        self.networks: set[str] = set()
-        self.calls: list[list[str]] = []
-        self.removed: list[str] = []
-        self.rm_attempts: list[list[str]] = []
-        self.failing: set[str] = set()
-
-    def find(self, key: str) -> str | None:
-        for name, state in self.containers.items():
-            if key == name or (isinstance(state, dict) and state.get("Id") == key):
-                return name
-        return None
-
-    def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        self.calls.append(argv)
-        verb, *args = argv[1:]
-        if verb == "rm":
-            self.rm_attempts.append(argv)
-        if verb in self.failing or (args and args[0] in self.failing):
-            return subprocess.CompletedProcess(argv, 1, "", "container is running")
-        if verb == "ps":
-            filters = [
-                args[i + 1].removeprefix("label=") for i, a in enumerate(args) if a == "--filter"
-            ]
-            names = [
-                name
-                for name, state in self.containers.items()
-                if isinstance(state, dict)
-                and ("-a" in args or state["State"] == {"Running": True})
-                and all(
-                    state["Config"]["Labels"].get(k) == v
-                    for k, v in (f.split("=", 1) for f in filters)
-                )
-            ]
-            return subprocess.CompletedProcess(argv, 0, "".join(f"{n}\n" for n in names), "")
-        if verb in {"inspect", "container"}:
-            strict = verb == "container"  # `docker container inspect <name> --format {{json .}}`
-            name = self.find(args[1] if strict else args[0])
-            if name is None:
-                return subprocess.CompletedProcess(argv, 1, "", "No such container")
-            state = self.containers[name]
-            if "--format" in args and not strict:
-                state = state["Config"]["Labels"]
-            out = (
-                state
-                if isinstance(state, str)
-                else json.dumps(state if "--format" in args else [state])
-            )
-            return subprocess.CompletedProcess(argv, 0, out, "")
-        name = self.find(args[-1])
-        assert verb in {"stop", "rm"} and name is not None, argv
-        if verb == "stop":
-            self.containers[name]["State"]["Running"] = False
-        else:
-            self.removed.append(name)
-            del self.containers[name]
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-
 @pytest.fixture
-def sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> _SandboxDocker:
-    docker = _SandboxDocker()
-    # Every Docker command of session_runtime goes through `_run`; no public entry takes a runner.
-    monkeypatch.setattr(sr, "_run", docker.run)
+def sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
+    docker = serve_sandbox_docker(monkeypatch)
     monkeypatch.setattr(sr.idk, "network_exists", lambda _name: True)
     monkeypatch.setattr(sr.idk, "image_exists", lambda _image: True)
     monkeypatch.setattr(sr.idk, "image_id", lambda image: image)
@@ -440,7 +336,7 @@ def sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> _SandboxDocker:
 
 @pytest.fixture
 def issued(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, sandbox_docker: _SandboxDocker
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, sandbox_docker: SandboxDocker
 ) -> Mock:
     """A Project whose host-issued spec validates as `_test_issuance`; returns the `validate` mock."""
     (workspace / ".booley").mkdir()
@@ -501,7 +397,7 @@ class TestPrepareLegacyContainer:
         self,
         workspace: Path,
         issued: Mock,
-        sandbox_docker: _SandboxDocker,
+        sandbox_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         running: bool,
         labels: dict,
@@ -534,7 +430,7 @@ class TestPrepareLegacyContainer:
         assert sandbox_docker.removed == removed
 
     def test_other_projects_containers_are_never_inspected(
-        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker
+        self, workspace: Path, issued: Mock, sandbox_docker: SandboxDocker
     ) -> None:
         state = _vscode_container(workspace, running=False, spec_digest="old")
         state["Config"]["Labels"]["booley.project-id"] = "other-project"
@@ -556,7 +452,7 @@ class TestPrepareLegacyContainer:
         self,
         workspace: Path,
         issued: Mock,
-        sandbox_docker: _SandboxDocker,
+        sandbox_docker: SandboxDocker,
         running: bool,
         failing: set[str],
         refusal: str,
@@ -574,7 +470,7 @@ class TestPrepareLegacyContainer:
         assert len(sandbox_docker.rm_attempts) <= 1
 
     def test_unreadable_mounts_of_a_stopped_container_fail_loudly(
-        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker
+        self, workspace: Path, issued: Mock, sandbox_docker: SandboxDocker
     ) -> None:
         sandbox_docker.containers["editor"] = {
             **_vscode_container(workspace, running=False),
@@ -587,7 +483,7 @@ class TestPrepareLegacyContainer:
             sr.prepare(workspace)
 
     def test_inventory_failure_blocks_before_stamp_validation(
-        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker
+        self, workspace: Path, issued: Mock, sandbox_docker: SandboxDocker
     ) -> None:
         sandbox_docker.failing.add("ps")
 
@@ -618,7 +514,7 @@ class TestPrepareLegacyContainer:
         ids=["image", "mounts-type", "mount-entry"],
     )
     def test_unreadable_spec_is_left_to_validation(
-        self, workspace: Path, issued: Mock, sandbox_docker: _SandboxDocker, damage: dict
+        self, workspace: Path, issued: Mock, sandbox_docker: SandboxDocker, damage: dict
     ) -> None:
         _write_spec(workspace, {**_spec(), **damage})
         sandbox_docker.containers["editor"] = _vscode_container(workspace, booley_dir_targets=())
@@ -642,7 +538,7 @@ class TestPrepareLegacyContainer:
         self,
         workspace: Path,
         issued: Mock,
-        sandbox_docker: _SandboxDocker,
+        sandbox_docker: SandboxDocker,
         targets: tuple[str, ...],
         external: bool,
         identified: bool,
@@ -682,7 +578,7 @@ class TestPrepareLegacyContainer:
         self,
         workspace: Path,
         issued: Mock,
-        sandbox_docker: _SandboxDocker,
+        sandbox_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         image: str | None,
         mask: bool,
@@ -712,7 +608,7 @@ class TestPrepareLegacyContainer:
         self,
         workspace: Path,
         issued: Mock,
-        sandbox_docker: _SandboxDocker,
+        sandbox_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         external = workspace.parent / "external-project-data"
@@ -771,7 +667,7 @@ class TestIssuedRuntimeDriftFix:
     def test_names_the_repair_of_each_drifted_container(
         self,
         workspace: Path,
-        sandbox_docker: _SandboxDocker,
+        sandbox_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         edit,
         layout: str,
@@ -789,7 +685,7 @@ class TestIssuedRuntimeDriftFix:
         )
 
     def test_reports_running_and_ambiguous_resources_together(
-        self, workspace: Path, sandbox_docker: _SandboxDocker
+        self, workspace: Path, sandbox_docker: SandboxDocker
     ) -> None:
         sandbox_docker.containers["stranger"] = {
             **_vscode_container(workspace),
@@ -812,7 +708,7 @@ class TestIssuedRuntimeDriftFix:
         assert fix == f"in VS Code, {_REBUILD}; headless, run `booley session refresh` on the host"
 
     def test_windows_host_paths_identify_running_vscode(
-        self, sandbox_docker: _SandboxDocker, monkeypatch: pytest.MonkeyPatch
+        self, sandbox_docker: SandboxDocker, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         workspace = Path(r"C:\workplace\picorv32")
         state = _vscode_container(workspace)
@@ -953,7 +849,7 @@ def _relay_state(workspace: Path, *, image: str | None = None, **labels: str) ->
 
 
 @pytest.fixture
-def host_docker(sandbox_docker: _SandboxDocker, monkeypatch: pytest.MonkeyPatch) -> _SandboxDocker:
+def host_docker(sandbox_docker: SandboxDocker, monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
     """`sandbox_docker` that also answers existence probes and removes the license relay."""
     from booley.eda.provisioning.licensing import flexnet_docker
 
@@ -978,7 +874,7 @@ class TestInitReconciliation:
         ids=["labels", "image"],
     )
     def test_plans_then_removes_stopped_runtime_from_an_old_issuance(
-        self, workspace: Path, host_docker: _SandboxDocker, drift: dict
+        self, workspace: Path, host_docker: SandboxDocker, drift: dict
     ) -> None:
         name = sr.session_container_name(workspace)
         host_docker.containers[name] = _headless_state(workspace, running=False, **drift)
@@ -991,7 +887,7 @@ class TestInitReconciliation:
 
     @pytest.mark.parametrize("running", [True, False])
     def test_preserves_current_runtime(
-        self, workspace: Path, host_docker: _SandboxDocker, running: bool
+        self, workspace: Path, host_docker: SandboxDocker, running: bool
     ) -> None:
         name = sr.session_container_name(workspace)
         host_docker.containers[name] = _headless_state(workspace, running=running)
@@ -1003,7 +899,7 @@ class TestInitReconciliation:
     def test_stale_running_runtime_names_session_refresh(
         self,
         workspace: Path,
-        host_docker: _SandboxDocker,
+        host_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         withdrawn: bool,
     ) -> None:
@@ -1031,7 +927,7 @@ class TestInitReconciliation:
         assert host_docker.removed == []
 
     def test_other_project_session_blocks_relay_mutation(
-        self, workspace: Path, host_docker: _SandboxDocker
+        self, workspace: Path, host_docker: SandboxDocker
     ) -> None:
         relay = _relay(workspace)
         host_docker.containers[sr.session_container_name(workspace)] = _headless_state(
@@ -1058,7 +954,7 @@ class TestInitReconciliation:
         ids=["only-networks-left", "current", "older-labels", "other-image"],
     )
     def test_retry_finishes_stale_relay_cleanup_after_container_is_gone(
-        self, workspace: Path, host_docker: _SandboxDocker, relay_state: dict | None, stale: bool
+        self, workspace: Path, host_docker: SandboxDocker, relay_state: dict | None, stale: bool
     ) -> None:
         relay = _relay(workspace)
         host_docker.networks.add(relay.private_network)
@@ -1070,7 +966,7 @@ class TestInitReconciliation:
 
     @pytest.mark.parametrize("owner", ["sandbox", "relay"])
     def test_preserves_foreign_container(
-        self, workspace: Path, host_docker: _SandboxDocker, owner: str
+        self, workspace: Path, host_docker: SandboxDocker, owner: str
     ) -> None:
         if owner == "sandbox":
             name = sr.session_container_name(workspace)
@@ -1108,7 +1004,7 @@ class TestRefreshContainerTransactions:
         ids=["docker-error", "not-json", "not-an-object", "incomplete", "non-string-label"],
     )
     def test_strict_inspect_rejects_untrusted_docker_output(
-        self, workspace: Path, host_docker: _SandboxDocker, state: dict | str | None, message: str
+        self, workspace: Path, host_docker: SandboxDocker, state: dict | str | None, message: str
     ) -> None:
         if state is None:
             host_docker.failing.add("container")
@@ -1142,416 +1038,315 @@ class TestRefreshContainerTransactions:
         assert not any(_argv_of(call)[1] in {"run", "rm"} for call in run.call_args_list)
 
 
+def _sandbox_state(
+    workspace: Path, *, vscode: bool = False, running: bool = True, name: str | None = None
+) -> dict:
+    """Inspect state of a Sandbox of `_test_issuance`: what the real matcher and selection accept."""
+    spec = json.loads(dc.devcontainer_path(workspace).read_text(encoding="utf-8"))
+    issuance = _test_issuance(workspace)
+    state = _issued_container(spec, workspace, vscode=vscode)
+    state["Image"] = issuance.image_id
+    state["Config"]["Labels"].update(
+        {**dict(label.split("=", 1) for label in runtime_spec.labels(issuance))}
+    )
+    entry = headless_session_entry(name or sr.session_container_name(workspace), workspace)
+    state["Config"]["Labels"].update(entry["Config"]["Labels"])
+    state.update(Id=entry["Id"], Name=entry["Name"], Created=entry["Created"])
+    state["State"] = {**entry["State"], "Running": running}
+    return state
+
+
+@pytest.fixture
+def up_docker(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
+    """A Project with a spec on disk, and the egress network and spec image on a Docker fake."""
+    docker = serve_sandbox_docker(monkeypatch)
+    (workspace / ".booley").mkdir()
+    image = sr.project_image.project_image_name(workspace)
+    _write_spec(workspace, _spec(image=image))
+    docker.networks.add(dc.EGRESS_NETWORK)
+    docker.images[image] = {"Id": _test_issuance(workspace).image_id}
+    # The host-issued authority store and its licence record lie outside these entry points.
+    monkeypatch.setattr(runtime_spec, "validate", lambda *_a, **_k: _test_issuance(workspace))
+    monkeypatch.setattr(
+        runtime_spec, "authorized_project_data_source", lambda _path: workspace / ".booley"
+    )
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
+    return docker
+
+
+@pytest.fixture
+def attached(up_docker: SandboxDocker, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """`up_docker` with the real Sandbox selection and a stand-in attachment."""
+    from booley.runtime import session_admission
+
+    # The autouse fixture stubs the selection; these tests read the fake through the real one.
+    monkeypatch.setattr(
+        session_admission, "running_project_sandboxes", real_running_project_sandboxes
+    )
+    return SimpleNamespace(docker=up_docker, commands=attach_commands(monkeypatch))
+
+
+def _configure_image(monkeypatch: pytest.MonkeyPatch, workspace: Path, image: str) -> None:
+    """Point `[sandbox].image` of the Project's real `booley.toml` at *image*."""
+    from booley.runtime.booley_dir import reset_cache
+
+    (workspace / ".booley" / "booley.toml").write_text(
+        f'[sandbox]\nimage = "{image}"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("BOOLEY_DIR", str(workspace / ".booley"))
+    reset_cache()
+
+
+def _mutations(docker: SandboxDocker) -> list[list[str]]:
+    """The recorded Docker calls that change a container or network."""
+    return [
+        call
+        for call in docker.calls
+        if call[1] in {"run", "start", "stop", "rename", "rm", "exec"}
+        or call[1:3] in (["network", "create"], ["network", "connect"])
+    ]
+
+
 class TestUp:
-    def test_new_sandbox_refusal_happens_before_relay_or_docker_mutation(self, wired):
-        workspace, run = wired
+    def test_new_sandbox_refusal_happens_before_relay_or_docker_mutation(
+        self, workspace: Path, up_docker: SandboxDocker, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.eda.provisioning.licensing.flexnet_docker import RELAY_IMAGE
         from booley.runtime import session_admission
 
-        run.reset_mock()
-        with (
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(
-                session_admission,
-                "admit_start",
-                side_effect=session_admission.AdmissionError("host is at max_sessions=1"),
-            ),
-            patch.object(sr, "_prepare_license_relay") as relay,
-            pytest.raises(sr.SessionError, match="max_sessions=1"),
-        ):
+        up_docker.images[RELAY_IMAGE] = {"Id": _test_issuance(workspace).relay_image_id}
+        monkeypatch.setattr(runtime_spec, "requested_license", lambda *_a, **_k: _LICENSE_PROFILE)
+        monkeypatch.setattr(
+            session_admission,
+            "admit_start",
+            Mock(side_effect=session_admission.AdmissionError("host is at max_sessions=1")),
+        )
+
+        with pytest.raises(sr.SessionError, match="max_sessions=1"):
             sr.up(workspace)
 
-        relay.assert_not_called()
-        run.assert_not_called()
+        assert _mutations(up_docker) == []
 
     @pytest.mark.parametrize(
-        "wired",
-        ["real-image-lifecycle"],
-        indirect=True,
-        ids=["real-image-lifecycle"],
+        ("state", "verbs", "hooks"),
+        [
+            pytest.param(None, ["run"], ["postCreateCommand", "postStartCommand"], id="absent"),
+            pytest.param(False, ["start"], ["postStartCommand"], id="stopped"),
+            # A resumed container must not re-copy the credential seed.
+            pytest.param(True, [], ["postStartCommand"], id="running"),
+        ],
     )
-    def test_checks_project_image_provenance_before_starting(
+    def test_lifecycle_verbs_and_hooks(
         self,
-        wired,
-        monkeypatch: pytest.MonkeyPatch,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        caplog: pytest.LogCaptureFixture,
+        state: bool | None,
+        verbs: list[str],
+        hooks: list[str],
     ) -> None:
-        from booley.runtime import image_lifecycle
+        name = sr.session_container_name(workspace)
+        if state is not None:
+            up_docker.containers[name] = _sandbox_state(workspace, running=state)
+        spec = json.loads(dc.devcontainer_path(workspace).read_text(encoding="utf-8"))
 
-        workspace, _run = wired
-        booley_dir = workspace / ".booley"
-        booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text(
-            '[sandbox]\nimage = "custom/session"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(
-            image_lifecycle,
-            "_docker_adapter",
-            lambda: SimpleNamespace(image_id=lambda _image: None),
-        )
-        ours = sr.session_container_name(workspace)
+        assert sr.up(workspace) == name
 
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=True),
-        ):
-            assert sr.up(workspace) == ours
+        assert [call[1] for call in up_docker.calls if call[1] in {"run", "start"}] == verbs
+        assert [call for call in up_docker.calls if call[1] == "exec"] == [
+            ["docker", "exec", name, "bash", "-lc", spec[hook]] for hook in hooks
+        ]
+        assert "superseded" not in caplog.text
 
-    def test_creates_container_and_runs_both_hooks(self, wired):
-        workspace, run = wired
-        ours = sr.session_container_name(workspace)
-        with (
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
-            assert sr.up(workspace) == ours
-
-        argvs = [_argv_of(c) for c in run.call_args_list]
-        assert argvs[0][:2] == ["docker", "run"]
-        hooks = [a for a in argvs if a[:2] == ["docker", "exec"]]
-        assert len(hooks) == 2  # postCreate + postStart
-
-    def test_rebuild_removes_stopped_vscode_from_old_issuance_after_create(
-        self,
-        wired,
+    def test_existing_container_with_runtime_drift_is_never_started(
+        self, workspace: Path, up_docker: SandboxDocker
     ) -> None:
-        workspace, run = wired
-        issuance = runtime_spec.validate(
-            workspace,
-            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
-            workspace / ".devcontainer" / "devcontainer.json",
-        )
-        state = {
-            "State": {"Running": False},
-            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
-            "Mounts": [],
-        }
-        stale = "stale-vscode"
-        with (
-            patch.object(
-                sr, "_strict_all_sandbox_states", return_value=[(stale, json.dumps([state]))]
+        name = sr.session_container_name(workspace)
+        up_docker.containers[name] = {**_sandbox_state(workspace, running=False), "Mounts": []}
+
+        with pytest.raises(sr.SessionError, match="does not match the current host issuance"):
+            sr.up(workspace)
+
+        assert _mutations(up_docker) == []
+
+    @pytest.mark.parametrize(
+        ("running", "spec_digest", "bind", "failing", "removed"),
+        [
+            pytest.param(False, "old", None, set(), True, id="stopped-old-issuance"),
+            pytest.param(False, "old", None, {"run"}, False, id="removal-waits-for-create"),
+            pytest.param(
+                False,
+                "current-spec",
+                "missing-wayland-socket",
+                set(),
+                False,
+                id="unavailable-bind",
             ),
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
-            sr.up(workspace, rebuild=True)
-
-        argvs = [_argv_of(call) for call in run.call_args_list]
-        assert argvs.index(["docker", "rm", stale]) > next(
-            index for index, argv in enumerate(argvs) if argv[:2] == ["docker", "run"]
-        )
-        assert not any(argv[:2] == ["docker", "volume"] for argv in argvs)
-
-    def test_session_up_preserves_current_vscode_with_unavailable_bind(
+            pytest.param(True, "old", None, set(), False, id="running-old-issuance"),
+        ],
+    )
+    def test_vscode_containers_reconciled_around_create(
         self,
-        wired,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        running: bool,
+        spec_digest: str,
+        bind: str | None,
+        failing: set[str],
+        removed: bool,
     ) -> None:
-        workspace, run = wired
-        issuance = runtime_spec.validate(
-            workspace,
-            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
-            workspace / ".devcontainer" / "devcontainer.json",
-        )
-        state = {
-            "State": {"Running": False},
-            "Config": {
-                "Labels": _vscode_labels(
-                    workspace,
-                    issuance,
-                    spec_digest=issuance.spec_sha256,
-                )
-            },
-            "Mounts": [
+        state = _vscode_container(workspace, running=running, spec_digest=spec_digest)
+        if bind is not None:
+            state["Mounts"] = [
                 {
                     "Type": "bind",
-                    "Source": str(workspace / "missing-wayland-socket"),
+                    "Source": str(workspace / bind),
                     "Destination": "/tmp/vscode-wayland.sock",
                 }
-            ],
-        }
-        with (
-            patch.object(
-                sr,
-                "_strict_all_sandbox_states",
-                return_value=[("current-vscode", json.dumps([state]))],
-            ),
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
+            ]
+        up_docker.containers["editor"] = state
+        up_docker.failing |= failing
+
+        if running or failing:
+            with pytest.raises(sr.SessionError):
+                sr.up(workspace)
+        else:
             sr.up(workspace)
 
-        assert ["docker", "rm", "current-vscode"] not in [
-            _argv_of(call) for call in run.call_args_list
-        ]
+        calls = up_docker.calls
+        assert (["docker", "rm", "editor"] in calls) is removed
+        if removed:  # only after the replacement exists
+            assert calls.index(["docker", "rm", "editor"]) > next(
+                i for i, call in enumerate(calls) if call[1] == "run"
+            )
+        if running:
+            assert not any(call[1] == "run" for call in calls)
 
-    def test_session_up_rejects_running_stale_vscode_before_create(
-        self,
-        wired,
+    def test_rebuild_parks_old_container_until_replacement_succeeds(
+        self, workspace: Path, up_docker: SandboxDocker
     ) -> None:
-        workspace, run = wired
-        issuance = runtime_spec.validate(
-            workspace,
-            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
-            workspace / ".devcontainer" / "devcontainer.json",
-        )
-        state = {
-            "State": {"Running": True},
-            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
-            "Mounts": [],
-        }
-        with (
-            patch.object(
-                sr,
-                "_strict_all_sandbox_states",
-                return_value=[("active-vscode", json.dumps([state]))],
-            ),
-            pytest.raises(sr.SessionError, match=r"running Sandbox.*older host issuance"),
-        ):
-            sr.up(workspace)
-
-        assert not any(_argv_of(call)[:2] == ["docker", "run"] for call in run.call_args_list)
-
-    def test_existing_stopped_container_is_started_not_recreated(self, wired):
-        workspace, run = wired
-        ours = sr.session_container_name(workspace)
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
-            sr.up(workspace)
-
-        argvs = [_argv_of(c) for c in run.call_args_list]
-        assert ["docker", "start", ours] in argvs
-        assert not any(a[:2] == ["docker", "run"] for a in argvs)
-
-    def test_existing_container_with_runtime_drift_is_never_started(self, wired):
-        workspace, run = wired
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr, "container_matches_issuance", return_value=False),
-            pytest.raises(sr.SessionError, match="does not match the current host issuance"),
-        ):
-            sr.up(workspace)
-        assert not any(_argv_of(call)[:2] == ["docker", "start"] for call in run.call_args_list)
-
-    def test_running_container_only_runs_post_start(self, wired):
-        workspace, run = wired
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=True),
-        ):
-            sr.up(workspace)
-
-        argvs = [_argv_of(c) for c in run.call_args_list]
-        assert not any(a[:2] == ["docker", "run"] for a in argvs)
-        assert not any(a[:2] == ["docker", "start"] for a in argvs)
-        hooks = [a for a in argvs if a[:2] == ["docker", "exec"]]
-        assert len(hooks) == 1  # postStart only; postCreate must not re-seed
-
-    def test_post_create_does_not_rerun_on_resume(self, wired):
-        """A resumed container must not re-copy the credential seed."""
-        workspace, run = wired
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
-            sr.up(workspace)
-
-        hooks = [
-            _argv_of(c)[-1] for c in run.call_args_list if _argv_of(c)[:2] == ["docker", "exec"]
-        ]
-        assert hooks == [f"{dc.git_identity_command()} && {dc.mcp_post_start_command()}"]
-
-    def test_rebuild_parks_old_container_until_replacement_succeeds(self, wired):
-        workspace, run = wired
-        exists = iter([True, False, False])
-        with (
-            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
-            patch.object(sr.idk, "container_running", return_value=False),
-            patch.object(
-                sr.idk,
-                "network_exists",
-                side_effect=lambda name: name == dc.EGRESS_NETWORK,
-            ),
-        ):
-            sr.up(workspace, rebuild=True)
-
-        argvs = [_argv_of(c) for c in run.call_args_list]
-        backup = f"{sr.session_container_name(workspace)}-pre-refresh"
-        assert ["docker", "rename", sr.session_container_name(workspace), backup] in argvs
-        assert any(a[:2] == ["docker", "run"] for a in argvs)
-        assert ["docker", "rm", "-f", backup] in argvs
-
-    def test_failed_refresh_probe_restores_parked_container(self, wired):
-        workspace, run = wired
         name = sr.session_container_name(workspace)
         backup = f"{name}-pre-refresh"
-        issuance = runtime_spec.validate(
-            workspace,
-            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
-            workspace / ".devcontainer" / "devcontainer.json",
-        )
-        stale_vscode = {
-            "State": {"Running": False},
-            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
-            "Mounts": [],
-        }
-        exists = iter([True, False, False, True])
-        with (
-            patch.object(
-                sr,
-                "_strict_all_sandbox_states",
-                return_value=[("stale-vscode", json.dumps([stale_vscode]))],
-            ),
-            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
-            patch.object(sr.idk, "container_running", return_value=False),
-            patch.object(
-                sr,
-                "verify_refreshed_session",
-                side_effect=sr.SessionError("payload mismatch"),
-            ),
-            pytest.raises(sr.SessionError, match="payload mismatch"),
-        ):
-            sr.up(
-                workspace,
-                rebuild=True,
-                expected_image_id="sha256:fresh",
-            )
+        up_docker.containers[name] = _sandbox_state(workspace, running=False)
 
-        argvs = [_argv_of(c) for c in run.call_args_list]
-        assert ["docker", "rm", "stale-vscode"] not in argvs
-        assert ["docker", "rename", name, backup] in argvs
-        assert ["docker", "rm", "-f", name] in argvs
-        assert ["docker", "rename", backup, name] in argvs
-        assert ["docker", "rm", "-f", backup] not in argvs
-        assert not any(argv[:2] == ["docker", "volume"] for argv in argvs)
+        sr.up(workspace, rebuild=True)
 
-    def test_failed_probe_without_prior_runtime_removes_candidate(self, wired):
-        workspace, run = wired
-        name = sr.session_container_name(workspace)
-        exists = iter([False, False, True])
-        with (
-            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
-            patch.object(
-                sr,
-                "verify_refreshed_session",
-                side_effect=sr.SessionError("payload mismatch"),
-            ),
-            pytest.raises(sr.SessionError, match="payload mismatch"),
-        ):
-            sr.up(
-                workspace,
-                rebuild=True,
-                expected_image_id="sha256:fresh",
-            )
-
-        assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
-
-    def test_fresh_refresh_rejects_unverified_labels_or_networks(self, wired):
-        workspace, run = wired
-        name = sr.session_container_name(workspace)
-        exists = iter([False, False, True])
-        with (
-            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
-            patch.object(sr, "container_matches_issuance", return_value=False),
-            patch.object(sr, "verify_refreshed_session") as verify,
-            pytest.raises(sr.SessionError, match="labels or network topology"),
-        ):
-            sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh")
-
-        verify.assert_not_called()
-        assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
-
-    def test_old_container_cleanup_failure_keeps_verified_replacement(self, wired, caplog):
-        workspace, run = wired
-        name = sr.session_container_name(workspace)
-        backup = f"{name}-pre-refresh"
-        exists = iter([True, False, False])
-
-        def response(argv, **_kwargs):
-            if argv == ["docker", "rm", "-f", backup]:
-                return subprocess.CompletedProcess(argv, 1, "", "busy")
-            return subprocess.CompletedProcess(argv, 0, "", "")
-
-        run.side_effect = response
-        with (
-            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
-            patch.object(sr.idk, "container_running", return_value=False),
-            patch.object(sr, "verify_refreshed_session"),
-        ):
-            assert sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh") == name
-
-        assert "replacement succeeded" in caplog.text
-
-    def test_refresh_to_unproxied_spec_needs_no_egress_network(self, wired):
-        workspace, _run = wired
-        _write_spec(workspace, _spec(egress="unproxied"))
-        name = sr.session_container_name(workspace)
-        exists = iter([False, False, False])
-        with (
-            patch.object(sr.idk, "network_exists", return_value=False),
-            patch.object(sr.idk, "ensure_unproxied_network", return_value=False) as ensure,
-            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
-            patch.object(sr.idk, "container_running", return_value=False),
-            patch.object(sr, "verify_refreshed_session"),
-        ):
-            assert sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh") == name
-        ensure.assert_called_once_with()
+        verbs = [call for call in _mutations(up_docker) if call[1] != "exec"]
+        assert verbs[0] == ["docker", "rename", name, backup]
+        assert verbs[1][:2] == ["docker", "run"]
+        assert verbs[2:] == [["docker", "rm", "-f", backup]]
 
     @pytest.mark.parametrize(
-        ("managed", "steps"),
+        ("parked", "created", "message"),
         [
-            (True, "run `booley session refresh` on the host"),
-            (
-                False,
+            pytest.param(True, "issued", "refreshed Sandbox uses", id="prior-runtime-restored"),
+            pytest.param(False, "issued", "refreshed Sandbox uses", id="no-prior-image-mismatch"),
+            pytest.param(False, "foreign", "labels or network topology", id="no-prior-labels"),
+        ],
+    )
+    def test_failed_refresh_rolls_back(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        parked: bool,
+        created: str,
+        message: str,
+    ) -> None:
+        name = sr.session_container_name(workspace)
+        backup = f"{name}-pre-refresh"
+        if created == "issued":
+            up_docker.created = _sandbox_state(workspace)
+        if parked:
+            up_docker.containers[name] = _sandbox_state(workspace, running=False)
+            # Cleanup of stale VS Code containers must wait until the replacement verified.
+            up_docker.containers["stale-vscode"] = _vscode_container(
+                workspace, running=False, spec_digest="old"
+            )
+
+        with pytest.raises(sr.SessionError, match=message):
+            sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh")
+
+        calls = up_docker.calls
+        assert ["docker", "rm", "-f", name] in calls
+        assert ["docker", "rm", "stale-vscode"] not in calls
+        assert ["docker", "rm", "-f", backup] not in calls
+        assert (["docker", "rename", backup, name] in calls) is parked
+        assert not any("-I" in call for call in calls)  # no wheel probe of an unverified container
+        assert (name in up_docker.containers) is parked
+
+    def test_old_container_cleanup_failure_keeps_verified_replacement(
+        self, workspace: Path, up_docker: SandboxDocker, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        name = sr.session_container_name(workspace)
+        up_docker.containers[name] = _sandbox_state(workspace, running=False)
+        up_docker.created = _sandbox_state(workspace)
+        up_docker.failing.add("rm")  # only the backup removal runs
+
+        result = sr.up(
+            workspace, rebuild=True, expected_image_id=_test_issuance(workspace).image_id
+        )
+
+        assert result == name
+        assert "replacement succeeded" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("image", "steps"),
+        [
+            pytest.param(None, "run `booley session refresh` on the host", id="booley-image"),
+            pytest.param(
+                "custom/session",
                 "run `booley session down`, `booley init --seed`, "
                 "and `booley session up` on the host",
+                id="own-image",
             ),
         ],
-        ids=["booley-image", "own-image"],
     )
-    def test_licensed_refresh_fails_before_parking_existing_runtime(self, wired, managed, steps):
-        workspace, run = wired
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr, "_requested_issued_license", return_value=object()),
-            patch.object(sr, "image_is_managed", return_value=managed),
-            pytest.raises(
-                sr.SessionError,
-                match=re.escape(
-                    "`booley session up --rebuild` cannot preserve a licensed relay topology; "
-                    f"instead, {steps}"
-                ),
+    def test_licensed_refresh_fails_before_parking_existing_runtime(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        image: str | None,
+        steps: str,
+    ) -> None:
+        from booley.eda.provisioning.licensing.flexnet_docker import RELAY_IMAGE
+
+        up_docker.images[RELAY_IMAGE] = {"Id": _test_issuance(workspace).relay_image_id}
+        up_docker.containers[sr.session_container_name(workspace)] = _sandbox_state(
+            workspace, running=False
+        )
+        monkeypatch.setattr(runtime_spec, "requested_license", lambda *_a, **_k: _LICENSE_PROFILE)
+        if image is not None:
+            _configure_image(monkeypatch, workspace, image)
+
+        with pytest.raises(
+            sr.SessionError,
+            match=re.escape(
+                "`booley session up --rebuild` cannot preserve a licensed relay topology; "
+                f"instead, {steps}"
             ),
         ):
             sr.up(workspace, rebuild=True)
 
-        assert not any(_argv_of(call)[:2] == ["docker", "rename"] for call in run.call_args_list)
+        assert _mutations(up_docker) == []
 
-    def test_docker_run_failure_raises(self, wired):
-        workspace, run = wired
-        run.return_value = subprocess.CompletedProcess([], 1, "", "no such network")
-        with (
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "container_running", return_value=False),
-            pytest.raises(sr.SessionError, match="no such network"),
-        ):
+    def test_docker_run_failure_raises(self, workspace: Path, up_docker: SandboxDocker) -> None:
+        up_docker.failing.add("run")
+
+        with pytest.raises(sr.SessionError, match="docker run failed"):
             sr.up(workspace)
 
-    def test_failing_hook_warns_but_leaves_container_up(self, wired, caplog):
-        workspace, run = wired
-        ours = sr.session_container_name(workspace)
+    def test_failing_hook_warns_but_leaves_container_up(
+        self, workspace: Path, up_docker: SandboxDocker, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        up_docker.exec_reply = lambda argv: subprocess.CompletedProcess(
+            argv, 1, "", "registrar boom"
+        )
 
-        def fake(argv, **kw):
-            rc = 1 if argv[:2] == ["docker", "exec"] else 0
-            return subprocess.CompletedProcess([], rc, "", "registrar boom")
+        assert sr.up(workspace) == sr.session_container_name(workspace)
 
-        run.side_effect = fake
-        with (
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
-            assert sr.up(workspace) == ours
         assert "postCreateCommand failed" in caplog.text
+        assert sr.session_container_name(workspace) in up_docker.containers
 
 
 def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[dict]:
@@ -1604,7 +1399,7 @@ def _issued_container(spec: dict, workspace: Path, *, vscode: bool = False) -> d
     }
 
 
-def _resumes(docker: _SandboxDocker, spec: dict, workspace: Path, state: dict) -> bool:
+def _resumes(docker: SandboxDocker, spec: dict, workspace: Path, state: dict) -> bool:
     """Whether `session up` would resume *state* as the Sandbox *spec* issues."""
     issuance = _test_issuance(workspace)
     issuance.image_id = spec["image"]
@@ -1661,7 +1456,7 @@ class TestContainerResumeChecks:
         ],
     )
     def test_resume_accepts_only_issued_and_vscode_managed_mounts(
-        self, workspace: Path, sandbox_docker: _SandboxDocker, vscode: bool, edit, matches: bool
+        self, workspace: Path, sandbox_docker: SandboxDocker, vscode: bool, edit, matches: bool
     ) -> None:
         spec = _issued_spec(workspace)
         state = _issued_container(spec, workspace, vscode=vscode)
@@ -1671,7 +1466,7 @@ class TestContainerResumeChecks:
 
     @pytest.mark.parametrize("spec_source", ["/c/Users/dev/project", "/C/Users/dev/project"])
     def test_wsl2_mount_path_matches_spec(
-        self, sandbox_docker: _SandboxDocker, monkeypatch: pytest.MonkeyPatch, spec_source: str
+        self, sandbox_docker: SandboxDocker, monkeypatch: pytest.MonkeyPatch, spec_source: str
     ) -> None:
         workspace = Path("/c/Users/dev/project")
         spec = _issued_spec(workspace)
@@ -1694,7 +1489,7 @@ class TestContainerResumeChecks:
         ids=["issued", "missing", "changed", "pre-image-identity"],
     )
     def test_resume_requires_issued_git_environment(
-        self, workspace: Path, sandbox_docker: _SandboxDocker, vscode: bool, drift
+        self, workspace: Path, sandbox_docker: SandboxDocker, vscode: bool, drift
     ) -> None:
         spec = _issued_spec(workspace)
         state = _issued_container(spec, workspace, vscode=vscode)
@@ -1711,7 +1506,7 @@ class TestContainerResumeChecks:
         ids=["routed-network", "egress-network"],
     )
     def test_resume_matches_issued_egress_topology(
-        self, workspace: Path, sandbox_docker: _SandboxDocker, network: str, matches: bool
+        self, workspace: Path, sandbox_docker: SandboxDocker, network: str, matches: bool
     ) -> None:
         spec = _issued_spec(workspace, egress="unproxied")
         state = _issued_container(spec, workspace)
@@ -1845,64 +1640,66 @@ class TestLicensedRelayLifecycle:
 
 
 class TestPreflight:
-    def test_missing_network_names_booley_init(self, workspace: Path):
-        _write_spec(workspace, _spec())
-        with (
-            patch(
-                "booley.runtime.session_issuance.validate",
-                return_value=SimpleNamespace(license_profile=None),
-            ),
-            patch.object(sr.idk, "network_exists", return_value=False),
-            pytest.raises(sr.SessionError, match="booley init"),
-        ):
+    @pytest.mark.parametrize(
+        ("missing", "message"),
+        [
+            pytest.param("network", "booley init", id="egress-network"),
+            pytest.param("image", "not built", id="sandbox-image"),
+            pytest.param("relay-image", r"license relay image.*booley init", id="relay-image"),
+        ],
+    )
+    def test_start_refused_before_create(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        missing: str,
+        message: str,
+    ) -> None:
+        if missing == "network":
+            up_docker.networks.clear()
+        elif missing == "image":
+            up_docker.images.clear()
+        else:
+            monkeypatch.setattr(
+                runtime_spec, "requested_license", lambda *_a, **_k: _LICENSE_PROFILE
+            )
+
+        with pytest.raises(sr.SessionError, match=message):
             sr.up(workspace)
 
-    def test_missing_image_names_booley_init(self, workspace: Path):
-        _write_spec(workspace, _spec())
-        with (
-            patch(
-                "booley.runtime.session_issuance.validate",
-                return_value=SimpleNamespace(license_profile=None),
-            ),
-            patch.object(sr.idk, "network_exists", return_value=True),
-            patch.object(sr.idk, "image_exists", return_value=False),
-            pytest.raises(sr.SessionError, match="not built"),
-        ):
-            sr.up(workspace)
-
-    def test_missing_license_relay_image_fails_before_session_create(self, wired):
-        workspace, run = wired
-        profile = SimpleNamespace(
-            server_ipv4="10.20.30.40",
-            server_hostid="license-server-01",
-            lmgrd_port=2100,
-            vendor_port=2101,
-        )
-        with (
-            patch("booley.runtime.session_issuance.requested_license", return_value=profile),
-            patch.object(
-                sr.idk, "image_exists", side_effect=lambda image: image != "booley-flexnet-relay:1"
-            ),
-            pytest.raises(sr.SessionError, match=r"license relay image.*booley init"),
-        ):
-            sr.up(workspace)
-        assert not any(_argv_of(call)[:2] == ["docker", "run"] for call in run.call_args_list)
+        assert _mutations(up_docker) == []
 
     def test_missing_spec_names_booley_init(self, workspace: Path):
         with pytest.raises(sr.SessionError, match="run `booley init`"):
             sr.up(workspace)
 
-    def test_unproxied_spec_ensures_routed_network_without_egress_network(self, wired):
-        workspace, _run = wired
-        _write_spec(workspace, _spec(egress="unproxied"))
-        with (
-            patch.object(sr.idk, "network_exists", return_value=False),
-            patch.object(sr.idk, "ensure_unproxied_network", return_value=True) as ensure,
-            patch.object(sr.idk, "container_exists", return_value=False),
-            patch.object(sr.idk, "container_running", return_value=False),
-        ):
-            assert sr.up(workspace) == sr.session_container_name(workspace)
-        ensure.assert_called_once_with()
+    def test_unproxied_spec_creates_routed_network_without_egress_network(
+        self, workspace: Path, up_docker: SandboxDocker
+    ) -> None:
+        image = sr.project_image.project_image_name(workspace)
+        _write_spec(workspace, _spec(egress="unproxied", image=image))
+        up_docker.networks.clear()
+
+        assert sr.up(workspace) == sr.session_container_name(workspace)
+
+        creates = [call for call in up_docker.calls if call[1:3] == ["network", "create"]]
+        assert [call[-1] for call in creates] == [dc.UNPROXIED_NETWORK]
+
+
+_DIGEST = "sha256:" + "a" * 64
+_OTHER_DIGEST = "sha256:" + "b" * 64
+
+
+def _provenance(fingerprint: str) -> dict:
+    """Image record of a Booley-built Sandbox Image selected by *fingerprint*."""
+    labels = {
+        "io.booley.provenance.schema": "3",
+        "io.booley.artifact.role": "wheel-overlay",
+        "io.booley.build.recipe-fingerprint": "wheel-recipe",
+        "io.booley.sandbox.selection-fingerprint": fingerprint,
+    }
+    return {"Config": {"Labels": labels}}
 
 
 class TestImageDriftWarning:
@@ -1911,189 +1708,86 @@ class TestImageDriftWarning:
     WARNs on the drift; `up` must surface it inline (warn only, never rewrite
     the spec)."""
 
-    def _set_toml_image(self, workspace: Path, image: str) -> None:
-        pdir = workspace / ".booley"
-        pdir.mkdir()
-        (pdir / "booley.toml").write_text(f'[sandbox]\nimage = "{image}"\n', encoding="utf-8")
-
-    def _up_running(self, workspace: Path) -> None:
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=True),
-        ):
-            sr.up(workspace)
-
-    def test_image_comparison_uses_shared_dispatch(self, workspace, monkeypatch):
-        assert callable(getattr(sr.idk, "compare_issued_image", None)), (
-            "shared image dispatch is missing"
-        )
-        calls = []
-        monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda root: "configured")
-
-        def compare(*args, **kwargs):
-            calls.append((args, kwargs))
-            return sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
-
-        monkeypatch.setattr(sr.idk, "compare_issued_image", compare)
-        sr._warn_on_image_drift({"image": "issued-tag"}, workspace)
-        assert calls == [(("issued-tag", "configured"), {"project_root": workspace})]
-
-    def test_equivalent_image_emits_one_debug_note(self, workspace, caplog, monkeypatch):
-        self.test_same_source_tag_move_is_silent(workspace, caplog, monkeypatch)
-        notes = [
-            record
-            for record in caplog.records
-            if "moved to an equivalent Sandbox Image" in record.message
-        ]
-        assert len(notes) == 1
-        assert notes[0].levelname == "DEBUG"
-        assert not any(record.levelname == "WARNING" for record in caplog.records)
-
-    def test_spec_vs_toml_drift_warns_and_names_the_fix(self, wired, caplog, monkeypatch):
-        from booley.runtime.booley_dir import reset_cache
-
-        workspace, _run = wired
-        # The spec on disk says the default 'booley-sandbox'; the toml has
-        # since been pointed at a project image.
-        self._set_toml_image(workspace, "i2c-booley-sandbox")
-        monkeypatch.setenv("BOOLEY_DIR", str(workspace / ".booley"))
-        reset_cache()
-
-        self._up_running(workspace)
-
-        assert "!= [sandbox].image 'i2c-booley-sandbox'" in caplog.text
-        assert "booley init --seed" in caplog.text
-        assert "booley session down" in caplog.text
-
-    def test_matching_image_is_silent(self, wired, caplog):
-        workspace, _run = wired
-        self._set_toml_image(workspace, "booley-sandbox")
-        _write_spec(workspace, _spec(image=sr.project_image.project_image_name(workspace)))
-
-        self._up_running(workspace)
-
-        assert "[sandbox].image" not in caplog.text
-
-    def test_pinned_digest_matching_configured_tag_is_silent(
-        self, workspace: Path, caplog, monkeypatch
-    ):
-
-        digest = "sha256:" + "a" * 64
-        monkeypatch.setattr(
-            sr.project_image,
-            "project_sandbox_image",
-            lambda _root: sr.project_image.project_image_name(workspace),
-        )
-        monkeypatch.setattr(
-            sr.idk,
-            "image_id",
-            lambda image: (
-                digest
-                if image in {digest, sr.project_image.project_image_name(workspace)}
-                else None
+    @pytest.mark.parametrize(
+        ("configured", "issued", "images", "warns", "moved"),
+        [
+            # The spec on disk says the default image; the toml was pointed at a project image.
+            pytest.param("i2c-booley-sandbox", "booley-sandbox", {}, True, 0, id="spec-vs-toml"),
+            pytest.param("booley-sandbox", None, {}, False, 0, id="matching"),
+            pytest.param(None, None, {}, False, 0, id="no-project-config"),
+            pytest.param(
+                None,
+                _DIGEST,
+                {_DIGEST: {"Id": _DIGEST}, "PROJECT": {"Id": _DIGEST}},
+                False,
+                0,
+                id="pinned-digest-same-id",
             ),
-        )
-        monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_a, **_kw: None)
-
-        sr._warn_on_image_drift({"image": digest}, workspace)
-
-        assert "[sandbox].image" not in caplog.text
-
-    def test_same_source_tag_move_is_silent(self, workspace: Path, caplog, monkeypatch):
-
-        digest = "sha256:" + "a" * 64
-        monkeypatch.setattr(
-            sr.project_image,
-            "project_sandbox_image",
-            lambda _root: sr.project_image.project_image_name(workspace),
-        )
-        fingerprint = "f" * 64
-
-        def inspect(reference: str, *, executable: str = "docker"):
-            del executable
-            return sr.image_identity.ImageMetadata(
-                reference,
-                digest if reference == digest else "sha256:" + "b" * 64,
+            # #786: the tag moved but the selection is the same: a DEBUG note, never a WARNING.
+            pytest.param(
+                None,
+                _DIGEST,
                 {
-                    "io.booley.provenance.schema": "3",
-                    "io.booley.artifact.role": "wheel-overlay",
-                    "io.booley.build.recipe-fingerprint": "wheel-recipe",
-                    "io.booley.sandbox.selection-fingerprint": fingerprint,
+                    _DIGEST: {"Id": _DIGEST, **_provenance("f" * 64)},
+                    "PROJECT": {"Id": _OTHER_DIGEST, **_provenance("f" * 64)},
                 },
-                {},
-                (),
-            )
-
-        monkeypatch.setattr(sr.idk, "inspect_image_metadata", inspect)
-
-        with caplog.at_level("DEBUG"):
-            sr._warn_on_image_drift({"image": digest}, workspace)
-
-        assert not any(record.levelname == "WARNING" for record in caplog.records)
-        assert "moved to an equivalent Sandbox Image" in caplog.text
-
-    def test_logically_different_configured_image_warns(
-        self, workspace: Path, caplog, monkeypatch
-    ):
-        digest = "sha256:" + "a" * 64
-        monkeypatch.setattr(
-            sr.project_image,
-            "project_sandbox_image",
-            lambda _root: sr.project_image.project_image_name(workspace),
-        )
-        monkeypatch.setattr(
-            sr.idk,
-            "compare_issued_selection",
-            lambda *_args, **_kwargs: sr.image_identity.Comparison(
-                sr.image_identity.Status.MISMATCH
+                False,
+                1,
+                id="same-selection-tag-move",
             ),
-        )
-
-        sr._warn_on_image_drift({"image": digest}, workspace)
-
-        assert (
-            f"!= [sandbox].image '{sr.project_image.project_image_name(workspace)}'" in caplog.text
-        )
-
-    def test_rebuilt_external_image_warns_despite_inherited_labels(
-        self, workspace: Path, caplog, monkeypatch
-    ):
-        digest = "sha256:" + "a" * 64
-        monkeypatch.setattr(
-            sr.project_image, "project_sandbox_image", lambda _root: "custom-sandbox"
-        )
-        monkeypatch.setattr(
-            sr.idk,
-            "compare_issued_reference",
-            lambda *_args, **_kwargs: sr.image_identity.Comparison(
-                sr.image_identity.Status.MISMATCH
+            pytest.param(
+                None,
+                _DIGEST,
+                {
+                    _DIGEST: {"Id": _DIGEST, **_provenance("f" * 64)},
+                    "PROJECT": {"Id": _OTHER_DIGEST, **_provenance("e" * 64)},
+                },
+                True,
+                0,
+                id="logically-different",
             ),
-        )
+            # 7b576678a: an external image rebuilt on the same labels is another image.
+            pytest.param(
+                "custom-sandbox",
+                _DIGEST,
+                {_DIGEST: {"Id": _DIGEST}, "custom-sandbox": {"Id": _OTHER_DIGEST}},
+                True,
+                0,
+                id="rebuilt-external",
+            ),
+        ],
+    )
+    def test_drift_warning(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        configured: str | None,
+        issued: str | None,
+        images: dict[str, dict],
+        warns: bool,
+        moved: int,
+    ) -> None:
+        project = sr.project_image.project_image_name(workspace)
+        if configured is not None:
+            _configure_image(monkeypatch, workspace, configured)
+        up_docker.images.clear()
+        up_docker.images.update({project if k == "PROJECT" else k: v for k, v in images.items()})
+        spec_image = issued or project
+        up_docker.images.setdefault(spec_image, {"Id": _DIGEST})
+        _write_spec(workspace, _spec(image=spec_image))
 
-        sr._warn_on_image_drift({"image": digest}, workspace)
+        with caplog.at_level("DEBUG", logger=sr.logger.name):
+            sr.check_refresh_start(workspace)
 
-        assert "!= [sandbox].image 'custom-sandbox'" in caplog.text
-
-    def test_no_project_config_is_silent(self, wired, caplog):
-        # No .booley at all: the resolver falls back to the base image,
-        # which is exactly what the generated spec carries — no drift.
-        workspace, _run = wired
-        _write_spec(workspace, _spec(image=sr.project_image.project_image_name(workspace)))
-
-        self._up_running(workspace)
-
-        assert "[sandbox].image" not in caplog.text
-
-    def test_warning_does_not_block_the_session(self, wired, caplog):
-        workspace, _run = wired
-        ours = sr.session_container_name(workspace)
-        self._set_toml_image(workspace, "i2c-booley-sandbox")
-
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=True),
-        ):
-            assert sr.up(workspace) == ours
+        expected = configured or project
+        message = f"!= [sandbox].image '{expected}'"
+        assert (message in caplog.text) is warns
+        if warns:
+            assert sr.sandbox_remedy(workspace) in caplog.text
+        notes = [r for r in caplog.records if "equivalent Sandbox Image" in r.message]
+        assert len(notes) == moved
 
 
 class TestStaleBooleyBakeWarning:
@@ -2102,88 +1796,61 @@ class TestStaleBooleyBakeWarning:
     Booley code. Advisory only — no verdict (pip install, unlabeled image) must
     stay silent."""
 
-    def test_mismatch_warns_names_fields_and_fix(self, workspace, caplog, monkeypatch):
-        expected = sr.image_identity.BooleyBuildIdentity("1.0", "abc123", None, "current")
-        observed = sr.image_identity.ImageMetadata(
-            "sha256:issued",
-            "sha256:issued",
-            {
-                "org.opencontainers.image.version": "1.0",
-                "org.opencontainers.image.revision": "def456",
-                "io.booley.wheel.source-fingerprint": "stale",
-            },
-            {},
-            (),
+    @pytest.mark.parametrize(
+        ("labels", "warns"),
+        [
+            pytest.param(
+                {
+                    "org.opencontainers.image.version": "1.0",
+                    "org.opencontainers.image.revision": "def456",
+                    "io.booley.wheel.source-fingerprint": "stale",
+                },
+                True,
+                id="mismatch",
+            ),
+            pytest.param(
+                {
+                    "org.opencontainers.image.version": "1.0",
+                    "org.opencontainers.image.revision": "abc123",
+                    "io.booley.wheel.source-fingerprint": "current",
+                },
+                False,
+                id="match",
+            ),
+            pytest.param({}, False, id="unknown-identity"),
+        ],
+    )
+    def test_warns_only_when_the_issued_image_proves_drift(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        labels: dict[str, str],
+        warns: bool,
+    ) -> None:
+        # The host installation's build identity is host environment, not Booley's own code.
+        monkeypatch.setattr(
+            sr.image_identity,
+            "current_host_build_identity",
+            lambda: sr.image_identity.BooleyBuildIdentity("1.0", "abc123", None, "current"),
         )
-        monkeypatch.setattr(sr.image_identity, "current_host_build_identity", lambda: expected)
-        monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_args, **_kwargs: observed)
+        image = sr.project_image.project_image_name(workspace)
+        up_docker.images[image] = {"Id": _DIGEST, "Config": {"Labels": labels}}
 
-        monkeypatch.setattr(sr, "sandbox_remedy", lambda _root: "recreate it")
+        sr.check_refresh_start(workspace)
 
-        sr._warn_on_stale_booley_bake({"image": "sha256:issued"}, workspace)
-
-        assert "stale Booley code" in caplog.text
-        assert "revision abc123 -> def456" in caplog.text
-        assert "wheel_source_fingerprint current -> stale" in caplog.text
-        assert "recreate it" in caplog.text
-
-    def test_unknown_identity_is_silent(self, workspace, caplog):
-        result = sr.image_identity.Comparison(sr.image_identity.Status.UNKNOWN)
-        with patch.object(sr.idk, "compare_issued_build", return_value=result):
-            sr._warn_on_stale_booley_bake({"image": "sha256:issued"}, workspace)
-        assert "stale Booley code" not in caplog.text
-
-    def test_match_is_silent(self, workspace, caplog):
-        result = sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
-        with patch.object(sr.idk, "compare_issued_build", return_value=result):
-            sr._warn_on_stale_booley_bake({"image": "sha256:issued"}, workspace)
-        assert "stale Booley code" not in caplog.text
-
-
-class TestStaleSessionContainerWarning:
-    """A rebuild moves the tag, not running containers: `up` must say when the
-    live session was born from a superseded image (the previously dead
-    `sessions_on_stale_image` probe, now wired in)."""
-
-    def test_stale_container_warns_by_name(self, workspace, caplog):
-        name = sr.session_container_name(workspace)
-        with patch.object(sr, "sessions_on_stale_image", return_value=[name]):
-            sr._warn_on_stale_session_containers({"image": "booley-sandbox"}, workspace)
-        assert name in caplog.text
-        assert "superseded by a rebuild" in caplog.text
-        assert "run `booley session refresh` on the host" in caplog.text
-        assert "session down" not in caplog.text
-
-    def test_stale_vscode_container_names_rebuild_container(self, workspace, caplog):
-        with patch.object(sr, "sessions_on_stale_image", return_value=["vsc-editor"]):
-            sr._warn_on_stale_session_containers({"image": "booley-sandbox"}, workspace)
-        assert "vsc-editor" in caplog.text
-        assert "to pick up the new image, use Dev Containers: Rebuild Container." in caplog.text
-        assert "session down" not in caplog.text
-
-    def test_current_containers_are_silent(self, workspace, caplog):
-        with patch.object(sr, "sessions_on_stale_image", return_value=[]):
-            sr._warn_on_stale_session_containers({"image": "booley-sandbox"}, workspace)
-        assert "superseded" not in caplog.text
-
-    def test_up_invokes_the_probe(self, wired, caplog):
-        workspace, _run = wired
-        with (
-            patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr.idk, "container_running", return_value=True),
-            patch.object(
-                sr, "sessions_on_stale_image", return_value=["booley-session-i2c"]
-            ) as probe,
-        ):
-            sr.up(workspace)
-        probe.assert_called_once()
-        assert "superseded by a rebuild" in caplog.text
+        assert ("stale Booley code" in caplog.text) is warns
+        if warns:
+            assert "revision abc123 -> def456" in caplog.text
+            assert "wheel_source_fingerprint current -> stale" in caplog.text
+            assert sr.sandbox_remedy(workspace) in caplog.text
 
 
 class TestDownAndStatus:
     @pytest.mark.parametrize("relay_exists", [False, True], ids=["nothing", "relay-only"])
     def test_down_without_a_sandbox_removes_only_the_relay(
-        self, workspace: Path, host_docker: _SandboxDocker, relay_exists: bool
+        self, workspace: Path, host_docker: SandboxDocker, relay_exists: bool
     ) -> None:
         relay = _relay(workspace)
         if relay_exists:
@@ -2199,7 +1866,7 @@ class TestDownAndStatus:
     def test_down_refuses_before_any_mutation(
         self,
         workspace: Path,
-        host_docker: _SandboxDocker,
+        host_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         owner: str,
     ) -> None:
@@ -2225,7 +1892,7 @@ class TestDownAndStatus:
     def test_down_runs_before_stop_then_stops(
         self,
         workspace: Path,
-        host_docker: _SandboxDocker,
+        host_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         running: bool,
     ) -> None:
@@ -2251,7 +1918,7 @@ class TestDownAndStatus:
 
     @pytest.mark.parametrize("failure", ["stop", "rm"])
     def test_down_reports_headless_docker_failure(
-        self, workspace: Path, host_docker: _SandboxDocker, failure: str
+        self, workspace: Path, host_docker: SandboxDocker, failure: str
     ) -> None:
         host_docker.containers[sr.session_container_name(workspace)] = _headless_state(workspace)
         host_docker.failing.add(failure)
@@ -2272,7 +1939,7 @@ class TestDownAndStatus:
     def test_status_reports_each_state(
         self,
         workspace: Path,
-        host_docker: _SandboxDocker,
+        host_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         running: bool | None,
         pending: bool,
@@ -2318,113 +1985,92 @@ class TestSessionsOnStaleImage:
     OLD_ID = "sha256:bbb"
     IMAGE = "i2c-booley-sandbox"
 
-    def _patch_docker(
+    @pytest.fixture
+    def docker(self, monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
+        docker = serve_sandbox_docker(monkeypatch)
+        docker.images[self.IMAGE] = {"Id": self.NEW_ID}
+        return docker
+
+    @staticmethod
+    def _running(image: str, folder: Path | None = None) -> dict:
+        labels = {"booley.role": "interactive"}
+        if folder is not None:
+            labels["devcontainer.local_folder"] = str(folder)
+        return {"Image": image, "State": {"Running": True}, "Config": {"Labels": labels}}
+
+    @pytest.mark.parametrize(
+        ("container", "image", "folder", "stale"),
+        [
+            pytest.param("ours", OLD_ID, None, True, id="ours-on-old-image"),
+            pytest.param("editor", OLD_ID, "workspace", True, id="vscode-for-this-folder"),
+            # The rebuild was a no-op (all layers cached): nothing to restart for.
+            pytest.param("ours", NEW_ID, None, False, id="same-image-id"),
+            pytest.param("editor", OLD_ID, "elsewhere", False, id="another-workspace"),
+            pytest.param(
+                "editor",
+                OLD_ID,
+                "case-variant",
+                False,
+                id="case-variant-folder",
+                marks=pytest.mark.skipif(
+                    sys.platform != "linux", reason="needs a case-sensitive filesystem"
+                ),
+            ),
+            pytest.param(
+                "editor",
+                OLD_ID,
+                "symlink",
+                True,
+                id="symlinked-folder",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32", reason="symlinks need privileges on Windows"
+                ),
+            ),
+        ],
+    )
+    def test_reports_only_containers_on_a_superseded_image(
         self,
-        monkeypatch,
-        *,
-        names: str,
-        container_ids: dict[str, str],
-        folders: dict[str, str] | None = None,
-        image_id: str | None = NEW_ID,
-    ):
-        folders = folders or {}
+        workspace: Path,
+        docker: SandboxDocker,
+        container: str,
+        image: str,
+        folder: str | None,
+        stale: bool,
+    ) -> None:
+        if folder == "symlink":
+            (workspace.parent / "alias").symlink_to(workspace, target_is_directory=True)
+        folders = {
+            "workspace": workspace,
+            "elsewhere": workspace.parent / "elsewhere",
+            # `<tmp>/I2C` differs from `<tmp>/i2c` only in case: another directory on Linux.
+            "case-variant": workspace.parent / "I2C",
+            "symlink": workspace.parent / "alias",
+            None: None,
+        }
+        name = sr.session_container_name(workspace) if container == "ours" else "goofy_ellis"
+        docker.containers[name] = self._running(image, folders[folder])
 
-        def fake_run(argv, **_kw):
-            if argv[:3] == ["docker", "image", "inspect"]:
-                if image_id is None:
-                    return subprocess.CompletedProcess([], 1, "", "no such image")
-                return subprocess.CompletedProcess([], 0, f"{image_id}\n", "")
-            if argv[:2] == ["docker", "ps"]:
-                return subprocess.CompletedProcess([], 0, names, "")
-            if argv[:2] == ["docker", "inspect"]:
-                # `docker inspect --format {{.Image}} <name>` (image ID) vs
-                # `docker inspect <name> --format {{...local_folder}}` (label).
-                if argv[2] == "--format":
-                    return subprocess.CompletedProcess([], 0, container_ids.get(argv[4], ""), "")
-                return subprocess.CompletedProcess([], 0, folders.get(argv[2], ""), "")
-            return subprocess.CompletedProcess([], 1, "", "")
+        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ([name] if stale else [])
 
-        monkeypatch.setattr(sr, "_run", fake_run)
-        monkeypatch.setattr(sr.idk, "image_id", lambda _image: image_id)
-
-    def test_our_session_on_the_old_image_is_reported(self, workspace: Path, monkeypatch):
+    @pytest.mark.parametrize("case", ["none-running", "unbuilt-image", "vanished-container"])
+    def test_silent_without_evidence(
+        self, workspace: Path, docker: SandboxDocker, case: str
+    ) -> None:
         ours = sr.session_container_name(workspace)
-        self._patch_docker(monkeypatch, names=f"{ours}\n", container_ids={ours: self.OLD_ID})
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == [ours]
+        if case != "none-running":
+            docker.containers[ours] = self._running(self.OLD_ID)
+        if case == "unbuilt-image":
+            docker.images.clear()
+        if case == "vanished-container":  # gone between `docker ps` and the inspect
+            docker.failing.add(ours)
 
-    def test_vscode_container_for_this_folder_is_reported(self, workspace: Path, monkeypatch):
-        self._patch_docker(
-            monkeypatch,
-            names="goofy_ellis\n",
-            container_ids={"goofy_ellis": self.OLD_ID},
-            folders={"goofy_ellis": str(workspace)},
-        )
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ["goofy_ellis"]
-
-    @pytest.mark.skipif(sys.platform != "linux", reason="needs a case-sensitive filesystem")
-    def test_vscode_container_for_case_variant_folder_is_ignored(
-        self, workspace: Path, monkeypatch
-    ):
-        # `<tmp>/I2C` differs from the workspace `<tmp>/i2c` only in case: on Linux
-        # that is another directory, so its editor container is not this workspace's.
-        self._patch_docker(
-            monkeypatch,
-            names="goofy_ellis\n",
-            container_ids={"goofy_ellis": self.OLD_ID},
-            folders={"goofy_ellis": str(workspace.parent / "I2C")},
-        )
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-    def test_vscode_container_for_symlinked_folder_is_reported(self, workspace: Path, monkeypatch):
-        # A label naming the workspace through a symlink is the same directory.
-        alias = workspace.parent / "alias"
-        alias.symlink_to(workspace, target_is_directory=True)
-        self._patch_docker(
-            monkeypatch,
-            names="goofy_ellis\n",
-            container_ids={"goofy_ellis": self.OLD_ID},
-            folders={"goofy_ellis": str(alias)},
-        )
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ["goofy_ellis"]
-
-    def test_same_image_id_is_silent(self, workspace: Path, monkeypatch):
-        # The rebuild was a no-op (all layers cached): the tag still resolves to
-        # the very image the container runs, so there is nothing to restart for.
-        ours = sr.session_container_name(workspace)
-        self._patch_docker(monkeypatch, names=f"{ours}\n", container_ids={ours: self.NEW_ID})
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
-
-    def test_no_running_container_is_silent(self, workspace: Path, monkeypatch):
-        self._patch_docker(monkeypatch, names="", container_ids={})
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
-
-    def test_container_for_another_workspace_is_ignored(self, workspace: Path, monkeypatch):
-        self._patch_docker(
-            monkeypatch,
-            names="other\n",
-            container_ids={"other": self.OLD_ID},
-            folders={"other": str(workspace.parent / "elsewhere")},
-        )
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
-
-    def test_unbuilt_image_is_silent(self, workspace: Path, monkeypatch):
-        ours = sr.session_container_name(workspace)
-        self._patch_docker(
-            monkeypatch, names=f"{ours}\n", container_ids={ours: self.OLD_ID}, image_id=None
-        )
         assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
 
     def test_docker_failure_warns_and_reports_no_stale_sessions(
-        self, workspace: Path, monkeypatch, caplog
-    ):
-        # Every Docker seam (sr._run, the image-ID helper's _run_docker) sees a
-        # missing Docker: the probe stays advisory, but says why it is blind.
-        def no_docker(*_a, **_k):
-            raise FileNotFoundError("docker")
-
-        monkeypatch.setattr(sr, "_run", no_docker)
-        monkeypatch.setattr(sr.idk, "_run_docker", no_docker)
+        self, workspace: Path, docker: SandboxDocker, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The probe stays advisory, but says why it is blind.
+        docker.missing = True
         with caplog.at_level("WARNING", logger=sr.logger.name):
             assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
         warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
@@ -2433,234 +2079,107 @@ class TestSessionsOnStaleImage:
         assert "cannot check running Sandboxes" in warnings[0]
         assert "docker" in warnings[0]
 
-    def test_failed_container_inspect_is_silent(self, workspace: Path, monkeypatch):
-        # Container vanished between `docker ps` and the inspect: no ID to
-        # compare, so say nothing rather than guess.
-        ours = sr.session_container_name(workspace)
-        self._patch_docker(monkeypatch, names=f"{ours}\n", container_ids={})
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
+    def test_up_names_a_stale_vscode_container_and_its_remedy(
+        self, workspace: Path, up_docker: SandboxDocker, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        up_docker.containers["editor"] = _vscode_container(workspace)  # on `_NEW_IMAGE`
 
+        sr.up(workspace)
 
-class TestMangledArgWarning:
-    """B1 (host half): `booley` is a native Windows exe, so Git Bash/MSYS
-    rewrites POSIX argv on the way in — `-- ... --report-dir /tmp/rep` arrives
-    already mangled to `C:/Users/.../Temp/rep`. We forward the command to
-    `docker exec` verbatim (we cannot know which arguments are paths), but that
-    string denotes nothing in the Linux container, so say so."""
+        assert "'editor' is running an image superseded by a rebuild" in caplog.text
+        assert "use Dev Containers: Rebuild Container." in caplog.text
+        assert "session down" not in caplog.text
 
-    def test_windows_path_argument_warns(self, caplog):
-        cmd = [
-            "python3",
-            "-m",
-            "booley.flows.lint",
-            "--report-dir",
-            "C:/Users/andre/AppData/Local/Temp/rep-lint",
-        ]
-        sr._warn_on_mangled_args(cmd)
-        assert "Windows host paths" in caplog.text
-        assert "MSYS_NO_PATHCONV" in caplog.text
+    def test_stale_headless_session_is_told_to_refresh(self, workspace: Path) -> None:
+        advice = sr.stale_image_advice(workspace, sr.session_container_name(workspace))
 
-    def test_equals_form_is_caught_too(self, caplog):
-        sr._warn_on_mangled_args([r"--report-dir=C:\Temp\rep"])
-        assert "Windows host paths" in caplog.text
-
-    def test_ordinary_container_command_is_silent(self, caplog):
-        sr._warn_on_mangled_args(
-            [
-                "python3",
-                "-m",
-                "booley.flows.lint",
-                "--target",
-                "lint",
-                "--report-dir",
-                "/tmp/rep-lint",
-            ],
-        )
-        assert caplog.text == ""
-
-    def test_enter_still_forwards_the_command_verbatim(self, workspace: Path):
-        # The warning is advisory: we must not rewrite the user's argv (only the
-        # caller knows which arguments are paths). Exec gets exactly what it got.
-        cmd = ["python3", "-c", "print(1)", "--out", "C:/Temp/x"]
-        with patch.object(sr, "run_project_command", return_value=0) as run:
-            assert sr.enter(workspace, cmd, tty=False) == 0
-        run.assert_called_once_with(workspace, cmd, tty=False, cwd=None)
+        assert "booley session refresh" in advice
+        assert "session down" not in advice
 
 
 class _ParallelEnterProbe:
-    def __init__(self, command_env: dict[str, str]) -> None:
-        self.command_env = command_env
+    """Hold the first `enter` inside its Docker calls, under the lifecycle lock."""
+
+    def __init__(self) -> None:
         self.first_selecting = threading.Event()
         self.release_first = threading.Event()
         self.second_waiting = threading.Event()
         self.execution_barrier = threading.Barrier(2)
-        self.select_guard = threading.Lock()
-        self.select_calls = 0
+        self.guard = threading.Lock()
+        self.blocked = False
 
-    def select_runtime(self, _workspace: Path) -> tuple[str, dict[str, str]]:
-        with self.select_guard:
-            self.select_calls += 1
-            call = self.select_calls
-        if call == 1:
+    def hold_first_call(self, _argv: list[str]) -> None:
+        with self.guard:
+            first = not self.blocked
+            self.blocked = True
+        if first:
             self.first_selecting.set()
             assert self.release_first.wait(timeout=2)
-        return "runtime", self.command_env
 
-    def run_command(self, *_args, **_kwargs) -> SimpleNamespace:
-        self.execution_barrier.wait(timeout=2)
-        return SimpleNamespace(exit_code=0)
+
+def _running_headless(docker: SandboxDocker, workspace: Path) -> None:
+    name = sr.session_container_name(workspace)
+    docker.containers[name] = _sandbox_state(workspace)
 
 
 class TestRunProjectCommand:
-    COMMAND_ENV: ClassVar[dict[str, str]] = {
-        "HTTP_PROXY": dc.PROXY_URL,
-        "HTTPS_PROXY": dc.PROXY_URL,
-        "http_proxy": dc.PROXY_URL,
-        "https_proxy": dc.PROXY_URL,
-        "NO_PROXY": "localhost,127.0.0.1",
-        "BOOLEY_MCP_MODE": "interactive",
-        "BOOLEY_DIR": "/booley",
-        "BOOLEY_AGENT_APP": "claude",
-    }
+    COMMAND: ClassVar[list[str]] = ["claude", "setup-token"]
 
     @staticmethod
-    def _request(workspace: Path):
-        return SimpleNamespace(
-            spec={
-                "image": "booley-sandbox",
-                "remoteEnv": {
-                    **TestRunProjectCommand.COMMAND_ENV,
-                    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
-                },
-            },
-            issuance=object(),
-            profile=None,
-            name=sr.session_container_name(workspace),
-            labels=(),
-            relay=None,
+    def _attachments(attached: SimpleNamespace) -> list[tuple[str, list[str], dict]]:
+        return [
+            (container, command, kwargs) for _, container, command, kwargs in attached.commands
+        ]
+
+    def test_reuses_valid_running_vscode_runtime(
+        self, workspace: Path, attached: SimpleNamespace
+    ) -> None:
+        attached.docker.containers["editor"] = _sandbox_state(
+            workspace, vscode=True, name="editor"
         )
 
-    @staticmethod
-    def _vscode_state(workspace: Path) -> str:
-        return json.dumps([{"Config": {"Labels": {"devcontainer.local_folder": str(workspace)}}}])
+        assert sr.run_project_command(workspace, self.COMMAND, tty=True) == 0
 
-    def test_reuses_valid_running_vscode_runtime(self, workspace: Path):
-        request = self._request(workspace)
-        command = ["claude", "setup-token"]
-        with (
-            patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(
-                sr,
-                "resolve_running_sandbox",
-                return_value=SimpleNamespace(
-                    name="vscode-runtime", container_id="vscode-runtime", vscode=True
-                ),
-            ),
-            patch.object(sr, "container_matches_issuance", return_value=True),
-            patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.runtime.runtime_attachment.run_command") as run,
-        ):
-            run.return_value = SimpleNamespace(exit_code=0)
-            assert sr.run_project_command(workspace, command, tty=True) == 0
+        ((container, command, kwargs),) = self._attachments(attached)
+        assert (container, command) == ("id-editor", self.COMMAND)
+        assert (kwargs["tty"], kwargs["cwd"]) == (True, None)
+        # The container already holds the credential; the spec only carries a placeholder.
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in kwargs["env"]
+        assert kwargs["env"]["HTTP_PROXY"] == dc.PROXY_URL
+        assert _mutations(attached.docker) == []
 
-        start.assert_not_called()
-        run.assert_called_once_with(
-            workspace,
-            "vscode-runtime",
-            command,
-            tty=True,
-            env=self.COMMAND_ENV,
-            cwd=None,
-        )
+    def test_starts_headless_runtime_when_none_is_running(
+        self, workspace: Path, attached: SimpleNamespace
+    ) -> None:
+        name = sr.session_container_name(workspace)
+        attached.docker.created = _sandbox_state(workspace)
 
-    def test_starts_headless_runtime_when_none_is_running(self, workspace: Path):
-        request = self._request(workspace)
-        command = ["claude", "setup-token"]
-        with (
-            patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(
-                sr,
-                "resolve_running_sandbox",
-                side_effect=[
-                    None,
-                    None,
-                    SimpleNamespace(name=request.name, container_id=request.name, vscode=False),
-                ],
-            ),
-            patch.object(sr, "container_matches_issuance", return_value=True),
-            patch.object(sr, "_run_up_transaction") as start,
-            patch.object(sr, "_warn_on_stale_session_containers"),
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.runtime.runtime_attachment.run_command") as run,
-        ):
-            run.return_value = SimpleNamespace(exit_code=0)
-            assert sr.run_project_command(workspace, command, tty=False) == 0
+        assert sr.run_project_command(workspace, self.COMMAND, tty=False) == 0
 
-        start.assert_called_once_with(
-            workspace,
-            request,
-            rebuild=False,
-            expected_image_id=None,
-        )
-        run.assert_called_once_with(
-            workspace,
-            request.name,
-            command,
-            tty=False,
-            env=self.COMMAND_ENV,
-            cwd=None,
-        )
+        assert [call[1] for call in attached.docker.calls if call[1] == "run"] == ["run"]
+        ((container, command, kwargs),) = self._attachments(attached)
+        assert (container, command, kwargs["tty"]) == (f"id-{name}", self.COMMAND, False)
 
-    def test_ignores_running_runtime_for_another_project(self, workspace: Path):
-        request = self._request(workspace)
-        with (
-            patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(
-                sr,
-                "resolve_running_sandbox",
-                return_value=SimpleNamespace(
-                    name="vscode-runtime", container_id="vscode-runtime", vscode=True
-                ),
-            ),
-            patch.object(sr, "container_matches_issuance", return_value=True),
-            patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.runtime.runtime_attachment.run_command") as run,
-        ):
-            run.return_value = SimpleNamespace(exit_code=0)
-            assert sr.run_project_command(workspace, ["claude", "setup-token"]) == 0
+    def test_recovers_interrupted_invalidation_before_selecting_runtime(
+        self, workspace: Path, attached: SimpleNamespace
+    ) -> None:
+        issuance_invalidation.prepare(str(workspace.resolve()))
 
-        start.assert_not_called()
-        run.assert_called_once()
-        assert run.call_args.args[1] == "vscode-runtime"
+        with pytest.raises(sr.SessionError, match="recovered interrupted Sandbox host state"):
+            sr.run_project_command(workspace, self.COMMAND)
 
-    def test_recovers_interrupted_invalidation_before_selecting_runtime(self, workspace: Path):
-        select = Mock()
-        with (
-            patch.object(
-                sr,
-                "_recover_before_lifecycle",
-                side_effect=sr.SessionError("recovered interrupted refresh"),
-            ) as recover,
-            patch.object(sr, "_select_or_start_project_runtime", select),
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            pytest.raises(sr.SessionError, match="recovered interrupted refresh"),
-        ):
-            sr.run_project_command(workspace, ["claude", "setup-token"])
-
-        recover.assert_called_once_with(None)
-        select.assert_not_called()
+        assert attached.commands == []
+        assert not any(call[1] == "run" for call in attached.docker.calls)
 
     def test_parallel_enters_wait_then_execute_concurrently(
         self,
         workspace: Path,
+        up_docker: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley.runtime import lifecycle_lock
+        from booley.runtime import lifecycle_lock, session_admission
 
-        probe = _ParallelEnterProbe(self.COMMAND_ENV)
-
+        probe = _ParallelEnterProbe()
         real_wait = lifecycle_lock.wait_for_file_lock
 
         def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
@@ -2669,12 +2188,14 @@ class TestRunProjectCommand:
             real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
 
         monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
-        monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
-        monkeypatch.setattr(sr, "_select_or_start_project_runtime", probe.select_runtime)
         monkeypatch.setattr(
-            "booley.runtime.runtime_attachment.run_command",
-            probe.run_command,
+            session_admission, "running_project_sandboxes", real_running_project_sandboxes
         )
+        commands = attach_commands(
+            monkeypatch, before=lambda: probe.execution_barrier.wait(timeout=2)
+        )
+        _running_headless(up_docker, workspace)
+        up_docker.on_call = probe.hold_first_call
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             first = executor.submit(sr.enter, workspace, ["bwave", "first"], tty=False)
@@ -2686,121 +2207,68 @@ class TestRunProjectCommand:
             assert first.result(timeout=5) == 0
             assert second.result(timeout=5) == 0
 
-        assert probe.select_calls == 2
+        assert sorted(command[-1] for _, _, command, _ in commands) == ["first", "second"]
 
-    def test_stale_running_runtime_blocks_headless_creation(self, workspace: Path):
-        request = self._request(workspace)
-        with (
-            patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(
-                sr,
-                "resolve_running_sandbox",
-                return_value=SimpleNamespace(
-                    name="stale-runtime", container_id="stale-runtime", vscode=True
-                ),
-            ),
-            patch.object(sr, "container_matches_issuance", return_value=False),
-            patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            pytest.raises(sr.SessionError, match="does not match the current host issuance"),
-        ):
-            sr.run_project_command(workspace, ["claude", "setup-token"])
+    def test_stale_running_runtime_blocks_headless_creation(
+        self, workspace: Path, attached: SimpleNamespace
+    ) -> None:
+        stale = _sandbox_state(workspace)
+        stale["Image"] = _OLD_IMAGE
+        attached.docker.containers[sr.session_container_name(workspace)] = stale
 
-        start.assert_not_called()
+        with pytest.raises(sr.SessionError, match="does not match the current host issuance"):
+            sr.run_project_command(workspace, self.COMMAND)
 
-    def test_multiple_running_runtimes_are_refused(self, workspace: Path):
-        request = self._request(workspace)
-        with (
-            patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(
-                sr,
-                "resolve_running_sandbox",
-                side_effect=sr.SessionError("multiple running Sandboxes"),
-            ),
-            patch.object(sr, "container_matches_issuance", return_value=True),
-            patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            pytest.raises(sr.SessionError, match="multiple running Sandboxes"),
-        ):
-            sr.run_project_command(workspace, ["claude", "setup-token"])
+        assert not any(call[1] == "run" for call in attached.docker.calls)
 
-        start.assert_not_called()
+    def test_multiple_running_runtimes_are_refused(
+        self, workspace: Path, attached: SimpleNamespace
+    ) -> None:
+        _running_headless(attached.docker, workspace)
+        attached.docker.containers["editor"] = _sandbox_state(
+            workspace, vscode=True, name="editor"
+        )
 
-    def test_attachment_failure_is_reported_as_session_error(self, workspace: Path):
-        with (
-            patch.object(
-                sr,
-                "_select_or_start_project_runtime",
-                return_value=("runtime", self.COMMAND_ENV),
-            ),
-            patch.object(sr, "_recover_before_lifecycle"),
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch(
-                "booley.runtime.runtime_attachment.run_command",
-                side_effect=OSError("docker disappeared"),
-            ),
-            pytest.raises(sr.SessionError, match=r"could not attach.*docker disappeared"),
-        ):
-            sr.run_project_command(workspace, ["claude", "setup-token"])
+        with pytest.raises(sr.SessionError, match="multiple running Sandboxes"):
+            sr.run_project_command(workspace, self.COMMAND)
 
+        assert not any(call[1] == "run" for call in attached.docker.calls)
 
-class TestEnterAlwaysSetsTERM:
-    """F-43a: every agent-driven exec answered "TERM environment variable not set."
+    def test_attachment_failure_is_reported_as_session_error(
+        self, workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _running_headless(attached.docker, workspace)
+        attach_commands(monkeypatch, error=OSError("docker disappeared"))
 
-    `docker exec -t` is what sets TERM, and `_enter` only allocates a tty when
-    both streams are ttys — which no agent-driven caller is. So the shell in
-    the container ran with no TERM at all and said so on every command.
+        with pytest.raises(sr.SessionError, match=r"could not attach.*docker disappeared"):
+            sr.run_project_command(workspace, self.COMMAND)
 
-    Only the non-tty branch had the bug, and only it gets a value: docker's own
-    `-t` TERM=xterm resolves in the image, whereas a forwarded host TERM
-    (xterm-kitty, alacritty, xterm-ghostty) has no terminfo entry there and
-    would break clear/tput/less/vim for those users.
-    """
+    @pytest.mark.parametrize(
+        ("command", "warns"),
+        [
+            pytest.param(["python3", "-m", "x", "--report-dir", "C:/Temp/rep"], True, id="path"),
+            pytest.param(["--report-dir=C:\\Temp\\rep"], True, id="equals-form"),
+            pytest.param(["python3", "--report-dir", "/tmp/rep-lint"], False, id="container-path"),
+        ],
+    )
+    def test_mangled_arguments_warn_and_pass_verbatim(
+        self,
+        workspace: Path,
+        attached: SimpleNamespace,
+        caplog: pytest.LogCaptureFixture,
+        command: list[str],
+        warns: bool,
+    ) -> None:
+        _running_headless(attached.docker, workspace)
 
-    def _argv(self, workspace: Path, *, tty: bool, term_env: str | None) -> list[str]:
-        env = {} if term_env is None else {"TERM": term_env}
-        with (
-            patch.object(
-                sr,
-                "_select_or_start_project_runtime",
-                return_value=("booley-session-x", {}),
-            ),
-            patch.object(sr, "_recover_before_lifecycle"),
-            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.runtime.runtime_attachment.run_command") as run,
-            patch.dict(sr.os.environ, env, clear=(term_env is None)),
-        ):
-            run.return_value = SimpleNamespace(exit_code=0)
-            sr.enter(workspace, ["echo", "hi"], tty=tty)
-        command = run.call_args.args[2]
-        return sr.exec_argv("booley-session-x", command, tty=run.call_args.kwargs["tty"])
+        assert sr.enter(workspace, command, tty=False) == 0
 
-    def test_non_tty_run_gets_a_dumb_term(self, workspace: Path):
-        argv = self._argv(workspace, tty=False, term_env="xterm-256color")
-        assert "-t" not in argv
-        assert argv[argv.index("-e") + 1] == "TERM=dumb"
-
-    def test_tty_run_leaves_term_to_docker(self, workspace: Path):
-        # `docker exec -t` sets TERM=xterm itself, and the image has terminfo
-        # for it. We must not override that.
-        argv = self._argv(workspace, tty=True, term_env="xterm-256color")
-        assert "-t" in argv
-        assert "-e" not in argv
-
-    def test_tty_run_never_forwards_an_exotic_host_term(self, workspace: Path):
-        # ubuntu:24.04 ships no ncurses-term: xterm-kitty has no terminfo entry,
-        # so forwarding it would break every curses program in the container.
-        argv = self._argv(workspace, tty=True, term_env="xterm-kitty")
-        assert not any("kitty" in a for a in argv)
-
-    def test_tty_run_without_a_host_term_still_adds_nothing(self, workspace: Path):
-        argv = self._argv(workspace, tty=True, term_env=None)
-        assert "-e" not in argv
-
-    def test_the_command_still_comes_last(self, workspace: Path):
-        argv = self._argv(workspace, tty=False, term_env="vt100")
-        assert argv[-2:] == ["echo", "hi"]
-        assert "booley-session-x" in argv
+        # The warning is advisory: only the caller knows which arguments are paths.
+        assert [attached_command for _, attached_command, _ in self._attachments(attached)] == [
+            command
+        ]
+        assert ("Windows host paths" in caplog.text) is warns
+        assert ("MSYS_NO_PATHCONV" in caplog.text) is warns
 
 
 class TestSessionRefresh:
@@ -2809,14 +2277,18 @@ class TestSessionRefresh:
 
         from booley.harness import booley
 
+        # Pins source structure, which #4359 owns; the public CLI cannot reach a line count.
         assert len(inspect.getsourcelines(booley._cmd_session)[0]) <= 50
 
-    def test_parser_exposes_refresh_subcommand(self):
-        from booley.harness.booley import _build_parser
-
-        args = _build_parser().parse_args(["session", "refresh"])
-        assert args.command == "session"
-        assert args.session_command == "refresh"
+    @pytest.fixture
+    def cli_project(
+        self, workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> SandboxDocker:
+        """A Project under isolated host state, and the Docker fake its commands reach."""
+        (workspace / ".booley").mkdir()
+        isolate_session_cli(monkeypatch, tmp_path)
+        monkeypatch.setattr(health, "due_reason", lambda _root: None)
+        return serve_sandbox_docker(monkeypatch)
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
     @pytest.mark.parametrize(
@@ -2828,26 +2300,16 @@ class TestSessionRefresh:
         command: str,
         workspace: Path,
         tmp_path: Path,
+        cli_project: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        from booley.harness import booley
-        from booley.harness.booley import _build_parser
-
         issuance_invalidation.prepare(str(workspace.resolve()))
         issuance_invalidation.cancel(str(workspace.resolve()))
-        booley_config = tmp_path / "xdg" / "booley"
+        booley_config = tmp_path / "xdg-config" / "booley"
         booley_config.chmod(0o755)
-        monkeypatch.setattr(booley, "_report_upgrade_before_session", lambda _root: None)
-        monkeypatch.setattr(health, "due_reason", lambda _root: None)
-        monkeypatch.setattr(
-            sr,
-            "_run",
-            lambda *_a, **_kw: pytest.fail("unsafe recovery must precede Docker mutation"),
-        )
-        args = _build_parser().parse_args(["session", command])
 
-        assert booley._cmd_session(args, workspace) == 2
+        assert run_cli(monkeypatch, ["-C", str(workspace), "session", command]) == 2
 
         captured = capsys.readouterr()
         assert str(booley_config) in captured.err
@@ -2855,175 +2317,128 @@ class TestSessionRefresh:
         assert f"chmod 700 {booley_config}" in captured.err
         assert "Traceback" not in captured.out
         assert "Traceback" not in captured.err
+        assert cli_project.calls == []  # unsafe recovery must precede Docker mutation
 
-    def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
-        from booley.harness import booley, session_refresh
-        from booley.harness.booley import _build_parser
+    def test_refresh_configures_progress_before_reconciling_image(
+        self,
+        workspace: Path,
+        cli_project: SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.harness import session_refresh
         from booley.harness.setup import common as setup_common
-
-        args = _build_parser().parse_args(["session", "refresh"])
         from booley.runtime.session_refresh import RefreshResult
 
         result = RefreshResult(
             RefreshImage("sha256:fresh", None, None, False), "replaced", "old", "new"
         )
         events: list[str] = []
-        with (
-            patch.object(
-                setup_common,
-                "configure_progress_output",
-                side_effect=lambda: events.append("configure"),
-            ),
-            patch.object(
-                session_refresh,
-                "refresh",
-                side_effect=lambda *_args, **_kwargs: events.append("reconcile") or result,
-            ),
-            patch.object(booley, "_report_session_health"),
-            patch.object(health, "due_reason", return_value=None),
-        ):
-            assert booley._session_refresh(args, tmp_path) == 0
+        monkeypatch.setattr(
+            setup_common, "configure_progress_output", lambda: events.append("configure")
+        )
+        monkeypatch.setattr(
+            session_refresh,
+            "refresh",
+            lambda *_args, **_kwargs: events.append("reconcile") or result,
+        )
+
+        assert run_cli(monkeypatch, ["-C", str(workspace), "session", "refresh"]) == 0
 
         assert events == ["configure", "reconcile"]
 
-    def test_small_session_handlers_delegate_and_report(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    def test_enter_strips_the_separator_and_allocates_a_tty_for_two_terminals(
+        self, workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.harness import booley
+        isolate_session_cli(monkeypatch, workspace.parent)
+        monkeypatch.setattr(health, "due_reason", lambda _root: None)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        _running_headless(attached.docker, workspace)
 
-        with (
-            patch.object(sr, "enter", return_value=7) as enter,
-            patch.object(booley.sys.stdin, "isatty", return_value=True),
-            patch.object(booley.sys.stdout, "isatty", return_value=True),
-        ):
-            assert (
-                booley._session_enter(SimpleNamespace(exec_cmd=["--", "echo", "ready"]), tmp_path)
-                == 7
-            )
-        enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True, cwd=None)
+        argv = ["-C", str(workspace), "session", "enter", "--", "echo", "ready"]
+        assert run_cli(monkeypatch, argv) == 0
 
-        with patch.object(sr, "down", return_value=sr.DownResult()):
-            assert booley._session_down(SimpleNamespace(), tmp_path) == 0
+        ((_, command, kwargs),) = TestRunProjectCommand._attachments(attached)
+        assert command == ["echo", "ready"]
+        assert kwargs["tty"] is True
 
-        assert capsys.readouterr().out.splitlines() == ["no Sandbox container for this Project"]
-
-    def test_refresh_refuses_active_vscode_before_reconciling_image(self, tmp_path: Path):
-        from booley.harness import booley, session_refresh
-        from booley.harness.booley import _build_parser
-
-        args = _build_parser().parse_args(["session", "refresh"])
-        with (
-            patch.object(
-                session_refresh,
-                "refresh",
-                side_effect=sr.SessionError("VS Code owns Sandbox 'vscode-owned'"),
-            ) as refresh,
-        ):
-            assert booley._cmd_session(args, tmp_path) == 2
-
-        refresh.assert_called_once_with(tmp_path, verbose=False)
-
-    def test_runtime_probe_verifies_exact_wheel_identity(self, tmp_path: Path):
-        image_id = "sha256:" + "a" * 64
-        identity = json.dumps(
-            {
-                "source": "wheel-source",
-                "sha256": "b" * 64,
-                "package_version": "0.2.6",
-                "module_version": "0.2.6",
-            }
-        )
-        with (
-            patch.object(sr, "_docker_stdout", return_value=image_id),
-            patch.object(
-                sr,
-                "_run",
-                return_value=subprocess.CompletedProcess([], 0, identity, ""),
-            ) as run,
-        ):
-            sr.verify_refreshed_session(
-                tmp_path,
-                image_id,
-                expected_wheel_source_fingerprint="wheel-source",
-                expected_wheel_sha256="b" * 64,
-            )
-
-        assert run.call_count == 1
-        argv = run.call_args.args[0]
-        assert argv[:3] == ["docker", "exec", sr.session_container_name(tmp_path)]
-        assert argv[3:6] == ["python3", "-I", "-c"]
-
-    def test_runtime_probe_skips_optional_identity_checks_when_unrequested(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("expected", "output", "failure"),
+        [
+            pytest.param(
+                {"source": "wheel-source", "sha256": "b" * 64},
+                {"source": "wheel-source", "sha256": "b" * 64},
+                None,
+                id="exact-identity",
+            ),
+            pytest.param({}, None, None, id="no-expectations"),
+            pytest.param({"source": "wheel-source"}, "not-json", "wheel identity", id="malformed"),
+            pytest.param(
+                {"source": "wheel-source", "sha256": "b" * 64},
+                {"source": "other-source", "sha256": "b" * 64},
+                "source_fingerprint wheel-source -> other-source",
+                id="other-source",
+            ),
+        ],
+    )
+    def test_verify_refreshed_session(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        expected: dict[str, str],
+        output: dict[str, str] | str | None,
+        failure: str | None,
     ) -> None:
+        docker = serve_sandbox_docker(monkeypatch)
         image_id = "sha256:" + "a" * 64
-        with (
-            patch.object(sr, "_docker_stdout", return_value=image_id),
-            patch.object(sr, "_run") as run,
-        ):
-            sr.verify_refreshed_session(tmp_path, image_id)
-        run.assert_not_called()
-
-    def test_runtime_probe_rejects_malformed_wheel_identity(self, tmp_path: Path):
-        image_id = "sha256:" + "a" * 64
-        with (
-            patch.object(sr, "_docker_stdout", return_value=image_id),
-            patch.object(
-                sr,
-                "_run",
-                return_value=subprocess.CompletedProcess([], 0, "not-json", "probe failed"),
-            ),
-            pytest.raises(sr.SessionError, match="wheel identity"),
-        ):
-            sr.verify_refreshed_session(
-                tmp_path,
-                image_id,
-                expected_wheel_source_fingerprint="wheel-source",
+        name = sr.session_container_name(workspace)
+        docker.containers[name] = {"Image": image_id}
+        stdout = (
+            output
+            if isinstance(output, str)
+            else json.dumps(
+                {**(output or {}), "package_version": "0.2.6", "module_version": "0.2.6"}
             )
-
-    def test_runtime_probe_rejects_wheel_identity_mismatch(self, tmp_path: Path):
-        image_id = "sha256:" + "a" * 64
-        identity = json.dumps(
-            {
-                "source": "other-source",
-                "sha256": "b" * 64,
-                "package_version": "0.2.6",
-                "module_version": "0.2.6",
-            }
         )
-        with (
-            patch.object(sr, "_docker_stdout", return_value=image_id),
-            patch.object(
-                sr,
-                "_run",
-                return_value=subprocess.CompletedProcess([], 0, identity, ""),
-            ),
-            pytest.raises(sr.SessionError, match="wheel identity") as caught,
-        ):
+        docker.exec_reply = lambda argv: subprocess.CompletedProcess(
+            argv, 0, stdout, "probe failed"
+        )
+
+        def verify() -> None:
             sr.verify_refreshed_session(
-                tmp_path,
+                workspace,
                 image_id,
-                expected_wheel_source_fingerprint="wheel-source",
-                expected_wheel_sha256="b" * 64,
+                expected_wheel_source_fingerprint=expected.get("source"),
+                expected_wheel_sha256=expected.get("sha256"),
             )
 
-        assert "source_fingerprint wheel-source -> other-source" in str(caught.value)
-        assert "wheel_sha256" not in str(caught.value)
+        if failure is None:
+            verify()
+        else:
+            with pytest.raises(sr.SessionError, match="wheel identity") as caught:
+                verify()
+            assert failure in str(caught.value)
+            assert "wheel_sha256" not in str(caught.value)
+
+        probes = [call for call in docker.calls if call[1] == "exec"]
+        if expected:
+            assert [call[:3] for call in probes] == [["docker", "exec", name]]
+            assert probes[0][3:6] == ["python3", "-I", "-c"]
+        else:
+            assert probes == []
 
     def test_down_up_never_announces_persisted_stale_doctor_findings(
         self,
-        tmp_path: Path,
+        workspace: Path,
+        cli_project: SandboxDocker,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        from booley.harness import booley
         from booley.harness import doctor as doctor_module
-        from booley.harness.booley import _build_parser
 
+        down = ["-C", str(workspace), "session", "down"]
         monkeypatch.setattr(sr, "down", lambda _root, **_kwargs: sr.DownResult(headless=True))
-        monkeypatch.setattr(sr, "session_container_name", lambda _root: "session")
-        down_args = _build_parser().parse_args(["session", "down"])
-        assert booley._cmd_session(down_args, tmp_path) == 0
+        assert run_cli(monkeypatch, down) == 0
         capsys.readouterr()
 
         monkeypatch.setattr(
@@ -3041,9 +2456,9 @@ class TestSessionRefresh:
             "observe_deep_status",
             lambda *_args, **_kwargs: SimpleNamespace(render=lambda: "deep status"),
         )
-        up_args = _build_parser().parse_args(["session", "up"])
 
-        assert booley._cmd_session(up_args, tmp_path) == 0
+        assert run_cli(monkeypatch, ["-C", str(workspace), "session", "up"]) == 0
+
         output = capsys.readouterr()
         assert "Automatic Doctor is running" in output.err
         assert "Doctor inputs changed" in output.err
