@@ -54,6 +54,7 @@ from booley.core.booley_layout import BooleyLayoutError
 from booley.core.boundary import BoundaryError
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
+from booley.core.host_shell import quote_arg
 from booley.runtime.project_discovery import session_store_checkout
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
 
@@ -314,14 +315,15 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
     went wrong sends them at a command that just failed.
     """
     out = trace.with_suffix(".fst")
+    trace_arg, out_arg = quote_arg(str(trace)), quote_arg(str(out))
     if not build:
         _exit_usage(
             f"ERROR: {trace.name} is a raw VCD; the query engine needs a built "
             f".fst store, so registering it would bind an unqueryable alias.\n"
             f"Build one first, then register it:\n"
-            f"  bwave build {trace} -o {out}\n"
-            f"  bwave register {out} --as ALIAS\n"
-            f"Or let register do both: bwave register {trace} --as ALIAS --build" + diagnostics
+            f"  bwave build {trace_arg} -o {out_arg}\n"
+            f"  bwave register {out_arg} --as ALIAS\n"
+            f"Or let register do both: bwave register {trace_arg} --as ALIAS --build" + diagnostics
         )
     if out.exists():
         # --build writes unscoped (scope=None), so silently overwriting would
@@ -332,9 +334,9 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             f"ERROR: refusing to overwrite the existing {out} with --build "
             f"(it may have been built with a different --scope).\n"
             f"Register the store that is already there:\n"
-            f"  bwave register {out} --as ALIAS\n"
+            f"  bwave register {out_arg} --as ALIAS\n"
             f"Or rebuild it deliberately, then register:\n"
-            f"  bwave build {trace} -o {out}"
+            f"  bwave build {trace_arg} -o {out_arg}"
         )
     print(f"[bwave] building {out.name} from {trace.name} (--build) ...", file=sys.stderr)
     result = convert_vcd(trace, out, existing_store=ExistingStorePolicy.REFUSE)
@@ -345,7 +347,8 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             (trace.parent / "trace.fst.stderr").write_text(result.detail + "\n", encoding="utf-8")
         sys.exit(
             f"ERROR: could not build a queryable store from {trace}.\n"
-            f"Run `bwave build {trace} -o {out}` directly to see the failure." + diagnostics
+            f"Run `bwave build {trace_arg} -o {out_arg}` directly to see the failure."
+            + diagnostics
         )
     return out
 

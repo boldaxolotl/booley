@@ -9,6 +9,7 @@ import pytest
 
 from booley.audit.diagnostic_results import Findings
 from booley.core.booley_dir import checkout_booley_dir_relative_to, reset_cache
+from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.authority import AuthorityError, _canonical_project
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows import baseline_worktree as baseline
@@ -122,13 +123,14 @@ def test_missing_booley_directory_prevents_agent_selection_write(tmp_path, capsy
 
 
 def test_inventory_failure_retains_actionable_retry(tmp_path, monkeypatch, capsys):
-    ctx = InitContext(project_root=tmp_path)
+    root = tmp_path / "it's a root"
+    ctx = InitContext(project_root=root)
     monkeypatch.setattr(
         init_cmd, "remember_project", Mock(side_effect=inventory.ProjectInventoryError("denied"))
     )
     init_cmd._step_project_inventory(ctx)
     assert ctx.results[-1].status == "err"
-    assert "booley projects discover" in ctx.results[-1].detail
+    assert f"booley projects discover {quote_arg(str(root))}" in ctx.results[-1].detail
     assert "could not remember Project Root" in capsys.readouterr().out
 
 

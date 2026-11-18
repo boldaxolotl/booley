@@ -73,6 +73,7 @@ from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
 from booley.core.boundary import as_dict, as_str, as_str_list, require_dict
 from booley.core.config_paths import resolve_toml
+from booley.core.host_shell import quote_arg
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
     CoreProjectionError,
@@ -2099,7 +2100,7 @@ def _step_project_inventory(ctx: InitContext) -> None:
         ctx.record(
             "project_inventory",
             "err",
-            f"retry with `booley projects discover {ctx.project_root}`",
+            f"retry with `booley projects discover {quote_arg(str(ctx.project_root))}`",
         )
         return
     ok(f"remembered Project path {project_root}")

@@ -31,6 +31,7 @@ from booley.audit.diagnostic_results import (
     Findings,
     Severity,
 )
+from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import (
@@ -2424,8 +2425,10 @@ def _git_init(root: Path) -> None:
 @pytest.mark.parametrize("row", ["never", "unset", "wrong-value", "not-a-repo"])
 def test_worktree_prune_guard(row, tmp_path, monkeypatch):
     """Worktrees hold container paths; a host `git gc` prunes them unless the guard is `never`."""
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    project = tmp_path / "it's a project"
+    project.mkdir()
+    booley_dir = _write_project(project)
+    _patch_environment(monkeypatch, project, booley_dir)
     answers = {
         "never": {"stdout": "never\n"},
         "unset": {"returncode": 1},
@@ -2435,14 +2438,14 @@ def test_worktree_prune_guard(row, tmp_path, monkeypatch):
         _answer_command(
             monkeypatch,
             lambda cmd: (
-                cmd[:3] == ["git", "-C", str(tmp_path)] and cmd[-2:] == ["rev-parse", "--git-dir"]
+                cmd[:3] == ["git", "-C", str(project)] and cmd[-2:] == ["rev-parse", "--git-dir"]
             ),
             returncode=128,
         )
     else:
         _answer_command(monkeypatch, lambda cmd: "gc.worktreePruneExpire" in cmd, **answers[row])
 
-    result = _doctor_run(tmp_path)
+    result = _doctor_run(project)
 
     fails = [f for f in result.findings if "gc.worktreePruneExpire" in f.message]
     if row == "never":
@@ -2455,7 +2458,7 @@ def test_worktree_prune_guard(row, tmp_path, monkeypatch):
     else:
         (fail,) = fails
         assert fail.severity is Severity.FAIL
-        assert fail.fix == f"git -C {tmp_path} config gc.worktreePruneExpire never"
+        assert fail.fix == f"git -C {quote_arg(str(project))} config gc.worktreePruneExpire never"
         assert ("'3.months.ago'" in fail.message) is (row == "wrong-value")
 
 

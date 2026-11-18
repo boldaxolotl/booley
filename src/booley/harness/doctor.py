@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import socket
 import subprocess
@@ -1195,7 +1194,7 @@ def _warn_missing_project_data_branch(
         f"Booley Directory's repository {project_repo} has no local branch {outer_branch!r}; "
         "implicit Paired Checkout routing will fail"
     )
-    command = shlex.join(["git", "-C", str(project_repo), "switch", "-c", outer_branch])
+    command = f"git -C {quote_arg(str(project_repo))} switch -c {quote_arg(outer_branch)}"
     fix = (
         f"commit or otherwise clean changes to the Booley Directory, then run `{command}` and rerun "
         "Doctor; if branch names intentionally differ, set project_destination_ref explicitly"
@@ -1595,7 +1594,7 @@ def _check_worktree_prune_guard(
     _fail(
         f"{WORKTREE_PRUNE_KEY} is {detail} — a host-side `git gc` can prune "
         f"legacy or fallback worktree registrations in {repository}",
-        f"git -C {repository} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
+        f"git -C {quote_arg(str(repository))} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
     )
 
 
@@ -3480,7 +3479,7 @@ def _check_oauth_token(
     ):
         _warn(
             f"{label}: stored credential is readable by others: {auth_token.token_path(provider)}",
-            f"chmod 600 {auth_token.token_path(provider)}",
+            f"chmod 600 {quote_arg(str(auth_token.token_path(provider)))}",
         )
         return
     if api_key:

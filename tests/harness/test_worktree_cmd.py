@@ -1362,11 +1362,10 @@ def test_worktree_new_after_managed_bundle_runtime_init(
 def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     versioned_project, python_outer, capsys, monkeypatch
 ):
-    import shlex
-
     from booley.harness.init_cmd import InitContext, _step_booley_dir
     from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
     from booley.runtime.booley_dir import reset_cache
+    from booley.runtime.sandbox_apply import shell_command
     from tests.harness.test_init_rerun import _managed_git
 
     root = versioned_project
@@ -1385,12 +1384,10 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     capsys.readouterr()
     before = _managed_git(data, "ls-files", "--stage", "-z")
     step_project_git_hooks(InitContext(project_root=root))
-    command = shlex.join(
-        ["git", "-C", str(data), "rm", "--cached", "--", ".managed/project-git-hooks.pyz"]
-    )
-    assert command in capsys.readouterr().out
+    argv = ["git", "-C", str(data), "rm", "--cached", "--", ".managed/project-git-hooks.pyz"]
+    assert shell_command(argv) in capsys.readouterr().out
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
-    run_bounded_child(shlex.split(command), check=True)
+    run_bounded_child(argv, check=True)
     assert bundle.is_file()
     _managed_git(data, "commit", "-qm", "intentional generated bundle removal")
     _step_booley_dir(InitContext(project_root=root))

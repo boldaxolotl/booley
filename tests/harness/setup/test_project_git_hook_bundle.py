@@ -41,6 +41,7 @@ def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
             "booley_commit_validation.py",
             "checkout_role.py",
             "run_command.py",
+            "host_shell.py",
             "commit_msg_utils.py",
             "validate_commit_msg.py",
             "commit_msg_hook.py",

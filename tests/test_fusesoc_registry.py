@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from booley.core.host_shell import quote_arg
 from booley.fusesoc import core_projection, fusesoc_registry, selftest_overlay
 from booley.fusesoc.core_projection import CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
@@ -1162,8 +1163,21 @@ class TestMissingSourcePreflight:
         assert (
             "hint: 'worktrees/scalar_1bfe1733' looks like a git worktree "
             "baseline; create it with: git worktree add "
-            "worktrees/scalar_1bfe1733 <commit-ish>"
+            f"{quote_arg('worktrees/scalar_1bfe1733')} <commit-ish>"
         ) in msg
+
+    def test_worktree_hint_quotes_the_root(self, tmp_path: Path):
+        root = "worktrees/it's base"
+        core = self._BASELINE_CORE.replace("worktrees/scalar_1bfe1733", root)
+        _write_core(tmp_path, core, create_sources=False)
+        with pytest.raises(MissingSourceError) as exc_info:
+            _resolve_target(
+                "sim_base",
+                project_root=tmp_path,
+                build_root=tmp_path / "build",
+                runner=subprocess.run,
+            )
+        assert f"git worktree add {quote_arg(root)} <commit-ish>" in str(exc_info.value)
 
     def test_missing_source_is_a_target_resolution_error(self):
         # Callers' existing `except TargetResolutionError` handlers must catch it.
