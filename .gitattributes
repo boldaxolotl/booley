@@ -24,6 +24,9 @@ tests/flows/fixtures/booley_0_4_0/** -text -whitespace
 # Captured Cocotb console output keeps the producer's trailing spaces.
 tests/fixtures/cocotb_timeout_progress/2.1.0/*.log -text -whitespace
 
+# Captured Cocotb skip-reason logs keep the producer's trailing spaces.
+tests/fixtures/cocotb_results/2.1.0/*.log -text -whitespace
+
 # Captured Yosys `stat` output keeps the producer's trailing spaces and final blank line.
 tests/flows/synth/fixtures/mapped_latch_yosys_*.txt -text -whitespace
 
