@@ -27,6 +27,7 @@ from booley.config.project_config import (
 from booley.flows.cli_help import CliHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.job_estimates import JobRequest, sim_job_request, sim_resource_flags
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
@@ -70,6 +71,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_SUCCESS,
     EndpointOutcome,
+    ExecutionResult,
     normalize_completion_error,
 )
 from booley.runtime.file_lock import LockContentionError
@@ -130,13 +132,13 @@ from .record_presentation import (
     _coverage_record_lines,
     _coverage_request_selector,
     _coverage_request_target,
+    _coverage_target_outcome,
     _grade_exit_code,
     _is_pre_sim_card_line,
     _pre_sim_integrity_failure,
     _pre_sim_lines,
     _pre_sim_projection,
     _resolved_coverage_records,
-    _retain_coverage_record,
     _simulation_record_build_infrastructure_detail,
     _simulation_record_hook_inputs,
     _simulation_record_preview_entry,
@@ -219,6 +221,8 @@ class SimulateFlow(
         """Start an invocation with no Simulation Record outcomes: only this Flow keeps them."""
         super()._start_invocation(request)
         self._simulation_record_outcomes: tuple[Any, ...] = ()
+        # Targets whose projection could not be published, with the error: they stay pending.
+        self._projection_failures: list[tuple[SimulationRecordOutcome, Exception]] = []
         # Resumed origins this invocation's `publication_resources` already lock (see flow_resume).
         self._held_resume_origins: set[Path] = set()
 
@@ -243,6 +247,7 @@ class SimulateFlow(
         """Drop the killed attempt's outcomes; keep its Test Runs, seeds and build settings."""
         super().begin_requeued_attempt()
         self._simulation_record_outcomes = ()
+        self._projection_failures = []
         self._current_published_pre_sim_keys = set()
 
     request_type = SimRequest
@@ -312,15 +317,53 @@ class SimulateFlow(
                 return invocation
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
 
-    def publish_flow_records(self, outcome: EndpointOutcome) -> None:
-        """Publish each Simulation Record's ``simulation.json``; no outcomes publish nothing."""
-        outcomes = self._simulation_record_outcomes
-        if not outcomes:
-            return
-        publish_simulation_record_projections(Path(self.args.work_dir), outcomes)
-        # In this process, after publication. ``work_dir`` is the candidate checkout, never the
-        # cwd or BOOLEY_DIR.
-        register_trace_sessions(outcomes, Path(self.args.work_dir))
+    def _publish_projection(self, outcome: SimulationRecordOutcome) -> bool:
+        """Publish one Target's ``simulation.json`` before anything reports the Target complete.
+
+        A failure keeps the Target pending: it is recorded for the run's completion errors and
+        the caller leaves the Target out of progress and the card.
+        """
+        try:
+            publish_simulation_record_projections(Path(self.args.work_dir), (outcome,))
+        except (OSError, ValueError, RuntimeError) as error:
+            self._projection_failures.append((outcome, error))
+            return False
+        return True
+
+    def _with_projection_failures(self, result: EndpointOutcome) -> EndpointOutcome:
+        """Report each Target whose projection failed: a completion error and a pending Target."""
+        if not self._projection_failures:
+            return result
+        for outcome, error in self._projection_failures:
+            normalize_completion_error(
+                result,
+                error,
+                "publish Simulation Record projections",
+                path=outcome.manifest_path.parents[1] / "simulation.json",
+            )
+        pending = result.detail.get("pending_targets")
+        result.detail["pending_targets"] = [
+            *(cast(list[str], pending) if isinstance(pending, list) else []),
+            *(str(outcome.target["selector"]) for outcome, _ in self._projection_failures),
+        ]
+        return result
+
+    def finish_execution(
+        self,
+        prepared: PreparedExecution,
+        outcome: EndpointOutcome,
+        *,
+        started: float | None,
+    ) -> ExecutionResult:
+        """Register the published Targets' bwave traces, then report: the attempt's final step.
+
+        Only the attempt whose result stands reaches this, so a requeued first attempt never
+        moves a bwave alias. ``work_dir`` is the candidate checkout, never the cwd or
+        BOOLEY_DIR.
+        """
+        if self._simulation_record_outcomes:
+            register_trace_sessions(self._simulation_record_outcomes, Path(self.args.work_dir))
+        return super().finish_execution(prepared, outcome, started=started)
 
     def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None:
         if self.cycle_report_json is not None:
@@ -331,7 +374,8 @@ class SimulateFlow(
                     {"test": item["test"], "cycle_count": item["cycle_count"]}
                     for item in outcome.observations
                 ]
-                for outcome in outcomes
+                # A Target whose projection failed keeps its measured counts.
+                for outcome in (*outcomes, *(failed for failed, _ in self._projection_failures))
             }
             self.cycle_report_json = json.dumps({"cycle_counts": rows}) if rows else "{}"
         except Exception:  # optional metadata cannot change verdict or acceptance
@@ -339,7 +383,7 @@ class SimulateFlow(
             self.cycle_report_json = '{"cycle_counts_error":"unavailable"}'
 
     def refresh_report_detail(self, result: EndpointOutcome) -> None:
-        """Bind final projection references after acceptance publication."""
+        """Bind the records' artifact references to this invocation's directory."""
         outcomes = self._simulation_record_outcomes
         invocation = self._reserved_invocation_dir
         if outcomes and invocation is not None:
@@ -988,13 +1032,16 @@ class SimulateFlow(
                 return self._coverage_simulation_record_failure(
                     outcomes, requests, index, request, exc
                 )
-            outcomes.append(outcome)
             try:
-                _retain_coverage_record(progress, outcome)
+                target = _coverage_target_outcome(outcome)
             except (OSError, ValueError) as exc:
                 return self._coverage_simulation_record_failure(
-                    outcomes[:-1], requests, index, request, exc, failed_outcome=outcome
+                    outcomes, requests, index, request, exc, failed_outcome=outcome
                 )
+            if not self._publish_projection(outcome):
+                continue
+            outcomes.append(outcome)
+            progress.outcomes.append(target)
             try:
                 progress.checkpoint()
             except (OSError, ValueError) as exc:
@@ -1141,7 +1188,10 @@ class SimulateFlow(
 
         Admission check, invocation reservation, published-manifest tracking,
         the progress lifecycle and failure normalization live here; a kind
-        supplies only what differs.
+        supplies only what differs. Each Target's projection is published as its
+        run returns, so progress lists a Target complete only once its
+        ``simulation.json`` exists; a Target whose projection failed stays pending
+        and the run ends ``aborted`` with a completion error.
         """
         if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(
@@ -1160,12 +1210,12 @@ class SimulateFlow(
             if isinstance(started, EndpointOutcome):
                 return started
             with ProgressLifecycle(started.terminal) as lifecycle:
-                result = started.run()
-                if started.finished(result):
+                result = self._with_projection_failures(started.run())
+                if started.finished(result) and not self._projection_failures:
                     lifecycle.complete()
                 return (
                     self._with_simulation_record_paths(result, published)
-                    if simulation_record.paths_on_success
+                    if simulation_record.paths_on_success or self._projection_failures
                     else result
                 )
         except (OSError, ValueError, RuntimeError) as exc:
@@ -1178,7 +1228,7 @@ class SimulateFlow(
                     path=invocation / "progress.json",
                 )
             else:
-                result = simulation_record.failure(exc, invocation)
+                result = self._with_projection_failures(simulation_record.failure(exc, invocation))
             return self._with_simulation_record_paths(result, published)
 
     def _with_live_progress(self, run: Callable[[], EndpointOutcome]) -> EndpointOutcome:
@@ -1359,8 +1409,8 @@ class SimulateFlow(
             )
         return requests
 
-    @staticmethod
     def _publish_and_run_simulation_record_requests(
+        self,
         simulation_record: SimulationRecord,
         candidates: Sequence[NewSimulationRecordRunRequest],
         *,
@@ -1374,9 +1424,11 @@ class SimulateFlow(
         for request in candidates:
             simulation_record.publish_new(request)
         for request in candidates:
-            completed.append(simulation_record.run(request))
-            if checkpoint is not None:
-                checkpoint()
+            outcome = simulation_record.run(request)
+            if self._publish_projection(outcome):
+                completed.append(outcome)
+                if checkpoint is not None:
+                    checkpoint()
         return completed
 
     def _write_simulation_record_progress(

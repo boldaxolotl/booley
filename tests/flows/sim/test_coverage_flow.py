@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.coverage_reference import (
@@ -947,7 +948,8 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
     result = _coverage(tmp_path, _SplitMetricsExecution(), target="sim_custom")
 
     assert result.exit_code == 2
-    assert result.outcome.detail["targets"]["sim_custom"]["simulation"] == "pass"
+    # The Target whose projection failed stays pending: no card entry, no Coverage Record line.
+    assert result.outcome.detail["pending_targets"] == ["sim_custom"]
     assert result.outcome.detail["completion_error"]["operation"] == (
         "publish Simulation Record projections"
     )
@@ -1066,19 +1068,30 @@ def _prepare_coverage_origin(tmp_path, monkeypatch, *, skipped=()):
 
 
 def _interrupt_coverage_collection(
-    tmp_path, monkeypatch, *, selected=None, skipped=(), boundary=None, no_waivers=False
+    tmp_path,
+    monkeypatch,
+    *,
+    selected=None,
+    skipped=(),
+    boundary=None,
+    no_waivers=False,
+    signalled=False,
 ):
     """Interrupt a coverage run before its collection records a result.
 
     Without ``boundary`` the interrupt lands inside the executor, leaving the
     aggregate work item ``interrupted``.  With ``"after:manifest_commit"`` it
     lands right after the Manifest is published, leaving the item ``pending``.
+    With ``signalled`` the process ends in the executor without unwinding, as a
+    SIGTERM does: only the handler's progress abort runs.
     """
     reports = _prepare_coverage_origin(tmp_path, monkeypatch, skipped=skipped)
 
     class Interrupted(NativeExecution):
         def run(self, request):
             super().run(request)
+            if signalled:
+                abort_open_progress()
             raise KeyboardInterrupt("simulated process interruption")
 
     def checkpoint(actual):
@@ -1099,6 +1112,20 @@ def _interrupt_coverage_collection(
             simulation_record_publication_checkpoint=checkpoint if boundary else None,
         ).execute(request)
     return reports, request
+
+
+def test_signal_aborted_coverage_progress_stays_terminal(tmp_path, monkeypatch):
+    reports, _request = _interrupt_coverage_collection(tmp_path, monkeypatch, signalled=True)
+    progress_path = reports / "sim/1/progress.json"
+    aborted = progress_path.read_bytes()
+    assert json.loads(aborted)["phase"] == "aborted"
+
+    refused = _coverage(tmp_path, resume_from=reports / "sim/1/targets/sim_0/record/manifest.json")
+    assert refused.exit_code == 2
+    assert progress_path.read_bytes() == aborted
+    assert _coverage(tmp_path).exit_code == 0
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert (progress["phase"], progress["pending_targets"]) == ("aborted", ["sim_0"])
 
 
 def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, skipped=()):

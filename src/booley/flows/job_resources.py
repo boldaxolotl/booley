@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.flows.memory_admission import job_thread_count
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import current_job
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.resource_history import DOCTOR_RUN_ENV, append_records
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -739,11 +740,14 @@ def history_records(
     # it), when it has one; absent otherwise.
     job_threads = job_thread_count()
     threads = {} if job_threads is None else {"threads": job_threads}
+    # Which Job ran the command: the history counts and retains Jobs, not records.
+    job = {} if (job_id := current_job()) is None else {"job": job_id}
     return [
         {
             **common,
             **size,
             **threads,
+            **job,
             "key": {
                 "target": label.target,
                 "phase": phase,
@@ -885,6 +889,25 @@ def specialist_record(
     }
 
 
+# Set while a block repeats commands this Job already recorded.
+_repeating: ContextVar[bool] = ContextVar("booley_repeating_commands", default=False)
+
+
+@contextlib.contextmanager
+def repeated_commands() -> Iterator[None]:
+    """Mark the block as repeating commands this Job already recorded.
+
+    A repeat that exits zero without timing out adds nothing to the history;
+    a failed, timed-out or OOM-killed repeat is still recorded, because its
+    outcome differs from the first record's.
+    """
+    token = _repeating.set(True)
+    try:
+        yield
+    finally:
+        _repeating.reset(token)
+
+
 def record_command(
     flow: str,
     label: ResourceLabel,
@@ -898,6 +921,8 @@ def record_command(
     nothing: they would pollute the Project's real keys. Inside ``judged_commands``
     the records are held until the block ends.
     """
+    if _repeating.get() and result.returncode == 0 and not result.timed_out:
+        return
 
     def build() -> list[dict[str, Any]]:
         return history_records(flow, label, flags, measurement, result)

@@ -757,8 +757,12 @@ def _public_cycle_flow(simulation_record, monkeypatch):
     monkeypatch.setattr(
         flow,
         "run_prepared_simulation",
-        # Private seam: the stubbed run answers with the projection of the record built above.
-        lambda *_args: flow._simulation_record_endpoint_outcome([simulation_record]),
+        # Private seam: the stubbed run publishes the record built above as the real run does.
+        lambda *_args: flow._with_projection_failures(
+            flow._simulation_record_endpoint_outcome(
+                [simulation_record] if flow._publish_projection(simulation_record) else []
+            )
+        ),
     )
     return flow
 
@@ -839,14 +843,15 @@ def test_public_cycle_metadata_survives_publication_faults(tmp_path, monkeypatch
     if failure in {None, "metadata"}:
         projection = json.loads(next(reports.glob("sim/*/targets/*/simulation.json")).read_text())
         assert projection["tests"][0]["cycles"] == 1234
-    if failure not in {"render", "structured"}:
+    # An unpublished Target keeps its counts but has no card entry or record detail.
+    if failure not in {"render", "structured", "acceptance"}:
         assert report["detail"]["records"]["sim"]["observations"][0]["cycle_count"] == 1234
         assert "smoke: cycles=1234" in result.outcome.report_text
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeypatch, cancelled):
-    """The first Target's counts reach the report; nothing publishes."""
+    """The first Target's counts reach the report; only it publishes."""
     from booley.flows.sim.record.coordinator import (
         SimulationRecord,
         SimulationRecordCancellationError,
@@ -875,7 +880,8 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
         assert "targets" not in result.outcome.detail and "records" not in result.outcome.detail
     report = json.loads((tmp_path / "reports/sim.json").read_text())
     assert list(report["cycle_counts"]) == ["sim_a"]
-    assert not list((tmp_path / "reports").glob("sim/*/targets/*/simulation.json"))
+    published = (tmp_path / "reports").glob("sim/*/targets/*/simulation.json")
+    assert [path.parent.name for path in published] == ["sim_a"]
 
 
 @pytest.mark.parametrize("unnamed", [False, True])
@@ -970,10 +976,17 @@ def _three_target_coverage_origin(tmp_path, monkeypatch):
     return reports
 
 
-def _assert_coverage_fault(fault, result, reports, returned, terminal_phases):
+def _assert_coverage_fault(fault, result, reports, returned, terminal_phases, monkeypatch, capsys):
     detail = result.outcome.detail
     report = json.loads((reports / "sim/1/report.json").read_text())
-    counted = {"progress": 1, "terminal_progress": 3, "retention": 2, "run": 1, "cancel": 1}[fault]
+    counted = {
+        "progress": 1,
+        "terminal_progress": 3,
+        "retention": 2,
+        "run": 1,
+        "cancel": 1,
+        "projection": 3,
+    }[fault]
     assert list(report["cycle_counts"]) == [f"sim_{index}" for index in range(counted)]
     if fault == "terminal_progress":
         assert detail["completion_error"]["operation"] == "publish coverage progress"
@@ -987,10 +1000,26 @@ def _assert_coverage_fault(fault, result, reports, returned, terminal_phases):
         assert all(row[0]["cycle_count"] is None for row in report["cycle_counts"].values())
         coverage_record = (returned[0].manifest_path.parents[1] / "coverage.json").resolve()
         assert f"  Coverage Record: {coverage_record}" in result.outcome.report_text.splitlines()
+        assert _coverage_uncovered_exit(monkeypatch, capsys, coverage_record) == 0
+    elif fault == "projection":
+        error = detail["completion_error"]
+        assert error["operation"] == "publish Simulation Record projections"
+        assert Path(error["path"]).parts[-3:] == ("targets", "sim_1", "simulation.json")
+        assert terminal_phases == ["aborted"]
+        progress = json.loads((reports / "sim/1/progress.json").read_text())
+        assert progress["phase"] == "aborted"
+        assert progress["completed_targets"] == ["sim_0", "sim_2"]
+        assert progress["pending_targets"] == ["sim_1"]
+        lines = [
+            line
+            for line in result.outcome.report_text.splitlines()
+            if line.startswith("  Coverage Record: ")
+        ]
+        assert [Path(line.split(": ", 1)[1]).parent.name for line in lines] == ["sim_0", "sim_2"]
     if fault in ("retention", "run"):
         # Retaining the failed Target would make its projection fail with a completion error.
         assert "completion_error" not in detail
-    if fault != "cancel":
+    if fault not in ("cancel", "projection"):
         assert report["detail"]["pending_targets"] == (
             [] if fault == "terminal_progress" else ["sim_1", "sim_2"]
         )
@@ -1001,14 +1030,47 @@ def _assert_coverage_fault(fault, result, reports, returned, terminal_phases):
         "terminal_progress": {"sim_0", "sim_1", "sim_2"},
         "retention": {"sim_0"},
         "run": {"sim_0"},
-        "cancel": set(),
+        "cancel": {"sim_0"},
+        "projection": {"sim_0", "sim_2"},
     }
     assert published == retained[fault]
 
 
-@pytest.mark.parametrize("fault", ["progress", "terminal_progress", "retention", "run", "cancel"])
-def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, fault):
-    """A fault after some Targets finished keeps their counts apart from what is published."""
+def _coverage_uncovered_exit(monkeypatch, capsys, coverage_json: Path) -> int:
+    """Exit code of ``booley coverage uncovered`` on a Coverage Record, run as a host terminal."""
+    from booley.harness import booley as cli
+    from tests.harness.test_coverage_cli import _booley
+
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    return _booley(monkeypatch, capsys, "coverage", "uncovered", str(coverage_json))[0]
+
+
+def _fail_projection_of(monkeypatch, target: str) -> None:
+    """Make writing *target*'s ``simulation.json`` fail, as a full disk would.
+
+    Patches Booley's own writer: no public entry point injects a disk-write fault.
+    """
+    from booley.flows.sim import acceptance
+
+    original = acceptance.write_compatibility_projection
+
+    def write(path, *args, **kwargs):
+        if Path(path).parent.name == target:
+            raise OSError(5, "projection unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(acceptance, "write_compatibility_projection", write)
+
+
+@pytest.mark.parametrize(
+    "fault", ["progress", "terminal_progress", "retention", "run", "cancel", "projection"]
+)
+def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, capsys, fault):
+    """A fault after some Targets finished keeps their counts apart from what is published.
+
+    A finished Target's Coverage Record is readable before the next Target starts, and a
+    Target whose projection cannot be published stays pending.
+    """
     from booley.flows.sim.coverage_progress import CoverageProgress
     from booley.flows.sim.record.coordinator import (
         SimulationRecord,
@@ -1021,9 +1083,14 @@ def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, fa
     original_run = SimulationRecord.run
     original_checkpoint = CoverageProgress.checkpoint
     returned = []
+    readable = []
     terminal_phases = []
 
     def run(simulation_record, request):
+        if len(returned) == 1 and fault != "progress":
+            # The second Target is starting: the first one is already readable.
+            first = returned[0].manifest_path.parents[1] / "coverage.json"
+            readable.append(_coverage_uncovered_exit(monkeypatch, capsys, first))
         if len(returned) == 1 and fault == "run":
             raise RuntimeError("second run failed before outcome")
         if len(returned) == 1 and fault == "cancel":
@@ -1038,20 +1105,25 @@ def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, fa
     def checkpoint(progress, *, complete=False, phase=None):
         if fault == "progress" and not complete and progress.outcomes:
             raise OSError("progress unavailable")
-        if fault == "terminal_progress" and complete:
+        if complete:
             terminal_phases.append(phase)
+        if fault == "terminal_progress" and complete:
             raise OSError("terminal progress unavailable")
         return original_checkpoint(progress, complete=complete, phase=phase)
 
     monkeypatch.setattr(SimulationRecord, "run", run)
     monkeypatch.setattr(CoverageProgress, "checkpoint", checkpoint)
+    if fault == "projection":
+        _fail_projection_of(monkeypatch, "sim_1")
     result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
         SimRequest(
             target="sim_0,sim_1,sim_2", work_dir=tmp_path, coverage=True, report_dir=reports
         )
     )
+    # Observed while the second Target started: `booley coverage uncovered` took the first's record.
+    assert readable == ([] if fault == "progress" else [0])
     assert result.exit_code == (130 if fault == "cancel" else 2)
-    _assert_coverage_fault(fault, result, reports, returned, terminal_phases)
+    _assert_coverage_fault(fault, result, reports, returned, terminal_phases, monkeypatch, capsys)
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
@@ -1403,9 +1475,10 @@ def _faulty_kind_run(tmp_path, monkeypatch, kind, fault):
     terminal_phases = []
 
     def checkpoint(path, payload):
-        if payload["complete"] and fault == "completion":
+        if payload["complete"]:
             terminal_phases.append(payload["phase"])
-            raise OSError("terminal progress unavailable")
+            if fault == "completion":
+                raise OSError("terminal progress unavailable")
         return original_checkpoint(path, payload)
 
     def fail_after_publication(record, run_request):
@@ -1419,6 +1492,13 @@ def _faulty_kind_run(tmp_path, monkeypatch, kind, fault):
 
     for module in modules:
         monkeypatch.setattr(module, "publish_checkpoint", checkpoint)
+    if fault == "projection":
+        from booley.flows.sim import acceptance
+
+        def unavailable(*_args, **_kwargs):
+            raise OSError(5, "projection unavailable")
+
+        monkeypatch.setattr(acceptance, "write_compatibility_projection", unavailable)
     if kind == "resume":
         monkeypatch.setattr(flow_module, "publish_checkpoint", checkpoint)
         if fault == "before_result":
@@ -1429,7 +1509,7 @@ def _faulty_kind_run(tmp_path, monkeypatch, kind, fault):
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
-@pytest.mark.parametrize("fault", ["before_result", "completion"])
+@pytest.mark.parametrize("fault", ["before_result", "completion", "projection"])
 def test_simulation_record_kind_failure_cards_name_published_manifests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, fault: str
 ) -> None:
@@ -1447,6 +1527,14 @@ def test_simulation_record_kind_failure_cards_name_published_manifests(
         assert terminal_phases == ["complete", "aborted"]
         # The finished work still reaches the card: its verdict is not lost with the write.
         assert " PASS" in card.splitlines()[0]
+    elif fault == "projection":
+        error = result.outcome.detail["completion_error"]
+        assert error["operation"] == "publish Simulation Record projections"
+        assert terminal_phases == ["aborted"]
+        assert "  Coverage Record: " not in card
+        assert result.outcome.detail["pending_targets"] == [
+            "sim_0" if kind == "coverage" else "sim_a"
+        ]
     else:
         failed = {
             "ordinary": "Simulation Record execution failed",
@@ -1690,10 +1778,12 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
     from booley.flows.sim import flow as flow_module
 
     publish_checkpoint = flow_module.publish_checkpoint
-    hook = SimulateFlow.publish_flow_records
+    projections = flow_module.publish_simulation_record_projections
     refresh = SimulateFlow.refresh_report_detail
 
     def progress(path, payload):
+        if payload["completed_targets"] and not payload["complete"]:
+            events.append("listed")
         if payload["complete"]:
             terminal_phases.append(payload["phase"])
             events.append("terminal")
@@ -1701,8 +1791,8 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
                 raise OSError("injected terminal progress failure")
         return publish_checkpoint(path, payload)
 
-    def record(self, outcome):
-        hook(self, outcome)
+    def record(work_dir, outcomes):
+        projections(work_dir, outcomes)
         events.append("publish")
 
     def refresh_detail(self, result):
@@ -1710,7 +1800,7 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
         return refresh(self, result)
 
     monkeypatch.setattr(flow_module, "publish_checkpoint", progress)
-    monkeypatch.setattr(SimulateFlow, "publish_flow_records", record)
+    monkeypatch.setattr(flow_module, "publish_simulation_record_projections", record)
     monkeypatch.setattr(SimulateFlow, "refresh_report_detail", refresh_detail)
 
 
@@ -1720,7 +1810,7 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
 def test_simulation_record_publication_lifecycle_order(
     tmp_path, monkeypatch, terminal_write_fails
 ):
-    """Record publication follows the terminal result and precedes the report refresh."""
+    """Record publication precedes the progress that lists the Target completed."""
     from booley.flows.sim.request import SimRequest
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
@@ -1735,7 +1825,7 @@ def test_simulation_record_publication_lifecycle_order(
     )
 
     first = {name: events.index(name) for name in dict.fromkeys(events)}
-    assert first["terminal"] < first["publish"] < first["refresh"]
+    assert first["publish"] < first["listed"] < first["terminal"] < first["refresh"]
     if terminal_write_fails:
         assert result.exit_code == 2
         operation = result.outcome.detail["completion_error"]["operation"]

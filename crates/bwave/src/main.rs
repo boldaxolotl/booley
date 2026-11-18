@@ -317,7 +317,7 @@ struct WaveArgs {
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
 
-    /// Time range START:END (required for wave queries)
+    /// Optional time range START:END; without it, --limit bounds the column count
     #[arg(short = 't', long = "time")]
     time: Option<String>,
 

@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from contextvars import ContextVar
@@ -124,18 +125,7 @@ def normalize_completion_error(
 Prepared_contra = TypeVar("Prepared_contra", contravariant=True)
 
 
-class RecordPublisher(Protocol[Prepared_contra]):
-    """Publish the records of one prepared request."""
-
-    def publish_records(self, prepared: Prepared_contra, outcome: EndpointOutcome) -> None:
-        """Publish records before the report is written."""
-        ...
-
-
-class ExecutableEndpoint(
-    RecordPublisher[Prepared_contra],
-    Protocol[Prepared_contra],
-):
+class ExecutableEndpoint(Protocol[Prepared_contra]):
     """Internal adapter interface consumed by :func:`execute_endpoint`.
 
     The interface describes lifecycle stages, not the implementation helpers
@@ -176,32 +166,9 @@ class ExecutableEndpoint(
         outcome: EndpointOutcome,
         *,
         started: float | None,
-        records_published: bool,
     ) -> ExecutionResult:
-        """Publish completion; the report refreshes its detail once records are published."""
+        """Publish completion: the report refreshes its detail, then the display event ends."""
         ...
-
-
-def _publish_and_finish(
-    endpoint: ExecutableEndpoint[Prepared_contra],
-    prepared: Prepared_contra,
-    outcome: EndpointOutcome,
-    *,
-    started: float | None,
-) -> ExecutionResult:
-    records_published = False
-    try:
-        endpoint.publish_records(prepared, outcome)
-        records_published = True
-    except Exception as exc:
-        logger.debug("Endpoint record publication failed", exc_info=True)
-        normalize_completion_error(outcome, exc, "publish Simulation Record projections")
-    return endpoint.finish_execution(
-        prepared,
-        outcome,
-        started=started,
-        records_published=records_published,
-    )
 
 
 @dataclass(eq=False)
@@ -228,6 +195,15 @@ class _JobAttempt:
 
 # The current attempt; shared by the Job's threads (Simulation Record lanes copy the context).
 _JOB_ATTEMPT: ContextVar[_JobAttempt | None] = ContextVar("booley_job_attempt", default=None)
+
+
+# The running Job's opaque id; ``None`` outside ``execute_endpoint``.
+_JOB_ID: ContextVar[str | None] = ContextVar("booley_job_id", default=None)
+
+
+def current_job() -> str | None:
+    """The id of the Job this code runs in, shared by its attempts and threads; it sorts by start."""
+    return _JOB_ID.get()
 
 
 @contextmanager
@@ -391,10 +367,10 @@ def _attempt_endpoint(
 ) -> ExecutionResult | None:
     """Admit and run one attempt; ``None`` after releasing its claim to requeue the Job.
 
-    Once admitted, the claim stays held through record publication and
-    reporting. A first attempt that is requeued publishes
-    nothing: its records, report and display end never happen, and its
-    progress document is retired so no caller reads it for the Job.
+    Once admitted, the claim stays held through reporting. A first attempt that is
+    requeued reports nothing: its report and display end never happen, its directory
+    keeps the records its finished Targets published with its other partial artifacts,
+    and its progress document is retired so no caller reads it for the Job.
     """
     admission = ExitStack()
     try:
@@ -402,7 +378,7 @@ def _attempt_endpoint(
     except EndpointRejectedError as exc:
         if requeued:
             _name_requeue(exc.outcome, started_again=False)
-        return _publish_and_finish(endpoint, request, exc.outcome, started=None)
+        return endpoint.finish_execution(request, exc.outcome, started=None)
     with admission:
         started = time.monotonic()
         # The requeued attempt is the last one: it is never armed.
@@ -416,7 +392,7 @@ def _attempt_endpoint(
         if requeued:
             _name_requeue(outcome, started_again=True)
         _name_final_oom_kills(outcome, attempt, requeued=requeued)
-        return _publish_and_finish(endpoint, request, outcome, started=started)
+        return endpoint.finish_execution(request, outcome, started=started)
 
 
 def execute_endpoint(
@@ -430,8 +406,14 @@ def execute_endpoint(
     first attempt was OOM-killed gets one more attempt, run alone, and its
     result comes from that attempt only.
     """
-    first = _attempt_endpoint(endpoint, request, requeued=False)
-    if first is not None:
-        return first
-    # The requeued attempt is never armed, so it always finishes.
-    return cast(ExecutionResult, _attempt_endpoint(endpoint, request, requeued=True))
+    # A fresh id, not BOOLEY_RUN_ID: an inherited one could merge separate invocations.
+    # It starts with the time, so ids sort by Job start.
+    token = _JOB_ID.set(f"{time.time_ns():020d}-{uuid.uuid4().hex[:8]}")
+    try:
+        first = _attempt_endpoint(endpoint, request, requeued=False)
+        if first is not None:
+            return first
+        # The requeued attempt is never armed, so it always finishes.
+        return cast(ExecutionResult, _attempt_endpoint(endpoint, request, requeued=True))
+    finally:
+        _JOB_ID.reset(token)

@@ -2269,9 +2269,8 @@ class TestJobPhase:
         )
         # The queue detail and the requeue reason read together.
         assert _job_phase("simulate-p-4") == (
-            "QUEUED (position 1): waits to run alone (memory estimate unknown or above the "
-            "Memory Budget); largest holders: run-1 (synth, a) 200 MiB; "
-            "requeued after out-of-memory"
+            "QUEUED (position 1): waits to run alone (requeued after out-of-memory); "
+            "largest holders: run-1 (synth, a) 200 MiB"
         )
         # Contrast: the same waiter without a reason reads without it.
         store.release(token)
@@ -3179,12 +3178,10 @@ def _handoff_text(monkeypatch, phase):
     return result[0].text
 
 
-def test_queued_handoff_says_queued_for_memory_not_started(monkeypatch):
-    phase = "QUEUED (position 1): needs 807 MiB; 266 MiB free of the 14,016 MiB Memory Budget"
+def test_queued_handoff_says_queued_not_started(monkeypatch):
+    phase = "QUEUED (position 2): waits in queue order behind run-3 (synth, a); needs 807 MiB"
     text = _handoff_text(monkeypatch, phase)
-    assert text.startswith(
-        f"{phase}: 'sim' is queued for memory and has not started yet (run_id=run-1)."
-    )
+    assert text.startswith(f"{phase}: 'sim' is queued and has not started yet (run_id=run-1).")
     assert "the run has not started" in text
     assert "call 'booley_poll' with no run_id" in text
     assert "running in the background" not in text
@@ -3192,9 +3189,9 @@ def test_queued_handoff_says_queued_for_memory_not_started(monkeypatch):
 
 
 def test_requeued_handoff_says_the_retry_has_not_started(monkeypatch):
-    phase = "QUEUED (position 1): waits to run alone; requeued after out-of-memory"
+    phase = "QUEUED (position 1): waits to run alone (requeued after out-of-memory)"
     text = _handoff_text(monkeypatch, phase)
-    assert "is queued for memory and has not started yet (run_id=run-1)" in text
+    assert "is queued and has not started yet (run_id=run-1)" in text
     assert "the retry has not started" in text
     assert "the run has not started" not in text
 

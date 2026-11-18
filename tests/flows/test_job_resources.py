@@ -144,7 +144,7 @@ def test_command_records_every_field_and_keeps_its_exit_code(run, tmp_path):
     assert result.returncode == 3
     (record,) = _history(tmp_path)
     # Endpoint admission also records the Job thread count.
-    assert set(record) == RECORD_FIELDS | {"threads"}
+    assert set(record) == RECORD_FIELDS | {"threads", "job"}
     assert record["key"] == {"target": "test", "phase": "echo_tool", "flags": [], "test_run": ""}
     assert record["outcome"] == "exit_nonzero" and record["returncode"] == 3
     assert record["peak_rss_mb"] >= 16
@@ -873,6 +873,15 @@ def test_parallel_writers_never_lose_or_corrupt_records(tmp_path):
     assert keys == {f"w{n}-{index}" for n in range(6) for index in range(10)}
 
 
+def test_repeated_commands_record_only_failures(flow, tmp_path):
+    with job_resources.repeated_commands():
+        _execute(flow, _python("pass"))
+        _execute(flow, _python("raise SystemExit(3)"))
+
+    (record,) = _history(tmp_path)
+    assert record["returncode"] == 3
+
+
 def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
     keys, per_key = 120, 21
     resource_history.append_records(
@@ -886,6 +895,28 @@ def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
         seqs = [r["seq"] for r in records if r["key"]["target"] == f"k{k}"]
         newest = per_key if k == 0 else per_key - 1
         assert seqs == list(range(newest - 19, newest + 1))
+
+
+def test_history_counts_and_keeps_jobs_not_records(tmp_path):
+    def job(n: int, count: int) -> list[dict[str, Any]]:
+        # Job ids sort by start, as execute_endpoint's do.
+        return [_record("k", job=f"{n:03d}", seq=i) for i in range(count)]
+
+    resource_history.append_records(tmp_path, job(0, 1))
+    for n in range(1, 20):
+        resource_history.append_records(tmp_path, job(n, 2))
+    resource_history.append_records(tmp_path, [*job(20, 2), _record("old")])
+    # Job 0 is already evicted: a late record of it neither returns nor evicts Job 1.
+    resource_history.append_records(tmp_path, job(0, 1))
+
+    records = _history(tmp_path)
+    kept = [r for r in records if r["key"]["target"] == "k"]
+    assert {r["job"] for r in kept} == {f"{n:03d}" for n in range(1, 21)}
+    assert len(kept) == 40
+    assert {s["key"]["target"]: s["runs"] for s in resource_history.summarize(records)} == {
+        "k": 20,
+        "old": 1,
+    }
 
 
 @pytest.mark.parametrize(

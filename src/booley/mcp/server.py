@@ -963,8 +963,7 @@ def _format_job_running(name: str, run_id: str) -> str:
         "the retry has not started" if OOM_REQUEUE_REASON in phase else "the run has not started"
     )
     status = (
-        f"is queued for memory and has not started yet (run_id={run_id}). This is NOT the "
-        f"result — {retry}."
+        f"is queued and has not started yet (run_id={run_id}). This is NOT the result — {retry}."
         if phase.startswith("QUEUED")
         else f"is taking longer than the inline wait and is now running in the background "
         f"(run_id={run_id}). This is NOT the result — the run has not finished."
@@ -979,7 +978,7 @@ def _format_job_running(name: str, run_id: str) -> str:
 
 
 def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
-    """Message for a poll whose job is still running (or queued for memory).
+    """Message for a poll whose job is still running (or queued).
 
     *owned*: the polling agent started the Job, so an argument-free poll covers it.
     """

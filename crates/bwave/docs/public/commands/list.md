@@ -35,9 +35,10 @@ trace, e.g. from a Verilator sim traced via the auto
 `--main`) replaces the footer with `ERROR: waveform
 store has no signals ...` — still exit 0, so `list`
 remains usable to diagnose the store, unlike the query
-subcommands which exit 2 on it. A `-s` pattern that
-merely matches none of the store's N signals keeps the
-plain `# 0 signals` footer.
+subcommands which exit 2 on it. When every `-s`
+pattern matches none of the store's signals, the footer
+becomes `# WARNING: no signals match pattern(s) ...`,
+still exit 0 (JSON: `warnings`).
 
 JSON mode produces a `listData` envelope:
 
