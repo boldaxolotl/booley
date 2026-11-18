@@ -232,6 +232,53 @@ def test_compute_without_cgroup_limit_reads_memtotal(
     assert result.bytes == 14 * GIB
 
 
+@pytest.mark.parametrize(
+    ("limit", "cgroup_swap", "host_swap", "headroom", "swap_bytes"),
+    [
+        pytest.param(32 * GIB, 8 * GIB, 4 * GIB, False, 4 * GIB, id="swap"),
+        pytest.param(32 * GIB, 0, 4 * GIB, True, 0, id="no-swap"),
+        pytest.param(32 * GIB, 1 << 60, 0, True, 0, id="no-host-swap"),
+        pytest.param(32 * GIB, None, 4 * GIB, True, 0, id="no-swap-accounting"),
+        pytest.param(None, 8 * GIB, 16 * GIB, True, 0, id="no-limit"),
+    ],
+)
+def test_compute_drops_headroom_only_with_a_swap_allowance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int | None,
+    cgroup_swap: int | None,
+    host_swap: int,
+    headroom: bool,
+    swap_bytes: int,
+) -> None:
+    monkeypatch.setattr(f"{MODULE}.cgroup_memory_limit_bytes", lambda: limit)
+    monkeypatch.setattr(f"{MODULE}.cgroup_swap_limit_bytes", lambda _limit: cgroup_swap)
+    proc = make_proc(tmp_path)
+    (proc / "meminfo").write_text(
+        f"MemTotal: {16 * GIB // 1024} kB\nSwapTotal: {host_swap // 1024} kB\n", encoding="utf-8"
+    )
+
+    result = memory_budget.compute_memory_budget(proc_root=proc)
+
+    roles = [p.role for p in result.reserve]
+    assert (memory_budget.ReserveRole.HEADROOM in roles) is headroom
+    assert result.swap_bytes == swap_bytes
+    assert result.bytes == (limit or 16 * GIB) - (2 * GIB if headroom else 0)
+
+
+def test_unreadable_meminfo_gives_no_swap_allowance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(f"{MODULE}.cgroup_memory_limit_bytes", lambda: 32 * GIB)
+    monkeypatch.setattr(f"{MODULE}.cgroup_swap_limit_bytes", lambda _limit: 8 * GIB)
+    proc = make_proc(tmp_path)  # no meminfo file
+
+    result = memory_budget.compute_memory_budget(proc_root=proc)
+
+    assert result.swap_bytes == 0
+    assert result.bytes == 30 * GIB
+
+
 def test_compute_without_readable_memtotal_names_the_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

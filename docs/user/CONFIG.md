@@ -116,14 +116,19 @@ memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes f
 
 The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
 reserve: the memory the running agents, the MCP server, and the Dashboard use,
-plus 2 GB. Without `[sandbox].memory` the Sandbox has no limit, so Booley starts
-from the machine's installed memory, which the Sandbox shares with everything
+plus 2 GB when the Sandbox has no swap. A Sandbox with a swap allowance holds
+back no fixed 2 GB, because swap absorbs a short overshoot. The Sandbox has none
+with `[sandbox].swap = "0"`, on a Docker host without swap or without swap limit
+support, and without `[sandbox].memory`. Without `[sandbox].memory` the Sandbox
+has no limit, so Booley starts from the machine's installed memory, which the
+Sandbox shares with everything
 else; `booley doctor` warns while it is unset.
 
 Booley reserves the largest peak memory it recorded for a Job
-([resource history](#job-resource-history)), plus 25%. With no record of its
-own, the Job borrows the largest peak recorded for the same Target and step,
-then for that step anywhere in the Project. Only a step Booley has never
+([resource history](#job-resource-history)) plus the memory it swapped out,
+plus 10% when the Sandbox has swap and 25% when it has none. With no record of
+its own, the Job borrows the largest peak recorded for the same Target and
+step, then for that step anywhere in the Project. Only a step Booley has never
 measured makes the Job run alone. A Simulation Record runs independent tests
 in parallel while their reservations fit.
 
@@ -148,17 +153,19 @@ Seat Caps don't share commercial license seats between Projects. See
 
 ### Job resource history
 
-Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target and Job phase, with no overall cap. Each
-Specialist run that calls its Agent CLI is measured too (the Agent CLI's
-processes, not Booley's own, and not their temporary files) and kept 20 per
-Specialist; Specialist runs do not change the figures of any Target. An entry
-with no run in the last 90 days is deleted the next time any Job records. Peak
-memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
-recorded before that rule keep their earlier peak. `booley resources` prints the
-run count and the minimum, median, and maximum peak memory and wall-clock time
-for each, with one line per Specialist after the Targets (`--json` for
-scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation has its own entry
+Booley measures every Job's peak memory, peak swap, CPU time, and wall-clock
+time, and keeps the newest 20 runs per Target and Job phase, with no overall
+cap. Each Specialist run that calls its Agent CLI is measured too (the Agent
+CLI's processes, not Booley's own, and not their temporary files) and kept 20
+per Specialist; Specialist runs do not change the figures of any Target. An
+entry with no run in the last 90 days is deleted the next time any Job records.
+Peak memory counts the Job's temporary files only when `TMPDIR` is on tmpfs;
+runs recorded before that rule keep their earlier peak. `booley resources`
+prints the run count and the minimum, median, and maximum peak memory and
+wall-clock time for each, and the peak swap of an entry that swapped, with one
+line per Specialist after the Targets (`--json` for scripts). Runs recorded
+before swap was measured show no swap figure. Use it to choose
+`[sandbox].memory`. Each Test Variant of a simulation has its own entry
 (`tests=first+slow`; the default Variant keeps the bare Test name), and the
 seeds of one Variant share it. Flow runs that `booley doctor` starts are not
 recorded. If the history is not valid JSON or was written by another Booley

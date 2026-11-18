@@ -18,8 +18,12 @@ if TYPE_CHECKING:
 MIB = 1024**2
 
 
-def budget_of(byte_count: int) -> MemoryBudget:
-    """A computed-rule ``MemoryBudget`` of exactly *byte_count* bytes (limit minus headroom)."""
+def budget_of(byte_count: int, *, swap_bytes: int = 0) -> MemoryBudget:
+    """A computed-rule ``MemoryBudget`` of exactly *byte_count* bytes.
+
+    Without swap it is the limit minus the fixed headroom; with *swap_bytes* the
+    Sandbox holds no headroom back.
+    """
     # Imported here: conftest imports this module before it puts ``src/`` on the path.
     from booley.audit.resource_policy import MEMORY_HEADROOM_BYTES
     from booley.runtime.memory_budget import (
@@ -30,6 +34,8 @@ def budget_of(byte_count: int) -> MemoryBudget:
         ReserveSource,
     )
 
+    if swap_bytes:
+        return MemoryBudget(byte_count, BudgetRule.LIMIT, byte_count, None, (), swap_bytes)
     headroom = ReservePart(ReserveRole.HEADROOM, MEMORY_HEADROOM_BYTES, ReserveSource.FIXED, None)
     return MemoryBudget(
         byte_count, BudgetRule.LIMIT, byte_count + MEMORY_HEADROOM_BYTES, None, (headroom,)

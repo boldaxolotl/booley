@@ -51,9 +51,12 @@ read-only, and delegating it would loosen the hardening.
   `--memory-swap` limit: `[sandbox].swap` beyond the memory, else a quarter of
   `memory`, capped at the swap the Docker host has (read from the host, or the
   Docker Desktop VM on Windows). Docker's default (swap equal to memory) never
-  applies. Admission ignores swap, so the budget stays memory-only; the OOM
-  kill, and so the single requeue, happens at memory plus swap. Doctor warns
-  when the host cannot back the setting.
+  applies. The OOM kill, and so the single requeue, happens at memory plus
+  swap. With a swap allowance (read from the cgroup, capped at the host's swap)
+  the budget holds back no fixed headroom and memory estimates use a margin of
+  1.10, because swap absorbs a short overshoot. Without one (`swap = "0"`, no
+  swap accounting, no memory limit) the 2 GB headroom and the margin of 1.25
+  stay. Doctor warns when the host cannot back the setting.
 - Queue priority by requester role: `interactive` first; background work last.
   Standalone Jobs (ADR 0086) are admitted like any Job at their priorities.
 - A Project that uses a licensed EDA tool must declare its Seat Cap in
@@ -68,10 +71,12 @@ read-only, and delegating it would loosen the hardening.
 
 ### Estimates
 
-- A phase's memory estimate is the maximum over retained records of its key,
-  with headroom. The maximum covers cold and warm compiler-cache builds without
-  tracking cache state; too high an estimate costs only parallelism.
-  Wall-clock estimates, used only for jump-ahead, follow the same rule.
+- A phase's memory estimate is the maximum over retained records of its key
+  (resident memory plus what the Job swapped out, as a Job that swapped records
+  a resident peak below what it needed), times the swap-dependent margin. The
+  maximum covers cold and warm compiler-cache builds without tracking cache
+  state; too high an estimate costs only parallelism. Wall-clock estimates,
+  used only for jump-ahead, use their own values and the no-swap margin.
 - RTL changes are ignored: keys carry no input fingerprint. The agent edits
   RTL before nearly every run, so treating a changed input as unknown would
   serialize it. A large jump is caught by the OOM guard and requeue.
