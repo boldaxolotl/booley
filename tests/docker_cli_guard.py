@@ -60,6 +60,21 @@ def assert_docker_cli_unused() -> None:
     assert not calls, f"test reached the Docker CLI: {calls}"
 
 
+def docker_cli_absent(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Make ``_run_docker`` fail as if no ``docker`` executable were installed.
+
+    Returns the argument list of every call, so a test can check what was asked.
+    """
+    calls: list[list[str]] = []
+
+    def absent(args: list[str], *_args: object, **_kwargs: object):
+        calls.append(list(args))
+        raise FileNotFoundError(2, "No such file or directory", "docker")
+
+    monkeypatch.setattr(host_docker, "_run_docker", absent)
+    return calls
+
+
 def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the shared Docker helper through ``subprocess.run`` (looked up at call time).
 
