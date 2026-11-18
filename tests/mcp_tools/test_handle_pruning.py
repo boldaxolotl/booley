@@ -25,6 +25,7 @@ from booley.runtime.session_activity import process_session_key
 from booley.runtime.timefmt import rfc3339_from_epoch
 from tests.booley_checkouts_support import init_repo, isolate_git, main_project
 from tests.project_runtime_git_support import git
+from tests.time_budget import hang_guard_s
 
 NOW = 1_800_000_000.0
 DAY = 24 * 3600.0
@@ -282,7 +283,7 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
     with caplog.at_level("WARNING"):
         server._run_http(1)
         assert started[0] is not None
-        started[0].join(timeout=10)
+        started[0].join(timeout=hang_guard_s())
     assert served == [True]
     assert any("Handle pruning skipped" in r.getMessage() for r in caplog.records)
 

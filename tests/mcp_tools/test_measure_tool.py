@@ -41,6 +41,7 @@ from tests.mcp_tools.test_owned_job_poll import (  # noqa: F401  (the autouse fi
     _poll,
     _write,
 )
+from tests.time_budget import hang_guard_s
 
 RUN_ID = "measure-20260101T000000Z-1"
 
@@ -79,7 +80,7 @@ def test_measure_returns_its_run_id_at_once(
     tool = measure_tool()
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
-    monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 30.0)  # must not apply
+    monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)  # must not apply
     started, release = asyncio.Event(), asyncio.Event()
     submitted: list[tuple[list[str], int, dict[str, Any]]] = []
 
@@ -106,9 +107,9 @@ def test_measure_returns_its_run_id_at_once(
             mcp_server._dispatch_special_mcp_tool(
                 tool.MEASURE_TOOL_NAME, arguments, jobs, [], None, _caller()
             ),
-            timeout=10,
+            timeout=hang_guard_s(),
         )
-        await asyncio.wait_for(started.wait(), timeout=10)
+        await asyncio.wait_for(started.wait(), timeout=hang_guard_s())
         returned_before_the_process_ended = not release.is_set()
         release.set()
         await asyncio.gather(*jobs._tasks.values())

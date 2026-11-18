@@ -280,7 +280,6 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
             ".booley/booley.toml",
             ".booley/hooks/check.py",
         ],
-        timeout=10,
         check=True,
     )
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
