@@ -96,6 +96,7 @@ from .model import (
     SimulationResult,
     SimulatorBundle,
     frozen_pre_sim_commands,
+    frozen_resource_flags,
     grade_observations,
 )
 from .planning import manifest_digest
@@ -310,9 +311,8 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                     ready, compiled_group = built
         finally:
             # The shared build is settled (built, reused, recovered or failed). Pre-Sim
-            # Commands run unmeasured after it, so their Jobs keep the build estimate.
-            if not frozen_pre_sim_commands(request.manifest):
-                end_phase(handle.selector, "sim_build")
+            # Commands are a phase of their own, so the build's estimate ends here.
+            end_phase(handle.selector, "sim_build")
         return self._launch_shared(
             request,
             run_directory,
@@ -608,6 +608,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             True,
             commands=frozen_pre_sim_commands(request.manifest),
             test_runs=work_item_test_runs(request.work_item),
+            resource_flags=frozen_resource_flags(request.manifest),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -769,6 +770,7 @@ def _immutable_hook_failure(
         False,
         commands=frozen_pre_sim_commands(request.manifest),
         test_runs=work_item_test_runs(request.work_item),
+        resource_flags=frozen_resource_flags(request.manifest),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
@@ -846,6 +848,7 @@ def _run_hook(
     run_cwd: Path | None,
     expose_build_root: bool,
     *,
+    resource_flags: tuple[str, ...],
     commands: tuple[str, ...] | None = None,
     test_runs: tuple[TestRun, ...] = (),
 ):
@@ -860,6 +863,7 @@ def _run_hook(
         expose_build_root=expose_build_root,
         commands=commands,
         test_runs=test_runs,
+        resource_flags=resource_flags,
     )
 
 

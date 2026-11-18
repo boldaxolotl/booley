@@ -568,6 +568,13 @@ with the command's output, and the run goes on with the next test. Each firing
 is listed in the report with its exit status and duration, `--dry-run` shows
 where the commands will run, and `booley doctor` checks their format.
 
+Booley measures each firing's memory and time per Target, and `booley resources`
+lists them as `sim_pre_run`. A Target's tests reserve memory for the larger of
+the commands and the simulation. Until the commands are measured for a Target,
+each test reserves as much as that Target's build. Each firing gets its own
+empty `TMPDIR`, deleted when the firing ends, before the tests it prepared run:
+keep files the tests read under `$BOOLEY_RUN_CWD` or the Project.
+
 By default the commands can't change the simulator build: they run after it is
 built and see only run-time inputs, so the build can be reused across tests.
 If a command must write into the build tree, set

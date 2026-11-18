@@ -108,7 +108,7 @@ class CheckoutStub(BooleyFlow):
             work = Path(self.args.work_dir)
             handle = TargetCatalog.build(work).select("probe")
             evidence = run_pre_sim_commands(
-                handle, test_names=("t",), build_root=work / "b", eda_tool="icarus", timeout_s={hang_s}
+                handle, test_names=("t",), build_root=work / "b", eda_tool="icarus", timeout_s={hang_s}, resource_flags=()
             )
             (CTL / "presim.json").write_text(
                 json.dumps(

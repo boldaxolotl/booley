@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.flows.job_resources import ResourceLabel
 from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt
@@ -61,7 +62,11 @@ def _child(tmp_path: Path, code: str) -> None:
     to the installed sink without an EDA tool or a Pre-Sim hook.
     """
     result = _run_pre_sim_process(
-        [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=hang_guard_s()
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=hang_guard_s(),
+        resource=(ResourceLabel("t", "sim_pre_run"), ()),
     )
     assert result.returncode == 0, result.stderr
 
