@@ -392,7 +392,7 @@ def test_descendant_held_pipe_does_not_wait_forever(tmp_path):
     started = time.monotonic()
     with sink.installed():
         # Generous timeout: a loaded CI runner can take over 0.3 s just to start
-        # the interpreter. The held descendant sleeps 30 s, so the bound below
+        # the interpreter. The held descendant sleeps 30 s (scaled), so the bound below
         # still proves the call does not wait for it.
         (stdout, _, timed_out), _ = run_observed(sink, script, timeout=scaled(3))
     assert time.monotonic() - started < scaled(15)

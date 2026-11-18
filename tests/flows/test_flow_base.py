@@ -245,7 +245,7 @@ class TestTimeoutKillsTheWholeTree:
 
     Private seam: the timeout clock must start only once the grandchild exists,
     which needs the ``_communicate_local_process`` seam; the drain bound is
-    patched to 1 s; and the Ctrl-C test needs the ``KeyboardInterrupt`` to leave
+    patched to 1 s (scaled); and the Ctrl-C test needs the ``KeyboardInterrupt`` to leave
     ``_execute`` raw (through ``execute_cli`` the lifecycle turns it into exit 130).
 
     ``subprocess.run(timeout=...)`` kills only the direct child, so the
@@ -388,7 +388,7 @@ class TestTimeoutKillsTheWholeTree:
         now runs in its own session, modelling a descendant that survived the
         kill, so only the drain bound can return in time.
 
-        The drain bound is patched to 1 s to keep the idle runtime short; a
+        The drain bound is patched to 1 s (scaled) to keep the idle runtime short; a
         change to the constant's value is not covered, only the call-site bound.
         The final liveness assertion assumes the kill is group-scoped; a kill
         that reaches other sessions would need a different escape model.
@@ -446,7 +446,7 @@ class TestTimeoutKillsTheWholeTree:
             assert seen["alive"], "grandchild was not alive when the clock started"
             assert seen["holds_stdout"], "grandchild did not hold the child's stdout"
             assert result.timed_out is True, result.stderr
-            # 2s budget + kill grace + 1s patched drain; a drain that blocks
+            # 2 s budget + kill grace + 1 s patched drain (each scaled); a drain that blocks
             # behind the grandchild lasts until its sleep ends.
             assert elapsed < scaled(30), (
                 f"drain blocked {elapsed:.1f}s behind a grandchild holding stdout"
