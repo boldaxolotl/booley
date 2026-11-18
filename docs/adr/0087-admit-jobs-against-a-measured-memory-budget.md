@@ -88,7 +88,11 @@ read-only, and delegating it would loosen the hardening.
 - No history: borrow the largest estimate for the same Target and phase,
   then for that phase anywhere in the Project; with neither, the Job runs
   alone. (Always running unknown Jobs alone would serialize a fresh
-  Project's first regression.)
+  Project's first regression.) ASIC synthesis and FPGA implementation never
+  borrow from another Target: their memory scales with the design, so a
+  block's estimate admits a chip's first run far too low and leaves the
+  catch to the OOM guard after a wasted run. A Target's first such
+  run runs alone and says it has no measurement yet.
 - Pre-Sim Commands are a measured phase of their own, `sim_pre_run`, keyed per
   Target like preparation and build and recorded for every firing. A Job or
   Simulation Record item that runs them reserves the larger of their estimate

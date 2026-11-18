@@ -81,8 +81,9 @@ def plan_memory_claim(
 
     A Job runs alone when the Memory Budget is unavailable, when its footprint
     is unknown (no requests, or no recorded peak for any of its phases), when
-    some phase has no estimate, or when its estimate exceeds the budget; only
-    the unavailable budget and the over-budget Job carry a warning.
+    some phase has no estimate, or when its estimate exceeds the budget. A
+    warning goes with the unavailable budget, the over-budget Job, and a Job
+    with a size-dependent phase its Target has never measured.
     """
     if budget_mb is None:
         return MemoryAdmissionPlan(
@@ -100,20 +101,36 @@ def plan_memory_claim(
 
 
 def _claim_for_estimate(estimate: JobEstimate, budget_mb: float) -> tuple[MemoryClaim, str | None]:
-    """The claim a sized Job makes under *budget_mb*, and its warning (over budget only)."""
+    """The claim a sized Job makes under *budget_mb*, and its warning.
+
+    The warning names an over-budget estimate and any size-dependent phase with
+    no measurement yet, one per line.
+    """
     wall_s = estimate.own_wall_s
-    alone = MemoryClaim(budget_mb=budget_mb, run_alone=True, wall_s=wall_s)
+    unmeasured = ", ".join(
+        dict.fromkeys(f"{key.phase} on Target {key.target}" for key in estimate.unmeasured)
+    )
+    alone = MemoryClaim(
+        budget_mb=budget_mb, run_alone=True, wall_s=wall_s, unmeasured=unmeasured or None
+    )
+    note = (
+        f"No memory measurement yet for {unmeasured}; this Job ran alone, "
+        "and later runs are sized from its measurement."
+        if unmeasured
+        else None
+    )
     reservation = estimate.reservation_mb
     if reservation is None:
-        return alone, None
+        return alone, note
     fit = estimate.fit(budget_mb)
     if fit is Fit.OVER_BUDGET:
-        return alone, (
+        over = (
             f"Memory estimate {reservation:.0f} MiB exceeds the Memory Budget "
             f"of {budget_mb:.0f} MiB; this Job ran alone."
         )
+        return alone, over if note is None else f"{over}\n{note}"
     if fit is Fit.RUN_ALONE or reservation <= 0:
-        return alone, None
+        return alone, note
     return MemoryClaim(budget_mb=budget_mb, reservation_mb=reservation, wall_s=wall_s), None
 
 
