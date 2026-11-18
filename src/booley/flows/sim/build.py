@@ -447,9 +447,12 @@ def setup_timeout_s(build_timeout_s: int) -> int:
     return max(build_timeout_s, DEFAULT_SIM_BUILD_TIMEOUT_MS // 1000)
 
 
-def _setup_oom_reason(peak_rss_mb: float | None) -> str:
+def _setup_oom_reason(result: SubprocessResult) -> str:
     """Name the OOM evidence of a FuseSoC setup, as :func:`_build_oom_reason` does for a build."""
+    peak_rss_mb = result.peak_rss_mb
     peak = "peak RSS unknown" if peak_rss_mb is None else f"peak RSS {peak_rss_mb:.0f} MB"
+    if result.host_oom_kill:
+        return f"FuseSoC setup failed: the host ran out of memory and killed it ({peak})"
     return (
         f"FuseSoC setup failed while the Sandbox recorded an OOM kill ({peak}; raise "
         "[sandbox].memory and recreate the Sandbox, or run fewer Jobs at once)"
@@ -488,7 +491,7 @@ def measured_setup_runner(invoke: SetupInvoker, *, target: str, timeout_s: int) 
         if result.timed_out:
             stderr = f"{stderr}\nFuseSoC setup timed out after {timeout_s} s".lstrip("\n")
         elif result.oom_blamed:
-            stderr = f"{stderr}\n{_setup_oom_reason(result.peak_rss_mb)}".lstrip("\n")
+            stderr = f"{stderr}\n{_setup_oom_reason(result)}".lstrip("\n")
         return subprocess.CompletedProcess(list(cmd), result.returncode, result.stdout, stderr)
 
     return run
@@ -508,15 +511,19 @@ _OOM_REMEDY = (
 )
 
 
-def _build_oom_reason(peak_rss_mb: float | None) -> str:
+def _build_oom_reason(result: SubprocessResult) -> str:
     """Name the OOM evidence without claiming the build process itself was killed.
 
     The Sandbox OOM counter is cgroup-wide, so a sibling process may have
-    raised it; the wording states only what was observed.
+    raised it; the wording states only what was observed. A host kill names
+    no Sandbox remedy: the Job's own line carries it.
     """
+    peak_rss_mb = result.peak_rss_mb
     peak = (
         "build peak RSS unknown" if peak_rss_mb is None else f"build peak RSS {peak_rss_mb:.0f} MB"
     )
+    if result.host_oom_kill:
+        return f"build failed: the host ran out of memory and killed it ({peak})"
     return f"build failed while the Sandbox recorded an OOM kill ({peak}; {_OOM_REMEDY})"
 
 
@@ -525,7 +532,7 @@ def _abnormal_build_reason(result: SubprocessResult, timeout_s: int | None, gene
     if result.timed_out:
         return _build_timeout_reason(timeout_s)
     if result.oom_blamed:
-        return _build_oom_reason(result.peak_rss_mb)
+        return _build_oom_reason(result)
     return generic
 
 

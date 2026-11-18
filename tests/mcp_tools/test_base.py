@@ -258,6 +258,39 @@ def test_self_printed_verdict_gets_only_the_oom_kill_note(capsys) -> None:
     assert captured.err == f"{note}\n"
 
 
+def test_self_printed_verdict_gets_only_the_host_oom_kill_note(capsys) -> None:
+    """The host line leads the result; a verdict the Flow already printed is not shown twice."""
+    from types import SimpleNamespace
+
+    from booley.flows.endpoint_reporting import _publish_console_verdict
+    from booley.runtime.endpoint_execution import HOST_OOM_KILL_NOTE, EndpointOutcome
+
+    host = f"{HOST_OOM_KILL_NOTE}: the host ran out of memory, so the Job is not retried."
+    note = "Killed for out-of-memory: work item a's last attempt was OOM-killed, so no retry."
+
+    def publish(report_text: str, seen: str) -> None:
+        endpoint = SimpleNamespace(
+            _stdout_witness=SimpleNamespace(saw=lambda text: text == seen),
+            endpoint_kind="flow",
+            announce_success_report=False,
+        )
+        _publish_console_verdict(
+            endpoint, EndpointOutcome(exit_code=EXIT_FAILURE, report_text=report_text)
+        )
+
+    publish(f"{host}\ndesign failed", "design failed")
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", f"{host}\n")
+
+    publish(f"{host}\ndesign failed\n{note}", "design failed")
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", f"{host}\n{note}\n")
+
+    # The Flow printed nothing: the whole result, host line first, goes to stderr.
+    publish(f"{host}\ndesign failed", "")
+    assert capsys.readouterr().err == f"{host}\ndesign failed\n"
+
+
 def test_console_failure_is_normalized_and_recovery_is_attempted() -> None:
     endpoint = ConcreteMcpTool()
     with (

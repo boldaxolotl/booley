@@ -81,6 +81,8 @@ class SubprocessResult:
     # A process of this command's own tree was killed by
     # the OOM killer (``job_resources.own_oom_kill``). Set by ``_execute_local``.
     oom_killed: bool = False
+    # The own kill was the host's: the Sandbox stayed below its own memory limit.
+    host_oom_kill: bool = False
 
     @property
     def oom_blamed(self) -> bool:
@@ -96,15 +98,22 @@ def _blame_own_oom_kill(
     measurement: job_resources.JobMeasurement,
     result: SubprocessResult,
     scope: Any,
+    *,
+    kill_logs: tuple[Path, ...] = (),
+    since: float = 0.0,
 ) -> None:
-    """Mark a command whose own process the OOM killer took.
+    """Mark a command whose own process the OOM killer took, and which kind it was.
 
-    A kill also counts for the whole Job, which the requeue reads (ADR 0087).
+    A kill also counts for the whole Job, which the requeue reads for a kill at
+    the Sandbox's limit but not for a host kill (ADR 0087).
     """
     cancelled = scope is not None and scope.cancelled()
-    result.oom_killed = job_resources.own_oom_kill(measurement, result, cancelled=cancelled)
+    result.oom_killed = job_resources.own_oom_kill(
+        measurement, result, cancelled=cancelled, kill_logs=kill_logs, since=since
+    )
+    result.host_oom_kill = result.oom_killed and job_resources.host_oom_kill(measurement)
     if result.oom_killed:
-        note_job_oom_kill()
+        note_job_oom_kill(host=result.host_oom_kill)
 
 
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
@@ -352,6 +361,7 @@ class FlowMechanics:
         )
         monitor = JobResourceMonitor(label.split)
         env.update(monitor.temp_env())
+        dispatched = time.time()
         try:
             result = self._run_measured(cmd, cwd, env, scope, observer, monitor, timeout)
         finally:
@@ -362,7 +372,9 @@ class FlowMechanics:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
         result.oom_kill_delta = measurement.oom_kill_delta or 0
-        _blame_own_oom_kill(measurement, result, scope)
+        _blame_own_oom_kill(
+            measurement, result, scope, kill_logs=label.kill_logs, since=dispatched
+        )
         job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
         return result
 

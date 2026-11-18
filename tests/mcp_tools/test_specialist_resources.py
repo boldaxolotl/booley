@@ -205,7 +205,9 @@ def test_unmeasurable_values_are_recorded_absent(env: _Env, monkeypatch) -> None
     monkeypatch.setattr(job_resources, "process_tree", lambda *_a, **_k: None)
     # The two probes below are the measurement sources this test makes unavailable.
     monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: None)
+    monkeypatch.setattr(
+        job_resources, "cgroup_memory_events", lambda: job_resources.MemoryEvents(None, None)
+    )
     # Private probes: the only way to make this measurement unavailable.
     monkeypatch.setattr(job_resources, "_container_memory_bytes", lambda: None)
 

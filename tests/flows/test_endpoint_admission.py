@@ -1298,7 +1298,11 @@ def test_killed_attempt_runs_no_command_after_its_oom_kill(
 
     # The container's OOM counter rises over attempt 1's first command only.
     counts = itertools.chain((0, 1), itertools.repeat(1))
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
+    monkeypatch.setattr(
+        job_resources,
+        "cgroup_memory_events",
+        lambda: job_resources.MemoryEvents(*[next(counts)] * 2),
+    )
     marker = runtime / "attempts.txt"
     harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
     # Private seam: the Flow's command runner has no public caller short of a real EDA tool.

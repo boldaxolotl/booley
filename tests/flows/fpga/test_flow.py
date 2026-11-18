@@ -1491,6 +1491,34 @@ def test_fake_vivado_generated_command_startup(
         assert "RESULT: ERROR" in result.report_text
 
 
+def test_vivado_run_logs_are_the_commands_kill_logs(tmp_path, state_file):
+    from booley.flows import job_resources
+
+    runs = tmp_path / "wr" / "dut.runs"
+    logs = (
+        tmp_path / "wr" / "vivado.log",
+        runs / "synth_1" / "runme.log",
+        runs / "impl_1" / "runme.log",
+    )
+    prepared = _PreparedFpgaCommand(["make"], tmp_path / "wr", "", False, None, console_logs=logs)
+    # The top-level Vivado log is the command's own output, not a run script's.
+    assert prepared.kill_logs == logs[1:]
+
+    flow = _flow(tmp_path, state_file)
+    seen: list[tuple[Path, ...]] = []
+
+    def execute(cmd, **_kwargs):
+        label = job_resources.current_label()
+        assert label is not None
+        seen.append(label.kill_logs)
+        return SubprocessResult(returncode=0)
+
+    flow._execute_boundary = execute
+    flow._run_vivado("fpga_default", ["make"], None, prepared.kill_logs)
+
+    assert seen == [logs[1:]]
+
+
 @pytest.mark.parametrize("decoy", [True, False])
 def test_route_witness_only_from_fresh_impl_runlog(tmp_path, state_file, decoy):
     flow = _flow(tmp_path, state_file)
