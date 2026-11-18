@@ -178,6 +178,18 @@ def test_preflight_refuses_runs_of_an_unregistered_test(tmp_path, monkeypatch):
     assert prepared.findings[0].message.endswith("does not register for the Target: ghost")
 
 
+def test_preflight_names_the_tests_when_the_registry_is_emptied(tmp_path, monkeypatch):
+    context = replace(_project(tmp_path, monkeypatch), test_names={})
+    runs = _runs(tmp_path, "reset")
+
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), test_runs={"sim_0": runs}), context
+    )
+
+    assert prepared.plan is None
+    assert prepared.findings[0].message.endswith("does not register for the Target: reset")
+
+
 def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeypatch):
     _project(tmp_path, monkeypatch)
     execution = NativeExecution()

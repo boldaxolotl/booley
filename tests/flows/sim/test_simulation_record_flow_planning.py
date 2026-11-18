@@ -246,3 +246,10 @@ def test_malformed_tests_toml_is_refused_naming_the_cause(tmp_path: Path) -> Non
     _, handle, inspection, preview = _planning_fixture(tmp_path)
     with pytest.raises(SimulationRecordIntegrityError, match=r"cannot read the Target's Tests"):
         _target_tests(handle, inspection, preview, tmp_path, "[sim\n")
+
+
+def test_malformed_variants_are_refused_naming_the_cause(tmp_path: Path) -> None:
+    _, handle, inspection, preview = _planning_fixture(tmp_path)
+    text = _SECTION + '[sim.variants.reset]\ndefault = "missing"\na = ["+n=1"]\n'
+    with pytest.raises(SimulationRecordIntegrityError, match=r"cannot read the Target's Tests"):
+        _target_tests(handle, inspection, preview, tmp_path, text)

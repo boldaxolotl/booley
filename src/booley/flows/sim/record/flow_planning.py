@@ -455,24 +455,24 @@ def _target_tests(root: Path, identity: str) -> dict[str, object]:
     """
     try:
         section = lookup_target_section(load_test_configuration(root), identity) or {}
+        skipped = set(section.get("skip") or ())
+        variants = section.get("variants") or {}
+        tests = [
+            {
+                "name": name,
+                "sha256": document_digest(
+                    {
+                        "skipped": name in skipped,
+                        "variants": _test_variants_document(name, variants.get(name)),
+                    }
+                ),
+            }
+            for name in section.get("tests") or ()
+        ]
     except (OSError, ValueError) as exc:
         raise SimulationRecordIntegrityError(
             f"cannot read the Target's Tests from tests.toml: {exc}"
         ) from exc
-    skipped = set(section.get("skip") or ())
-    variants = section.get("variants") or {}
-    tests = [
-        {
-            "name": name,
-            "sha256": document_digest(
-                {
-                    "skipped": name in skipped,
-                    "variants": _test_variants_document(name, variants.get(name)),
-                }
-            ),
-        }
-        for name in section.get("tests") or ()
-    ]
     settings = {key: section.get(key) for key in ("select", "env", "seed", "default_seed")}
     return {"tests": tests, "settings": settings}
 

@@ -161,6 +161,26 @@ def test_resume_compares_only_the_resumed_targets_tests(
         assert _snapshot(manifest.parent) == before
 
 
+def test_resume_of_a_default_invocation_record_refuses_tests_added_to_its_target(
+    tmp_path, monkeypatch
+):
+    reports, manifest, executions = _interrupted_simulation_record(
+        tmp_path, monkeypatch, tests_toml="# no Tests for sim_0\n"
+    )
+    (tmp_path / ".booley/tests.toml").write_text('[sim_0]\ntests=["reset"]\n', newline="\n")
+    before = _snapshot(manifest.parent)
+    _resume_until_execution(monkeypatch)
+
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+
+    assert result.exit_code == 2
+    assert result.outcome.detail["mismatch_summary"] == ["suite changed: +reset"]
+    assert len(executions) == 1
+    assert _snapshot(manifest.parent) == before
+
+
 def _prime_prior_refusal(root, reports, manifest, executions):
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=root, report_dir=reports)
