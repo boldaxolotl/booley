@@ -241,7 +241,7 @@ def _unconfinable_script_violation(
         core_file=core_file,
         message=(
             f"{section} '{spec_name}' references '{rel}', but the "
-            "agent's write Scope is unrestricted ('*'), so the "
+            "agent's write Scope covers the whole Project ('*'), so the "
             "script cannot be guaranteed read-only/immutable. "
             "Imperative .core sections are only permitted with a "
             "bounded Scope that excludes the script."
