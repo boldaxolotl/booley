@@ -571,10 +571,16 @@ def test_logical_mode_creates_no_slot_and_never_reports_reuse(bench: Bench) -> N
     ).exists()
 
 
-def _fail_yosys(bench: Bench, **files: str) -> None:
+def _fail_yosys(bench: Bench, **files: str | None) -> None:
+    """Append each text to a stage file; a ``None`` text removes the file."""
+
     def write() -> None:
         for name, text in files.items():
-            with (bench.root / bench.commands[-1][2] / name).open("a", encoding="utf-8") as out:
+            path = bench.root / bench.commands[-1][2] / name
+            if text is None:
+                path.unlink()
+                continue
+            with path.open("a", encoding="utf-8") as out:
                 out.write(text)
 
     bench.on_yosys = write
@@ -593,6 +599,7 @@ _CONFLICTING_DRIVERS = (
         (LOGICAL_TARGET, {"yosys.log": "ERROR: boom\n"}, 0, ["exit_nonzero"]),
         (TARGET, {"yosys.log": "ERROR: boom\n"}, None, ["exit_nonzero", "exit_zero"]),
         (TARGET, {"check_dut.txt": _CONFLICTING_DRIVERS}, None, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {"sv2v_converted.v": None}, None, ["exit_nonzero", "exit_zero"]),
         (TARGET, {}, -1, ["exit_zero"]),
         (TARGET, {}, 1, ["exit_zero", "exit_nonzero"]),
     ],
@@ -600,6 +607,7 @@ _CONFLICTING_DRIVERS = (
         "logical",
         "physical-yosys-log",
         "physical-structural",
+        "physical-sv2v-output-missing",
         "physical-openroad-not-started",
         "physical-openroad-fails",
     ],
@@ -608,7 +616,7 @@ def test_synth_record_outcome_follows_the_failing_stage(
     bench: Bench,
     tmp_path: Path,
     target: str,
-    files: dict[str, str],
+    files: dict[str, str | None],
     openroad_exit: int | None,
     outcomes: list[str],
 ) -> None:

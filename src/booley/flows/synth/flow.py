@@ -48,6 +48,7 @@ from booley.evidence.timing import (
 )
 from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import (
+    EdaFailure,
     classify_eda_failure,
     first_tool_diagnostic,
     strip_failure_markers,
@@ -1191,8 +1192,38 @@ def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -
     return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
 
 
+def _boundary_failure(
+    termination: str, outcome: Any, result: SubprocessResult, output: str
+) -> EdaFailure | None:
+    """The failure a stage's wrapper marker reports, unless the run was stopped."""
+    if termination in {"timeout", "oom", "resource_killed"}:
+        return None
+    boundary_result = replace(result, stdout=output, stderr="")
+    token = getattr(outcome, "attempt_token", None)
+    failure = classify_eda_failure(boundary_result, expected_token=token)
+    stage = getattr(outcome, "stage", None)
+    if (
+        failure is None
+        and re.fullmatch(r"[0-9a-f]{32}", token or "")
+        and stage in {"sv2v", "yosys", "openroad"}
+    ):
+        failure = classify_eda_failure(
+            boundary_result, expected_stage=stage, expected_executable=stage
+        )
+    return failure
+
+
+# Positions in the records a physical run holds: Yosys is recorded before OpenROAD.
+_YOSYS_COMMAND = 0
+_OPENROAD_COMMAND = 1
+
+
 def _judge_stage_commands(
-    commands: JudgedCommands, plan: Any, metrics: SynthMetrics, outcome: BoundaryOutcome
+    commands: JudgedCommands,
+    plan: Any,
+    metrics: SynthMetrics,
+    outcome: BoundaryOutcome,
+    failure: EdaFailure | None,
 ) -> None:
     """Judge the run's commands: only the one whose own output failed the run is failed."""
     if metrics.returncode == 0:
@@ -1203,9 +1234,10 @@ def _judge_stage_commands(
         yosys_owned = (
             outcome.forced_failure is not None
             or not outcome.yosys_complete
+            or (failure is not None and failure.stage in {"sv2v", "yosys"})
             or (metrics.termination == "design_failure" and outcome.openroad_diagnostic is None)
         )
-        commands.judge(False, 0 if yosys_owned else 1)
+        commands.judge(False, _YOSYS_COMMAND if yosys_owned else _OPENROAD_COMMAND)
 
 
 class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
@@ -1703,8 +1735,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         outcome: Any,
         result: SubprocessResult,
         output: str,
-    ) -> None:
-        """Apply terminal and mode-specific completeness policy to metrics."""
+    ) -> EdaFailure | None:
+        """Apply terminal and mode-specific completeness policy; return the failure it read."""
         metrics.expected_latches = expected_count("synth", self.args.work_dir, "expected_latches")
         metrics.expected_comb_loops = expected_count(
             "synth", self.args.work_dir, "expected_comb_loops"
@@ -1720,20 +1752,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
             metrics.termination = "infrastructure_error"
-        failure = None
-        if metrics.termination not in {"timeout", "oom", "resource_killed"}:
-            boundary_result = replace(result, stdout=output, stderr="")
-            token = getattr(outcome, "attempt_token", None)
-            failure = classify_eda_failure(boundary_result, expected_token=token)
-            stage = getattr(outcome, "stage", None)
-            if (
-                failure is None
-                and re.fullmatch(r"[0-9a-f]{32}", token or "")
-                and stage in {"sv2v", "yosys", "openroad"}
-            ):
-                failure = classify_eda_failure(
-                    boundary_result, expected_stage=stage, expected_executable=stage
-                )
+        failure = _boundary_failure(metrics.termination, outcome, result, output)
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
             metrics.infra_error = failure.reason
@@ -1771,6 +1790,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             )
         self._apply_design_failure(metrics, outcome, result, output)
         self._apply_unknown_failure(metrics, outcome, result)
+        return failure
 
     @staticmethod
     def _apply_unknown_failure(
@@ -1964,8 +1984,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                 "producer_run_id": producer.run_id,
                 "producer_started_at": producer.started_at,
             }
-        self._apply_boundary_completion(metrics, outcome, proc_result, output)
-        _judge_stage_commands(commands, plan, metrics, outcome)
+        failure = self._apply_boundary_completion(metrics, outcome, proc_result, output)
+        _judge_stage_commands(commands, plan, metrics, outcome, failure)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
 
         return metrics, output

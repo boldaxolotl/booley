@@ -163,17 +163,17 @@ Seat Caps don't share commercial license seats between Projects. See
 
 Booley measures every Job's peak memory, peak swap, CPU time, and wall-clock
 time, and keeps the newest 20 runs per Target and Job phase, with no overall
-cap. Each entry records an outcome: `timeout`, `oom_kill`, or `host_oom_kill`
-when the run was stopped, otherwise `exit_zero` or `exit_nonzero`. For
-`booley flow fpga`, `lint`, and `synth`, those two say whether the Flow judged
-the command succeeded after reading its output (a route that misses timing, or
-lint findings, is still `exit_zero`); for other commands they follow the exit
-code. Every entry keeps the exit code as `returncode`. Each Specialist run
-that calls its Agent CLI is measured too (the Agent CLI's processes, not
-Booley's own, and not their temporary files) and kept 20 per Specialist;
-Specialist runs do not change the figures of any Target. An entry with no run
-in the last 90 days is deleted the next time any Job records. Peak memory
-counts the Job's temporary files only when `TMPDIR` is on tmpfs;
+cap. Each Job entry records an outcome: `timeout`, `oom_kill`, or
+`host_oom_kill` when the run was stopped, otherwise `exit_zero` or
+`exit_nonzero`. For `booley flow fpga`, `lint`, and `synth`, those two say
+whether the Flow judged the command succeeded after reading its output (a route
+that misses timing, or lint findings, is still `exit_zero`); for other commands
+they follow the exit code. Every entry keeps the exit code as `returncode`.
+Each Specialist run that calls its Agent CLI is measured too (the Agent CLI's
+processes, not Booley's own, and not their temporary files) and kept 20 per
+Specialist; Specialist runs do not change the figures of any Target. An entry
+with no run in the last 90 days is deleted the next time any Job records. Peak
+memory counts the Job's temporary files only when `TMPDIR` is on tmpfs;
 runs recorded before that rule keep their earlier peak. `booley resources`
 prints the run count and the minimum, median, and maximum peak memory and
 wall-clock time for each, and the peak swap of an entry that swapped, with one

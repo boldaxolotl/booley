@@ -384,8 +384,9 @@ def test_fpga_label_carries_target_source_bytes(tmp_path: Path, vivado: dict) ->
     [
         (2, True, None, EXIT_SUCCESS, "exit_zero"),
         (1, False, {}, EXIT_ERROR, "exit_nonzero"),
+        (0, False, {}, EXIT_ERROR, "exit_nonzero"),
     ],
-    ids=["boardless", "no-route"],
+    ids=["boardless", "no-route", "exit-zero-no-route"],
 )
 def test_fpga_impl_record_outcome_follows_route_completion(
     tmp_path: Path,

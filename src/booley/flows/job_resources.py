@@ -116,8 +116,8 @@ class JudgedCommands:
         """
         indexes = range(len(self._builders)) if command is None else [command]
         for index in indexes:
-            with contextlib.suppress(IndexError):
-                self._verdicts[range(len(self._builders))[index]] = succeeded
+            if 0 <= index < len(self._builders):
+                self._verdicts[index] = succeeded
 
     def records(self) -> list[dict[str, Any]]:
         """Build the records; a judged exit outcome follows the judgment, a stop stays."""
