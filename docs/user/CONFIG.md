@@ -159,22 +159,21 @@ Seat Caps don't share commercial license seats between Projects. See
 ### Job resource history
 
 Booley measures every Job's peak memory, peak swap, CPU time, and wall-clock
-time, and keeps each Target and Job phase's measurements from its newest 20
-Jobs, with no overall cap. A Job that runs a phase several times counts once.
-Each Specialist run that calls its Agent CLI is measured too (the Agent CLI's
-processes, not Booley's own, and not their temporary files) and kept 20 per
-Specialist; Specialist runs do not change the figures of any Target. An entry
-with no run in the last 90 days is deleted the next time any Job records. Peak
-memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
-recorded before that rule keep their earlier peak. `booley resources` prints
-the number of Jobs as the run count and the minimum, median, and maximum peak
-memory and wall-clock time for each, and the peak swap of an entry that
-swapped, with one line per Specialist after the Targets (`--json` for
-scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a
-simulation has its own entry (`tests=first+slow`; the default Variant keeps
-the bare Test name), and the seeds of one Variant share it. Flow runs that
-`booley doctor` starts are not recorded. If the history is not valid JSON or
-was written by another Booley version, the next Job keeps it as
+time, and keeps the newest 20 runs per Target and Job phase, with no overall
+cap. Each Specialist run that calls its Agent CLI is measured too (the Agent
+CLI's processes, not Booley's own, and not their temporary files) and kept 20
+per Specialist; Specialist runs do not change the figures of any Target. An
+entry with no run in the last 90 days is deleted the next time any Job records.
+Peak memory counts the Job's temporary files only when `TMPDIR` is on tmpfs;
+runs recorded before that rule keep their earlier peak. `booley resources`
+prints the run count, which counts each Job once, and the minimum, median, and
+maximum peak memory and wall-clock time for each, and the peak swap of an entry
+that swapped, with one line per Specialist after the Targets (`--json` for
+scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation
+has its own entry (`tests=first+slow`; the default Variant keeps the bare Test
+name), and the seeds of one Variant share it. Flow runs that `booley doctor`
+starts are not recorded. If the history is not valid JSON or was written by
+another Booley version, the next Job keeps it as
 `.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
 one.
 
