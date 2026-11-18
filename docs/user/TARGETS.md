@@ -115,15 +115,15 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 Doctor checks the `.core` files your Targets use for anything that would let
 the Developer Agent change how its own results are produced:
 
-- **No `hooks:` on an fpga Target.** FPGA builds run a fixed, reviewed tool
-  setup. Run an extra step from a `generators:` entry or outside the `.core`.
+- **No `hooks:` on an fpga Target.** Run an extra step from a `generators:`
+  entry or outside the `.core`.
 - **Parameters hold literal values.** A parameter's `datatype` is `bool`,
   `file`, `int`, `real`, or `str`. Booley can't pass an HDL expression such
   as `WIDTH*2` to the tool as a parameter, so write out its value.
 - **Scripts live outside the source directories.** A file that a `scripts:`
   or `generators:` entry runs must sit outside the Project's RTL and
-  testbench directories, for example in `scripts/`, so the Developer Agent
-  does not edit it as part of its design work. While the agent's write Scope
+  testbench directories, for example in `scripts/`, so the Developer
+  Agent does not edit it as part of its design work. While the agent's write Scope
   is unrestricted (`*`), every such script is flagged.
 
 The first two fail Doctor; the script rule is a warning. Each finding names
