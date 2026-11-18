@@ -174,7 +174,7 @@ def test_simulation_admission_reports_malformed_runtime_identity(
             pass
 
         @staticmethod
-        def finish_execution(_prepared, outcome, *, started, records_published) -> ExecutionResult:
+        def finish_execution(_prepared, outcome, *, started) -> ExecutionResult:
             return ExecutionResult(outcome.exit_code, outcome)
 
     prepared = SimpleNamespace(non_persisting_dry_run=False)

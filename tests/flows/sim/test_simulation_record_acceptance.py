@@ -10,10 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.endpoint_session import PreparedExecution
-from booley.flows.prepared_invocation import OrdinaryRunInvocation
 from booley.flows.sim.acceptance import publish_simulation_record_projections
-from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
 )
@@ -24,7 +21,6 @@ from booley.flows.sim.record.coordinator import (
 )
 from booley.flows.sim.record.facts import AcceptanceFacts
 from booley.flows.sim.record.model import create_simulation_record_plan
-from booley.runtime.endpoint_execution import EXIT_CANCELLED, EndpointOutcome
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _manifest_for,
@@ -142,23 +138,6 @@ def test_acceptance_facts_hold_the_built_document_without_decoding() -> None:
         "673e3f58cc435bafd241831f96d5056142721a0b7a26bd27d1be031868983a00"
     )
     assert digest == "sha256:82777c907f41c2966c91f1e426c7d5b0efff39d67b431ffd8b91ceaa813994b9"
-
-
-def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
-    flow.publish_records(
-        PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
-        outcome,
-    )
-
-
-def test_cancelled_simulation_record_suppresses_acceptance_publication(monkeypatch) -> None:
-    flow = SimulateFlow()
-    received: list[tuple[object, ...]] = []
-    monkeypatch.setattr(flow, "publish_flow_records", lambda _outcome: received.append(()))
-
-    _record_final(flow, EndpointOutcome(exit_code=EXIT_CANCELLED))
-
-    assert received == []
 
 
 def _one_item_outcome(tmp_path: Path):

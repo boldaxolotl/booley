@@ -13,7 +13,6 @@ from typing import Any, cast
 from booley.flows.metric_declarations import metrics_document
 from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_policy import coverage_metrics
-from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record import CoverageRecord, CoverageRollup
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.record.test_run_files import TestRunFiles, simulation_record_test_run_files
@@ -1031,18 +1030,14 @@ def _grade_exit_code(grade: str) -> int:
     return EXIT_SUCCESS if grade == "pass" else EXIT_FAILURE
 
 
-def _retain_coverage_record(progress: CoverageProgress, outcome: SimulationRecordOutcome) -> None:
-    """Authenticate and retain one completed Target before observational writes."""
+def _coverage_target_outcome(outcome: SimulationRecordOutcome) -> CoverageTargetOutcome:
+    """Authenticate one completed Target's ``coverage.json`` and build its progress entry."""
     public = outcome.manifest_path.parents[1] / "coverage.json"
     coverage_record = resolve_coverage_record_reference(public).loaded.coverage_record
-    progress.outcomes.append(
-        CoverageTargetOutcome(
-            str(outcome.target["selector"]),
-            _coverage_record_exit_code(
-                [outcome], {str(outcome.target["selector"]): coverage_record}
-            )
-            or _grade_exit_code(outcome.aggregate_grade),
-            public,
-            coverage_record.evaluation,
-        )
+    return CoverageTargetOutcome(
+        str(outcome.target["selector"]),
+        _coverage_record_exit_code([outcome], {str(outcome.target["selector"]): coverage_record})
+        or _grade_exit_code(outcome.aggregate_grade),
+        public,
+        coverage_record.evaluation,
     )

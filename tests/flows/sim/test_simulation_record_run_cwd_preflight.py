@@ -267,7 +267,7 @@ def test_missing_literal_run_cwd_blocks_every_publication_across_the_invocation(
     # this method, and no public flow fixture builds two requests with a missing
     # literal run_cwd.
     with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
-        SimulateFlow._publish_and_run_simulation_record_requests(
+        SimulateFlow()._publish_and_run_simulation_record_requests(
             SimulationRecord(harness.executor), [candidate]
         )
 
