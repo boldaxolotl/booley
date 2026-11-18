@@ -215,16 +215,13 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
         assert not registry.path("codex:main").exists()
         assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
         assert len(registry.snapshot().rows[0].calls) == 2
-        assert await observer.shared(facts) == ((facts.key,), "")
         await observer.record(earlier, "late", "completed")
         if initial_peer_unavailable:
             # A late peerless completion recreates the thread row; the next attributed
             # call folds it into the tab.
             assert registry.path("codex:main").exists()
             facts = await observer.attribution({}, metadata, "codex-mcp-client")
-        else:
-            # A delayed completion from before migration must not restore a thread row.
-            assert await observer.shared(earlier) == ((facts.key,), "")
+        # Either way a delayed completion from before migration restores no thread row.
         assert not registry.path("codex:main").exists()
         assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
         # New threads get aliases without allocating their own display IDs.
@@ -235,3 +232,24 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
         )
     finally:
         observer.close()
+
+
+def test_resumed_tab_keeps_the_old_handle_and_codex_ownership(tmp_path):
+    # Bug caught: a resumed Codex launch got a new handle, or its ownership marker pointed
+    # at the old key, so `codex_chat_owner` no longer found the launch that owns the tab.
+    proc = tmp_path / "proc"
+    old = process(proc, 100, 1, executable="node")
+    new = process(proc, 200, 1, executable="node")
+    peer = process(proc, 201, 200)
+    old_key, new_key = process_session_key(old), process_session_key(new)
+    assert chat_sessions.reserve_codex_chat(tmp_path, old) == "S1"
+
+    label = chat_sessions.reserve_codex_chat(tmp_path, new, predecessors=(old_key, "codex:conv-1"))
+
+    assert label == "S1"
+    handles = HandleStore(tmp_path).load()
+    assert handles.labels()[new_key] == "S1"
+    assert handles.aliases[new_key] == old_key
+    assert handles.aliases["chat:codex:" + new_key] == new_key
+    assert handles.next_number == 2
+    assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) == new

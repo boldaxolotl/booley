@@ -6,14 +6,18 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
+from tests.memory_budget_support import budget_of, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
+
+if TYPE_CHECKING:
+    from booley.runtime.sandbox_apply import Attachment
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,13 +30,6 @@ pytest_plugins = [
     "tests.sandbox_only",
     "tests.thread_leak_guard",
 ]
-
-# Temporary (#3329): a bare ``pytest tests/`` skips the Goal Mode unit tests; the
-# coverage omit for ``src/booley/goals`` (pyproject.toml) and the classifier
-# exemption (.github/scripts/ci_goal_tests.py) go with it. Remove all three when
-# Goal Mode is removed (#3276), or when metrics-driven development fully replaces
-# it. Naming the path still collects them: ``pytest tests/goals``.
-collect_ignore = ["goals"]
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +55,7 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
 # rewrites command scope.
 #
 # Known gaps (not covered by this setting):
-# - ``src/booley/goals/committed_bytes.py`` replaces command scope with
+# - ``src/booley/runtime/commit_export.py`` replaces command scope with
 #   ``GIT_CONFIG_COUNT=0`` / ``GIT_CONFIG_PARAMETERS=""`` for its shadow-repository Git.
 # - ``src/booley/runtime/incontainer_git_identity_cleanup.py`` strips every
 #   ``GIT_CONFIG_*`` for its ``git config --file`` reads.
@@ -100,8 +97,8 @@ def _disable_git_auto_maintenance_for_children() -> None:
     """Append the session settings to the command scope child processes inherit.
 
     Idempotent: a key whose effective (last) value already is the wanted one is not
-    appended again, so repeated ``pytest_configure`` calls (mutmut) and xdist workers
-    re-running it on an inherited environment add nothing. Inherited entries stay.
+    appended again, so xdist workers re-running it on an inherited
+    environment add nothing. Inherited entries stay.
     """
     entries = _git_command_entries(os.environ)
     for key, value in _SESSION_GIT_COMMAND_CONFIG:
@@ -253,6 +250,14 @@ def require_symlinks(tmp_path: Path) -> None:
 
 # Generous per-test ceiling: only true hangs (a wedged subprocess or an
 # unbounded stall loop) exceed it, so it never flakes a healthy test.
+# CI passes --timeout=60 instead, or 120 on Windows where
+# BOOLEY_TEST_TIME_SCALE is 2 (see ``tests/time_budget.py`` and
+# ``.github/ci/README.md#test-time-budgets``); raise one test's budget with
+# ``@pytest.mark.timeout(N)``. On Windows an expired budget kills the whole xdist
+# worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
+# (3x the slowest Windows CI duration, from the ``time`` values in the
+# ``junit-windows-*`` and ``full-junit-windows-latest-*`` artifacts). The Windows
+# legs fail a passing test that uses more than 80% of its budget.
 _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 
@@ -383,35 +388,6 @@ def pytest_runtest_makereport(
     return report
 
 
-def hide_mutmut_stats_mode_from_children() -> None:
-    """Remove mutmut's ``stats`` marker from the environment child processes inherit.
-
-    Why: while collecting stats, mutmut calls ``set_mutant_under_test("stats")``,
-    which also exports ``MUTANT_UNDER_TEST=stats``. A child process that a test
-    spawns or execs (multiprocessing ``spawn``, a ``booley`` or pytest subprocess
-    with the mutated source on ``PYTHONPATH``) inherits it, so its first call
-    into mutated code tries to record a stats hit and loads mutmut's
-    configuration. Tests often start such children from an empty temporary
-    working directory (the harness autouse fixture), where mutmut finds no
-    ``setup.cfg`` and the child dies with ``FileNotFoundError``.
-
-    Relies on (mutmut >= 3.8.1, upstream mutmut #511): ``set_mutant_under_test``
-    also keeps a process-local copy, and ``get_mutant_under_test`` falls back to
-    it when the environment variable is missing. So the parent pytest process still records
-    which tests cover which functions, while a fresh child sees no mode at all and
-    runs the original, unmutated functions. Its hits were never recorded anyway,
-    so no stats are lost. A forked child keeps the in-memory copy and mutmut's
-    already-cached configuration, exactly as before. If a later mutmut drops the
-    fallback, the parent stops recording and the campaign ends early with "could
-    not find any test case for any mutant".
-
-    Only ``stats`` is removed: a mutant run must keep exporting the mutant name so
-    children exercise the mutant, and a plain pytest run has nothing to remove.
-    """
-    if os.environ.get("MUTANT_UNDER_TEST") == "stats":
-        del os.environ["MUTANT_UNDER_TEST"]
-
-
 def pytest_configure(config: pytest.Config) -> None:
     """Bound every test's wall-clock so a hang fails loudly instead of wedging
     the whole suite.
@@ -420,12 +396,8 @@ def pytest_configure(config: pytest.Config) -> None:
     this is a deliberate no-op that emits *no* config warning, keeping the suite
     warning-free (principle 12) in bare environments.
 
-    Runs for every session mutmut starts (it calls ``pytest.main`` repeatedly in
-    one process), so the stats marker is hidden before any test starts a child.
-
     Also exports the session's Git auto-maintenance settings to every child.
     """
-    hide_mutmut_stats_mode_from_children()
     _disable_git_auto_maintenance_for_children()
     _configure_test_profile(config)
     _begin_coverage_stamp(config)
@@ -434,11 +406,40 @@ def pytest_configure(config: pytest.Config) -> None:
     from tests.timeout_headroom import timeout_plugin_loaded
 
     _isolate_xdist_worker_temp()
-    if timeout_plugin_loaded(config):
-        from pytest_timeout import get_env_settings
+    _configure_time_budgets(config, timeout_plugin_loaded(config))
 
-        if get_env_settings(config).timeout is None:
-            config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
+
+def _configure_time_budgets(config: pytest.Config, timeout_loaded: bool) -> None:
+    """Validate the time scale and keep the per-test limit above the hang guard.
+
+    A hung child can outlive its own deadline by the fixed kill-and-drain time,
+    so the per-test limit must be at least twice the hang guard (and at least
+    60 s, today's CI value, whatever the factor). Runs that execute no test
+    (``--help``) are never refused.
+    """
+    if config.option.help:
+        return
+    from tests.time_budget import TimeScaleError, hang_guard_s, time_scale
+
+    try:
+        time_scale()
+        minimum = max(2 * hang_guard_s(), 60)
+    except TimeScaleError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    if not timeout_loaded:
+        return
+    from pytest_timeout import get_env_settings
+
+    timeout = get_env_settings(config).timeout
+    if timeout is None:
+        timeout = config.option.timeout = max(_DEFAULT_TEST_TIMEOUT_S, minimum)
+    if 0 < timeout < minimum:
+        raise pytest.UsageError(
+            f"--timeout={timeout:g} is below twice the hang guard ({hang_guard_s()} s at "
+            f"BOOLEY_TEST_TIME_SCALE={time_scale():g}); a hung child would outlive the "
+            "per-test limit and kill the worker without naming the test. "
+            f"Pass --timeout={minimum} or more."
+        )
 
 
 def prune_orphan_basetemps(config: pytest.Config) -> None:
@@ -594,6 +595,20 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_host_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve Booley's host config directory inside each test's tmp_path (#3837).
+
+    ``config_dir()`` otherwise falls back to the real ``~/.config/booley``, and
+    ``booley init`` would scan and recover the developer's real issuance-
+    invalidation journals. Per test, not per session: private-store permission
+    tests need a fresh tree. Tests and fixtures that set ``XDG_CONFIG_HOME``
+    themselves run later and keep their value; tests of the ``Path.home()``
+    fallback delete it.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_host_lifecycle_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep host-global mutation locks local to each test process."""
     from booley.runtime import lifecycle_lock
@@ -610,11 +625,67 @@ def _isolate_directory_layout_metadata(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 @pytest.fixture(autouse=True)
+def _isolate_bwave_sessions(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the real temporary-directory bwave store out of tests.
+
+    A traced sim run registers into its checkout's store, but a run outside any
+    Project (and any ``bwave`` call from the Booley source checkout) falls back
+    to ``<tmp>/bwave/bwave_sessions.json``; without this a serial run would
+    write the developer's own and leave ``@<target>`` behind for later tests.
+    Tests under ``tests/bwave`` exercise that store on purpose (their child
+    processes read it) and isolate it themselves.
+    """
+    if "tests/bwave/" in request.node.nodeid.replace("\\", "/"):
+        return
+    try:
+        from booley.bwave import sessions
+    except ModuleNotFoundError:  # minimal CI images lack optional dependencies
+        return
+    store = sessions.SessionStore(tmp_path / "bwave-sessions" / "bwave_sessions.json", None)
+    monkeypatch.setattr(sessions, "_temporary_store", lambda: store)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_booley_dir_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Linked-entry pins must not be written to the real host config."""
     from booley.core import booley_dir_pin
 
     monkeypatch.setattr(booley_dir_pin, "config_dir", lambda: tmp_path / "pin-config" / "booley")
+
+
+@pytest.fixture(autouse=True)
+def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admission tests must not depend on the host exposing ``/proc/meminfo``.
+
+    Windows has no ``/proc``, so the real Memory Budget is unavailable there and
+    every Job would run alone with an extra "Memory Budget unavailable" note in
+    its reports and refusals. Fall back to a fixed 64 GiB budget when measuring
+    fails; tests of the unavailable path patch ``compute_memory_budget`` themselves.
+    """
+    from booley.flows import memory_admission
+    from booley.runtime import memory_budget
+
+    real_compute = memory_budget.compute_memory_budget
+
+    def compute_or_fixed(**kwargs: Any) -> memory_budget.MemoryBudget:
+        try:
+            return real_compute(**kwargs)
+        except OSError:
+            return budget_of(64 * 1024**3)
+
+    monkeypatch.setattr(memory_admission, "compute_memory_budget", compute_or_fixed)
+
+
+@pytest.fixture
+def pin_memory_budget(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
+    """Return ``pin(mib)``: fix the Memory Budget admission tests see, in MiB.
+
+    The budget comes from the budget computation, never from ``booley.toml``:
+    no key there sets it, and the host's memory must not matter.
+    """
+    return lambda mib: pin_budget(monkeypatch, mib)
 
 
 @pytest.fixture(autouse=True)
@@ -658,21 +729,6 @@ def write_activity_signal(booley_dir: Path, key: str, state: str, at: str, tool:
     return path
 
 
-@pytest.fixture(autouse=True)
-def _inline_ended_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep cleanup deterministic; worker tests explicitly restore the process launcher."""
-    from booley.goals import ended_records
-    from booley.goals.store import GoalStore
-
-    monkeypatch.setattr(
-        ended_records,
-        "_launch_cleanup",
-        lambda booley_dir, repo_dir: ended_records.sweep_ended_records(
-            GoalStore(booley_dir), repo_dir
-        ),
-    )
-
-
 _FAKE_BWAVE = '''#!{python}
 """Stand-in for ``bwave build``: modes come from FAKE_BWAVE_MODE."""
 import os
@@ -714,3 +770,21 @@ def fake_bwave(tmp_path, monkeypatch):
     script.chmod(0o755)
     monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: str(script))
     return script
+
+
+@pytest.fixture
+def fake_sandbox_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Attachment | None], None]:
+    """Fake the Sandbox owner inventory so remedy text never asks the host's Docker.
+
+    The owner starts unknown (``None``); call the returned function with an
+    ``Attachment`` to give the Sandbox one.
+    """
+    from booley.runtime import session_runtime
+
+    def attach(owner: Attachment | None) -> None:
+        monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: owner)
+
+    attach(None)
+    return attach

@@ -25,18 +25,18 @@ def validate_manifest_reference(
     projection_path: Path,
     manifest_path: Path,
     manifest_raw: bytes,
-    campaign_id: object,
+    simulation_record_id: object,
 ) -> None:
-    """Authenticate the projection's typed ``campaign_manifest`` artifact reference."""
+    """Authenticate the projection's typed ``simulation_record_manifest`` artifact reference."""
     _need(
         isinstance(reference, dict), "compatibility manifest backlink is not an artifact reference"
     )
     _need(reference.get("path_base") == "origin_target", "manifest backlink base differs")
     _need(
-        reference.get("kind") == "simulation_campaign_manifest",
+        reference.get("kind") == "simulation_record_manifest",
         "manifest backlink kind differs",
     )
-    _need(reference.get("owner") == campaign_id, "manifest backlink owner differs")
+    _need(reference.get("owner") == simulation_record_id, "manifest backlink owner differs")
     path = reference.get("path")
     _need(isinstance(path, str) and bool(path), "manifest backlink path is invalid")
     # ``origin_target`` is the Target directory that holds simulation.json.

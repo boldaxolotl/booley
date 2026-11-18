@@ -7,8 +7,8 @@ intentional change of that stored form may update its literal.
 
 Every input holds unsorted keys and non-ASCII text in a field the pinned form
 keeps, so key sorting and ``ensure_ascii`` are both observable. All pinned inputs
-are literals except the campaign of the point-store and manifest tests, which
-is the shared valid Campaign document with literal overrides.
+are literals except the Coverage Record of the point-store and manifest tests, which
+is the shared valid Coverage Record document with literal overrides.
 """
 
 from __future__ import annotations
@@ -19,24 +19,24 @@ from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
 
-from booley.flows.sim.coverage_campaign import (
-    DurableTargetIdentity,
-    decode_coverage_point_id,
-)
-from booley.flows.sim.coverage_campaign_store import (
-    load_coverage_campaign,
-    publish_coverage_campaign,
-)
 from booley.flows.sim.coverage_policy import (
     ApprovedWaiverSet,
     CoverageCriterion,
     CoverageThreshold,
-    evaluate_coverage_campaign,
+    evaluate_coverage_record,
 )
 from booley.flows.sim.coverage_provenance import coverage_digest
+from booley.flows.sim.coverage_record import (
+    DurableTargetIdentity,
+    decode_coverage_point_id,
+)
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+    publish_coverage_record,
+)
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReference,
-    encode_coverage_campaign_reference,
+    CoverageRecordReference,
+    encode_coverage_record_reference,
 )
 from booley.flows.sim.coverage_waivers import (
     CoverageRepositoryRoots,
@@ -50,9 +50,9 @@ from booley.flows.sim.verilator_coverage import (
     SelectedCoverageRun,
     collect,
 )
-from tests.flows.sim.coverage_campaign_test_support import decode_document
-from tests.flows.sim.test_coverage_campaign import _valid_document
-from tests.flows.sim.test_coverage_policy import _TARGET, _two_metric_campaign
+from tests.flows.sim.coverage_record_test_support import decode_document
+from tests.flows.sim.test_coverage_policy import _TARGET, _two_metric_coverage_record
+from tests.flows.sim.test_coverage_record import _valid_document
 from tests.flows.sim.test_verilator_coverage_collector import _HEADER, _PresenceExecution
 
 GOLDEN_POINT_ID = (
@@ -79,15 +79,15 @@ GOLDEN_IDENTITY = {
     },
 }
 GOLDEN_REFERENCE_BYTES = (
-    b'{"$schema":"booley.coverage-campaign-reference/v1","coverage_campaign":{"bytes":5386,'
-    b'"campaign_id":"campaign:sim_counter:2026-09-01T10:30:00Z","path":"campaign/work-items/'
+    b'{"$schema":"booley.coverage-record-reference/v1","coverage_record":{"bytes":5386,'
+    b'"coverage_record_id":"campaign:sim_counter:2026-09-01T10:30:00Z","path":"record/work-items/'
     b"0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/"
-    b'coverage-campaign/coverage.json","path_base":"origin_target",'
-    b'"schema":"booley.coverage-campaign/v5","sha256":"sha256:' + b"b" * 64 + b'"},'
+    b'coverage-record/coverage.json","path_base":"origin_target",'
+    b'"schema":"booley.coverage-record/v1","sha256":"sha256:' + b"b" * 64 + b'"},'
     b'"origin_invocation_id":12,"producer_invocation_id":19,'
     b'"simulation_attempt_id":"87654321-4321-4432-a234-cba987654321",'
-    b'"simulation_campaign_id":"12345678-1234-4234-9234-123456789abc",'
     b'"simulation_manifest_sha256":"sha256:' + b"a" * 64 + b'",'
+    b'"simulation_record_id":"12345678-1234-4234-9234-123456789abc",'
     b'"simulation_work_item_id":"item:0000:0123456789abcdef",'
     b'"target":{"identity":"acme:demo:counter:1.0#sim_counter","selector":"sim_z\xc3\xa4hler"}}\n'
 )
@@ -112,7 +112,7 @@ def test_point_id_golden_is_shared_by_collector_and_codec(tmp_path: Path) -> Non
             custom_main_hooks=(),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         reset_included=True,
     )
 
@@ -123,8 +123,8 @@ def test_point_id_golden_is_shared_by_collector_and_codec(tmp_path: Path) -> Non
     assert decode_coverage_point_id(GOLDEN_POINT_ID) == GOLDEN_IDENTITY
 
 
-def _campaign_document() -> dict[str, object]:
-    """The shared valid Campaign with the golden point and a non-ASCII selector."""
+def _coverage_record_document() -> dict[str, object]:
+    """The shared valid Coverage Record with the golden point and a non-ASCII selector."""
     document = _valid_document()
     document["target"]["selector"] = "sim_zähler"  # type: ignore[index]
     document["points"][0].update(id=GOLDEN_POINT_ID, identity=GOLDEN_IDENTITY)  # type: ignore[index]
@@ -132,10 +132,10 @@ def _campaign_document() -> dict[str, object]:
 
 
 def _publish(tmp_path: Path):
-    campaign = decode_document(
-        _campaign_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
+    coverage_record = decode_document(
+        _coverage_record_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
     )
-    return publish_coverage_campaign(tmp_path / "campaign", campaign)
+    return publish_coverage_record(tmp_path / "record", coverage_record)
 
 
 def test_point_store_lines_golden(tmp_path: Path) -> None:
@@ -145,12 +145,12 @@ def test_point_store_lines_golden(tmp_path: Path) -> None:
 
     assert "zähler".encode() in lines
     assert lines.endswith(b"\n")
-    assert _sha256_hex(lines) == "609dfae9ad04d68120e098360b3891688bd71492ff80276907a92dd18a709c4c"
+    assert _sha256_hex(lines) == "00b20bb72d9afbbe2895a1c27e6afd66f4996c0674b228916b12249f736376e9"
 
 
 def test_manifest_golden(tmp_path: Path) -> None:
     paths = _publish(tmp_path)
-    raw = paths.campaign.read_bytes()
+    raw = paths.coverage_record.read_bytes()
     compressed = paths.points.read_bytes()
 
     # zlib builds differ in compressed bytes, so only these two values are normalized.
@@ -166,39 +166,39 @@ def test_manifest_golden(tmp_path: Path) -> None:
     assert "ä".encode() not in raw
     assert (
         _sha256_hex(normalized)
-        == "cc701b79374df1d0f6266b77021345ed6d07eb0863093ce428f223db55872e41"
+        == "9472651ded3ee395d84ff35c65558e8fdb7ab2e6050cbb846b70b03ffddbf340"
     )
-    loaded = load_coverage_campaign(paths.campaign)
+    loaded = load_coverage_record(paths.coverage_record)
     assert loaded.summary.manifest_sha256 == f"sha256:{_sha256_hex(raw)}"
 
 
-def test_coverage_campaign_reference_golden() -> None:
+def test_coverage_record_reference_golden() -> None:
     # Keys are deliberately unsorted: the encoder must sort them.
-    reference = CoverageCampaignReference(
+    reference = CoverageRecordReference(
         {
             "target": {"selector": "sim_zähler", "identity": "acme:demo:counter:1.0#sim_counter"},
             "simulation_work_item_id": "item:0000:0123456789abcdef",
             "simulation_manifest_sha256": "sha256:" + "a" * 64,
-            "simulation_campaign_id": "12345678-1234-4234-9234-123456789abc",
+            "simulation_record_id": "12345678-1234-4234-9234-123456789abc",
             "simulation_attempt_id": "87654321-4321-4432-a234-cba987654321",
             "producer_invocation_id": 19,
             "origin_invocation_id": 12,
-            "coverage_campaign": {
+            "coverage_record": {
                 "sha256": "sha256:" + "b" * 64,
-                "schema": "booley.coverage-campaign/v5",
+                "schema": "booley.coverage-record/v1",
                 "path_base": "origin_target",
-                "path": "campaign/work-items/0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/coverage-campaign/coverage.json",
-                "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
+                "path": "record/work-items/0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/coverage-record/coverage.json",
+                "coverage_record_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
                 "bytes": 5386,
             },
-            "$schema": "booley.coverage-campaign-reference/v1",
+            "$schema": "booley.coverage-record-reference/v1",
         }
     )
 
-    raw = encode_coverage_campaign_reference(reference)
+    raw = encode_coverage_record_reference(reference)
 
     assert raw == GOLDEN_REFERENCE_BYTES
-    assert _sha256_hex(raw) == "66a1c0eb6e5853ea3285d31156d722a77a65992e1b1ee048e4a8a3a64dc83add"
+    assert _sha256_hex(raw) == "6abaa2cfc585358b9c9eb31abe21e67627d7849e8e46b00a7d1d231df0ec5770"
 
 
 def test_approved_waiver_set_digest_golden(tmp_path: Path) -> None:
@@ -258,7 +258,7 @@ def test_criterion_fingerprint_golden() -> None:
         waivers=(),
     )
 
-    evaluated = evaluate_coverage_campaign(_two_metric_campaign(), criterion, waivers)
+    evaluated = evaluate_coverage_record(_two_metric_coverage_record(), criterion, waivers)
 
     assert (
         evaluated.evaluation["criterion_fingerprint"]
@@ -266,7 +266,7 @@ def test_criterion_fingerprint_golden() -> None:
     )
 
 
-def test_coverage_campaign_fingerprint_golden() -> None:
+def test_coverage_record_fingerprint_golden() -> None:
     value = {
         "zähler": MappingProxyType({"b": (1, 2.5), "a": None}),
         "items": ("x", {"y": True, "ä": "ö"}),

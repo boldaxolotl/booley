@@ -29,11 +29,11 @@ def test_native_tabs_and_helpers_own_one_handle_but_nested_clients_do_not(tmp_pa
     registry = SessionRegistry(tmp_path, proc_root=proc)
     for peer in (main, backend):
         facts = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
-        assert publish(registry, facts, "goal_status", NOW).key == activity.process_session_key(
+        assert publish(registry, facts, "flow_lint", NOW).key == activity.process_session_key(
             owner
         )
     nested_facts = Attribution("codex:nested", "thread", "", "", process=nested, namespace=SCOPE)
-    assert publish(registry, nested_facts, "goal_status", NOW) == nested_facts
+    assert publish(registry, nested_facts, "flow_lint", NOW) == nested_facts
     assert len(registry.snapshot().rows) == 2
     assert HandleStore(tmp_path).load().labels()["codex:main"] == "S1"
     assert HandleStore(tmp_path).load().labels()["codex:nested"] == "S2"
@@ -78,7 +78,7 @@ def test_registry_rejects_redirected_handle_map_ancestors(tmp_path, redirect):
 
 
 def test_hook_follows_symlinked_booley_dir_entry(tmp_path):
-    """The Booley Directory entry may be a link (``/booley-project`` alias, host ``.booley``)."""
+    """The Booley Directory entry may be a link (``/booley`` alias, host ``.booley``)."""
     proc = tmp_path / "proc"
     owner = process(proc, 100, 1, executable="codex")
     (proc / "100" / "cmdline").write_bytes(b"S1\0--no-daemon\0")

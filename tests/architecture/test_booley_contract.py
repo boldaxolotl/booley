@@ -34,14 +34,6 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D40", "booley.presentation.colors", "booley.mcp.server", "seed.py"),
         ("D40", "booley.presentation.colors", "booley.runtime.git", "seed.py"),
         ("D40", "booley.presentation.colors", "booley.flows.base", "seed.py"),
-        ("D40", "booley.presentation.colors", "booley.goals.store", "seed.py"),
-        ("D38", "booley.flows.sim.flow", "booley.goals.presentation", "seed.py"),
-        (
-            "D38",
-            "booley.specialists.coverage_candidate_recording",
-            "booley.goals.paths",
-            "seed.py",
-        ),
         ("D29", "booley.bwave", "booley.flows", "bwave/__init__.py"),
         ("D29", "booley.bwave.waveform_store", "booley.flows.sim", "seed.py"),
         ("D27", "booley.targets", "booley.flows", "targets/__init__.py"),
@@ -50,19 +42,14 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D28", "booley.fusesoc", "booley.runtime", "fusesoc/__init__.py"),
         ("D28", "booley.fusesoc.core_security", "booley.runtime.git", "seed.py"),
         ("D18", "booley.config.agent", "booley.runtime.agent_backend", "seed.py"),
-        ("D21", "booley.review.goal_package", "booley.harness.booley", "seed.py"),
+        ("D21", "booley.review.package", "booley.harness.booley", "seed.py"),
         ("D15", "booley.flows", "booley.mcp", "flows/__init__.py"),
         ("D15", "booley.flows.base", "booley.mcp.base", "flows/base.py"),
         ("D15", "booley.flows.sim.flow", "booley.mcp.schema_extractor", "seed.py"),
-        ("D16", "booley.criteria.policy", "booley.flows.execution", "seed.py"),
-        ("D2", "booley.criteria.policy", "booley.mcp.base", "seed.py"),
         ("D1", "booley.audit.policy", "booley.mcp.registry", "seed.py"),
         ("D1", "booley.config.settings", "booley.harness.cli", "seed.py"),
         ("D1", "booley.fusesoc.target", "booley.specialists.reviewer", "seed.py"),
         ("D1", "booley.targets.registry", "booley.harness.cli", "seed.py"),
-        ("D2", "booley.criteria.policy", "booley.harness.cli", "seed.py"),
-        ("D2", "booley.criteria.policy", "booley.mcp.registry", "seed.py"),
-        ("D2", "booley.criteria.policy", "booley.specialists.reviewer", "seed.py"),
         ("D3", "booley.specialists.reviewer", "booley.harness.cli", "seed.py"),
         ("D3", "booley.specialists.reviewer", "booley.mcp.server", "seed.py"),
         ("D4", "booley.mcp.registry", "booley.harness.cli", "seed.py"),
@@ -71,17 +58,8 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D5", "booley.runtime.agent", "booley.specialists.reviewer", "seed.py"),
         ("D6", "booley.runtime.agent", "booley.harness.cli", "seed.py"),
         ("D5", "booley.runtime.agent", "booley.mcp.base", "seed.py"),
-        ("D35", "booley.goals.store", "booley.harness.cli", "seed.py"),
-        ("D35", "booley.goals.translate", "booley.mcp.server", "seed.py"),
-        ("D35", "booley.goals", "booley.harness.booley", "goals/__init__.py"),
-        ("D35", "booley.goals.store", "booley.specialists.reviewer", "seed.py"),
-        ("D35", "booley.goals.translate", "booley.flows.sim.flow", "seed.py"),
-        ("D35", "booley.goals.translate", "booley.flows.synth.flow", "seed.py"),
-        ("D35", "booley.goals.translate", "booley.flows.fpga.flow", "seed.py"),
-        ("D35", "booley.goals.translate", "booley.flows.lint.flow", "seed.py"),
-        ("D25", "booley.core.file_lock", "booley.goals.store", "seed.py"),
+        ("D25", "booley.core.file_lock", "booley.mcp.server", "seed.py"),
         ("D7", "booley.flows.target_campaign", "booley.harness.cli", "seed.py"),
-        ("D7", "booley.flows.target_criteria", "booley.mcp.registry", "seed.py"),
         (
             "D7",
             "booley.flows.target_test_suite",
@@ -172,40 +150,40 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
     ("statement", "target"),
     [
         (
-            "import booley.flows.sim.campaign.store\n",
-            "booley.flows.sim.campaign.store",
+            "import booley.flows.sim.record.store\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "from booley.flows.sim.campaign import store\n",
-            "booley.flows.sim.campaign.store",
+            "from booley.flows.sim.record import store\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "from booley.flows.sim.campaign.store import CampaignStore\n",
-            "booley.flows.sim.campaign.store",
+            "from booley.flows.sim.record.store import SimulationRecordStore\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "def deferred():\n    import booley.flows.sim.campaign.store\n",
-            "booley.flows.sim.campaign.store",
+            "def deferred():\n    import booley.flows.sim.record.store\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "if enabled:\n    import booley.flows.sim.campaign.store\n",
-            "booley.flows.sim.campaign.store",
+            "if enabled:\n    import booley.flows.sim.record.store\n",
+            "booley.flows.sim.record.store",
         ),
         (
             "from typing import TYPE_CHECKING\n"
-            "if TYPE_CHECKING:\n    from booley.flows.sim.campaign.store import CampaignStore\n",
-            "booley.flows.sim.campaign.store",
+            "if TYPE_CHECKING:\n    from booley.flows.sim.record.store import SimulationRecordStore\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "from booley.flows.sim.campaign.inspection import authenticate_work_item\n",
-            "booley.flows.sim.campaign.inspection",
+            "from booley.flows.sim.record.inspection import authenticate_work_item\n",
+            "booley.flows.sim.record.inspection",
         ),
     ],
 )
-def test_campaign_storage_rule_catches_every_external_import_form(
+def test_simulation_record_storage_rule_catches_every_external_import_form(
     tmp_path: Path, statement: str, target: str
 ) -> None:
-    root = _campaign_rule_seed(tmp_path, "flows/sim/rogue.py", statement)
+    root = _simulation_record_rule_seed(tmp_path, "flows/sim/rogue.py", statement)
 
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
     report = format_problems(problems)
@@ -215,11 +193,11 @@ def test_campaign_storage_rule_catches_every_external_import_form(
     assert target in report
 
 
-def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> None:
-    root = _campaign_rule_seed(
+def test_simulation_record_storage_rule_allows_public_facade_import(tmp_path: Path) -> None:
+    root = _simulation_record_rule_seed(
         tmp_path,
         "flows/sim/rogue.py",
-        "from booley.flows.sim import campaign\n",
+        "from booley.flows.sim import record\n",
     )
 
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
@@ -230,12 +208,12 @@ def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("source", "target"),
     [
-        ("booley.flows.sim.campaign.coordinator", "booley.flows.sim.campaign.store"),
-        ("booley.flows.sim.campaign.inspection", "booley.flows.sim.campaign.store"),
-        ("booley.flows.sim.campaign", "booley.flows.sim.campaign.inspection"),
+        ("booley.flows.sim.record.coordinator", "booley.flows.sim.record.store"),
+        ("booley.flows.sim.record.inspection", "booley.flows.sim.record.store"),
+        ("booley.flows.sim.record", "booley.flows.sim.record.inspection"),
     ],
 )
-def test_campaign_storage_permissions_allow_only_their_exact_edges(
+def test_simulation_record_storage_permissions_allow_only_their_exact_edges(
     source: str, target: str
 ) -> None:
     allowed = _dependency(source, target)
@@ -347,15 +325,15 @@ def _dependency(source: str, target: str, *, line: int = 1, path: str = "seed.py
     return Dependency(source, target, Path(path), line, 0)
 
 
-def _campaign_rule_seed(tmp_path: Path, source: str, statement: str) -> Path:
+def _simulation_record_rule_seed(tmp_path: Path, source: str, statement: str) -> Path:
     root = tmp_path / "booley"
     files = (
         "__init__.py",
         "flows/__init__.py",
         "flows/sim/__init__.py",
-        "flows/sim/campaign/__init__.py",
-        "flows/sim/campaign/store.py",
-        "flows/sim/campaign/inspection.py",
+        "flows/sim/record/__init__.py",
+        "flows/sim/record/store.py",
+        "flows/sim/record/inspection.py",
         source,
     )
     for relative in files:

@@ -391,8 +391,12 @@ def _record_state(
         return False  # The turn ended earlier with background work still running.
     state = EVENT_STATES[event]
     tool = payload.get("tool_name")
-    named = state == WAITING_TOOL and isinstance(tool, str) and tool.isprintable()
-    _write(root, key, state, tool[:MAX_TOOL_NAME] if named else "", now)
+    label = (
+        tool[:MAX_TOOL_NAME]
+        if state == WAITING_TOOL and isinstance(tool, str) and tool.isprintable()
+        else ""
+    )
+    _write(root, key, state, label, now)
     return True
 
 

@@ -145,14 +145,14 @@ def test_text_only_codex_may_expose_one_scoped_nested_mcp_tool(tmp_path):
         cwd=root,
         text_only=True,
         nested_mcp_tools=["coverage_evidence"],
-        nested_mcp_env={"BOOLEY_COVERAGE_CAMPAIGN": "/reports/coverage.json"},
+        nested_mcp_env={"BOOLEY_COVERAGE_RECORD": "/reports/coverage.json"},
     )
 
     _, env = prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(cache)})
 
     config = (Path(env["CODEX_HOME"]) / "config.toml").read_text()
     assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
-    assert 'BOOLEY_COVERAGE_CAMPAIGN = "/reports/coverage.json"' in config
+    assert 'BOOLEY_COVERAGE_RECORD = "/reports/coverage.json"' in config
     assert "mcp_servers.booley" in config
 
 
@@ -166,7 +166,7 @@ async def test_claude_text_only_model_receives_no_tools_mcp_or_project_settings(
 
     options, query = _capturing_successful_query()
     monkeypatch.setattr(_claude_backend, "query", query)
-    await ClaudeSDKBackend().call(
+    await ClaudeSDKBackend(auth_mode="visitor").call(
         AgentCallParams(prompt="Explain", model="sonnet", cwd=tmp_path, text_only=True)
     )
     assert options[0].tools == []

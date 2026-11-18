@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from booley.audit.resource_policy import parse_memory_limit
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.config.gateway import (
     GATEWAY_AUTH,
@@ -45,6 +46,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
+from booley.runtime import host_docker, mount_history
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
@@ -66,7 +68,7 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
-from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.private_store import session_store_repair
 from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -338,7 +340,7 @@ def stamp_store() -> ProjectStore:
         "host-issued Sandbox spec",
         RuntimeSpecError,
     )
-    return ProjectStore(private, SESSION_STORE_REPAIR)
+    return ProjectStore(private, session_store_repair)
 
 
 def validate_auth_reseed_storage(project_root: Path) -> None:
@@ -376,37 +378,26 @@ def _stamp_read_path(project_root: Path) -> Path:
     return stamp_path(project_root)
 
 
-def recovery_stamp_path(project_root: Path) -> Path:
-    """Return the stamp path that recovery must snapshot."""
-    return _stamp_read_path(project_root.resolve(strict=True))
+def stamp_is_absent(project_root: Path) -> bool:
+    """True when no stamp exists (never issued or withdrawn); a misnamed stamp is not absent."""
+    try:
+        return stamp_store().locate(str(project_root.resolve())) is None
+    except RuntimeSpecError:
+        return False
 
 
 def load_issued_snapshot(project_root: Path) -> Issuance:
     """Load structurally valid prior issuance without consulting current authority.
 
-    Session refresh reads the replacement issuance through this view after
-    reissuing, and remedy selection reads the prior one.  The current grant
-    may legitimately have changed — healing that drift is the point of
-    refresh — while the sealed licence decision and Project identity still
-    have to be trusted before Docker mutation.
+    Remedy selection reads the prior issuance through this view.  The current
+    grant may legitimately have changed, while the sealed licence decision and
+    Project identity still have to be trusted before Docker mutation.
     """
     project = project_root.resolve(strict=True)
     issuance = _load_stamp(_stamp_read_path(project))
     if issuance.project_root != str(project):
         raise RuntimeSpecError("host-issued spec stamp belongs to a different Project")
     _require_project_keeper(project, issuance)
-    return issuance
-
-
-def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
-    """Authenticate the exact prior issuance without consulting current grants."""
-    project = project_root.resolve(strict=True)
-    issuance = _load_stamp(_stamp_read_path(project))
-    if differences := _authentication_differences(issuance, project, spec, spec_path):
-        raise RuntimeSpecError(
-            "prior Sandbox spec differs from its issuance stamp: " + differences
-        )
-    _require_retained_keeper(project, issuance)
     return issuance
 
 
@@ -490,7 +481,7 @@ def _issuance_requirements(
         vivado_enabled=flow_enabled("fpga", project_root),
         prior_eda=prior_eda,
     ) as leased:
-        yield eda_requirements.with_relay_identity(leased)
+        yield eda_requirements.with_relay_identity(leased, runner=host_docker.relay_docker)
 
 
 def _seal_with_requirements(
@@ -717,6 +708,7 @@ def issue_prepared(
             _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
                 leased,
+                runner=host_docker.relay_docker,
                 force_relay=force_dependencies,
             )
             return _persist_prepared(
@@ -758,6 +750,15 @@ def _persist_prepared(
         if previous_issuance is not None
         else _current_keeper_id(project)
     )
+    try:
+        mount_history.record_former_mount(
+            authorized_project_data_source(project),
+            previous,
+            BOOLEY_DIR_TARGET,
+            path,
+        )
+    except mount_history.MountHistoryError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
     task_transaction = None
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
@@ -807,7 +808,7 @@ def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
 
 
 def _current_keeper_id(project: Path) -> str | None:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         return docker.image_id(keeper_image(project))
@@ -818,7 +819,7 @@ def _current_keeper_id(project: Path) -> str | None:
 
 
 def _restore_keeper(project: Path, image_id: str | None) -> None:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     keeper = keeper_image(project)
     try:
@@ -1136,6 +1137,7 @@ def _validate_issued_mounts(
     mounts = spec.get("mounts")
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
+    project_data = _require_project_data_source(issuance.project_data_source)
     project_data_workspace_target = _require_project_data_mount(
         mounts, issuance.project_data_source, project, layout=issuance.project_data_layout
     )
@@ -1146,7 +1148,7 @@ def _validate_issued_mounts(
             "issued image no longer proves the canonical Booley Directory alias"
         )
     record = _spec_cli_record(spec)
-    _validate_credential_policy(spec, project, Path(issuance.project_data_source), app, record)
+    _validate_credential_policy(spec, project, project_data, app, record)
     _validate_state_volume(mounts, record, project)
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
@@ -1198,13 +1200,7 @@ def _validate_run_args(
                 {"fixed_hardening": tuple(raw[:cursor])},
             )
         )
-    if raw[cursor : cursor + 1] == ["--memory"]:
-        if (
-            cursor + 1 >= len(raw)
-            or re.fullmatch(r"[1-9][0-9]*(?:[kKmMgG])?", raw[cursor + 1]) is None
-        ):
-            raise RuntimeSpecError("devcontainer.json memory limit is invalid")
-        cursor += 2
+    cursor = _validate_memory_args(raw, cursor)
     if private_network is not None:
         if raw[cursor : cursor + 2] != ["--network", private_network]:
             raise RuntimeSpecError("licensed Sandbox private network has drifted")
@@ -1215,6 +1211,25 @@ def _validate_run_args(
             "devcontainer.json issuance labels differ from host authority: "
             + _issuance_label_differences(expected_labels, raw[cursor:])
         )
+
+
+def _validate_memory_args(raw: list[str], cursor: int) -> int:
+    """Check the optional ``--memory <v>`` and ``--memory-swap <v>``; return the next cursor."""
+    if raw[cursor : cursor + 1] != ["--memory"]:
+        return cursor
+    pattern = r"[1-9][0-9]*(?:[kKmMgG])?"
+    if cursor + 1 >= len(raw) or re.fullmatch(pattern, raw[cursor + 1]) is None:
+        raise RuntimeSpecError("devcontainer.json memory limit is invalid")
+    memory_bytes = parse_memory_limit(raw[cursor + 1]) or 0
+    cursor += 2
+    if raw[cursor : cursor + 1] == ["--memory-swap"]:
+        swap_limit = raw[cursor + 1] if cursor + 1 < len(raw) else ""
+        if re.fullmatch(pattern, swap_limit) is None or (
+            (parse_memory_limit(swap_limit) or 0) < memory_bytes
+        ):
+            raise RuntimeSpecError("devcontainer.json swap limit is invalid")
+        cursor += 2
+    return cursor
 
 
 def _issuance_label_differences(expected_labels: tuple[str, ...], tail: list[str]) -> str:
@@ -1333,7 +1348,7 @@ def _validate_gateway_environment(remote: dict[str, Any], record: dict[str, str]
         )
 
 
-def _format_cli_record(record: dict[str, str]) -> str:
+def _format_cli_record(record: Mapping[str, str]) -> str:
     return ", ".join(f"{cli}={policy}" for cli, policy in record.items()) or "none"
 
 
@@ -1354,12 +1369,12 @@ def _validate_credential_policy(
         raise RuntimeSpecError(
             f"Sandbox Agent CLI {app} is not in the Project's Agent CLIs "
             f"({_format_cli_record(found.policies)}; without [agent] clis only [agent] "
-            "default is allowed); run `booley session refresh` and recreate the Sandbox"
+            "default is allowed)"
         )
     if list(record.items()) != list(expected.items()):
         raise RuntimeSpecError(
             f"Sandbox Agent CLIs {_format_cli_record(record)} differ from [agent] clis "
-            f"{_format_cli_record(expected)}; refresh and recreate the Sandbox"
+            f"{_format_cli_record(expected)}"
         )
     remote = spec.get("remoteEnv", {})
     primary = record[app] if app in record else found.policies[found.default]
@@ -1367,9 +1382,7 @@ def _validate_credential_policy(
         remote.get("BOOLEY_PRIMARY_AUTH") != primary
         or remote.get("BOOLEY_CREDENTIAL_SCHEMA") != auth_token.CREDENTIAL_SCHEMA
     ):
-        raise RuntimeSpecError(
-            "Sandbox credential policy/schema has drifted; refresh and recreate the Sandbox"
-        )
+        raise RuntimeSpecError("Sandbox credential policy/schema has drifted")
     _validate_credential_seed_sources(spec, record)
     _validate_seed_targets(spec, record)
 
@@ -1412,12 +1425,8 @@ def _validate_credential_seed_sources(spec: dict[str, Any], record: dict[str, st
         fields = _mount_fields(raw)
         # Spec sources use Docker's bind format (``/c/...`` on Windows): map back to a host path.
         source = host_path_from_docker_mount(fields.get("source", "")) or Path()
-        cli = login_targets.get(fields.get("target"))
-        if (
-            cli
-            and record[cli] != "auto"
-            and not auth_token.subscription_available(cli, record[cli], source)
-        ):
+        cli = login_targets.get(fields.get("target", ""))
+        if cli and not auth_token.subscription_available(cli, record[cli], source):
             raise RuntimeSpecError(
                 "Sandbox login seed is not a recognized subscription credential"
             )
@@ -1495,7 +1504,7 @@ def _validate_overlaps(mounts: list[str]) -> None:
 
 def _validate_mount_surfaces(mounts: list[str], project_data_workspace_target: str | None) -> None:
     """Reject broad authority mounts and writable host binds outside fixed state."""
-    writable_targets = {"/booley-project"}
+    writable_targets = {BOOLEY_DIR_TARGET}
     if project_data_workspace_target is not None:
         writable_targets.add(project_data_workspace_target)
     forbidden = {"/", "/var/run/docker.sock", "/run/docker.sock", "/root", "/home"}
@@ -1559,7 +1568,7 @@ def _validate_project_data_bind_source(project: Path, candidate: Path) -> Path:
     except RuntimeSpecError as exc:
         source = docker_mount_path(candidate)
         raise RuntimeSpecError(
-            f"generated bind source for /booley-project could not be validated: {source}: {exc}"
+            f"generated bind source for {BOOLEY_DIR_TARGET} could not be validated: {source}: {exc}"
         ) from exc
 
 
@@ -1647,23 +1656,24 @@ def _pin_project_data_mount(
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
     indexes = [
-        index for index, raw in enumerate(mounts) if _mount_target(raw) == "/booley-project"
+        index for index, raw in enumerate(mounts) if _mount_target(raw) == BOOLEY_DIR_TARGET
     ]
     if len(indexes) != 1:
         raise RuntimeSpecError("Booley Directory target must have one exact writable bind")
     index = indexes[0]
     allowed = {
-        "source=${localWorkspaceFolder}/.booley,target=/booley-project,type=bind",
-        f"source={expected_source},target=/booley-project,type=bind",
+        f"source=${{localWorkspaceFolder}}/.booley,target={BOOLEY_DIR_TARGET},type=bind",
+        f"source={expected_source},target={BOOLEY_DIR_TARGET},type=bind",
     }
     if mounts[index] not in allowed:
         raise RuntimeSpecError("Booley Directory mount source was not authorized by the host")
-    mounts[index] = f"source={expected_source},target=/booley-project,type=bind"
+    mounts[index] = f"source={expected_source},target={BOOLEY_DIR_TARGET},type=bind"
     shadow_target = _project_data_shadow_target(project, project_data)
     if shadow_target is None:
         if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
             raise RuntimeSpecError(
-                "selected image alias hides the external Booley Directory source; an ordinary /booley-project directory is required"
+                "selected image alias hides the external Booley Directory source; "
+                f"an ordinary {BOOLEY_DIR_TARGET} directory is required"
             )
         return
     if any(_mount_target(raw) == shadow_target for raw in mounts):
@@ -1674,8 +1684,8 @@ def _pin_project_data_mount(
         mounts[:] = [
             raw
             for raw in mounts
-            if _mount_target(raw) != "/booley-project"
-            and not str(_mount_target(raw)).startswith("/booley-project/")
+            if _mount_target(raw) != BOOLEY_DIR_TARGET
+            and not str(_mount_target(raw)).startswith(f"{BOOLEY_DIR_TARGET}/")
         ]
 
 
@@ -1906,6 +1916,13 @@ def _private_primary_group(group_id: int, user_id: int) -> bool:
     )
 
 
+def _require_project_data_source(source: str | None) -> Path:
+    """Return the host-authorized Booley Directory mount source, or refuse its absence."""
+    if not source:
+        raise RuntimeSpecError("host issuance lacks an authorized Booley Directory mount source")
+    return Path(source)
+
+
 def _require_project_data_mount(
     mounts: list[str],
     source: str | None,
@@ -1913,23 +1930,21 @@ def _require_project_data_mount(
     *,
     layout: str = "legacy",
 ) -> str | None:
-    if not source:
-        raise RuntimeSpecError("host issuance lacks an authorized Booley Directory mount source")
-    project = Path(source)
+    project = _require_project_data_source(source)
     canonical = _validate_project_data_bind_source(project_root, project)
     if canonical != project:
         raise RuntimeSpecError("issued Booley Directory mount source is no longer canonical")
     expected_source = docker_mount_path(project)
-    expected = f"source={expected_source},target=/booley-project,type=bind"
-    matches = [item for item in mounts if _mount_target(item) == "/booley-project"]
+    expected = f"source={expected_source},target={BOOLEY_DIR_TARGET},type=bind"
+    matches = [item for item in mounts if _mount_target(item) == BOOLEY_DIR_TARGET]
     if layout == "canonical-alias":
         if project != project_root / ".booley":
             raise RuntimeSpecError(
                 "canonical alias layout requires checkout-local Booley Directory"
             )
         if any(
-            _mount_target(raw) == "/booley-project"
-            or str(_mount_target(raw)).startswith("/booley-project/")
+            _mount_target(raw) == BOOLEY_DIR_TARGET
+            or str(_mount_target(raw)).startswith(f"{BOOLEY_DIR_TARGET}/")
             for raw in mounts
         ):
             raise RuntimeSpecError("canonical alias layout forbids alias-subtree mounts")
@@ -1954,8 +1969,10 @@ def _validate_state_volume(mounts: list[str], record: dict[str, str], project: P
     from booley.runtime import devcontainer as dc
 
     project_id = dc.canonical_project_id(project)
+    legacy = dc.legacy_subscription_clis(mounts, project_id)
     expected = [
-        str(dc.state_volume_mount(cli, project_id, policy)) for cli, policy in record.items()
+        str(dc.state_volume_mount(cli, project_id, policy, legacy=cli in legacy))
+        for cli, policy in record.items()
     ]
     targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex"}
     # A volume other than an expected one may hold a login copied for a dropped CLI or
@@ -2031,7 +2048,7 @@ def _runtime_authority_error(spec: dict[str, Any], exc: Exception) -> RuntimeSpe
 
 
 def _resolve_image_id(image: str) -> str:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         value = docker.image_id(image)
@@ -2050,7 +2067,7 @@ def _keeper_image_id(keeper: str) -> str | None:
     naming the keeper, so callers cannot report a missing keeper or retag one
     because Docker was unreachable.
     """
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         return docker.image_id(keeper)
@@ -2067,7 +2084,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
     moves this one private tag to the newly approved immutable ID. Runtime specs
     and stamps continue to use the ID itself as their authority boundary.
     """
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     retained_id = _keeper_image_id(issuance.keeper_image)
     if retained_id == issuance.image_id:
@@ -2082,7 +2099,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
 
 def _validate_image_contract(image_id: str) -> None:
     """Inspect the fixed compatibility contract without executing image code."""
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     created = docker._run_docker(
         [
@@ -2232,7 +2249,7 @@ def spec_project_data_layout(spec: dict[str, Any]) -> str:
     mounts = spec.get("mounts", [])
     return (
         "legacy"
-        if any(_mount_target(raw) == "/booley-project" for raw in mounts)
+        if any(_mount_target(raw) == BOOLEY_DIR_TARGET for raw in mounts)
         else "canonical-alias"
     )
 

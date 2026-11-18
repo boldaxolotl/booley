@@ -3,17 +3,32 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+from tests.pipe_holding_tree import (
+    PARENT_SCRIPT,
+    heartbeat_tree,
+    wait_until_heartbeat_stops,
+)
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 import booley
 from booley.runtime.project_prepare import prepare_project
+
+# ``timeout_s`` is printed raw by ``prepare_project``, so it stays an ``int``.
+_CAPTURED_HOOK_TIMEOUT_S = math.ceil(scaled(2))
+_LOGGED_HOOK_TIMEOUT_S = math.ceil(scaled(1))
+_LOGGED_HOOK_BOUND_S = scaled(30)
+_BACKGROUND_CHILD_TIMEOUT_S = math.ceil(scaled(50))
+_BACKGROUND_CHILD_BOUND_S = scaled(30)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -124,7 +139,7 @@ def test_booley_commands_from_checkout_hooks_reach_main_common_state(
             test_names=("smoke",),
             build_root=tmp_path / "build",
             eda_tool="verilator",
-            timeout_s=60,
+            timeout_s=hang_guard_s(),
             commands=(f'"{sys.executable}" "{script}" "{report}"',),
         )
         assert evidence is not None and evidence.status == "passed", evidence
@@ -143,6 +158,64 @@ def _hook_checkout(tmp_path: Path, body: str) -> Path:
     hooks.mkdir(parents=True)
     (hooks / "post-setup.py").write_text(body, encoding="utf-8")
     return root
+
+
+def _heartbeat_hook_checkout(tmp_path: Path, paths: dict[str, Path]) -> Path:
+    """A checkout whose hook is ``PARENT_SCRIPT``: it spawns a heartbeat grandchild and waits."""
+    argv = [str(paths["heartbeat"]), str(paths["stop"]), str(paths["done"]), "live-until-stop"]
+    return _hook_checkout(tmp_path, f"import sys\nsys.argv[1:] = {argv!r}\n{PARENT_SCRIPT}")
+
+
+def test_captured_hook_timeout_stops_the_hook_tree(tmp_path: Path) -> None:
+    with heartbeat_tree(tmp_path) as paths:
+        root = _heartbeat_hook_checkout(tmp_path, paths)
+        started = time.monotonic()
+
+        result = prepare_project(
+            root, root, slug="s", sim_flow_enabled=False, timeout_s=_CAPTURED_HOOK_TIMEOUT_S
+        )
+
+        # The timeout plus the helper's fixed 32 s Windows margin, under a scaled
+        # bound below the grandchild's self-exit
+        assert time.monotonic() - started < scaled(38)
+        assert not result.ok
+        assert result.error == f"post-setup hook timed out ({_CAPTURED_HOOK_TIMEOUT_S}s)"
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
+
+
+def test_captured_hook_start_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
+    root = _hook_checkout(tmp_path, "pass\n")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "absent-python"))
+
+    result = prepare_project(root, root, slug="s", sim_flow_enabled=False)
+
+    assert not result.ok
+    assert "OS error" in result.error
+
+
+def test_captured_hook_is_stopped_with_its_descendants_when_interrupted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    real_communicate = subprocess.Popen.communicate
+
+    def interrupt_once_started(self, *args, **kwargs):
+        # Only the hook's own process: Windows tree-kill runs taskkill through Popen too.
+        if any("post-setup" in str(arg) for arg in self.args):
+            deadline = time.monotonic() + hang_guard_s()
+            while not paths["heartbeat"].exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            raise KeyboardInterrupt("injected interrupt")
+        return real_communicate(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", interrupt_once_started)
+    with heartbeat_tree(tmp_path) as paths:
+        root = _heartbeat_hook_checkout(tmp_path, paths)
+
+        with pytest.raises(KeyboardInterrupt, match="injected interrupt"):
+            prepare_project(root, root, slug="s", sim_flow_enabled=False)
+
+        assert paths["heartbeat"].exists()
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
 
 
 def test_logged_hook_output_reaches_log_and_stderr(tmp_path: Path, capsys) -> None:
@@ -176,14 +249,19 @@ def test_logged_hook_start_failure_is_reported(tmp_path: Path, monkeypatch) -> N
 
 
 def test_logged_hook_timeout_kills_the_hook(tmp_path: Path) -> None:
-    root = _hook_checkout(tmp_path, "import time\nprint('started', flush=True)\ntime.sleep(60)\n")
+    root = _hook_checkout(
+        tmp_path,
+        f"import time\nprint('started', flush=True)\ntime.sleep({2 * _LOGGED_HOOK_BOUND_S:g})\n",
+    )
     log = tmp_path / "h.log"
     started = time.monotonic()
 
-    result = prepare_project(root, root, slug="s", sim_flow_enabled=False, timeout_s=1, log=log)
+    result = prepare_project(
+        root, root, slug="s", sim_flow_enabled=False, timeout_s=_LOGGED_HOOK_TIMEOUT_S, log=log
+    )
 
     assert not result.ok and "timed out" in result.error
-    assert time.monotonic() - started < 30
+    assert time.monotonic() - started < _LOGGED_HOOK_BOUND_S
     assert "started" in log.read_text(encoding="utf-8")
 
 
@@ -193,21 +271,27 @@ def test_logged_hook_background_child_does_not_hold_success(tmp_path: Path) -> N
     root = _hook_checkout(
         tmp_path,
         "import pathlib, subprocess, sys\n"
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        f"'import time; time.sleep({2 * _BACKGROUND_CHILD_BOUND_S:g})'])\n"
         f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
         "print('parent done')\n",
     )
     started = time.monotonic()
     try:
         result = prepare_project(
-            root, root, slug="s", sim_flow_enabled=False, timeout_s=50, log=tmp_path / "h.log"
+            root,
+            root,
+            slug="s",
+            sim_flow_enabled=False,
+            timeout_s=_BACKGROUND_CHILD_TIMEOUT_S,
+            log=tmp_path / "h.log",
         )
         elapsed = time.monotonic() - started
     finally:
         _stop_process(child_pid_file)
 
     assert result.ok
-    assert elapsed < 30
+    assert elapsed < _BACKGROUND_CHILD_BOUND_S
 
 
 def _stop_process(pid_file: Path) -> None:
@@ -219,7 +303,7 @@ def _stop_process(pid_file: Path) -> None:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + hang_guard_s()
     while os.name != "nt" and time.monotonic() < deadline:
         try:
             os.kill(pid, 0)

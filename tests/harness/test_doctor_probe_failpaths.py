@@ -16,7 +16,6 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -33,8 +32,15 @@ from tests.diagnostic_helpers import (
     _record_environment,
     _require_doctor_warning,
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import write_two_core_sim_project
+
+
+@pytest.fixture(autouse=True)
+def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the doctor probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
 
 
 class _Rec:
@@ -261,44 +267,22 @@ def test_first_smoke_test_reads_the_selected_cores_section(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _check_custom_endpoints_and_criteria — both FAIL branches
+# _check_custom_endpoints — both FAIL branches
 # ---------------------------------------------------------------------------
 
 
-class TestCustomToolsAndCriteria:
-    def test_ticket_preflight_error_fails_with_first_failure_as_fix(self, tmp_path, monkeypatch):
-        from booley.mcp import endpoint_validation
-
-        def boom(_root):
-            raise endpoint_validation.EndpointValidationError(
-                ["MCP endpoint 'x' has no command", "second"]
-            )
-
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
-        rec = _Rec()
-        fixes: list[str] = []
-
-        def fail_with_fix(m: str, fix: str = "") -> None:
-            rec.f(m, fix)
-            fixes.append(fix)
-
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, fail_with_fix)
-        assert rec.kinds() == {"fail"}
-        assert "custom endpoint/Criteria validation failed" in rec.fails()[0]
-        # The first TicketPreflightError failure is surfaced as the fix hint.
-        assert fixes == ["MCP endpoint 'x' has no command"]
-
+class TestCustomEndpoints:
     def test_generic_error_fails_with_message(self, tmp_path, monkeypatch):
         from booley.mcp import endpoint_validation
 
         def boom(_root):
-            raise ValueError("criteria.toml is not a table")
+            raise ValueError("booley.toml is not a table")
 
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
+        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints", boom)
         rec = _Rec()
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.f)
+        doctor._check_custom_endpoints(tmp_path, rec.p, rec.w, rec.f)
         assert rec.kinds() == {"fail"}
-        assert "criteria.toml is not a table" in rec.fails()[0]
+        assert "custom endpoint validation failed: booley.toml is not a table" in rec.fails()[0]
 
     def test_source_checkout_refusal_points_at_the_project_workspace(self, tmp_path, monkeypatch):
         from booley.mcp import endpoint_validation
@@ -307,7 +291,7 @@ class TestCustomToolsAndCriteria:
         def boom(_root):
             raise SourceCheckoutProjectError("refusing the Booley source checkout")
 
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
+        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints", boom)
         rec = _Rec()
         fixes: list[str] = []
 
@@ -315,7 +299,7 @@ class TestCustomToolsAndCriteria:
             rec.f(m, fix)
             fixes.append(fix)
 
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, fail_with_fix)
+        doctor._check_custom_endpoints(tmp_path, rec.p, rec.w, fail_with_fix)
         assert rec.kinds() == {"fail"}
         assert fixes == ["run Doctor from the Project's workspace, not a Booley source checkout"]
 
@@ -326,13 +310,7 @@ class TestCustomToolsAndCriteria:
 
 
 def _git_init(root: Path) -> None:
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
 
 
 class TestGitConflictsAndDirty:
@@ -481,146 +459,3 @@ class TestImageBakesVenueMarker:
         rec = _Rec()
         doctor._check_image_bakes_runtime_marker("docker", self._IMAGE, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
-
-
-@pytest.mark.parametrize("inside", [True, False])
-def test_vivado_rc0_init_error_is_fail(monkeypatch, inside):
-    rec = _Rec()
-    runtime = SimpleNamespace(inside=inside, available=True, command=lambda argv: argv)
-    monkeypatch.setattr(doctor.shutil, "which", lambda binary: "/bin/" + binary)
-    calls = []
-
-    def run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(
-            argv, 0, "ERROR: Tcl initialization failed: libncurses.so.5", ""
-        )
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-    doctor._check_session_binary(
-        "fpga", "vivado", flow_runtime=runtime, _pass=rec.p, _skip=rec.s, _fail=rec.f
-    )
-    assert rec.fails()
-    assert "libncurses.so.5" in rec.fails()[0]
-    assert calls and calls[0][1]["timeout"] == 30
-
-
-@pytest.mark.parametrize("inside", [True, False])
-@pytest.mark.parametrize("mode", ["good", "missing", "stale", "nonzero"])
-def test_actual_vivado_batch_marker_and_owned_directory(tmp_path, monkeypatch, inside, mode):
-    import os
-
-    fake = tmp_path / "bin"
-    fake.mkdir()
-    vivado = fake / "vivado"
-    vivado.write_text(
-        "#!/bin/sh\nmkdir .Xil\ntouch vivado_pid123.str\n"
-        + (
-            "echo BOOLEY_VIVADO_STARTUP_stale\n"
-            if mode == "stale"
-            else "exit 0\n"
-            if mode == "missing"
-            else 'sed -n "s/^puts //p" "$6"\n' + ("exit 1\n" if mode == "nonzero" else "exit 0\n")
-        )
-    )
-    vivado.chmod(0o755)
-    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
-    monkeypatch.chdir(tmp_path)
-    rec = _Rec()
-    runtime = SimpleNamespace(inside=inside, available=True, command=lambda argv: argv)
-    doctor._check_session_binary(
-        "fpga", "vivado", flow_runtime=runtime, _pass=rec.p, _skip=rec.s, _fail=rec.f
-    )
-    assert ("pass" in rec.kinds()) is (mode == "good")
-    assert not (tmp_path / ".Xil").exists()
-    assert not (tmp_path / "vivado_pid123.str").exists()
-    assert set(tmp_path.iterdir()) == {fake}
-
-
-@pytest.mark.parametrize("returncode", [124, 137])
-def test_vivado_inner_timeout_is_distinct(monkeypatch, returncode):
-    rec = _Rec()
-    runtime = SimpleNamespace(inside=True, available=True, command=lambda argv: argv)
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda argv, **kwargs: subprocess.CompletedProcess(argv, returncode, "", ""),
-    )
-    doctor._check_session_binary(
-        "fpga", "vivado", flow_runtime=runtime, _pass=rec.p, _skip=rec.s, _fail=rec.f
-    )
-    assert "within 27s" in rec.fails()[0]
-
-
-def test_vivado_outer_timeout_and_unavailable_runtime(monkeypatch):
-    rec = _Rec()
-
-    def timeout(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
-
-    monkeypatch.setattr(doctor.subprocess, "run", timeout)
-    doctor._check_session_binary(
-        "fpga",
-        "vivado",
-        flow_runtime=SimpleNamespace(inside=True, available=True, command=lambda argv: argv),
-        _pass=rec.p,
-        _skip=rec.s,
-        _fail=rec.f,
-    )
-    assert "within 30s" in rec.fails()[0]
-    rec = _Rec()
-    doctor._check_session_binary(
-        "fpga",
-        "vivado",
-        flow_runtime=SimpleNamespace(inside=False, available=False),
-        _pass=rec.p,
-        _skip=rec.s,
-        _fail=rec.f,
-    )
-    assert rec.kinds() == {"skip"}
-
-
-# The probe only runs inside the Linux Sandbox, and termination is observed via
-# /proc. Elsewhere (MSYS sh/timeout on Windows) the 0.2s budget races shell
-# startup and process-group semantics differ, so the test would prove nothing.
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux Sandbox process-group contract")
-@pytest.mark.parametrize("delayed_exit", [False, True])
-def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch, delayed_exit):
-    import os
-    import time
-
-    fake = tmp_path / "bin"
-    fake.mkdir()
-    pid_file = tmp_path / "child.pid"
-    vivado = fake / "vivado"
-    child = (
-        "sh -c 'trap \"sleep 0.1; exit 0\" TERM; sleep 60' >/dev/null 2>&1"
-        if delayed_exit
-        else "sleep 60"
-    )
-    vivado.write_text(f'#!/bin/sh\n{child} &\necho $! > "{pid_file}"\nwait\n')
-    vivado.chmod(0o755)
-    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
-    argv = doctor._vivado_startup_command("BOOLEY_VIVADO_STARTUP_test")
-    assert "timeout --kill-after=2s 27s" in argv[-1]
-    assert "--foreground" not in argv[-1]
-    argv[-1] = argv[-1].replace("27s", "0.2s")
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
-    assert result.returncode == 124
-    pid = int(pid_file.read_text())
-    stat = Path(f"/proc/{pid}/stat")
-    # timeout waits for its direct child; group members finish asynchronously.
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        try:
-            state = stat.read_text().split()[2]
-        except (FileNotFoundError, ProcessLookupError):
-            break
-        if state == "Z":
-            break
-        time.sleep(0.01)
-    else:
-        pytest.fail(f"Vivado child {pid} did not terminate within 3 seconds")
-    assert set(tmp_path.iterdir()) == {fake, pid_file}

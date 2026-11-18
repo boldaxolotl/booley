@@ -4,14 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Any, Generic, TypeVar
+from typing import Generic, TypeVar
 
-from booley.flows.target_criteria import (
-    TargetCriterion,
-    resolve_campaign_scope,
-    resolve_target_criteria,
-)
 from booley.flows.target_test_suite import (
     TargetTestSuite,
     require_runnable_target_test_suite,
@@ -27,6 +21,11 @@ class CampaignUnit:
     test_name: str | None
     display_name: str
     selected_tests: tuple[str, ...] = ()
+
+    @property
+    def tests(self) -> tuple[str, ...]:
+        """The tests this unit runs: the selected ones of a batched unit, else its own name."""
+        return self.selected_tests or (self.display_name,)
 
 
 @dataclass(frozen=True)
@@ -55,20 +54,12 @@ class TargetCampaign:
 
     target: str
     scope: tuple[str, ...]
-    criteria: tuple[TargetCriterion, ...]
     suite: TargetTestSuite
 
     @property
     def scope_arg(self) -> str:
         """Return the scope in the existing comma-separated CLI form."""
         return ",".join(self.scope)
-
-    def params_for(self, base_key: str) -> Mapping[str, Any]:
-        """Return one metric criterion's parameters, or an empty mapping."""
-        for criterion in self.criteria:
-            if criterion.base_key == base_key:
-                return criterion.params
-        return MappingProxyType({})
 
     def execution_units(
         self,
@@ -119,48 +110,41 @@ def all_campaign_results_match(
     return bool(values) and all(predicate(value) for value in values)
 
 
+def _scope_paths(scope: str) -> tuple[str, ...]:
+    """Split a comma-separated scope into its non-blank, stripped entries."""
+    return tuple(value.strip() for value in scope.split(",") if value.strip())
+
+
 def resolve_target_campaign(
     target: str,
-    criterion_keys: Sequence[str],
-    criteria: Mapping[str, object],
+    scope: str,
     *,
     identity: str,
-    explicit_scope: str | Sequence[str] | None = None,
     test_names: Mapping[str, list[str]] | None = None,
     test_skips: Mapping[str, list[str]] | None = None,
-    enforce_scope_match: bool = False,
 ) -> TargetCampaign:
-    """Resolve criterion parameters, authorized scope, and runnable tests."""
-    resolved_criteria = resolve_target_criteria(target, criterion_keys, criteria)
-    scope = resolve_campaign_scope(
-        explicit_scope,
-        resolved_criteria,
-        enforce_match=enforce_scope_match,
-    )
+    """Resolve the scope entries and the runnable tests of *target*."""
     suite = require_runnable_target_test_suite(
         target,
         identity=identity,
         test_names=test_names,
         test_skips=test_skips,
     )
-    return TargetCampaign(target, scope, resolved_criteria, suite)
+    return TargetCampaign(target, _scope_paths(scope), suite)
 
 
 def describe_target_campaign(
     target: str,
     *,
     identity: str,
-    criterion_keys: Sequence[str] = (),
-    criteria: Mapping[str, object] | None = None,
     test_names: Mapping[str, list[str]] | None = None,
     test_skips: Mapping[str, list[str]] | None = None,
 ) -> TargetCampaign:
-    """Describe test mechanics when criterion scope is not needed by a caller."""
+    """Describe test mechanics when a caller needs no scope."""
     suite = require_runnable_target_test_suite(
         target,
         identity=identity,
         test_names=test_names,
         test_skips=test_skips,
     )
-    resolved = resolve_target_criteria(target, criterion_keys, criteria or {})
-    return TargetCampaign(target, (), resolved, suite)
+    return TargetCampaign(target, (), suite)

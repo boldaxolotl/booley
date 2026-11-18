@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.config.goals import parse_dashboard
+from booley.config.sandbox import parse_dashboard
 from booley.core.boundary import require_dict
 from booley.core.file_lock import nonblocking_file_lock
-from booley.runtime import runtime_context
+from booley.runtime import platform_paths, runtime_context
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.jsonc import Document, Node
 from booley.runtime.project_repositories import (
@@ -179,13 +179,11 @@ def _task_file_tracked(root: Path) -> bool:
     tracked file must never be edited because Git could not be asked.
     """
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "ls-files", "--error-unmatch", "--", ".vscode/tasks.json"],
-            cwd=root,
-            capture_output=True,
-            text=True,
             timeout=30,
-            check=False,
+            cwd=root,
+            errors="strict",
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OSError(f"could not inspect Dashboard task Git tracking: {exc}") from exc
@@ -279,6 +277,7 @@ def _edit_task(files: _TaskFiles, document: Document, desired: bool) -> TaskPlan
             elif insertion:
                 raise ValueError("user-edited Dashboard task insertion preserved")
             else:
+                assert tasks is not None  # a matching task implies the tasks node exists
                 after = document.remove(tasks, matching[0])
     elif desired:
         if files.owner.get("enabled", False):

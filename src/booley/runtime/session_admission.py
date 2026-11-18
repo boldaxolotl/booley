@@ -1,11 +1,10 @@
-"""Host-wide admission control for Interactive Mode Sandboxes."""
+"""Host-wide admission control for Sandboxes."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
-import shlex
 import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -30,13 +29,24 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.core.egress_modes import declared_egress
+from booley.core.host_shell import quote_arg
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime.filesystem_utils import unlink_file
-from booley.runtime.platform_paths import host_path_from_docker_mount, same_host_path
-from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.platform_paths import (
+    host_path_from_docker_mount,
+    run_captured_bounded,
+    same_host_path,
+)
+from booley.runtime.private_store import session_store_repair
+from booley.runtime.sandbox_apply import (
+    Attachment,
+    apply_steps,
+    image_is_managed,
+    shell_command,
+)
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -84,22 +94,27 @@ class Sandbox:
     egress: str = "proxy"
 
 
-def _run(argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=timeout)
+#: Seconds an admission Docker command may run before it is killed.
+_DOCKER_TIMEOUT_S = 30
+
+
+def _run(argv: list[str], *, timeout: int = _DOCKER_TIMEOUT_S) -> subprocess.CompletedProcess[str]:
+    """Run *argv* capturing text; on timeout kill its whole process tree and raise.
+
+    Raises ``subprocess.TimeoutExpired`` within a bounded margin of *timeout*, even
+    when a descendant still holds the output pipes.
+    """
+    return run_captured_bounded(argv, timeout=timeout)
 
 
 def admit_start(
     project_root: Path,
     *,
     target_name: str,
-    recovery: bool = False,
     run: Run = _run,
     now: datetime | None = None,
 ) -> None:
     """Admit a slot-consuming start or raise an actionable refusal."""
-    if recovery:
-        _report_recovery_capacity(run)
-        return
     root = _canonical_root(project_root)
     live, claims, _candidates, diagnostics = _admission_snapshot(run, requesting_root=root)
     if any(item.name == target_name for item in live):
@@ -155,6 +170,16 @@ def clear_vscode_claim(project_root: Path) -> bool:
     return True
 
 
+def withdraw_claims(project_root: str) -> None:
+    """Remove an already-canonical Project identity's admission claim, valid or not.
+
+    A forgotten Project's claim is dead whatever it holds, and its directory may
+    be gone, so the stored identity is used as is and the claim is not decoded.
+    """
+    for path in claim_store().paths(project_root):
+        unlink_file(path, missing_ok=True)
+
+
 def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
     """Return whether this Project has a validated pending editor start."""
     root = _canonical_root(project_root)
@@ -185,7 +210,7 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
     local_name = session_container_name(project_root)
     command = ["docker", "ps", "--no-trunc", "--format", _PROJECT_LISTING_FORMAT]
     try:
-        result = run(command, timeout=30)
+        result = run(command, timeout=_DOCKER_TIMEOUT_S)
         if result.returncode:
             raise AdmissionError("cannot enumerate Project Sandboxes safely: " + _detail(result))
         items = {}
@@ -227,7 +252,7 @@ def _classified_sandbox(
     if (
         name != local_name
         and role == "license-relay"
-        and _noninteractive_relay(document, container_id, name)
+        and _relay_without_workspace(document, container_id, name)
     ):
         return None
     return _sandbox(document, container_id, name, exact_id=True)
@@ -243,17 +268,18 @@ def running_sandboxes(*, run: Run = _run) -> tuple[Sandbox, ...]:
 
 def recreate_remedy(item: Sandbox) -> str:
     """Name the host steps that recreate one Sandbox from a freshly issued spec."""
-    seed = _command(["booley", "init", "--seed", "--project", item.project_root])
+    root = item.project_root
+    managed = image_is_managed(Path(root))
     if item.vscode:
-        return (
-            f"recreate it: run `{seed}`, then use Dev Containers: Rebuild Container "
-            "in its VS Code window"
-        )
-    down = _command(["booley", "session", "down", "--project", item.project_root])
-    return f"recreate it: run `{down}`, `{seed}`, then start the Sandbox again"
+        steps = apply_steps(Attachment.VSCODE, managed=managed, project=root)
+        return f"recreate it: {steps} in its VS Code window"
+    if not Path(root).is_dir():
+        return f"stop it: run `booley session down --project {quote_arg(root)}`"
+    steps = apply_steps(Attachment.HEADLESS, managed=managed, project=root)
+    return f"recreate it: {steps}"
 
 
-def _noninteractive_relay(document: dict[str, Any], container_id: str, name: str) -> bool:
+def _relay_without_workspace(document: dict[str, Any], container_id: str, name: str) -> bool:
     """Exclude a relay only after proving it has no interactive workspace bind."""
     try:
         labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
@@ -307,7 +333,8 @@ def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_n
 def _verify_workspace_mount(item: Sandbox, root: str, run: Run) -> None:
     container_id = item.container_id
     result = run(
-        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"],
+        timeout=_DOCKER_TIMEOUT_S,
     )
     try:
         if result.returncode:
@@ -350,7 +377,7 @@ def _inventory(run: Run) -> tuple[Sandbox, ...]:
         "--format",
         "{{.ID}}\t{{.Names}}",
     ]
-    result = run(command)
+    result = run(command, timeout=_DOCKER_TIMEOUT_S)
     if result.returncode:
         raise AdmissionError("cannot enumerate Booley Sandboxes safely: " + _detail(result))
     items = []
@@ -384,7 +411,8 @@ def _vscode_inventory(
             f"label={_FOLDER_LABEL}",
             "--format",
             '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}',
-        ]
+        ],
+        timeout=_DOCKER_TIMEOUT_S,
     )
     if result.returncode:
         raise AdmissionError("cannot enumerate VS Code Sandboxes safely: " + _detail(result))
@@ -411,7 +439,8 @@ def _vscode_inventory(
 def _inspect_document(container_id: str, listed_name: str, run: Run) -> dict[str, Any]:
     """Run the one ``docker container inspect`` for a listed container and parse it."""
     result = run(
-        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"],
+        timeout=_DOCKER_TIMEOUT_S,
     )
     if result.returncode:
         raise AdmissionError(f"cannot inspect Sandbox {listed_name}: {_detail(result)}")
@@ -437,8 +466,12 @@ def _sandbox(
         state = require_dict(document.get("State"), field="State")
         labels = _labels(config.get("Labels"))
         running = require_bool_value(state.get("Running"), field="State.Running")
-        started = _docker_time(require_str(state, "StartedAt"), allow_zero=not running)
-        created = _docker_time(require_str(document, "Created"), allow_zero=False)
+        started_at = require_str(state, "StartedAt")
+        # A never-started container reports Docker's zero timestamp.
+        started = (
+            None if not running and _is_docker_zero_time(started_at) else _docker_time(started_at)
+        )
+        created = _docker_time(require_str(document, "Created"))
         name = require_str(document, "Name").removeprefix("/")
         root = _project_root(document, labels, listed_name)
         if exact_id and require_str(document, "Id") != container_id:
@@ -512,10 +545,12 @@ def _workspace_mount_root(document: dict[str, Any], name: str) -> str:
     return roots[0]
 
 
-def _docker_time(value: str, *, allow_zero: bool) -> datetime | None:
-    if value.startswith("0001-01-01"):
-        if allow_zero:
-            return None
+def _is_docker_zero_time(value: str) -> bool:
+    return value.startswith("0001-01-01")
+
+
+def _docker_time(value: str) -> datetime:
+    if _is_docker_zero_time(value):
         raise ValueError("Docker zero timestamp")
     parsed = parse_timestamp(value)
     return parsed.astimezone(UTC)
@@ -581,16 +616,10 @@ def _valid_identity(item: Sandbox, root: str) -> bool:
     return any(matches_project_label(item.project_id, candidate) for candidate in roots)
 
 
-def _command(argv: list[str]) -> str:
-    if os.name == "nt":
-        return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
-    return shlex.join(argv)
-
-
 def _identity_recovery(item: Sandbox, root: str) -> str:
-    stop = _command(["docker", "stop", item.container_id])
-    remove = _command(["docker", "rm", item.container_id])
-    down = _command(["booley", "session", "down", "--project", root])
+    stop = shell_command(["docker", "stop", item.container_id])
+    remove = shell_command(["docker", "rm", item.container_id])
+    down = shell_command(["booley", "session", "down", "--project", root])
     return (
         f"Sandbox {item.name} ({item.container_id}) Project identity disagrees with {root}. "
         f"{'In PowerShell, s' if os.name == 'nt' else 'S'}top it with `{stop}`, "
@@ -660,7 +689,7 @@ def claim_store() -> ProjectStore:
         "Sandbox admission claim",
         AdmissionError,
     )
-    return ProjectStore(private, SESSION_STORE_REPAIR)
+    return ProjectStore(private, session_store_repair)
 
 
 def _canonical_root(project_root: Path) -> str:
@@ -677,22 +706,6 @@ def _canonical_text(value: str) -> str:
     if not path.is_absolute() or ".." in path.parts:
         raise AdmissionError(f"Project path is not canonical: {value!r}")
     return _canonical_root(path)
-
-
-def _report_recovery_capacity(run: Run) -> None:
-    """Report a recovery that can temporarily restore the host above its cap."""
-    try:
-        live = _inventory(run)
-        policy = _policy()
-    except (AdmissionError, OSError, subprocess.SubprocessError) as exc:
-        logger.warning("cannot inspect Sandbox capacity during recovery: %s", exc)
-        return
-    if len(live) >= policy.max_sessions:
-        logger.warning(
-            "Sandbox recovery is restoring work at or above sandbox.max_sessions=%d; "
-            "ordinary starts remain blocked until capacity is freed",
-            policy.max_sessions,
-        )
 
 
 def _refusal(
@@ -718,7 +731,7 @@ def _refusal(
             )
             continue
         argv = ["booley", "session", "down", "--project", root]
-        command = _command(argv)
+        command = shell_command(argv)
         shell = " in PowerShell" if os.name == "nt" else ""
         lines.append(f"Free capacity{shell} with `{command}`.")
     lines.extend(diagnostics)

@@ -1,0 +1,327 @@
+"""Verilator build reuse through the real ``booley flow sim`` path.
+
+``SimulateFlow.execute`` runs every ordinary Simulation as a Simulation
+Simulation Record: ``OrdinaryHdlSerialExecutor`` drives
+``SimulationExecution.ordinary_group`` and ``PreparedOrdinaryGroup.compile``.
+These tests pin build reuse on that path, so a
+second identical ``sim`` call is served by the retained image and its durable
+``build-execution.json`` records why.
+
+The fake Verilator toolchain is shared with ``test_verilator_build_reuse_engine``;
+the production ``verilator_identity`` and read-closure checks run unpatched.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from booley.flows.sim import build_reuse
+from booley.flows.sim.build_session import simulation_build_slot
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.request import SimRequest
+from tests.conftest import symlink_or_skip
+from tests.flows.sim.test_verilator_build_reuse_engine import (
+    _edit_keeping_mtime,
+    _isolate_native_cores,
+    _select,
+    _write_core,
+    _write_fake_verilator,
+    _write_project,
+)
+from tests.time_budget import hang_guard_s
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
+)
+
+_SRC_ROOT = Path(__file__).resolve().parents[3] / "src"
+
+
+@pytest.fixture
+def flow_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fake-Verilator Project that ``SimulateFlow`` can run in-Sandbox."""
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    verilator_bin = _write_fake_verilator(tmp_path)
+    path = os.pathsep.join((str(verilator_bin), str(tmp_path / "toolbin"), os.environ["PATH"]))
+    monkeypatch.setenv("PATH", path)
+    for name in ("VERILATOR_ROOT", "MAKEFLAGS", "MFLAGS", "EDALIZE_LAUNCHER"):
+        monkeypatch.delenv(name, raising=False)
+    # The adapter runs as ``python -m``; it must import this checkout's source.
+    python_path = os.pathsep.join(
+        part for part in (str(_SRC_ROOT), os.environ.get("PYTHONPATH", "")) if part
+    )
+    monkeypatch.setenv("PYTHONPATH", python_path)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    # The fake installation is written moments before the first build; the
+    # production race guard would (correctly) refuse to trust its files.
+    monkeypatch.setattr(build_reuse, "RACE_MARGIN_NS", 0)
+    project = _write_project(tmp_path)
+    (project / ".booley" / "tests.toml").write_text(
+        '[sim]\ntests = ["first", "second", "third"]\nselect = "+test={name}"\n',
+        encoding="utf-8",
+    )
+    return project
+
+
+def _flow_sim(project: Path, report_root: Path, test: str) -> dict[str, object]:
+    """Run ``booley flow sim --target sim --test <test>``; return its build record.
+
+    Shared-variant builds (immutable Pre-Sim access) and private per-test builds
+    (``legacy-per-test``) both record ``evidence/build-execution.json``.
+    """
+    before = _report_runs(report_root)
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=project,
+            report_dir=report_root,
+            test=(test,),
+            timeout_ms=hang_guard_s() * 1000,
+        )
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+    (run,) = _report_runs(report_root) - before
+    (document,) = run.glob("targets/sim/record/**/evidence/build-execution.json")
+    return json.loads(document.read_text(encoding="utf-8"))["build"]
+
+
+def _report_runs(report_root: Path) -> set[Path]:
+    """Numbered per-invocation report directories (lock files excluded)."""
+    return {path for path in report_root.glob("sim/*") if path.is_dir()}
+
+
+def _generations(project: Path) -> list[Path]:
+    return sorted((simulation_build_slot(_select(project)) / "g").iterdir())
+
+
+def _current_generation(project: Path) -> str:
+    slot = simulation_build_slot(_select(project))
+    return str(json.loads((slot / "current.json").read_text(encoding="utf-8"))["generation"])
+
+
+def _assert_built(build: dict[str, object], decision: str) -> None:
+    assert build["ran"] is True
+    assert str(build["cache_decision"]).startswith(f"{decision};"), build["cache_decision"]
+
+
+def _assert_hit(build: dict[str, object]) -> None:
+    assert build["ran"] is False
+    assert str(build["cache_decision"]).startswith("hit;"), build["cache_decision"]
+
+
+def _configure(project: Path, *lines: str) -> None:
+    (project / ".booley" / "booley.toml").write_text(
+        "[flows.sim]\n" + "".join(f"{line}\n" for line in lines), encoding="utf-8"
+    )
+
+
+def _edit_rtl(project: Path) -> None:
+    _edit_keeping_mtime(
+        project / "rtl" / "tb.sv", '`include "defs.svh"\nmodule tb; // NEW\nendmodule\n'
+    )
+
+
+def _edit_include(project: Path) -> None:
+    _edit_keeping_mtime(project / "inc" / "defs.svh", "// DEFS v2\n")
+
+
+def _edit_flag(project: Path) -> None:
+    _write_core(project, options="--timing, -DEXTRA_FLAG")
+
+
+@pytest.mark.parametrize(
+    ("isolated", "edit"),
+    [
+        (False, _edit_rtl),
+        (False, _edit_include),
+        (False, _edit_flag),
+        (True, _edit_rtl),
+        (True, _edit_include),
+    ],
+    ids=["rtl", "include", "flag", "isolated-rtl", "isolated-include"],
+)
+def test_flow_sim_input_edit_misses_then_hits(
+    flow_project: Path, tmp_path: Path, isolated: bool, edit: Callable[[Path], None]
+) -> None:
+    """An edit to a source, listed header or flag prevents reuse; an isolated build is reused."""
+    reports = tmp_path / "reports"
+    if isolated:
+        _isolate_native_cores(flow_project)
+        _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
+        _assert_hit(_flow_sim(flow_project, reports, "first"))
+    else:
+        _flow_sim(flow_project, reports, "first")
+    edit(flow_project)
+    _assert_built(_flow_sim(flow_project, reports, "first"), "changed source, recipe, or tool")
+    _assert_hit(_flow_sim(flow_project, reports, "first"))
+
+
+def test_isolated_flow_sim_unlisted_header_edit_is_not_an_input(
+    flow_project: Path, tmp_path: Path
+) -> None:
+    """A header no fileset lists is neither exported nor read, so editing it keeps reuse."""
+    _isolate_native_cores(flow_project)
+    unlisted = flow_project / "inc" / "other.svh"
+    unlisted.write_text("// OTHER v1\n", encoding="utf-8")
+    reports = tmp_path / "reports"
+    _flow_sim(flow_project, reports, "first")
+    _edit_keeping_mtime(unlisted, "// OTHER v2\n")
+    _assert_hit(_flow_sim(flow_project, reports, "first"))
+
+
+_RUN_CWD_FIRMWARE = 'pre_run_commands = ["printf fw > \\"$BOOLEY_RUN_CWD/firmware.hex\\""]'
+
+
+@pytest.mark.parametrize(
+    "access", [(), ('pre_sim_build_access = "legacy-per-test"',)], ids=["immutable", "legacy"]
+)
+def test_flow_sim_pre_sim_firmware_in_run_cwd_keeps_reuse(
+    flow_project: Path, tmp_path: Path, access: tuple[str, ...]
+) -> None:
+    """A Pre-Sim firmware command writing only into the run directory still hits."""
+    _configure(flow_project, *access, _RUN_CWD_FIRMWARE)
+    reports = tmp_path / "reports"
+    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
+    retained = _current_generation(flow_project)
+    _assert_hit(_flow_sim(flow_project, reports, "second"))
+    # The hit discarded its candidate; only the first, retained build exists.
+    assert [path.name for path in _generations(flow_project)] == [retained]
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        'printf fw > \\"$BOOLEY_BUILD_ROOT/firmware.hex\\"',
+        'printf fw > \\"$BOOLEY_BUILD_ROOT/.booley-adapter-x.json\\"',
+        'printf fw > \\"$BOOLEY_BUILD_ROOT/.a-x.json\\"',
+        'chmod u+x \\"$BOOLEY_BUILD_ROOT\\"/*.vc',
+        'mkdir \\"$BOOLEY_BUILD_ROOT/empty\\"',
+    ],
+    ids=["file", "reserved-name", "adapter-result-name", "chmod-only", "empty-dir"],
+)
+def test_flow_sim_legacy_pre_sim_change_to_generation_forces_build(
+    flow_project: Path, tmp_path: Path, effect: str
+) -> None:
+    """A per-test Pre-Sim Command that changes the candidate generation never hits.
+
+    Only test ``second`` runs the effect, so a reusable image is already
+    retained when it runs: the change alone must force the second build, and
+    the image it built (with the hook's effect) is never retained for a hit.
+    """
+    _configure(
+        flow_project,
+        'pre_sim_build_access = "legacy-per-test"',
+        f'pre_run_commands = ["[ \\"$BOOLEY_TEST_NAME\\" != second ] || {effect}"]',
+    )
+    reports = tmp_path / "reports"
+    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
+    retained = _current_generation(flow_project)
+    _assert_built(_flow_sim(flow_project, reports, "second"), "reuse unsupported")
+    assert len(_generations(flow_project)) == 2
+    assert _current_generation(flow_project) == retained
+    _assert_hit(_flow_sim(flow_project, reports, "third"))
+    assert len(_generations(flow_project)) == 2
+
+
+def test_symlinked_booley_directory_runs_and_reuses_build(
+    flow_project: Path, tmp_path: Path
+) -> None:
+    """A Project whose ``.booley`` is a symlink runs like the plain layout (#2191).
+
+    Reports land in the default ``<entry>/flow-reports`` and the second
+    identical run still reuses the retained image, so every link-sensitive
+    Simulation place (lock, run log, Simulation Record store, build reference) is crossed.
+    """
+    entry = flow_project / ".booley"
+    external = tmp_path / "external-booley"
+    entry.rename(external)
+    symlink_or_skip(entry, external, target_is_directory=True)
+    reports = entry / "flow-reports"
+    builds = []
+    for _ in range(2):
+        before = _report_runs(reports)
+        result = SimulateFlow().execute(
+            SimRequest(
+                target="sim",
+                work_dir=flow_project,
+                test=("first",),
+                timeout_ms=hang_guard_s() * 1000,
+            )
+        )
+        assert result.exit_code == 0, result.outcome.report_text
+        (run,) = _report_runs(reports) - before
+        assert (run / "report.json").is_file()
+        progress = json.loads((run / "progress.json").read_text(encoding="utf-8"))
+        assert progress["phase"] == "complete"
+        (document,) = run.glob("targets/sim/record/**/evidence/build-execution.json")
+        builds.append(json.loads(document.read_text(encoding="utf-8"))["build"])
+    _assert_built(builds[0], "missing provenance")
+    _assert_hit(builds[1])
+    # The attempt log is written through the entry link by the run itself.
+    (log,) = run.glob("**/run.log")
+    assert log.read_text(encoding="utf-8").startswith("[BOOLEY RUN_LOG]")
+
+
+@pytest.mark.parametrize("linked", [True, False], ids=["linked", "plain"])
+def test_symlinked_booley_directory_accepts_declared_source_below_entry(
+    flow_project: Path, tmp_path: Path, linked: bool
+) -> None:
+    """A Simulation source a core declares under a linked ``.booley`` stays in the Project.
+
+    The picorv32 demo keeps its Verilator C++ main in ``.booley/sim/``, and its
+    ``.booley`` is a symlink to a sibling Project repo. The declaration is spelled
+    through the entry, so it must not be refused as escaping the Project. With
+    ``ignore_native_cores`` the isolated core copy used to resolve it through the link.
+    """
+    entry = flow_project / ".booley"
+    (entry / "sim").mkdir()
+    (flow_project / "dpi" / "helper.cpp").rename(entry / "sim" / "helper.cpp")
+    # Stealth layout as in the demo: the core lives in ``.booley/cores/`` and
+    # its file paths are relative to the Project Root (ADR 0036).
+    (entry / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    (entry / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    (entry / "cores").mkdir()
+    core = flow_project / "demo.core"
+    (entry / "cores" / "demo.core").write_text(
+        core.read_text(encoding="utf-8").replace("dpi/helper.cpp", ".booley/sim/helper.cpp"),
+        encoding="utf-8",
+    )
+    core.unlink()
+    if linked:
+        external = tmp_path / "external-booley"
+        entry.rename(external)
+        symlink_or_skip(entry, external, target_is_directory=True)
+
+    reports = tmp_path / "reports"
+    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
+    (manifest,) = reports.glob("sim/*/targets/sim/record/manifest.json")
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    closure = [item["path"] for item in document["build_variants"][0]["source_closure"]]
+    assert ".booley/sim/helper.cpp" in closure
+    # AC3: no report names the build's private mirror, and the planned sources
+    # keep their Project-relative names (so a resumed Simulation Record authenticates).
+    generated = document["planning_disclosures"][0]["generated_files"]
+    assert {item["path"] for item in generated} == {
+        "rtl/tb.sv",
+        "inc/defs.svh",
+        ".booley/sim/helper.cpp",
+    }
+    assert all(item["source_path"] == item["path"] for item in generated)
+    run = manifest.parents[3]
+    assert not [p for p in run.rglob("*") if p.is_file() and b"core-mirror" in p.read_bytes()]
+    # The second identical run reuses the image in the plain layout. A linked
+    # ``.booley`` still misses: FuseSoC writes the EDAM ``core_file`` through
+    # the link, which names the generation (#2853 owns that gap).
+    second = _flow_sim(flow_project, reports, "first")
+    if linked:
+        _assert_built(second, "changed source, recipe, or tool")
+    else:
+        _assert_hit(second)

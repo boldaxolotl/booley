@@ -3,24 +3,25 @@
 A **Booley Flow** runs an EDA tool on one of your Targets the same way every
 time and turns the output into a verdict: pass, fail, or "could not tell". No
 LLM is involved, so you can trust a Flow's verdict as you would a script's.
-Booley ships four:
+Booley ships five:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
   whether each one passed. A Target's Tests, Test Variants and seeds are
   declared in [`tests.toml`](TESTS.md). A companion guide covers coverage:
     - [Coverage](COVERAGE.md): guide to measuring how much of the RTL your
       tests exercise, and finding what they miss.
-- [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
-  problems.
+- [Lint (`lint`)](FLOW-LINT.md): check RTL for mistakes without simulating it
+  and get a list of findings.
 - [ASIC synthesis (`synth`)](FLOW-SYNTH.md): estimate ASIC area and timing
   quickly while you iterate on RTL.
 - [FPGA implementation (`fpga`)](FLOW-FPGA.md): implement the design for an
   FPGA and report resources and timing.
+- [Mutation testing (`mutation`)](FLOW-MUTATION.md): plant small bugs in the
+  RTL and check that your tests catch them.
 
 This page covers what they share: choosing Targets, common options, following
-a run, and reading the result. **Specialists**, the LLM-powered helpers that
-review code or test your testbench, have their own page:
-[Specialists](SPECIALISTS.md).
+a run, and reading the result. **Specialists**, the LLM agents that review code
+or explain coverage, have their own page: [Specialists](SPECIALISTS.md).
 
 For everyday work [Usage](USAGE.md) is enough: the Developer Agent picks the
 Flow, Target, and options for you. Read on when you want to understand a
@@ -48,11 +49,9 @@ booley flow lint  --target lint_soc
 booley flow sim   --target sim_soc --test reset
 booley flow synth --target synth_soc
 booley flow fpga  --target fpga_soc
+booley flow mutation --target sim_soc
 booley flow <name> --help                     # every option of one Flow
 ```
-
-Your own runs never count as Goal evidence; only the agent's runs in Goal Mode
-do.
 
 ### Background Jobs
 
@@ -70,8 +69,8 @@ Job details show how long each result waited before it was read.
 ### Resource use
 
 Booley measures every Job's peak memory and time. `booley resources` shows the
-recent range for each Target, which tells you how many heavy Jobs fit side by
-side (`max_heavy`) and how much memory to reserve for each (`heavy_memory`).
+recent range for each Target. Booley sizes each Job's memory reservation from
+it, and the range helps you choose `[sandbox].memory`.
 See [Job resource history](CONFIG.md#job-resource-history).
 
 ### Choosing Targets
@@ -105,8 +104,10 @@ page.
 | `--timeout DURATION` | Time limit per unit of work, for example `90s`, `30m`, or `1h30m`. Time spent waiting in the queue doesn't count. |
 | `--dry-run` | Print what would run and stop. No EDA tool runs. |
 | `--report-dir <path>` | Write reports here instead of the default location. |
-| `--diagnostic` | Mark the run as diagnostic so it never counts as Goal evidence. |
 | `-q/--quiet` | Hide live progress and log paths; show only the verdict and errors. |
+
+`mutation` is the exception to the Target rules above: it requires `--target`
+and takes exactly one simulation Target.
 
 Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
 `booley.toml`, or its built-in default. Simulation builds have their own limit,
@@ -115,8 +116,7 @@ Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
 
 `synth` and `fpga` also take `--baseline <git-ref>`: they run the Flow a
 second time at that commit and report the difference, so you can see what a
-change cost in area or timing. In Goal Mode the baseline is the commit pinned
-when the Goal started.
+change cost in area or timing.
 
 <details markdown>
 <summary>In stealth mode</summary>
@@ -149,8 +149,8 @@ from the agent's shell, Booley prints plain timestamped `[booley-progress]`
 lines instead: one per new step, plus one every five seconds with any new
 output.
 
-When Simulation runs several tests in parallel (`[jobs].max_heavy` above 1;
-see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs)), each running test
+When Simulation runs several tests in parallel (their memory reservations fit
+the Memory Budget; see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs)), each running test
 gets its own progress row and output lines, labelled `lane=<test>/<attempt>`.
 
 On a terminal, Booley prints the log paths once, on one line, after the verdict.
@@ -194,7 +194,7 @@ out of time exits `2`. [Simulation results](FLOW-SIM.md#reading-results)
 has the details.
 
 **Reports.** Each run writes a JSON report and full logs under `flow-reports/`
-in the Booley Directory (Goal runs use the Goal's runtime directory), or under
+in the Booley Directory, or under
 `--report-dir`. Each run gets the next number under its Flow's directory, such
 as `flow-reports/sim/12/`, with the run's `report.json` at the top. Each
 Flow's page says which files in it to open.
@@ -202,10 +202,12 @@ Flow's page says which files in it to open.
 **Dry runs.** `--dry-run` prints a JSON plan of each unit of work: Target,
 sources, constraints, parameters, and the exact commands. It exits `0` when
 everything can be planned and `2` otherwise, still showing the parts that
-could be planned.
+could be planned. An ordinary or coverage `sim` dry run lists each Target's
+pending Simulation Record work items instead, and an ordinary or coverage
+`sim` planning failure names every error without a partial plan.
 
-When a Flow fails for a reason you can't explain, see
-[Troubleshooting](TROUBLESHOOTING.md). If Booley itself seems wrong, report it
+When a Flow fails for a reason you can't explain, run `booley doctor` (see
+[Doctor](DOCTOR.md)). If Booley itself seems wrong, report it
 as described in [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).
 
 ### Cleaning up reports
@@ -215,8 +217,7 @@ deletes them:
 
 | Run started by | Reports | Cleaned up |
 |---|---|---|
-| A Goal | The Goal Record, in the main checkout's Booley Directory | Automatically, once the Goal has ended and its worktree and Goal Branch are gone. |
-| The agent in Interactive Mode | `.interactive_logs/<session>/` in the main checkout's Booley Directory, from any checkout | Not automatically; see below. |
+| The Developer Agent | `.interactive_logs/<session>/` in the main checkout's Booley Directory, from any checkout | Not automatically; see below. |
 | You, from the CLI | `flow-reports/` in the Booley Directory of the checkout you run in, or `--report-dir` | With the worktree, for a run in a linked worktree. |
 
 In the main checkout nothing removes them, and coverage runs in particular

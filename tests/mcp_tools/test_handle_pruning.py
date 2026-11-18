@@ -13,7 +13,7 @@ import pytest
 
 from booley.mcp import server
 from booley.mcp.session_registry import Attribution, SessionRegistry
-from booley.runtime import handles, job_records
+from booley.runtime import handles, job_records, platform_paths
 from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.pid import (
     ProcessIdentity,
@@ -25,6 +25,7 @@ from booley.runtime.session_activity import process_session_key
 from booley.runtime.timefmt import rfc3339_from_epoch
 from tests.booley_checkouts_support import init_repo, isolate_git, main_project
 from tests.project_runtime_git_support import git
+from tests.time_budget import hang_guard_s
 
 NOW = 1_800_000_000.0
 DAY = 24 * 3600.0
@@ -282,7 +283,7 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
     with caplog.at_level("WARNING"):
         server._run_http(1)
         assert started[0] is not None
-        started[0].join(timeout=10)
+        started[0].join(timeout=hang_guard_s())
     assert served == [True]
     assert any("Handle pruning skipped" in r.getMessage() for r in caplog.records)
 
@@ -316,13 +317,26 @@ def take_number_one(kind: str, main: Path, booley_dir: Path) -> None:
         git(booley_dir, "commit", "--allow-empty", "-qm", "fixture")
         git(booley_dir, "branch", "booley-worktree/s1")
     else:
-        git(main, "branch", "booley/s1/x" if kind == "nested-branch" else "booley/s1")
+        branch = {
+            "branch": "booley/s1",
+            "nested-branch": "booley/s1/x",
+            "wt-branch": "wt/s1",
+            "nested-wt-branch": "wt/s1/x",
+        }[kind]
+        git(main, "branch", branch)
 
 
 def test_allocation_after_full_prune_skips_taken_numbers(tmp_path, monkeypatch):
     """An emptied map restarts numbering, but never at a number whose worktree or branch lives."""
     isolate_git(tmp_path, monkeypatch)
-    for kind in ("worktree", "branch", "nested-branch", "paired-branch"):
+    for kind in (
+        "worktree",
+        "branch",
+        "nested-branch",
+        "wt-branch",
+        "nested-wt-branch",
+        "paired-branch",
+    ):
         (tmp_path / kind).mkdir()
         main = main_project(tmp_path / kind)
         booley_dir = main / ".booley"
@@ -354,7 +368,7 @@ def test_allocation_without_usable_git_skips_only_worktree_directories(
             if failure == "git-missing":
                 patch.setenv("PATH", "")
             elif failure == "timeout":
-                patch.setattr(subprocess, "run", timeout)
+                patch.setattr(platform_paths, "run_captured_bounded", timeout)
             assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2", failure
         assert any("Git branch list unavailable" in r.getMessage() for r in caplog.records), (
             failure
@@ -364,7 +378,7 @@ def test_allocation_without_usable_git_skips_only_worktree_directories(
 
 def test_allocation_survives_a_branch_name_that_is_not_utf8(tmp_path, monkeypatch):
     """One undecodable branch name must not stop handle allocation."""
-    real_run = subprocess.run
+    real_run = platform_paths.run_captured_bounded
     listing = (
         "import sys; sys.stdout.buffer.write(b'refs/heads/booley/s1\\nrefs/heads/booley/\\xff\\n')"
     )
@@ -376,5 +390,5 @@ def test_allocation_survives_a_branch_name_that_is_not_utf8(tmp_path, monkeypatc
     booley_dir = checkout / ".booley"
     booley_dir.mkdir(parents=True)
     (checkout / ".git").mkdir()
-    monkeypatch.setattr(subprocess, "run", run_listing)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", run_listing)
     assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2"

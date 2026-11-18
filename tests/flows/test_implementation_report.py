@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
-from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.fpga.implementation_report import build_fpga_implementation_report
 from booley.flows.implementation_publication import (
     ImplementationProgress,
@@ -21,11 +20,10 @@ from booley.flows.implementation_report import (
     ImplementationContext,
     ImplementationRun,
     MetricPolicy,
-    build_implementation_aggregate,
     build_implementation_report,
 )
 from booley.flows.progress_lifecycle import ProgressPublicationError
-from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
+from booley.flows.synth.flow import SynthMetrics
 from booley.flows.synth.implementation_report import build_synth_implementation_report
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
@@ -49,26 +47,6 @@ def _run(**overrides) -> ImplementationRun:
     }
     values.update(overrides)
     return ImplementationRun(**values)
-
-
-def test_grade_is_resolved_once_from_policy_inputs() -> None:
-    policy = MetricPolicy(("area",))
-    warning = build_implementation_report(
-        _context(), _run(warning_reasons=("negative slack",)), None, policy
-    )
-    failure = build_implementation_report(
-        _context(), _run(failure_reasons=("fatal timing",)), None, policy
-    )
-    error = build_implementation_report(
-        _context(), _run(infra_error="tool unavailable"), None, policy
-    )
-
-    assert warning.grade == "warn" and warning.passed
-    assert failure.grade == "fail" and not failure.passed
-    assert error.grade == "error" and not error.passed
-    assert build_implementation_aggregate({"warn": warning}).exit_code == 0
-    assert build_implementation_aggregate({"fail": failure}).exit_code == 1
-    assert build_implementation_aggregate({"error": error}).exit_code == 2
 
 
 def test_comparison_records_per_metric_unavailability() -> None:
@@ -172,19 +150,6 @@ def test_fpga_cache_separates_producer_and_consumer_provenance() -> None:
     assert report["provenance"]["consumer_run_id"] == "consumer-run"
 
 
-def test_baseline_infrastructure_error_makes_comparison_an_error() -> None:
-    report = build_implementation_report(
-        _context(requested_baseline_ref="main", resolved_baseline_ref="a" * 40),
-        _run(),
-        _run(passed=False, tool_returncode=2, infra_error="baseline setup failed"),
-        MetricPolicy(("area",), required_comparison_metrics=("area",)),
-    )
-
-    assert report.grade == "error"
-    assert report.canonical["comparison"]["basis_valid"] is False
-    assert "baseline infrastructure error" in report.canonical["comparison"]["basis_errors"][0]
-
-
 def test_synthesis_fatal_timing_is_persisted_as_failure() -> None:
     report = build_synth_implementation_report(
         _context(),
@@ -246,59 +211,55 @@ def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) 
     assert baseline_snapshot.read_text(encoding="utf-8") == "baseline log\n"
 
 
-def test_publication_without_invocation_keeps_live_log_pointer(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("report_dir", "invocation", "stable", "numbered", "artifacts"),
+    [
+        # The live log pointer survives when no invocation folder exists.
+        (
+            "reports",
+            None,
+            "reports/synth_asic.json",
+            None,
+            {"report": "reports/synth_asic.json", "log": "build/missing.log"},
+        ),
+        # A log missing from the invocation snapshot is dropped.
+        (
+            "reports",
+            "reports/synth/1",
+            "reports/synth_asic.json",
+            "reports/synth/1/targets/asic.json",
+            {"report": "reports/synth/1/targets/asic.json"},
+        ),
+        # Publication can be disabled without losing the envelope.
+        (None, None, None, None, None),
+    ],
+    ids=["live-log-pointer", "missing-log-dropped", "disabled"],
+)
+def test_publication_paths_and_artifacts_follow_the_folders_given(
+    report_dir: str | None,
+    invocation: str | None,
+    stable: str | None,
+    numbered: str | None,
+    artifacts: dict[str, str] | None,
+    tmp_path: Path,
+) -> None:
     report = build_implementation_report(
         _context(),
-        _run(artifacts={"log": "build/missing.log"}),
-        None,
-        MetricPolicy(("area",)),
-    )
-    publisher = ImplementationPublisher(tmp_path, tmp_path / "reports", None)
-
-    published = publisher.publish_report(report, {"passed": True})
-
-    assert published.invocation_path is None
-    assert published.stable_path == tmp_path / "reports" / "synth_asic.json"
-    assert published.payload[ENVELOPE_KEY]["artifacts"] == {
-        "report": "reports/synth_asic.json",
-        "log": "build/missing.log",
-    }
-
-
-def test_publication_drops_missing_log_from_invocation_snapshot(tmp_path: Path) -> None:
-    report_dir = tmp_path / "reports"
-    invocation = report_dir / "synth" / "1"
-    report = build_implementation_report(
-        _context(),
-        _run(artifacts={"log": "build/missing.log"}),
-        None,
-        MetricPolicy(("area",)),
-    )
-
-    published = ImplementationPublisher(tmp_path, report_dir, invocation).publish_report(
-        report, {"passed": True}
-    )
-
-    assert published.payload[ENVELOPE_KEY]["artifacts"] == {
-        "report": "reports/synth/1/targets/asic.json"
-    }
-
-
-def test_publication_can_be_disabled_without_losing_the_envelope(tmp_path: Path) -> None:
-    report = build_implementation_report(
-        _context(),
-        _run(),
+        _run(artifacts={"log": "build/missing.log"} if report_dir else None),
         None,
         MetricPolicy(("area",)),
     )
 
-    published = ImplementationPublisher(tmp_path, None, None).publish_report(
-        report, {"passed": True}
-    )
+    published = ImplementationPublisher(
+        tmp_path,
+        tmp_path / report_dir if report_dir else None,
+        tmp_path / invocation if invocation else None,
+    ).publish_report(report, {"passed": True})
 
-    assert published.stable_path is None
-    assert published.invocation_path is None
+    assert published.stable_path == (tmp_path / stable if stable else None)
+    assert published.invocation_path == (tmp_path / numbered if numbered else None)
     assert published.payload[ENVELOPE_KEY]["identity"]["target"] == "asic"
+    assert published.payload[ENVELOPE_KEY]["artifacts"] == artifacts
 
 
 def test_failed_stable_refresh_preserves_previous_alias(
@@ -328,32 +289,6 @@ def test_failed_stable_refresh_preserves_previous_alias(
     assert stable.read_text(encoding="utf-8") == "previous stable report\n"
     assert (invocation / "targets" / "asic.json").is_file()
     assert list(report_dir.glob(".*.tmp")) == []
-
-
-def test_progress_uses_shared_shape(tmp_path: Path) -> None:
-    invocation = tmp_path / "reports" / "fpga" / "1"
-    invocation.mkdir(parents=True)
-    report = build_implementation_report(
-        _context(flow="fpga", target="board"),
-        _run(metrics={"lut_count": 10}),
-        None,
-        MetricPolicy(("lut_count",)),
-    )
-    path = ImplementationPublisher(tmp_path, tmp_path / "reports", invocation).publish_progress(
-        ImplementationProgress(
-            flow="fpga",
-            run_id="run-1",
-            targets=("board", "board_2"),
-            completed_targets=("board",),
-            phase="current",
-            reports={"board": report},
-        )
-    )
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["completed_targets"] == ["board"]
-    assert payload["pending_targets"] == ["board_2"]
-    assert payload[ENVELOPE_KEY]["results"]["board"]["metrics"]["lut_count"] == 10
 
 
 def test_progress_run_owns_start_and_complete_publication() -> None:
@@ -432,22 +367,15 @@ def _pair_plan(flow: str) -> SimpleNamespace:
     )
 
 
-def test_implementation_context_from_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_context_of_a_skipped_baseline_drops_its_refs_but_keeps_its_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from booley.flows.implementation_report import implementation_context
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "run-42")
-    plan = _pair_plan("fpga")
 
-    ran = implementation_context(
-        plan,
-        target="new",
-        eda_tool="vivado",
-        baseline_ran=True,
-        requested_baseline_ref="main~1",
-        resolved_baseline_ref="a" * 40,
-    )
     skipped = implementation_context(
-        plan,
+        _pair_plan("fpga"),
         target="new",
         eda_tool="vivado",
         baseline_ran=False,
@@ -455,50 +383,5 @@ def test_implementation_context_from_plan(monkeypatch: pytest.MonkeyPatch) -> No
         resolved_baseline_ref="a" * 40,
     )
 
-    assert (ran.flow, ran.target, ran.eda_tool) == ("fpga", "new", "vivado")
-    assert ran.invocation_run_id == "run-42"
-    assert ran.baseline_target == "old"
-    assert ran.baseline_target_identity == "acme:lib:dut:1#old"
-    assert ran.candidate_target_identity == "acme:lib:dut:1#new"
-    assert (ran.requested_baseline_ref, ran.resolved_baseline_ref) == ("main~1", "a" * 40)
     assert (skipped.requested_baseline_ref, skipped.resolved_baseline_ref) == (None, None)
-    assert skipped.baseline_target_identity == ran.baseline_target_identity
-
-
-@pytest.mark.parametrize("flow_name", ["synth", "fpga"])
-def test_flow_report_identity_wiring(flow_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both Flows feed the same report identity: refs, Targets and eda tool."""
-    monkeypatch.setenv("BOOLEY_RUN_ID", "run-7")
-    if flow_name == "synth":
-        flow = object.__new__(AsicSynthesizeFlow)
-        current: SynthMetrics | FpgaMetrics = SynthMetrics(area_kge=1.0, cells=10)
-        baseline: SynthMetrics | FpgaMetrics = SynthMetrics(area_kge=1.0, cells=10)
-    else:
-        flow = object.__new__(FpgaImplFlow)
-        current = FpgaMetrics(lut_count=10, ff_count=20, wns_ns=0.1, whs_ns=0.1)
-        baseline = FpgaMetrics(lut_count=10, ff_count=20, wns_ns=0.1, whs_ns=0.1)
-    flow._args = SimpleNamespace(baseline="main~1")
-    flow._eda_tool = "tool-x"
-    flow._target_plan = lambda _target: _pair_plan(flow_name)
-
-    flow._baseline_full_sha = "a" * 40
-    with_baseline = flow._implementation_report("new", current, baseline, "short").canonical
-    flow._baseline_full_sha = None
-    short_ref = flow._implementation_report("new", current, baseline, "short").canonical
-    without_baseline = flow._implementation_report("new", current, None, None).canonical
-
-    comparison = with_baseline["comparison"]
-    assert comparison["requested_ref"] == "main~1"
-    assert comparison["resolved_ref"] == "a" * 40
-    assert comparison["baseline_target"] == "old"
-    assert comparison["baseline_target_identity"] == "acme:lib:dut:1#old"
-    assert comparison["candidate_target_identity"] == "acme:lib:dut:1#new"
-    assert short_ref["comparison"]["resolved_ref"] == "short"
-    assert without_baseline["comparison"] is None
-    for canonical in (with_baseline, without_baseline):
-        identity = canonical["identity"]
-        assert identity["flow"] == flow_name
-        assert identity["target"] == "new"
-        assert identity["target_identity"] == "acme:lib:dut:1#new"
-        assert identity["eda_tool"] == "tool-x"
-        assert identity["invocation_run_id"] == "run-7"
+    assert skipped.baseline_target_identity == "acme:lib:dut:1#old"

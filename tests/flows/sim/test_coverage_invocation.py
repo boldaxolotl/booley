@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 
 from booley.config.project_config import load_test_configuration_field
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     CoverageProjectContext,
     prepare_coverage_invocation,
 )
 from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+from booley.flows.sim.coverage_record import DurableTargetIdentity
 from booley.targets.catalog import PreparedTargetSelection
 
 
@@ -34,8 +34,15 @@ def project(root: Path, tools: tuple[str, ...] = ("verilator",)) -> CoverageProj
     )
 
 
+def _criterion(tests: tuple[str, ...] | None) -> CoverageCriterion:
+    return CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        tests,
+    )
+
+
 def test_coverage_context_prefers_checkout_local_project_data(tmp_path, monkeypatch):
-    from booley.criteria.state import DevelopmentState
     from booley.flows.sim import coverage_flow_context
     from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 
@@ -47,14 +54,13 @@ def test_coverage_context_prefers_checkout_local_project_data(tmp_path, monkeypa
     monkeypatch.setenv("BOOLEY_DIR", str(unrelated))
     reset_cache()
     assert resolve_booley_dir() == unrelated.resolve()
-    monkeypatch.setattr(coverage_flow_context, "_coverage_policies", lambda *_args: {})
     monkeypatch.setattr(
         coverage_flow_context,
         "load_test_configuration_field",
         lambda *_args: {},
     )
 
-    context = coverage_flow_context.coverage_project_context(checkout, DevelopmentState())
+    context = coverage_flow_context.coverage_project_context(checkout)
 
     assert context.project_data_repository == local_project_data
 
@@ -88,11 +94,7 @@ def test_preflight_aggregates_invalid_targets_and_rejects_mixed_tools_atomically
 
 def test_criterion_never_selects_coverage_tests(tmp_path: Path) -> None:
     context = project(tmp_path)
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        ("wrap",),
-    )
+    criterion = _criterion(("wrap",))
     context = replace(context, criteria={"coverage_sim_0": criterion})
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     assert prepared.plan.targets[0].selected_tests == ("reset", "wrap")
@@ -173,60 +175,30 @@ def test_suite_never_mixes_the_qualified_and_bare_sections(tmp_path: Path) -> No
     assert [finding.code for finding in prepared.findings] == ["COV_SUITE_INVALID"]
 
 
-def test_unfiltered_suite_applies_configured_skips(tmp_path: Path) -> None:
-    context = replace(project(tmp_path), skipped_tests={"sim_0": ("wrap",)})
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    assert prepared.plan.targets[0].selected_tests == ("reset",)
-
-
 @pytest.mark.parametrize(
-    ("tests", "expected"),
-    [(("wrap",), ("wrap",)), (("reset", "wrap"), ("reset", "wrap"))],
+    ("requested", "criterion_tests", "expected"),
+    [
+        pytest.param(None, False, ("reset",), id="unfiltered"),
+        pytest.param(("wrap",), False, ("wrap",), id="explicit-skipped-test"),
+        pytest.param(("reset", "wrap"), False, ("reset", "wrap"), id="explicit-all"),
+        pytest.param(None, ("wrap",), ("reset",), id="criterion-names-skipped-test"),
+        pytest.param(None, None, ("reset",), id="all-tests-criterion"),
+    ],
 )
-def test_explicit_suite_overrides_configured_skips(tmp_path: Path, tests, expected) -> None:
+def test_configured_skips_apply_unless_the_request_names_the_test(
+    tmp_path: Path, requested, criterion_tests, expected
+) -> None:
     context = replace(project(tmp_path), skipped_tests={"sim_0": ("wrap",)})
+    if criterion_tests is not False:
+        context = replace(context, criteria={"coverage_sim_0": _criterion(criterion_tests)})
     prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), tests=tests), context
+        CoverageInvocationRequest(("sim_0",), tests=requested), context
     )
     assert prepared.plan.targets[0].selected_tests == expected
 
 
-def test_criterion_suite_does_not_bypass_configured_skips(tmp_path: Path) -> None:
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        ("wrap",),
-    )
-    context = replace(
-        project(tmp_path),
-        criteria={"coverage_sim_0": criterion},
-        skipped_tests={"sim_0": ("wrap",)},
-    )
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    assert prepared.plan.targets[0].selected_tests == ("reset",)
-
-
-def test_all_tests_criterion_applies_configured_skips(tmp_path: Path) -> None:
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
-    )
-    context = replace(
-        project(tmp_path),
-        criteria={"coverage_sim_0": criterion},
-        skipped_tests={"sim_0": ("wrap",)},
-    )
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    assert prepared.plan.targets[0].selected_tests == ("reset",)
-
-
 def test_criterion_listing_unregistered_test_fails_preflight(tmp_path: Path) -> None:
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        ("ghost",),
-    )
+    criterion = _criterion(("ghost",))
     context = replace(project(tmp_path), criteria={"coverage_sim_0": criterion})
     result = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     assert result.plan is None
@@ -247,11 +219,7 @@ def test_coverage_selection_sorts_input_and_registry_order(tmp_path: Path) -> No
 def _gated_context(tmp_path: Path) -> CoverageProjectContext:
     from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
 
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
-    )
+    criterion = _criterion(None)
     return replace(
         project(tmp_path),
         criteria={"coverage_sim_0": criterion},
@@ -259,30 +227,18 @@ def _gated_context(tmp_path: Path) -> CoverageProjectContext:
     )
 
 
-def test_no_waivers_with_criterion_is_refused_without_diagnostic(tmp_path: Path) -> None:
-    result = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True), _gated_context(tmp_path)
-    )
-    assert result.plan is None
-    assert [finding.code for finding in result.findings] == ["COV_NO_WAIVERS_CRITERION"]
-
-
-def test_no_waivers_diagnostic_keeps_criterion_and_drops_waiver_config(tmp_path: Path) -> None:
+@pytest.mark.parametrize("gated", [True, False], ids=["gated", "ungated"])
+def test_no_waivers_drops_waiver_config(tmp_path: Path, gated: bool) -> None:
     context = _gated_context(tmp_path)
-    result = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True, diagnostic=True), context
-    )
-    target = result.plan.targets[0]
-    assert target.criterion is not None
-    assert target.waiver_config is None
-
-
-def test_no_waivers_ungated_drops_waiver_config(tmp_path: Path) -> None:
-    context = replace(_gated_context(tmp_path), criteria={})
+    if not gated:
+        context = replace(context, criteria={})
     result = prepare_coverage_invocation(
         CoverageInvocationRequest(("sim_0",), no_waivers=True), context
     )
-    assert result.plan.targets[0].waiver_config is None
+    assert result.findings == ()
+    target = result.plan.targets[0]
+    assert (target.criterion is not None) is gated
+    assert target.waiver_config is None
 
 
 def test_default_request_keeps_context_waiver_config(tmp_path: Path) -> None:

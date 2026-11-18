@@ -14,8 +14,6 @@ from tests.architecture.import_graph import analyze_imports
 @pytest.mark.parametrize(
     "source,target,rule",
     [
-        ("runtime/consumer.py", "goals/store.py", "D36"),
-        ("runtime/job_observation/__init__.py", "goals/binding.py", "D36"),
         ("runtime/job_observation/reader.py", "targets/catalog.py", "D37"),
         ("runtime/job_observation/reader.py", "harness/dashboard/jobs.py", "D6"),
         ("runtime/job_observation/reader.py", "mcp/job_lifecycle.py", "D5"),

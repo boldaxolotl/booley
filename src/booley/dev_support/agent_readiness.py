@@ -21,10 +21,11 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from booley.core.host_probes import ProbeState, probe_docker
 from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
+from booley.runtime.platform_paths import run_captured_bounded
 
 SCHEMA_VERSION = 1
 # The runners whose exact versions the shared tools environment must hold. Only
@@ -43,6 +44,10 @@ RUNNER_EXTRAS = {
     "quality": ("ruff", "pyright"),
 }
 _EXACT_PIN_RE = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([0-9][^\s;,*=]*)\s*")
+# A requirement that names extras, e.g. ``booley-rtl[test,quality]``: (name, extras, rest).
+_EXTRAS_REQUIREMENT_RE = re.compile(
+    r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*\[([^\]]*)\](.*)", re.DOTALL
+)
 # Names the cache root, so checkouts speaking another receipt schema build under
 # another directory and lock and never overwrite or race this one.
 RECEIPT_SCHEMA_VERSION = 2
@@ -547,13 +552,51 @@ def dependency_fingerprint(root: Path) -> str:
 def _project_dependencies(root: Path) -> dict[str, tuple[str, ...]]:
     data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     project = data["project"]
-    extras = project.get("optional-dependencies", {})
     selected = {
         "dependencies": tuple(project.get("dependencies", ())),
-        "test": tuple(extras.get("test", ())),
-        "quality": tuple(extras.get("quality", ())),
+        "test": _extra_requirements(project, "test"),
+        "quality": _extra_requirements(project, "quality"),
     }
     return selected
+
+
+def _normalized_name(name: str) -> str:
+    """PEP 503 name normalization (stdlib only; this module cannot import packaging)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _extra_requirements(
+    project: dict[str, Any], extra: str, seen: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
+    """Return an extra's requirements with self-references replaced by what they name.
+
+    ``test`` may list ``<project>[hdl-parser]`` so each pin is written once. Handed to
+    pip as written, that would install the published package, so the referenced
+    extras' requirements take its place, in declaration order and without repeats.
+    A cycle contributes nothing the second time round; an unknown extra is a usage error.
+    """
+    own_name = _normalized_name(project["name"])
+    extras: dict[str, list[str]] = project.get("optional-dependencies", {})
+    expanded: list[str] = []
+    chain = seen | {extra}
+    for requirement in extras.get(extra, ()):
+        parsed = _EXTRAS_REQUIREMENT_RE.fullmatch(requirement)
+        if parsed is None or _normalized_name(parsed[1]) != own_name:
+            expanded.append(requirement)
+            continue
+        if parsed[3].strip():
+            raise ReadinessUsageError(
+                f"the {extra} extra of pyproject.toml has a self-reference {requirement!r} "
+                "with a version or marker; use the bare `<project>[extras]` form"
+            )
+        for name in (_normalized_name(item.strip()) for item in parsed[2].split(",")):
+            if name not in extras:
+                raise ReadinessUsageError(
+                    f"the {extra} extra of pyproject.toml references unknown extra {name!r}"
+                )
+            if name not in chain:
+                expanded.extend(_extra_requirements(project, name, chain))
+    return tuple(dict.fromkeys(expanded))
 
 
 def runner_pins(root: Path) -> dict[str, str]:
@@ -646,7 +689,7 @@ def validate_environment(
 def _docker_check(required: bool) -> Check:
     observation = probe_docker(
         which=shutil.which,
-        run=subprocess.run,
+        run=run_captured_bounded,
         probe_daemon=required,
         cwd=Path.cwd(),
     )
@@ -700,6 +743,38 @@ def _native_test_check(root: Path) -> Check:
     )
 
 
+def _source_check_commands(python: Path, root: Path) -> tuple[Command, ...]:
+    return (
+        # Fails in seconds when the packaged CHANGELOG mirror is stale (the user-doc
+        # copies are Git-ignored build output, not checked). The launcher imports this
+        # checkout's src/, which the shared environment never installs; -B keeps
+        # bytecode out of the checkout.
+        Command(
+            "packaged-copies.check",
+            (str(python), "-B", str(root / ".github/scripts/sync_packaged_copies.py"), "--check"),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
+        # The same launcher is CI's required "Check Markdown line length" step in docs-check.
+        Command(
+            "markdown.line-length",
+            (str(python), "-B", str(root / ".github/scripts/markdown_line_length.py")),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
+        # CI's lint-job function length step, against the newest merge base.
+        Command(
+            "function-length.check",
+            (str(python), "-B", str(root / ".github/scripts/check_function_length.py")),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
+    )
+
+
 def _verification_commands(
     python: Path,
     root: Path,
@@ -734,16 +809,7 @@ def _verification_commands(
             "typecheck",
             "handoff",
         ),
-        # Fails in seconds when a packaged doc copy or the packaged CHANGELOG
-        # mirror is stale. The launcher imports this checkout's src/, which the
-        # shared environment never installs; -B keeps bytecode out of the checkout.
-        Command(
-            "packaged-copies.check",
-            (str(python), "-B", str(root / ".github/scripts/sync_packaged_copies.py"), "--check"),
-            str(root),
-            "lint",
-            "before-commit",
-        ),
+        *_source_check_commands(python, root),
     )
     if not native_ready:
         return lint
@@ -888,5 +954,7 @@ def _run_process(
         return None
 
 
-def _successful(result: subprocess.CompletedProcess[str] | None) -> bool:
+def _successful(
+    result: subprocess.CompletedProcess[str] | None,
+) -> TypeGuard[subprocess.CompletedProcess[str]]:
     return result is not None and result.returncode == 0

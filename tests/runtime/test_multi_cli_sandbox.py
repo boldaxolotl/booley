@@ -1,6 +1,6 @@
 """A Booley-issued Sandbox seeds exactly the Agent CLIs ``[agent] clis`` allows.
 
-Specs are built through the real init path (``_interactive_spec_sources``) against a
+Specs are built through the real init path (``_sandbox_spec_sources``) against a
 disposable host home holding a login for both Agent CLIs.
 """
 
@@ -52,7 +52,7 @@ def _host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str) -> Path:
 
 def _issue(project: Path, app: str) -> dict:
     """The spec ``booley init`` would write for *app* (built, not sealed)."""
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, None
     )
     inputs = session_issuance.SessionSpecInputs(sources.project_data_source, (), (), None, None)
@@ -73,7 +73,10 @@ def _hooks(spec: dict) -> str:
 
 def test_issued_spec_seeds_every_listed_cli(tmp_path, monkeypatch):
     project = _host(
-        tmp_path, monkeypatch, '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+        tmp_path,
+        monkeypatch,
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+        '[agent.auth]\nclaude = "subscription"\ncodex = "api_key"\n',
     )
     monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
     auth_token.store_token("SYNTHETIC_STORED_CODEX", "codex")
@@ -82,16 +85,17 @@ def test_issued_spec_seeds_every_listed_cli(tmp_path, monkeypatch):
 
     assert spec["name"] == "Booley Interactive (claude, codex)"
     assert spec["remoteEnv"]["BOOLEY_AGENT_APP"] == "claude"
-    assert spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] == "claude=auto,codex=auto"
+    assert spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] == "claude=subscription,codex=api_key"
     targets = _targets(spec)
-    for seed in (_CLAUDE_CREDS_SEED, _CODEX_CREDS_SEED, dc._APP_TOKEN_SEED_TARGET["codex"]):
+    for seed in (_CLAUDE_CREDS_SEED, dc._APP_TOKEN_SEED_TARGET["codex"]):
         assert seed in targets
+    assert _CODEX_CREDS_SEED not in targets  # api_key leaves the Codex login behind
     project_id = dc.canonical_project_id(project)
     assert _volumes(spec) == [
         dc.state_volume_mount("claude", project_id),
-        dc.state_volume_mount("codex", project_id),
+        dc.state_volume_mount("codex", project_id, "api_key"),
     ]
-    assert ".codex/auth.json" in _hooks(spec)
+    assert ".codex/auth.json" not in _hooks(spec)
     assert ".claude/.credentials.json" in _hooks(spec)
     assert spec["remoteEnv"]["OPENAI_API_KEY"] == "${localEnv:OPENAI_API_KEY}"
 
@@ -103,8 +107,8 @@ def test_single_cli_spec_seeds_only_claude_as_before(tmp_path, monkeypatch):
     spec = _issue(project, "claude")
 
     assert spec["name"] == "Booley Interactive (claude)"
-    assert spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] == "claude=auto"
-    assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "auto"
+    assert spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] == "claude=subscription"
+    assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
     assert "OPENAI_API_KEY" not in spec["remoteEnv"]
     # No Claude token exported or stored: nothing is forwarded over the mounted login.
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in spec["remoteEnv"]

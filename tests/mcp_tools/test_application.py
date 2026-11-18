@@ -12,8 +12,8 @@ from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
     UnknownMcpToolError,
-    _normalize_payload,
 )
+from tests.time_budget import hang_guard_s
 
 
 def _definition(name: str = "echo", **extra):
@@ -79,58 +79,43 @@ def test_duplicate_canonical_alias_fails_catalog_construction() -> None:
         _application([_definition("echo"), _definition("run_echo")])
 
 
-def test_invalid_builtin_schema_fails_startup() -> None:
-    broken = _definition()
-    broken["schema"] = {"type": "definitely-not-a-json-schema-type"}
-
-    with pytest.raises(SchemaError):
-        _application([broken])
+_BAD_TYPE = {"type": "definitely-not-a-json-schema-type"}
 
 
-def test_invalid_custom_schema_is_excluded_with_actionable_error() -> None:
+@pytest.mark.parametrize(
+    ("override", "error", "message"),
+    [
+        ({"schema": _BAD_TYPE}, SchemaError, "definitely-not-a-json-schema-type"),
+        ({"schema": None}, ValueError, "input schema must be a mapping"),
+    ],
+)
+def test_invalid_builtin_schema_fails_startup(override, error, message) -> None:
+    with pytest.raises(error, match=message):
+        _application([_definition(**override)])
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ({"schema": _BAD_TYPE}, None),
+        *(
+            ({"schema": bad}, f"input schema must be a mapping, got {type(bad).__name__}")
+            for bad in (None, "not-a-schema", 7)
+        ),
+        ({"output_schema": "not-a-schema"}, "output schema must be a mapping, got str"),
+    ],
+    ids=["bad-type", "input-none", "input-str", "input-int", "output-str"],
+)
+def test_invalid_custom_schema_is_excluded_with_actionable_error(override, expected) -> None:
     errors: list[str] = []
-    broken = _definition(is_custom=True)
-    broken["schema"] = {"type": "definitely-not-a-json-schema-type"}
 
-    application = _application([broken, _definition("valid")], errors=errors)
+    application = _application(
+        [_definition(is_custom=True, **override), _definition("valid")], errors=errors
+    )
 
     assert [tool.name for tool in application.list_tools()] == ["valid"]
-    assert errors and errors[0].startswith("INVALID CUSTOM MCP SCHEMA: echo:")
-
-
-@pytest.mark.parametrize("schema", [None, "not-a-schema", 7])
-def test_non_mapping_custom_input_schema_is_excluded(schema: object) -> None:
-    errors: list[str] = []
-    broken = _definition(is_custom=True)
-    broken["schema"] = schema
-
-    application = _application([broken, _definition("valid")], errors=errors)
-
-    assert [tool.name for tool in application.list_tools()] == ["valid"]
-    assert errors == [
-        f"INVALID CUSTOM MCP SCHEMA: echo: MCP tool 'echo' input schema "
-        f"must be a mapping, got {type(schema).__name__}"
-    ]
-
-
-def test_non_mapping_custom_output_schema_is_excluded() -> None:
-    errors: list[str] = []
-    broken = _definition(is_custom=True, output_schema="not-a-schema")
-
-    application = _application([broken, _definition("valid")], errors=errors)
-
-    assert [tool.name for tool in application.list_tools()] == ["valid"]
-    assert errors == [
-        "INVALID CUSTOM MCP SCHEMA: echo: MCP tool 'echo' output schema must be a mapping, got str"
-    ]
-
-
-def test_non_mapping_builtin_schema_fails_startup() -> None:
-    broken = _definition()
-    broken["schema"] = None
-
-    with pytest.raises(ValueError, match="input schema must be a mapping"):
-        _application([broken])
+    assert len(errors) == 1 and errors[0].startswith("INVALID CUSTOM MCP SCHEMA: echo:")
+    assert expected is None or expected in errors[0]
 
 
 def test_valid_output_schema_is_advertised() -> None:
@@ -141,22 +126,34 @@ def test_valid_output_schema_is_advertised() -> None:
     assert application.list_tools()[0].output_schema == output_schema
 
 
+def _result_of(value):
+    """The payload (or the error) ``call_tool`` returns when the dispatch returns *value*."""
+
+    async def dispatch(name, arguments, source):
+        return value
+
+    application = McpApplication(
+        [_definition()],
+        dispatch=dispatch,
+        canonicalize=lambda name: name,
+        on_discovery_error=pytest.fail,
+    )
+    return asyncio.run(application.call_tool("echo", {"text": "x"}))
+
+
 def test_structured_result_normalization_validates_tuple_shape() -> None:
     with pytest.raises(TypeError, match="invalid structured result"):
-        _normalize_payload(([], None))
+        _result_of(([], None))
 
-    payload = _normalize_payload(([], {"answer": "ok"}))
-
-    assert payload.structured_content == {"answer": "ok"}
+    assert _result_of(([], {"answer": "ok"})).structured_content == {"answer": "ok"}
 
 
 def test_dispatch_error_preserves_text_and_structured_content() -> None:
-    result = McpDispatchResult(
-        value=([SimpleNamespace(text="EXIT_CODE: 2")], {"exit_code": 2}),
-        is_error=True,
+    payload = _result_of(
+        McpDispatchResult(
+            value=([SimpleNamespace(text="EXIT_CODE: 2")], {"exit_code": 2}), is_error=True
+        )
     )
-
-    payload = _normalize_payload(result)
 
     assert payload.content[0].text == "EXIT_CODE: 2"
     assert payload.structured_content == {"exit_code": 2}
@@ -224,82 +221,6 @@ def test_inflight_dispatch_keeps_one_generation_metadata():
     asyncio.run(exercise())
 
 
-def test_live_status_preserves_independent_names_and_observation_precedes_import(
-    tmp_path, monkeypatch
-):
-    from booley.mcp import live_catalog, server
-    from booley.runtime.booley_dir import reset_cache
-    from tests.mcp_tools.test_live_catalog import write_endpoint
-
-    directory = tmp_path / ".booley"
-    directory.mkdir()
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOOLEY_DIR", str(directory))
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-    for key in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
-        monkeypatch.delenv(key, raising=False)
-    reset_cache()
-    seen, imports = [], []
-
-    async def status(name, arguments, jobs, names, *, caller=None):
-        seen.append(set(names))
-        return [SimpleNamespace(text="ready")]
-
-    def worker(paths, cancel):
-        imports.append(paths)
-        return [], []
-
-    monkeypatch.setattr(server, "_dispatch_special_mcp_tool", status)
-    monkeypatch.setattr(live_catalog, "run_schema_worker", worker)
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
-
-    async def exercise():
-        await application.call_tool("booley_status", {})
-        write_endpoint(directory)
-        (directory / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
-        assert await application.live_catalog.observe_change()
-        assert imports == []
-        await application.live_catalog.refresh()
-        assert len(imports) == 1
-        await application.call_tool("booley_status", {})
-        assert "bwave" in seen[0]
-        assert seen[1] == seen[0] - {"sim"}
-
-    try:
-        asyncio.run(exercise())
-    finally:
-        reset_cache()
-
-
-def test_duplicate_custom_names_reject_complete_live_and_startup_candidates(tmp_path, monkeypatch):
-    from booley.mcp import server
-    from booley.runtime.booley_dir import reset_cache
-    from tests.mcp_tools.test_live_catalog import write_endpoint
-
-    directory = tmp_path / ".booley"
-    directory.mkdir()
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOOLEY_DIR", str(directory))
-    reset_cache()
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
-    original = application.list_tools()
-    write_endpoint(directory, "first")
-    second = write_endpoint(directory, "second")
-    second.write_text(second.read_text().replace("name = 'second'", "name = 'first'"))
-    try:
-        rejected = False
-        try:
-            asyncio.run(application.live_catalog.refresh())
-        except ValueError:
-            rejected = True
-        assert rejected, "duplicate custom names must reject the complete candidate"
-        assert application.list_tools() == original
-        with pytest.raises(ValueError, match="Duplicate"):
-            server._build_mcp_catalog(server._McpLifetime(None, None))
-    finally:
-        reset_cache()
-
-
 @pytest.mark.parametrize("default", ["Path('build')", "object()"])
 def test_schema_worker_preserves_valid_siblings_and_wire_defaults(tmp_path, default):
     from booley.mcp.catalog_worker import run_schema_worker
@@ -365,16 +286,18 @@ def test_cancelled_schema_discovery_owns_worker_until_cleanup(monkeypatch, delay
 
     def worker(paths, cancel):
         entered.set()
-        assert cancel.wait(3)
-        assert release.wait(12)
+        assert cancel.wait(hang_guard_s())
+        assert release.wait(hang_guard_s())
         reaped.set()
         raise error("worker cleanup completed")
 
     monkeypatch.setattr(live_catalog, "run_schema_worker", worker)
 
     async def exercise():
+        # Cancellation must hit the schema worker thread itself; a running refresh cannot be
+        # cancelled at that point deterministically.
         task = asyncio.create_task(live_catalog._async_schemas({}))
-        assert await asyncio.to_thread(entered.wait, 2)
+        assert await asyncio.to_thread(entered.wait, hang_guard_s())
         task.cancel()
         try:
             await asyncio.sleep(delay)

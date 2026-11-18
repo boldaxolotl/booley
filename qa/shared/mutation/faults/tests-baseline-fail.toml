@@ -1,0 +1,8 @@
+# Registry that adds the always-failing `fail` test to both Targets, so each
+# baseline fails. Install it over `tests.toml` in the resolved Booley Directory.
+[sim_icarus]
+tests = ["full", "smoke", "fail"]
+select = "+test={name}"
+
+[sim_cocotb]
+tests = ["full", "smoke", "fail"]

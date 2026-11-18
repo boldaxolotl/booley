@@ -12,7 +12,83 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.evidence.timing import ClockTiming, per_clock_to_json
+from booley.core.boundary import as_dict, as_float, as_int, as_str
+from booley.evidence.timing import ClockTiming, per_clock_from_json, per_clock_to_json
+from booley.flows.edam import EdamFile
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    MetricsUnavailable,
+    metric_values,
+)
+
+# Metrics the FPGA implementation Flow declares; names are the ones ``metrics.toml`` bounds use.
+# Per-clock wns_ns/whs_ns cover intra-clock paths only, unlike the design-wide fields.
+_FPGA_COST_TIER = CostTier.HIGH
+FPGA_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
+    MetricDeclaration("lut_count", "LUTs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("ff_count", "FFs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    # Vivado reports fractional BRAM tiles (a RAMB18 is half a tile).
+    MetricDeclaration("bram_count", "BRAM tiles", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("dsp_count", "DSPs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _FPGA_COST_TIER, MetricKind.PER_CLOCK
+    ),
+    MetricDeclaration("wns_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration("whs_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
+)
+
+
+def _incomplete_reason(entry: object) -> str | None:
+    """Why a Target's implementation run did not complete, or ``None`` when it did."""
+    status = as_dict((as_dict(entry) or {}).get("status")) or {}
+    reason = as_str(status.get("infra_error")) or None
+    if status.get("timed_out") is True:
+        text = "the FPGA implementation timed out"
+        return f"{text}: {reason}" if reason else text
+    if reason:
+        return reason
+    if (as_dict(status.get("completion")) or {}).get("route") is not True:
+        return "Vivado did not complete route_design"
+    return None
+
+
+def report_metric_values(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
+    """Read each Target's :data:`FPGA_METRIC_DECLARATIONS` values from an aggregate *detail*.
+
+    Reads the implementation block's per-Target ``metrics``, mirroring
+    :meth:`FpgaMetrics.flow_metrics`. A Target without that block is skipped; one that
+    timed out, hit an infrastructure error, or did not route is
+    :class:`MetricsUnavailable` with the reason.
+    """
+    implementation = as_dict(detail.get("implementation")) or {}
+    results = as_dict(implementation.get("results")) or {}
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
+    for target, entry in results.items():
+        metrics = as_dict((as_dict(entry) or {}).get("metrics"))
+        if metrics is None:
+            continue
+        reason = _incomplete_reason(entry)
+        if reason is not None:
+            values[str(target)] = MetricsUnavailable(reason)
+            continue
+        values[str(target)] = metric_values(
+            FPGA_METRIC_DECLARATIONS,
+            plain={
+                "lut_count": as_int(metrics.get("lut_count")),
+                "ff_count": as_int(metrics.get("ff_count")),
+                "bram_count": as_float(metrics.get("bram_count")),
+                "dsp_count": as_int(metrics.get("dsp_count")),
+            },
+            per_clock=per_clock_from_json(metrics.get("per_clock")),
+        )
+    return values
 
 
 @dataclass
@@ -36,6 +112,11 @@ class FpgaMetrics:
     latches: int = 0
     comb_loops: int = 0
     multi_driven: int = 0
+    #: Latches / combinational loops the design is declared to contain on
+    #: purpose (``[flows.fpga].expected_latches`` / ``expected_comb_loops``).
+    #: Raw counts are always reported; only the excess is critical.
+    expected_latches: int = 0
+    expected_comb_loops: int = 0
     returncode: int = 0
     route_completed: bool = False
     timed_out: bool = False
@@ -59,6 +140,23 @@ class FpgaMetrics:
     #: Current run consuming a prior producer's cached artifacts.
     cache_consumer_run_id: str = ""
 
+    def flow_metrics(self) -> FlowMetricValues:
+        """Return this run's typed values for :data:`FPGA_METRIC_DECLARATIONS`.
+
+        The design-wide ``wns_ns``/``whs_ns`` fields are not part of these values:
+        they include inter-clock paths that the per-clock rows exclude.
+        """
+        return metric_values(
+            FPGA_METRIC_DECLARATIONS,
+            plain={
+                "lut_count": self.lut_count,
+                "ff_count": self.ff_count,
+                "bram_count": self.bram_count,
+                "dsp_count": self.dsp_count,
+            },
+            per_clock=self.per_clock,
+        )
+
     @property
     def has_primary_metrics(self) -> bool:
         return self.lut_count is not None and self.ff_count is not None
@@ -73,8 +171,37 @@ class FpgaMetrics:
         )
 
     @property
+    def unexpected_latches(self) -> int:
+        """Latches beyond the declared intentional count (never negative)."""
+        return max(0, self.latches - self.expected_latches)
+
+    @property
+    def unexpected_comb_loops(self) -> int:
+        """Combinational loops beyond the declared count (never negative)."""
+        return max(0, self.comb_loops - self.expected_comb_loops)
+
+    @property
     def has_critical(self) -> bool:
-        return self.latches > 0 or self.comb_loops > 0 or self.multi_driven > 0
+        return (
+            self.unexpected_latches > 0 or self.unexpected_comb_loops > 0 or self.multi_driven > 0
+        )
+
+    def critical_summary(self) -> str:
+        """Name each critical structural count with its actual, expected, and excess."""
+        parts = []
+        if self.unexpected_latches:
+            parts.append(
+                f"{self.latches} latches (actual={self.latches}, "
+                f"expected={self.expected_latches}, excess={self.unexpected_latches})"
+            )
+        if self.unexpected_comb_loops:
+            parts.append(
+                f"{self.comb_loops} comb loops (actual={self.comb_loops}, "
+                f"expected={self.expected_comb_loops}, excess={self.unexpected_comb_loops})"
+            )
+        if self.multi_driven:
+            parts.append(f"{self.multi_driven} multi-driven")
+        return ", ".join(parts)
 
     @property
     def passed(self) -> bool:
@@ -88,9 +215,7 @@ class FpgaMetrics:
         )
 
 
-def _metrics_detail(
-    metrics: FpgaMetrics | None, *, baseline: bool = False
-) -> dict[str, Any] | None:
+def _metrics_detail(metrics: FpgaMetrics, *, baseline: bool = False) -> dict[str, Any]:
     """Detail dict for one run's metrics; *baseline* suppresses the pointers.
 
     A ``--baseline`` run happens inside a throwaway git worktree that is
@@ -104,8 +229,6 @@ def _metrics_detail(
     this reason; ``dirs`` is not, so the artifact block is suppressed here
     instead of being filtered key by key.
     """
-    if metrics is None:
-        return None
     pointers: dict[str, Any] = (
         {}
         if baseline
@@ -174,24 +297,18 @@ def _vlogdefine_args(parameters: Any) -> list[str]:
     return defines
 
 
-def _split_resolved_sources(resolved: Any) -> tuple[list[Path], list[Path], list[Path]]:
-    """Split a resolved Target's RTL sources into (.sv, .v, include dirs).
+def _resolved_sources(resolved: Any) -> tuple[list[EdamFile], list[Path]]:
+    """Return a resolved Target's HDL sources and include dirs for Vivado.
 
-    Shared by :meth:`FpgaImplFlow._prepare_fpga_command` (the real Vivado run)
-    and :meth:`FpgaImplFlow._resolve_fpga_summary` (the dry-run preview) off the
-    ``.core``-resolved file list (decision 4): each source is an absolute path
-    under the FuseSoC build root, so it crosses into the vivado template the
-    same way the legacy ``build_file_list`` paths did.
+    Shared by the real Vivado run and the dry-run preview. Sources keep the
+    Target's order and the ``file_type`` its ``.core`` declares, whatever the
+    file name; each path is absolute under the FuseSoC build root.
     """
-    sv_files: list[Path] = []
-    v_files: list[Path] = []
-    for f in resolved.rtl_source_files:
-        path = f.absolute(resolved.build_root)
-        if path.suffix == ".sv":
-            sv_files.append(path)
-        elif path.suffix == ".v":
-            v_files.append(path)
-    return sv_files, v_files, list(resolved.rtl_include_dirs)
+    sources = [
+        EdamFile(f.absolute(resolved.build_root), f.file_type)
+        for f in resolved.rtl_hdl_source_files
+    ]
+    return sources, list(resolved.rtl_include_dirs)
 
 
 def _unique_strings(values: list[Any]) -> list[str]:

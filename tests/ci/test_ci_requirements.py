@@ -41,7 +41,6 @@ _PROJECT_INSTALL_LOCATIONS = {
     "test.yml:coverage-shards",
     "test.yml:coverage",
     "test.yml:bwave-integration",
-    "deep-tests.yml:mutation",
     "deep-tests.yml:bwave-fuzz",
     "deep-tests.yml:worktree-mounts",
     "full-python-matrix.yml:test",

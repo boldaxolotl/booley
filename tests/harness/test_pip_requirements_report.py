@@ -10,6 +10,7 @@ import pytest
 import booley
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.harness import init_cmd
+from booley.harness import session_refresh as harness_refresh
 from booley.harness.setup.common import InitContext
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime import project_image as pi
@@ -98,18 +99,19 @@ def test_init_notes_each_curated_override_once(
     assert "numpy" not in out
 
 
-def test_session_refresh_prepare_reports_left_out_lines(
+def test_session_refresh_converge_reports_left_out_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
     _stub_base_image(monkeypatch, {"cocotb": "2.1.0"})
-    plan = SimpleNamespace(project_root=root, nodes=(), steps=())
-    prepared = object()
-    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_a: plan)
-    monkeypatch.setattr(init_cmd.image_lifecycle, "prepare", lambda *_a, **_k: prepared)
+    converged = lifecycle.LifecycleResult(
+        "booley-sandbox", "sha256:converged", lifecycle.Status.CURRENT
+    )
+    monkeypatch.setattr(harness_lifecycle, "reconcile_planned", lambda *_a, **_k: converged)
 
-    assert init_cmd.prepare_runtime_image(root) is prepared
+    image = harness_refresh._RuntimeImages().converge(root, verbose=False)
 
+    assert image.selected_id == "sha256:converged"
     out = capsys.readouterr().out
     assert out.count("'-e ./local'") == 1
     assert out.count("'fusesoc==2.3'") == 1

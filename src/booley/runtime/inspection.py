@@ -27,6 +27,7 @@ from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
+from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
     RelayProfile,
@@ -41,23 +42,25 @@ from booley.eda.provisioning.policies.vivado import (
 from booley.runtime import (
     auth_token,
     image_identity,
+    platform_paths,
     runtime_context,
     sandbox_layout,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.git import _git_common_dir, stealth_exclude_names
-from booley.runtime.platform_paths import same_host_path
+from booley.runtime.platform_paths import run_captured_bounded, same_host_path
+from booley.runtime.sandbox_apply import Attachment
 
 
 @dataclass(frozen=True, slots=True)
 class InteractiveGitRequest:
-    """Inputs needed to inspect Git state that Interactive Mode depends on."""
+    """Inputs needed to inspect Git state that the Sandbox depends on."""
 
     project_root: Path
     booley_dir: Path
@@ -118,7 +121,7 @@ def inspect_runtime(request: RuntimeInspectionRequest) -> RuntimeInspectionResul
 
 
 def inspect_interactive_git(request: InteractiveGitRequest) -> DiagnosticReport:
-    """Inspect Git excludes and tracked scratch for Interactive Mode; never repairs."""
+    """Inspect Git excludes and tracked scratch for the Sandbox; never repairs."""
     report = Findings()
     _check_devcontainer_excludes(request.project_root, report)
     _check_interactive_logs_tracked(request.booley_dir, report)
@@ -128,20 +131,18 @@ def inspect_interactive_git(request: InteractiveGitRequest) -> DiagnosticReport:
 def inspect_retained_resources(project_root: Path, docker_exe: str | None) -> DiagnosticReport:
     """Observe persistent volumes and image keepers without deleting resources."""
     report = Findings()
-    _check_interactive_state_volumes(project_root, docker_exe, report)
+    _check_sandbox_state_volumes(project_root, docker_exe, report)
     _check_issued_image_keepers(project_root, docker_exe, report)
     return report.report()
 
 
 def _devcontainer_tracked(project_root: Path) -> bool:
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "ls-files", "--", ".devcontainer"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
+            cwd=project_root,
+            errors="strict",
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return False
@@ -153,14 +154,14 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
 
     *request.image* is the project-resolved ``[sandbox].image``; the spec's own
     ``image`` must match it, else the Sandbox runs a stale image.
-    *request.declared_provider* is the project's *explicit* ``[agent] provider`` and
+    *request.declared_provider* is the project's *explicit* ``[agent] default`` and
     *request.declared_clis* its explicit ``[agent] clis`` (``None`` = undeclared); the
     spec's recorded Agent CLI set must match them. Beyond those preconditions the spec
     is compared against a rebuild of what ``booley init`` would write now.
     """
     if _devcontainer_tracked(request.project_root):
         report.fail(
-            ".devcontainer/ is tracked by git - Interactive Mode unavailable",
+            ".devcontainer/ is tracked by git - Sandbox unavailable",
             "remove it from git history; Booley keeps the spec untracked",
         )
         return
@@ -208,9 +209,9 @@ def _provider_current(
             request,
             report,
             f"devcontainer.json BOOLEY_AGENT_APP 'auto' may resolve to an app other than "
-            f"[agent] provider '{pinned}': without that app's credential the session "
+            f"the [agent] default '{pinned}': without that app's credential the session "
             f"registers the other app while Specialists still use '{pinned}'; remove "
-            f"[agent] provider or set BOOLEY_AGENT_APP to '{pinned}'",
+            f"[agent] default (or its older name provider) or set BOOLEY_AGENT_APP to '{pinned}'",
         )
         return True
     return _cli_set_current(request, spec, spec_app, report)
@@ -419,7 +420,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         report.skip("live issued Sandbox labels/topology - container runtime unavailable")
         return
     _check_runtime_booley_version(request, request.docker_exe, issuance.image, report)
-    _inspect_live_runtime(request, spec, issuance, report)
+    _inspect_live_runtime(request, request.docker_exe, spec, issuance, report)
 
 
 def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings) -> None:
@@ -472,13 +473,14 @@ def _inspect_active_sandbox(
 
 def _inspect_live_runtime(
     request: RuntimeInspectionRequest,
+    docker_exe: str,
     spec: dict,
     issuance: runtime_spec.Issuance,
     report: Findings,
 ) -> None:
     _inspect_active_sandbox(request, spec, issuance, report)
     try:
-        result = _list_issued_containers(request, issuance)
+        result = _list_issued_containers(docker_exe, issuance)
     except (OSError, subprocess.SubprocessError) as exc:
         report.fail(f"could not inspect issued Sandbox resources: {exc}", "start Docker")
         return
@@ -512,14 +514,14 @@ def _inspect_live_runtime(
 
 
 def _list_issued_containers(
-    request: RuntimeInspectionRequest, issuance: runtime_spec.Issuance
+    docker_exe: str, issuance: runtime_spec.Issuance
 ) -> subprocess.CompletedProcess[str]:
     identity = next(
         label for label in runtime_spec.labels(issuance) if label.startswith("booley.project-id=")
     )
-    return subprocess.run(
+    return run_captured_bounded(
         [
-            request.docker_exe,
+            docker_exe,
             "ps",
             "-aq",
             "--filter",
@@ -529,10 +531,7 @@ def _list_issued_containers(
             "--format",
             "{{.Names}}",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
-        check=False,
     )
 
 
@@ -554,7 +553,7 @@ def _check_runtime_booley_version(
 def _accepted_booley_dir(value: str, project_root: Path) -> bool:
     """Return whether ``value`` is an accepted in-Sandbox ``BOOLEY_DIR`` spelling (ADR 0073).
 
-    Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
+    Accepted spellings are the image alias ``/booley`` and the ``.booley``
     entry directly under the inspected Project Root, either one resolving to an
     existing directory. The entry may be a symlink; its parent must be the same
     location as the Project Root, so aliased Project Root spellings are tolerated. Paths alone
@@ -660,6 +659,35 @@ def _runtime_path_exposed(path: Path) -> bool:
         return False
 
 
+def _relay_repair(project_root: Path, containers: list[str]) -> str:
+    """Name the repair that rebuilds the licensed relay topology for the Sandbox's owner.
+
+    ``booley session down`` removes the relay topology, but refuses a running
+    VS Code Sandbox, and VS Code's ``booley session prepare`` provisions only a
+    missing relay. A VS Code owner therefore removes its container first, runs
+    ``session down`` for the relay, and reopens the folder. A headless owner
+    follows ``session down`` with ``session up --rebuild``.
+    """
+    try:
+        attachment = session_runtime.sandbox_attachment(project_root)
+    except session_runtime.SessionError:
+        attachment = None
+    headless = "run `booley session down`, then `booley session up --rebuild` on the host"
+    remove = ""
+    if containers:
+        names = " ".join(quote_arg(name) for name in containers)
+        remove = f"`docker stop {names}` and `docker rm {names}`, "
+    vscode = (
+        f"close VS Code, then on the host run {remove}run `booley session down` "
+        "to remove the relay topology, and reopen the folder in the container"
+    )
+    if attachment is Attachment.VSCODE:
+        return vscode
+    if attachment is Attachment.HEADLESS:
+        return headless
+    return f"in VS Code, {vscode}; headless, {headless}"
+
+
 def _check_issued_license_relay(
     request: RuntimeInspectionRequest,
     containers: list[str],
@@ -689,7 +717,7 @@ def _check_issued_license_relay(
         if containers:
             report.fail(
                 "licensed Sandbox has no relay topology",
-                "run `booley session down`, then `booley session up --rebuild`",
+                _relay_repair(project_root, containers),
             )
         return
     try:
@@ -704,11 +732,12 @@ def _check_issued_license_relay(
             ),
             issuance_labels=runtime_spec.labels(issuance),
             image=image_id,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         report.fail(
             f"live FlexNet relay topology differs from host issuance: {exc}",
-            "run `booley session down`, then `booley session up --rebuild`",
+            _relay_repair(project_root, containers),
         )
         return
     report.pass_("live FlexNet relay bytes, hardening, endpoints, and aliases verified")
@@ -808,7 +837,7 @@ def _probe_mounted_vivado(report: Findings) -> None:
     )
 
 
-def _check_interactive_state_volumes(
+def _check_sandbox_state_volumes(
     project_root: Path, docker_exe: str | None, report: Findings
 ) -> None:
     """Surface persistent home-state volumes and flag orphans for pruning.
@@ -910,13 +939,11 @@ def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
     check alone does not catch an already-poisoned repository.
     """
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "ls-files", "--", ".interactive_logs"],
-            cwd=booley_dir,
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
+            cwd=booley_dir,
+            errors="strict",
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return

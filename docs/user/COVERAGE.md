@@ -2,9 +2,8 @@
 
 Coverage tells you how much of your RTL the tests actually exercise: which
 lines, branches, expressions, toggles, and cover properties were hit, and
-which never were. Use it to judge whether a testbench is thorough, to find
-logic no test reaches, or, in Goal Mode, to require a minimum coverage before a
-change counts as done. It is part of the [Simulation Flow](FLOW-SIM.md) and
+which never were. Use it to judge whether a testbench is thorough or to find
+logic no test reaches. It is part of the [Simulation Flow](FLOW-SIM.md) and
 works only on Verilator Targets; an Icarus Target cannot collect coverage.
 Coverage does not replace pass/fail checks: a fully covered design can still
 be wrong.
@@ -23,9 +22,8 @@ test either hits or misses. Each metric counts a different kind of point:
 | `cover_property` | one SystemVerilog `cover property` | the property matches |
 
 One hit by one test is enough. Verilator also records FSM and covergroup
-data; Booley keeps it in the Campaign but gives it no percentage, so no
-threshold applies to it. The metric names in the table are the ones
-[Coverage Goals](#coverage-goals) use.
+data; Booley keeps it in the Coverage Record but gives it no percentage, so no
+threshold applies to it.
 
 ## Collecting coverage
 
@@ -38,29 +36,29 @@ threshold applies to it. The metric names in the table are the ones
    ([selecting Test Runs](FLOW-SIM.md#test-runs-test-variants-and-seeds)).
 3. Read the result (next section).
 4. To find out what is missing and why, ask the agent to run the
-   [Coverage Analyst](#analyzing-a-campaign) on the run.
+   [Coverage Analyst](#analyzing-a-coverage-record) on the run.
 
-If any selected Target uses Icarus, the whole run is refused before anything
-builds. Coverage runs only in the default `--mode simulate`. `--trace` can be
-combined with `--coverage`.
+If any selected Target does not use Verilator, the whole run is refused
+before anything builds. Coverage runs only in the default `--mode simulate`.
+`--trace` can be combined with `--coverage`.
 
 Generated or custom C++ mains, HDL testbenches, and cocotb all work.
 
 ## Reading results
 
-Each Target gets its own **Coverage Campaign**: the coverage record of one
+Each Target gets its own **Coverage Record**: the coverage evidence of one
 Target in one run. The easiest way to read it is to ask the agent, for example
 "What coverage did sim_soc reach?". The agent gets every metric's percentage,
-any threshold and whether it was met, and the Campaign's location.
+any threshold and whether it was met, and the Coverage Record's location.
 
-A run you start yourself prints a block per Target:
+A run you start yourself prints a block per Target. Example (Verilator):
 
 ```text
-sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Campaign …)
-  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Record …)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   coverage: line 92.3% · branch 81.0% (min 80%, met) · toggle 64.2%
-  coverage campaign: /work/.booley/flow-reports/sim/12/targets/sim_soc/coverage.json
+  Coverage Record: /work/.booley/flow-reports/sim/12/targets/sim_soc/coverage.json
 ```
 
 The first line has three verdicts:
@@ -71,8 +69,8 @@ The first line has three verdicts:
   `INCOMPATIBLE` followed by a diagnostic code in brackets. Anything but
   `COMPLETE` means the numbers can't be trusted.
 - **evaluation**: whether the thresholds were met. `NOT_REQUESTED` means
-  there were none to check, which is the normal case outside a
-  [Coverage Goal](#coverage-goals). `FAIL` names the first metric that
+  there were none to check, which is the normal case. `FAIL` names the first
+  metric that
   missed, for example `evaluation FAIL (branch: observed 1/2 points;
   displayed 50%; minimum 80%)`. `BLOCKED` gives a code, such as an invalid
   [waiver](#coverage-waivers).
@@ -89,7 +87,7 @@ The other lines:
   Percentages are cut off, not rounded, to one decimal (or to the
   decimals of the minimum, if it has more), so `100.0%` always means every
   point is covered and a `met` metric never prints below its minimum.
-- **`coverage campaign`** is the Target's Coverage Campaign file, described
+- **`Coverage Record`** is the Target's `coverage.json`, described
   below. It is printed whatever the collection status, and also for the
   Targets that finished before a run failed or was cancelled.
 
@@ -117,13 +115,15 @@ of its files.
 ```
 
 `percent` is rounded to two decimals here, so `77.19` is printed as `77.1%` on
-the terminal for a metric without a finer minimum. `threshold` and `met` are filled in when a Coverage Goal sets a
-threshold for that metric. A metric the design has no points for, such as
+the terminal for a metric without a finer minimum. `threshold` and `met` are
+filled in when a
+threshold is set for that metric. A metric the design has no points for, such as
 `cover_property` in a design without `cover property` statements, is left out.
 
-**`sim/<N>/targets/<target>/coverage.json`** is the Coverage Campaign. Pass
+**`sim/<N>/targets/<target>/coverage.json`** is the Coverage Record. Pass
 its path to [`booley coverage uncovered`](#finding-uncovered-points) to list
-the uncovered points, or to the [Coverage Analyst](#analyzing-a-campaign) to
+the uncovered points, or to the [Coverage Analyst](#analyzing-a-coverage-record)
+to
 find out what is uncovered and why.
 
 ### How the numbers are counted
@@ -159,7 +159,7 @@ Target decides the exit code.
 
 `booley coverage uncovered` lists every point no test hit. It works in a host
 terminal and in the Sandbox, and only reads the file you give it. Pass the
-`coverage campaign:` path the run printed:
+`Coverage Record:` path the run printed:
 
 ```bash
 # In the Sandbox
@@ -172,7 +172,7 @@ booley coverage uncovered <coverage.json> --metric toggle --source rtl/fifo.sv
 ```
 
 It prints one line per uncovered point, sorted by source file, line, and
-metric, then a count:
+metric, then a count. Example (Verilator):
 
 ```text
 rtl/fifo.sv:42  toggle  wr_ptr[2]:1->0  TOP.tb.dut.u_fifo
@@ -202,39 +202,9 @@ than splitting on them.
   per-file count, pipe the list:
   `booley coverage uncovered <coverage.json> | awk -F: 'NF > 1 {print $1}' | sort | uniq -c | sort -rn`.
 
-Ask the agent, which runs the [Coverage Analyst](#analyzing-a-campaign), to
+Ask the agent, which runs the [Coverage Analyst](#analyzing-a-coverage-record),
+to
 explain why points are uncovered.
-
-## Coverage Goals
-
-Outside Goal Mode, a coverage run just collects and stores the Campaign; there
-are no thresholds to pass. In [Goal Mode](GOAL-MODE.md), a coverage Goal sets
-minimum percentages for one Target, for example "line coverage of sim_counter
-at least 90% and branch at least 80% over the whole suite":
-
-```json
-{"family": "COVERAGE", "target": "sim_counter", "tests": "all",
- "metrics": {"line": 90, "branch": 80}}
-```
-
-- Metrics are the five in [What is measured](#what-is-measured).
-  Name at least one; each threshold is a number above 0 and at most 100.
-  Every threshold must be met. Booley compares exact values, so a displayed
-  89.996% rounded to 90.00% does not meet 90.
-- `tests` is `"all"` or a list of
-  [Test Run selectors](GOAL-MODE.md#simulation-cycle-count-and-coverage-goals), such as
-  `["reset", "stress+soak@x5"]`. It does not choose which tests run; it says
-  which tests the measurement must come from. If the run's tests differ,
-  coverage is still collected but the Goal is not evaluated, so run exactly
-  the listed tests.
-- The thresholds alone decide the Goal. A failed test does not make it unmet,
-  as long as the run still wrote its coverage data. Add a simulation Goal for
-  the same tests when they must also pass.
-- If a metric in the Goal has no RTL points at all, evaluation is blocked.
-
-To see coverage without waivers, add `--no-waivers`. When the Target has a
-coverage Goal, this also needs `--diagnostic`, and the run then records no Goal
-evidence.
 
 ## Coverage waivers
 
@@ -244,35 +214,18 @@ Each waiver is an **approval file** in your [waiver directory](#waiver-directory
 naming the person who approved it, so the agent can't raise coverage by
 waiving what it failed to test.
 
-Every coverage run applies the approved waivers, in Interactive Mode and in
-Goal Mode: waived points are reported as `waived` and left out of the
+Every coverage run applies the approved waivers: waived points are reported as
+`waived` and left out of the
 percentages. If an approval file is invalid, or does not match the current RTL
 (for example the source changed), that Target's evaluation is blocked and the
 run exits `2`. Fix or remove the approval, or rerun with `--no-waivers`. If one
 approval for a Target is bad, none of that Target's approvals apply.
 
-How a waiver gets approved depends on the mode.
+How a waiver gets approved:
 
-### In Goal Mode
-
-1. The Coverage Analyst proposes **Waiver Candidates**: points it believes are
-   unreachable or out of scope. A candidate counts for nothing on its own.
-2. The agent asks you to approve the candidates it needs. You see the point,
-   its source, the coverage change it would make, and the justification, and
-   you approve or reject each one with a reason. Nothing is approved by
-   default.
-3. Approving writes the approval file (and, for an unreachable point, a
-   written review argument as proof) into your waiver directory and records
-   the change in the Goal's Change Log. A rejection is remembered for that
-   point until its source changes.
-4. Ask the agent to rerun coverage. Approval does not meet a Goal; only a new
-   run with the waiver applied does.
-
-### In Interactive Mode
-
-There is no approval step: the Coverage Analyst still suggests points that
-look unreachable or out of scope, but nothing records them, and a waiver
-exists only once an approval file does.
+There is no approval step: the Coverage Analyst suggests points that look
+unreachable or out of scope, but nothing records them, and a waiver exists only
+once an approval file does.
 
 1. Ask the agent which points could be waived, for example "Which uncovered
    branches in fifo.sv are unreachable?". The Analyst names each point by its
@@ -285,20 +238,20 @@ exists only once an approval file does.
    checks that a person approved it.
 4. Rerun coverage to see the waivers applied.
 
-## Analyzing a Campaign
+## Analyzing a Coverage Record
 
-The **Coverage Analyst** is a Specialist that explains one Coverage Campaign:
-what is uncovered, the likely reasons, which tests to add, and in Goal Mode
-which points look like Waiver Candidates. Ask the agent, for example "Why is
+The **Coverage Analyst** is a Specialist that explains one Coverage Record:
+what is uncovered, the likely reasons, which tests to add, and which points
+look like Waiver Candidates. Ask the agent, for example "Why is
 branch coverage on sim_soc so low?". Its model only reads the evidence: it
-never runs simulation, changes Goals, or approves waivers. Pick its model like
+never runs simulation or approves waivers. Pick its model like
 any Specialist's, under [`[models]`](CONFIG.md#model-selection-models).
 
 To run it yourself inside the Sandbox, pass the Target's
 [`coverage.json`](#reading-results):
 
 ```bash
-booley specialist coverage_analyst --campaign <path to coverage.json>
+booley specialist coverage_analyst --record <path to coverage.json>
 ```
 
 ## Disk space
@@ -363,7 +316,7 @@ source_sha256 = "sha256:<SHA-256 of rtl/counter.sv>"
 [[approval]]
 id = "reserved-counter-branch"
 target = "acme:demo:counter:1#sim_counter"
-point_id = "<point id from the Campaign>"
+point_id = "<point id from the Coverage Record>"
 reason = "excluded"
 justification = "Reserved behavior is intentionally excluded."
 approved_by = "verification-owner@example.test"

@@ -29,7 +29,7 @@ filesets:
   tb:
     files:
       - tb/tb_dut.sv: {file_type: systemVerilogSource}
-    tags: [tb]               # REQUIRED on the testbench fileset (decision 13).
+    tags: [tb]               # REQUIRED on the testbench fileset.
   # Ordinary synth-only RTL; never attach this fileset or its selection define
   # to sim/lint/fpga Targets.
   # Its read data depends, through registers only and bit-wise, on the
@@ -65,7 +65,7 @@ targets:
     toplevel: tb_dut         # a sim target's toplevel is its TB top
     parameters: [WIDTH]
 
-  # --- Cocotb Target (ADR 0034) — a sim Target with a PYTHON testbench. -------
+  # --- Cocotb Target — a sim Target with a PYTHON testbench. ------------------
   # Delete this block for an SV-testbench project; delete the `sim_dut` block above
   # for a cocotb one. The ONLY thing that marks a Target as cocotb is
   # `cocotb_module` in its flow_options. Requires the Python TB in a `tags: [tb]`
@@ -89,7 +89,7 @@ targets:
 
   lint_dut:
     flow: lint
-    flow_options: {tool: verilator, booley: {doctor: [lint]}}
+    flow_options: {tool: verilator, verilator_options: [-Wall], booley: {doctor: [lint]}}
                              # NB: with `tool: icarus` on ANY target (lint /
                              # elaborate / sim), SystemVerilog sources need
                              # iverilog_options: [-g2012] — iverilog defaults to
@@ -103,11 +103,16 @@ targets:
                              # mismatch"). Point lint AND synth at a flat-port
                              # wrapper that instantiates the interfaces with real
                              # parameters. `booley doctor` flags this.
+  lint_dut_style:            # Verible style lint (row 11; drop when declined)
+    flow: lint
+    flow_options: {tool: verible, booley: {doctor: [lint]}}
+    filesets: [rtl]
+    toplevel: dut
   synth_dut:                 # asic_synthesize (an fpga_impl target would be `fpga_dut`)
     flow: generic
     flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
                              # Every Doctor-marked synth Target is deep-run;
-                             # memory calibration retains the largest peak.
+                             # `booley resources` reports its peak memory.
                              # backend selects synth_<arch> and refuses to
                              # configure without it (external error: "yosys requires tool option
                              # 'arch'"). Booley's synth script overrides the pass,

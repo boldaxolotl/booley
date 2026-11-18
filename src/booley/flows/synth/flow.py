@@ -4,8 +4,7 @@ Wraps the Yosys synthesis flow (sv2v + Yosys + ABC) with structured reporting,
 critical-condition detection, and optional delta computation against a baseline
 git ref. The baseline is synthesized in a throwaway ``git worktree`` (see
 :mod:`booley.flows.baseline_worktree`) rather than by checking the ref out in place, so
-``--baseline`` never touches the caller's working tree and works in both Ticket
-and Interactive Mode.
+``--baseline`` never touches the caller's working tree.
 
 The configure half renders scripts and a Makefile into the per-target build dir
 in-process (:mod:`booley.flows.synth.backends.pipeline`), execution runs ``make -C <rel>`` in
@@ -15,7 +14,6 @@ the make run left in the build directory.
 
 from __future__ import annotations
 
-import copy
 import logging
 import os
 import re
@@ -23,19 +21,28 @@ import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
-from booley.core.boundary import BoundaryError, require_bool, require_positive_int
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    as_float,
+    as_int,
+    as_str,
+    as_str_list,
+    require_bool,
+    require_positive_int,
+)
 from booley.core.build_paths import work_root_for
-from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
     ClockTiming,
     make_clock_timing,
+    per_clock_from_json,
     per_clock_to_json,
     worst_clock,
 )
@@ -45,7 +52,18 @@ from booley.flows.eda_failures import (
     first_tool_diagnostic,
     strip_failure_markers,
 )
-from booley.flows.job_resources import SYNTH_PHASES, resource_phase
+from booley.flows.flow_config import expected_count
+from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
+from booley.flows.memory_admission import job_thread_count
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    MetricsUnavailable,
+    metric_values,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -55,15 +73,15 @@ from booley.flows.plan import (
     normalize_plan_path,
     stable_unit_id,
 )
+from booley.flows.reservation_phases import report_phase_end
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
-    compose_result,
     note_line,
     status_cell,
-    tty_text,
 )
 from booley.flows.synth import openroad_reuse
+from booley.flows.synth.backends.pipeline import openroad_thread_assignment
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
@@ -76,12 +94,10 @@ from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.presentation.terminal_table import render_table
-from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
-    EndpointOutcome,
 )
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import (
@@ -90,45 +106,32 @@ from booley.runtime.timefmt import (
     rfc3339_from_epoch,
     utc_now_rfc3339,
 )
-from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts, edam
-from ..base import BuiltinFlow, SubprocessResult
+from ..base import SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
     git_full_sha,
-    git_short_sha,
-    resolve_ticket_baseline,
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
     baseline_execution_context,
-    candidate_execution_refs,
     resolve_target_execution_ref,
-    selected_target_handle,
-    target_pair_plans_for_handles,
-    target_plan_for_handle,
 )
+from ..implementation_flow import ImplementationFlow
 from ..implementation_publication import (
-    ImplementationProgress,
-    ImplementationProgressRun,
-    ImplementationPublisher,
     target_report_slug,
 )
 from ..implementation_report import (
     ImplementationAggregate,
+    ImplementationContext,
     ImplementationReport,
-    build_implementation_aggregate,
-    implementation_context,
 )
 from ..invocation import resolve_timeout_ms
-from ..progress_lifecycle import ProgressPublicationError
 from ..run_evidence import (
-    BASELINE_RUN_EVIDENCE_DETAIL,
-    RUN_EVIDENCE_DETAIL,
     build_flow_run_evidence,
 )
 from ..source_fingerprint import compute_source_fingerprint
@@ -138,11 +141,6 @@ from .implementation_report import (
     build_synth_implementation_report,
 )
 from .recipe import (
-    BASELINE_RECIPE_FINGERPRINT_DETAIL,
-    BASELINE_RECIPE_SNAPSHOT_DETAIL,
-    BASELINE_REF_DETAIL,
-    RECIPE_FINGERPRINT_DETAIL,
-    RECIPE_SNAPSHOT_DETAIL,
     resolve_synth_mode,
     synthesis_recipe_args,
     synthesis_recipe_snapshot,
@@ -185,6 +183,7 @@ def _merge_stage_results(yosys: SubprocessResult, openroad: SubprocessResult) ->
         dispatched_unix=yosys.dispatched_unix,
         peak_rss_mb=max(peaks) if peaks else None,
         oom_kill_delta=openroad.oom_kill_delta,
+        oom_killed=openroad.oom_killed,
     )
 
 
@@ -211,25 +210,6 @@ def _resolve_synth_timeout_ms(
 ) -> int:
     """Resolve the per-target synthesis budget for MCP and Flow callers."""
     return resolve_timeout_ms("synth", work_dir, requested)
-
-
-def _expected_latches(work_dir: Path) -> int:
-    """``[flows.synth].expected_latches`` — declared intentional latches.
-
-    A standard-cell integrated clock gater is built from a deliberate
-    ``always_latch``; lowRISC's generic ``prim_clock_gating`` contains exactly
-    one. Failing on any latch at all makes such a design unsynthesizable
-    through Booley even though the RTL is correct (F-19). Declaring the count
-    keeps the check meaningful — one more latch than declared still fails, and
-    the raw count is always reported — while letting a correct design pass.
-
-    A negative or non-integer value is ignored (treated as 0) rather than
-    silently widening the gate.
-    """
-    raw = _load_flow_config(work_dir).get("expected_latches", 0)
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        return 0
-    return max(0, raw)
 
 
 def _fail_on_timing_violation(work_dir: Path) -> bool:
@@ -260,8 +240,8 @@ def _timing_report_paths(work_dir: Path) -> int | None:
 
     ``None`` when unset, so the backend default applies and the configure argv
     stays unchanged. The count is a report-size policy, not a recipe input: it
-    must not enter the recipe fingerprint (Goal Criteria pin it), which is why
-    it lives here and not in a Target's ``advanced_settings_openroad``.
+    must not enter the recipe fingerprint, which is why it lives here and not in
+    a Target's ``advanced_settings_openroad``.
 
     Raises ``BoundaryError`` on anything but an integer of at least 1.
     """
@@ -279,6 +259,22 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
+
+# Metrics the synthesis Flow declares; names are the ones ``metrics.toml`` bounds use.
+# area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
+_SYNTH_COST_TIER = CostTier.HIGH
+SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
+    MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("area_kge", "kGE", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("cell_count", "cells", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK
+    ),
+    MetricDeclaration("wns_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration("whs_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+)
 
 
 @dataclass
@@ -331,6 +327,10 @@ class SynthMetrics:
     unwaivable error made a correct design unsynthesizable (F-19). Latches
     are always reported; only the count above this is a critical condition."""
     comb_loops: int = 0
+    expected_comb_loops: int = 0
+    """Combinational loops the design is declared to contain on purpose
+    (``[flows.synth].expected_comb_loops``). Loops are always reported; only
+    the count above this is a critical condition."""
     multi_driven: int = 0
     warning_summary: WarningSummary = field(default_factory=WarningSummary)
     returncode: int = 0
@@ -373,13 +373,25 @@ class SynthMetrics:
         if isinstance(self.synth_mode, str):
             self.synth_mode = SynthMode(self.synth_mode)
 
+    def flow_metrics(self) -> FlowMetricValues:
+        """Return this run's typed values for :data:`SYNTH_METRIC_DECLARATIONS`."""
+        return metric_values(
+            SYNTH_METRIC_DECLARATIONS,
+            plain={
+                "area_um2": self.area_um2,
+                "area_kge": self.area_kge,
+                "cell_count": self.cells,
+            },
+            per_clock=self.per_clock,
+        )
+
     def qor_detail(self) -> dict[str, Any]:
         """Return the canonical QoR fields shared by every report surface."""
         detail: dict[str, Any] = {
             "area_um2": self.area_um2,
             "area_source": self.area_source,
             "area_kge": self.area_kge,
-            "cells": self.cells,
+            "cell_count": self.cells,
             "wire_count": self.wire_count,
             "synth_mode": self.synth_mode.value if self.synth_mode else "",
             "per_clock": per_clock_to_json(self.per_clock),
@@ -416,6 +428,8 @@ class SynthMetrics:
             "expected_latches": self.expected_latches,
             "unexpected_latches": self.unexpected_latches,
             "comb_loops": self.comb_loops,
+            "expected_comb_loops": self.expected_comb_loops,
+            "unexpected_comb_loops": self.unexpected_comb_loops,
             "multi_driven": self.multi_driven,
             "warning_summary": self.warning_summary.to_detail(),
         }
@@ -448,10 +462,15 @@ class SynthMetrics:
         return max(0, self.latches - self.expected_latches)
 
     @property
+    def unexpected_comb_loops(self) -> int:
+        """Combinational loops beyond the declared count (never negative)."""
+        return max(0, self.comb_loops - self.expected_comb_loops)
+
+    @property
     def has_critical(self) -> bool:
         return self.structural_checks_complete and (
             self.unexpected_latches > 0
-            or self.comb_loops > 0
+            or self.unexpected_comb_loops > 0
             or self.multi_driven > 0
             or self.process_count > 0
         )
@@ -626,6 +645,24 @@ def _latch_diagnostic(metrics: SynthMetrics) -> str:
     )
 
 
+def _comb_loop_diagnostic(metrics: SynthMetrics) -> str:
+    """Actual, expected, and excess combinational loops for console and excerpts."""
+    return (
+        f"{metrics.comb_loops} comb loops (actual={metrics.comb_loops}, "
+        f"expected={metrics.expected_comb_loops}, excess={metrics.unexpected_comb_loops})"
+    )
+
+
+def _critical_diagnostic(metrics: SynthMetrics) -> str:
+    """Name each critical structural count that exceeds its declared allowance."""
+    parts = []
+    if metrics.unexpected_latches:
+        parts.append(_latch_diagnostic(metrics))
+    if metrics.unexpected_comb_loops:
+        parts.append(_comb_loop_diagnostic(metrics))
+    return "; ".join(parts) or "critical structural conditions"
+
+
 # Header prepended to a design diagnostic when the tool exited 0 but its log
 # still reported an error; it describes the exit code, not the design problem.
 _EXIT_ZERO_ERROR_HEADER = "ERROR: synthesis log reports an error despite exit 0:"
@@ -636,8 +673,15 @@ def _design_failure_reason(metrics: SynthMetrics) -> str:
     if "unmapped generic cell:" in metrics.failure_output:
         reason = "unmapped generic cell"
         return f"{reason}; {_latch_diagnostic(metrics)}" if metrics.latches else reason
-    if metrics.latches:
-        return _latch_diagnostic(metrics)
+    if metrics.latches or metrics.unexpected_comb_loops:
+        return "; ".join(
+            part
+            for part in (
+                _latch_diagnostic(metrics) if metrics.latches else "",
+                _comb_loop_diagnostic(metrics) if metrics.unexpected_comb_loops else "",
+            )
+            if part
+        )
     if "unmapped latch:" in metrics.failure_output:
         return "unmapped latch"
     # The exit-0 header names the exit code, not the design problem: skip it.
@@ -722,7 +766,7 @@ def _termination_reason(result: SubprocessResult, output: str) -> str:
         return "timeout"
     if result.returncode == 0:
         return "completed"
-    if result.oom_kill_delta > 0:
+    if result.oom_blamed:
         return "oom"
     if result.returncode in {-9, 137} or _RESOURCE_KILL_RE.search(output):
         return "resource_killed"
@@ -811,7 +855,7 @@ _BASELINE_DETAIL_FIELDS = (
     "area_um2",
     "area_source",
     "area_kge",
-    "cells",
+    "cell_count",
     "wire_count",
     "per_clock",
     "estimated_fmax_mhz",
@@ -820,7 +864,7 @@ _REPORT_QOR_FIELDS = (
     "area_kge",
     "area_um2",
     "area_source",
-    "cells",
+    "cell_count",
     "synth_mode",
     "per_clock",
     "estimated_fmax_mhz",
@@ -834,25 +878,10 @@ _REPORT_BASELINE_FIELDS = (
     "area_um2",
     "area_source",
     "synth_mode",
-    "cells",
+    "cell_count",
     "per_clock",
     "estimated_fmax_mhz",
 )
-_CRITERION_METRIC_MAP = {
-    "area": "area_um2",
-    "area_um2": "area_um2",
-    "area_kge": "area_kge",
-    "cell_count": "cells",
-    "wire_count": "wire_count",
-    "critical_path_ps": "critical_path_ps",
-    "fmax_mhz": "fmax_mhz",
-    "wns_ns": "wns_ns",
-    "whs_ns": "whs_ns",
-    "period_ns": "period_ns",
-    "reg2reg_fmax_mhz": "reg2reg_fmax_mhz",
-    "reg2reg_slack_ns": "reg2reg_slack_ns",
-}
-_CRITERION_MIN_ALLOWED = ["fmax_mhz", "reg2reg_fmax_mhz", "wns_ns", "whs_ns"]
 
 
 def _select_present(detail: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
@@ -902,20 +931,6 @@ def _add_report_deltas(
         report["timing_delta_pct"] = round(timing_delta, 1)
 
 
-def _add_baseline_criterion_detail(detail: dict[str, Any], baseline: SynthMetrics) -> None:
-    """Attach baseline QoR and recipe evidence to criterion detail."""
-    detail["baseline_metrics"] = {
-        **_select_present(
-            baseline.qor_detail(),
-            _BASELINE_DETAIL_FIELDS,
-        ),
-        **baseline.warning_detail(),
-    }
-    detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = baseline.recipe_fingerprint or None
-    detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = baseline.recipe_snapshot or None
-    detail[BASELINE_RUN_EVIDENCE_DETAIL] = baseline.run_evidence or None
-
-
 def _target_summary(
     metrics: SynthMetrics,
     baseline: SynthMetrics | None = None,
@@ -927,6 +942,7 @@ def _target_summary(
         "has_critical": metrics.has_critical,
         "unexpected_latches": metrics.unexpected_latches,
         "comb_loops": metrics.comb_loops,
+        "unexpected_comb_loops": metrics.unexpected_comb_loops,
         "multi_driven": metrics.multi_driven,
         **metrics.warning_detail(),
         # The aggregate detail is what reaches the agent as MCP
@@ -958,11 +974,9 @@ def _aggregate_detail(
 ) -> dict[str, Any]:
     """Detail for the run-level ``asic_synthesize.json`` (SETUP-F-29b).
 
-    Every number used to live ONLY in the per-target ``synthesis_ok_<tgt>``
-    criteria, leaving the flat aggregate report with ``"detail": {}`` — so a
-    consumer that read the Flow's own report file (the MCP poll path, triage)
-    saw a verdict with no QoR behind it and had to go hunting through
-    ``state.json``. Mirror the per-target summaries here, keyed by target,
+    A consumer that reads the Flow's own report file (the MCP poll path, triage)
+    needs the QoR behind a verdict, not only the verdict. Mirror the per-target
+    summaries here, keyed by target,
     with an explicit ``targets`` list so the run's scope is readable even when
     a target produced no metrics at all.
     """
@@ -978,6 +992,53 @@ def _aggregate_detail(
     if baseline_sha:
         detail["baseline_ref"] = baseline_sha
     return detail
+
+
+def _incomplete_reason(summary: dict[str, Any]) -> str | None:
+    """Why a Target summary's run did not complete, or ``None`` when it did.
+
+    A summary without ``ppa_complete`` is not a completed run: the reader fails closed.
+    """
+    if infra_error := as_str(summary.get("infra_error")):
+        return infra_error
+    if summary.get("ppa_complete") is not True:
+        termination = as_str(summary.get("termination"))
+        return (
+            f"the synthesis run did not complete{f' ({termination})' if termination else ''}; "
+            "its partial numbers are not final QoR"
+        )
+    return None
+
+
+def report_metric_values(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
+    """Read each Target's :data:`SYNTH_METRIC_DECLARATIONS` values from an aggregate *detail*.
+
+    The inverse of :func:`_aggregate_detail`. A Target whose summary is missing or
+    malformed is skipped: judging an absent measurement belongs to the caller. A Target
+    whose run did not complete (timeout, out of memory, infrastructure error, partial
+    PPA) is :class:`MetricsUnavailable` with the reason, never its partial numbers.
+    """
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
+    for target in as_str_list(detail.get("targets")):
+        summary = as_dict(detail.get(target))
+        if summary is None:
+            continue
+        reason = _incomplete_reason(summary)
+        if reason is not None:
+            values[target] = MetricsUnavailable(reason)
+            continue
+        values[target] = metric_values(
+            SYNTH_METRIC_DECLARATIONS,
+            plain={
+                "area_um2": as_float(summary.get("area_um2")),
+                "area_kge": as_float(summary.get("area_kge")),
+                "cell_count": as_int(summary.get("cell_count")),
+            },
+            per_clock=per_clock_from_json(summary.get("per_clock")),
+        )
+    return values
 
 
 def _publish_timing_dir(
@@ -1059,8 +1120,7 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     synthesize byte-identical sources on both sides. Paired Checkouts
     instead materialize their pinned or fork-point revision, but can still compare identical RTL.
 
-    Compare the canonical source fingerprint (:func:`compute_source_fingerprint`,
-    the same ``_source_fingerprint`` the criteria records already stamp) of the
+    Compare the canonical source fingerprint (:func:`compute_source_fingerprint`) of the
     two trees. Only flag when the project HAS stealth cores *and* both sides hash
     identical, so a plain project whose git-tracked RTL genuinely didn't change
     between the ref and HEAD isn't nagged about a legitimately-zero delta.
@@ -1101,7 +1161,7 @@ def _work_path(path: Path, work_dir: Path) -> Path:
 
     Target files come back resolved (physical), and the tools run in the
     physical *work_dir*. Both sides must match, or a checkout reached through
-    a link (a Codespace Goal worktree under the symlinked ``.booley`` entry)
+    a link (a Codespace worktree under the symlinked ``.booley`` entry)
     yields a relative path that climbs out of the checkout. A file behind the
     checkout's own linked ``.booley`` entry stays named through the entry,
     which is what ``/work`` shows in the Sandbox.
@@ -1125,15 +1185,11 @@ def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -
     return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
 
 
-class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
+class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
     request_type = SynthRequest
     argument_adapter = SynthArguments
-
-    def _resolve_job_class(self) -> str:
-        """Synthesis is a heavy Sandbox workload."""
-        return job_slots.CLASS_HEAVY
 
     name: str = "synth"
     description: str = (
@@ -1154,7 +1210,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
         "booley.toml is only for enablement, verdict, and report "
         "policy such as enabled, timeout_ms, expected_latches, "
-        "fail_on_timing_violation, and timing_report_paths."
+        "expected_comb_loops, fail_on_timing_violation, and timing_report_paths."
     )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
@@ -1167,26 +1223,19 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         example="booley flow synth --target synth_soc --baseline main",
     )
     code_modifying: bool = False
-    # ``[flows.synth].timing_report_paths``, latched by ``_resolve_run_policy``.
+    # ``[flows.synth].timing_report_paths``, latched by ``_run_policy_error``.
     _report_path_count: int | None = None
+    # Set when a stealth-cores self-compare is detected in the baseline checkout;
+    # reset per run by ``_begin_run``.
+    _baseline_selfcompare_msg: str | None = None
+    # Candidate selector -> published baseline timing dir (None: publishing failed).
+    _baseline_timing: dict[str, str | None]
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: ClassVar[int] = 7200
-    satisfies: ClassVar[list[str]] = ["synthesis_ok"]
-    conventional_families: ClassVar[frozenset[str]] = frozenset({"synthesis_ok"})
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,
     # then results are interpreted from files under that same directory.
-
-    # -- BooleyFlow abstract methods (unused — we override _run) ----------
-
-    def _build_command(self) -> list[str]:
-        """Not used — _run handles multi-config orchestration directly."""
-        return []
-
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
-        """Not used — _run handles interpretation directly."""
-        return EndpointOutcome()
 
     # -- Command builder for a single config ----------------------------------
 
@@ -1294,24 +1343,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
         )
 
-    def _target_handle(self, target: str) -> TargetHandle:
-        """Return the selected handle, reselecting only in a baseline checkout."""
-        return selected_target_handle(
-            getattr(self, "_target_handles", {}),
-            self.args.work_dir,
-            target,
-            flow="synth",
-        )
-
-    def _target_plan(self, target: str) -> TargetPairPlan:
-        """Look up the total pair plan by canonical candidate identity."""
-        return target_plan_for_handle(
-            getattr(self, "_target_pairs", ()),
-            self._target_handle(target),
-            flow="synth",
-            basis_bound=self.flow_acceptance.basis_bound,
-        )
-
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
         """Freeze the normalized recipe and source evidence for one Target."""
         snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
@@ -1406,13 +1437,38 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         return syn_make.configure_synthesis(spec, self._synth_build_dir(target))
 
     def _synth_boundary_cmd(self, plan: Any, stage: str | None = None) -> list[str]:
-        """Return the Sandbox command for a configured plan, or for one Makefile *stage*."""
+        """Return the Sandbox command for a configured plan, or for one Makefile *stage*.
+
+        The ``openroad`` stage also carries the Job's thread share, when it has one.
+        """
         cmd = ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
-        return [*cmd, stage] if stage else cmd
+        if not stage:
+            return cmd
+        cmd.append(stage)
+        threads = job_thread_count()
+        if stage == "openroad" and threads is not None:
+            cmd.append(openroad_thread_assignment(threads))
+        return cmd
 
     # -- Single-target run ----------------------------------------------------
 
     def _run_single_config(
+        self,
+        target: str,
+    ) -> tuple[SynthMetrics, str]:
+        """Run synthesis for one target and report its ``synth`` phase ended.
+
+        A phase that is skipped (a setup failure) ends at once. A baseline run
+        reports nothing: its Target may be the candidate's, whose phase it must
+        not count out of the Job's Memory Reservation.
+        """
+        try:
+            return self._synthesize_target(target)
+        finally:
+            if getattr(self, "_execution_role", "candidate") != "baseline":
+                report_phase_end(target, "synth")
+
+    def _synthesize_target(
         self,
         target: str,
     ) -> tuple[SynthMetrics, str]:
@@ -1493,12 +1549,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             target=target,
             temporary=role == "baseline",
         )
-        return self._run_configured(target, plan)
+        return self._run_configured(target, plan, resolved_source_bytes(planned.resolved))
 
-    def _run_configured(self, target: str, plan: Any) -> tuple[SynthMetrics, str]:
+    def _run_configured(
+        self, target: str, plan: Any, source_bytes: int | None
+    ) -> tuple[SynthMetrics, str]:
         """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
         start = time.monotonic()
-        run = self._run_synth_make(target, plan)
+        run = self._run_synth_make(target, plan, source_bytes)
         elapsed = time.monotonic() - start
         metrics, output = self._interpret_boundary_run(
             target, plan, run.result, elapsed, producer=run.producer
@@ -1507,9 +1565,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self._store_openroad_result(target, plan, metrics, run)
         return metrics, output
 
-    def _run_synth_make(self, target: str, plan: Any) -> _SynthRun:
+    def _run_synth_make(self, target: str, plan: Any, source_bytes: int | None) -> _SynthRun:
         """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
-        with resource_phase(target, "synth", split=SYNTH_PHASES):
+        with resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes):
             if not runs_openroad(plan.spec.timing.mode):
                 cmd = self._synth_boundary_cmd(plan)
                 return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))
@@ -1541,7 +1599,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             openroad_reuse.collect_openroad_inputs(plan, identity)
         )
         slot = self._openroad_slot(target)
-        entry = slot.lookup(key) if key is not None and not self.args.fresh_openroad else None
+        entry = slot.lookup(key) if key is not None and not self.args.no_cache else None
         if entry is not None:
             from booley.flows.terminal_progress import announce_unit
 
@@ -1623,12 +1681,17 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         output: str,
     ) -> None:
         """Apply terminal and mode-specific completeness policy to metrics."""
-        metrics.expected_latches = _expected_latches(self.args.work_dir)
+        metrics.expected_latches = expected_count("synth", self.args.work_dir, "expected_latches")
+        metrics.expected_comb_loops = expected_count(
+            "synth", self.args.work_dir, "expected_comb_loops"
+        )
         metrics.warning_summary = outcome.diagnostics.warnings
         metrics.returncode = result.returncode
         metrics.timed_out = result.timed_out
         metrics.termination = _termination_reason(result, output)
-        input_error = _INPUT_ERROR_RE.search(output)
+        # The producer is a Tcl ``error`` that makes OpenROAD exit non-zero, so an
+        # exit-0 log mentioning the token (echoed RTL comment) is not an input error.
+        input_error = _INPUT_ERROR_RE.search(output) if result.returncode != 0 else None
         if input_error is not None:
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
@@ -1733,11 +1796,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif getattr(outcome, "design_diagnostic", None):
             diagnostic = outcome.design_diagnostic
         elif result.returncode == 0 and metrics.has_critical:
-            diagnostic = (
-                _latch_diagnostic(metrics)
-                if metrics.unexpected_latches
-                else "critical structural conditions"
-            )
+            diagnostic = _critical_diagnostic(metrics)
         elif (
             metrics.has_critical
             and result.returncode != 0
@@ -1768,7 +1827,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         outcome: Any,
         stdout: str,
     ) -> None:
-        """Apply authoritative final-check evidence or legacy inline evidence."""
+        """Apply authoritative pre-mapping and final check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
             not getattr(outcome, "attempt_token", "")
@@ -1813,7 +1872,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                     )
         metrics.dirs = self._artifact_dirs(target, metrics.synth_mode)
         if metrics.termination == "oom":
-            logger.warning("Synth %s was killed by the cgroup OOM killer", target)
+            logger.warning("Synth %s was killed by the OOM killer", target)
         elif metrics.termination == "resource_killed":
             logger.warning("Synth %s was resource-killed", target)
         elif result.timed_out:
@@ -1992,80 +2051,50 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     # -- Report writing -------------------------------------------------------
 
-    def _implementation_report(
+    def _build_implementation_report(
         self,
-        target: str,
-        metrics: SynthMetrics,
-        baseline_metrics: SynthMetrics | None,
-        baseline_ref: str | None,
+        context: ImplementationContext,
+        current: SynthMetrics,
+        baseline: SynthMetrics | None,
     ) -> ImplementationReport:
         """Adapt native synthesis evidence to the shared canonical schema."""
-        context = implementation_context(
-            self._target_plan(target),
-            target=target,
-            eda_tool=self._eda_tool,
-            baseline_ran=baseline_metrics is not None,
-            requested_baseline_ref=self.args.baseline,
-            resolved_baseline_ref=getattr(self, "_baseline_full_sha", None) or baseline_ref,
-        )
         return build_synth_implementation_report(
             context,
-            metrics,
-            baseline_metrics,
+            current,
+            baseline,
             fatal_timing=getattr(self, "_timing_violation_is_fatal", False),
         )
 
-    def _publisher(self) -> ImplementationPublisher:
-        return ImplementationPublisher(
-            work_dir=Path(self.args.work_dir),
-            report_dir=self.args.report_dir,
-            invocation_dir=self.reserve_invocation_dir(),
-        )
-
-    def _write_target_report(
+    def _target_report_payload(
         self,
         target: str,
-        metrics: SynthMetrics,
-        baseline_metrics: SynthMetrics | None,
+        current: SynthMetrics,
+        baseline: SynthMetrics | None,
         baseline_ref: str | None,
-        implementation: ImplementationReport | None = None,
-    ) -> ImplementationReport:
-        """Write per-target JSON report to report_dir."""
-        implementation = implementation or self._implementation_report(
-            target, metrics, baseline_metrics, baseline_ref
-        )
-        report_dir = self.args.report_dir
-        if report_dir is None:
-            return implementation
-        report_dir.mkdir(parents=True, exist_ok=True)
-
+        report_path: Path,
+    ) -> dict[str, Any]:
+        """Return the per-Target JSON report before the canonical verdict is set."""
         report = _build_report_dict(
             self.name,
             target,
-            metrics,
-            baseline_metrics,
+            current,
+            baseline,
             baseline_ref,
             self._compute_delta_pct,
             eda_tool=self._eda_tool,
         )
-        report["passed"] = implementation.passed
         plan = self._target_plan(target)
         report["baseline_target"] = plan.baseline.selector
         report["candidate_target"] = plan.candidate.selector
         report["baseline_target_identity"] = plan.baseline.identity
         report["candidate_target_identity"] = plan.candidate.identity
-        report["run_evidence"] = metrics.run_evidence or None
-        report["baseline_run_evidence"] = (
-            baseline_metrics.run_evidence if baseline_metrics else None
-        )
+        report["run_evidence"] = current.run_evidence or None
+        report["baseline_run_evidence"] = baseline.run_evidence if baseline else None
         run_id = os.environ.get("BOOLEY_RUN_ID", "")
         if run_id:
             report["run_id"] = run_id
-        safe_target = synth_target_report_slug(target)
-        report_path = report_dir / f"synth_{safe_target}.json"
-        self._add_report_artifacts(report, report_dir, report_path, target, metrics)
-        published = self._publisher().publish_report(implementation, report)
-        return ImplementationReport(published.payload["implementation"])
+        self._add_report_artifacts(report, report_path.parent, report_path, target, current)
+        return report
 
     def _add_report_artifacts(
         self,
@@ -2127,68 +2156,15 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 result["timing"] = published
         return result
 
-    def _write_progress_report(
-        self,
-        targets: list[str],
-        current_results: dict[str, SynthMetrics],
-        baseline_results: dict[str, SynthMetrics],
-        *,
-        phase: str,
-        baseline_ref: str | None = None,
-        complete: bool = False,
-    ) -> None:
-        """Checkpoint a long matrix after every target and phase transition."""
-        reports = getattr(self, "_implementation_reports", {})
-        progress = ImplementationProgress(
-            flow=self.name,
-            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-            targets=tuple(targets),
-            completed_targets=tuple(current_results),
-            baseline_completed_targets=tuple(baseline_results),
-            phase=phase,
-            complete=complete,
-            baseline_ref=baseline_ref,
-            reports=reports,
-        )
-        self._publisher().publish_progress(progress)
-
-    def _persist_target_outcome(
-        self,
-        target: str,
-        metrics: SynthMetrics,
-        baseline_metrics: SynthMetrics | None,
-        baseline_ref: str | None,
-    ) -> None:
-        """Durably record one terminal target before the next one starts."""
-        implementation = self._implementation_report(
-            target, metrics, baseline_metrics, baseline_ref
-        )
-        implementation = self._write_target_report(
-            target, metrics, baseline_metrics, baseline_ref, implementation
-        )
-        self._implementation_reports[target] = implementation
-        if implementation.grade != "error":
-            self._set_config_criterion(
-                target,
-                metrics,
-                baseline_metrics,
-                baseline_ref,
-                implementation=implementation,
-            )
-            if self.state._file_path is not None:
-                self.state.save()
-
     # -- Main run logic -------------------------------------------------------
 
-    def _resolve_run_policy(self, enabled: bool) -> str | None:
+    def _run_policy_error(self) -> str | None:
         """Latch the per-run policy state, or return the message that blocks the run.
 
         The ``fail_on_timing_violation`` gate (F-37) must be settled before a
         half-hour synthesis starts: a mistyped knob has to fail now, not while
         formatting the report at the end.
         """
-        if not enabled:
-            return "synth is disabled ([flows.synth].enabled = false)."
         try:
             self._timing_violation_is_fatal = _fail_on_timing_violation(self.args.work_dir)
             self._report_path_count = _timing_report_paths(self.args.work_dir)
@@ -2196,19 +2172,83 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             return f"synth: {exc}"
         return None
 
-    def _apply_ticket_baseline(self, targets: Sequence[TargetHandle]) -> str | None:
-        """Default relative ticket criteria to their immutable baseline SHA."""
-        baseline, full_sha, error = resolve_ticket_baseline(
-            self.state.criteria,
-            "synthesis_ok_",
-            targets,
-            self.args.baseline,
-            Path(self.args.work_dir),
-            "synth",
+    def _begin_run(self, targets: list[str], /) -> None:
+        """Reset the per-run baseline state so a reused instance never leaks a stale value."""
+        self._baseline_selfcompare_msg = None
+        self._baseline_timing = {}
+
+    def _enter_baseline_worktree(
+        self, pairs: Sequence[TargetPairPlan], project_root: Path, worktree: Path, /
+    ) -> None:
+        """Warn when every pair compares a Target against its own identity."""
+        if all(plan.baseline.identity == plan.candidate.identity for plan in pairs):
+            self._baseline_selfcompare_msg = _baseline_self_compare_warning(project_root, worktree)
+
+    def _run_target(self, target: str, publish: Callable[[SynthMetrics], None], /) -> SynthMetrics:
+        """Synthesize one Target under its work-root lease, publishing inside the lease."""
+        baseline = getattr(self, "_execution_role", "candidate") == "baseline"
+        output = ""
+        try:
+            with edam.work_root_lease(
+                self._synth_work_root(target),
+                timeout_s=self._get_timeout(),
+                on_wait=lambda: self._report_workspace_wait(target),
+            ):
+                metrics, output = self._run_single_config(target)
+                if baseline:
+                    self._publish_baseline_timing(
+                        metrics, target, self._target_pairs, self._project_root
+                    )
+                publish(metrics)
+        except edam.WorkRootLeaseError as exc:
+            logger.error("Synth %s%s: %s", "baseline " if baseline else "", target, exc)
+            output = str(exc)
+            metrics = _infra_metrics(output)
+            publish(metrics)
+        if baseline:
+            metrics.log_path = self._persist_baseline_log(target, output, self._project_root)
+        return metrics
+
+    def _result_text(
+        self,
+        targets: list[str],
+        current: dict[str, SynthMetrics],
+        baseline: dict[str, SynthMetrics],
+        reports: dict[str, ImplementationReport],
+        aggregate: ImplementationAggregate,
+        /,
+    ) -> tuple[list[str], list[str], str]:
+        """Build the synthesis table, notes and ``RESULT:`` headline from policy-resolved evidence."""
+        self._discard_stale_selfcompare(targets, current, baseline)
+        notes, failed_targets, selfcompare_msg = self._aggregate_prefix(baseline, reports)
+        violated = self._append_target_blocks(notes, failed_targets, targets, current)
+        self._append_fatal_timing_failure(failed_targets, violated)
+        headline = _result_line(
+            failed_targets,
+            selfcompare_msg,
+            violated,
+            self._eda_warning_headlines(targets, current),
+            aggregate.exit_code,
         )
-        self.args.baseline = baseline
-        self._baseline_full_sha = full_sha
-        return error
+        table = self._summary_table_lines(targets, current, baseline, selfcompare_msg, reports)
+        return table, notes, headline
+
+    def _result_detail(
+        self,
+        targets: list[str],
+        current: dict[str, SynthMetrics],
+        baseline: dict[str, SynthMetrics],
+        short_sha: str | None,
+        reports: dict[str, ImplementationReport],
+        aggregate: ImplementationAggregate,
+        /,
+    ) -> dict[str, Any]:
+        return self._implementation_aggregate_detail(
+            targets, current, baseline, short_sha, reports, aggregate
+        )
+
+    def _display_lines(self, targets: list[str], current: dict[str, SynthMetrics], /) -> list[str]:
+        return _first_valid_display(targets, current)
 
     def _synth_work_unit(
         self,
@@ -2301,7 +2341,31 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             for argument in normalize_plan_argv(planned.command, root)
         )
 
-    def _plan_synth_implementation(self, targets: list[str]) -> FlowPlan:
+    def _plan_candidate_unit(
+        self,
+        target: str,
+        revision: str | None,
+        recipes: dict[str, _PlannedSynthRecipe],
+    ) -> WorkUnitPlan:
+        """Plan one candidate Target: in scratch for a dry run, else under its lease."""
+        if self.args.dry_run:
+            with tempfile.TemporaryDirectory(
+                prefix=".booley-synth-plan-",
+                dir=self.args.work_dir,
+            ) as scratch:
+                planned = self._resolve_synth_recipe(target, build_root=Path(scratch) / target)
+                return self._synth_work_unit(target, planned, role="candidate", revision=revision)
+        lease = edam.work_root_lease(
+            self._synth_work_root(target),
+            timeout_s=self._get_timeout(),
+            on_wait=lambda selected=target: self._report_workspace_wait(selected),
+        )
+        with lease:
+            planned = self._resolve_synth_recipe(target)
+        recipes[target] = planned
+        return self._synth_work_unit(target, planned, role="candidate", revision=revision)
+
+    def _plan_implementation(self, targets: list[str]) -> FlowPlan:
         """Resolve candidate and baseline recipes before either revision runs."""
         candidate_units: list[WorkUnitPlan] = []
         baseline_units: list[WorkUnitPlan] = []
@@ -2310,37 +2374,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         candidate_recipes: dict[str, _PlannedSynthRecipe] = {}
         for target in targets:
             try:
-                if self.args.dry_run:
-                    with tempfile.TemporaryDirectory(
-                        prefix=".booley-synth-plan-",
-                        dir=self.args.work_dir,
-                    ) as scratch:
-                        planned = self._resolve_synth_recipe(
-                            target,
-                            build_root=Path(scratch) / target,
-                        )
-                        unit = self._synth_work_unit(
-                            target,
-                            planned,
-                            role="candidate",
-                            revision=candidate_revision,
-                        )
-                else:
-                    lease = edam.work_root_lease(
-                        self._synth_work_root(target),
-                        timeout_s=self._get_timeout(),
-                        on_wait=lambda selected=target: self._report_workspace_wait(selected),
-                    )
-                    with lease:
-                        planned = self._resolve_synth_recipe(target)
-                    candidate_recipes[target] = planned
-                    unit = self._synth_work_unit(
-                        target,
-                        planned,
-                        role="candidate",
-                        revision=candidate_revision,
-                    )
-                candidate_units.append(unit)
+                candidate_units.append(
+                    self._plan_candidate_unit(target, candidate_revision, candidate_recipes)
+                )
             except (
                 BoundaryError,
                 edam.WorkRootLeaseError,
@@ -2421,189 +2457,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             self._recipe_evidence = candidate_evidence
         return units, errors
 
-    def _run(self) -> EndpointOutcome:  # noqa: PLR0911 — linear guarded orchestration
-        """Execute synthesis for all targets, optionally comparing to baseline."""
-        # Populated by _run_baseline_configs when a stealth-cores self-compare is
-        # detected; read by _aggregate_results. Reset per run so a stale value
-        # from a reused instance never leaks into a fresh invocation.
-        self._baseline_selfcompare_msg: str | None = None
-        self._baseline_full_sha: str | None = None
-        self._implementation_reports: dict[str, ImplementationReport] = {}
-        self._execution_role = "candidate"
-
-        handles = self._selected_target_handles()
-        self._target_handles = {handle.selector: handle for handle in handles}
-        targets = [handle.selector for handle in handles]
-        if not targets:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "synth: no Target selected. Pass --target <name> "
-                    "(bare name if unambiguous, else vlnv#name)."
-                ),
-            )
-        preparation_error = self._prepare_target_pairs(handles)
-        if preparation_error is not None:
-            return preparation_error
-        plan = self._plan_synth_implementation(targets)
-        self._flow_plan = plan
-        if self.args.dry_run:
-            return self._dry_run_result(plan)
-        if plan.aggregate_errors:
-            detail: dict[str, Any] = {"plan": plan.as_dict()}
-            for target in targets:
-                prefix = f"candidate {target}: "
-                message = next(
-                    (
-                        error.removeprefix(prefix)
-                        for error in plan.aggregate_errors
-                        if error.startswith(prefix)
-                    ),
-                    None,
-                )
-                if message is not None:
-                    detail[target] = {"infra_error": message}
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "synth: infrastructure error during planning: "
-                    + "; ".join(plan.aggregate_errors)
-                ),
-                detail=detail,
-            )
-        self.reserve_invocation_dir()
-        progress = ImplementationProgressRun(
-            self.name,
-            lambda current, baseline, phase, baseline_ref, complete: self._write_progress_report(
-                targets,
-                current,
-                baseline,
-                phase=phase,
-                baseline_ref=baseline_ref,
-                complete=complete,
-            ),
-        )
-        try:
-            with progress:
-                baseline_outcome, short_sha = self._run_baseline_configs(
-                    self._target_pairs, progress.baseline_results
-                )
-                if isinstance(baseline_outcome, EndpointOutcome):
-                    return baseline_outcome
-                progress.baseline_ref = short_sha
-                current_results = self._run_current_targets(
-                    targets,
-                    progress.baseline_results,
-                    short_sha,
-                    progress.current_results,
-                )
-                self._discard_stale_selfcompare(
-                    targets, current_results, progress.baseline_results
-                )
-                result = self._aggregate_results(
-                    targets, current_results, progress.baseline_results, short_sha
-                )
-                return progress.complete(result)
-        except ProgressPublicationError as exc:
-            return progress.publication_failure(exc)
-
-    def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> EndpointOutcome | None:
-        baseline_error = self._apply_ticket_baseline(handles)
-        comparison_error: str | None = None
-        try:
-            self._target_pairs = target_pair_plans_for_handles(
-                self.state.criteria,
-                "synthesis_ok_",
-                handles,
-                basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
-                flow="synth",
-            )
-            self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
-        except ImplementationComparisonError as exc:
-            comparison_error = f"synth: {exc}"
-        if baseline_error is not None or comparison_error is not None:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=baseline_error or comparison_error or "synth comparison error",
-            )
-        # Resolve enablement once per run, then reuse it in each config and the
-        # dry-run report.
-        config_error = self._resolve_run_policy(self._flow_enabled())
-        if config_error is not None:
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=config_error)
-        return None
-
-    def _run_current_targets(
-        self,
-        targets: list[str],
-        baseline_results: dict[str, SynthMetrics],
-        short_sha: str | None,
-        current_results: dict[str, SynthMetrics] | None = None,
-    ) -> dict[str, SynthMetrics]:
-        current_results = current_results if current_results is not None else {}
-        for tgt in targets:
-            try:
-                with edam.work_root_lease(
-                    self._synth_work_root(tgt),
-                    timeout_s=self._get_timeout(),
-                    on_wait=lambda target=tgt: self._report_workspace_wait(target),
-                ):
-                    metrics, _output = self._run_single_config(tgt)
-                    self._publish_current_target(
-                        tgt,
-                        metrics,
-                        targets,
-                        current_results,
-                        baseline_results,
-                        short_sha,
-                    )
-            except edam.WorkRootLeaseError as exc:
-                logger.error("Synth %s: %s", tgt, exc)
-                metrics = _infra_metrics(str(exc))
-                self._publish_current_target(
-                    tgt,
-                    metrics,
-                    targets,
-                    current_results,
-                    baseline_results,
-                    short_sha,
-                )
-            if len(targets) > 1:
-                self.emit_completion(
-                    self._format_config_line(
-                        tgt,
-                        metrics,
-                        baseline_results.get(tgt),
-                        human=True,
-                    )
-                )
-        return current_results
-
-    def _publish_current_target(
-        self,
-        target: str,
-        metrics: SynthMetrics,
-        targets: list[str],
-        current_results: dict[str, SynthMetrics],
-        baseline_results: dict[str, SynthMetrics],
-        baseline_ref: str | None,
-    ) -> None:
-        """Publish one Target while its mutable workspace is still owned."""
-        self._persist_target_outcome(
-            target,
-            metrics,
-            baseline_results.get(target),
-            baseline_ref,
-        )
-        current_results[target] = metrics
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="current",
-            baseline_ref=baseline_ref,
-        )
-
     def _discard_stale_selfcompare(
         self,
         targets: list[str],
@@ -2617,59 +2470,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             for target in targets
         ):
             self._baseline_selfcompare_msg = None
-
-    def _run_baseline_configs(
-        self,
-        pairs: Sequence[TargetPairPlan],
-        baseline_results: dict[str, SynthMetrics] | None = None,
-    ) -> tuple[dict[str, SynthMetrics] | EndpointOutcome, str | None]:
-        """Synthesize paired baseline Targets in an ephemeral worktree."""
-        # Candidate selector -> published baseline timing dir (None: publishing failed).
-        self._baseline_timing: dict[str, str | None] = {}
-        baseline_ref = self.args.baseline
-        if not baseline_ref:
-            return baseline_results or {}, None
-        targets = [plan.candidate.selector for plan in pairs]
-        project_root = Path(self.args.work_dir)
-        short_sha = git_short_sha(baseline_ref, project_root)
-        full_sha = git_full_sha(str(baseline_ref), project_root)
-        if full_sha is not None:
-            self._baseline_full_sha = full_sha
-        try:
-            with baseline_worktree(
-                project_root,
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as wt:
-                self.args.work_dir = wt
-                self._project_root = project_root
-                current_handles = getattr(self, "_target_handles", {})
-                current_refs = getattr(self, "_target_execution_refs", {})
-                current_role = getattr(self, "_execution_role", "candidate")
-                self._target_handles, self._target_execution_refs = baseline_execution_context(
-                    pairs, wt
-                )
-                self._execution_role = "baseline"
-                if all(plan.baseline.identity == plan.candidate.identity for plan in pairs):
-                    self._baseline_selfcompare_msg = _baseline_self_compare_warning(
-                        project_root, wt
-                    )
-                try:
-                    result = self._execute_baseline_pairs(
-                        pairs, targets, project_root, short_sha, baseline_results
-                    )
-                finally:
-                    self._target_handles = current_handles
-                    self._target_execution_refs = current_refs
-                    self._execution_role = current_role
-                    self.args.work_dir = project_root
-                    self._project_root = None
-        except (BaselineWorktreeError, ImplementationComparisonError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"synth: {exc}",
-            ), None
-        return result, short_sha
 
     def _publish_baseline_timing(
         self,
@@ -2700,41 +2500,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             )
             if published != "":
                 self._baseline_timing[candidate] = published
-
-    def _execute_baseline_pairs(
-        self,
-        pairs: Sequence[TargetPairPlan],
-        targets: list[str],
-        project_root: Path,
-        short_sha: str,
-        baseline_results: dict[str, SynthMetrics] | None = None,
-    ) -> dict[str, SynthMetrics]:
-        baseline_results = baseline_results if baseline_results is not None else {}
-        executed: dict[str, SynthMetrics] = {}
-        for plan in pairs:
-            baseline = plan.baseline.selector
-            candidate = plan.candidate.selector
-            if baseline not in executed:
-                try:
-                    with edam.work_root_lease(
-                        self._synth_work_root(baseline),
-                        timeout_s=self._get_timeout(),
-                        on_wait=lambda target=baseline: self._report_workspace_wait(target),
-                    ):
-                        metrics, output = self._run_single_config(baseline)
-                        self._publish_baseline_timing(metrics, baseline, pairs, project_root)
-                except edam.WorkRootLeaseError as exc:
-                    logger.error("Synth baseline %s: %s", baseline, exc)
-                    output = str(exc)
-                    metrics = _infra_metrics(output)
-                metrics.log_path = self._persist_baseline_log(baseline, output, project_root)
-                executed[baseline] = metrics
-            metrics = copy.deepcopy(executed[baseline])
-            baseline_results[candidate] = metrics
-            self._write_progress_report(
-                targets, {}, baseline_results, phase="baseline", baseline_ref=short_sha
-            )
-        return baseline_results
 
     def _target_note_lines(self, tgt: str, cur: SynthMetrics) -> list[str]:
         """Render the notes (everything but the table row) for one target."""
@@ -2811,22 +2576,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         return self._target_note_lines(tgt, cur), self._timing_violation(tgt, cur), failure
 
     @staticmethod
-    def _comparison_error_lines(
-        reports: dict[str, ImplementationReport],
-    ) -> tuple[list[str], list[str]]:
-        lines: list[str] = []
-        failures: list[str] = []
-        for target, report in reports.items():
-            comparison = report.canonical.get("comparison")
-            errors = comparison.get("basis_errors", []) if isinstance(comparison, dict) else []
-            for message in errors:
-                if str(message).startswith("baseline infrastructure error:"):
-                    continue
-                lines.append(note_line(f"comparison {target}", "ERROR", str(message)))
-                failures.append(f"comparison {target}: {message}")
-        return lines, failures
-
-    @staticmethod
     def _implementation_aggregate_detail(
         targets: list[str],
         current: dict[str, SynthMetrics],
@@ -2841,66 +2590,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             detail[target]["passed"] = report.passed
         detail["implementation"] = aggregate.detail
         return detail
-
-    def _aggregate_results(
-        self,
-        targets: list[str],
-        current_results: dict[str, SynthMetrics],
-        baseline_results: dict[str, SynthMetrics],
-        short_sha: str | None,
-    ) -> EndpointOutcome:
-        """Build the final synthesis report from policy-resolved target evidence."""
-        implementation_reports = {
-            target: getattr(self, "_implementation_reports", {}).get(target)
-            or self._implementation_report(
-                target,
-                current_results[target],
-                baseline_results.get(target),
-                short_sha,
-            )
-            for target in targets
-        }
-        implementation_aggregate = build_implementation_aggregate(
-            implementation_reports,
-            baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
-        )
-        notes, failed_targets, selfcompare_msg = self._aggregate_prefix(
-            baseline_results, implementation_reports
-        )
-        violated = self._append_target_blocks(notes, failed_targets, targets, current_results)
-        self._append_fatal_timing_failure(failed_targets, violated)
-        eda_warnings = self._eda_warning_headlines(targets, current_results)
-        result_line = _result_line(
-            failed_targets,
-            selfcompare_msg,
-            violated,
-            eda_warnings,
-            implementation_aggregate.exit_code,
-        )
-        result = compose_result(
-            short_sha if self.args.baseline else None,
-            self._summary_table_lines(
-                targets, current_results, baseline_results, selfcompare_msg, implementation_reports
-            ),
-            notes,
-            result_line,
-        )
-        report_text = result.record
-        print(tty_text(result))
-        detail = self._implementation_aggregate_detail(
-            targets,
-            current_results,
-            baseline_results,
-            short_sha,
-            implementation_reports,
-            implementation_aggregate,
-        )
-        return EndpointOutcome(
-            exit_code=implementation_aggregate.exit_code,
-            report_text=report_text,
-            display_lines=_first_valid_display(targets, current_results),
-            detail=detail,
-        )
 
     @staticmethod
     def _eda_warning_headlines(
@@ -2921,15 +2610,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         reports: dict[str, ImplementationReport],
     ) -> tuple[list[str], list[str], str | None]:
         """Return the run-level notes, failures and self-compare message."""
-        lines: list[str] = []
-        failures: list[str] = []
-        for target, metrics in baseline_results.items():
-            if metrics.infra_error:
-                lines.append(note_line(f"baseline {target}", "ERROR", metrics.infra_error))
-                failures.append(f"baseline {target}: {metrics.infra_error}")
-        comparison_lines, comparison_failures = self._comparison_error_lines(reports)
-        lines.extend(comparison_lines)
-        failures.extend(comparison_failures)
+        lines, failures = self._baseline_error_notes(baseline_results, reports)
         selfcompare_msg = getattr(self, "_baseline_selfcompare_msg", None)
         if selfcompare_msg:
             lines.append(note_line("", "WARNING", selfcompare_msg))
@@ -3166,8 +2847,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         parts = []
         if cur.unexpected_latches:
             parts.append(_latch_diagnostic(cur))
-        if cur.comb_loops:
-            parts.append(f"{cur.comb_loops} comb loop")
+        if cur.unexpected_comb_loops:
+            parts.append(_comb_loop_diagnostic(cur))
         if cur.multi_driven:
             parts.append(f"{cur.multi_driven} multi-driven")
         return note_line(tgt, "CRITICAL", ", ".join(parts))
@@ -3233,47 +2914,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif cur.has_critical:
             reason = "critical conditions"
         return f"{tgt}: {reason}"
-
-    def _set_config_criterion(
-        self,
-        tgt: str,
-        cur: SynthMetrics,
-        base: SynthMetrics | None,
-        baseline_ref: str | None,
-        *,
-        implementation: ImplementationReport | None = None,
-    ) -> None:
-        """Set the synthesis_ok criterion for one target."""
-        plan = self._target_plan(tgt)
-        detail: dict[str, Any] = {
-            **cur.qor_detail(),
-            **cur.structural_detail(),
-            **cur.warning_detail(),
-            "process_count": cur.process_count,
-            **cur.status_detail(),
-            RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
-            RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
-            RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
-            BASELINE_TARGET_DETAIL: plan.baseline.selector,
-            CANDIDATE_TARGET_DETAIL: plan.candidate.selector,
-            "_baseline_target_identity": plan.baseline.identity,
-            "_candidate_target_identity": plan.candidate.identity,
-            "_metric_map": dict(_CRITERION_METRIC_MAP),
-            "_min_allowed": list(_CRITERION_MIN_ALLOWED),
-        }
-        if base:
-            _add_baseline_criterion_detail(detail, base)
-        if baseline_ref:
-            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
-        implementation = implementation or self._implementation_report(
-            tgt, cur, base, baseline_ref
-        )
-        self.set_criterion(
-            f"synthesis_ok_{tgt}",
-            implementation.passed,
-            detail=implementation.envelope(detail),
-            source_target=tgt,
-        )
 
 
 def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:

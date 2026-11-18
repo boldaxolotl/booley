@@ -27,7 +27,7 @@ _BUILTIN = {
 
 # Literal (not bc.SPECIALISTS) so collection works on any version; the drift guard
 # below keeps the Specialist vocabulary itself honest.
-_SPECIALIST_NAMES = ("coverage_analyst", "mutation_tester", "reviewer")
+_SPECIALIST_NAMES = ("coverage_analyst", "reviewer")
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +103,52 @@ def test_invalid_config_fails_loading_naming_key(tmp_path):
         assert fails == [message]
 
 
+def test_model_roles_are_reviewer_and_coverage_analyst():
+    """Mutation testing runs no model, so only the two model-backed Specialists are roles."""
+    assert {"reviewer", "coverage_analyst"} == bc.SPECIALISTS
+
+
+def test_stale_mutation_tester_key_reports_retired_flow(tmp_path):
+    """A ``[models] mutation_tester`` left from an older release is reported as retired."""
+    from booley.audit.agent_schema import audit_models_table
+
+    expected = (
+        "booley.toml [models] mutation_tester is retired: the mutation_tester Specialist "
+        "is now the mutation Flow and uses no model; delete the key."
+    )
+    body = '[models]\nmutation_tester = "claude-opus-5-5"\n'
+    _write_toml(tmp_path, body)
+
+    with pytest.raises(BackendConfigError) as excinfo:
+        load_agent_settings(tmp_path)
+    assert str(excinfo.value) == expected
+
+    (finding,) = audit_models_table(tomllib.loads(body)).findings
+    assert finding.severity is ConfigFindingSeverity.FAIL
+    assert finding.message == expected
+    assert "delete [models] mutation_tester" in finding.fix
+
+
+def test_unknown_models_key_says_delete_without_rename(tmp_path):
+    """A typo'd ``[models]`` key gets delete-only advice, identical in loader and Doctor."""
+    from booley.audit.agent_schema import audit_models_table
+
+    expected = (
+        "booley.toml [models] has an unknown key 'reviwer'; "
+        "valid keys are coverage_analyst, reviewer; delete [models] reviwer."
+    )
+    body = '[models]\nreviwer = "claude-opus-5-5"\n'
+    _write_toml(tmp_path, body)
+
+    with pytest.raises(BackendConfigError) as excinfo:
+        load_agent_settings(tmp_path)
+    assert str(excinfo.value) == expected
+    assert "rename" not in str(excinfo.value)
+
+    (finding,) = audit_models_table(tomllib.loads(body)).findings
+    assert finding.message == expected
+
+
 _RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES = [
     (
         '[models]\nstandard = "claude-sonnet-5-5"\n',
@@ -113,7 +159,7 @@ _RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES = [
         [
             "[models]",
             'reviewer = "gpt-6-luna"',
-            'mutation_tester = "claude-opus-5-5"',
+            'coverage_analyst = "claude-opus-5-5"',
             "[agent]",
             'clis = ["claude", "codex"]',
         ],
@@ -168,7 +214,7 @@ def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch):
         pytest.param(
             None,
             {
-                "claude-opus-5-5": ("[models] coverage_analyst", "[models] mutation_tester"),
+                "claude-opus-5-5": ("[models] coverage_analyst",),
                 "gpt-6-luna": ("[models] reviewer",),
             },
             id="pins",
@@ -176,7 +222,7 @@ def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch):
         pytest.param(
             "gw-model",
             {
-                "claude-opus-5-5": ("[models] coverage_analyst", "[models] mutation_tester"),
+                "claude-opus-5-5": ("[models] coverage_analyst",),
                 "gw-model": ("BOOLEY_GATEWAY_MODEL",),
             },
             id="gateway-pin-codex-only",
@@ -295,13 +341,14 @@ def test_sandbox_settings_take_each_cli_policy_from_spec_record(tmp_path, monkey
 
 
 def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatch):
+    monkeypatch.setattr(bc, "_inside_container", lambda: False)
     data = {"agent": {"clis": ["claude", "codex"], "default": "claude"}}
-    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=gateway,codex=auto")
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=gateway,codex=subscription")
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
 
     settings = bc.settings_from_data(data, lazy=True)
 
-    assert dict(settings.auth) == {"claude": "api_key", "codex": "auto"}
+    assert dict(settings.auth) == {"claude": "api_key", "codex": "subscription"}
 
 
 @pytest.mark.parametrize(
@@ -309,10 +356,11 @@ def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatc
     [
         "claude",
         "claude=bogus",
-        "gemini=auto",
-        "claude=auto,claude=auto",
+        "gemini=subscription",
+        "claude=subscription,claude=subscription",
         "claude=gateway",
-        "=auto",
+        "=subscription",
+        "claude=auto",
     ],
 )
 def test_cli_record_decoding_is_strict(raw):
@@ -321,12 +369,13 @@ def test_cli_record_decoding_is_strict(raw):
 
 
 def test_cli_record_round_trips_in_order():
-    policies = {"codex": "api_key", "claude": "auto"}
+    policies = {"codex": "api_key", "claude": "subscription"}
     assert bc.decode_cli_policies(bc.encode_cli_policies(policies)) == policies
     assert bc.decode_cli_policies("") == {}
 
 
-def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_path):
+def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(bc, "_inside_container", lambda: False)
     _write_toml(
         tmp_path,
         '[agent]\nclis = ["codex", "claude"]\ndefault = "claude"\n\n'
@@ -336,7 +385,7 @@ def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_pa
     assert (found.clis, found.default, dict(found.policies)) == (
         ("codex", "claude"),
         "claude",
-        {"codex": "api_key", "claude": "auto"},
+        {"codex": "api_key", "claude": "subscription"},
     )
 
 
@@ -387,7 +436,7 @@ def test_model_list_entry_outside_clis_loads(tmp_path):
     assert settings.model_candidates("reviewer") == ("claude-opus-5-5", "gpt-6-luna")
     assert settings.model_for_specialist("reviewer") == "claude-opus-5-5"
     assert settings.cli_for_specialist("reviewer") == "claude"
-    assert settings.model_candidates("mutation_tester") is None
+    assert settings.model_candidates("coverage_analyst") is None
     assert settings.model_settings()["gpt-6-luna"] == ("[models] reviewer",)
 
     _write_toml(tmp_path, '[agent]\ndefault = "claude"\n\n[models]\nreviewer = "gpt-6-luna"\n')
@@ -405,3 +454,26 @@ def test_model_list_gateway_pin_replaces_codex_entries(tmp_path):
     )
 
     assert settings.model_candidates("reviewer") == ("gpt-6-luna", "claude-opus-5-5")
+
+
+def test_worktree_resolver_reads_the_checkout_without_installing(tmp_path, monkeypatch):
+    """The read-only resolver gives a checkout's pins and auth and leaves the cache alone."""
+    checkout = tmp_path / "checkout"
+    _write_toml(
+        checkout,
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
+        '[agent.auth]\nclaude = "subscription"\n\n[models]\nreviewer = "claude-pinned-test"\n',
+    )
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "codex=api_key")
+    sentinel = bc.settings_from_data({"agent": {"default": "claude"}}, lazy=False)
+    bc.set_agent_settings(sentinel)
+    try:
+        settings = bc.worktree_agent_settings(checkout)
+        assert bc.get_agent_settings() is sentinel
+    finally:
+        bc.set_agent_settings(None)
+
+    assert settings.model_for_specialist("reviewer") == "claude-pinned-test"
+    assert settings.default_cli == "claude"
+    assert settings.auth_for("claude") == "subscription"
+    assert settings.auth_for("codex") == "api_key"

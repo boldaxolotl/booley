@@ -16,6 +16,7 @@ from booley.core.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.core.booley_layout import BooleyLayoutError
+from booley.runtime import platform_paths, sandbox_layout
 
 
 class BooleyDirMismatchError(ValueError):
@@ -47,10 +48,10 @@ def relative_worktree_paths(project_root: Path) -> bool:
     except ValueError:
         return False
     if root == Path("/work"):
-        alias = Path("/booley-project")
+        alias = Path(sandbox_layout.BOOLEY_DIR_TARGET)
         return (
             alias.is_symlink()
-            and alias.readlink() == Path("/work/.booley")
+            and alias.readlink() == Path(sandbox_layout.PROJECT_DATA_MOUNT_PATH)
             and alias.lstat().st_uid == 0
             and Path("/").stat().st_uid == 0
             and not Path("/").stat().st_mode & 0o022
@@ -67,12 +68,8 @@ def worktree_creation_config(project_root: Path) -> tuple[str, ...]:
 
 def _git_supports_relative_paths() -> bool:
     try:
-        result = subprocess.run(
-            ["git", "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
+        result = platform_paths.run_captured_bounded(
+            ["git", "--version"], timeout=10, errors="strict"
         )
     except (OSError, subprocess.SubprocessError):
         return False

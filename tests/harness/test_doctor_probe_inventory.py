@@ -21,6 +21,7 @@ say exactly which name moved.
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -35,7 +36,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_viewer_bridge$|inspect_native_dependencies$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$|inspect_core_resolution$|inspect_mcp_server$|inspect_flow_runtime_reality$|inspect_vivado_startup$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -86,14 +87,15 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_interactive_git",
             "inspect_viewer_bridge",
             "_run_agent_credential_checks",
-            "_run_mcp_probe",
+            "_check_sandbox_mcp_server",
+            "inspect_mcp_server",
         }
     ),
     "_run_project_checks": frozenset(
         {
-            "_check_goal_history_ignored",
             "_check_agent_backend_health",
-            "_check_custom_endpoints_and_criteria",
+            "_check_custom_endpoints",
+            "_check_disabled_endpoints",
             "_check_git_state",
             "_check_handle_map_size",
             "_check_project_gitignore",
@@ -104,16 +106,28 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_deep_checks": frozenset(
         {
-            "_run_fpga_impl_deep_notice",
             "_run_selftest_checks",
             "_run_flow_check",
         }
     ),
     "_run_deep_phase": frozenset(
         {
-            "_run_core_resolve_checks",
+            "_run_core_resolution",
             "_run_deep_checks",
         }
+    ),
+    "_run_core_resolution": frozenset({"inspect_core_resolution"}),
+    "_run_flow_audit": frozenset(
+        {
+            "_check_design_size",
+            "_check_doctor_targets",
+            "_check_sim_run_cwd",
+            "_run_flow_check",
+            "_run_flow_runtime_inspection",
+        }
+    ),
+    "_run_flow_runtime_inspection": frozenset(
+        {"inspect_flow_runtime_reality", "inspect_vivado_startup"}
     ),
     "_run_project_phase": frozenset(
         {
@@ -125,7 +139,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_project_data_destination_branch",
             "_check_upgrade_review",
             "_check_legacy_source_stashes",
-            "_check_goal_presence",
+            "_check_goal_leftovers",
             "_check_worktree_booley_pairing",
             "_check_common_state_in_worktrees",
             "_check_worktree_core_shadow_guard",
@@ -134,7 +148,9 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_runtime_phase": frozenset(
         {
-            "_check_memory_invariant",
+            "_check_sandbox_memory",
+            "_check_sandbox_swap",
+            "_check_seat_caps",
             "_check_runtime_location",
             "inspect_worktree_portability",
             "_run_container_checks",
@@ -144,12 +160,11 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_core_audit": frozenset(
         {
-            "_check_core_repository_hygiene",
-            "_check_core_schema",
-            "_check_core_setup_hazards",
             "_check_target_metadata",
             "_check_target_sources",
-            "_run_core_security_audit",
+            "inspect_core_repository_hygiene",
+            "inspect_core_security",
+            "inspect_core_tree",
             "inspect_native_dependencies",
             "inspect_target_test_plans",
         }
@@ -300,3 +315,200 @@ def test_doctor_holds_no_cocotb_rules() -> None:
     assert "ast" not in imported_modules, "doctor.py parses Python source again"
     cocotb_functions = sorted(name for name in _module_functions() if "cocotb" in name)
     assert not cocotb_functions, f"cocotb rules moved back into Doctor: {cocotb_functions}"
+
+
+def test_core_audit_inventory_names_the_core_tree_owner_calls() -> None:
+    """The core audit calls the owner; no Doctor check stands in for its operations."""
+    refs = _probe_refs("_run_core_audit")
+    assert {"inspect_core_tree", "inspect_core_security"} <= refs
+    assert not refs & {
+        "_check_core_schema",
+        "_check_core_setup_hazards",
+        "_run_core_security_audit",
+    }
+
+
+def test_doctor_holds_no_core_tree_rules() -> None:
+    """The .core schema, setup-hazard, security, ownership and rejection rules live in the owner."""
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    moved = {
+        "_owned_core_files",
+        "_fusesoc_rejected_cores",
+        "_rejected_target_core",
+        "_check_core_schema",
+        "_core_schema_findings",
+        "_fusesoc_core_rejection",
+        "_check_core_setup_hazards",
+        "_report_recursive_symlink_hazards",
+        "_report_recursive_symlink_group",
+        "_run_core_security_audit",
+        "_CORE_SCHEMA_FIX",
+        "_RECURSIVE_SYMLINK_FIX",
+        "_SCOPE_DEPENDENT_VIOLATIONS",
+    }
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+    assert not moved & defined, (
+        f"core-tree rules moved back into Doctor: {sorted(moved & defined)}"
+    )
+
+
+def test_core_audit_inventory_names_the_core_repository_hygiene_owner_call() -> None:
+    """The core audit calls the owner; no Doctor check stands in for its rules."""
+    refs = _probe_refs("_run_core_audit")
+    assert "inspect_core_repository_hygiene" in refs
+    assert not refs & {
+        "_check_core_repository_hygiene",
+        "_check_core_files_tracked",
+        "_check_readmemh_targets_tracked",
+        "_check_committed_build_artifacts",
+    }
+
+
+def test_doctor_holds_no_core_repository_hygiene_rules() -> None:
+    """The three Git-hygiene rules for authored ``.core`` inputs live in the owner."""
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    moved = {
+        "_check_core_repository_hygiene",
+        "_check_core_files_tracked",
+        "_check_readmemh_targets_tracked",
+        "_check_committed_build_artifacts",
+        "_looks_built_from_sibling_source",
+        "_readmem_literal_targets",
+        "_BUILD_ARTIFACT_SUFFIXES",
+        "_BUILD_SOURCE_SUFFIXES",
+        "_BUILD_SOURCE_NAMES",
+        "_READMEM_RE",
+    }
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    assert not moved & defined, f"hygiene rules moved back into Doctor: {sorted(moved & defined)}"
+
+
+def test_deep_phase_inventory_names_the_core_resolution_owner_call() -> None:
+    """The deep phase calls the core resolution wrapper, which calls the owner."""
+    assert _probe_refs("_run_core_resolution") == {"inspect_core_resolution"}
+    refs = _probe_refs("_run_deep_phase")
+    assert "_run_core_resolution" in refs
+    assert "_run_core_resolve_checks" not in refs
+
+
+def test_doctor_holds_no_core_resolution_rules() -> None:
+    """Core resolution, its Sandbox snippet and the image-run/host fallbacks are gone."""
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    moved = {
+        "_run_core_resolve_checks",
+        "_resolve_deep_core_targets",
+        "_execute_core_resolution",
+        "_grade_core_resolution",
+        "_report_core_resolve",
+        "_core_resolve_payload",
+        "_CORE_RESOLVE_SNIPPET",
+        "_run_core_resolve_in_docker",
+        "_CORE_RESOLVE_TIMEOUT_S",
+        "_docker_wrap",
+        "_sandbox_guard_failed",
+        "_SANDBOX_GUARD_MARKER",
+        "_SANDBOX_GUARD_EXIT",
+        "_SANDBOX_GUARD_SCRIPT",
+        "_OUTPUT_ERROR_MARKERS",
+        "_output_excerpt_lines",
+    }
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    assert not moved & defined, (
+        f"core resolution rules moved back into Doctor: {sorted(moved & defined)}"
+    )
+    attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert "resolve_target_handle" not in attributes, "the host-FuseSoC fallback is gone"
+
+
+def test_doctor_holds_no_mcp_probe_rules() -> None:
+    """The MCP server probe, its grading rules and constants live in the owner."""
+    moved = {
+        "_run_mcp_probe",
+        "_sandbox_booley_dir",
+        "_mcp_probe_command",
+        "_check_mcp_probe_result",
+        "_parse_mcp_probe_stdout",
+        "_check_mcp_tool_payload",
+        "_required_mcp_tools",
+        "_advisory_mcp_tools",
+        "_BASE_REQUIRED_MCP_TOOLS",
+        "_ADVISORY_SPECIALIST_TOOLS",
+        "_ADVISORY_FLOW_TOOLS",
+        "_MCP_PROBE_TIMEOUT_S",
+    }
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+    assert not moved & defined, (
+        f"MCP probe rules moved back into Doctor: {sorted(moved & defined)}"
+    )
+    owner = importlib.import_module("booley.mcp.server_inspection")
+    assert callable(owner.inspect_mcp_server)
+
+
+def test_mcp_checks_inventory_names_the_mcp_server_owner_call() -> None:
+    """The MCP checks call the owner; no Doctor probe stands in for it."""
+    refs = _probe_refs("_run_mcp_checks")
+    assert "inspect_mcp_server" in refs
+    assert "_run_mcp_probe" not in refs
+
+
+def test_flow_audit_inventory_names_the_flow_runtime_owner_calls() -> None:
+    """The Flow audit calls the runtime wrapper, which calls both owners; no Doctor probe stands in."""
+    assert "_run_flow_runtime_inspection" in _probe_refs("_run_flow_audit")
+    assert "_check_flow_runtime_reality" not in _probe_refs("_run_flow_audit")
+    assert _probe_refs("_run_flow_runtime_inspection") == {
+        "inspect_flow_runtime_reality",
+        "inspect_vivado_startup",
+    }
+
+
+def test_doctor_holds_no_flow_runtime_probe_rules() -> None:
+    """The Flow runtime-reality and Vivado startup rules live in their owners, not Doctor."""
+    moved = {
+        "_check_flow_runtime_reality",
+        "_runtime_probe_binaries",
+        "_check_session_binary",
+        "_vivado_startup_command",
+        "_check_vivado_startup",
+        "_EDA_TOOL_BINARIES",
+    }
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+    assert not moved & defined, (
+        f"Flow runtime probe rules moved back into Doctor: {sorted(moved & defined)}"
+    )
+    reality = importlib.import_module("booley.flows.runtime_reality")
+    startup = importlib.import_module("booley.flows.fpga.vivado_startup")
+    assert callable(reality.inspect_flow_runtime_reality)
+    assert callable(startup.inspect_vivado_startup)

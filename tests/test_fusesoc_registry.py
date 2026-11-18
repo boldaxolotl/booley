@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from booley.core.host_shell import quote_arg
 from booley.fusesoc import core_projection, fusesoc_registry, selftest_overlay
 from booley.fusesoc.core_projection import CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
@@ -1062,6 +1063,34 @@ class TestResolveTargetMocked:
                 runner=failing,
             )
 
+    def test_setup_failure_names_unprovided_dependency(self, tmp_path: Path):
+        def failing(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        def fail_message(name: str, depend: str) -> str:
+            project = tmp_path / name
+            _write_core(project / "ip", TestSelectableCoreClosure._root("top", depend))
+            _write_core(project / "dep", TestSelectableCoreClosure._leaf("dep"))
+            with pytest.raises(TargetResolutionError) as excinfo:
+                _resolve_target(
+                    "sim",
+                    project_root=project,
+                    build_root=tmp_path / f"build-{name}",
+                    vlnv="acme:lib:top:0",
+                    runner=failing,
+                )
+            return str(excinfo.value)
+
+        missing = fail_message("missing", "acme:lib:dep, '>=::vlog_tb_utils:1.1'")
+        assert missing.endswith(
+            "(exit 1):\nboom\nno Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox "
+            "has no FuseSoC libraries and cannot fetch them; copy it into the repository as "
+            "a .core, or drop the depend: (check first whether the testbench guards its use "
+            "with an `ifdef` or defines the module itself)"
+        )
+        # Provided-but-other-failure: FuseSoC's text stays, no hint is added.
+        assert fail_message("provided", "acme:lib:dep").endswith("(exit 1):\nboom")
+
     def test_missing_fusesoc_binary_raises(self, tmp_path: Path):
         project = tmp_path / "proj"
         _write_core(project / "ip")
@@ -1134,8 +1163,21 @@ class TestMissingSourcePreflight:
         assert (
             "hint: 'worktrees/scalar_1bfe1733' looks like a git worktree "
             "baseline; create it with: git worktree add "
-            "worktrees/scalar_1bfe1733 <commit-ish>"
+            f"{quote_arg('worktrees/scalar_1bfe1733')} <commit-ish>"
         ) in msg
+
+    def test_worktree_hint_quotes_the_root(self, tmp_path: Path):
+        root = "worktrees/it's base"
+        core = self._BASELINE_CORE.replace("worktrees/scalar_1bfe1733", root)
+        _write_core(tmp_path, core, create_sources=False)
+        with pytest.raises(MissingSourceError) as exc_info:
+            _resolve_target(
+                "sim_base",
+                project_root=tmp_path,
+                build_root=tmp_path / "build",
+                runner=subprocess.run,
+            )
+        assert f"git worktree add {quote_arg(root)} <commit-ish>" in str(exc_info.value)
 
     def test_missing_source_is_a_target_resolution_error(self):
         # Callers' existing `except TargetResolutionError` handlers must catch it.
@@ -1525,7 +1567,7 @@ class TestTargetSourceFilesDependencyClosure:
 
     Ibex's sim Target's root fileset owns the C++/firmware harness while
     `ibex_top_tracing.sv` is contributed transitively, so a root-core-only
-    read returned no RTL at all and mutation_tester failed before injection.
+    read returned no RTL at all and the Mutation Flow failed before injection.
     """
 
     def _layered_repo(self, tmp_path: Path) -> None:
@@ -2107,6 +2149,53 @@ class TestSelectableCoreClosure:
         catalog = TargetCatalog.build(tmp_path)
         assert catalog.core_closure([catalog.select("sim")]) == frozenset({top, dep})
 
+    def test_unprovided_dependencies_match_by_identity(self, tmp_path: Path):
+        # A versioned, operator-prefixed depend on a Project core is provided by
+        # identity; an unprovided one is named as written, every spelling of it.
+        _write_core(
+            tmp_path / "top",
+            self._root("top", '(>=acme:lib:dep:1.0), "tool_verilator? (>=::vlog_tb_utils:1.1)"'),
+        )
+        _write_core(
+            tmp_path / "dep",
+            self._leaf("dep").replace(
+                "filesets:\n  rtl:\n    files:",
+                "filesets:\n  rtl:\n    depend: ['::vlog_tb_utils:2.0']\n    files:",
+            ),
+        )
+        catalog = TargetCatalog.build(tmp_path)
+        assert catalog.unprovided_dependencies(catalog.select("sim")) == (
+            "::vlog_tb_utils:2.0",
+            ">=::vlog_tb_utils:1.1",
+        )
+
+    def test_unprovided_dependencies_include_depend_append(self, tmp_path: Path):
+        # FuseSoC merges a fileset's depend_append into depend: both are collected,
+        # directly and through a Project core.
+        _write_core(
+            tmp_path / "top",
+            self._root("top", "acme:lib:dep").replace(
+                "    depend:", "    depend_append: ['::appended:0']\n    depend:"
+            ),
+        )
+        _write_core(
+            tmp_path / "dep",
+            self._leaf("dep").replace(
+                "filesets:\n  rtl:\n    files:",
+                "filesets:\n  rtl:\n    depend_append: ['::deep_appended:0']\n    files:",
+            ),
+        )
+        catalog = TargetCatalog.build(tmp_path)
+        assert catalog.unprovided_dependencies(catalog.select("sim")) == (
+            "::appended:0",
+            "::deep_appended:0",
+        )
+
+    def test_unprovided_dependency_hint_names_each_of_several(self):
+        hint = fusesoc_registry.unprovided_dependency_hint(["::a:0", "::b:0"])
+        assert hint.startswith("no Project .core provides '::a:0', '::b:0': ")
+        assert "copy each into the repository as a .core, or drop its depend:" in hint
+
     def test_unselectable_sibling_target_does_not_widen_closure(self, tmp_path: Path):
         # top's seeded `sim` depends on dep; its *unseeded* `alt` target depends on
         # rogue — rogue must NOT enter the closure (precise per-Target seeding).
@@ -2257,7 +2346,7 @@ class TestFilesetsAppend:
         """A CAPI2 fileset path is relative to its .core's directory. For a
         state-zone core (ADR 0036 stealth cores) that is NOT the Project Root,
         so returned paths must be re-based project-relative — consumers join
-        them onto the root (doctor's sentinel scan, mutation_tester's DUT list)
+        them onto the root (doctor's sentinel scan, the Mutation Flow's DUT list)
         and used to silently read the wrong file, or none at all."""
         from booley.fusesoc.fusesoc_registry import _target_source_files
 
@@ -3030,3 +3119,34 @@ def test_resolving_target_runs_no_extra_core_graph_inspection(tmp_path, monkeypa
     monkeypatch.setattr(fusesoc_registry, "_run_setup_command", lambda *a, **k: k["source_ref"])
     fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
     assert inspected == []
+
+
+def test_fusesoc_setup_sees_the_checkouts_booley_dir(tmp_path, monkeypatch):
+    """Generators run by ``fusesoc run --setup`` read the checkout's inputs, not Main's."""
+    from booley.runtime import booley_dir
+
+    project = tmp_path / "proj"
+    _write_core(project / "ip")
+    (project / ".booley").mkdir(parents=True)
+    main = tmp_path / "main-booley"
+    main.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(main))
+    booley_dir.reset_cache()
+    build_root = tmp_path / "build"
+    seen: dict[str, str] = {}
+
+    def recording_runner(cmd, **kwargs):
+        seen["BOOLEY_DIR"] = kwargs["env"]["BOOLEY_DIR"]
+        out = build_root / "demo_core_0" / "sim"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    try:
+        _resolve_target(
+            "sim", project_root=project, build_root=build_root, runner=recording_runner
+        )
+    finally:
+        booley_dir.reset_cache()
+
+    assert seen["BOOLEY_DIR"] == str((project / ".booley").resolve())

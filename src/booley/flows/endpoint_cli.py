@@ -114,17 +114,6 @@ def add_common_args(
             metavar="TARGET[,TARGET...]",
             help=target_help,
         )
-    from booley.flows.cli_help import SurfaceHelp
-
-    parser.add_argument(
-        "--diagnostic",
-        action="store_true",
-        help=SurfaceHelp(
-            "Run without satisfying Goals. Use for a Flow/Target combination "
-            "outside the active Goal definition.",
-            cli="Run diagnostically. CLI runs never record Goal evidence; use Goal-bound MCP calls with work_dir.",
-        ),
-    )
 
 
 def human_endpoint_parser(endpoint, *, project: Path | None = None) -> argparse.ArgumentParser:
@@ -182,13 +171,6 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
         elif len(endpoint._args.steer) == 1:
             endpoint._args.steer = endpoint._args.steer[0]
     apply_environment(endpoint._args, endpoint.endpoint_kind)
-    if (
-        not invocation.transport
-        and endpoint.endpoint_kind in {"flow", "specialist"}
-        and not endpoint._acceptance_recorder.acceptance_identity()
-        and invocation.goal_recording_advisory is not None
-    ):
-        invocation.goal_recording_advisory(endpoint._args.work_dir)
     return endpoint._args
 
 
@@ -254,8 +236,6 @@ def apply_environment(args, endpoint_kind: str) -> None:
     """Resolve Session/Ticket context equally for typed and CLI requests."""
     # Ticket context from env vars (set by developer or explicit board validate)
     args.slug = os.environ.get("BOOLEY_SLUG", "")
-    state_env = os.environ.get("BOOLEY_STATE_FILE", "")
-    args.state_file = Path(state_env) if state_env else None
     # report-dir: CLI flag wins, then env var, then None
     if args.report_dir is None:
         runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")

@@ -11,6 +11,8 @@ import pytest
 from tests.conftest import require_symlinks
 from tests.owned_scratch_support import complete_runs, make_repo
 
+from booley.runtime import auth_token
+
 
 def _isolate_scratch(tmp_path, monkeypatch) -> Path:
     """Point the system temp directory (and the login home) inside *tmp_path*."""
@@ -65,7 +67,7 @@ def test_refresh_through_nested_home_reaches_real_login(tmp_path, monkeypatch):
         shutil.rmtree(nested, ignore_errors=True)
 
 
-@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key", "gateway"])
+@pytest.mark.parametrize("policy", [auth_token.VISITOR_AUTH, "subscription", "api_key", "gateway"])
 def test_missing_login_leaves_no_auth_entry(tmp_path, monkeypatch, policy):
     """No login, or a policy that excludes it: no file and no dangling link."""
     from booley.runtime import _codex_backend as cb
@@ -85,7 +87,7 @@ def test_missing_login_leaves_no_auth_entry(tmp_path, monkeypatch, policy):
     login = _real_login(tmp_path)
     ensure()
     # Only the policies that may use the login link it.
-    assert auth.is_symlink() is (policy in {"auto", "subscription"})
+    assert auth.is_symlink() is (policy in {auth_token.VISITOR_AUTH, "subscription"})
     login.unlink()
     ensure()
     assert not os.path.lexists(auth)
@@ -119,12 +121,12 @@ def test_nested_codex_home_includes_scoped_environment(tmp_path, monkeypatch):
         cb._ensure_nested_codex_home(
             "coverage_analyst",
             ["coverage_evidence"],
-            {"BOOLEY_COVERAGE_CAMPAIGN": "/reports/coverage.json"},
+            {"BOOLEY_COVERAGE_RECORD": "/reports/coverage.json"},
         )
     )
 
     config = (home / ".codex/config.toml").read_text(encoding="utf-8")
-    assert 'BOOLEY_COVERAGE_CAMPAIGN = "/reports/coverage.json"' in config
+    assert 'BOOLEY_COVERAGE_RECORD = "/reports/coverage.json"' in config
     assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
 
 

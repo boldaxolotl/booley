@@ -3,7 +3,7 @@
 A worktree is idle when its last-used stamp is older than the age (``--older-than``,
 else ``[worktree].gc_older_than``, default 7 days). Every other outcome keeps the
 worktree and says why: no stamp, too recent, you are inside it, or ``rm`` refuses
-it (live Session, active Goal Mode, unsaved work, damaged checkout, ...). ADR 0082.
+it (live Session, unsaved work, damaged checkout, ...). ADR 0082.
 """
 
 from __future__ import annotations

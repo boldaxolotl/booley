@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
-    RUNTIME_EXECUTION_ENV,
     ExecutionId,
-    atomic_write_json,
+    ExecutionPaths,
     execution_paths,
-    read_json,
-    write_attachment_heartbeat,
+    update_execution_record,
 )
-from booley.runtime.pid import capture_process_identity
+from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.platform_paths import kill_process_tree
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -47,18 +45,46 @@ class SupervisedProcessSet:
             if cancelled:
                 kill_process_tree(process)
         if self._execution_id is not None and not cancelled and not self._cancelled():
-            identity = capture_process_identity(process.pid)
-            self._write_record("running", identity, tree_terminal=False)
+            self._record_running(self._execution_id, process)
+
+    def _record_running(self, execution_id: ExecutionId, process: subprocess.Popen) -> None:
+        identity = capture_process_identity(process.pid)
+        already_terminal = False
+
+        def change(current: dict[str, Any] | None) -> dict[str, Any] | None:
+            nonlocal already_terminal
+            if current is not None and current.get("state") == "terminal":
+                already_terminal = True
+                return None
+            return self._record("running", identity)
+
+        update_execution_record(self._paths(execution_id), change)
+        if already_terminal:
+            # The execution was proven empty and recorded terminal: nothing may
+            # run under it, and the terminal record is never replaced.
+            kill_process_tree(process)
 
     def unregister(self, process: subprocess.Popen) -> None:
         with self._gate:
             self._processes.discard(process)
             active = bool(self._processes)
         if self._execution_id is not None and not active:
-            paths = execution_paths(self._execution_id, booley_dir=self._project_data)
-            current = read_json(paths.record)
-            if current is not None and current.get("state") == "running":
-                self._write_record("waiting", None, tree_terminal=False)
+
+            def change(current: dict[str, Any] | None) -> dict[str, Any] | None:
+                if current is not None and current.get("state") == "running":
+                    return self._record("waiting", None)
+                return None
+
+            update_execution_record(self._paths(self._execution_id), change)
+
+    def pids(self) -> tuple[int, ...]:
+        """The PIDs of the registered processes not yet reaped.
+
+        A reaped process stays registered until its owner unregisters it, and
+        the kernel may reuse its PID before then: never hand out that PID.
+        """
+        with self._gate:
+            return tuple(process.pid for process in self._processes if process.returncode is None)
 
     def terminate_all(self) -> None:
         with self._gate:
@@ -66,22 +92,22 @@ class SupervisedProcessSet:
         for process in processes:
             kill_process_tree(process)
 
-    def _write_record(self, state: str, leader, *, tree_terminal: bool) -> None:
-        paths = execution_paths(self._execution_id, booley_dir=self._project_data)
-        atomic_write_json(
-            paths.record,
-            {
-                "schema_version": PROTOCOL_VERSION,
-                "state": state,
-                "runtime_identity": None,
-                "supervisor": None,
-                "leader": leader.to_payload() if leader is not None else None,
-                "exit_code": None,
-                "tree_terminal": tree_terminal,
-                "terminal_cause": None,
-                "updated_at": utc_now_rfc3339(),
-            },
-        )
+    def _paths(self, execution_id: ExecutionId) -> ExecutionPaths:
+        return execution_paths(execution_id, booley_dir=self._project_data)
+
+    @staticmethod
+    def _record(state: str, leader: ProcessIdentity | None) -> dict[str, Any]:
+        return {
+            "schema_version": PROTOCOL_VERSION,
+            "state": state,
+            "runtime_identity": None,
+            "supervisor": None,
+            "leader": leader.to_payload() if leader is not None else None,
+            "exit_code": None,
+            "tree_terminal": False,
+            "terminal_cause": None,
+            "updated_at": utc_now_rfc3339(),
+        }
 
 
 def no_cancellation_cause() -> str | None:
@@ -125,7 +151,7 @@ def supervised_execution_scope(
     watcher = threading.Thread(
         target=_watch_scope_cancellation,
         args=(scope, stop),
-        name="booley-campaign-process-cancellation",
+        name="booley-record-process-cancellation",
         daemon=True,
     )
     watcher.start()
@@ -149,52 +175,8 @@ def current_supervised_execution() -> SupervisedExecutionScope | None:
     return _SCOPE.get()
 
 
-class SupervisedCommandHeartbeat:
-    """Advance the attachment heartbeat while one wrapped command runs."""
-
-    def __init__(self, scope: SupervisedExecutionScope) -> None:
-        self._paths = execution_paths(scope.execution_id, booley_dir=scope.project_data)
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self) -> None:
-        write_attachment_heartbeat(self._paths, generation=1)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1)
-
-    def _run(self) -> None:
-        generation = 1
-        while not self._stop.wait(0.25):
-            generation += 1
-            write_attachment_heartbeat(self._paths, generation=generation)
-
-
-def wrap_supervised_command(
-    command: list[str], scope: SupervisedExecutionScope
-) -> tuple[list[str], dict[str, str], SupervisedCommandHeartbeat]:
-    """Wrap a local command in the exact-ID process-tree supervisor."""
-    wrapped = [
-        sys.executable,
-        "-m",
-        "booley.runtime.execution_supervisor",
-        "run",
-        "--execution-id",
-        str(scope.execution_id),
-        "--attachment-timeout-seconds",
-        "2.0",
-        "--",
-        *command,
-    ]
-    heartbeat = SupervisedCommandHeartbeat(scope)
-    return wrapped, {RUNTIME_EXECUTION_ENV: str(scope.execution_id)}, heartbeat
-
-
 __all__ = [
     "SupervisedExecutionScope",
     "current_supervised_execution",
     "supervised_execution_scope",
-    "wrap_supervised_command",
 ]

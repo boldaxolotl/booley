@@ -5,7 +5,7 @@ Two transports (``--transport``, or ``BOOLEY_MCP_TRANSPORT``):
 - ``stdio`` (default) — spawned by the agent app / SDK as a child process
   inside the Sandbox. The agent client owns the child process lifetime.
 - ``http`` — a streamable-HTTP server on ``127.0.0.1``. Used by
-  Interactive Mode (ADR 0023): the devcontainer ``postStartCommand`` starts it
+  the Sandbox: the devcontainer ``postStartCommand`` starts it
   on every container start (including resume), and the agent app *connects*
   to a URL instead of owning a child process — so a devcontainer stop→start
   no longer strands the client with a dead stdio pipe it never re-spawns.
@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
@@ -66,9 +67,6 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
-from booley.goals.binding import GoalBindingError, GoalRunBinding
-from booley.goals.store import GoalStore, GoalStoreError
-from booley.goals.warnings import goal_warnings
 from booley.mcp import (
     call_context,
     catalog,
@@ -77,6 +75,7 @@ from booley.mcp import (
     job_lifecycle,
     job_ownership,
     job_results,
+    measure_tool,
     peer_checkout,
 )
 from booley.mcp.application import (
@@ -84,7 +83,6 @@ from booley.mcp.application import (
     McpDispatchResult,
     McpInputRequired,
     McpRequestContext,
-    McpTextBlock,
     McpToolDefinition,
     McpToolPayload,
     UnknownMcpToolError,
@@ -93,11 +91,6 @@ from booley.mcp.call_context import (
     CallContext,
     resolve_call_context,
     resolve_work_dir,
-)
-from booley.mcp.flow_execution_selection import select_flow_execution
-from booley.mcp.goal_tools import (
-    GOAL_TOOL_NAMES,
-    dispatch_goal_tool,
 )
 from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, OwnedPoll, _poll_status
 from booley.mcp.job_notice import UnreadNotice, target_label
@@ -126,7 +119,7 @@ from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.display_identity import DisplayIdentity
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, EndpointOutcome
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
@@ -161,17 +154,11 @@ logging.basicConfig(
     format="[mcp] %(levelname)s %(message)s",
 )
 
-# ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
-# detached background jobs (submit → poll) instead of holding the call open.
-# Everything else stays synchronous — it finishes inside the inline wait.
-# The LLM specialists (reviewer / mutation_tester / coverage_analyst) joined
-# 2026-07-06 for the same reason: each drives a full sub-agent loop with a
-# 20-30 min default_timeout, so an interactive call reliably outran the ~60s
-# client cap and came back as a bare timeout — no run_id, no poll, recoverable
-# only via booley_report. They are lightweight on memory (Read/Grep/Glob +
-# API calls), so single-flight admission is stricter than they need, but the
-# poll affordance is exactly what was missing.
-_ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
+# ADR 0027 / ADR 0087: a Job that memory admission admits can wait in the queue
+# for as long as other Jobs hold the memory, so its MCP call runs as a detached
+# background Job (submit -> poll) and hands back a run_id once the inline wait
+# ends. The catalog derives each definition's ``memory_admitted`` from the
+# endpoint class; every other endpoint runs inline.
 
 # How long a submit (and each poll) blocks inline before handing back a run_id.
 # Must sit safely under the generic MCP client's ~60-90s call cap so the caller
@@ -192,14 +179,14 @@ _ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
 # CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS lifts that past this wait (issue #2627).
 _DEFAULT_JOB_INLINE_WAIT_SECONDS = 240.0
 
-# Interactive MCP servers are Docker containers spawned by Codex/Claude tabs.
+# In-Sandbox MCP servers are Docker containers spawned by Codex/Claude tabs.
 # Clients do not always tear them down promptly, so the server exits itself
 # after sitting idle. Set BOOLEY_MCP_IDLE_TIMEOUT_SECONDS=0 to disable.
-_DEFAULT_INTERACTIVE_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
-_DEFAULT_INTERACTIVE_MAX_AGE_SECONDS = 12 * 60 * 60
+_DEFAULT_MCP_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
+_DEFAULT_MCP_MAX_AGE_SECONDS = 12 * 60 * 60
 _MCP_WATCHDOG_POLL_SECONDS = 30.0
 
-# HTTP transport (Interactive Mode, ADR 0023). Loopback only — the URL is
+# HTTP transport (the Sandbox, ADR 0023). Loopback only — the URL is
 # reachable from agent apps inside the same container, never from the host.
 _HTTP_HOST = "127.0.0.1"
 
@@ -273,11 +260,11 @@ class _McpLifetime:
         return cls(
             _env_timeout_seconds(
                 "BOOLEY_MCP_IDLE_TIMEOUT_SECONDS",
-                _DEFAULT_INTERACTIVE_IDLE_TIMEOUT_SECONDS,
+                _DEFAULT_MCP_IDLE_TIMEOUT_SECONDS,
             ),
             _env_timeout_seconds(
                 "BOOLEY_MCP_MAX_AGE_SECONDS",
-                _DEFAULT_INTERACTIVE_MAX_AGE_SECONDS,
+                _DEFAULT_MCP_MAX_AGE_SECONDS,
             ),
             heartbeat_path=_MCP_HEARTBEAT_PATH,
         )
@@ -448,7 +435,7 @@ def _resolve_transcript_dir(
     elif logs_dir:
         runtime_dir = logs_runtime_dir(logs_dir)
     else:
-        # Interactive Mode sets neither env var. Writing transcripts to an
+        # The Sandbox sets neither env var. Writing transcripts to an
         # ephemeral OS tempdir made a failed specialist impossible to
         # post-mortem — the raw agent output vanished with the session and was
         # never where `booley cheat` advertises (QA_REPORT C1: an ~$0.85
@@ -525,7 +512,7 @@ def _params_to_argv(
     return argv
 
 
-# Watchdog sampling interval while a child may be queued for its class slot.
+# Watchdog sampling interval while a child may be queued for memory admission.
 # Queue-state reads are a handful of small file stats/reads per tick; 5s keeps
 # the budget accounting within one tick of the truth without measurable IO.
 
@@ -554,7 +541,10 @@ async def _run_subprocess(
     env: dict[str, str] | None = None,
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
+    is_requeued: Callable[[], bool] | None = None,
+    stop_grace: float | None = None,
     log_path: Path | None = None,
+    cwd: Path | None = None,
 ) -> tuple[int, str, str, bool]:
     """Delegate process supervision with adapter-configured diagnostic timings."""
     return await endpoint_process._run_subprocess(
@@ -564,9 +554,12 @@ async def _run_subprocess(
         env=env,
         is_queued=is_queued,
         on_first_active=on_first_active,
+        is_requeued=is_requeued,
         watchdog_tick=endpoint_process._WATCHDOG_TICK_SECONDS,
         cancel_grace=endpoint_process.CANCEL_GRACE_SECONDS,
+        stop_grace=stop_grace,
         log_path=log_path,
+        cwd=cwd,
     )
 
 
@@ -669,7 +662,7 @@ def _build_mcp_tool_index(
 
 
 def _format_status_card(mcp_tool_names: list[str]) -> str:
-    """Return the concise user-facing Interactive Mode status card."""
+    """Return the concise user-facing Sandbox status card."""
     session_id = _interactive_session_id()
     mcp_tools_text = ", ".join(mcp_tool_names) if mcp_tool_names else "none"
     try:
@@ -715,7 +708,6 @@ def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
         return McpDispatchResult(
             value=_prepend_health_block(content.value, block),
             is_error=content.is_error,
-            goal_aware=content.goal_aware,
         )
     return _prepend_health_block(content, block)
 
@@ -817,10 +809,7 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
         return _error_result(work_dir_error)
-    try:
-        context = resolve_call_context(arguments)
-    except (GoalBindingError, GoalStoreError) as exc:
-        return _error_result(str(exc))
+    context = resolve_call_context(arguments)
     try:
         report = _latest_report(endpoint, context=context)
     except jobrec.JobRecordError as exc:
@@ -834,8 +823,13 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
 async def _dispatch_bwave(
     name: str,
     arguments: dict[str, Any],
+    request_context: McpRequestContext | None = None,
 ) -> list[TextContent] | None:
-    """Handle B-Wave MCP tool calls. Returns None if *name* is not a B-Wave MCP tool."""
+    """Handle B-Wave MCP tool calls. Returns None if *name* is not a B-Wave MCP tool.
+
+    The child runs in the calling agent's routed checkout, so ``@<alias>`` resolves
+    from that checkout's session store; unrouted callers keep the server cwd.
+    """
     bwave_subcmds = {
         "bwave": lambda a: [
             sys.executable,
@@ -864,7 +858,8 @@ async def _dispatch_bwave(
     started = time.monotonic()
     exit_code = 2
     try:
-        exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd)
+        checkout = request_context.checkout if request_context is not None else None
+        exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd, cwd=checkout)
         return [
             TextContent(
                 type="text",
@@ -964,15 +959,18 @@ def _format_job_attached(name: str, run_id: str) -> str:
 def _format_job_running(name: str, run_id: str) -> str:
     """Message returned when a heavy endpoint detaches past the inline wait."""
     phase = _job_phase(run_id)
-    waiting = (
-        "is waiting for its concurrency slot"
+    retry = (
+        "the retry has not started" if OOM_REQUEUE_REASON in phase else "the run has not started"
+    )
+    status = (
+        f"is queued for memory and has not started yet (run_id={run_id}). This is NOT the "
+        f"result — {retry}."
         if phase.startswith("QUEUED")
-        else "is taking longer than the inline wait"
+        else f"is taking longer than the inline wait and is now running in the background "
+        f"(run_id={run_id}). This is NOT the result — the run has not finished."
     )
     return (
-        f"{phase}: '{name}' {waiting} and is now "
-        f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. With several Jobs running, call "
+        f"{phase}: '{name}' {status} With several Jobs running, call "
         f"'{catalog.POLL_MCP_TOOL_NAME}' with no run_id to get whichever of your Jobs "
         f"finishes first; pass run_id={run_id} only to wait for this Job alone. Keep "
         f"polling until you have its EXIT_CODE. Pass/fail criteria are recorded only "
@@ -981,7 +979,7 @@ def _format_job_running(name: str, run_id: str) -> str:
 
 
 def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
-    """Message for a poll whose job is still running (or queued for a slot).
+    """Message for a poll whose job is still running (or queued for memory).
 
     *owned*: the polling agent started the Job, so an argument-free poll covers it.
     """
@@ -997,6 +995,9 @@ def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
     progress = _running_progress(run_id)
     if progress is None:
         return message
+    rec = _job_record(run_id)
+    if rec is not None and rec.endpoint == measure_tool.MEASURE_ENDPOINT:
+        return f"{message} {measure_tool.running_text(progress)}"
     completed = progress.get("completed_targets", [])
     pending = progress.get("pending_targets", [])
     phase = progress.get("phase", "running")
@@ -1025,11 +1026,7 @@ def _running_poll_content(run_id: str, caller: Caller | None = None) -> McpToolC
     rec = _job_record(run_id)
     owned = caller is None or rec is None or job_ownership.owns(rec, caller)
     content = [TextContent(type="text", text=_format_job_running_poll(run_id, owned))]
-    return _goal_warning_result(
-        _with_structured_report(content, _running_progress(run_id)),
-        None if rec is None else job_results.job_binding(rec),
-        None if rec is None else rec.session_key,
-    )
+    return _with_structured_report(content, _running_progress(run_id))
 
 
 def _job_report(rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
@@ -1075,8 +1072,8 @@ class _JobManager(JobLifecycle):
         endpoint_process.write_synthetic_endpoint_end(name, duration_s, **kwargs)
 
     @staticmethod
-    async def _cancel_process(pid: int) -> None:
-        await _cancel_adopted_process_group(pid)
+    async def _cancel_process(pid: int, grace_seconds: float) -> None:
+        await _cancel_adopted_process_group(pid, grace_seconds)
 
     def _report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
         return _job_report(rec)
@@ -1084,6 +1081,14 @@ class _JobManager(JobLifecycle):
     def result_text(self, run_id: str) -> str:
         """Render a finished job's result exactly like the synchronous path."""
         result = self.terminal_result(run_id)
+        return self._result_card(result)
+
+    @staticmethod
+    def _result_card(result: JobResult) -> str:
+        """The result text: a ``measure`` Job's own summary layout, else the generic card."""
+        report = result.report if result.report_fresh else None
+        if report is not None and report.get("endpoint") == measure_tool.MEASURE_ENDPOINT:
+            return measure_tool.result_text(result.exit_code, result.stdout, result.stderr, report)
         return _format_mcp_tool_result(
             result.exit_code, result.stdout, result.stderr, result.report
         )
@@ -1097,27 +1102,10 @@ class _JobManager(JobLifecycle):
         report with its caveats spelled out.
         """
         result = result or self.terminal_result(run_id)
-        exit_code, stdout, stderr, report, report_fresh = (
-            result.exit_code,
-            result.stdout,
-            result.stderr,
-            result.report,
-            result.report_fresh,
-        )
-        content = [
-            TextContent(
-                type="text",
-                text=_format_mcp_tool_result(exit_code, stdout, stderr, report),
-            )
-        ]
+        exit_code, report, report_fresh = result.exit_code, result.report, result.report_fresh
+        content = [TextContent(type="text", text=self._result_card(result))]
         rendered = _with_structured_report(content, report if report_fresh else None)
-        rec = self._read_run(run_id)
-        binding = None if rec is None else job_results.job_binding(rec)
-        return _goal_warning_result(
-            _dispatch_result(rendered, is_error=exit_code != 0),
-            binding,
-            None if rec is None else rec.session_key,
-        )
+        return _dispatch_result(rendered, is_error=exit_code != 0)
 
 
 # Re-check cadence while long-polling a disk-only (adopted) job. Each check
@@ -1156,7 +1144,13 @@ def _job_listing(outcome: OwnedPoll) -> str:
     """Trailing block naming the caller's other Jobs; empty when there are none."""
 
     def line(rec: jobrec.JobRecord, state: str) -> str:
-        return f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
+        text = f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
+        progress = (
+            _running_progress(rec.run_id)
+            if rec.endpoint == measure_tool.MEASURE_ENDPOINT
+            else None
+        )
+        return text if progress is None else f"{text}. {measure_tool.running_text(progress)}"
 
     sections = []
     if outcome.running:
@@ -1275,11 +1269,9 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
     ]
 
 
-async def _cancel_adopted_process_group(pid: int) -> None:
+async def _cancel_adopted_process_group(pid: int, grace_seconds: float) -> None:
     """Delegate disk-only process-group cancellation."""
-    await endpoint_process._cancel_adopted_process_group(
-        pid, grace_seconds=endpoint_process.CANCEL_GRACE_SECONDS
-    )
+    await endpoint_process._cancel_adopted_process_group(pid, grace_seconds=grace_seconds)
 
 
 async def _dispatch_cancel_impl(
@@ -1291,6 +1283,7 @@ async def _dispatch_cancel_impl(
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
         return [TextContent(type="text", text="Provide the 'run_id' of a queued job.")]
+    record = jobs._read_run(run_id)
     phase = await jobs.cancel(run_id)
     if phase is None:
         return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
@@ -1310,6 +1303,7 @@ async def _dispatch_cancel_impl(
                 f"Fetch its result with '{catalog.POLL_MCP_TOOL_NAME}'.",
             )
         ]
+    grace_endpoint = "" if record is None else record.endpoint
     return [
         TextContent(
             type="text",
@@ -1317,7 +1311,8 @@ async def _dispatch_cancel_impl(
                 f"CANCELLED: {phase} job {run_id} was withdrawn before it started."
                 if phase == "queued"
                 else f"CANCELLED: running job {run_id} received SIGTERM; any process "
-                f"still alive after {endpoint_process.CANCEL_GRACE_SECONDS:.0f}s was force-killed."
+                f"still alive after {endpoint_process.cancel_grace_seconds(grace_endpoint):.0f}s "
+                "was force-killed."
             ),
         )
     ]
@@ -1331,16 +1326,23 @@ async def _dispatch_async_job(
     *,
     context: CallContext,
     caller: Caller | None = None,
+    inline_wait: float | None = None,
+    attach: bool = True,
 ) -> McpToolContent:
-    """Compose inline completion or a background handoff from the lifecycle."""
+    """Compose inline completion or a background handoff from the lifecycle.
+
+    *inline_wait* replaces the configured inline wait; 0 hands the ``run_id`` back at once.
+    *attach* False never joins identical live work.
+    """
     try:
         submission = await jobs.submit_and_wait(
             name,
             cmd,
             mcp_tool_timeout,
             context=context,
-            wait_seconds=_job_inline_wait_seconds(),
+            wait_seconds=_job_inline_wait_seconds() if inline_wait is None else inline_wait,
             owner=None if caller is None else caller.owner,
+            attach=attach,
         )
         state = submission.poll
         if state.status != "running" or (submission.attached and not state.tracked):
@@ -1355,10 +1357,8 @@ async def _dispatch_async_job(
     return _running_handoff_content(text, state.run_id)
 
 
-def _find_attachable_job(
-    name: str, cmd: list[str], *, context: CallContext | None = None
-) -> str | None:
-    return job_results._find_attachable_job(name, cmd, context=context, roots=job_roots())
+def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
+    return job_results._find_attachable_job(name, cmd, roots=job_roots())
 
 
 async def _attach_to_job(name: str, run_id: str, jobs: _JobManager) -> McpToolContent:
@@ -1416,25 +1416,14 @@ def _endpoint_command(
     arguments: dict[str, Any],
     definition: dict[str, Any],
     call_counts: dict[str, int],
-    context: CallContext,
 ) -> list[str]:
     """Build the canonical subprocess command for one endpoint definition."""
     arguments = dict(arguments)
     argv = _params_to_argv(arguments, definition.get("negative_flags"))
     if definition.get("is_specialist"):
-        transcript_dir = (
-            _resolve_transcript_dir(name, call_counts, context=context)
-            if context.binding
-            else _resolve_transcript_dir(name, call_counts)
-        )
+        transcript_dir = _resolve_transcript_dir(name, call_counts)
         argv.extend(["--transcript-dir", str(transcript_dir)])
     module = definition["module"]
-    runner = select_flow_execution(binding=context.binding).flow_runner_module
-    if definition.get("is_flow") and runner is not None:
-        cmd = ["python", "-m", runner]
-        if definition.get("is_custom") and definition.get("custom_path"):
-            cmd.extend(["--custom-path", definition["custom_path"]])
-        return [*cmd, name, *argv]
     if definition.get("is_custom") and definition.get("custom_path"):
         return ["python", definition["custom_path"], *argv]
     module_path = definition.get("module_path") or f"booley.mcp.{module}"
@@ -1503,27 +1492,22 @@ async def _dispatch_booley_mcp_tool(
 ) -> McpToolContent:
     """Run a Booley Flow subprocess and return an MCP result.
 
-    Heavy, long-running endpoints (``_ASYNC_JOB_MCP_TOOLS``) go through the submit/poll
-    job model (ADR 0027): they can outlive the MCP client's call cap, so holding
-    the call open orphans the subprocess and BLOCKs the next call. Everything
-    else stays synchronous and returns its full result inline.
+    Memory-admitted endpoints (``memory_admitted`` in the definition) go through
+    the submit/poll job model (ADR 0027): admission can queue them past the MCP
+    client's call cap, so holding the call open orphans the subprocess and BLOCKs
+    the next call. Everything else stays synchronous and returns its full result
+    inline.
     """
     work_dir_error = _validate_work_dir(arguments.get("work_dir")) or _unroutable_endpoint_error(
         arguments, request_context
     )
     if work_dir_error is not None:
         return _error_result(work_dir_error)
-    try:
-        context = resolve_call_context(arguments)
-        if request_context is not None and request_context.session_key() is not None:
-            context = replace(context, session_key=request_context.session_key())
-    except (GoalBindingError, GoalStoreError) as exc:
-        return _error_result(f"ERROR: {exc}")
+    context = resolve_call_context(arguments)
+    if request_context is not None and request_context.session_key() is not None:
+        context = replace(context, session_key=request_context.session_key())
 
-    try:
-        cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts, context)
-    except (GoalStoreError, GoalBindingError) as exc:
-        return _error_result(f"ERROR: {exc}")
+    cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts)
 
     try:
         mcp_tool_timeout = _mcp_tool_timeout_seconds(
@@ -1533,11 +1517,10 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(f"ERROR: invalid Flow timeout: {exc}")
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
-    if name in _ASYNC_JOB_MCP_TOOLS:
-        result = await _dispatch_async_job(
+    if mcp_tool_def.get("memory_admitted"):
+        return await _dispatch_async_job(
             name, cmd, mcp_tool_timeout, jobs, context=context, caller=caller
         )
-        return _goal_warning_result(result, context.binding, context.session_key)
 
     exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
         name,
@@ -1552,11 +1535,7 @@ async def _dispatch_booley_mcp_tool(
     )
     report_note = ""
     try:
-        report = (
-            None
-            if skip_report
-            else (_latest_report(context=context) if context.binding else _try_read_report())
-        )
+        report = None if skip_report else _try_read_report()
     except jobrec.JobRecordError as exc:
         # The run finished: keep its verdict and say the report was unreadable.
         report = None
@@ -1568,9 +1547,7 @@ async def _dispatch_booley_mcp_tool(
         )
     ]
     rendered = _with_structured_report(content, report)
-    return _goal_warning_result(
-        _dispatch_result(rendered, is_error=exit_code != 0), context.binding, context.session_key
-    )
+    return _dispatch_result(rendered, is_error=exit_code != 0)
 
 
 def _sim_mcp_tool_timeout_seconds(
@@ -1582,15 +1559,16 @@ def _sim_mcp_tool_timeout_seconds(
     from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
     from booley.flows.sim.config import (
         resolve_sim_build_timeout_ms,
+        resolve_sim_timeout_ms,
         resolve_sim_trace_convert_timeout_ms,
     )
-    from booley.flows.sim.flow import _resolve_sim_campaign_work_units, _resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
+    from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 
     work_dir = context.work_dir
     requested = requested_timeout_ms(arguments)
     if requested is None:
-        timeout_ms = _resolve_sim_timeout_ms(work_dir)
+        timeout_ms = resolve_sim_timeout_ms(work_dir)
     else:
         timeout_ms = resolve_timeout_ms("sim", None, requested)
     build_timeout_ms = resolve_sim_build_timeout_ms(work_dir)
@@ -1604,7 +1582,7 @@ def _sim_mcp_tool_timeout_seconds(
         work_units = (
             1
             if arguments.get("resume_from") is not None
-            else _resolve_sim_campaign_work_units(
+            else resolve_simulation_record_work_units(
                 work_dir,
                 raw_target,
                 arguments.get("test"),
@@ -1623,7 +1601,6 @@ def _sim_mcp_tool_timeout_seconds(
         run_s=run_s,
         build_s=build_s,
         convert_s=convert_s,
-        state_path=context.state_path,
     )
     return max(default, planned_s)
 
@@ -1637,7 +1614,6 @@ def _sim_planned_timeout_seconds(
     run_s: int,
     build_s: int,
     convert_s: int,
-    state_path: Path | None,
 ) -> int:
     """Sum child stage limits plus finalization slack for one Simulation call."""
     from booley.flows.base import DEFAULT_TIMEOUT_S
@@ -1652,12 +1628,9 @@ def _sim_planned_timeout_seconds(
         runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + TRACE_CLEANUP_MARGIN_S + trace_s)
         targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
         return runs_s + targets_s + 30
-    baseline_scale = 2 if _baseline_required("cycle_count_", state_path) else 1
-    run_units = work_units * baseline_scale
-    build_units = target_count * baseline_scale
-    planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
+    planned_s = target_count * build_s + work_units * (DEFAULT_TIMEOUT_S + run_s)
     if arguments.get("trace"):
-        planned_s += (convert_s + TRACE_CLEANUP_MARGIN_S) * run_units
+        planned_s += (convert_s + TRACE_CLEANUP_MARGIN_S) * work_units
     return planned_s + 30
 
 
@@ -1681,10 +1654,7 @@ def _implementation_budget_plan(
         context.explicit_work_dir,
         requested_timeout_ms(arguments),
     )
-    criterion_prefix = "synthesis_ok_" if name == "synth" else "fpga_impl_ok_"
-    has_baseline = bool(arguments.get("baseline")) or _baseline_required(
-        criterion_prefix, context.state_path
-    )
+    has_baseline = bool(arguments.get("baseline"))
     work_units = _target_count(arguments) * (2 if has_baseline else 1)
     return BudgetPlan(
         timeout_ms=timeout_ms,
@@ -1718,6 +1688,24 @@ def _lint_budget_plan(
     )
 
 
+def _mutation_mcp_tool_timeout_seconds(
+    arguments: dict[str, Any], default: int, context: CallContext
+) -> int:
+    """Outer MCP wait for a mutation run: its time budget, never less than *default*.
+
+    The budget also sizes ``--count auto``, so a caller who raises ``timeout_ms``
+    must not be cut off at the default wait.
+    """
+    from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
+
+    timeout_ms = resolve_timeout_ms(
+        "mutation",
+        context.explicit_work_dir,
+        requested_timeout_ms(arguments),
+    )
+    return max(default, -(-timeout_ms // 1000))
+
+
 def _mcp_tool_timeout_seconds(
     name: str,
     arguments: dict[str, Any],
@@ -1745,35 +1733,16 @@ def _mcp_tool_timeout_seconds(
     if name == "lint":
         return _lint_budget_plan(arguments, default, context).outer_timeout_s
 
+    if name == "mutation":
+        return _mutation_mcp_tool_timeout_seconds(arguments, default, context)
+
     if name != "sim":
         return default
     return _sim_mcp_tool_timeout_seconds(arguments, default, context)
 
 
-def _baseline_required(criterion_prefix: str, state_path: Path | None) -> bool:
-    """Whether criteria persisted at *state_path* will auto-enable an implementation baseline."""
-    from booley.evidence.fields import BASELINE_REF_PARAM
-
-    if state_path is None:
-        return False
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    criteria = state.get("criteria") if isinstance(state, dict) else None
-    if not isinstance(criteria, dict):
-        return False
-    return any(
-        isinstance(entry, dict)
-        and isinstance(entry.get("params"), dict)
-        and bool(entry["params"].get(BASELINE_REF_PARAM))
-        for name, entry in criteria.items()
-        if name.startswith(criterion_prefix)
-    )
-
-
 def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
-    """Serve one bounded query from the Campaign-scoped evidence module."""
+    """Serve one bounded query from the Coverage Record-scoped evidence module."""
     from booley.mcp.coverage_evidence import query_active_coverage_evidence
 
     try:
@@ -1781,6 +1750,56 @@ def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
     except (OSError, ValueError) as exc:
         result = {"error": "coverage_evidence_rejected", "message": str(exc)}
     return [TextContent(type="text", text=json.dumps(result, sort_keys=True))]
+
+
+async def _dispatch_measure(
+    arguments: dict[str, Any],
+    jobs: _JobManager,
+    request_context: McpRequestContext | None,
+    caller: Caller | None,
+) -> McpToolContent:
+    """Submit ``booley measure`` as a Job and hand its ``run_id`` back at once.
+
+    A measurement runs with the plain call context. It never
+    attaches to an identical live Job: ``HEAD`` and the base branch move while one runs, so
+    the same argv can name another commit.
+    """
+    work_dir_error = _validate_work_dir(arguments.get("work_dir"))
+    if work_dir_error is not None:
+        return _error_result(work_dir_error)
+    context = resolve_call_context(arguments)
+    if request_context is not None and request_context.session_key() is not None:
+        context = replace(context, session_key=request_context.session_key())
+    return await _dispatch_async_job(
+        measure_tool.MEASURE_ENDPOINT,
+        measure_tool.measure_argv(arguments),
+        measure_tool.MEASURE_TIMEOUT_S,
+        jobs,
+        context=context,
+        caller=caller,
+        inline_wait=0,
+        attach=False,
+    )
+
+
+async def _dispatch_measure_or_cancel(
+    name: str,
+    arguments: dict[str, Any],
+    jobs: _JobManager,
+    request_context: McpRequestContext | None,
+    caller: Caller | None,
+) -> McpToolContent | None:
+    """Route ``booley_measure`` and ``booley_cancel``; ``None`` when the tool is hidden."""
+    exposure = _exposure()
+    if name == catalog._CANCEL_MCP_TOOL_NAME:
+        return (
+            await _dispatch_cancel(arguments, jobs)
+            if catalog.utilities_visible(exposure)
+            else None
+        )
+    if not catalog.measure_visible(exposure):
+        return None
+    return await _dispatch_measure(arguments, jobs, request_context, caller)
 
 
 async def _dispatch_special_mcp_tool(
@@ -1822,14 +1841,10 @@ async def _dispatch_special_mcp_tool(
         return handler() if visible() else None
     if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_poll(arguments, jobs, caller)
-    if name == catalog._CANCEL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
-        return await _dispatch_cancel(arguments, jobs)
+    if name in {measure_tool.MEASURE_TOOL_NAME, catalog._CANCEL_MCP_TOOL_NAME}:
+        return await _dispatch_measure_or_cancel(name, arguments, jobs, request_context, caller)
     if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
         return await _dispatch_sleep(arguments)
-    if name in GOAL_TOOL_NAMES and catalog.goals_visible(_exposure()):
-        return await dispatch_goal_tool(
-            name, arguments, booley_dir=resolve_booley_dir(), request_context=request_context
-        )
     return None
 
 
@@ -1875,19 +1890,20 @@ async def _dispatch_application_tool(
         if server_identity is None
         else job_ownership.caller_for(server_identity, request_context)
     )
-    if name in GOAL_TOOL_NAMES and request_context is not None:
-        special_result = await _dispatch_special_mcp_tool(
-            name, arguments, jobs, status_mcp_tool_names, request_context, caller
-        )
-    else:
-        special_result = await _dispatch_special_mcp_tool(
-            name, arguments, jobs, status_mcp_tool_names, caller=caller
-        )
+    special_result = await _dispatch_special_mcp_tool(
+        name, arguments, jobs, status_mcp_tool_names, caller=caller
+    )
     if special_result is not None:
         return special_result
-    bwave_result = await _dispatch_bwave(name, arguments)
+    bwave_result = await _dispatch_bwave(name, arguments, request_context)
     if bwave_result is not None:
         return _prepend_changed_health_alert(bwave_result)
+    # Status, poll, cancel and report tools were dispatched above and stay open, so
+    # an agent can still inspect and cancel; running a Flow or Specialist refuses.
+    try:
+        refuse_retired_config(None)
+    except RetiredConfigError as exc:
+        return _error_result(f"ERROR: {exc}")
     args = (name, arguments, dict(mcp_tool_def), mcp_tool_call_counts, jobs)
     result = (
         await _dispatch_booley_mcp_tool(*args, caller=caller)
@@ -2022,7 +2038,7 @@ def _build_mcp_catalog(
 
 
 def build_mcp_probe_payload() -> dict[str, Any]:
-    """Build the real Interactive Mode catalog and return Doctor's payload."""
+    """Build the real Sandbox catalog and return Doctor's payload."""
     _maybe_configure_interactive_logs_dir()
     _load_agent_settings_from_toml()
     application, _mcp_tools, discovery_errors = _build_mcp_catalog(_McpLifetime(None, None))
@@ -2050,7 +2066,7 @@ def _logs_dir_in_own_booley_dir(logs_dir: str) -> bool:
 
 
 def _sdk_tool_result(
-    payload: McpToolContent | McpInputRequired,
+    payload: McpToolPayload | McpInputRequired,
 ) -> CallToolResult | InputRequiredResult:
     """Project transport-neutral results at the SDK boundary."""
     if isinstance(payload, McpInputRequired):
@@ -2069,8 +2085,8 @@ def _sdk_tool_result(
         )
     return CallToolResult(
         content=[TextContent(type="text", text=block.text) for block in payload.content],
-        structuredContent=payload.structured_content,
-        isError=payload.is_error,
+        structured_content=payload.structured_content,
+        is_error=payload.is_error,
     )
 
 
@@ -2140,7 +2156,7 @@ async def _observe_tool_completion(
     tool: str,
     observer: SessionObserver | None,
 ) -> McpToolPayload | McpInputRequired:
-    """Add at most one shared warning without changing successful tool payloads."""
+    """Record the call outcome in the session registry; the payload is returned unchanged."""
     if observer is not None:
         outcome = (
             "input-required"
@@ -2148,24 +2164,7 @@ async def _observe_tool_completion(
             else ("error" if payload.is_error else "completed")
         )
         await _record_presence(observer, request.attribution, tool, outcome)
-    if not payload.goal_aware:
-        return payload
-    warning = request.presentation_warning
-    if observer is not None:
-        try:
-            _, warning = await observer.shared(request.attribution)
-        except Exception:
-            logger.debug("Session completion presentation unavailable", exc_info=True)
-    text = (
-        payload.message
-        if isinstance(payload, McpInputRequired)
-        else "\n".join(block.text for block in payload.content)
-    )
-    if not warning or warning in text.splitlines():
-        return payload
-    if isinstance(payload, McpInputRequired):
-        return replace(payload, message=payload.message + "\n" + warning)
-    return replace(payload, content=(*payload.content, McpTextBlock(warning)))
+    return payload
 
 
 def _client_name_and_meta(
@@ -2240,10 +2239,7 @@ async def _resolve_observed_request_context(
         caller=caller,
     )
     facts = await observer.resolved(facts)
-    keys, warning = await observer.shared(facts)
-    return replace(
-        request, attribution=facts, other_session_keys=keys, presentation_warning=warning
-    )
+    return replace(request, attribution=facts)
 
 
 def _application_request_context(
@@ -2339,13 +2335,13 @@ def _sdk_tool(tool: McpToolDefinition) -> McpSdkTool:
     return McpSdkTool(
         name=tool.name,
         description=tool.description,
-        inputSchema=tool.input_schema,
-        outputSchema=tool.output_schema,
+        input_schema=tool.input_schema,
+        output_schema=tool.output_schema,
     )
 
 
 def _interactive_session_id() -> str:
-    """Stable per-tab identifier for the Interactive Mode logs directory.
+    """Stable per-tab identifier for the Sandbox logs directory.
 
     The container hostname is Docker's short container ID by default — so
     this also identifies which tab the logs belong to.  Falls back to the
@@ -2362,14 +2358,14 @@ def _interactive_session_id() -> str:
 
 
 def _maybe_configure_interactive_logs_dir() -> None:
-    """In Interactive Mode, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
+    """In the Sandbox, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
     Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
     disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
     takes precedence over this default.
 
-    Interactive Mode is detected by:
+    The Sandbox is detected by:
       - ``BOOLEY_LOGS_DIR`` not already set;
       - a Project resolving from the server's environment and CWD.
 
@@ -2399,7 +2395,7 @@ def _maybe_configure_interactive_logs_dir() -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(
-        "Interactive Mode: BOOLEY_LOGS_DIR=%s (session %s)",
+        "MCP server logs: BOOLEY_LOGS_DIR=%s (session %s)",
         logs_dir,
         session_id,
     )
@@ -2473,7 +2469,7 @@ async def _main() -> None:
 def _run_http(port: int) -> None:
     """Serve the MCP tools over protected streamable HTTP on loopback.
 
-    Interactive Mode transport (ADR 0023): started by the devcontainer's
+    The Sandbox transport (ADR 0023): started by the devcontainer's
     ``postStartCommand`` (via ``incontainer_register.ensure_http_server``), so
     a container stop→start transparently brings the endpoint back — the agent
     apps hold only a URL, not a child process.
@@ -2544,7 +2540,7 @@ def main() -> None:
         "--transport",
         choices=("stdio", "http"),
         default=os.environ.get("BOOLEY_MCP_TRANSPORT", "stdio"),
-        help="stdio: client-spawned child; http: standalone loopback server (Interactive Mode)",
+        help="stdio: client-spawned child; http: standalone loopback server inside the Sandbox",
     )
     parser.add_argument(
         "--port",
@@ -2561,30 +2557,6 @@ def main() -> None:
     except EndpointConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
-
-
-def _goal_warning_result(
-    result: McpToolContent, binding: GoalRunBinding | None, session_key: str | None
-) -> McpToolContent:
-    if binding is None:
-        return result
-    try:
-        prefix = goal_warnings(
-            GoalStore(binding.booley_dir).load(binding.record_id),
-            binding.booley_dir,
-            work_dir=binding.worktree_root,
-            session_key=session_key,
-        )
-    except GoalStoreError as exc:
-        prefix = f"WARNING: Goal Record cannot be read: {exc}"
-    payload = result.value if isinstance(result, McpDispatchResult) else result
-    if prefix:
-        payload = _prepend_health_block(payload, TextContent(type="text", text=prefix))
-    return McpDispatchResult(
-        value=payload,
-        is_error=result.is_error if isinstance(result, McpDispatchResult) else False,
-        goal_aware=True,
-    )
 
 
 async def _dispatch_poll(

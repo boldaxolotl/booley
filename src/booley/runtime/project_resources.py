@@ -15,8 +15,8 @@ from typing import NamedTuple
 from booley.config.sandbox import project_image_name_for_identity
 from booley.core.boundary import require_dict, require_list, require_str
 from booley.core.project_identity import accepted_project_labels, project_name_id
-from booley.projects.image_keepers import Leftover, PurgeResult
-from booley.runtime import interactive_docker
+from booley.projects.image_keepers import Leftover, LeftoverKind, LeftoverReason, PurgeResult
+from booley.runtime import host_docker
 from booley.runtime.devcontainer import state_volume_names
 from booley.runtime.image_lifecycle import (
     ImageReference,
@@ -36,7 +36,7 @@ class _ImageRow(NamedTuple):
 
 
 def _lines(args: list[str], *, timeout: int = 30) -> list[str]:
-    output = interactive_docker.strict_docker(
+    output = host_docker.strict_docker(
         args, context=f"docker {' '.join(args[:2])}", timeout=timeout
     )
     return [line for line in output.splitlines() if line]
@@ -71,13 +71,13 @@ def _image_rows() -> list[_ImageRow]:
         ]
     ):
         image, reference, size = line.split("\t")
-        rows.append(_ImageRow(interactive_docker.validated_image_id(image), reference, size))
+        rows.append(_ImageRow(host_docker.validated_image_id(image), reference, size))
     return rows
 
 
 def _image_reason(
     identity: str, image: str, refs: tuple[str, ...], owned: set[str], in_use: frozenset[str]
-) -> str:
+) -> LeftoverReason:
     if image in in_use:
         return "in-use"
     if any(not _owns_tag(identity, ref) for ref in refs):
@@ -102,7 +102,7 @@ def _images(identity: str) -> tuple[Leftover, ...]:
             tags.setdefault(row.image, []).append(row.reference)
         if _owns_tag(identity, row.reference):
             mine.add(row.image)
-    in_use = interactive_docker.container_image_ids_strict() if mine else frozenset()
+    in_use = host_docker.container_image_ids_strict() if mine else frozenset()
     result = []
     for image in sorted(mine & sizes.keys()):
         refs = tuple(sorted(tags.get(image, ())))
@@ -145,11 +145,12 @@ def _volumes(identity: str) -> tuple[Leftover, ...]:
 
 def _labelled(identity: str) -> tuple[Leftover, ...]:
     """Containers and networks (including license topology) still labelled for the Project."""
-    result = []
-    for kind, args, name_field in (
+    result: list[Leftover] = []
+    kinds: tuple[tuple[LeftoverKind, list[str], str], ...] = (
         ("container", ["container", "ls", "--all"], "{{.Names}}"),
         ("network", ["network", "ls"], "{{.Name}}"),
-    ):
+    )
+    for kind, args, name_field in kinds:
         names = {
             name
             for label in accepted_project_labels(identity)
@@ -175,7 +176,7 @@ def _release_own_tags(identity: str, removed: list[str]) -> set[str]:
 
     Returns the IDs whose tags were released.
     """
-    in_use = interactive_docker.container_image_ids_strict()
+    in_use = host_docker.container_image_ids_strict()
     tags = [
         (row.image, row.reference)
         for row in _image_rows()

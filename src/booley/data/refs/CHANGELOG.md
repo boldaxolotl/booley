@@ -9,12 +9,103 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Booley no longer enforces any commit-message convention. `[stealth]
+  enforce_convention`, which required `type(scope): summary` subjects, is
+  retired: Booley ignores it, and you can delete it. Specialists commit with the message the
+  agent wrote, no longer rewritten into `type(scope): summary` form.
+  `BOOLEY_SKIP_COMMIT_VALIDATION=1` now skips only the `max_body_lines` cap.
+  Rerun `booley init` in each Stealth Project to install the new hook.
+- Mutation testing now generates Mutants deterministically and runs no LLM:
+- Stealth Mode now rejects a commit message that contains a banned term
+  instead of rewriting it with `redacted`. The commit-msg hook never changes the
+  message file: it lists each match, says where your message is kept, and gives
+  the `git commit -v -e -F "<path>"` retry (a rejected merge commit says how to
+  finish it). Comment lines and everything below the scissors line aren't
+  checked. `BOOLEY_SKIP_COMMIT_VALIDATION=1` no longer skips banned terms, only
+  the body-length check. A Specialist whose commit message has a
+  banned term now fails with the validation error instead of committing under
+  its default message. `cursor` and `ticket` left the default banned list; add
+  them to `banned_words` to keep them. Rerun `booley init` in each Stealth
+  Project to install the new hook
+  ([#3597](https://github.com/boldaxolotl/Booley/issues/3597)).
+- The Sandbox start step now registers Booley's MCP server and skills for every
+  allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
+  `codex` serves both. A CLI whose registration is refused is reported as
+  `<cli>:refused` (the error line names the CLI) and no longer stops the others.
+  With `BOOLEY_AGENT_APP=auto`, every CLI with a credential is allowed, Claude
+  the default when both have one; `booley doctor` audits each
+  ([#2756](https://github.com/boldaxolotl/Booley/issues/2756)).
+- A traced `sim` run now registers each traced Target's waveform as B-Wave
+  session `@<target>` (its last Test Run that did not pass, else its last) and
+  the last Target's as the default session, so `bwave @<target> list` and a path-less
+  `bwave list` work without finding the trace file. Each checkout keeps its own
+  session store in its Booley Directory, so `@<target>` and the default session
+  belong to that checkout's latest traced run
+  ([#3483](https://github.com/boldaxolotl/Booley/issues/3483)); outside a
+  Project the store stays in the temporary directory. Sessions and markers
+  registered before the upgrade are not carried over. `bwave` without a trace
+  path or session now says to rerun the simulation with `--trace`.
+- The Mutation Tester now generates Mutants deterministically and runs no LLM:
+  the same RTL, `--count`, and the new `--seed` (default 0) give identical
+  Mutants. `--scope` is optional and defaults to the Target's own RTL. The
+  default pass threshold is 80 % of the count, rounded up, also for an
+  existing Goal without `min_detected` (it used to require every Mutant). Each Mutant's per-test timeout scales with the
+  baseline run (10 x, 30 s minimum, 300 s cap), and a timed-out Mutant counts
+  as detected and is reported as `detected (timeout)`. Results record scope
+  file hashes, generator and pyslang versions, seed, and count. `--steer` and
+  `--regen-lock` are removed, and the mutation lock is no longer used.
+  Mutation testing is now the Booley Flow `booley flow mutation` (same flags,
+  MCP tool `mutation`, plus the shared Flow options). `booley specialist
+  mutation_tester`, its MCP tool, and the `[models] mutation_tester` key are
+  removed: delete the key, and replace a `[specialists.mutation_tester]` table
+  with `[flows.mutation]` (`enabled`, `timeout_ms`). Reports move from
+  `mcp-tool-reports/` to `flow-reports/mutation/<N>/`. The `mutation_score`
+  criterion and `MUTATION:` Goals are unchanged.
+
+- The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
+  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
+  the equivalent shell command, then submit or copy it. The Jobs window opens
+  with the new Job selected. The Dashboard is no longer read-only. The review
+  screen says whether the Job runs now or queues (with its position), refuses
+  Submit when the Job queue is full, warns about a connected session, running
+  Jobs, or uncommitted changes in the worktree, and shows the per-work-unit
+  timeout of synth and FPGA runs.
+  as a Standalone Job: choose the worktree and the Flow, fill in a form generated
+  from the Flow's options, check the equivalent shell command, then submit or
+  copy it. The Target and test fields pick from the worktree's compatible
+  Targets and the chosen Target's Test Runs. The Jobs window opens with the new
+  Job selected. The Dashboard is no longer read-only.
+- Job resource history keeps the newest 20 runs per Target, Job phase, flags,
+  and Test Run with no overall cap, and deletes a group that has had no run in
+  90 days. Peak memory now includes processes forked by any thread of a Job
+  command, and counts the Job's temporary files only when `TMPDIR` is on
+  tmpfs (they are still recorded as the temporary-file peak); earlier runs
+  keep their earlier peak.
+- A failed test function that a Cocotb Target without registered Tests discovered
+  now gets one `booley flow sim --target <name> --seed N` command that reruns the
+  whole batch, instead of a `--test=<name>@N` command that Booley refused with
+  exit 2.
+- `booley init` now records the default Agent CLI as `[agent] default` instead of
+  the older name `provider`, and the `--provider` conflict error names
+  `[agent] default`. An existing `provider` key is kept as written and still
+  works.
+- `booley resources` now keeps each Test Variant of a simulation apart
+  (`tests=first+slow`; the default Variant keeps the bare Test name, and the
+  seeds of one Variant share an entry). Flow runs that `booley doctor` starts
+  are no longer recorded, and each record stores the size of the Target's
+  source files when it is known.
+- The `sim` result card now names each Test Run that did not pass with its log
+  (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
+  `--trace` run lists its passing Test Runs with their waveform too.
+  `simulation.json` `tests[]` rows and the MCP result carry `log` and `trace`
+  paths for every Test Run (`null` when absent), so nobody searches the
+  Campaign's work items for them.
 - A second `booley chat` while the main checkout is in use now starts in its
   own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
   and prints a line saying where it works. The first session and a lone
   session run in the main checkout as before. `booley chat --new-worktree`
   always uses a worktree, `booley chat --here` always uses the main checkout,
-  and `[chat] worktree = "auto" | "always" | "never"` sets the default
+  and `[worktree] chat = "auto" | "always" | "never"` sets the default
   (`auto`). Run from inside an existing worktree, `booley chat` starts there.
   A plain `claude` tab or VS Code panel does not hold the main checkout, so it
   is noticed only on a best-effort basis.
@@ -51,7 +142,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   no longer hides `.booley/` or gives it its own repository before setup
   records your choice; the booley-setup skill's hidden answer does both. A
   Project set up earlier whose `booley.toml` has no `enabled` key has left
-  Stealth: commit messages are no longer cleaned and pushes are no longer
+  Stealth: commit messages are no longer checked and pushes are no longer
   checked. `booley init` and Doctor warn `stealth.enabled-unset` while
   `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
   `enabled = false` to confirm it is off. A `booley.toml` that can't be read
@@ -138,6 +229,24 @@ Packaged release history starts at 0.2.7. For older changes, see
   VS Code container whose Booley Directory mounts are outdated, including any
   from before 0.3.0. Close VS Code, stop and remove that container, run
   `booley init --seed`, then reopen the folder in the container.
+- The Session Runtime now uses Verilator v5.054 at source commit
+  `bbb60a403932a9f695cb6ff001ceb73de6ad9234`. Verilator 5.054 moved `if`/`else`
+  and `?:` branch points out of `--coverage-line` into the new
+  `--coverage-branch` switch; `booley flow sim --coverage` now passes both, so
+  `branch` points are still collected. A project that passes `--coverage-line`
+  in its own `verilator_options` must add `--coverage-branch` to keep them.
+  ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
+- The egress proxy and reaper sidecars now run on Python 3.15.2 and the reaper
+  on the Docker 29.9.3 CLI; Booley rebuilds both automatically. The FlexNet
+  relay image also builds on Python 3.15.2, but an existing
+  `booley-flexnet-relay:1` image is kept: remove it with
+  `docker image rm booley-flexnet-relay:1` and the next licensed session builds
+  it again.
+
+- The RISC-V Sandbox Image moves Spike to upstream master `4094d290`, which adds
+  configurable LR/SC reservation-set size, a Zvt tile fix, and a batch of
+  CSR and PMP fixes (`stopei`, `mstateen0`, `scountovf`, mcontrol6 triggers).
+  ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
 
 ## 0.4.0 - 04 NOV 2026
 
@@ -433,7 +542,7 @@ can try Booley in a browser through a free GitHub Codespaces demo.
   harness files; it WARNs instead. Doctor's attached-window checks now run.
   In a Codespace it accepts `~/.ssh/authorized_keys` and a symlinked
   `BOOLEY_DIR`. Host `doctor --deep` no longer fails simulation checks on
-  Booley's own `/booley-project` alias.
+  Booley's own Booley Directory alias.
 - Deep Doctor warns when a simulation bad overlay fails to build and requires
   a behavioral failure to accept it. It no longer blocks on the expected
   upgrade-review warning.
@@ -925,8 +1034,8 @@ adding new features.
 - `validate-ticket` prepares published Tickets with the Project's post-setup
   hook before checking Target inputs, so hook-generated inputs such as
   firmware images no longer fail validation.
-- Commands run from a Stealth Project's data directory (`/booley-project` or
-  `/work/.booley_project`) act on the owning Project checkout instead of
+- Commands run from a Stealth Project's data directory (the Sandbox's Booley Directory
+  mount or `/work/.booley_project`) act on the owning Project checkout instead of
   treating the data repository as the Project; discovery, automatic Doctor,
   and report path hints treat both paths as one directory. A Git failure
   during an ancestry check exits 2 with "cannot verify ancestry" instead of a

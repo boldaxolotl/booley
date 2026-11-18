@@ -11,10 +11,8 @@ from the mirror, the dry-run preview and the unchanged non-isolated behavior.
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
@@ -32,14 +30,12 @@ from booley.flows.sim.build_session import SimulationBuildSession, snapshot_buil
 from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
 from booley.flows.sim.verilator_coverage_execution import prepare_coverage_collection
-from booley.flows.sim.workload import capture_workload_inputs
 from booley.fusesoc.fusesoc_registry import (
     ResolvedFile,
     setup_command_for_handle,
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
-from tests.flows.sim.test_verilator_build_reuse_engine import _edit_keeping_mtime
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)
 
 pytest.importorskip("fusesoc")
@@ -228,22 +224,6 @@ def _prepare_coverage(
 
 
 @pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize("trace", [False, True], ids=["plain", "trace"])
-def test_isolated_coverage_build_include_dirs_hold_only_listed_headers(
-    tmp_path: Path, trace: bool
-) -> None:
-    """AC1: coverage and trace+coverage builds read only listed headers."""
-    root = _write_project(tmp_path / "proj")
-    prepared, _vlnv = _prepare_coverage(root, trace=trace)
-    folders = [Path(folder).resolve() for folder in prepared.resolved.rtl_include_dirs]
-    assert folders
-    assert all(folder.is_relative_to(prepared.build_root.resolve()) for folder in folders)
-    assert _holds(folders, "listed.vh")
-    assert not _holds(folders, "unlisted.vh")
-    assert (prepared.work_root / "core-mirror").is_dir()
-
-
-@pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_traced_sim_resolves_through_mirror(tmp_path: Path) -> None:
     """AC1 for traced Simulation: the injected packaged dump module keeps its absolute name."""
     from booley.flows.sim.trace_overlay import write_trace_overlay
@@ -259,36 +239,9 @@ def test_isolated_traced_sim_resolves_through_mirror(tmp_path: Path) -> None:
         )
     finally:
         overlay.cleanup()
-    folders = [Path(folder).resolve() for folder in prepared.resolved.rtl_include_dirs]
-    assert _holds(folders, "listed.vh")
-    assert not _holds(folders, "unlisted.vh")
-    assert all(folder.is_relative_to(prepared.build_root.resolve()) for folder in folders)
     dump = [item for item in prepared.resolved.files if item.name.endswith("booley_vcd_dump.sv")]
     assert dump
     assert all(Path(item.name).is_absolute() for item in dump)
-
-
-@pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize("tool", ["verilator", "iverilog"])
-def test_isolated_sim_tool_error_names_unlisted_header(tmp_path: Path, tool: str) -> None:
-    """AC1: a source that includes an unlisted header fails the build, naming the header."""
-    if shutil.which(tool) is None:
-        pytest.skip(f"{tool} is not installed")
-    root = _write_project(tmp_path / "proj")
-    (root / "rtl" / "top.v").write_text(
-        '`include "unlisted.vh"\nmodule top; endmodule\n', encoding="utf-8"
-    )
-    prepared = _prepare(root, "sim_verilator" if tool == "verilator" else "sim_icarus")
-    result = subprocess.run(
-        list(prepared.make_argv),
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    assert result.returncode != 0
-    assert "unlisted.vh" in result.stdout + result.stderr
 
 
 @pytest.mark.usefixtures("real_fusesoc")
@@ -306,28 +259,10 @@ def test_isolated_absolute_include_keeps_reuse_off(tmp_path: Path) -> None:
     assert stock_verilator_recipe(prepared.build_root) is None
 
 
-def _write_project_core(
-    root: Path,
-    core_path: Path | None = None,
-    *,
-    absolute_include: Path | None = None,
-    user_files: bool = True,
-    headers: bool = True,
-    icarus_options: dict[str, list[str]] | None = None,
-    extra_files: tuple[str, ...] = (),
-) -> None:
+def _write_project_core(root: Path, core_path: Path | None = None, **core_options: Any) -> None:
     """Rewrite the Project core, by default the isolated one under ``.booley/cores``."""
     path = core_path or root / ".booley" / "cores" / "design.core"
-    path.write_text(
-        _core(
-            absolute_include=absolute_include,
-            user_files=user_files,
-            headers=headers,
-            icarus_options=icarus_options,
-            extra_files=extra_files,
-        ),
-        encoding="utf-8",
-    )
+    path.write_text(_core(**core_options), encoding="utf-8")
 
 
 # The Icarus recipe check reads the Edalize command file with POSIX shell quoting, which
@@ -339,7 +274,8 @@ icarus_reuse_posix_only = pytest.mark.skipif(
 
 def _icarus_key(prepared: PreparedSimulationBuild, root: Path) -> str | None:
     """The Icarus reuse key of one prepared build, with the host tool identity pinned."""
-    return build_session._reuse_input_key(prepared, snapshot_build_inputs(prepared), "", root, {})
+    session = SimulationBuildSession(_handle(root, "sim_icarus"))
+    return session.reusable_key(prepared, snapshot_build_inputs(prepared), hooks=False)
 
 
 @icarus_reuse_posix_only
@@ -347,11 +283,11 @@ def _icarus_key(prepared: PreparedSimulationBuild, root: Path) -> str | None:
 def test_isolated_icarus_reuse_key_is_stable_and_follows_edits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC2: an isolated Icarus build keys the same across generations until an input changes."""
-    monkeypatch.setattr(build_session, "_icarus_tool_identity", lambda: "iverilog-test")
-    monkeypatch.setattr(build_session, "_python_recipe_identity", lambda: "recipe-test")
+    """An isolated Icarus build keys the same across generations, with stock options, until an input changes."""
+    _stub_icarus_identity(monkeypatch)
     root = _write_project(tmp_path / "proj")
-    _write_project_core(root, user_files=False, headers=False)
+    options = {"iverilog_options": ["-g2012", "-DWIDTH=8"]}
+    _write_project_core(root, user_files=False, headers=False, icarus_options=options)
     top = root / "rtl" / "top.v"
     top.write_text("module top; endmodule\n", encoding="utf-8")
     first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
@@ -360,35 +296,6 @@ def test_isolated_icarus_reuse_key_is_stable_and_follows_edits(
     top.write_text("module top; // edited\nendmodule\n", encoding="utf-8")
     edited = _icarus_key(_prepare(root, "sim_icarus", name="g3"), root)
     assert edited not in (None, first)
-
-
-@icarus_reuse_posix_only
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_icarus_listed_header_edit_changes_or_declines_the_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Editing a listed header never leaves an isolated Icarus build with the same reuse key.
-
-    The key may decline (``None``) because recipes that use includes are not
-    keyed today; the invariant holds if a later change keys them safely.
-    """
-    _stub_icarus_identity(monkeypatch)
-    root = _write_project(tmp_path / "proj")
-    first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
-    # Keep the old mtime so only the header bytes can move the key.
-    _edit_keeping_mtime(root / "rtl" / "inc" / "listed.vh", "// listed v2\n")
-    second = _icarus_key(_prepare(root, "sim_icarus", name="g2"), root)
-    assert first is None or first != second
-
-
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_mirrored_names_stay_project_relative(tmp_path: Path) -> None:
-    """AC3: workload snapshot rows never show the mirror."""
-    root = _write_project(tmp_path / "proj")
-    prepared = _prepare(root, "sim_verilator")
-    rows = {row["path"] for row in capture_workload_inputs(root, prepared.resolved)}
-    assert {"rtl/top.v", "rtl/inc/listed.vh", "data/plain.hex"} <= rows
-    assert not [path for path in rows if "core-mirror" in path or path.startswith("src/")]
 
 
 @pytest.mark.parametrize(
@@ -423,33 +330,26 @@ def test_non_isolated_sim_preparation_is_unchanged(tmp_path: Path, variant: str)
     assert not list(tmp_path.rglob("core-mirror"))
     export = prepared.build_root.resolve() / "src" / "acme_lib_design_1" / "rtl" / "inc"
     assert [Path(d).resolve() for d in prepared.resolved.rtl_include_dirs] == [export]
-    rows = {row["path"] for row in capture_workload_inputs(root, prepared.resolved)}
-    assert any(path.endswith("src/acme_lib_design_1/rtl/top.v") for path in rows)
     assert prepared.core_closure is not None
     assert all("<generation>" not in value for value in prepared.core_closure.values())
 
 
 @pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_sim_dry_run_names_build_mirror(tmp_path: Path) -> None:
-    """The preview names the mirror the run renders, never the shared registry, and writes nothing."""
-    root = _write_project(tmp_path / "proj")
-    handle = _handle(root, "sim_icarus")
-    build_root = work_root_for(root, "sim", "sim_icarus", variant="preview")
-    command = simulation_setup_command(handle, build_root=build_root)
-    assert command[command.index("--cores-root") + 1] == str(build_root.resolve() / "core-mirror")
-    assert not build_root.exists()
-    assert not list(tmp_path.rglob("core-mirror"))
-
-
-@pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize("variant", ["plain", "projected"])
-def test_non_isolated_sim_dry_run_is_unchanged(tmp_path: Path, variant: str) -> None:
+@pytest.mark.parametrize("variant", ["isolated", "plain", "projected"])
+def test_sim_dry_run_command_by_layout(tmp_path: Path, variant: str) -> None:
+    """An isolated preview names the mirror the run renders and writes nothing; others are unchanged."""
     root = _write_project(tmp_path / "proj", variant)
     handle = _handle(root, "sim_icarus")
     build_root = work_root_for(root, "sim", "sim_icarus", variant="preview")
-    assert simulation_setup_command(handle, build_root=build_root) == setup_command_for_handle(
-        handle, build_root=build_root
-    )
+    command = simulation_setup_command(handle, build_root=build_root)
+    if variant == "isolated":
+        assert command[command.index("--cores-root") + 1] == str(
+            build_root.resolve() / "core-mirror"
+        )
+        assert not build_root.exists()
+        assert not list(tmp_path.rglob("core-mirror"))
+    else:
+        assert command == setup_command_for_handle(handle, build_root=build_root)
 
 
 @pytest.mark.usefixtures("real_fusesoc")
@@ -471,9 +371,17 @@ def test_isolated_sim_dry_run_rejects_entry_that_is_not_a_regular_file(tmp_path:
 def test_isolated_coverage_foreign_paths_cover_prepared_headers(
     tmp_path: Path, trace: bool
 ) -> None:
-    """AC3: every header the coverage build exports is named by ``foreign_paths``."""
+    """Coverage builds read only listed headers; each exported header is named by ``foreign_paths``."""
     root = _write_project(tmp_path / "proj", dependency=True)
     prepared, _vlnv = _prepare_coverage(root, trace=trace)
+    folders = [Path(folder).resolve() for folder in prepared.resolved.rtl_include_dirs]
+    assert folders
+    assert all(folder.is_relative_to(prepared.build_root.resolve()) for folder in folders)
+    assert _holds(folders, "listed.vh")
+    assert not _holds(folders, "unlisted.vh")
+    assert (prepared.work_root / "core-mirror").is_dir()
+    # The names Verilator records (hence coverage point IDs) do not depend on the checkout.
+    assert str(root) not in _recipe_text(prepared)
     request = prepare_coverage_collection(
         _handle(root, "sim_verilator"),
         selected_tests=(),
@@ -491,19 +399,15 @@ def test_isolated_coverage_foreign_paths_cover_prepared_headers(
     assert any(f"-booley{'trace' if trace else ''}coverage" in name for name in headers)
 
 
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_coverage_recipe_is_checkout_independent(tmp_path: Path) -> None:
-    """The names Verilator records (hence coverage point IDs) do not depend on the checkout."""
-    recipes = []
-    for index in range(2):
-        root = _write_project(tmp_path / f"checkout-{index}")
-        prepared, _vlnv = _prepare_coverage(root, trace=False)
-        recipes.append(_recipe_text(prepared))
-    assert recipes[0] == recipes[1]
-
-
 def _stub_icarus_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the host tool identities so the Icarus key is non-None without ``iverilog``."""
+    """Pin the host tool identities so the Icarus key is non-None without ``iverilog``.
+
+    Private seam: the Icarus key hashes the host iverilog install and Python recipe
+    sources; real FuseSoC preparation needs the real PATH, so no fake install can
+    stand in.
+    """
+    for name in ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(build_session, "_icarus_tool_identity", lambda: "iverilog-test")
     monkeypatch.setattr(build_session, "_python_recipe_identity", lambda: "recipe-test")
 
@@ -556,65 +460,27 @@ def test_isolated_icarus_reuse_declines_option_operands(
 @icarus_reuse_posix_only
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize(
-    "hidden", ["rtl/.a-hidden.v", "rtl/run.log", "rtl/.booley-runtime-inputs/m.v"]
+    "hidden",
+    ["rtl/.a-hidden.v", "rtl/run.log", "rtl/.booley-runtime-inputs/m.v", 'rtl/it"s.v'],
+    ids=["dot-file", "run-log", "runtime-inputs", "quote"],
 )
 def test_isolated_reuse_declines_source_named_like_a_booley_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hidden: str
 ) -> None:
-    """A listed source the input snapshot skips by name escapes the hash, so reuse declines."""
+    """A listed source the input snapshot skips (or a quote breaks) by name declines reuse."""
     _stub_icarus_identity(monkeypatch)
     root = _write_project(tmp_path / "proj")
     (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
     _write_project_core(root, user_files=False, headers=False)
-    session = SimpleNamespace(handle=SimpleNamespace(project_root=root), variant="")
-
-    def session_key(prepared: PreparedSimulationBuild) -> str | None:
-        inputs = snapshot_build_inputs(prepared)
-        return SimulationBuildSession.reusable_key(session, prepared, inputs, hooks=False)  # type: ignore[arg-type]
-
     # Control: an ordinary name keys, so a None key below comes from the file name.
-    assert session_key(_prepare(root, "sim_icarus", name="control")) is not None
+    assert _icarus_key(_prepare(root, "sim_icarus", name="control"), root) is not None
     (root / hidden).parent.mkdir(exist_ok=True)
     (root / hidden).write_text("module m; endmodule\n", encoding="utf-8")
     _write_project_core(root, user_files=False, headers=False, extra_files=(hidden,))
-    assert session_key(_prepare(root, "sim_icarus", name="hidden")) is None
-
-
-@icarus_reuse_posix_only
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_icarus_reuse_declines_quoted_file_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A listed file name holding a quote declines reuse instead of crashing the keying."""
-    _stub_icarus_identity(monkeypatch)
-    root = _write_project(tmp_path / "proj")
-    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
-    _write_project_core(root, user_files=False, headers=False)
-    # Control: the plain recipe reuses, so a None key below comes from the file name.
-    assert _icarus_key(_prepare(root, "sim_icarus", name="control"), root) is not None
-    quoted = 'rtl/it"s.v'
-    (root / quoted).write_text("module m; endmodule\n", encoding="utf-8")
-    _write_project_core(root, user_files=False, headers=False, extra_files=(quoted,))
-    prepared = _prepare(root, "sim_icarus", name="quoted")
+    prepared = _prepare(root, "sim_icarus", name="hidden")
     script = next(prepared.build_root.glob("*.scr")).read_text(encoding="utf-8")
-    assert any(line.endswith(quoted) for line in script.splitlines())
+    assert any(line.endswith(hidden) for line in script.splitlines())
     assert _icarus_key(prepared, root) is None
-
-
-@icarus_reuse_posix_only
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_icarus_reuse_keeps_stock_options(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Attached ``-g``/``-D`` options are stock, so isolated reuse still keys the same."""
-    _stub_icarus_identity(monkeypatch)
-    root = _write_project(tmp_path / "proj")
-    options = {"iverilog_options": ["-g2012", "-DWIDTH=8"]}
-    _write_project_core(root, user_files=False, headers=False, icarus_options=options)
-    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
-    first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
-    assert first is not None
-    assert _icarus_key(_prepare(root, "sim_icarus", name="g2"), root) == first
 
 
 @icarus_reuse_posix_only

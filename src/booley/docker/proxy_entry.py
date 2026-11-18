@@ -16,7 +16,7 @@ import signal
 import sys
 import threading
 
-from egress_proxy import EgressProxy
+from egress_proxy import EgressProxy  # pyright: ignore[reportMissingImports]
 
 logging.basicConfig(
     level=logging.INFO,

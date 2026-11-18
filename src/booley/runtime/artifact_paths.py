@@ -20,7 +20,7 @@ _PATH_KEYS = frozenset(
 
 def available_paths(payload: Mapping[str, Any], roots: tuple[Path, ...]) -> tuple[str, ...]:
     """Project only explicitly named, existing files; missing artifacts remain unavailable."""
-    pending = [(payload, False)]
+    pending: list[tuple[object, bool]] = [(payload, False)]
     paths = []
     for _ in range(4096):
         if not pending:

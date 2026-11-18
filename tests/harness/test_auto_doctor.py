@@ -18,9 +18,24 @@ import pytest
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.bwave import vaporview_bridge
 from booley.harness import auto_doctor, doctor
-from booley.runtime import doctor_stamp, health, health_presentation, vaporview
+from booley.runtime import (
+    devcontainer,
+    doctor_stamp,
+    health,
+    health_presentation,
+    inspection,
+    vaporview,
+)
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.time_budget import hang_guard_s
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of vaporview, inspection."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, vaporview, inspection)
 
 
 @pytest.fixture(autouse=True)
@@ -472,7 +487,7 @@ def test_pretrust_viewer_bridge_publishes_no_fail(tmp_path: Path, monkeypatch):
         server.bind(str(socket_path))
         server.listen(4)
 
-        server.settimeout(5)
+        server.settimeout(hang_guard_s())
 
         def serve() -> None:
             # Bounded: the check pings each window a handful of times at most.
@@ -482,7 +497,7 @@ def test_pretrust_viewer_bridge_publishes_no_fail(tmp_path: Path, monkeypatch):
                 except OSError:
                     return
                 with conn:
-                    conn.settimeout(5)
+                    conn.settimeout(hang_guard_s())
                     conn.recv(65536)
                     conn.sendall((json.dumps(pretrust_ping) + "\n").encode())
 
@@ -502,6 +517,13 @@ def _publish_with_real_bridge_check(
 ) -> dict:
     """Run the real Viewer Bridge owner inside ``auto_doctor._execute``."""
     real_run = subprocess.run
+    roots = (".vscode-server",)
+    answers = {
+        vaporview._vaporview_versions_probe_source(roots): {
+            root: [vaporview.VERIFIED_VERSION] for root in roots
+        },
+        vaporview._VAPORVIEW_PATCH_PROBE_SOURCE: {"hook_running": False, "installs": ["patched"]},
+    }
 
     def probe_run(argv, **kwargs):
         """Serve the owner's in-Sandbox probes: bridges are real, the rest is attached."""
@@ -509,14 +531,22 @@ def _publish_with_real_bridge_check(
         if command[-1] == vaporview._VIEWER_BRIDGE_PROBE_SOURCE:
             summary = vaporview_bridge.doctor_summary(home)
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(summary), stderr="")
-        if command[-1] == vaporview._VAPORVIEW_VERSIONS_PROBE_SOURCE:
+        if command[-1] in answers:
             return subprocess.CompletedProcess(
-                argv, 0, stdout=json.dumps([vaporview.VERIFIED_VERSION]), stderr=""
+                argv, 0, stdout=json.dumps(answers[command[-1]]), stderr=""
             )
-        if command[-1] in (
-            vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE,
-            vaporview._VAPORVIEW_STATE_PROBE_SOURCE,
+        if command[-1] == vaporview._bundled_extensions_probe_source(
+            devcontainer.BUNDLED_EXTENSIONS, roots
         ):
+            installed = {
+                e.extension_id: {"versions": {root: [e.version] for root in roots}, "vsix": True}
+                for e in devcontainer.BUNDLED_EXTENSIONS
+            }
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(installed), stderr="")
+        if command[-1] == vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE:
+            attached = {"roots": list(roots), "unidentified": 0}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(attached), stderr="")
+        if command[-1] == vaporview._VAPORVIEW_STATE_PROBE_SOURCE:
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         return real_run(argv, **kwargs)
 

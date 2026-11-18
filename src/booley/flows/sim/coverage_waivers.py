@@ -21,18 +21,18 @@ from booley.config.coverage_waiver_inputs import (
     proof_references,
 )
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    CoverageFinding,
-    CoveragePoint,
-    DurableTargetIdentity,
-    decode_coverage_point_id,
-)
 from booley.flows.sim.coverage_json import (
     WAIVER_SET_JSON,
     FrozenJson,
     content_digest,
     freeze_coverage_mapping,
+)
+from booley.flows.sim.coverage_record import (
+    CoverageFinding,
+    CoveragePoint,
+    CoverageRecord,
+    DurableTargetIdentity,
+    decode_coverage_point_id,
 )
 from booley.flows.sim.coverage_waiver_files import (
     SecureFile,
@@ -96,9 +96,9 @@ class ApprovedWaiverSet:
     digest: str
     waivers: tuple[ApprovedWaiver, ...]
 
-    def match(self, campaign: CoverageCampaign) -> ApprovedWaiverMatch:
-        """Resolve applicable exact matches transactionally for one Campaign."""
-        return _match_campaign(self.waivers, campaign)
+    def match(self, coverage_record: CoverageRecord) -> ApprovedWaiverMatch:
+        """Resolve applicable exact matches transactionally for one Coverage Record."""
+        return _match_coverage_record(self.waivers, coverage_record)
 
 
 WaivablePointProblem = Literal["missing", "ambiguous", "source", "ineligible", "hit"]
@@ -112,9 +112,9 @@ def waivable_point_problem(
 ) -> WaivablePointProblem | None:
     """Why the points sharing one requested id cannot be waived, or None.
 
-    *matches* are the Campaign points with the requested id. *sources* is the
+    *matches* are the Coverage Record points with the requested id. *sources* is the
     accepted RTL sources: one named source for an approval or a Waiver
-    Candidate, the Campaign's whole RTL closure for Coverage Analysis.
+    Candidate, the Coverage Record's whole RTL closure for Coverage Analysis.
     *zero_hits* also rejects a point with observed hits.
     """
     if not matches:
@@ -822,8 +822,10 @@ _MATCH_FINDINGS: Mapping[WaivablePointProblem, tuple[str, str]] = {
 }
 
 
-def _match_finding(waiver: ApprovedWaiver, campaign: CoverageCampaign) -> CoverageFinding | None:
-    points = [point for point in campaign.points if point.id == waiver.point_id]
+def _match_finding(
+    waiver: ApprovedWaiver, coverage_record: CoverageRecord
+) -> CoverageFinding | None:
+    points = [point for point in coverage_record.points if point.id == waiver.point_id]
     problem = waivable_point_problem(points, {waiver.source})
     if problem is None:
         return None
@@ -831,17 +833,19 @@ def _match_finding(waiver: ApprovedWaiver, campaign: CoverageCampaign) -> Covera
     return _error(code, f"/approved_waivers/{waiver.waiver_file}#{waiver.waiver_id}", message)
 
 
-def _match_campaign(
-    waivers: tuple[ApprovedWaiver, ...], campaign: CoverageCampaign
+def _match_coverage_record(
+    waivers: tuple[ApprovedWaiver, ...], coverage_record: CoverageRecord
 ) -> ApprovedWaiverMatch:
-    if campaign.normalization.get("status") not in {
+    if coverage_record.normalization.get("status") not in {
         "complete",
         "complete_with_unknown_records",
     }:
         return ApprovedWaiverMatch(waivers=(), findings=())
-    applicable = [item for item in waivers if str(item.target) == campaign.target.identity]
+    applicable = [item for item in waivers if str(item.target) == coverage_record.target.identity]
     findings = tuple(
-        finding for item in applicable if (finding := _match_finding(item, campaign)) is not None
+        finding
+        for item in applicable
+        if (finding := _match_finding(item, coverage_record)) is not None
     )
     if findings:
         return ApprovedWaiverMatch(waivers=(), findings=findings)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from tests.smoke.test_verilator_coverage_collector_smoke import _write_generated_target
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
@@ -46,12 +47,14 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
             report_dir=alias / "trace-reports",
             test=("good",),
             trace=True,
-            timeout_ms=90_000,
+            timeout_ms=3 * hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    campaign = result.outcome.detail["campaigns"]["sim"]
-    manifest = root / ".booley/trace-reports/sim/1" / campaign["artifacts"]["manifest"]["path"]
+    simulation_record = result.outcome.detail["records"]["sim"]
+    manifest = (
+        root / ".booley/trace-reports/sim/1" / simulation_record["artifacts"]["manifest"]["path"]
+    )
     receipt = next(manifest.parent.glob("work-items/*/result.json"))
     document = json.loads(receipt.read_text())
     trace = next(item for item in document["evidence"] if item["kind"] == "trace")
@@ -67,7 +70,7 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
 
 def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
     root = Path("/work")
-    alias = Path("/booley-project")
+    alias = Path("/booley")
     data = root / ".booley"
     assert shutil.which("verilator") and shutil.which("verilator_coverage")
     assert alias.is_symlink() and alias.readlink() == data
@@ -82,16 +85,16 @@ def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
                 test=(name,),
                 coverage=True,
                 trace=True,
-                timeout_ms=90_000,
+                timeout_ms=3 * hang_guard_s() * 1000,
             )
         )
         assert result.exit_code == expected, result.outcome.report_text
-        campaign = result.outcome.detail["campaigns"]["sim"]
-        assert campaign["artifacts"]["manifest"]["path"]
-        assert campaign["artifacts"]["simulation"]["path"]
-        assert campaign["artifacts"]["coverage"]["path"]
+        simulation_record = result.outcome.detail["records"]["sim"]
+        assert simulation_record["artifacts"]["manifest"]["path"]
+        assert simulation_record["artifacts"]["simulation"]["path"]
+        assert simulation_record["artifacts"]["coverage"]["path"]
     reports = data / "reports"
-    assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 2
+    assert len(list(reports.glob("sim/*/targets/sim/record/manifest.json"))) == 2
     assert len(list(reports.glob("sim/.invocation-*.lock"))) == 2
     assert list(reports.rglob("coverage-points.jsonl.gz"))
     assert list(reports.rglob("*.fst")) or list(reports.rglob("*.vcd"))
@@ -107,7 +110,7 @@ def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
             work_dir=root,
             report_dir=alias / "linked/reports",
             test=("good",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert refused.exit_code == 2

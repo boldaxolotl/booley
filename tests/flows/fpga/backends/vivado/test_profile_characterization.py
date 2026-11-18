@@ -11,7 +11,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.time_budget import scaled
+
 _FIXTURE = Path(__file__).resolve().parents[4] / "fixtures" / "vivado_profile_characterization"
+# Completion deadline of the opt-in licensed-host routed run, which takes minutes.
+_RUN_TIMEOUT_S = scaled(900)
 _PROFILES = ("balanced", "compact", "max_frequency")
 _EXPECTED_MAPPING = {
     "balanced": ("Vivado Synthesis Defaults", "Vivado Implementation Defaults"),
@@ -92,6 +96,7 @@ def _vivado() -> Path:
 @pytest.mark.slow
 @pytest.mark.parametrize("profile", _PROFILES)
 def test_profile_completes_routed_characterization(profile: str, tmp_path: Path) -> None:
+    # Kept on subprocess.run: opt-in licensed-host Vivado routed run takes minutes, beyond the shared budget.
     completed = subprocess.run(
         [
             str(_vivado()),
@@ -105,7 +110,7 @@ def test_profile_completes_routed_characterization(profile: str, tmp_path: Path)
         ],
         capture_output=True,
         text=True,
-        timeout=900,
+        timeout=_RUN_TIMEOUT_S,
         check=False,
     )
     output = completed.stdout + completed.stderr

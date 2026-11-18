@@ -12,8 +12,8 @@ import zipfile
 from pathlib import Path
 
 import booley
-from booley.dev_support.reference_docs import SHIPPED_DOCS
 from booley.runtime.image_build_contracts import embedded_image_build_contracts
+from booley.runtime.packaged_docs import SHIPPED_DOCS
 
 EXPECTED_ENTRY_POINTS = {
     "booley": "booley.harness.booley:main",

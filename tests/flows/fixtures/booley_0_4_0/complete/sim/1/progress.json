@@ -1,0 +1,74 @@
+{
+  "complete": true,
+  "completed_targets": [
+    "sim"
+  ],
+  "detail": {
+    "sim": {
+      "artifacts": {},
+      "build_stage": [],
+      "campaign_id": "a2e9f8c1-e31c-4374-8a65-fb4aff7c7016",
+      "complete": true,
+      "dependency": "external_origin_campaign",
+      "dependency_available": false,
+      "grade": "pass",
+      "manifest_sha256": "sha256:3fa689d446a02fe3c2a87925044d72a033217067102c9f9ec4cae4dadbfaf4be",
+      "observation_counts": {
+        "assertions": {
+          "clean": 1
+        },
+        "execution": {
+          "completed": 1
+        },
+        "functional": {
+          "pass": 1
+        }
+      },
+      "observation_total": 1,
+      "observations": [
+        {
+          "assertion_count": 0,
+          "assertions": "clean",
+          "cycle_count": null,
+          "detail": {
+            "reason": ""
+          },
+          "execution": "completed",
+          "failure_class": null,
+          "functional": "pass",
+          "test": "first"
+        }
+      ],
+      "observations_truncated": false,
+      "origin_invocation_id": 1,
+      "resolved_artifacts": {
+        "manifest": "/booley-0.4.0-capture/complete/reports/sim/1/targets/sim/campaign/manifest.json",
+        "simulation": "/booley-0.4.0-capture/complete/reports/sim/1/targets/sim/simulation.json"
+      },
+      "termination_counts": {},
+      "test_run_total": 1,
+      "test_runs": [
+        {
+          "args": [],
+          "env": {},
+          "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+          "grade": "pass",
+          "name": "first@1",
+          "seed": 1,
+          "test": "first",
+          "variant": null
+        }
+      ],
+      "test_runs_truncated": false
+    }
+  },
+  "flow": "sim",
+  "mode": "simulate",
+  "pending_targets": [],
+  "phase": "complete",
+  "run_id": "",
+  "targets": [
+    "sim"
+  ],
+  "timestamp": "2026-11-12T22:28:25Z"
+}

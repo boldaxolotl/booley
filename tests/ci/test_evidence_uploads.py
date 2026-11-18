@@ -171,13 +171,34 @@ def _assert_uploads(workflow: dict, tmp_path: Path, actions: dict | None = None)
         "bwave-integration",
         "sidecar-smoke",
         "bwave-smoke",
-        "riscv-image",
         "ci-metrics",
     }, "the workflow diagnostic audit must exercise every diagnostic-producing job"
 
 
 def test_declared_evidence_reaches_uploads(tmp_path: Path) -> None:
     _assert_uploads(_workflow(), tmp_path)
+
+
+def test_riscv_candidate_script_evidence_reaches_the_upload(tmp_path: Path) -> None:
+    """The riscv-image job's diagnostics come from ``riscv_candidate.sh``, not a flag it spells.
+
+    The audit above reads flags in step bodies, so this job is checked by what
+    it hands the script: the evidence directory the unconditional upload covers.
+    """
+    steps = _steps(_workflow()["jobs"]["riscv-image"]["steps"])
+    build = next(
+        step for step in steps if step.get("name") == "Run RISC-V candidate image contract"
+    )
+    resolve = next(step for step in steps if step.get("id") == "riscv-tooling")
+    upload = next(step for step in steps if step.get("name") == "Upload candidate RISC-V evidence")
+
+    assert '.github/scripts/riscv_candidate.sh build "${evidence}"' in build["run"]
+    assert 'evidence="${RUNNER_TEMP}/riscv-image-evidence"' in build["run"]
+    assert upload["if"] == "always()"
+    assert steps.index(resolve) < steps.index(build) < steps.index(upload)
+    assert _covered("/runner/riscv-image-evidence/tooling-compat.log", upload, tmp_path)
+    assert _covered("/runner/riscv-image-evidence/tooling-source.json", upload, tmp_path)
+    assert "riscv-image-evidence/tooling-source.json" in resolve["run"]
 
 
 @pytest.mark.parametrize(

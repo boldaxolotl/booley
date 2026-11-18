@@ -1,4 +1,4 @@
-"""Read-only Textual navigation over detached Dashboard snapshots."""
+"""Textual navigation over detached Dashboard snapshots, and the Run wizard that starts Flows."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import re
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -21,18 +20,26 @@ from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, OptionList, Static
+from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
-from booley.core.boundary import as_float
-from booley.goals.model import OCCUPYING_STATES
-from booley.goals.presentation import proposal_presentation
 from booley.harness.dashboard import sessions
 from booley.harness.dashboard.footer import BackTarget, footer_hints
-from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView
+from booley.harness.dashboard.jobs import (
+    FINISHED_JOB_STATES,
+    TERMINAL_JOB_STATES,
+    JobSnapshot,
+    JobView,
+    job_elapsed_seconds,
+)
+from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.links import linked_text, open_in_editor
-from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
+from booley.harness.dashboard.measurement import checkout_of, measuring_text
+from booley.harness.dashboard.model import DashboardSnapshot
 from booley.harness.dashboard.resources import Resources
+from booley.harness.dashboard.review import Occupants
+from booley.harness.dashboard.specialist_form import SimRun
 from booley.harness.dashboard.targets import (
     TargetDetail,
     TargetListing,
@@ -40,10 +47,20 @@ from booley.harness.dashboard.targets import (
     WorktreeChoice,
     WorktreeList,
     first_line,
+    launchable_flows,
     order_worktrees,
 )
-from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, WORKTREE, TopBar
+from booley.harness.dashboard.topbar import (
+    FILTER,
+    HELP_ITEM,
+    OWNER,
+    RUN_ITEM,
+    WINDOW,
+    WORKTREE,
+    TopBar,
+)
 from booley.harness.dashboard.view_probe import ViewState
+from booley.harness.dashboard.wizard import LOADING, RunPreset, RunWizard
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.presentation.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.presentation.report_results import (
@@ -52,10 +69,7 @@ from booley.presentation.report_results import (
     configuration,
     literal,
     present_job_report,
-    project_facts,
-    proposal_summary,
 )
-from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
 from booley.runtime.job_records import parse_stamp, target_arg
 from booley.runtime.pid import ProcessState
@@ -76,46 +90,48 @@ REFRESH_SECONDS = 2
 CURSOR_POSITION_REQUEST = "\x1b[6n"
 # "Finished" lists this many newest Jobs; "All" lists everything the snapshot retains.
 FINISHED_JOBS = 50
-# An orphaned process is known dead even though its Job record never finalized.
-_REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
+# Fits a queued claim's need, free memory, a blocked seat and three named holders.
+_QUEUE_DETAIL_LIMIT = 400
 HELP = (
     "↑↓ move through the list · Enter opens the selected row · Esc goes back one level\n"
     "←→ switch between the Sessions, Jobs and Targets windows; each keeps its place\n"
     "↑ on the first row (an empty list, or the top of a detail view) reaches the top bar:"
     " ←→ choose, Enter apply, ↓ or Esc back\n"
-    "The top bar holds the window tabs and Help; in the Jobs window also its filters:\n"
+    "The top bar holds the window tabs, Run and Help; in the Jobs window also its filters:\n"
     f"Running, Finished (newest {FINISHED_JOBS}) and All, and the owner"
     " (Enter cycles All sessions, each session, Standalone)\n"
     "The Jobs tab counts unfinished Jobs; the Jobs window always opens on All sessions\n"
     "and keeps the Running / Finished / All choice\n"
     "The Targets window lists the selected worktree's Targets with their core and Flows;\n"
-    "Enter shows filesets, tests, Test Variants and constraints. Its top bar Worktree item\n"
-    "picks the worktree: those with sessions first, the main checkout last\n"
+    "Enter shows filesets, tests, Test Variants and constraints, then the Flows that can\n"
+    "drive the Target: ↓ past the end reaches them, Enter opens Run's form with the worktree\n"
+    "and Target filled in, and Esc on the form returns to the detail. The Targets window's\n"
+    "top bar Worktree item picks the worktree: those with sessions first, the main checkout last\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
     "Booley call rows are informational; Enter does not open them\n"
     "The footer shows the keys that apply where the cursor is\n"
     "Click a report, artifact or evidence path to open it in the editor\n"
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
-    "The Dashboard is read-only; approvals remain in chat."
+    "Run in the top bar starts a built-in Flow or the reviewer Specialist as a Standalone Job:\n"
+    "pick the worktree, the Flow or Specialist, then fill in its form; check the equivalent\n"
+    "shell command and submit or copy it;\n"
+    "the review also says if the Job runs now or queues and warns\n"
+    "about sessions, running Jobs and uncommitted changes in the worktree\n"
+    "After Run the Jobs window opens on All sessions with the new Job selected; a Finished\n"
+    "filter switches to Running, which keeps the selected Job listed after it finishes"
 )
 
 _ACCENT = f"color({PALETTE_DODGER_BLUE})"
 _CHROME = f"color({PALETTE_MAUVE})"
 SEMANTIC_STYLE = {
     "pass": "green",
-    "met": "green",
-    "passing": "green",
     "warn": "yellow",
     "fail": "bold red",
-    "failing": "bold red",
     "running": _ACCENT,
-    "checking": _ACCENT,
-    "needs recheck": f"color({PALETTE_ORANGE})",
     "attention": f"color({PALETTE_ORANGE})",
     "unknown": "dim",
     "not run": "dim",
-    "not yet run": "dim",
     "unavailable": "dim",
     "ok": "dim",
 }
@@ -124,13 +140,13 @@ SEMANTIC_STYLE = {
 UNMOUNTED_LIST_WIDTH = 160
 NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client calls Booley."
 # Views that replace the list with one full-width detail.
-DEDICATED_VIEWS = frozenset({"job", "goal", "help", "proposal", "target"})
+DEDICATED_VIEWS = frozenset({"job", "help", "target"})
 # Windows left to right; the arrow keys step along them.
 WINDOW_ORDER = ("sessions", "jobs", "targets")
 # Terminal columns from which a detail (Jobs) or preview (Sessions) sits beside the list.
 WIDE_COLUMNS = 120
-# Jobs list columns, left to right. Crit repeats the detail's Criterion line as a mark.
-JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Crit", "Elapsed")
+# Jobs list columns, left to right.
+JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Elapsed")
 _TARGET, _RESULT = JOB_COLUMNS.index("Target"), JOB_COLUMNS.index("Result")
 # A Target is cut to this many columns before a Result word is: six name characters,
 # the ellipsis and the gap. The Job detail beside the list shows both in full.
@@ -178,7 +194,8 @@ class SessionOrientation:
     """
 
     key: str
-    handle: str
+    #: ``S3``, or ``S3 · uart-fix`` for a named session.
+    title: str
     checkout: str
     branch: str
     mode: str
@@ -190,21 +207,9 @@ class SessionOrientation:
     last_age: str
 
 
-def _goal_summary(goal: GoalView) -> str:
-    """One line: Goals met of total and pending proposals; ``Goals —`` without a status."""
-    status = goal.status
-    if status is None:
-        return f"Goals {_ABSENT}"
-    line = f"Goals {status.met}/{len(status.goals)} met"
-    if status.pending_proposals > 0:
-        count = status.pending_proposals
-        line += f" · {count} proposal{'s' if count != 1 else ''} pending"
-    return line
-
-
 def _finished(job: JobView) -> bool:
     """True for Jobs that ended or whose process is known dead; they list under Finished."""
-    return job.state in _REPORT_DETAIL_STATES
+    return job.state in FINISHED_JOB_STATES
 
 
 def _sentence(text: str) -> str:
@@ -213,9 +218,9 @@ def _sentence(text: str) -> str:
 
 
 def activity_label(activity: Activity, now: float) -> str:
-    """Reported session activity and how long it has lasted; unknown is said plainly."""
+    """Reported session activity and how long it has lasted; unknown says why."""
     if activity.state == UNKNOWN:
-        return "activity unknown"
+        return f"activity unknown ({activity.cause})"
     tool = f" ({activity.tool})" if activity.state == WAITING_TOOL and activity.tool else ""
     try:
         elapsed = now - parse_timestamp(activity.since).timestamp()
@@ -264,8 +269,7 @@ _ACTIVITY_STYLE = {
     WAITING_TOOL: _ACCENT,
     UNKNOWN: "dim",
 }
-# Header of the session list's second section: the Booley calls, Jobs and
-# proposals of the session (not its hook-reported Session activity).
+# Header of the session list's second section: the Booley calls and Jobs of the session (not its hook-reported Session activity).
 BOOLEY_ACTIVITY = "Booley activity"
 
 
@@ -351,35 +355,8 @@ def _notices_text(snapshot: DashboardSnapshot) -> Text:
 
 
 def _activity_row(kind: str, line: str) -> Text:
-    """One Booley activity row: its kind muted (a pending proposal flagged), the rest plain."""
-    style = SEMANTIC_STYLE["attention"] if kind == "Pending proposal" else _CHROME
-    return Text.assemble((kind + ": ", style), line)
-
-
-def _goal_text(goal: GoalDetail) -> Text:
-    text = Text()
-    if goal.checking:
-        text.append("checking · ", style=SEMANTIC_STYLE["checking"])
-    text.append(goal.state + " · ", style=SEMANTIC_STYLE[goal.state])
-    text.append(goal.presentation.label + " · " + goal.presentation.detail, style=_ACCENT)
-    return text
-
-
-def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
-    """Extract an interval, freezing terminal Jobs even without an end stamp."""
-    if job.state in TERMINAL_JOB_STATES and not job.record.ended_at:
-        reported = as_float((job.report or {}).get("elapsed_s"))
-        return reported if reported is not None and reported >= 0 else None
-    try:
-        start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
-        end = (
-            parse_timestamp(job.record.ended_at).timestamp()
-            if job.record.ended_at
-            else (time.time() if now is None else now)
-        )
-        return max(0, end - start)
-    except ValueError:
-        return None
+    """One Booley activity row: its kind muted, the rest plain."""
+    return Text.assemble((kind + ": ", _CHROME), line)
 
 
 def _connection_label(row: SessionRow, now: float) -> str:
@@ -428,32 +405,33 @@ def _job_cells(job: JobView, now: float, handles: Mapping[str, str] | None) -> t
     target = target_arg(job.record.argv)
     owner = _owner_handle(job, handles)
     elapsed = job_elapsed_seconds(job, now)
-    if job.state in _REPORT_DETAIL_STATES:
+    if job.state in FINISHED_JOB_STATES:
         presentation = _job_presentation(job)
         result = Text(
             presentation.flow_word.value,
             style=SEMANTIC_STYLE.get(presentation.flow_word.semantic, ""),
         )
-        criterion = presentation.criterion
-        crit = (
-            Text(
-                "✓" if criterion.semantic == "met" else "✗",
-                style=SEMANTIC_STYLE[criterion.semantic],
-            )
-            if criterion is not None
-            else Text()
-        )
     else:
-        result, crit = Text(_ELLIPSIS, style="dim"), Text()
+        result = Text(_ELLIPSIS, style="dim")
     return (
         Text(_job_label(job)),
         Text(target) if target else Text(_ABSENT, style="dim"),
         Text(owner) if owner else Text(_ABSENT, style="dim"),
         Text(job.state),
         result,
-        crit,
         Text(format_duration(elapsed) if elapsed is not None else "unavailable"),
     )
+
+
+def _text_cells(rows: list[tuple[object, ...]]) -> list[tuple[Text, ...]]:
+    """Jobs rows are built from ``Text`` cells; refuse any other cell."""
+    text_rows: list[tuple[Text, ...]] = []
+    for row in rows:
+        cells = tuple(cell for cell in row if isinstance(cell, Text))
+        if len(cells) != len(row):
+            raise TypeError("a Jobs row holds only Text cells")
+        text_rows.append(cells)
+    return text_rows
 
 
 def _fit_job_widths(available: int, rows: list[tuple[Text, ...]]) -> tuple[int, ...]:
@@ -512,11 +490,9 @@ def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
 
 
 def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
-    """Compact result, independent acceptance, execution and published artifacts."""
+    """Compact result, execution and published artifacts."""
     result = _job_presentation(job)
     rows = [result.flow_result]
-    if result.criterion is not None:
-        rows.append(result.criterion)
     elapsed = job_elapsed_seconds(job, now)
     duration = format_duration(elapsed) if elapsed is not None else "unavailable"
     rows.append(
@@ -547,6 +523,8 @@ def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
             rows.append(ResultLine("", f"{len(artifacts) - 3} more artifacts in report"))
     if job.log_path:
         rows.extend((ResultLine("Log", ""), ResultLine("", job.log_path)))
+    if job.transcript_dir:
+        rows.extend((ResultLine("Transcripts", ""), ResultLine("", job.transcript_dir)))
     if report:
         rows.extend((ResultLine("Report", ""), ResultLine("", report)))
     return rows
@@ -568,17 +546,23 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
             rows.append(ResultLine(label, format_clock(stamp, now=now)))
     rows.extend(_read_row(job, now=now))
     tool = job.recorded_tools
-    if job.state not in _REPORT_DETAIL_STATES:
+    if job.state not in FINISHED_JOB_STATES:
         tool = tool or job.eda_tool
     elif not tool and (
         report.get("flow")
-        or (job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"})
+        or (
+            job.report is None
+            and job.record.endpoint in {"sim", "lint", "synth", "fpga", "mutation"}
+        )
     ):
         tool = "not recorded by this Flow"
     if tool:
         rows.append(ResultLine("EDA tool", tool))
     if job.stage:
         rows.append(ResultLine("Stage", literal(job.stage)))
+    if job.state == "queued" and job.queue:
+        # The text names other processes' run IDs and Targets: shown as data, bounded.
+        rows.append(ResultLine("Queue", literal(job.queue, limit=_QUEUE_DETAIL_LIMIT)))
     rows.extend(_job_resources(job))
     return rows
 
@@ -598,7 +582,7 @@ def _read_row(job: JobView, *, now: float | None = None) -> list[ResultLine]:
         if waited is not None:
             row += f" · {format_duration(max(0.0, waited))} after end"
         return [ResultLine("Read", row)]
-    if record.owner is not None and job.state in _REPORT_DETAIL_STATES:
+    if record.owner is not None and job.state in FINISHED_JOB_STATES:
         return [ResultLine("Read", "unread")]
     return []
 
@@ -610,7 +594,7 @@ def _seconds_between(start: str | None, end: str) -> float | None:
 
 
 def _job_resources(job: JobView) -> list[ResultLine]:
-    if job.state in _REPORT_DETAIL_STATES:
+    if job.state in FINISHED_JOB_STATES:
         if job.report is None:
             return [ResultLine("", "resources not recorded (no report)", "unavailable")]
         resources = job.recorded_resources
@@ -631,10 +615,10 @@ def _job_resources(job: JobView) -> list[ResultLine]:
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
-    """Visible deduplicated side artifacts first, then ``job.log``, exact report last."""
+    """Visible deduplicated side artifacts first, then ``job.log``, transcripts, exact report last."""
     report = str(job.report_path) if job.report_path is not None else None
     artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
-    return (*artifacts, *(path for path in (job.log_path, report) if path))
+    return (*artifacts, *(path for path in (job.log_path, job.transcript_dir, report) if path))
 
 
 def _job_words(job: JobView, now: float) -> str:
@@ -646,28 +630,6 @@ def _job_words(job: JobView, now: float) -> str:
 def _job_summary(job: JobView, now: float) -> str:
     """Compact overview form: marker, Job label, Flow, Target and elapsed time."""
     return f"▶ {_job_label(job)} {_job_words(job, now)}"
-
-
-def _evidence_detail(goal: GoalDetail, *, now: float | None = None) -> str:
-    frozen = "".join(f"{line}\n" for line in goal.test_runs)
-    if goal.evidence is None:
-        return frozen + "Last check: unavailable · Evidence unavailable"
-    facts = observation_facts(goal.evidence)
-    recorded = goal.evidence.get("recorded_at")
-    checked = format_clock(recorded, now=now) if recorded is not None else "unavailable"
-    lines = [
-        f"Last check: {checked}",
-        "Observations:",
-        _line_text(project_facts(facts)),
-        "Immutable derivation provenance:",
-    ]
-    for row in goal.provenance[:5]:
-        lines.append(_line_text(project_facts(observation_facts(row))))
-    if len(goal.provenance) > 5:
-        lines.append(f"{len(goal.provenance) - 5} more provenance records in evidence")
-    if goal.artifacts:
-        lines.extend(("Available evidence paths:", *goal.artifacts))
-    return frozen + "\n".join(lines)
 
 
 class SessionList(DataTable):
@@ -700,6 +662,29 @@ class SessionList(DataTable):
         return next((row for row in range(self.row_count) if row not in self.header_rows), 0)
 
 
+class FlowList(OptionList):
+    """The Flows that can drive the open Target; Up on the first one returns to the detail."""
+
+    def action_cursor_up(self) -> None:
+        if self.highlighted in (None, 0):
+            self.app.query_one("#aside").focus(scroll_visible=False)
+        else:
+            super().action_cursor_up()
+
+
+class DetailScroll(VerticalScroll):
+    """The detail panel: Down scrolls a line, and past the end reaches the Flow list, if shown."""
+
+    BINDINGS: ClassVar = [Binding("down", "scroll_or_flows", show=False)]
+
+    def action_scroll_or_flows(self) -> None:
+        flows = self.query_one("#target-flows", FlowList)
+        if flows.display and self.scroll_y >= self.max_scroll_y:
+            flows.focus()
+        else:
+            super().action_scroll_down()
+
+
 class DashboardApp(App[None]):
     """One observational Sandbox view, responsive and keyboard accessible."""
 
@@ -722,6 +707,7 @@ class DashboardApp(App[None]):
     #body { height: 1fr; }
     #list { width: 1fr; }
     #aside { width: 1fr; display: none; padding: 0 1; }
+    #target-flows { height: auto; max-height: 100%; display: none; }
     #empty { height: auto; }
     #footer { dock: bottom; height: 1; color: $text-muted; }
     """
@@ -732,6 +718,7 @@ class DashboardApp(App[None]):
         opener: Callable[[str], str] = open_in_editor,
         view_state: ViewState | None = None,
         targets: TargetsReader | None = None,
+        launcher: Launcher | None = None,
     ) -> None:
         super().__init__()
         self.reader = reader
@@ -740,6 +727,12 @@ class DashboardApp(App[None]):
         self.view_state = view_state
         # Reads for the Targets window; without one the window reads nothing.
         self.targets = targets
+        # Starts Flows for the Run wizard; without one (no Project root) Run is unavailable.
+        self.launcher = launcher
+        # The Job the Run wizard just submitted, until its row appears in the Jobs list.
+        self._pending_job = ""
+        # The window and history Run was chosen from; Esc on the Jobs root returns there.
+        self._run_origin: tuple[str, list[Navigation]] | None = None
         self.snapshot = DashboardSnapshot()
         # Each window keeps its own non-empty history; its first entry is the top level.
         self.windows: dict[str, list[Navigation]] = {
@@ -772,6 +765,8 @@ class DashboardApp(App[None]):
         # Scroll offsets by (window, view, session, filter, detail selection).
         self._scrolls: dict[tuple[str, str, str | Owner | None, str, str], float] = {}
         self._detail_shown: tuple[str, str, str | Owner | None, str, str] | None = None
+        # The (Target, Flows) the Target detail's Flow list was filled for.
+        self._flows_shown: tuple[str, tuple[str, ...]] | None = None
 
     def compose(self) -> ComposeResult:
         yield TopBar(id="topbar")
@@ -783,8 +778,9 @@ class DashboardApp(App[None]):
         yield Static(id="empty", markup=False)
         with Horizontal(id="body"):
             yield SessionList(id="list", cursor_type="row")
-            with VerticalScroll(id="aside"):
+            with DetailScroll(id="aside"):
                 yield Static(id="detail", markup=False)
+                yield FlowList(id="target-flows", markup=False)
         yield Static(id="footer", markup=False)
 
     async def on_mount(self) -> None:
@@ -898,6 +894,7 @@ class DashboardApp(App[None]):
 
     def _show_window(self, window: str) -> None:
         """Switch windows; each keeps its own history, selection and scroll."""
+        self._forget_run()
         self._remember()
         if window == "jobs" and self.window != "jobs":
             self._reset_jobs_owner()
@@ -917,13 +914,18 @@ class DashboardApp(App[None]):
         self.query_one(TopBar).focus()
 
     def _focus_content(self) -> None:
-        """Give the keyboard to the list, or to the detail when the list is hidden."""
+        """Give the keyboard to the list, or to the detail when the list is hidden.
+
+        Not while a modal (the Run wizard) is open: it keeps the keyboard.
+        """
+        if len(self.screen_stack) > 1:
+            return
         table = self.query_one(DataTable)
         (table if table.display else self.query_one("#aside")).focus()
 
     def _content_at_top(self) -> bool:
         """True when up has nowhere to go inside the focused content."""
-        table = self.query_one(DataTable)
+        table = self.query_one(SessionList)
         if table.display:
             return self.focused is table and (
                 table.row_count == 0 or table.cursor_row <= table.first_selectable_row()
@@ -950,6 +952,8 @@ class DashboardApp(App[None]):
             self._set_jobs_filter(session=self._next_owner())
         elif message.kind == WORKTREE:
             self._open_worktrees()
+        elif message.kind == RUN_ITEM:
+            self._open_run_wizard()
         # A scroll view has no list to hand the keyboard back to: it takes it (#2886).
         # The worktree list is for choosing from, so it takes the keyboard too.
         if self.navigation.view in DEDICATED_VIEWS or message.kind == WORKTREE:
@@ -958,12 +962,20 @@ class DashboardApp(App[None]):
     def on_top_bar_left(self, _message: TopBar.Left) -> None:
         self._focus_content()
 
+    def on_top_bar_moved(self, _message: TopBar.Moved) -> None:
+        self._update_footer()
+
     def action_back(self) -> None:
         """Go back one level inside the shown window; its top level stays put."""
         stack = self.windows[self.window]
         if len(stack) > 1:
             stack.pop()
             self._show()
+        elif self.window == "jobs" and self._run_origin is not None:
+            # Esc after Run returns to where the wizard started, history and all.
+            window, history = self._run_origin
+            self._forget_run()
+            self._navigate(window, *history)
 
     def action_help(self) -> None:
         """Display the Dashboard's keys and views; reached from the top bar's Help item."""
@@ -985,7 +997,64 @@ class DashboardApp(App[None]):
 
         A filter chosen while a narrow Job detail is open returns to the list.
         """
+        self._forget_run()
         self._navigate("jobs", replace(self._jobs_root(), selected="", **changes))
+
+    def _forget_run(self) -> None:
+        """A window switch or a filter choice ends what Run set up: the pending Job and the way back."""
+        self._pending_job = ""
+        self._run_origin = None
+
+    def _open_run_wizard(self, preset: RunPreset | None = None) -> None:
+        """Open the Run wizard over the current window, remembering where it started.
+
+        A *preset* (from a Target detail) starts it at the form, its worktree and Target chosen.
+        """
+        if self.launcher is None or self.targets is None:
+            self.notify("Run unavailable: no Project root", severity="warning")
+            return
+        self._remember()
+        origin = (self.window, list(self.windows[self.window]))
+        self._load_worktrees()
+        choices, message = self._wizard_worktrees()
+        self.push_screen(
+            RunWizard(
+                self.launcher,
+                self.targets,
+                choices,
+                message,
+                self._default_worktree,
+                self._worktree_occupants,
+                self._finished_sim_runs,
+                preset,
+            ),
+            lambda key: self._after_run(origin, key),
+        )
+
+    def _wizard_worktrees(self) -> tuple[tuple[WorktreeChoice, ...], str]:
+        """The wizard's worktree list and what to say while there is none."""
+        listed = self._worktree_list
+        return self._worktree_choices(), LOADING if listed is None else listed.problem
+
+    def _after_run(self, origin: tuple[str, list[Navigation]], key: str | None) -> None:
+        """Show the submitted Job selected in the Jobs window, which opens on All sessions.
+
+        A Finished filter would hide a Job that is still running, so it becomes Running;
+        Running keeps the selected Job listed after it finishes. The Job's row may not be
+        in the snapshot yet: the selection waits for it (``_pending_job``).
+        """
+        if key is None:
+            return
+        job_filter = self._jobs_root().job_filter
+        self._navigate(
+            "jobs",
+            Navigation("jobs", None, "running" if job_filter == "finished" else job_filter, key),
+        )
+        self._pending_job = key
+        self._run_origin = origin
+        self._focus_content()  # the top bar had the keyboard when Run was chosen
+        self._update_footer()  # Esc now goes back to where Run started
+        self.call_later(self.refresh_snapshot)
 
     def action_open_path(self, path: str) -> None:
         """Open a published path in the editor; a failure is reported, never raised."""
@@ -996,10 +1065,14 @@ class DashboardApp(App[None]):
         if self.is_mounted and self.query("#list"):
             self.call_after_refresh(self.render_snapshot)
 
-    def _session(self) -> tuple[str, GoalView | None]:
-        """The session's orientation header as plain text, and its Goal."""
-        header, goal = self._session_header()
-        return header.plain, goal
+    def _session(self) -> str:
+        """The session's orientation header as plain text."""
+        return self._session_header().plain
+
+    def _open_session_key(self) -> str:
+        """The open session's key; the empty string when no session is open."""
+        session = self.navigation.session
+        return session if isinstance(session, str) else ""
 
     def _session_row(self) -> tuple[SessionRow | None, bool]:
         """The open detail's session row and whether it is connected.
@@ -1012,31 +1085,30 @@ class DashboardApp(App[None]):
             (
                 row
                 for row in self.snapshot.sessions
-                if row.attribution.key == self.navigation.session
+                if row.attribution.key == self._open_session_key()
             ),
             None,
         )
         if live is not None:
             return live, True
-        return self._known_sessions.get(self.navigation.session or ""), False
+        return self._known_sessions.get(self._open_session_key()), False
 
-    def _session_header(self) -> tuple[Text, GoalView | None]:
-        """The session's orientation header, styled fact by fact, and its Goal."""
+    def _session_header(self) -> Text:
+        """The session's orientation header, styled fact by fact."""
         row, connected = self._session_row()
         attention = SEMANTIC_STYLE["attention"]
         if row is None:
-            handle = self._session_handle(self.navigation.session or "")
+            title = self._session_title(self._open_session_key())
             return _join(
-                (f"{handle} ", "bold " + _ACCENT),
+                (f"{title} ", "bold " + _ACCENT),
                 ("disconnected", attention),
                 "retained Jobs remain available",
-            ), None
-        goal = self._goal_for_session(row.attribution)
-        info = self._orientation(row, goal, connected=connected)
+            )
+        info = self._orientation(row, connected=connected)
         state = self.snapshot.activity.get(info.key, Activity()).state
         connection_style = "green" if info.connection == "connected" else attention
         header = _join(
-            info.handle,
+            info.title,
             info.checkout,
             info.branch or "branch unavailable",
             info.mode,
@@ -1054,11 +1126,9 @@ class DashboardApp(App[None]):
                 "\n", ("Session key: ", _CHROME), (sessions.session_key_label(info.key), "dim")
             )
         )
-        return header, goal
+        return header
 
-    def _orientation(
-        self, row: SessionRow, goal: GoalView | None, *, connected: bool
-    ) -> SessionOrientation:
+    def _orientation(self, row: SessionRow, *, connected: bool) -> SessionOrientation:
         """Derive the shared orientation facts once for session detail and the preview."""
         facts = row.attribution
         shared = any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions)
@@ -1068,14 +1138,14 @@ class DashboardApp(App[None]):
             else ("WARNING: shared worktree" if shared else "")
         )
         last = row.calls[-1] if row.calls else None
-        checkout, branch = self._checkout_label(facts, goal)
+        checkout, branch = self._checkout_label(facts)
         now = self.snapshot.observed_at
         return SessionOrientation(
             key=facts.key,
-            handle=self._session_handle(facts.key),
+            title=self._session_title(facts.key),
             checkout=checkout,
             branch=branch,
-            mode="Goal Mode" if goal else "Interactive",
+            mode="Interactive",
             connection=_connection_label(row, now) if connected else "disconnected",
             started=format_age(row.started_at, now=now),
             activity=_sentence(self._activity_label(facts.key)),
@@ -1085,7 +1155,7 @@ class DashboardApp(App[None]):
         )
 
     @staticmethod
-    def _checkout_label(facts: Attribution, goal: GoalView | None) -> tuple[str, str]:
+    def _checkout_label(facts: Attribution) -> tuple[str, str]:
         """Checkout and branch a session's Booley calls target, for display.
 
         A session that never passed ``work_dir`` runs every call in its MCP
@@ -1093,35 +1163,12 @@ class DashboardApp(App[None]):
         unless its process runs in a routable checkout.
         """
         if not facts.work_dir and facts.default_work_dir:
-            return f"{facts.default_work_dir} (default)", facts.branch
-        return facts.work_dir, facts.branch or (goal.record.branch if goal and goal.record else "")
+            return f"{checkout_of(facts)} (default)", facts.branch
+        return facts.work_dir, facts.branch
 
     def _activity_label(self, key: str) -> str:
         return activity_label(
             self.snapshot.activity.get(key, Activity()), self.snapshot.observed_at
-        )
-
-    def _goal_for_session(self, facts: Attribution) -> GoalView | None:
-        candidates = [
-            goal
-            for goal in self.snapshot.goals
-            if goal.record is not None and goal.record.worktree.key == facts.worktree_key
-        ]
-        current = next(
-            (
-                goal
-                for goal in candidates
-                if goal.record is not None and goal.record.state.value in OCCUPYING_STATES
-            ),
-            None,
-        )
-        return current or next(
-            (
-                goal
-                for goal in reversed(candidates)
-                if goal.record is not None and goal.record.session_key == facts.key
-            ),
-            None,
         )
 
     def _jobs(self) -> list[JobView]:
@@ -1265,34 +1312,12 @@ class DashboardApp(App[None]):
         return nav.view.title(), [], []
 
     def _session_content(self) -> tuple[Text, list[str], list[tuple[object, ...]]]:
-        orientation, goal = self._session_header()
+        orientation = self._session_header()
         self._fitted_width = 0  # Set again only when a section rule is drawn.
-        keys, cells = [], []
-        if goal is not None:
-            ordered = sorted(
-                goal.goals,
-                key=lambda item: {
-                    "failing": 0,
-                    "needs recheck": 1,
-                    "not yet run": 2,
-                    "checking": 3,
-                    "passing": 4,
-                }["checking" if item.checking else item.state],
-            )
-            keys.extend(item.key for item in ordered)
-            cells.extend(_goal_text(item) for item in ordered)
-        if goal and goal.diagnostic:
-            orientation.append("\n" + goal.diagnostic)
-        if goal and goal.terminal_summary:
-            orientation.append("\n")
-            orientation.append_text(_markdown_lines(goal.terminal_summary))
+        keys: list[str] = []
+        cells: list[Text] = []
         row, _ = self._session_row()
-        activity = self._session_activity(goal, row)
-        if goal is not None:
-            # Goals head the list; Booley activity is its own section below a
-            # spacer and a titled rule, both unselectable header rows.
-            keys += [sessions.HEADER_PREFIX + "spacer", sessions.HEADER_PREFIX + "booley-activity"]
-            cells += [Text(""), self._section_rule(BOOLEY_ACTIVITY)]
+        activity = self._session_activity(row)
         if not activity:
             keys.append(sessions.HEADER_PREFIX + "no-booley-activity")
             cells.append(Text("No Booley activity yet", style="dim"))
@@ -1301,37 +1326,16 @@ class DashboardApp(App[None]):
             cells.append(content)
         return orientation, keys, [(cell,) for cell in cells]
 
-    def _section_rule(self, title: str) -> Text:
-        """A titled rule as wide as the list, separating one list section from the next."""
-        self._fitted_width = self._list_width()
-        rule = f"── {title} "
-        return Text(
-            rule + "─" * max(0, self._fitted_width - cell_len(rule)), style="bold " + _CHROME
-        )
-
-    def _session_activity(
-        self, goal: GoalView | None, session: SessionRow | None
-    ) -> list[tuple[str, Text]]:
-        """The session's pending proposals, unfinished Jobs and recent Booley calls.
+    def _session_activity(self, session: SessionRow | None) -> list[tuple[str, Text]]:
+        """The session's unfinished Jobs and recent Booley calls.
 
         ``session`` is the resolved row (live or remembered) whose calls are listed.
         """
-        activities = []
-        if goal and goal.status:
-            activities.extend(
-                (
-                    "proposal:" + view.proposal.id,
-                    _activity_row(
-                        "Pending proposal", proposal_summary(proposal_presentation(view))
-                    ),
-                )
-                for view in goal.status.proposals
-                if view.state == "pending" and not view.closed_by_abandonment
-            )
+        activities: list[tuple[str, Text]] = []
         activities.extend(
             ("job:" + json.dumps(job.key), _activity_row("Running Job", self._job_line(job)))
             for job in self.snapshot.jobs.jobs
-            if self._owned_by(job, self.navigation.session)
+            if self._owned_by(job, self._open_session_key())
             and job.state not in TERMINAL_JOB_STATES
         )
         if session:
@@ -1357,6 +1361,8 @@ class DashboardApp(App[None]):
         )
 
     def _selected_key(self) -> str:
+        if self._pending_job and self.navigation.view == "jobs":
+            return self._pending_job  # not listed yet, so no cursor row can stand for it
         table = self.query_one(DataTable)
         index = table.cursor_row
         return self.row_keys[index] if index < len(self.row_keys) else self.navigation.selected
@@ -1368,6 +1374,10 @@ class DashboardApp(App[None]):
     def _session_handle(self, key: str) -> str:
         return self.snapshot.session_handles.get(key, "S?")
 
+    def _session_title(self, key: str) -> str:
+        """The handle with its ``--name`` label when the session has one."""
+        return self.snapshot.session_titles.get(key) or self._session_handle(key)
+
     def _owned_by(self, job: JobView, key: str | None) -> bool:
         """Aliases affect presentation membership only; routing keeps durable keys."""
         if key is None:
@@ -1376,54 +1386,65 @@ class DashboardApp(App[None]):
         label = self.snapshot.session_handles.get(key)
         return owner == label if owner and label else job.record.session_key == key
 
-    def _occupying_goal(self, facts: Attribution) -> GoalView | None:
-        """The Goal occupying a session's worktree; overview rows never describe a finished one."""
-        return next(
-            (
-                goal
-                for goal in self.snapshot.goals
-                if goal.record
-                and goal.record.worktree.key == facts.worktree_key
-                and goal.record.state.value in OCCUPYING_STATES
-            ),
-            None,
-        )
-
     def _session_facts(self, row: SessionRow) -> sessions.SessionFacts:
         """Everything the overview shows about one session."""
         facts = row.attribution
-        goal = self._occupying_goal(facts)
-        mode = "Interactive"
-        if goal:
-            mode = f"Goal {goal.status.met}/{len(goal.status.goals)}" if goal.status else "Goal"
         notices = []
-        if goal and goal.diagnostic:
-            # A diagnostic can span lines; a row must stay one line.
-            notices.append(" · ".join(part.strip() for part in goal.diagnostic.splitlines()))
         if facts.kind == "worktree":
             notices.append("shared attribution unavailable")
         elif any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions):
             notices.append("WARNING shared worktree")
-        checkout, branch = self._checkout_label(facts, goal)
+        checkout, branch = self._checkout_label(facts)
+        measurement, report = self._measurement(facts)
         return sessions.SessionFacts(
             key=facts.key,
             handle=self._session_handle(facts.key),
-            mode=mode,
+            title=self._session_title(facts.key),
+            mode="Interactive",
             branch=branch,
             work_dir=checkout,
             started=format_age(row.started_at, now=self.snapshot.observed_at),
             activity=self.snapshot.activity.get(facts.key, Activity()),
-            proposals=goal.status.pending_proposals if goal and goal.status else 0,
             jobs=tuple(
                 _job_summary(job, self.snapshot.observed_at)
                 for job in self.snapshot.jobs.jobs
                 if self._owned_by(job, facts.key) and job.state == "running"
             ),
             notices=tuple(notices),
+            measurement=measurement,
+            report=report,
         )
 
+    def _measurement(self, facts: Attribution) -> tuple[str, str]:
+        """The line under a session row and the report it opens; ``("", "")`` shows none."""
+        line = self.snapshot.measurements.get(checkout_of(facts))
+        if line is None:
+            return "", ""
+        job = line.measuring
+        if job is not None:
+            progress = job.record.progress
+            return measuring_text(
+                progress, job_elapsed_seconds(job, self.snapshot.observed_at)
+            ), ""
+        return line.text, line.report or ""
+
+    def _selected_report(self) -> str | None:
+        """The report a selected measurement line opens, or None when the cursor is elsewhere."""
+        if self.navigation.view != "overview":
+            return None
+        if self.query_one(DataTable).cursor_row >= len(self.row_keys):
+            return None
+        key = self._selected_key()
+        if not key.startswith(sessions.MEASUREMENT_PREFIX):
+            return None
+        row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
+        return (self._measurement(row.attribution)[1] or None) if row else None
+
+    def _session_row_of(self, key: str) -> SessionRow | None:
+        return next((row for row in self.snapshot.sessions if row.attribution.key == key), None)
+
     def _needs_you(self) -> int:
-        """Sessions that wait for the human or hold a pending Goal-change proposal."""
+        """Sessions that wait for the human."""
         groups = (sessions.group_of(self._session_facts(row)) for row in self.snapshot.sessions)
         return sum(group == sessions.NEEDS_YOU for group in groups)
 
@@ -1467,14 +1488,7 @@ class DashboardApp(App[None]):
         notices_text = _notices_text(self.snapshot)
         notices.update(notices_text)
         notices.display = bool(notices_text)
-        bar = self.query_one(TopBar)
-        bar.active = self.window
-        bar.needs_you = self._needs_you()
-        jobs_root = self._jobs_root()
-        bar.job_filter = jobs_root.job_filter
-        bar.owner = self._owner_filter_label(jobs_root.session)
-        bar.unfinished = sum(not _finished(job) for job in self.snapshot.jobs.jobs)
-        bar.worktree = self._worktree.name if self._worktree else ""
+        self._update_top_bar()
         table = self.query_one(SessionList)
         selected = self._selected_key()
         scroll = (
@@ -1483,7 +1497,7 @@ class DashboardApp(App[None]):
             else self._scrolls.get(self._scroll_key(self.navigation), 0)
         )
         rows, job_widths = self._apply_list_columns(table, rows)
-        if rows != self._rows:
+        if rows != self._rows or keys != self.row_keys:
             table.header_rows = frozenset()
             table.clear()
             for row in rows:
@@ -1493,6 +1507,8 @@ class DashboardApp(App[None]):
             self._place_cursor(table, keys, selected, scroll)
             self._rows = rows
         self.row_keys = keys
+        if self._pending_job in keys:
+            self._pending_job = ""  # the cursor now stands on it
         self._render_detail()
         self._update_footer()
         # The list's width settles only after layout (a window switch, a scrollbar).
@@ -1504,6 +1520,17 @@ class DashboardApp(App[None]):
         # missing focus owner (a view change hid the list) moves it.
         if self.focused is None or not self.focused.display:
             self._focus_content()
+
+    def _update_top_bar(self) -> None:
+        """Tell the top bar the active window, filters, counts and worktree."""
+        bar = self.query_one(TopBar)
+        bar.active = self.window
+        bar.needs_you = self._needs_you()
+        jobs_root = self._jobs_root()
+        bar.job_filter = jobs_root.job_filter
+        bar.owner = self._owner_filter_label(jobs_root.session)
+        bar.unfinished = sum(not _finished(job) for job in self.snapshot.jobs.jobs)
+        bar.worktree = self._worktree.name if self._worktree else ""
 
     @staticmethod
     def _place_cursor(table: SessionList, keys: list[str], selected: str, scroll: float) -> None:
@@ -1549,10 +1576,11 @@ class DashboardApp(App[None]):
         job_widths: tuple[int, ...] | None = None
         if self.navigation.view == "jobs":
             self._jobs_fit_width = table.size.width
+            job_cells = _text_cells(rows)
             job_widths = _fit_job_widths(
-                self._jobs_fit_width - table.styles.scrollbar_size_vertical, rows
+                self._jobs_fit_width - table.styles.scrollbar_size_vertical, job_cells
             )
-            rows = _truncate_job_rows(rows, job_widths)
+            rows = list(_truncate_job_rows(job_cells, job_widths))
         columns = self._list_columns(job_widths)
         if columns != self._list_columns_shown:
             table.clear(columns=True)
@@ -1571,7 +1599,7 @@ class DashboardApp(App[None]):
             return tuple(zip(JOB_COLUMNS, job_widths, strict=True))
         return {
             "overview": ((self._overview_header, None),),
-            "session": (("Goals" if self._session()[1] else BOOLEY_ACTIVITY, None),),
+            "session": ((BOOLEY_ACTIVITY, None),),
             "targets": (("Target", None), ("Core", None), ("Flows", None)),
             "worktrees": (("Worktree", None),),
         }.get(self.navigation.view, self._list_columns_shown)
@@ -1584,12 +1612,6 @@ class DashboardApp(App[None]):
         ):
             self.render_snapshot()
 
-    def _selected_goal(self) -> GoalDetail | None:
-        _, goal = self._session()
-        if goal is None:
-            return None
-        return next((item for item in goal.goals if item.key == self.navigation.selected), None)
-
     def _selected_job(self) -> JobView | None:
         """The Job named by a dedicated detail view, or under the Jobs list cursor."""
         table = self.query_one(DataTable)
@@ -1601,42 +1623,12 @@ class DashboardApp(App[None]):
             key = ""
         return next((job for job in self.snapshot.jobs.jobs if json.dumps(job.key) == key), None)
 
-    def _selected_proposal_detail(self) -> str:
-        _, goal = self._session()
-        view = (
-            next(
-                (
-                    view
-                    for view in goal.status.proposals
-                    if view.proposal.id == self.navigation.selected
-                ),
-                None,
-            )
-            if goal and goal.status
-            else None
-        )
-        if view is None:
-            return "Proposal unavailable"
-        return (
-            _line_text(project_facts(proposal_presentation(view))) + "\nApproval remains in chat."
-        )
-
     def _detail_content(self) -> tuple[str | Text, tuple[str, ...]]:
         """Detail text for the current view and the published paths it may link."""
         view = self.navigation.view
         if view in {"jobs", "job"}:
             job = self._selected_job()
             return (self._job_detail(job), job_paths(job)) if job else ("Job data unavailable", ())
-        if view == "goal":
-            goal = self._selected_goal()
-            if goal is None:
-                return "Goal data unavailable", ()
-            return (
-                f"{goal.presentation.label}\n{goal.state}\nRequirement: {goal.presentation.requirement}\n{goal.presentation.detail}\n"
-                + _evidence_detail(goal, now=self.snapshot.observed_at)
-            ), goal.artifacts
-        if view == "proposal":
-            return self._selected_proposal_detail(), ()
         if view in {"help", "target"}:
             return (HELP if view == "help" else self._target_detail_text()), ()
         return self._preview_content() if view == "overview" else ("", ())
@@ -1652,14 +1644,13 @@ class DashboardApp(App[None]):
                 (job for job in self.snapshot.jobs.jobs if json.dumps(job.key) == key[4:]), None
             )
             return (self._job_detail(job), job_paths(job)) if job else (Text(), ())
-        row = next((row for row in self.snapshot.sessions if row.attribution.key == key), None)
+        row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
         return (self._session_preview(row), ()) if row else (Text(), ())
 
     def _session_preview(self, row: SessionRow) -> Text:
-        """Labelled orientation lines, the Goal summary and the unfinished Jobs of one session."""
+        """Labelled orientation lines, the unfinished Jobs of one session."""
         facts = row.attribution
-        goal = self._occupying_goal(facts)
-        info = self._orientation(row, goal, connected=True)
+        info = self._orientation(row, connected=True)
         lines: list[tuple[str, str]] = [
             ("Activity", info.activity),
             ("Branch", info.branch or _ABSENT),
@@ -1671,7 +1662,7 @@ class DashboardApp(App[None]):
                 f"{info.last_call} · {info.last_age}" if info.last_call else _ABSENT,
             ),
         ]
-        text = Text(f"{info.handle} · {info.mode}", style="bold " + _ACCENT)
+        text = Text(f"{info.title} · {info.mode}", style="bold " + _ACCENT)
         for label, value in lines:
             text.append("\n")
             text.append(label + ":", style=_CHROME)
@@ -1679,8 +1670,6 @@ class DashboardApp(App[None]):
             text.append(value, style="dim" if value == _ABSENT else "")
         if info.warning:
             text.append("\n" + info.warning)
-        if goal:
-            text.append("\n" + _goal_summary(goal))
         jobs = [
             job
             for job in self.snapshot.jobs.jobs
@@ -1704,6 +1693,7 @@ class DashboardApp(App[None]):
         self.query_one(DataTable).display = not dedicated
         aside.styles.width = "100%" if dedicated else "50%"
         self.query_one("#detail", Static).update(linked_text(detail, paths))
+        self._fill_flow_list()
         # Entering a view (or returning to it from the other window) restores its offset;
         # later refreshes of the same view leave the user's scrolling alone.
         shown = self._scroll_key(nav)
@@ -1745,6 +1735,40 @@ class DashboardApp(App[None]):
             detail.append(row.value, style=SEMANTIC_STYLE.get(row.semantic, ""))
         return detail
 
+    def _target_flows(self) -> tuple[str, ...]:
+        """The Flows that can drive the open Target; none until its detail is read, or without Run."""
+        detail = self._detail
+        if (
+            self.navigation.view != "target"
+            or self.launcher is None
+            or detail is None
+            or detail.row is None
+            or detail.selector != self.navigation.selected
+        ):
+            return ()
+        return launchable_flows(detail.row.flows)
+
+    def _fill_flow_list(self) -> None:
+        """List the open Target's Flows; a refresh of the same list keeps the highlight."""
+        flows = self._target_flows()
+        options = self.query_one("#target-flows", FlowList)
+        shown = (self.navigation.selected, flows)
+        if shown != self._flows_shown:
+            self._flows_shown = shown
+            options.clear_options()
+            options.add_options([Option(flow, id=flow) for flow in flows])
+            options.highlighted = 0 if flows else None
+        options.display = bool(flows)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Enter on a Flow of the Target detail opens Run's form for that Target."""
+        if event.option_list.id != "target-flows":
+            return
+        event.stop()
+        detail, flow = self._detail, event.option.id
+        assert detail is not None and flow is not None  # the list is filled from the detail
+        self._open_run_wizard(RunPreset(detail.worktree, flow, detail.selector))
+
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         # A highlight queued before shutdown can arrive after the table is gone.
         if not self.query(DataTable):
@@ -1765,12 +1789,17 @@ class DashboardApp(App[None]):
             footer.update(
                 footer_hints(
                     top_bar=isinstance(self.focused, TopBar),
-                    enter_opens=self._enter_target() is not None,
+                    enter_opens=self._enter_target() is not None
+                    or self._selected_report() is not None,
                     jobs_list=self.navigation.view == "jobs",
                     targets_list=self.navigation.view == "targets",
-                    nested=len(self.windows[self.window]) > 1,
+                    nested=len(self.windows[self.window]) > 1
+                    or (self.window == "jobs" and self._run_origin is not None),
                     scrolling=self.focused is self.query_one("#aside"),
+                    flows_below=self.query_one("#target-flows").display,
+                    run_list=isinstance(self.focused, FlowList),
                     back_to=_back_target(self.navigation.view),
+                    on_run=self.query_one(TopBar).current_kind() == RUN_ITEM,
                 )
             )
 
@@ -1788,11 +1817,15 @@ class DashboardApp(App[None]):
         """
         if self.query_one(DataTable).cursor_row >= len(self.row_keys):
             return None
+        if self._pending_job and self.navigation.view == "jobs":
+            return None  # a Job that is not listed yet has nothing to open
         key = self._selected_key()
         if not key or key.startswith(sessions.HEADER_PREFIX):
             return None  # A header row, such as an empty-state line, opens nothing.
         nav = self.navigation
         target = None
+        if nav.view == "overview" and key.startswith(sessions.MEASUREMENT_PREFIX):
+            return None  # the line opens its report, not a view (`_selected_report`)
         if nav.view == "overview":
             target = (
                 Navigation("job", None, nav.job_filter, key.removeprefix("job:"))
@@ -1814,13 +1847,12 @@ class DashboardApp(App[None]):
         """What Enter opens on a row of a session detail; Booley call rows open nothing."""
         if key.startswith("job:"):
             return Navigation("job", nav.session, nav.job_filter, key.removeprefix("job:"))
-        if key.startswith("proposal:"):
-            return Navigation("proposal", nav.session, selected=key.removeprefix("proposal:"))
-        if key.startswith("call:"):
-            return None
-        return Navigation("goal", nav.session, selected=key)
+        return None
 
     def _open_selected(self) -> None:
+        if (report := self._selected_report()) is not None:
+            self.action_open_path(report)
+            return
         target = self._enter_target()
         if target is None:
             return
@@ -1913,10 +1945,16 @@ class DashboardApp(App[None]):
                 text.append("\n  " + line)
         for problem in detail.problems:
             text.append(("\n" if text else "") + problem, style=SEMANTIC_STYLE["attention"])
+        if self._target_flows():  # the Flow list follows this last line
+            add("Run a Booley Flow", "")
         return text
 
     def _session_checkouts(self) -> list[tuple[Path, str]]:
-        """Each connected session's checkout and ``S3 Interactive`` label, in handle order."""
+        """Each connected session's checkout and ``S3 · uart-fix Interactive`` label, by handle number.
+
+        The label starts with the session title (the bare handle when unnamed); the order
+        follows the handle number, never the title.
+        """
 
         def number(row: SessionRow) -> int:
             match = _HANDLE_NUMBER.fullmatch(self._session_handle(row.attribution.key))
@@ -1927,9 +1965,45 @@ class DashboardApp(App[None]):
             facts = row.attribution
             checkout = facts.work_dir or facts.default_work_dir
             if checkout:
-                label = f"{self._session_handle(facts.key)} {self._session_facts(row).mode}"
+                label = f"{self._session_title(facts.key)} {self._session_facts(row).mode}"
                 pairs.append((Path(checkout), label))
         return pairs
+
+    def _worktree_occupants(self, worktree: Path) -> Occupants:
+        """The connected sessions and unfinished Jobs in *worktree*, as the last read showed them."""
+        if self.snapshot.observed_at == 0:
+            return Occupants(problem="the Dashboard has not read them yet")
+        here = worktree.resolve()
+        sessions = tuple(
+            label for path, label in self._session_checkouts() if path.resolve() == here
+        )
+        running = tuple(
+            job.handle or job.record.run_id
+            for job in self.snapshot.jobs.jobs
+            if not _finished(job)
+            and job.record.work_dir
+            and Path(job.record.work_dir).resolve() == here
+        )
+        return Occupants(sessions, running)
+
+    def _finished_sim_runs(self, worktree: Path) -> tuple[SimRun, ...] | None:
+        """The finished Simulation Jobs of *worktree* that the last read retained; ``None`` before any read.
+
+        Their invocation directories hold the Coverage Records the Run wizard offers.
+        No file is read here: this runs on the main thread.
+        """
+        if self.snapshot.observed_at == 0:
+            return None
+        here = worktree.resolve()
+        return tuple(
+            SimRun(job.report_path.parent, job.record.ended_at or "")
+            for job in self.snapshot.jobs.jobs
+            if job.record.endpoint == "sim"
+            and _finished(job)
+            and job.report_path is not None
+            and job.record.work_dir
+            and Path(job.record.work_dir).resolve() == here
+        )
 
     def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:
         """The worktrees to pick from; sessions' first, the main checkout last."""
@@ -1943,6 +2017,18 @@ class DashboardApp(App[None]):
         row = self._known_sessions.get(key)
         checkout = row.attribution.work_dir or row.attribution.default_work_dir if row else ""
         return Path(checkout) if checkout else None
+
+    def _default_worktree(self, choices: tuple[WorktreeChoice, ...]) -> Path | None:
+        """The highlighted session's worktree, else the main checkout."""
+        checkout = self._highlighted_checkout()
+        return next(
+            (
+                item.path
+                for item in choices
+                if checkout and item.path.resolve() == checkout.resolve()
+            ),
+            None,
+        ) or next((item.path for item in choices if item.main), None)
 
     def _enter_targets(self) -> None:
         """Entering the window refreshes its reads and, until a choice, preselects the worktree."""
@@ -1958,16 +2044,7 @@ class DashboardApp(App[None]):
         """
         if self._worktree_chosen or self.targets is None or self._worktree_list is None:
             return False
-        choices = self._worktree_choices()
-        checkout = self._highlighted_checkout()
-        picked = next(
-            (
-                item.path
-                for item in choices
-                if checkout and item.path.resolve() == checkout.resolve()
-            ),
-            None,
-        ) or next((item.path for item in choices if item.main), self.targets.root)
+        picked = self._default_worktree(self._worktree_choices()) or self.targets.root
         if picked == self._worktree:
             return False
         self._set_worktree(picked)
@@ -2051,6 +2128,8 @@ class DashboardApp(App[None]):
         reset = False
         if isinstance(result, WorktreeList):
             self._worktree_list = result
+            if isinstance(self.screen, RunWizard):
+                self.screen.set_worktrees(*self._wizard_worktrees())
             # Only the read started by entering the window preselects: a list opened later
             # by the human must not swap the worktree under them.
             reset = (

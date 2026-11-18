@@ -7,7 +7,8 @@ the command that regenerates the file.
 
 Scope: catches an added, removed, or re-pinned direct dependency and a wrong
 compile command. It does not notice a new extra or marker on an existing direct
-requirement.
+requirement. A self-reference (``booley-rtl[test]``, how ``dev`` composes the other
+extras) is not a direct requirement: it carries no pin and uv writes no line for it.
 """
 
 from __future__ import annotations
@@ -79,11 +80,13 @@ def parse(text: str) -> Constraints:
 
 
 def _direct_requirements(project: dict) -> list[Requirement]:
-    """Runtime dependencies plus every optional extra."""
+    """Runtime dependencies plus every optional extra, minus self-references."""
     declared = list(project.get("dependencies", ()))
     for extra in project.get("optional-dependencies", {}).values():
         declared.extend(extra)
-    return [Requirement(item) for item in declared]
+    own_name = canonicalize_name(project.get("name", ""))
+    requirements = [Requirement(item) for item in declared]
+    return [item for item in requirements if canonicalize_name(item.name) != own_name]
 
 
 def stale_reasons(project: dict, text: str) -> list[str]:

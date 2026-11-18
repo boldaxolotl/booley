@@ -20,8 +20,9 @@ from booley.harness import init_cmd
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime import host_base_acquisition as owner
-from booley.runtime import interactive_docker
+from booley.runtime import host_docker
 from booley.runtime.docker_build import DockerBuildResult
+from booley.runtime.packaged_docs import MissingShippedDocError
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 
 
@@ -258,7 +259,7 @@ def test_local_candidate_reports_runtime_base_inspect_failure(tmp_path, monkeypa
     # Fail every Docker seam (the shared helper and raw subprocess); an empty PATH
     # does not hide `docker` on Windows.
     monkeypatch.setattr(init_docker_image.subprocess, "run", docker_missing)
-    monkeypatch.setattr(interactive_docker, "_run_docker", docker_missing)
+    monkeypatch.setattr(host_docker, "_run_docker", docker_missing)
     monkeypatch.setattr(
         init_docker_image,
         "_docker_build_image",
@@ -1177,8 +1178,8 @@ class TestWheelFailureReport:
         assert "stderr side of the story" in capsys.readouterr().out
 
     def test_ensurepip_failure_names_its_fix(self, capsys):
-        """The exact trap docs/user/TROUBLESHOOTING.md documents, and the one that killed the
-        fpu port's first init: Debian splits venv out of the interpreter."""
+        """The trap that killed the fpu port's first init: Debian splits venv out of the
+        interpreter."""
         ctx = InitContext(project_root=Path("/tmp/x"))
         _wheel_failure(
             ctx,
@@ -1193,6 +1194,16 @@ class TestWheelFailureReport:
         pyver = f"python{sys.version_info.major}.{sys.version_info.minor}-venv"
         assert f"apt install {pyver}" in out
         assert "--no-isolation" in out
+
+    def test_missing_shipped_doc_does_not_blame_the_build_module(self, capsys):
+        ctx = InitContext(project_root=Path("/tmp/x"))
+        init_docker_image._report_wheel_failure(
+            ctx, MissingShippedDocError("shipped doc source is missing: docs/user/X.md")
+        )
+
+        out = capsys.readouterr().out
+        assert "docs/user/X.md" in out
+        assert "pip install build" not in out
 
     def test_missing_build_module_keeps_its_own_fix(self, capsys):
         ctx = InitContext(project_root=Path("/tmp/x"))

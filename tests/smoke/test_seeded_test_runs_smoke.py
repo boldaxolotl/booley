@@ -17,11 +17,11 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.config.project_config import normalize_tests_toml
 from booley.flows.sim.backends import cocotb as cocotb_backend
@@ -30,7 +30,6 @@ from booley.flows.sim.backends import verilator as verilator_backend
 from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
 from booley.flows.test_runs import MAX_SEED
 
-_TOOL_TIMEOUT_S = 180
 _OTHER_SEED = 271828
 
 # Two draws from the simulator's own generator, and the seed argument the
@@ -83,15 +82,7 @@ def _plusargs(plan: TargetTestPlan, seed: int) -> list[str]:
 
 
 def _run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        timeout=_TOOL_TIMEOUT_S,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = run_bounded_child(command, cwd=cwd, env=env, timeout=SUBPROCESS_TIMEOUT_S)
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout + result.stderr
 

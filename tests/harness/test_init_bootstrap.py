@@ -12,9 +12,10 @@ import pytest
 
 from booley.config.host_config import host_config_path
 from booley.harness import bootstrap, bootstrap_cli, init_cmd
-from booley.runtime import issuance_invalidation, session_refresh
+from booley.runtime import issuance_invalidation
 from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+from tests.time_budget import hang_guard_s
 
 
 def _args(**overrides: object) -> argparse.Namespace:
@@ -89,7 +90,9 @@ def test_host_setup_waits_for_lifecycle_lock(
     lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
     waiting = observe_lifecycle_contention(monkeypatch)
     invoked: list[str] = []
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setattr(
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kw: False
+    )
     run = _host_setup_run(operation, tmp_path, monkeypatch, invoked)
 
     with (
@@ -97,10 +100,10 @@ def test_host_setup_waits_for_lifecycle_lock(
         ThreadPoolExecutor(max_workers=1) as executor,
     ):
         result = executor.submit(run)
-        assert waiting.wait(2)
+        assert waiting.wait(hang_guard_s())
         assert not result.done()
         holder.release()
-        assert result.result(timeout=5) == 0
+        assert result.result(timeout=hang_guard_s()) == 0
 
     assert invoked == [operation]
     assert "host Docker lifecycle is busy" in caplog.text
@@ -242,7 +245,7 @@ def test_check_only_continues_project_planning_and_returns_pending(
             (_finding(init_cmd.BootstrapState.PENDING),),
         ),
     )
-    selection = init_cmd.AgentSelection("claude", "auto", True, True)
+    selection = init_cmd.AgentSelection("claude", "subscription", True, "subscription")
     monkeypatch.setattr(
         init_cmd,
         "_resolve_agent_selection",
@@ -301,7 +304,7 @@ def _image_command_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     monkeypatch.setattr(
         init_cmd,
         "_resolve_agent_selection",
-        lambda *_args: init_cmd.AgentSelection("claude", "auto", True, True),
+        lambda *_args: init_cmd.AgentSelection("claude", "subscription", True, "subscription"),
     )
     monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
     monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
@@ -370,7 +373,7 @@ def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
     monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", observe)
     monkeypatch.setattr(
         init_cmd,
-        "_step_interactive",
+        "_step_sandbox",
         lambda *_args, **_kwargs: pytest.fail("refused seed must not apply a spec"),
     )
     assert init_cmd.run_init(_args(seed=True, force=True), tmp_path) == 2

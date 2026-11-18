@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from booley.flows.synth.warnings import parse_synth_diagnostics
+from tests.flows.synth.captured_yosys import diagnostic_sources
+
+_CLEAN_CHECK = "Found and reported 0 problems.\n"
 
 
 def test_real_yosys_v068_structural_warnings_are_counted() -> None:
@@ -31,7 +36,9 @@ def test_real_yosys_v068_structural_warnings_are_counted() -> None:
         + "Found and reported 40 problems.\n"
     )
 
-    diagnostics = parse_synth_diagnostics({"yosys": yosys, "final_check": final_check})
+    diagnostics = parse_synth_diagnostics(
+        {"yosys": yosys, "premap_check": _CLEAN_CHECK, "final_check": final_check}
+    )
 
     assert diagnostics.structural.complete is True
     assert diagnostics.structural.comb_loops == 16
@@ -58,7 +65,8 @@ def test_warning_groups_keep_counts_and_representative_diagnostics() -> None:
                 "[WARNING STA-0503] find_timing_paths -group_count is deprecated. "
                 "Use -group_path_count instead.\n"
             ),
-            "final_check": "Found and reported 0 problems.\n",
+            "premap_check": _CLEAN_CHECK,
+            "final_check": _CLEAN_CHECK,
         }
     )
 
@@ -119,7 +127,8 @@ def test_earlier_loop_is_advisory_when_final_check_is_clean() -> None:
     diagnostics = parse_synth_diagnostics(
         {
             "yosys": "Warning: found logic loop in module top:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n",
-            "final_check": "Found and reported 0 problems.\n",
+            "premap_check": _CLEAN_CHECK,
+            "final_check": _CLEAN_CHECK,
         }
     )
 
@@ -131,14 +140,17 @@ def test_earlier_loop_is_advisory_when_final_check_is_clean() -> None:
     representative = diagnostics.warnings.representatives[0]
     assert "$add$rtl.sv:7$1" in representative.message
     assert "\\feedback" in representative.message
-    assert (
-        "completed final netlist check reports no combinational loops" in representative.rationale
+    assert "completed post-optimisation check reports no combinational loops" in (
+        representative.rationale or ""
     )
 
 
 def test_final_check_without_completion_marker_is_incomplete() -> None:
     diagnostics = parse_synth_diagnostics(
-        {"final_check": ("Warning: found logic loop in module top:\n    wire \\feedback\n")}
+        {
+            "premap_check": _CLEAN_CHECK,
+            "final_check": "Warning: found logic loop in module top:\n    wire \\feedback\n",
+        }
     )
 
     assert diagnostics.structural.complete is False
@@ -150,16 +162,30 @@ def test_informational_warning_summary_is_not_a_warning_record() -> None:
     diagnostics = parse_synth_diagnostics(
         {
             "yosys": "Warnings: 7 unique messages, 9 total\n",
-            "final_check": "Found and reported 0 problems.\n",
+            "premap_check": _CLEAN_CHECK,
+            "final_check": _CLEAN_CHECK,
         }
     )
 
     assert diagnostics.warnings.total_warnings == 0
 
 
-@pytest.mark.parametrize("final", [None, "", "Checking module top...\n"])
-def test_earlier_loop_without_completed_final_stays_structural(final):
+@pytest.mark.parametrize(
+    ("premap", "final"),
+    [
+        (_CLEAN_CHECK, None),
+        (_CLEAN_CHECK, ""),
+        (_CLEAN_CHECK, "Checking module top...\n"),
+        (None, _CLEAN_CHECK),
+        ("", _CLEAN_CHECK),
+        ("Checking module top...\n", _CLEAN_CHECK),
+        (None, None),
+    ],
+)
+def test_earlier_loop_without_both_completed_checks_stays_structural(premap, final):
     sources = {"yosys": "Warning: found logic loop in module top:\n    wire \\feedback\n"}
+    if premap is not None:
+        sources["premap_check"] = premap
     if final is not None:
         sources["final_check"] = final
     diagnostics = parse_synth_diagnostics(sources)
@@ -174,11 +200,13 @@ def test_earlier_repeated_loops_do_not_change_exact_final_count(count):
     diagnostics = parse_synth_diagnostics(
         {
             "yosys": loop * 20,
-            "final_check": loop * count + f"Found and reported {count} problems.\n",
+            "premap_check": loop * count + f"Found and reported {count} problems.\n",
+            "final_check": _CLEAN_CHECK,
         }
     )
     assert diagnostics.structural.comb_loops == count
-    assert diagnostics.warnings.total_warnings == 20 + count
+    # The pre-mapping check is a count source only: it is not in the inventory.
+    assert diagnostics.warnings.total_warnings == 20
     assert diagnostics.warnings.advisory_warnings == (20 if count == 0 else 0)
 
 
@@ -186,8 +214,150 @@ def test_earlier_driver_clean_final_remains_inventory_only():
     diagnostics = parse_synth_diagnostics(
         {
             "yosys": "Warning: multiple conflicting drivers for top.sig:\n",
-            "final_check": "Found and reported 0 problems.\n",
+            "premap_check": _CLEAN_CHECK,
+            "final_check": _CLEAN_CHECK,
         }
     )
     assert diagnostics.structural.multi_driven == 0
     assert diagnostics.warnings.structural_warnings == 1
+
+
+def test_real_yosys_v070_check_output_is_counted() -> None:
+    # Captured from Yosys 0.70+ (28ba3cb92) through Booley's generated script:
+    # one combinational loop and one multi-driven net in the design.
+    sources = diagnostic_sources("check_yosys_0_70.txt")
+    yosys, premap_check, final_check = (
+        sources["yosys"],
+        sources["premap_check"],
+        sources["final_check"],
+    )
+
+    diagnostics = parse_synth_diagnostics(sources)
+
+    # The pre-mapping check sees the loop through generic cells; the final check
+    # runs after Liberty mapping, where cells are opaque, so it sees only the
+    # multi-driven net.
+    assert diagnostics.structural.complete is True
+    assert diagnostics.structural.comb_loops == 1
+    assert diagnostics.structural.multi_driven == 1
+    # Booley's own pre-mapping check is not an inventory source: Yosys's
+    # ``check`` passes inside ``synth`` already report the same warnings.
+    assert diagnostics.warnings.by_category == {"combinational_loop": 2, "multi_driver": 3}
+    assert diagnostics.warnings.by_disposition == {"structural": 5}
+    assert "deprecated" not in (yosys + premap_check + final_check).lower()
+    # ``tee -q`` keeps both Booley-owned checks out of ``yosys.log``.
+    assert "Checking module chk" in premap_check
+    assert "Checking module chk" in final_check
+    assert yosys.count("Found and reported") == 2
+
+
+@pytest.mark.parametrize(
+    ("fixture", "comb_loops", "disposition"),
+    [
+        ("comb_loop_yosys_0_70.txt", 1, "structural"),
+        ("ff_feedback_yosys_0_70.txt", 0, None),
+        ("transient_loop_yosys_0_70.txt", 0, "advisory"),
+    ],
+    ids=["comb_loop", "ff_feedback", "transient_loop"],
+)
+def test_real_yosys_v070_loop_cases_are_counted(fixture, comb_loops, disposition) -> None:
+    # Captured from Yosys 0.70+ (28ba3cb92) and the pinned Nangate45 Liberty
+    # through Booley's generated script. The transient case is the #1417
+    # pattern: a loop ``synth``'s first check reports and its optimisation
+    # removes. Only the slang frontend produces it; the sv2v path does not.
+    diagnostics = parse_synth_diagnostics(diagnostic_sources(fixture))
+
+    assert diagnostics.structural.complete is True
+    assert diagnostics.structural.comb_loops == comb_loops
+    assert diagnostics.structural.multi_driven == 0
+    loops = [
+        group
+        for group in diagnostics.warnings.representatives
+        if group.category == "combinational_loop"
+    ]
+    assert {group.disposition for group in loops} == ({disposition} if disposition else set())
+    assert diagnostics.warnings.structural_warnings == (
+        diagnostics.warnings.total_warnings if disposition == "structural" else 0
+    )
+
+
+def test_loop_in_final_check_alone_still_counts() -> None:
+    # The larger of the two counts wins, so a loop the final check ever reports
+    # still fails the run even when the pre-mapping check is clean.
+    loop = "Warning: found logic loop in module top:\n    wire \\feedback\n"
+    diagnostics = parse_synth_diagnostics(
+        {
+            "premap_check": _CLEAN_CHECK,
+            "final_check": loop + "Found and reported 1 problems.\n",
+        }
+    )
+
+    assert diagnostics.structural.complete is True
+    assert diagnostics.structural.comb_loops == 1
+
+
+def _fixture_text(name: str) -> str:
+    return (Path(__file__).parent / "fixtures" / name).read_text()
+
+
+@pytest.mark.parametrize("version", ["0_69", "0_70"])
+def test_real_slang_frontend_warnings_group_under_frontend(version: str) -> None:
+    # Captured through `yosys -s` with `read_slang --top w w.sv`: Yosys 0.69+
+    # (9f75ca1f9) prints `w.sv:1:9: warning:`; Yosys 0.70+ (28ba3cb92) prints
+    # `w.sv:1: Warning:`. Both echo the source line and a caret line.
+    log = _fixture_text(f"slang_warning_yosys_{version}.txt")
+
+    summary = parse_synth_diagnostics({"yosys": log}).warnings
+
+    assert summary.total_warnings == 2
+    assert summary.unique_warnings == 1
+    assert summary.by_tool == {"yosys": 2}
+    assert summary.by_category == {"frontend": 2}
+    assert summary.by_disposition == {"informational": 2}
+    assert summary.actionable_warnings == 0
+    (group,) = summary.representatives
+    assert group.count == 2
+    assert group.code == "-Wunknown-pragma"
+    assert group.message == "Warning: unknown pragma 'foobar' [-Wunknown-pragma]"
+
+
+def test_real_read_verilog_located_warning_is_frontend() -> None:
+    # Captured from Yosys 0.70+ (28ba3cb92); 0.69+ prints the same line.
+    log = _fixture_text("verilog_warning_yosys_0_70.txt")
+
+    summary = parse_synth_diagnostics({"yosys": log}).warnings
+
+    assert summary.by_category == {"frontend": 1}
+    assert summary.by_disposition == {"informational": 1}
+    (group,) = summary.representatives
+    assert group.code is None
+    assert group.message.startswith("Warning: Range select [5:4]")
+
+
+@pytest.mark.parametrize(
+    ("body", "category"),
+    [
+        ("found logic loop in module top", "combinational_loop"),
+        ("multiple conflicting drivers for top.sig", "multi_driver"),
+    ],
+)
+def test_located_structural_warning_keeps_structural_classification(
+    body: str, category: str
+) -> None:
+    summary = parse_synth_diagnostics({"yosys": f"top.v:7: Warning: {body}\n"}).warnings
+
+    assert summary.by_category == {category: 1}
+    assert summary.structural_warnings == 1
+
+
+def test_frontend_groups_sort_after_actionable_representatives() -> None:
+    frontend = "".join(f"a.v:{n}: Warning: distinct frontend {n}\n" for n in range(9))
+
+    summary = parse_synth_diagnostics(
+        {"yosys": frontend + "Warning: something advisory\n"}
+    ).warnings
+
+    assert summary.total_warnings == 10
+    assert summary.actionable_unique_warnings == 1
+    assert len(summary.representatives) == 8
+    assert summary.representatives[0].disposition == "advisory"

@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 _ROOT = Path(__file__).parents[2]
 _CONTEXT = "docker-image://ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64
@@ -104,7 +106,7 @@ def _run(
     log.touch()
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir(exist_ok=True)
-    result = subprocess.run(
+    result = run_bounded_child(
         ["bash", "-e", "-c", _expressions_removed(step["run"])],
         cwd=cwd,
         env={
@@ -116,21 +118,19 @@ def _run(
             "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
             **env,
         },
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=60,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result, log.read_text(encoding="utf-8").splitlines()
 
 
-def test_demo_chowns_and_mounts_only_its_readiness_subdirectory(tmp_path: Path) -> None:
+def test_demo_chowns_and_mounts_only_its_measurement_subdirectory(tmp_path: Path) -> None:
     result, calls = _run(
         tmp_path,
         {"run": 'bash .github/scripts/run_picorv32_ci_demo.sh "${TEST_WORKSPACE}" booley-r2'},
         {"TEST_WORKSPACE": str(tmp_path)},
     )
-    directory = tmp_path / "runner/riscv-image-evidence/goal-readiness"
+    directory = tmp_path / "runner/riscv-image-evidence/measurement"
     assert result.returncode == 0, result.stderr
     assert [call for call in calls if call.startswith("sudo chown")] == [
         f"sudo chown -R 1000:1000 demo {directory}"
@@ -138,12 +138,12 @@ def test_demo_chowns_and_mounts_only_its_readiness_subdirectory(tmp_path: Path) 
     assert any(f"src={directory},dst=/evidence" in call for call in calls)
 
 
-def test_readiness_ownership_and_upload_access_are_restored_before_upload(
+def test_measurement_ownership_and_upload_access_are_restored_before_upload(
     tmp_path: Path,
 ) -> None:
-    directory = tmp_path / "runner/riscv-image-evidence/goal-readiness"
+    directory = tmp_path / "runner/riscv-image-evidence/measurement"
     directory.mkdir(parents=True)
-    evidence = directory / "goal-readiness.json"
+    evidence = directory / "measurement.json"
     evidence.write_text("{}")
     evidence.chmod(0o600)
     step = _step("Restore RISC-V demo checkout ownership")
@@ -225,6 +225,11 @@ def test_resolver_integrity_failure_fails_the_step(tmp_path: Path) -> None:
 def _lane(tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     scripts = tmp_path / ".github/scripts"
     scripts.mkdir(parents=True)
+    # The build is the real shared script; only its collaborators are fakes.
+    (scripts / "riscv_candidate.sh").write_bytes(
+        (_ROOT / ".github/scripts/riscv_candidate.sh").read_bytes()
+    )
+    (scripts / "riscv_candidate.sh").chmod(0o755)
     for name, status in (
         ("verify_riscv_image_contract.sh", "IMAGE_CONTRACT_STATUS"),
         ("run_picorv32_ci_demo.sh", "DEMO_STATUS"),
@@ -395,7 +400,7 @@ def test_every_lane_warns_at_or_below_its_budget() -> None:
         (None, True),
     ],
 )
-def test_readiness_upload_marker_tracks_demo_attempt(
+def test_measurement_upload_marker_tracks_demo_attempt(
     tmp_path: Path, failure: str | None, started: bool
 ) -> None:
     env = {"TOOLING_SOURCE": "local", "TOOLING_CONTEXT": ""}
@@ -403,9 +408,9 @@ def test_readiness_upload_marker_tracks_demo_attempt(
         env[failure] = "1"
     result, calls = _lane(tmp_path, **env)
     assert result.returncode == (1 if failure else 0), result.stderr
-    marker = tmp_path / "runner/riscv-image-evidence/goal-readiness-started"
+    marker = tmp_path / "runner/riscv-image-evidence/measurement-started"
     assert marker.exists() == started
-    collected, _ = _run(tmp_path, _step("Read Goal readiness attempt marker"), {})
+    collected, _ = _run(tmp_path, _step("Read measurement attempt marker"), {})
     assert collected.returncode == 0, collected.stderr
     output = tmp_path / "github-output"
     assert (output.exists() and "started=true" in output.read_text()) == started
@@ -417,7 +422,8 @@ def test_readiness_upload_marker_tracks_demo_attempt(
 
 def _wait_for_exit(pid: int) -> None:
     """Wait (bounded) for a backgrounded fake to finish writing its log."""
-    for _ in range(100):
+    deadline = time.monotonic() + hang_guard_s()
+    while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -462,8 +468,9 @@ def _run_prefetch_wait_step(tmp_path: Path, pid: int | None) -> subprocess.Compl
 
 
 def test_wait_returns_once_the_prefetch_has_exited(tmp_path: Path) -> None:
+    # The test needs this exited child's PID, so it drives the Popen itself.
     done = subprocess.Popen(["true"])
-    done.wait(timeout=10)
+    done.wait(timeout=hang_guard_s())
 
     result = _run_prefetch_wait_step(tmp_path, done.pid)
 
@@ -474,12 +481,13 @@ def test_wait_returns_once_the_prefetch_has_exited(tmp_path: Path) -> None:
 
 def test_wait_gives_up_on_a_stuck_prefetch_without_failing(tmp_path: Path) -> None:
     """The prefetch is an optimization; a stuck pull must never fail the lane."""
+    # The test drives this Popen itself (kill, wait).
     stuck = subprocess.Popen(["sleep", "30"])
     try:
         result = _run_prefetch_wait_step(tmp_path, stuck.pid)
     finally:
         stuck.kill()
-        stuck.wait(timeout=10)
+        stuck.wait(timeout=hang_guard_s())
 
     assert result.returncode == 0, result.stderr
     assert "::warning::RISC-V tooling prefetch still running" in result.stdout

@@ -54,6 +54,7 @@ from booley.flows.sim.adapter_transport import (
     publish_native_adapter_result,
     work_transport_identity,
 )
+from booley.flows.sim.backends.declared_streams import clear_stale_pipes
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
     CurrentRunTraces,
@@ -77,7 +78,7 @@ class _IcarusRun:
     build_dir: Path
     run_cwd: Path
     work_dir: Path
-    image: Path
+    image: str
     command: list[str]
     # Freshness filter for this run's waveform; None when tracing is off.
     current: CurrentRunTraces | None
@@ -281,6 +282,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
     from booley.flows.sim.run_guard import install_parent_death_guard
 
     install_parent_death_guard()
+    clear_stale_pipes(work.trace_files, Path(work.run_cwd or work.build_dir))
     run = run_icarus_image(
         build_dir=Path(work.build_dir),
         run_cwd=Path(work.run_cwd) if work.run_cwd else None,

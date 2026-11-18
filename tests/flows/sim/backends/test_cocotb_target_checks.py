@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.config.project_config import normalize_tests_toml
+from booley.flows.sim.backends import cocotb_target_checks
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
@@ -77,8 +77,6 @@ def _write_project(
 
 def _request(root: Path, sections: dict[str, Any] | None = None) -> Any:
     """Build the owner's request from the Project's real Targets."""
-    from booley.flows.sim.backends import cocotb_target_checks
-
     return cocotb_target_checks.CocotbTargetRequest(
         tuple(TargetCatalog.build(root).list()),
         normalize_tests_toml(sections or {}),
@@ -87,12 +85,17 @@ def _request(root: Path, sections: dict[str, Any] | None = None) -> Any:
 
 def _inspect(root: Path, tests: list[str] | None = None, **section: Any) -> DiagnosticReport:
     """Run the owner against *root* with a tests.toml ``[sim]`` section."""
-    from booley.flows.sim.backends import cocotb_target_checks
-
     if tests is not None:
         section["tests"] = tests
     sections = {"sim": section} if section else {}
     return cocotb_target_checks.inspect_cocotb_targets(_request(root, sections))
+
+
+def _has(report: DiagnosticReport, severity: Severity, *needles: str) -> bool:
+    """Whether some finding of *severity* has every needle in its message."""
+    return any(
+        f.severity is severity and all(n in f.message for n in needles) for f in report.findings
+    )
 
 
 def _rows(report: DiagnosticReport) -> list[tuple[Severity, str, str, str | None, str | None]]:
@@ -100,8 +103,6 @@ def _rows(report: DiagnosticReport) -> list[tuple[Severity, str, str, str | None
 
 
 def _has_cocotb(root: Path) -> bool:
-    from booley.flows.sim.backends import cocotb_target_checks
-
     return cocotb_target_checks.project_has_cocotb_target(root)
 
 
@@ -130,8 +131,7 @@ class TestCocotbTestNames:
     def test_generating_base_name_is_deferred(self, tmp_path, body, base):
         _write_project(tmp_path, tb_body=body)
         report = _inspect(tmp_path, [base])
-        skips = [f.message for f in report.findings if f.severity is Severity.SKIP]
-        assert any(base in m and "generating function" in m and "rendered IDs" in m for m in skips)
+        assert _has(report, Severity.SKIP, base, "generating function", "rendered IDs")
         assert not any("tests.toml names all present" in f.message for f in report.findings)
 
     @pytest.mark.parametrize(
@@ -165,10 +165,7 @@ class TestCocotbTestNames:
         )
         _write_project(tmp_path, tb_body=body)
         report = _inspect(tmp_path, ["test_reset"])
-        assert any(
-            f.severity is Severity.PASS and "tests.toml names all present" in f.message
-            for f in report.findings
-        )
+        assert _has(report, Severity.PASS, "tests.toml names all present")
 
     @pytest.mark.parametrize(
         "body",
@@ -181,12 +178,7 @@ class TestCocotbTestNames:
     def test_plain_function_search_does_not_earn_a_pass(self, tmp_path, body):
         _write_project(tmp_path, tb_body=body)
         report = _inspect(tmp_path, ["test_reset"])
-        assert any(
-            f.severity is Severity.WARN
-            and "not found as" in f.message
-            and "test_reset" in f.message
-            for f in report.findings
-        )
+        assert _has(report, Severity.WARN, "not found as", "test_reset")
         assert not any("tests.toml names all present" in f.message for f in report.findings)
 
     @pytest.mark.parametrize(
@@ -200,10 +192,7 @@ class TestCocotbTestNames:
     def test_unverifiable_source_never_passes_names(self, tmp_path, body):
         _write_project(tmp_path, tb_body=body)
         report = _inspect(tmp_path, ["test_reset"])
-        assert any(
-            f.severity is Severity.SKIP and "cannot be verified statically" in f.message
-            for f in report.findings
-        )
+        assert _has(report, Severity.SKIP, "cannot be verified statically")
         assert not any("tests.toml names all present" in f.message for f in report.findings)
 
     @pytest.mark.parametrize(
@@ -220,12 +209,7 @@ class TestCocotbTestNames:
         _write_project(tmp_path, tb_body=body)
         report = _inspect(tmp_path, names)
         assert not any("not found as functions" in f.message for f in report.findings)
-        assert any(
-            f.severity is Severity.SKIP
-            and "cannot be verified statically" in f.message
-            and word in f.message
-            for f in report.findings
-        )
+        assert _has(report, Severity.SKIP, "cannot be verified statically", word)
         assert not report.active_findings
 
     def test_hand_written_names_still_warn_when_absent(self, tmp_path: Path):
@@ -240,49 +224,49 @@ class TestCocotbTestNames:
         assert "test_reset" not in warns[0].message
         assert (warns[0].check_id, warns[0].subject) == ("cocotb.test-name-missing", "sim")
 
-    def test_all_names_present_passes(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("names", "messages"),
+        [
+            (
+                ["test_reset"],
+                [
+                    "cocotb Target 'sim' module file present (test_dut.py)",
+                    "cocotb Target 'sim' tests.toml names all present in test_dut.py",
+                ],
+            ),
+            # No declared names: the name scan is skipped.
+            (None, ["cocotb Target 'sim' module file present (test_dut.py)"]),
+        ],
+    )
+    def test_declared_names_present_or_no_name_scan(self, tmp_path: Path, names, messages):
         _write_project(tmp_path)
-        report = _inspect(tmp_path, ["test_reset"])
-        assert [f.message for f in report.findings if f.severity is Severity.PASS] == [
-            "cocotb Target 'sim' module file present (test_dut.py)",
-            "cocotb Target 'sim' tests.toml names all present in test_dut.py",
-        ]
+        report = _inspect(tmp_path, names)
+        assert [f.message for f in report.findings] == messages
         assert not report.active_findings
 
-    def test_no_declared_names_skips_the_name_scan(self, tmp_path: Path):
-        _write_project(tmp_path)
-        report = _inspect(tmp_path)
-        assert [f.message for f in report.findings] == [
-            "cocotb Target 'sim' module file present (test_dut.py)"
-        ]
+
+_SELECT_FAIL = (
+    "cocotb Target 'sim' declares a tests.toml `select` plusarg template",
+    "remove `select` — cocotb test selection is the COCOTB_TEST_FILTER env var "
+    "built from the `tests` list",
+)
 
 
-def test_select_template_fails_against_the_qualified_section(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("sections", "fails"),
+    [
+        ({"demo#sim": {"select": "+t={name}"}}, [_SELECT_FAIL]),
+        # Duplicate section keys leave the Target to the section-key audit.
+        ({"demo#sim": {"select": "+t={name}"}, "::demo:0#sim": {"tests": ["test_typo"]}}, []),
+    ],
+    ids=["qualified-section", "duplicate-section-keys"],
+)
+def test_select_template_fails_only_against_one_qualified_section(tmp_path: Path, sections, fails):
     _write_project(tmp_path)
-    request = _request(tmp_path, {"demo#sim": {"select": "+t={name}"}})
-    from booley.flows.sim.backends import cocotb_target_checks
-
-    report = cocotb_target_checks.inspect_cocotb_targets(request)
-    fails = [f for f in report.findings if f.severity is Severity.FAIL]
-    assert [(f.message, f.fix) for f in fails] == [
-        (
-            "cocotb Target 'sim' declares a tests.toml `select` plusarg template",
-            "remove `select` — cocotb test selection is the COCOTB_TEST_FILTER env var "
-            "built from the `tests` list (ADR 0034)",
-        )
-    ]
-
-
-def test_duplicate_section_keys_leave_the_target_to_the_section_key_audit(tmp_path: Path):
-    _write_project(tmp_path)
-    sections = {
-        "demo#sim": {"select": "+t={name}"},
-        "::demo:0#sim": {"tests": ["test_typo"]},
-    }
-    from booley.flows.sim.backends import cocotb_target_checks
-
     report = cocotb_target_checks.inspect_cocotb_targets(_request(tmp_path, sections))
-    assert report.findings == ()
+    assert [(f.message, f.fix) for f in report.findings if f.severity is Severity.FAIL] == fails
+    if not fails:
+        assert report.findings == ()
 
 
 def test_fileset_rules_report_check_ids_and_subjects(tmp_path: Path):
@@ -341,8 +325,6 @@ def test_unreadable_core_has_no_module_file(tmp_path: Path):
     _write_project(tmp_path)
     request = _request(tmp_path)
     (tmp_path / "design.core").write_text("not: [valid", encoding="utf-8")
-    from booley.flows.sim.backends import cocotb_target_checks
-
     report = cocotb_target_checks.inspect_cocotb_targets(request)
     assert [f.check_id for f in report.findings] == ["cocotb.module-file-missing"]
 
@@ -357,18 +339,6 @@ def test_cocotb_targets_report_in_name_order(tmp_path: Path):
     )
     report = _inspect(tmp_path)
     assert [f.subject for f in report.findings] == ["alpha", "zed"]
-
-
-def test_request_carries_only_targets_and_sections():
-    from booley.flows.sim.backends import cocotb_target_checks
-
-    request_type = cocotb_target_checks.CocotbTargetRequest
-    fields = dataclasses.fields(request_type)
-    assert {field.name for field in fields} == {"targets", "tests_sections"}
-    assert {field.name: field.type for field in fields} == {
-        "targets": "tuple[TargetHandle, ...]",
-        "tests_sections": "Mapping[str, Any]",
-    }
 
 
 def test_project_has_cocotb_target(tmp_path: Path):

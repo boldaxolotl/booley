@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.time_budget import hang_guard_s
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime.filesystem_utils import replace_file, safe_rmtree, unlink_file
 
@@ -186,7 +188,7 @@ class TestReplaceFile:
         try:
             replace_file(source, destination)
         finally:
-            closer.join(timeout=5)
+            closer.join(timeout=hang_guard_s())
             reader.close()
         assert destination.read_text() == "new"
 

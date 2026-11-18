@@ -1,6 +1,7 @@
 # B-Wave glossary
 
-This is the canonical vocabulary for B-Wave. Shared Booley concepts such as
+This is the canonical vocabulary for B-Wave, for contributors and agents
+working on Booley's waveform queries and viewing. Shared Booley concepts such as
 **Trace Artifact** and **EDA tool** are defined in the
 [shared glossary](../../docs/GLOSSARY.md); detailed commands and behavior belong
 in the [B-Wave documentation](docs/public/intro.md).

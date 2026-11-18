@@ -14,6 +14,7 @@ from pathlib import Path
 from queue import Queue
 
 import pytest
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.runtime import docker_build, docker_capacity
 from booley.runtime.docker_build import run_docker_build
@@ -43,7 +44,7 @@ class _RecordingOutput:
     def flush(self) -> None:
         pass
 
-    def wait_for(self, text: str, timeout: float = 5.0) -> bool:
+    def wait_for(self, text: str, timeout: float = hang_guard_s()) -> bool:
         with self._condition:
             return self._condition.wait_for(lambda: text in self._text, timeout=timeout)
 
@@ -158,7 +159,7 @@ def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -
                 [sys.executable, "-c", child, str(release)],
                 image="booley-sandbox",
                 verbose=False,
-                timeout=10,
+                timeout=2 * hang_guard_s(),
                 output=output,
             )
         )
@@ -170,7 +171,7 @@ def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -
         assert worker.is_alive()
     finally:
         release.touch()
-        worker.join(timeout=5)
+        worker.join(timeout=hang_guard_s())
 
     assert not worker.is_alive()
     assert results[0].returncode == 0
@@ -185,7 +186,7 @@ def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monke
             [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
-            timeout=10,
+            timeout=hang_guard_s(),
             output=_RecordingOutput(),
         )
 
@@ -214,7 +215,7 @@ def test_sequence_capacity_refuses_before_first_build(tmp_path: Path, monkeypatc
             [docker, "build", "-t", runtime.output_tag, "."],
             image=runtime.output_tag,
             verbose=False,
-            timeout=10,
+            timeout=hang_guard_s(),
             output=_RecordingOutput(),
             current_request=runtime,
             remaining_plan=plan,
@@ -244,7 +245,7 @@ def test_remaining_tail_does_not_charge_completed_headroom(tmp_path: Path, monke
         [docker, "build", "-t", base.output_tag, "."],
         image=base.output_tag,
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_RecordingOutput(),
         current_request=base,
         remaining_plan=DockerBuildPlan((base, overlay)),
@@ -253,7 +254,7 @@ def test_remaining_tail_does_not_charge_completed_headroom(tmp_path: Path, monke
         [docker, "build", "-t", overlay.output_tag, "."],
         image=overlay.output_tag,
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_RecordingOutput(),
         current_request=overlay,
         remaining_plan=DockerBuildPlan((overlay,)),
@@ -276,7 +277,7 @@ def test_candidate_overlay_uses_explicit_thin_estimate(tmp_path: Path, monkeypat
         [docker, "build", "-t", request.output_tag, "."],
         image=request.output_tag,
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_RecordingOutput(),
         current_request=request,
         remaining_plan=DockerBuildPlan((request,)),
@@ -346,7 +347,7 @@ def test_cached_docker_build_uses_smaller_headroom(tmp_path: Path, monkeypatch) 
         [docker, "build", "-t", "booley-sandbox", "."],
         image="booley-sandbox",
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_RecordingOutput(),
         current_request=request,
         remaining_plan=DockerBuildPlan((request,)),
@@ -372,7 +373,7 @@ def test_cached_docker_build_preserves_five_gib_safety_reserve(
             [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
-            timeout=10,
+            timeout=hang_guard_s(),
             output=_RecordingOutput(),
             current_request=request,
             remaining_plan=DockerBuildPlan((request,)),
@@ -391,7 +392,7 @@ def test_target_without_build_cache_uses_cold_build_headroom(tmp_path: Path, mon
             [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
-            timeout=10,
+            timeout=hang_guard_s(),
             output=_RecordingOutput(),
         )
 
@@ -408,7 +409,7 @@ def test_disk_preflight_override_allows_expert_build(tmp_path: Path, monkeypatch
         [docker, "build", "-t", "booley-sandbox", "."],
         image="booley-sandbox",
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_RecordingOutput(),
     )
 
@@ -426,7 +427,7 @@ def test_disk_preflight_override_accepts_only_one(tmp_path: Path, monkeypatch) -
             [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
-            timeout=10,
+            timeout=hang_guard_s(),
             output=_RecordingOutput(),
         )
 
@@ -449,7 +450,7 @@ def test_redirected_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeyp
                 [sys.executable, "-c", child, str(release)],
                 image="booley-sandbox",
                 verbose=False,
-                timeout=10,
+                timeout=2 * hang_guard_s(),
                 output=output,
             )
         )
@@ -461,7 +462,7 @@ def test_redirected_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeyp
         assert worker.is_alive()
     finally:
         release.touch()
-        worker.join(timeout=5)
+        worker.join(timeout=hang_guard_s())
 
     assert not worker.is_alive()
     assert results[0].returncode == 0
@@ -483,7 +484,7 @@ def test_tty_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeypatch) -
                 [sys.executable, "-c", child, str(release)],
                 image="booley-sandbox",
                 verbose=False,
-                timeout=10,
+                timeout=2 * hang_guard_s(),
                 output=output,
             )
         )
@@ -495,7 +496,7 @@ def test_tty_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeypatch) -
         assert worker.is_alive()
     finally:
         release.touch()
-        worker.join(timeout=5)
+        worker.join(timeout=hang_guard_s())
 
     assert not worker.is_alive()
     assert results[0].returncode == 0
@@ -514,12 +515,12 @@ def test_pump_deadline_bounds_an_exited_process_without_eof() -> None:
     )
 
     worker.start()
-    worker.join(timeout=0.1)
+    worker.join(timeout=scaled(0.1))
     try:
         assert not worker.is_alive()
     finally:
         records.put(docker_build._EOF)
-        worker.join(timeout=1)
+        worker.join(timeout=hang_guard_s())
 
     assert results == [False]
 
@@ -549,7 +550,7 @@ def test_failure_retains_early_error_despite_noisy_cleanup() -> None:
         [sys.executable, "-c", child],
         image="booley-sandbox",
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_RecordingOutput(),
     )
 
@@ -567,7 +568,7 @@ def test_capacity_exhaustion_after_preflight_has_cleanup_guidance() -> None:
         ],
         image="booley-sandbox",
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_RecordingOutput(),
     )
 
@@ -589,7 +590,7 @@ def test_capacity_exhaustion_in_verbose_tty_has_cleanup_guidance() -> None:
         ],
         image="booley-sandbox",
         verbose=True,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=output,
     )
 
@@ -609,7 +610,7 @@ def test_capacity_probe_failure_stops_build_before_starting(tmp_path: Path, monk
             [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
-            timeout=10,
+            timeout=hang_guard_s(),
             output=_RecordingOutput(),
         )
 
@@ -620,7 +621,7 @@ def test_capacity_probe_process_failure_is_fail_closed(monkeypatch) -> None:
     def fail(*_args, **_kwargs):
         raise OSError("probe unavailable")
 
-    monkeypatch.setattr(docker_capacity.subprocess, "run", fail)
+    monkeypatch.setattr(docker_capacity, "run_captured_bounded", fail)
 
     with pytest.raises(
         docker_capacity.DockerCapacityError, match="could not run Docker capacity probe"
@@ -781,7 +782,7 @@ def test_closed_progress_sink_does_not_fail_a_healthy_build() -> None:
         [sys.executable, "-c", "print('>>> Building image', flush=True)"],
         image="booley-sandbox",
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=_BrokenOutput(),
     )
 
@@ -795,7 +796,7 @@ def test_timeout_still_applies_after_child_closes_output_pipe() -> None:
         [sys.executable, "-c", child],
         image="booley-sandbox",
         verbose=False,
-        timeout=0.1,
+        timeout=scaled(0.1),
         output=_RecordingOutput(),
     )
 
@@ -808,7 +809,7 @@ def test_verbose_tty_timeout_uses_the_same_result_contract() -> None:
         [sys.executable, "-c", "import time; time.sleep(10)"],
         image="booley-sandbox",
         verbose=True,
-        timeout=0.1,
+        timeout=scaled(0.1),
         output=_RecordingOutput(tty=True),
     )
 
@@ -832,7 +833,7 @@ def test_hidden_chatter_does_not_postpone_redirected_heartbeat(
             [sys.executable, "-c", child, str(release)],
             image="booley-sandbox",
             verbose=False,
-            timeout=10,
+            timeout=2 * hang_guard_s(),
             output=output,
         )
     )
@@ -843,7 +844,7 @@ def test_hidden_chatter_does_not_postpone_redirected_heartbeat(
         assert "compiler chatter" not in output.text
     finally:
         release.touch()
-        worker.join(timeout=5)
+        worker.join(timeout=hang_guard_s())
 
     assert not worker.is_alive()
 
@@ -860,7 +861,7 @@ def test_tty_non_verbose_preserves_first_seen_progress_order() -> None:
         [sys.executable, "-c", child],
         image="booley-sandbox",
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=output,
     )
 
@@ -876,7 +877,7 @@ def test_failure_diagnostics_do_not_repeat_visible_progress() -> None:
         [sys.executable, "-c", child],
         image="booley-sandbox",
         verbose=False,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=output,
     )
 
@@ -895,7 +896,7 @@ def test_redirected_verbose_failure_streams_complete_output_once() -> None:
         [sys.executable, "-c", child],
         image="booley-sandbox",
         verbose=True,
-        timeout=10,
+        timeout=hang_guard_s(),
         output=output,
     )
 
@@ -905,9 +906,9 @@ def test_redirected_verbose_failure_streams_complete_output_once() -> None:
 
 
 _PARALLEL_PROGRESS_RECORDS = (
-    '#7 [yosys 1/1] RUN echo ">>> Building Yosys v0.69..." \\\n',
+    '#7 [yosys 1/1] RUN echo ">>> Building Yosys vX.Y..." \\\n',
     '#11 [runtime 1/1] RUN echo ">>> Installing runtime..." \\\n',
-    "#7 0.1 >>> Building Yosys v0.69...\n",
+    "#7 0.1 >>> Building Yosys vX.Y...\n",
     "#11 0.1 >>> Installing runtime...\n",
 )
 
@@ -932,7 +933,7 @@ def test_progress_state_deduplicates_parallel_stage_announcements(monkeypatch, t
         state.accept(record)
 
     assert output.text.splitlines() == [
-        ">>> Building Yosys v0.69...",
+        ">>> Building Yosys vX.Y...",
         ">>> Installing runtime...",
         ">>> third",
         ">>> fourth",
@@ -949,7 +950,7 @@ def test_progress_state_seen_announcements_are_isolated_per_build(monkeypatch, t
         for record in _PARALLEL_PROGRESS_RECORDS:
             state.accept(record)
         assert output.text.splitlines() == [
-            ">>> Building Yosys v0.69...",
+            ">>> Building Yosys vX.Y...",
             ">>> Installing runtime...",
         ]
 

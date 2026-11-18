@@ -25,9 +25,12 @@ from pathlib import Path
 import pytest
 
 from booley.bwave import vaporview_bridge as bwave_bridge
-from booley.bwave.cli import SESSION_FILE
+from booley.core.host_shell import quote_arg
 from booley.runtime import vaporview
+from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -56,18 +59,17 @@ def _no_bridge(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _clean_session():
-    """Remove session file before and after each test."""
-    SESSION_FILE.unlink(missing_ok=True)
-    yield
-    SESSION_FILE.unlink(missing_ok=True)
+def _clean_session(monkeypatch, tmp_path):
+    """Start every test with an empty temporary-directory session store of its own."""
+    isolate_temporary_store(monkeypatch, tmp_path)
 
 
 def _write_sessions(entries: dict) -> None:
-    from booley.bwave import cli as bwave
+    from booley.bwave import sessions
 
-    bwave.SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    bwave.SESSION_FILE.write_text(json.dumps(entries, indent=2) + "\n")
+    session_file = sessions._temporary_store().path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text(json.dumps(entries, indent=2) + "\n")
 
 
 def _make_entry(trace: str, markers: dict | None = None) -> dict:
@@ -241,11 +243,29 @@ def test_gui_directory_discovers_trace(tmp_path, launched):
 def test_gui_directory_without_trace_errors(tmp_path, launched):
     sim_dir = tmp_path / "empty_sim"
     sim_dir.mkdir()
+    (sim_dir / "sim.log").write_text("no dump\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc:
         _gui(str(sim_dir))
 
-    assert "No trace file found" in str(exc.value)
+    assert str(exc.value) == f"ERROR: No trace file found in {sim_dir}"
+    assert launched == []
+
+
+def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
+    sim_dir = tmp_path / "it's work"
+    sim_dir.mkdir()
+    dump = sim_dir / "sim.vcd"
+    dump.write_bytes(b"")
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(str(sim_dir))
+
+    message = str(exc.value)
+    assert "not named trace.vcd: sim.vcd" in message
+    assert "[flows.sim].trace_files" in message
+    assert f"bwave register {quote_arg(str(dump))} --as ALIAS --build" in message
+    assert f"bwave gui {quote_arg(str(dump))}" in message
     assert launched == []
 
 
@@ -755,7 +775,7 @@ def fake_rust(monkeypatch):
     monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-rust"])
     # The viewer model answers synchronously, so only a genuine drop waits out
     # the settle poll; keep that wait short enough not to drag the suite.
-    monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", 0.3)
+    monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", scaled(0.3))
     state = {"signals": list(_CANNED_SIGNALS), "total_ticks": 1_000_000, "clock": "tb.clk"}
     calls: list[list[str]] = []
 
@@ -2149,7 +2169,8 @@ def test_open_is_gone_and_says_so(monkeypatch, capsys):
     msg = str(exc.value)
     assert "`bwave open` is now `bwave gui`" in msg
     # …and hands back the exact command to rerun.
-    assert "bwave gui @dut -s tb.dut.fifo.*" in msg
+    retry_args = " ".join(quote_arg(arg) for arg in ["@dut", "-s", "tb.dut.fifo.*"])
+    assert f"bwave gui {retry_args}" in msg
 
 
 # ── venue guard ─────────────────────────────────────────────────────────────
@@ -2215,13 +2236,9 @@ def test_gui_subprocess_smoke(tmp_path):
     env["BOOLEY_CONTAINER"] = "1"
     env["HOME"] = str(tmp_path / "home")  # no bridge sockets: editor-CLI fallback
 
-    r = subprocess.run(
+    r = run_bounded_child(
         [sys.executable, "-m", "booley.bwave.cli", "gui", "@dut"],
-        capture_output=True,
-        text=True,
-        timeout=60,
         env=env,
-        check=False,
     )
 
     assert r.returncode == 0, f"stderr: {r.stderr}"
@@ -2318,12 +2335,7 @@ def test_issue_1108_real_json_cap_preserves_native_warnings(monkeypatch, tmp_pat
         "$var wire 1 ! a $end\n$var wire 1 ! alias $end\n"
         "$upscope $end\n$enddefinitions $end\n#0\n0!\n#1000\n1!\n#2000\n"
     )
-    subprocess.run(
-        [str(binary), "build", str(vcd), "-o", str(fst)],
-        check=True,
-        capture_output=True,
-        timeout=30,
-    )
+    run_bounded_child([str(binary), "build", str(vcd), "-o", str(fst)], check=True)
     monkeypatch.setattr(bwave, "_resolve_trace", lambda args: str(fst))
     monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
     monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)

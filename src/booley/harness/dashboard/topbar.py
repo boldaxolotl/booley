@@ -1,4 +1,4 @@
-"""The Dashboard top bar: window tabs, Jobs filters and Help on the first screen line."""
+"""The Dashboard top bar: window tabs, Jobs filters, Run and Help on the first screen line."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from textual.widget import Widget
 
 from booley.presentation.colors import PALETTE_DODGER_BLUE
 
-# (label, window name) for the window tabs. Help is an action, not a window.
+# (label, window name) for the window tabs. Run and Help are actions, not windows.
 ITEMS: tuple[tuple[str, str], ...] = (
     ("Sessions", "sessions"),
     ("Jobs", "jobs"),
@@ -25,11 +25,18 @@ JOB_FILTERS: tuple[tuple[str, str], ...] = (
     ("All", "all"),
 )
 # Item kinds posted in ``Selected``.
-WINDOW, FILTER, OWNER, WORKTREE, HELP_ITEM = "window", "filter", "owner", "worktree", "help"
+WINDOW, FILTER, OWNER, WORKTREE, RUN_ITEM, HELP_ITEM = (
+    "window",
+    "filter",
+    "owner",
+    "worktree",
+    "run",
+    "help",
+)
 
 
 class TopBar(Widget, can_focus=True):
-    """Window tabs, the Jobs filters, the Targets worktree and Help.
+    """Window tabs, the Jobs filters, the Targets worktree, Run and Help.
 
     The active window's tab and the active status filter are bold, the cursor
     item is reversed. The Jobs window adds the status filters and the owner
@@ -69,6 +76,9 @@ class TopBar(Widget, can_focus=True):
             self.kind = kind
             self.value = value
 
+    class Moved(Message):
+        """The cursor moved to another item; the footer describes the item under it."""
+
     class Left(Message):
         """The user asked to return to the window content."""
 
@@ -87,8 +97,16 @@ class TopBar(Widget, can_focus=True):
             items.append((f"Owner: {self.owner}", OWNER, None))
         if self.active == "targets":
             items.append((f"Worktree: {self.worktree}", WORKTREE, None))
+        items.append(("Run", RUN_ITEM, None))
         items.append(("Help", HELP_ITEM, None))
         return items
+
+    def current_kind(self) -> str:
+        """The kind of the item under the cursor."""
+        return self._items()[self.cursor][1]
+
+    def watch_cursor(self) -> None:
+        self.post_message(self.Moved())
 
     def watch_active(self) -> None:
         """Leaving the Jobs window drops its items; keep the cursor on a visible one."""
@@ -119,8 +137,12 @@ class TopBar(Widget, can_focus=True):
         text = Text()
         previous_kind = ""
         for index, (label, kind, value) in enumerate(self._items()):
-            # A divider opens the filter group and sets the worktree and Help apart.
-            if (kind == FILTER and previous_kind != FILTER) or kind in {WORKTREE, HELP_ITEM}:
+            # A divider opens the filter group and sets the worktree, Run and Help apart.
+            if (kind == FILTER and previous_kind != FILTER) or kind in {
+                WORKTREE,
+                RUN_ITEM,
+                HELP_ITEM,
+            }:
                 text.append("│")
             previous_kind = kind
             highlighted = (kind == WINDOW and value == self.active) or (

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,9 +18,18 @@ from booley.flows.progress_lifecycle import (
     progress_document,
     read_progress_for_run,
     repair_progress_after_reap,
+    retire_progress_of_requeued_attempt,
     supersede_progress,
+    write_progress_json,
 )
 from tests.conftest import symlink_or_skip
+from tests.sharing_error_support import (
+    flaky,
+    hold_replaces,
+    no_retry_delay,
+    sharing_error,
+)
+from tests.time_budget import hang_guard_s
 
 
 def test_normal_completion_publishes_once() -> None:
@@ -78,25 +90,24 @@ def test_failed_aborted_publication_retries_without_masking_failure() -> None:
     assert phases == ["aborted", "aborted"]
 
 
-def test_persistent_cleanup_failure_does_not_mask_interrupt() -> None:
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [(KeyboardInterrupt(), KeyboardInterrupt), (None, ProgressPublicationError)],
+    ids=["interrupt", "no-original-error"],
+)
+def test_persistent_cleanup_failure_is_reported_without_masking(
+    raised: BaseException | None, expected: type[BaseException]
+) -> None:
     def publish(_phase: str) -> None:
         raise OSError("disk unavailable")
 
-    interrupt = KeyboardInterrupt()
-    with pytest.raises(KeyboardInterrupt) as raised, ProgressLifecycle(publish):
-        raise interrupt
-    assert raised.value is interrupt
-
-
-def test_persistent_cleanup_failure_without_original_error_is_reported() -> None:
-    def publish(_phase: str) -> None:
-        raise OSError("disk unavailable")
-
-    with (
-        pytest.raises(ProgressPublicationError, match="aborted retry failed"),
-        ProgressLifecycle(publish),
-    ):
-        pass
+    with pytest.raises(expected) as caught, ProgressLifecycle(publish):
+        if raised is not None:
+            raise raised
+    if raised is None:
+        assert "aborted retry failed" in str(caught.value)
+    else:
+        assert caught.value is raised
 
 
 def test_lifecycle_rejects_second_terminal_publication() -> None:
@@ -185,19 +196,27 @@ def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
     path = tmp_path / "sim" / "1" / "progress.json"
     _write_progress(path)
     supersede_at_replace = threading.Event()
-    repair_at_replace = threading.Event()
+    repair_waiting = threading.Event()
     allow_supersede = threading.Event()
     original_replace = Path.replace
 
     def controlled_replace(source: Path, destination: Path) -> Path:
         if threading.current_thread().name == "supersede":
             supersede_at_replace.set()
-            assert allow_supersede.wait(timeout=5)
-        elif threading.current_thread().name == "repair":
-            repair_at_replace.set()
+            assert allow_supersede.wait(timeout=hang_guard_s())
         return original_replace(source, destination)
 
     monkeypatch.setattr(Path, "replace", controlled_replace)
+    real_wait_for_file_lock = progress_module.wait_for_file_lock
+
+    def announcing_wait_for_file_lock(*args: Any, **kwargs: Any) -> Any:
+        # The repair thread has read the stale document and now waits for the lock
+        # the paused supersede holds.
+        if threading.current_thread().name == "repair":
+            repair_waiting.set()
+        return real_wait_for_file_lock(*args, **kwargs)
+
+    monkeypatch.setattr(progress_module, "wait_for_file_lock", announcing_wait_for_file_lock)
     results: dict[str, bool] = {}
     supersede = threading.Thread(
         name="supersede",
@@ -213,12 +232,12 @@ def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
     )
 
     supersede.start()
-    assert supersede_at_replace.wait(timeout=5)
+    assert supersede_at_replace.wait(timeout=hang_guard_s())
     repair.start()
-    repair_at_replace.wait(timeout=0.5)
+    assert repair_waiting.wait(timeout=hang_guard_s())
     allow_supersede.set()
-    supersede.join(timeout=5)
-    repair.join(timeout=5)
+    supersede.join(timeout=hang_guard_s())
+    repair.join(timeout=hang_guard_s())
 
     assert results == {"supersede": True, "repair": False}
     assert json.loads(path.read_text())["phase"] == "superseded"
@@ -282,6 +301,8 @@ def test_supersede_ignores_nonresumable_phase_and_write_failure(
     def fail_replace(*_args: object, **_kwargs: object) -> None:
         raise OSError("disk unavailable")
 
+    # Private seam: a failed atomic replace cannot be provoked through the file
+    # system on every platform the suite runs on.
     monkeypatch.setattr(progress_module, "_replace_if_unchanged", fail_replace)
 
     assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
@@ -296,16 +317,19 @@ def test_progress_reader_rejects_oversize_and_nonobject_json(tmp_path: Path) -> 
     assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
 
 
-def test_containing_root_skips_unrelated_roots_and_rejects_outside_path(
-    tmp_path: Path,
-) -> None:
+def test_run_lookup_skips_unrelated_roots(tmp_path: Path) -> None:
     progress = tmp_path / "reports" / "sim" / "1" / "progress.json"
-    assert (
-        progress_module._containing_root(progress, (tmp_path / "unrelated", tmp_path / "reports"))
-        == tmp_path / "reports"
-    )
+    _write_progress(progress)
+    found = read_progress_for_run((tmp_path / "unrelated", tmp_path / "reports"), "sim", "run-1")
+    assert found is not None
+    assert found[0] == progress
 
+
+def test_containing_root_rejects_outside_path(tmp_path: Path) -> None:
+    progress = tmp_path / "reports" / "sim" / "1" / "progress.json"
     with pytest.raises(ValueError, match="outside configured report roots"):
+        # Private seam: every public caller derives the path from its roots, so
+        # a path outside them is unreachable from the public functions.
         progress_module._containing_root(progress, (tmp_path / "unrelated",))
 
 
@@ -342,70 +366,51 @@ def test_coverage_supersede_follows_only_the_booley_dir_entry(tmp_path: Path, li
     )
 
 
-def test_progress_write_survives_transient_replace_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("held", [1, 100])
+def test_progress_write_retries_replace_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: int
 ) -> None:
-    from booley.flows.progress_lifecycle import write_progress_json
-    from tests.sharing_error_support import hold_replaces
-
     path = tmp_path / "sim" / "1" / "progress.json"
     document = _write_progress(path)
-    attempts = hold_replaces(monkeypatch, {path: 1})
+    attempts = hold_replaces(monkeypatch, {path: held})
+    if held > 1:
+        with pytest.raises(PermissionError):
+            write_progress_json(path, document)
+        assert attempts[path] > 1
+        return
     write_progress_json(path, {**document, "phase": "complete", "complete": True})
     assert json.loads(path.read_text(encoding="utf-8"))["phase"] == "complete"
     assert attempts[path] == 2
 
 
-def test_progress_write_retries_before_raising_lasting_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.progress_lifecycle import write_progress_json
-    from tests.sharing_error_support import hold_replaces
-
-    path = tmp_path / "sim" / "1" / "progress.json"
-    document = _write_progress(path)
-    attempts = hold_replaces(monkeypatch, {path: 100})
-    with pytest.raises(PermissionError):
-        write_progress_json(path, document)
-    assert attempts[path] > 1
-
-
 def _flaky_progress_open(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[int]:
-    from tests.sharing_error_support import flaky, no_retry_delay
-
     no_retry_delay(monkeypatch)
     opener, calls = flaky(progress_module.open_regular_nofollow, failures)
     monkeypatch.setattr(progress_module, "open_regular_nofollow", opener)
     return calls
 
 
-def test_progress_read_survives_transient_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("failures", [1, 100])
+def test_progress_read_retries_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failures: int
 ) -> None:
     path = tmp_path / "sim" / "1" / "progress.json"
     _write_progress(path)
-    calls = _flaky_progress_open(monkeypatch, 1)
+    calls = _flaky_progress_open(monkeypatch, failures)
+    if failures > 1:
+        with pytest.raises(PermissionError):
+            read_progress_for_run((tmp_path,), "sim", "run-1")
+        assert calls[0] > 1
+        return
     found = read_progress_for_run((tmp_path,), "sim", "run-1")
     assert found is not None
     assert found[0] == path
     assert calls == [2]
 
 
-def test_progress_read_raises_lasting_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_progress(tmp_path / "sim" / "1" / "progress.json")
-    calls = _flaky_progress_open(monkeypatch, 100)
-    with pytest.raises(PermissionError):
-        read_progress_for_run((tmp_path,), "sim", "run-1")
-    assert calls[0] > 1
-
-
 def test_progress_read_keeps_posix_permission_error_as_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import errno
-
     _write_progress(tmp_path / "sim" / "1" / "progress.json")
     monkeypatch.setattr("sys.platform", "linux")
 
@@ -419,10 +424,6 @@ def test_progress_read_keeps_posix_permission_error_as_unreadable(
 def test_held_checkpoint_of_another_run_does_not_hide_this_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
-    from tests.sharing_error_support import no_retry_delay, sharing_error
-
     mine = tmp_path / "sim" / "1" / "progress.json"
     held = tmp_path / "sim" / "2" / "progress.json"
     _write_progress(mine)
@@ -440,3 +441,46 @@ def test_held_checkpoint_of_another_run_does_not_hide_this_run(
     found = read_progress_for_run((tmp_path,), "sim", "run-1")
     assert found is not None
     assert found[0] == mine
+
+
+def test_retired_progress_of_a_requeued_attempt_is_not_read_for_its_run(tmp_path: Path) -> None:
+    killed = tmp_path / "sim" / "1" / "progress.json"
+    original = _write_progress(killed)
+    other_run = tmp_path / "sim" / "2" / "progress.json"
+    _write_progress(other_run, run_id="run-2")
+    other_flow = tmp_path / "synth" / "1" / "progress.json"
+    _write_progress(other_flow)
+    other_flow.write_text(
+        json.dumps({**json.loads(other_flow.read_bytes()), "flow": "synth"}), encoding="utf-8"
+    )
+    other_flow_before = other_flow.read_bytes()
+    other_run_before = other_run.read_bytes()
+
+    retire_progress_of_requeued_attempt(killed, endpoint="sim", run_id="run-1")
+
+    retired = json.loads(killed.read_text(encoding="utf-8"))
+    assert retired["phase"] == "superseded"
+    assert retired["complete"] is True
+    assert retired["run_id"] == ""
+    assert retired["superseded_by"] == {
+        "reason": "requeued after out-of-memory",
+        "run_id": "run-1",
+    }
+    # What the killed attempt observed is kept.
+    assert retired["completed_targets"] == original["completed_targets"]
+    assert retired["detail"] == original["detail"]
+    assert read_progress_for_run((tmp_path,), "sim", "run-1") is None
+    found = read_progress_for_run((tmp_path,), "sim", "run-2")
+    assert found is not None and found[0] == other_run
+    # Another run's or another Flow's document, and a missing one, are left alone.
+    retire_progress_of_requeued_attempt(other_run, endpoint="sim", run_id="run-1")
+    retire_progress_of_requeued_attempt(other_flow, endpoint="sim", run_id="run-1")
+    retire_progress_of_requeued_attempt(
+        tmp_path / "sim" / "3" / "progress.json", endpoint="sim", run_id="run-1"
+    )
+    retire_progress_of_requeued_attempt(other_run, endpoint="sim", run_id="")
+    assert other_run.read_bytes() == other_run_before
+    assert other_flow.read_bytes() == other_flow_before
+    # Retiring twice is a no-op: the run id is already empty.
+    retire_progress_of_requeued_attempt(killed, endpoint="sim", run_id="run-1")
+    assert json.loads(killed.read_text(encoding="utf-8")) == retired

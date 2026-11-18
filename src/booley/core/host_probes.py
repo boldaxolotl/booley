@@ -33,24 +33,22 @@ def probe_docker(
     executable: str = "docker",
     probe_daemon: bool = True,
     which: Callable[[str], str | None] = shutil.which,
-    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    run: Callable[..., subprocess.CompletedProcess[str]],
     cwd: Path | None = None,
 ) -> HostProbe:
-    """Discover Docker and optionally ask its daemon for information."""
+    """Discover Docker and optionally ask its daemon for information.
+
+    *run* is the bounded command runner, called as ``run(argv, *, cwd, timeout)``.
+    ``booley.core`` cannot import ``booley.runtime``, so composers pass
+    ``run_captured_bounded``; a hung daemon must not outlive its timeout.
+    """
     found = which(executable)
     if not found:
         return HostProbe(None, ProbeState.MISSING)
     if not probe_daemon:
         return HostProbe(found, ProbeState.HEALTHY)
     try:
-        result = run(
-            [found, "info"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
+        result = run([found, "info"], cwd=cwd, timeout=10)
     except subprocess.TimeoutExpired:
         return HostProbe(found, ProbeState.TIMEOUT)
     except (OSError, subprocess.SubprocessError):

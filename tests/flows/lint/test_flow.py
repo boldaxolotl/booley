@@ -6,16 +6,17 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
-from booley.criteria.state import DevelopmentState
+from booley.flows import artifacts as flow_artifacts
+from booley.flows.base import SubprocessResult
 from booley.flows.lint.flow import (
     LintConfigResult,
     LintFlow,
@@ -25,10 +26,13 @@ from booley.flows.lint.flow import (
     parse_verible_warnings,
     parse_warnings,
 )
+from booley.flows.lint.request import LintRequest
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
+from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -77,10 +81,6 @@ def _adr0039_lenient_selection(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 SAMPLE_VERILATOR_OUTPUT = """\
 %Warning-UNUSEDSIGNAL: rtl/mod_a.sv:42:5: Signal is not used: 'foo'
                        ... In instance 'design_top.mod_a_inst'
@@ -88,29 +88,13 @@ SAMPLE_VERILATOR_OUTPUT = """\
 %Warning-WIDTH: rtl/mod_c.sv:55:10: Operator ASSIGN expects 32 bits on the LHS
 """
 
-SAMPLE_STDERR_MIXED = """\
-Compiling mod_b.sv
-%Warning-UNUSEDSIGNAL: rtl/mod_b.sv:88:7: Signal is not used: 'debug_flag'
-%Warning-UNUSEDSIGNAL: rtl/mod_a.sv:42:5: Signal is not used: 'foo'
-"""
-
 
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create a minimal state file and set env vars."""
-    sf = tmp_path / "state.json"
-    st = DevelopmentState.load(sf)
-    st.slug = "test-lint"
-    st.save()
+    """Set the slug env var and working directory; return the unused state path."""
     monkeypatch.setenv("BOOLEY_SLUG", "test-lint")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
     monkeypatch.chdir(tmp_path)
-    return sf
-
-
-@pytest.fixture()
-def lint_flow() -> LintFlow:
-    return LintFlow()
+    return tmp_path / "state.json"
 
 
 def _stub_resolved(
@@ -118,12 +102,10 @@ def _stub_resolved(
     files: tuple[str, ...] = (),
     build_root: Path = Path("build"),
 ) -> object:
-    """Minimal ResolvedTarget for tests that patch _prepare_lint_command.
+    """Minimal ResolvedTarget standing for what ``resolve_target_handle`` returns.
 
-    ``_prepare_lint_command`` now returns (make command, ResolvedTarget) so the
-    caller can report the actual EDA tool and file coverage; mocked call sites
-    pair the command with this stub. Empty toplevel/files skip the coverage
-    checks. ``files`` declares linted SystemVerilog sources (EDAM ``name``s).
+    Empty toplevel/files skip the coverage checks. ``files`` declares linted
+    SystemVerilog sources (EDAM ``name``s).
     """
     from booley.fusesoc import fusesoc_registry
 
@@ -143,59 +125,61 @@ def _stub_resolved(
     )
 
 
-@pytest.mark.parametrize("eda_tool", (None, "mystery-lint"))
-def test_real_preparation_rejects_missing_or_unknown_configured_linter(
-    tmp_path: Path,
-    eda_tool: str | None,
-) -> None:
-    flow = LintFlow()
-    flow.parse_args(["--target", "lint_bad", "--work-dir", str(tmp_path)])
-    handle = _target_handle("lint_bad", project_root=tmp_path)
-    resolved = _stub_resolved(eda_tool)
-    with (
-        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
-        pytest.raises(ValueError, match="unknown lint EDA tool"),
-    ):
-        flow._prepare_lint_command(handle)
-
-
-@pytest.mark.parametrize("eda_tool", (None, "mystery-lint"))
-def test_dry_run_plan_rejects_missing_or_unknown_declared_linter(
-    tmp_path: Path,
-    eda_tool: str | None,
-) -> None:
-    flow = LintFlow()
-    flow.parse_args(["--target", "lint_bad", "--work-dir", str(tmp_path)])
-    handle = _target_handle("lint_bad", project_root=tmp_path, eda_tool=eda_tool)
-
-    plan = flow._plan_lint((handle,))
-
-    assert len(plan.aggregate_errors) == 1
-    assert "unknown lint EDA tool" in plan.aggregate_errors[0]
-
-
-def test_preparation_rejects_declared_and_configured_linter_disagreement(
-    tmp_path: Path,
-) -> None:
-    flow = LintFlow()
-    flow.parse_args(["--target", "lint_disagree", "--work-dir", str(tmp_path)])
-    handle = _target_handle(
-        "lint_disagree",
-        project_root=tmp_path,
-        eda_tool="verible",
+def _process(
+    returncode: int = 0, stdout: str = "", stderr: str = "", timed_out: bool = False
+) -> SubprocessResult:
+    """A canned linter subprocess result."""
+    return SubprocessResult(
+        returncode=returncode, stdout=stdout, stderr=stderr, timed_out=timed_out, duration_s=0.1
     )
-    resolved = _stub_resolved("verilator")
-
-    with (
-        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
-        pytest.raises(ValueError, match=r"declared 'verible'.*configured 'verilator'"),
-    ):
-        flow._prepare_lint_command(handle)
 
 
-# ---------------------------------------------------------------------------
-# FuseSoC lint Target resolution (ADR 0022) — replaces the Booley-built EDAM
-# ---------------------------------------------------------------------------
+_LintRun = Callable[..., tuple[ExecutionResult, list[list[str]]]]
+
+
+@pytest.fixture()
+def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
+    """Run ``booley flow lint`` through its CLI entry with a canned linter subprocess.
+
+    ``run(*processes, args=(), target="lite", work_dir=None, resolved=...)``
+    returns the result and the command of every linter run. The Targets run in
+    order and take the processes in order (the last repeats). ``resolved(handle,
+    build_root)`` stands for ``resolve_target_handle``; ``resolved=None`` keeps
+    the resolver the test installed.
+    """
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+
+    def run(
+        *processes: SubprocessResult,
+        args: tuple[str, ...] = (),
+        target: str = "lite",
+        work_dir: Path | None = None,
+        resolved: Callable[..., object] | None = lambda handle, build_root: _stub_resolved(
+            build_root=tmp_path / handle.selector
+        ),
+    ) -> tuple[ExecutionResult, list[list[str]]]:
+        commands: list[list[str]] = []
+
+        def execute(_flow: LintFlow, cmd: list[str], **_kwargs: object) -> SubprocessResult:
+            commands.append(cmd)
+            return processes[min(len(commands), len(processes)) - 1]
+
+        # Unit tests have no Verilator: the linter subprocess is the one
+        # private seam the public Flow entry cannot replace.
+        monkeypatch.setattr(LintFlow, "_execute", execute)
+        if resolved is not None:
+            monkeypatch.setattr(
+                fusesoc_registry,
+                "resolve_target_handle",
+                lambda handle, build_root, **_kwargs: resolved(handle, build_root),
+            )
+        argv = ["--target", target, "--work-dir", str(work_dir or tmp_path), *args]
+        return LintFlow().execute_cli(argv), commands
+
+    return run
+
 
 # A minimal CAPI2 .core whose `lint` Target carries the -Wall option that
 # Booley's deleted _build_lint_edam used to inject. --lint-only is added by the
@@ -223,181 +207,179 @@ targets:
 """
 
 
-class TestLintResolution:
-    """`_prepare_lint_command` now drives `make` over FuseSoC's resolved build dir."""
-
-    def _flow(self, tmp_path: Path, state_file: Path) -> LintFlow:
-        (tmp_path / "rtl").mkdir(exist_ok=True)
-        (tmp_path / "rtl" / "top.sv").write_text("module top; endmodule\n")
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite"])
-        flow.read_state()
-        return flow
-
-    def test_prepare_drives_make_over_resolved_build_root(
-        self,
-        tmp_path: Path,
-        state_file: Path,
-    ):
-        """Booley resolves the Target through FuseSoC, then `make -C <relpath>`."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = self._flow(tmp_path, state_file)
-        # FuseSoC lays the build dir at <build_root>/<name>/<target>/; parse_edam
-        # points ResolvedTarget.build_root there. Emulate that for the mock.
-        resolved_build = (
-            tmp_path
-            / ".booley"
-            / ".runtime"
-            / "edalize"
-            / "lint"
-            / "lite"
-            / "lint_demo_0"
-            / "lite"
-        )
-        fake = fusesoc_registry.ResolvedTarget(
-            name="lite",
-            vlnv="::lint_demo:0",
-            toplevel="top",
-            eda_tool="verilator",
-            configured_eda_tool="verilator",
-            files=(),
-            parameters={},
-            build_root=resolved_build,
-            edam_path=resolved_build / "lint_demo_0.eda.yml",
-        )
-        captured = {}
-
-        def fake_resolve(target, *, project_root, build_root, **kw):
-            captured.update(
-                target=target,
-                project_root=project_root,
-                build_root=build_root,
-                vlnv=kw["vlnv"],
-            )
-            return fake
-
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=fake_resolve,
-        ):
-            prepared = flow._prepare_lint_command(
-                _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
-            )
-            cmd = prepared.command
-
-        # Target name and Project Root are forwarded; build_root is the
-        # per-(EDA tool, config) Edalize dir.
-        assert captured["target"] == "lite"
-        assert captured["vlnv"] == "::lint_demo:0"
-        assert Path(captured["project_root"]) == Path(flow.args.work_dir)
-        assert captured["build_root"] == (
-            tmp_path / ".booley" / ".runtime" / "edalize" / "lint" / "lite"
-        )
-        # Authenticated preflight names the selected linter before make can
-        # translate a child 127 into its own exit 2.
-        assert cmd[:2] == ["sh", "-c"]
-        assert "command -v verilator" in cmd[2]
-        assert re.search(r"BOOLEY_EDA_FAILURE token=[0-9a-f]{32}", cmd[2])
-        assert "make -C .booley/.runtime/edalize/lint/lite/lint_demo_0/lite" in cmd[2]
-
-    def test_setup_failure_propagates(self, tmp_path: Path, state_file: Path):
-        """A FuseSoC resolution failure surfaces (caller records a Flow error)."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = self._flow(tmp_path, state_file)
-        with (
-            patch.object(
-                fusesoc_registry,
-                "_resolve_target",
-                side_effect=fusesoc_registry.TargetResolutionError("boom"),
-            ),
-            pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
-        ):
-            flow._prepare_lint_command(
-                _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
-            )
-
-    def test_real_fusesoc_lint_setup(self, tmp_path: Path, state_file: Path, monkeypatch):
-        """Real catalog-authorized setup emits a relocatable Verilator lint build."""
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-        work_dir = tmp_path / "proj"
-        (work_dir / "rtl").mkdir(parents=True)
-        (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
-        (work_dir / "lint_demo.core").write_text(_LINT_CORE_TEXT, encoding="utf-8")
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(work_dir), "--target", "lite"])
-        flow.read_state()
-        command = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        _real_lint_setup(monkeypatch, command, tmp_path)
-        prepared = flow._prepare_lint_command(
-            _REAL_CATALOG_BUILD(work_dir).select("lite", for_flow="lint")
-        )
-        cmd, _resolved = prepared.command, prepared.resolved
-
-        assert cmd[:2] == ["sh", "-c"]
-        assert "command -v verilator" in cmd[2]
-        make_dir = Path(_resolved.build_root)
-        assert (make_dir / "Makefile").exists()
-        vc = next(make_dir.glob("*.vc")).read_text(encoding="utf-8")
-        assert "--lint-only" in vc
-        assert "-Wall" in vc
-        # Relocatable: no absolute project/build paths baked into the .vc.
-        assert str(work_dir) not in vc
-
-    def test_real_fusesoc_legacy_verilator_lint_setup(
-        self,
-        tmp_path: Path,
-        state_file: Path,
+def _lenient_catalog_declaring(monkeypatch: pytest.MonkeyPatch, eda_tool: str | None) -> None:
+    """Make every pass-through Target declare ``eda_tool`` as its linter."""
+    install_lenient_target_catalog(
         monkeypatch,
-    ) -> None:
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-        work_dir = tmp_path / "legacy-proj"
-        (work_dir / "rtl").mkdir(parents=True)
-        (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
-        (work_dir / "lint_demo.core").write_text(
-            "CAPI=2:\n"
-            "name: ::lint_demo:0\n"
-            "filesets:\n"
-            "  rtl:\n"
-            "    files: [rtl/top.sv]\n"
-            "    file_type: systemVerilogSource\n"
-            "targets:\n"
-            "  lint_legacy:\n"
-            "    default_tool: verilator\n"
-            "    tools:\n"
-            "      verilator: {mode: lint-only}\n"
-            "    filesets: [rtl]\n"
-            "    toplevel: top\n",
-            encoding="utf-8",
-        )
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(work_dir), "--target", "lint_legacy"])
-        flow.read_state()
-        handle = TargetCatalog.build(work_dir).select("lint_legacy", for_flow="lint")
-        command = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        _real_lint_setup(monkeypatch, command, tmp_path)
-        prepared = flow._prepare_lint_command(handle)
-
-        assert prepared.resolved.eda_tool is None
-        assert prepared.resolved.configured_eda_tool == "verilator"
-        assert (prepared.resolved.build_root / "Makefile").is_file()
+        real_catalog_build=_REAL_CATALOG_BUILD,
+        fallback_handle=lambda root, token: _target_handle(
+            token, project_root=root, eda_tool=eda_tool
+        ),
+    )
 
 
-class TestDoctorTargetAuthority:
-    @staticmethod
-    def _author_target(
-        root: Path,
-        filename: str,
-        vlnv: str,
-        *,
-        doctor_selftest: bool,
-        target_name: str = "lint",
-    ) -> None:
-        root.joinpath(filename).write_text(
+@pytest.mark.parametrize(
+    ("declared", "configured", "resolution_error", "expected"),
+    [
+        pytest.param(
+            "verilator",
+            None,
+            None,
+            "lint planning failed: lite: lint setup failed: unknown lint EDA tool None",
+            id="configured-missing",
+        ),
+        pytest.param(
+            "verilator",
+            "mystery-lint",
+            None,
+            "lint planning failed: lite: lint setup failed: unknown lint EDA tool 'mystery-lint'",
+            id="configured-unknown",
+        ),
+        pytest.param(
+            None,
+            "verilator",
+            None,
+            "lint planning failed: lite: unknown lint EDA tool None",
+            id="declared-missing",
+        ),
+        pytest.param(
+            "mystery-lint",
+            "verilator",
+            None,
+            "lint planning failed: lite: unknown lint EDA tool 'mystery-lint'",
+            id="declared-unknown",
+        ),
+        pytest.param(
+            "verible",
+            "verilator",
+            None,
+            "lint planning failed: lite: lint setup failed: lint Target 'lite' declared "
+            "'verible' but FuseSoC configured 'verilator'",
+            id="declared-configured-disagree",
+        ),
+        pytest.param(
+            "verilator",
+            "verilator",
+            fusesoc_registry.TargetResolutionError("boom"),
+            "lint planning failed: lite: lint setup failed: boom",
+            id="resolution-fails",
+        ),
+    ],
+)
+def test_lint_rejects_an_unusable_linter_before_running_it(
+    run_lint: _LintRun,
+    monkeypatch: pytest.MonkeyPatch,
+    declared: str | None,
+    configured: str | None,
+    resolution_error: Exception | None,
+    expected: str,
+) -> None:
+    _lenient_catalog_declaring(monkeypatch, declared)
+
+    def resolved(_handle: TargetHandle, _build_root: Path) -> object:
+        if resolution_error is not None:
+            raise resolution_error
+        return _stub_resolved(configured)
+
+    result, commands = run_lint(_process(), resolved=resolved)
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text.startswith(expected)
+    assert commands == []
+
+
+def test_lint_runs_make_over_the_resolved_build_root(run_lint: _LintRun, tmp_path: Path) -> None:
+    """Booley resolves the Target through FuseSoC, then `make -C <relpath>`."""
+    resolved_build = tmp_path / ".booley/.runtime/edalize/lint/lite/lint_demo_0/lite"
+    resolver_calls: list[tuple[str, Path]] = []
+
+    def resolved(handle: TargetHandle, build_root: Path) -> object:
+        resolver_calls.append((handle.selector, build_root))
+        return _stub_resolved(build_root=resolved_build)
+
+    result, commands = run_lint(_process(), resolved=resolved)
+
+    assert result.exit_code == EXIT_SUCCESS
+    # The resolver gets the per-(EDA tool, config) Edalize dir, not the dir make runs in.
+    assert resolver_calls == [("lite", tmp_path / ".booley/.runtime/edalize/lint/lite")]
+    (command,) = commands
+    assert command[:2] == ["sh", "-c"]
+    # The authenticated preflight names the linter before make can turn a child 127 into exit 2.
+    assert "command -v verilator" in command[2]
+    assert re.search(r"BOOLEY_EDA_FAILURE token=[0-9a-f]{32}", command[2])
+    assert "make -C .booley/.runtime/edalize/lint/lite/lint_demo_0/lite" in command[2]
+
+
+_LEGACY_LINT_CORE_TEXT = """\
+CAPI=2:
+name: ::lint_demo:0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+targets:
+  lite:
+    default_tool: verilator
+    tools:
+      verilator: {mode: lint-only}
+    filesets: [rtl]
+    toplevel: top
+"""
+
+
+@pytest.mark.parametrize(
+    ("core_text", "vc_options"),
+    [
+        pytest.param(_LINT_CORE_TEXT, ("--lint-only", "-Wall"), id="flow-options"),
+        pytest.param(_LEGACY_LINT_CORE_TEXT, (), id="legacy-tools"),
+    ],
+)
+def test_real_fusesoc_lint_setup(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    core_text: str,
+    vc_options: tuple[str, ...],
+) -> None:
+    """Real catalog-authorized setup emits a relocatable Verilator lint build."""
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    work_dir = tmp_path / "proj"
+    (work_dir / "rtl").mkdir(parents=True)
+    (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    (work_dir / "lint_demo.core").write_bytes(core_text.encode())
+    _real_lint_setup(
+        monkeypatch, [sys.executable, "-c", "from fusesoc.main import main; main()"], tmp_path
+    )
+
+    result, commands = run_lint(_process(), work_dir=work_dir, resolved=None)
+
+    assert result.exit_code == EXIT_SUCCESS
+    make_dir = work_dir / re.search(r"make -C (\S+)", commands[0][2]).group(1)
+    assert (make_dir / "Makefile").is_file()
+    vc = next(make_dir.glob("*.vc")).read_text(encoding="utf-8")
+    assert all(option in vc for option in vc_options)
+    # Relocatable: no absolute project/build paths baked into the .vc.
+    assert str(work_dir) not in vc
+
+
+def _dry_run_plan(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    """The plan a ``--dry-run`` prints ahead of its one-line verdict."""
+    out = capsys.readouterr().out
+    plan: dict[str, Any] = json.JSONDecoder().raw_decode(out[out.index("{") :])[0]
+    return plan
+
+
+def _author_lint_core(
+    root: Path,
+    filename: str,
+    vlnv: str,
+    *,
+    doctor_selftest: bool,
+    target_name: str = "lint",
+) -> None:
+    root.joinpath(filename).write_bytes(
+        (
             "CAPI=2:\n"
             f"name: {vlnv}\n"
             "targets:\n"
@@ -405,902 +387,515 @@ class TestDoctorTargetAuthority:
             "    flow: lint\n"
             "    flow_options:\n"
             "      tool: verible\n"
-            f"      booley: {{doctor_selftest: {str(doctor_selftest).lower()}}}\n",
-            encoding="utf-8",
-        )
+            f"      booley: {{doctor_selftest: {str(doctor_selftest).lower()}}}\n"
+        ).encode()
+    )
 
-    @staticmethod
-    def _doctor_catalog_builder(monkeypatch: pytest.MonkeyPatch):
-        def build_for_doctor(_cls, project_root: Path):
-            monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-            try:
-                return _REAL_CATALOG_BUILD(project_root)
-            finally:
-                monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
-        return build_for_doctor
+def test_public_lint_rejects_doctor_only_target_before_resolution(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ordinary Flow invocation cannot cross Doctor's private seam."""
+    _author_lint_core(tmp_path, "doctor.core", "acme:ip:doctor:1.0", doctor_selftest=True)
+    monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
+    monkeypatch.setattr(
+        TargetCatalog, "build", classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root))
+    )
+    resolved_handles: list[TargetHandle] = []
 
-    def _authorized_lint_flow(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> LintFlow:
-        self._author_target(
-            tmp_path,
-            "doctor.core",
-            "acme:ip:doctor:1.0",
-            doctor_selftest=True,
-            target_name="lint_selftest_bad",
-        )
-        monkeypatch.setattr(
-            TargetCatalog,
-            "build",
-            classmethod(self._doctor_catalog_builder(monkeypatch)),
-        )
-        monkeypatch.setattr(
-            LintFlow,
-            "_prepare_lint_command",
-            lambda _self, _target: (["verible-verilog-lint"], _stub_resolved("verible")),
-        )
-        monkeypatch.setattr(
-            LintFlow,
-            "_execute",
-            lambda _self, _cmd: MagicMock(
-                returncode=0,
-                stdout="rtl/bad.sv:1:1: forbidden construct [module-filename]\n",
-                stderr="",
-                timed_out=False,
-                duration_s=0.1,
-            ),
-        )
-        flow = LintFlow()
-        flow.parse_args(
-            ["--work-dir", str(tmp_path), "--target", "lint_selftest_bad", "--diagnostic"]
-        )
-        flow.read_state()
-        return flow
+    def resolved(handle: TargetHandle, _build_root: Path) -> object:
+        resolved_handles.append(handle)
+        return _stub_resolved("verible")
 
-    def test_public_lint_rejects_doctor_only_target_before_resolution(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """An ordinary Flow invocation cannot cross Doctor's private seam."""
-        self._author_target(
-            tmp_path,
-            "doctor.core",
-            "acme:ip:doctor:1.0",
-            doctor_selftest=True,
-        )
-        monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
-        monkeypatch.setattr(
-            TargetCatalog,
-            "build",
-            classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root)),
-        )
-        monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
+    result, commands = run_lint(_process(), target="lint", resolved=resolved)
 
-        with patch.object(fusesoc_registry, "_resolve_target") as resolve:
-            exit_code = LintFlow().main(
-                [
-                    "--work-dir",
-                    str(tmp_path),
-                    "--target",
-                    "lint",
-                    "--diagnostic",
-                ]
-            )
+    assert result.exit_code == EXIT_ERROR
+    assert "Unknown target 'lint'" in result.outcome.report_text
+    assert resolved_handles == []
+    assert commands == []
 
-        assert exit_code == EXIT_ERROR
-        resolve.assert_not_called()
 
-    def test_selected_vlnv_pins_qualified_doctor_target_execution(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Lint forwards the selected core identity through both command paths."""
-        self._author_target(
-            tmp_path,
-            "public.core",
-            "acme:ip:public:1.0",
-            doctor_selftest=False,
-        )
-        self._author_target(
-            tmp_path,
-            "doctor.core",
-            "acme:ip:doctor:1.0",
-            doctor_selftest=True,
-        )
+def test_selected_doctor_target_keeps_its_core_and_parser(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both cores name Target `lint`; Doctor's selection keeps its core and Verible parser."""
+    _author_lint_core(tmp_path, "public.core", "acme:ip:public:1.0", doctor_selftest=False)
+    _author_lint_core(tmp_path, "doctor.core", "acme:ip:doctor:1.0", doctor_selftest=True)
+
+    def build_for_doctor(_cls: object, project_root: Path) -> TargetCatalog:
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-        (target,) = _REAL_CATALOG_BUILD(tmp_path).select_many("doctor#lint")
-        monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
+        try:
+            return _REAL_CATALOG_BUILD(project_root)
+        finally:
+            monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
-        resolved = _stub_resolved("verible")
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(tmp_path), "--target", target.selector])
-        with patch.object(fusesoc_registry, "_resolve_target", return_value=resolved) as resolve:
-            flow._prepare_lint_command(target)
-
-        resolve.assert_called_once_with(
-            "doctor#lint",
-            project_root=tmp_path,
-            build_root=(tmp_path / ".booley" / ".runtime" / "edalize" / "lint" / "doctor_lint"),
-            vlnv="acme:ip:doctor:1.0",
-        )
-        setup = fusesoc_registry._setup_command(
-            target.selector,
-            project_root=tmp_path,
-            build_root=tmp_path / "build",
-            vlnv=target.vlnv,
-        )
-        target_index = setup.index("--target")
-        assert setup[target_index + 1] == "lint"
-        assert setup[-1] == "acme:ip:doctor:1.0"
-
-    def test_selected_doctor_target_keeps_its_lint_parser(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Lint uses the authorized handle after Doctor context is gone."""
-        flow = self._authorized_lint_flow(tmp_path, monkeypatch)
-        result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        assert result.detail["total_warnings"] == 1
-
-
-# ---------------------------------------------------------------------------
-# Warning parsing
-# ---------------------------------------------------------------------------
-
-
-class TestWarningParsing:
-    def test_parse_basic_warnings(self):
-        warnings = parse_warnings(SAMPLE_VERILATOR_OUTPUT, "lite")
-        assert len(warnings) == 3
-        assert warnings[0].rule == "UNUSEDSIGNAL"
-        assert warnings[0].file == "rtl/mod_a.sv"
-        assert warnings[0].line == 42
-        assert warnings[0].col == 5
-        assert "'foo'" in warnings[0].message
-        assert warnings[0].target == "lite"
-
-    def test_parse_width_warning(self):
-        warnings = parse_warnings(SAMPLE_VERILATOR_OUTPUT, "full")
-        width_warnings = [w for w in warnings if w.rule == "WIDTH"]
-        assert len(width_warnings) == 1
-        assert width_warnings[0].file == "rtl/mod_c.sv"
-        assert width_warnings[0].line == 55
-
-    def test_parse_empty_output(self):
-        warnings = parse_warnings("", "lite")
-        assert warnings == []
-
-    def test_parse_no_warnings(self):
-        warnings = parse_warnings("Compiling module...\nDone.\n", "lite")
-        assert warnings == []
-
-    def test_parse_mixed_stderr(self):
-        """Warnings embedded among non-warning lines."""
-        warnings = parse_warnings(SAMPLE_STDERR_MIXED, "combo")
-        assert len(warnings) == 2
-        assert warnings[0].rule == "UNUSEDSIGNAL"
-        assert warnings[0].file == "rtl/mod_b.sv"
-
-    def test_dedup_key_property(self):
-        w = LintWarning("RULE", "file.sv", 10, 3, "msg", "lite")
-        assert w.dedup_key == ("RULE", "file.sv", 10)
-
-
-# ---------------------------------------------------------------------------
-# Deduplication
-# ---------------------------------------------------------------------------
-
-
-class TestDeduplication:
-    def test_dedup_same_warning_different_configs(self):
-        w1 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "lite")
-        w2 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "full")
-        w3 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "combo")
-        result = deduplicate_warnings(
-            [w1, w2, w3],
-            {"lite": "verilator", "full": "verilator", "combo": "verible"},
-        )
-        assert len(result) == 1
-        assert result[0].target == "lite"  # first occurrence kept
-        assert result[0].targets == ("combo", "full", "lite")
-        assert result[0].eda_tools == (
-            ("combo", "verible"),
-            ("full", "verilator"),
-            ("lite", "verilator"),
-        )
-
-    def test_dedup_repeated_warning_from_one_target_lists_target_once(self):
-        first = LintWarning("WIDTH", "mod_a.sv", 42, 5, "first", "lite")
-        repeated = LintWarning("WIDTH", "mod_a.sv", 42, 9, "repeated", "lite")
-
-        result = deduplicate_warnings([first, repeated], {"lite": "verilator"})
-
-        assert len(result) == 1
-        assert result[0].targets == ("lite",)
-        assert result[0].eda_tools == (("lite", "verilator"),)
-        assert result[0].col == 5
-        assert result[0].message == "first"
-
-    def test_dedup_rejects_incomplete_eda_tool_provenance(self):
-        warnings = [
-            LintWarning("WIDTH", "mod_a.sv", 42, 5, "first", "lint_a"),
-            LintWarning("WIDTH", "mod_a.sv", 42, 9, "second", "lint_b"),
-        ]
-
-        with pytest.raises(
-            AssertionError,
-            match=r"missing EDA-tool provenance for contributing Target.*lint_b",
-        ):
-            deduplicate_warnings(warnings, {"lint_a": "verilator"})
-
-    def test_dedup_different_warnings(self):
-        w1 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg1", "lite")
-        w2 = LintWarning("WIDTH", "mod_c.sv", 55, 10, "msg2", "lite")
-        result = deduplicate_warnings([w1, w2])
-        assert len(result) == 2
-
-    def test_dedup_same_rule_different_lines(self):
-        w1 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg1", "lite")
-        w2 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 99, 5, "msg2", "lite")
-        result = deduplicate_warnings([w1, w2])
-        assert len(result) == 2
-
-    def test_dedup_empty(self):
-        assert deduplicate_warnings([]) == []
-
-    def test_dedup_across_configs_preserves_order(self):
-        """First occurrence from each dedup group is kept."""
-        w_lite = LintWarning("A", "f.sv", 1, 1, "m", "lite")
-        w_full = LintWarning("B", "g.sv", 2, 1, "m", "full")
-        w_lite_dup = LintWarning("A", "f.sv", 1, 1, "m", "combo")
-        result = deduplicate_warnings([w_lite, w_full, w_lite_dup])
-        assert len(result) == 2
-        assert result[0].rule == "A"
-        assert result[1].rule == "B"
-
-
-# ---------------------------------------------------------------------------
-# Scope filtering
-# ---------------------------------------------------------------------------
-
-
-class TestScopeFiltering:
-    def test_scope_matches_substring(self):
-        w1 = LintWarning("A", "rtl/mod_a.sv", 1, 1, "m", "lite")
-        w2 = LintWarning("B", "rtl/mod_c.sv", 2, 1, "m", "lite")
-        result = filter_by_scope([w1, w2], "mod_a")
-        assert len(result) == 1
-        assert result[0].file == "rtl/mod_a.sv"
-
-    def test_scope_multiple_paths(self):
-        w1 = LintWarning("A", "rtl/mod_a.sv", 1, 1, "m", "lite")
-        w2 = LintWarning("B", "rtl/mod_c.sv", 2, 1, "m", "lite")
-        w3 = LintWarning("C", "rtl/design_top.sv", 3, 1, "m", "lite")
-        result = filter_by_scope([w1, w2, w3], "mod_a,mod_c")
-        assert len(result) == 2
-
-    def test_scope_empty_returns_all(self):
-        w1 = LintWarning("A", "f.sv", 1, 1, "m", "lite")
-        result = filter_by_scope([w1], "")
-        assert len(result) == 1
-
-    def test_scope_no_match(self):
-        w1 = LintWarning("A", "rtl/mod_a.sv", 1, 1, "m", "lite")
-        result = filter_by_scope([w1], "nonexistent")
-        assert len(result) == 0
-
-
-# ---------------------------------------------------------------------------
-# Dry-run mode
-# ---------------------------------------------------------------------------
-
-
-class TestDryRun:
-    def test_plan_collects_target_setup_errors(self, tmp_path: Path, monkeypatch) -> None:
-        flow = LintFlow()
-        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
-        monkeypatch.setattr(flow, "_lint_work_unit", MagicMock(side_effect=ValueError("bad plan")))
-
-        plan = flow._plan_lint((_target_handle("broken", project_root=tmp_path),))
-
-        assert plan.aggregate_errors == ("broken: bad plan",)
-
-    def test_plan_rejects_untyped_inspection_errors(self, tmp_path: Path) -> None:
-        flow = LintFlow()
-        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
-        flow._target_catalog = MagicMock(
-            inspect=MagicMock(side_effect=fusesoc_registry.FuseSocError("inspection failed"))
-        )
-
-        with pytest.raises(fusesoc_registry.FuseSocError, match="inspection failed"):
-            flow._lint_plan_inspection(_target_handle("broken", project_root=tmp_path))
-
-    def test_dry_run_names_rejected_core(self, tmp_path: Path) -> None:
-        """A Target in a core FuseSoC ignores fails with the core and the reason."""
-        (tmp_path / "bad.core").write_text(
-            "CAPI=2:\nname: acme:ip:bad:0\ntargets:\n"
-            "  lite:\n    flow: lint\n    flow_options: {tool: verilator}\n"
-            "    filesetz: [rtl]\n",
-            encoding="utf-8",
-        )
-        handle = TargetCatalog.build(tmp_path).select("lite")
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-
-        plan = flow._plan_lint((handle,))
-
-        assert len(plan.aggregate_errors) == 1
-        error = plan.aggregate_errors[0]
-        assert "FuseSoC rejected" in error
-        assert "bad.core" in error
-        assert "filesetz" in error
-
-    def test_plan_rejects_error_command(self, tmp_path: Path, monkeypatch) -> None:
-        target = _target_handle("broken", project_root=tmp_path)
-        target.core_file.write_text("CAPI=2:\nname: ::broken:0\n", encoding="utf-8")
-        flow = LintFlow()
-        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
-        monkeypatch.setattr(flow, "_dry_run_command", lambda _target: ["ERROR: invalid target"])
-
-        with pytest.raises(ValueError, match="invalid target"):
-            flow._lint_plan_command(target)
-
-    def test_plan_tolerates_typed_missing_toplevel_without_message_matching(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        flow = LintFlow()
-        flow.parse_args(["--target", "legacy", "--work-dir", str(tmp_path)])
-        flow._target_catalog = MagicMock(
-            inspect=MagicMock(side_effect=MissingTargetToplevelError("wording may change"))
-        )
-
-        plan = flow._plan_lint((_target_handle("legacy", project_root=tmp_path),))
-
-        assert not plan.aggregate_errors
-        assert plan.work_units[0].recipe["toplevel"] == ""
-
-    def test_dry_run_shows_fusesoc_setup_without_resolving(
-        self,
-        tmp_path: Path,
-        state_file: Path,
-        capsys,
-    ):
-        """Dry-run previews ``fusesoc run --setup`` + ``make`` without resolving.
-
-        The preview is sourced from a cheap ``.core`` YAML read; patching
-        ``_resolve_target`` to fail proves dry-run never invokes fusesoc.
-        """
-        from booley.fusesoc import fusesoc_registry
-
-        (tmp_path / "lint.core").write_text(
-            "CAPI=2:\nname: ::lint_demo:0\ntargets:\n  lite:\n    flow: lint\n"
-            "    flow_options:\n      tool: verilator\n",
-            encoding="utf-8",
-        )
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite", "--dry-run"])
-        flow.read_state()
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
-        ):
-            result = flow._run()
-        assert result.exit_code == 0
-        assert "Dry run" in result.report_text
-        data = json.loads(capsys.readouterr().out)
-        assert data["flow"] == "lint"
-        cmd = data["work_units"][0]["commands"][0]["argv"]
-        assert cmd[:2] == ["sh", "-c"]
-        script = cmd[2]
-        assert "run --build-root" in script and "--setup" in script
-        assert "--target lite" in script
-        assert "lint_demo" in script  # the resolved vlnv from the .core
-        assert "make -C" in script
-
-    def test_dry_run_unknown_target_reports_error_inline(
-        self,
-        tmp_path: Path,
-        state_file: Path,
-        capsys,
-    ):
-        """A config with no ``.core`` Target yields a clean ERROR, not a crash."""
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite", "--dry-run"])
-        flow.read_state()
-        with patch.object(
-            fusesoc_registry,
-            "_setup_command",
-            side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        data = json.loads(capsys.readouterr().out)
-        assert data["flow"] == "lint"
-        assert data["work_units"] == []
-        assert data["aggregate_errors"] == ["lite: ERROR: lint dry-run: Unknown target 'lite'"]
-
-
-# ---------------------------------------------------------------------------
-# Per-config criterion setting
-# ---------------------------------------------------------------------------
-
-
-class TestCriterionSetting:
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
+    monkeypatch.setattr(TargetCatalog, "build", classmethod(build_for_doctor))
+    monkeypatch.setattr(
+        fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_COMMAND_FOR_HANDLE
     )
-    def test_sets_criterion_per_config(self, mock_cmd, mock_exec, state_file: Path):
-        """Criterion lint_clean_<config> is set per config."""
-        # No warnings => clean
-        mock_exec.return_value = MagicMock(
-            returncode=0,
-            stdout="",
-            stderr="",
-            timed_out=False,
-            duration_s=1.0,
-        )
-        flow = LintFlow()
-        flow.parse_args(
+
+    preview, _ = run_lint(target="doctor#lint", args=("--dry-run",))
+    setup_script = _dry_run_plan(capsys)["work_units"][0]["commands"][0]["argv"][2]
+    assert preview.exit_code == EXIT_SUCCESS
+    assert "--target lint acme:ip:doctor:1.0" in setup_script
+
+    resolver_calls: list[tuple[str, Path]] = []
+
+    def resolved(handle: TargetHandle, build_root: Path) -> object:
+        resolver_calls.append((handle.vlnv, build_root))
+        return _stub_resolved("verible")
+
+    finding = "rtl/bad.sv:1:1: forbidden construct [module-filename]\n"
+    result, _ = run_lint(_process(stdout=finding), target="doctor#lint", resolved=resolved)
+
+    assert resolver_calls == [
+        ("acme:ip:doctor:1.0", tmp_path / ".booley/.runtime/edalize/lint/doctor_lint")
+    ]
+    assert result.exit_code == EXIT_FAILURE
+    assert result.outcome.detail["total_warnings"] == 1
+
+
+@pytest.mark.parametrize(
+    ("output", "target", "expected"),
+    [
+        pytest.param(
+            SAMPLE_VERILATOR_OUTPUT,
+            "lite",
             [
-                "--target",
-                "lite,full",
-            ]
-        )
-        flow.read_state()
-        flow._run()
-
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is True
-        assert st.is_met("lint_clean_full") is True
-
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    def test_criterion_false_when_warnings(self, mock_cmd, mock_exec, state_file: Path):
-        """Criterion is False when config has warnings."""
-        mock_exec.return_value = MagicMock(
-            returncode=0,
-            stdout="%Warning-UNUSEDSIGNAL: f.sv:1:1: unused\n",
-            stderr="",
-            timed_out=False,
-            duration_s=1.0,
-        )
-        flow = LintFlow()
-        flow.parse_args(
+                ("UNUSEDSIGNAL", "rtl/mod_a.sv", 42, 5, "Signal is not used: 'foo'", "lite"),
+                ("UNDRIVEN", "rtl/mod_a.sv", 100, 3, "Signal is not driven: 'bar'", "lite"),
+                (
+                    "WIDTH",
+                    "rtl/mod_c.sv",
+                    55,
+                    10,
+                    "Operator ASSIGN expects 32 bits on the LHS",
+                    "lite",
+                ),
+            ],
+            id="basic",
+        ),
+        pytest.param("", "lite", [], id="empty"),
+        pytest.param("Compiling module...\nDone.\n", "lite", [], id="no-warnings"),
+        pytest.param(
+            "Compiling mod_b.sv\n"
+            "%Warning-UNUSEDSIGNAL: rtl/mod_b.sv:88:7: Signal is not used: 'debug_flag'\n"
+            "%Warning-UNUSEDSIGNAL: rtl/mod_a.sv:42:5: Signal is not used: 'foo'\n",
+            "combo",
             [
-                "--target",
-                "lite",
-            ]
-        )
-        flow.read_state()
-        flow._run()
-
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
-
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    def test_hard_error_is_not_clean_pass(self, mock_cmd, mock_exec, state_file: Path, capsys):
-        """QA-7: a non-zero rc (Verilator ``%Error``) must fail the gate.
-
-        ``%Error`` lines aren't ``%Warning`` lines, so parse_warnings finds
-        zero warnings — before the fix that scored as a clean PASS with the
-        criterion satisfied, green-lighting RTL that doesn't even elaborate.
-
-        Verilator ran and rejected the design, so the verdict is a design FAIL
-        rather than a Flow ERROR, matching `elaborate` on the same source
-        (F-29). The gate must be unsatisfied either way.
-        """
-        mock_exec.return_value = MagicMock(
-            returncode=2,
-            stdout="",
-            stderr=(
-                "%Error: src/core/biriscv_alu.v:184:39: Can't find definition "
-                "of variable: 'missing_operand_zzz'\n"
-                "%Error: Exiting due to 1 error(s)\n"
-            ),
-            timed_out=False,
-            duration_s=0.5,
-        )
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite"])
-        flow.read_state()
-        result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        captured = capsys.readouterr()
-        assert "RESULT: FAIL" in captured.out
-        assert "RESULT: PASS" not in captured.out
-        assert "missing_operand_zzz" in captured.out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
-
-
-class TestWarningsOnlyFatalExit:
-    """Verilator's default warnings-are-fatal exit must not defeat the knob.
-
-    A warnings-only run exits rc=2 with the location-less "%Error: Exiting
-    due to N warning(s)" epilogue as its only %Error line. Grading that a
-    hard failure made [flows.lint].warnings_as_errors=false inert on the
-    builtin path (C910 re-port finding; the adapter-era QA-5 lesson).
-    """
-
-    _WARNINGS_ONLY_OUTPUT = (
-        "%Warning-IMPLICIT: rtl/ct_l2c_wb.v:251:25: Signal definition not "
-        "found, creating implicitly: 'rfifo_full'\n"
-        "%Error: Exiting due to 44 warning(s)\n"
-    )
-
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    def test_non_blocking_knob_passes_warnings_only_fatal_exit(
-        self, mock_cmd, mock_exec, state_file: Path, capsys
-    ):
-        mock_exec.return_value = MagicMock(
-            returncode=2,
-            stdout="",
-            stderr=self._WARNINGS_ONLY_OUTPUT,
-            timed_out=False,
-            duration_s=0.5,
-        )
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite"])
-        flow.read_state()
-        with patch(
-            "booley.flows.lint.flow._lint_warnings_as_errors",
-            return_value=False,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        captured = capsys.readouterr()
-        assert "non-blocking" in captured.out
-        # The criterion still records the truth: warnings mean not clean.
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
-
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    def test_default_knob_still_fails_warnings_only_run(
-        self, mock_cmd, mock_exec, state_file: Path
-    ):
-        mock_exec.return_value = MagicMock(
-            returncode=2,
-            stdout="",
-            stderr=self._WARNINGS_ONLY_OUTPUT,
-            timed_out=False,
-            duration_s=0.5,
-        )
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite"])
-        flow.read_state()
-        result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    def test_real_errors_still_fail_regardless_of_knob(
-        self, mock_cmd, mock_exec, state_file: Path
-    ):
-        # A real located %Error precedes the epilogue — stays a design FAIL
-        # even with the non-blocking knob (it only covers warnings).
-        mock_exec.return_value = MagicMock(
-            returncode=2,
-            stdout="",
-            stderr=(
-                "%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n"
-                "%Error: Exiting due to 1 error(s)\n"
-            ),
-            timed_out=False,
-            duration_s=0.5,
-        )
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite"])
-        flow.read_state()
-        with patch(
-            "booley.flows.lint.flow._lint_warnings_as_errors",
-            return_value=False,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-
-
-class TestErrorVsFailTaxonomy:
-    """F-29: exit 2 means the linter could not run; exit 1 means the RTL failed.
-
-    The same undeclared identifier used to grade ERROR under `lint` and FAIL
-    under `elaborate`. Now a compiler diagnostic is a design FAIL in both, and
-    exit 2 is reserved for a linter that never reached a verdict.
-    """
-
-    def test_missing_linter_binary_is_an_eda_tool_error(self):
-        from booley.flows.lint.flow import _errored_verdict
-
-        result = LintConfigResult(target="lint_style", returncode=127)
-        result.error = "verible-verilog-lint is not installed"
-        result.error_is_eda_tool_failure = True
-
-        exit_code, summary = _errored_verdict([result])
-        assert exit_code == EXIT_ERROR
-        assert "RESULT: ERROR" in summary
-
-    def test_setup_exception_is_an_eda_tool_error(self, tmp_path: Path, state_file: Path):
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
-
-        with patch.object(
-            LintFlow,
-            "_prepare_lint_command",
-            side_effect=RuntimeError("broken setup"),
-        ):
-            result = flow._run_lint_target(_target_handle("lite"))
-
-        assert result.error == "lint setup failed: broken setup"
-        assert result.error_is_eda_tool_failure is True
-
-    def test_rejected_design_is_a_failure(self):
-        from booley.flows.lint.flow import _errored_verdict
-
-        result = LintConfigResult(target="lite", returncode=2)
-        result.error = "%Error: can't find definition of variable 'zzz'"
-
-        exit_code, summary = _errored_verdict([result])
-        assert exit_code == EXIT_FAILURE
-        assert "RESULT: FAIL" in summary
-
-    def test_a_single_eda_tool_failure_decides_a_mixed_run(self):
-        """An unusable linter makes the other Targets' verdicts untrustworthy."""
-        from booley.flows.lint.flow import _errored_verdict
-
-        design = LintConfigResult(target="lite", returncode=2)
-        design.error = "%Error: syntax"
-        broken = LintConfigResult(target="lint_style", returncode=127)
-        broken.error = "not installed"
-        broken.error_is_eda_tool_failure = True
-
-        exit_code, _summary = _errored_verdict([design, broken])
-        assert exit_code == EXIT_ERROR
-
-    def test_timeout_is_an_eda_tool_error_not_a_design_failure(
-        self,
-        tmp_path: Path,
-        state_file: Path,
-    ):
-        """A timeout reached no verdict about the RTL at all."""
-        with (
-            patch.object(LintFlow, "_execute") as mock_exec,
-            patch.object(
-                LintFlow,
-                "_prepare_lint_command",
-                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
-            ),
-        ):
-            mock_exec.return_value = MagicMock(
-                returncode=-1,
-                stdout="partial lint output",
-                stderr="partial timeout diagnostic",
-                timed_out=True,
-                duration_s=99.0,
-            )
-            flow = LintFlow()
-            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-            flow.read_state()
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert "lint_clean_lite" not in flow.state.criteria
-        run_log = tmp_path / ".booley/.runtime/edalize/lint/lite/run.log"
-        assert "partial lint output" in run_log.read_text(encoding="utf-8")
-        assert "partial timeout diagnostic" in run_log.read_text(encoding="utf-8")
-
-    def test_missing_linter_leaves_criterion_unset(self, tmp_path: Path, state_file: Path) -> None:
-        with (
-            patch.object(LintFlow, "_execute") as mock_exec,
-            patch.object(
-                LintFlow,
-                "_prepare_lint_command",
-                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
-            ),
-        ):
-            mock_exec.return_value = MagicMock(
-                returncode=2,
-                stdout="",
-                stderr="make: verilator: No such file or directory\n",
-                timed_out=False,
-                duration_s=0.1,
-            )
-            flow = LintFlow()
-            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-            flow.read_state()
-            result = flow._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert "lint_clean_lite" not in flow.state.criteria
-
-    def test_hard_fail_without_report_dir_omits_live_log_pointer(
-        self, tmp_path: Path, state_file: Path
-    ):
-        """A shared live-tail file is not durable evidence without a report root."""
-        with (
-            patch.object(LintFlow, "_execute") as mock_exec,
-            patch.object(
-                LintFlow,
-                "_prepare_lint_command",
-                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
-            ),
-        ):
-            mock_exec.return_value = MagicMock(
-                returncode=2,
-                stdout="",
-                stderr=(
-                    "%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n"
-                    "%Error: rtl/x.v:9:5: second diagnostic the first line omits\n"
+                (
+                    "UNUSEDSIGNAL",
+                    "rtl/mod_b.sv",
+                    88,
+                    7,
+                    "Signal is not used: 'debug_flag'",
+                    "combo",
                 ),
-                timed_out=False,
-                duration_s=0.5,
-            )
-            flow = LintFlow()
-            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-            flow.read_state()
-            cr = flow._run_lint_target(_target_handle("lite"))
+                ("UNUSEDSIGNAL", "rtl/mod_a.sv", 42, 5, "Signal is not used: 'foo'", "combo"),
+            ],
+            id="mixed-stderr",
+        ),
+    ],
+)
+def test_parse_warnings(
+    output: str, target: str, expected: list[tuple[str, str, int, int, str, str]]
+) -> None:
+    warnings = parse_warnings(output, target)
 
-        pointer = ".booley/.runtime/edalize/lint/lite/run.log"
-        assert cr.error.startswith("%Error: rtl/x.v:1:1")
-        assert "(full log:" not in cr.error
-        log_text = (tmp_path / pointer).read_text(encoding="utf-8")
-        assert "second diagnostic" in log_text
+    assert [(w.rule, w.file, w.line, w.col, w.message, w.target) for w in warnings] == expected
 
-    def test_hard_fail_criterion_cites_numbered_log(
-        self, tmp_path: Path, state_file: Path
-    ) -> None:
-        with (
-            patch.object(
-                LintFlow,
-                "_execute",
-                return_value=MagicMock(
-                    returncode=2,
-                    stdout="",
-                    stderr="%Error: rtl/x.v:1:1: rejected\n",
-                    timed_out=False,
-                    duration_s=0.5,
-                ),
+
+def test_dedup_same_warning_different_configs() -> None:
+    w1 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "lite")
+    w2 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "full")
+    w3 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "combo")
+    result = deduplicate_warnings(
+        [w1, w2, w3],
+        {"lite": "verilator", "full": "verilator", "combo": "verible"},
+    )
+    assert len(result) == 1
+    assert result[0].target == "lite"  # first occurrence kept
+    assert result[0].targets == ("combo", "full", "lite")
+    assert result[0].eda_tools == (
+        ("combo", "verible"),
+        ("full", "verilator"),
+        ("lite", "verilator"),
+    )
+
+
+def test_dedup_repeated_warning_from_one_target_lists_target_once() -> None:
+    first = LintWarning("WIDTH", "mod_a.sv", 42, 5, "first", "lite")
+    repeated = LintWarning("WIDTH", "mod_a.sv", 42, 9, "repeated", "lite")
+
+    result = deduplicate_warnings([first, repeated], {"lite": "verilator"})
+
+    assert len(result) == 1
+    assert result[0].targets == ("lite",)
+    assert result[0].eda_tools == (("lite", "verilator"),)
+    assert result[0].col == 5
+    assert result[0].message == "first"
+
+
+def test_dedup_rejects_incomplete_eda_tool_provenance() -> None:
+    warnings = [
+        LintWarning("WIDTH", "mod_a.sv", 42, 5, "first", "lint_a"),
+        LintWarning("WIDTH", "mod_a.sv", 42, 9, "second", "lint_b"),
+    ]
+
+    with pytest.raises(
+        AssertionError,
+        match=r"missing EDA-tool provenance for contributing Target.*lint_b",
+    ):
+        deduplicate_warnings(warnings, {"lint_a": "verilator"})
+
+
+@pytest.mark.parametrize(
+    ("warnings", "expected"),
+    [
+        pytest.param([], [], id="empty"),
+        pytest.param(
+            [
+                LintWarning("A", "f.sv", 1, 1, "m", "lite"),
+                LintWarning("A", "f.sv", 2, 1, "m", "lite"),
+            ],
+            [("A", "f.sv", 1, "lite"), ("A", "f.sv", 2, "lite")],
+            id="other-line",
+        ),
+        pytest.param(
+            [
+                LintWarning("A", "f.sv", 1, 1, "m", "lite"),
+                LintWarning("B", "f.sv", 1, 1, "m", "lite"),
+            ],
+            [("A", "f.sv", 1, "lite"), ("B", "f.sv", 1, "lite")],
+            id="other-rule",
+        ),
+        pytest.param(
+            [
+                LintWarning("A", "f.sv", 1, 1, "m", "lite"),
+                LintWarning("A", "g.sv", 1, 1, "m", "lite"),
+            ],
+            [("A", "f.sv", 1, "lite"), ("A", "g.sv", 1, "lite")],
+            id="other-file",
+        ),
+        pytest.param(
+            [
+                LintWarning("A", "f.sv", 1, 1, "m", "lite"),
+                LintWarning("B", "g.sv", 2, 1, "m", "full"),
+                LintWarning("A", "f.sv", 1, 1, "m", "combo"),
+            ],
+            [("A", "f.sv", 1, "lite"), ("B", "g.sv", 2, "full")],
+            id="first-of-each-group",
+        ),
+    ],
+)
+def test_dedup_keeps_first_warning_per_rule_file_and_line(
+    warnings: list[LintWarning], expected: list[tuple[str, str, int, str]]
+) -> None:
+    result = deduplicate_warnings(warnings)
+
+    assert [(w.rule, w.file, w.line, w.target) for w in result] == expected
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        pytest.param("mod_a", ["rtl/mod_a.sv"], id="substring"),
+        pytest.param("mod_a,mod_c", ["rtl/mod_a.sv", "rtl/mod_c.sv"], id="several-paths"),
+        pytest.param(
+            "", ["rtl/mod_a.sv", "rtl/mod_c.sv", "rtl/design_top.sv"], id="empty-keeps-all"
+        ),
+        pytest.param("nonexistent", [], id="no-match"),
+    ],
+)
+def test_filter_by_scope(scope: str, expected: list[str]) -> None:
+    warnings = [
+        LintWarning("A", "rtl/mod_a.sv", 1, 1, "m", "lite"),
+        LintWarning("B", "rtl/mod_c.sv", 2, 1, "m", "lite"),
+        LintWarning("C", "rtl/design_top.sv", 3, 1, "m", "lite"),
+    ]
+
+    assert [w.file for w in filter_by_scope(warnings, scope)] == expected
+
+
+_BAD_CORE = (
+    b"CAPI=2:\nname: acme:ip:bad:0\ntargets:\n"
+    b"  lite:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+    b"    filesetz: [rtl]\n"
+)
+_UNPROVIDED_DEPENDENCY_CORE = (
+    b"CAPI=2:\nname: acme:ip:top:0\nfilesets:\n  rtl:\n"
+    b"    depend: ['>=::vlog_tb_utils:1.1']\n"
+    b"targets:\n  lite:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+    b"    filesets: [rtl]\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("core", "fragments"),
+    [
+        pytest.param(_BAD_CORE, ("FuseSoC rejected", "bad.core", "filesetz"), id="rejected-core"),
+        pytest.param(
+            _UNPROVIDED_DEPENDENCY_CORE,
+            (
+                "\nno Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC "
+                "libraries and cannot fetch them; copy it into the repository as a .core, or "
+                "drop the depend: (check first whether the testbench guards its use with an "
+                "`ifdef` or defines the module itself)",
             ),
-            patch.object(
-                LintFlow,
-                "_prepare_lint_command",
-                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
-            ),
-        ):
-            flow = LintFlow()
-            flow.parse_args(
-                [
-                    "--target",
-                    "lite",
-                    "--work-dir",
-                    str(tmp_path),
-                    "--report-dir",
-                    str(tmp_path / "reports"),
-                ]
-            )
-            flow.read_state()
-            flow._run()
+            id="unprovided-dependency",
+        ),
+        pytest.param(
+            None, ("lite: ERROR: lint dry-run: Unknown target 'lite'",), id="unknown-target"
+        ),
+    ],
+)
+def test_dry_run_reports_planning_errors(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    core: bytes | None,
+    fragments: tuple[str, ...],
+) -> None:
+    """A Target FuseSoC cannot plan fails the dry run, naming the core and the reason."""
+    if core is None:
 
-        detail = DevelopmentState.load(state_file).criteria["lint_clean_lite"].detail
-        assert "reports/lint/1/artifacts/lite/run.log" in detail["error"]
+        def unknown_target(_handle: TargetHandle, **_kwargs: object) -> list[str]:
+            raise fusesoc_registry.TargetResolutionError("Unknown target 'lite'")
 
-    def test_previous_runs_log_is_erased_before_the_run(self, tmp_path: Path, state_file: Path):
-        """F-26: lint's run.log is only written at the END of a run, so it is
-        claimed (truncated to a run header) at the start — a tail during the
-        run must never show the previous run's findings."""
-        pointer = tmp_path / ".booley/.runtime/edalize/lint/lite/run.log"
-        pointer.parent.mkdir(parents=True)
-        pointer.write_text("%Warning: stale finding from an older run\n", encoding="utf-8")
+        monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", unknown_target)
+    else:
+        tmp_path.joinpath("bad.core").write_bytes(core)
 
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
-        seen: dict[str, str] = {}
+    result, commands = run_lint(args=("--dry-run",))
 
-        def _prepare(target: str):
-            # Read the log back mid-run: by prepare time it must be claimed.
-            seen["mid_run"] = pointer.read_text(encoding="utf-8")
-            return ["make", "-C", "x"], _stub_resolved("verilator")
+    plan = _dry_run_plan(capsys)
+    assert result.exit_code == EXIT_ERROR
+    assert plan["work_units"] == []
+    (error,) = plan["aggregate_errors"]
+    assert all(fragment in error for fragment in fragments)
+    assert commands == []
 
-        with (
-            patch.object(LintFlow, "_execute") as mock_exec,
-            patch.object(LintFlow, "_prepare_lint_command", side_effect=_prepare),
-        ):
-            mock_exec.return_value = MagicMock(
-                returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.1
-            )
-            flow._run_lint_target(_target_handle("lite"))
 
-        assert "stale finding" not in seen["mid_run"]
-        assert seen["mid_run"].startswith("[BOOLEY RUN_LOG] ")
-        assert "flow=lint target=lite" in seen["mid_run"]
+def test_dry_run_tolerates_a_typed_missing_toplevel(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The type of the inspection error, not its wording, marks a legacy Target without top."""
+    tmp_path.joinpath("lint.core").write_bytes(
+        b"CAPI=2:\nname: ::lint_demo:0\ntargets:\n  lite:\n    flow: lint\n"
+        b"    flow_options:\n      tool: verilator\n"
+    )
+    monkeypatch.setattr(
+        TargetCatalog, "build", classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root))
+    )
 
-    def test_hard_fail_pointer_omitted_when_log_publish_failed(
-        self, tmp_path: Path, state_file: Path
-    ) -> None:
-        """No numbered run.log published → no pointer appended (never cite a
-        file that does not exist), even though a report root is configured."""
-        from booley.flows import artifacts as flow_artifacts
+    def inspect(_catalog: TargetCatalog, _handle: TargetHandle) -> None:
+        raise MissingTargetToplevelError("wording may change")
 
-        real_publish = flow_artifacts.publish_bytes
+    monkeypatch.setattr(TargetCatalog, "inspect", inspect)
 
-        def publish_except_run_log(invocation_dir, parts, *args, **kwargs):
-            # Fail only the per-Target run.log; the report still publishes.
-            if parts[-1] == "run.log":
-                raise OSError("disk full")
-            return real_publish(invocation_dir, parts, *args, **kwargs)
+    result, _ = run_lint(args=("--dry-run",))
 
-        with (
-            patch.object(
-                LintFlow,
-                "_execute",
-                return_value=MagicMock(
-                    returncode=2,
-                    stdout="",
-                    stderr="%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n",
-                    timed_out=False,
-                    duration_s=0.5,
-                ),
-            ),
-            patch.object(
-                LintFlow,
-                "_prepare_lint_command",
-                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
-            ),
-            patch.object(flow_artifacts, "publish_bytes", side_effect=publish_except_run_log),
-        ):
-            flow = LintFlow()
-            flow.parse_args(
-                [
-                    "--target",
-                    "lite",
-                    "--work-dir",
-                    str(tmp_path),
-                    "--report-dir",
-                    str(tmp_path / "reports"),
-                ]
-            )
-            flow.read_state()
-            flow._run()
+    plan = _dry_run_plan(capsys)
+    assert result.exit_code == EXIT_SUCCESS
+    assert plan["aggregate_errors"] == []
+    assert plan["work_units"][0]["recipe"]["toplevel"] == ""
 
-        error = DevelopmentState.load(state_file).criteria["lint_clean_lite"].detail["error"]
-        assert error.startswith("%Error: rtl/x.v:1:1")
-        assert "full log:" not in error
+
+def test_dry_run_previews_fusesoc_setup_without_resolving(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The preview comes from a cheap ``.core`` read; a resolver that fails proves no fusesoc run."""
+    tmp_path.joinpath("lint.core").write_bytes(
+        b"CAPI=2:\nname: ::lint_demo:0\ntargets:\n  lite:\n    flow: lint\n"
+        b"    flow_options:\n      tool: verilator\n"
+    )
+
+    def resolved(_handle: TargetHandle, _build_root: Path) -> object:
+        raise AssertionError("dry-run must not resolve (run fusesoc)")
+
+    result, commands = run_lint(args=("--dry-run",), resolved=resolved)
+
+    data = _dry_run_plan(capsys)
+    assert result.exit_code == EXIT_SUCCESS
+    assert "Dry run" in result.outcome.report_text
+    assert data["flow"] == "lint"
+    argv = data["work_units"][0]["commands"][0]["argv"]
+    assert argv[:2] == ["sh", "-c"]
+    script = argv[2]
+    assert "run --build-root" in script and "--setup" in script
+    assert "--target lite" in script
+    assert "lint_demo" in script  # the resolved vlnv from the .core
+    assert "make -C" in script
+    assert commands == []
+
+
+_WARNINGS_ONLY_STDERR = (
+    "%Warning-IMPLICIT: rtl/ct_l2c_wb.v:251:25: Signal definition not "
+    "found, creating implicitly: 'rfifo_full'\n"
+    "%Error: Exiting due to 44 warning(s)\n"
+)
+_DESIGN_FAIL_STDERR = (
+    "%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n"
+    "%Error: Exiting due to 1 error(s)\n"
+)
+_NON_BLOCKING_KNOB = "[flows.lint]\nwarnings_as_errors = false\n"
+
+
+@pytest.mark.parametrize(
+    ("process", "knob", "exit_code", "report_fragment"),
+    [
+        pytest.param(_process(), False, EXIT_SUCCESS, "RESULT: PASS", id="pass"),
+        pytest.param(
+            _process(stdout=SAMPLE_VERILATOR_OUTPUT),
+            False,
+            EXIT_FAILURE,
+            "RESULT: WARN (3 warnings)",
+            id="finding",
+        ),
+        pytest.param(
+            _process(2, stderr=_DESIGN_FAIL_STDERR),
+            False,
+            EXIT_FAILURE,
+            "RESULT: FAIL — lite: %Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'",
+            id="design-fail",
+        ),
+        pytest.param(
+            _process(2, stderr="make: verilator: No such file or directory\n"),
+            False,
+            EXIT_ERROR,
+            "RESULT: ERROR — lite: missing tool: verilator",
+            id="missing-linter",
+        ),
+        pytest.param(
+            _process(-1, "partial lint output", "partial timeout diagnostic", timed_out=True),
+            False,
+            EXIT_ERROR,
+            "RESULT: ERROR — lite: Timed out after",
+            id="timeout",
+        ),
+        pytest.param(
+            _process(2, stderr=_WARNINGS_ONLY_STDERR),
+            False,
+            EXIT_FAILURE,
+            "RESULT: WARN (1 warnings)",
+            id="warnings-only",
+        ),
+        pytest.param(
+            _process(2, stderr=_WARNINGS_ONLY_STDERR),
+            True,
+            EXIT_SUCCESS,
+            "RESULT: WARN (1 warnings) — non-blocking ([flows.lint].warnings_as_errors=false)",
+            id="warnings-only-knob-off",
+        ),
+        pytest.param(
+            _process(2, stderr=_DESIGN_FAIL_STDERR),
+            True,
+            EXIT_FAILURE,
+            "RESULT: FAIL — lite: %Error: rtl/x.v:1:1",
+            id="design-fail-knob-off",
+        ),
+    ],
+)
+def test_linter_outcome_grades_the_run(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    process: SubprocessResult,
+    knob: bool,
+    exit_code: int,
+    report_fragment: str,
+) -> None:
+    """Exit 2 means the linter reached no verdict; exit 1 means the RTL failed (F-29, QA-7)."""
+    state_path = tmp_path / "state.json"
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    if knob:
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley/booley.toml").write_text(_NON_BLOCKING_KNOB, encoding="utf-8")
+
+    result, _ = run_lint(process)
+
+    assert result.exit_code == exit_code
+    assert report_fragment in result.outcome.report_text
+    run_log = (tmp_path / ".booley/.runtime/edalize/lint/lite/run.log").read_text(encoding="utf-8")
+    assert process.stdout in run_log
+    assert process.stderr in run_log
+    # A hand run records no Criterion and writes no state file.
+    assert not state_path.exists()
+    assert list(tmp_path.rglob("acceptance")) == []
+
+
+def test_a_single_eda_tool_failure_decides_a_mixed_run(run_lint: _LintRun) -> None:
+    """An unusable linter makes the other Targets' verdicts untrustworthy."""
+    design_fail = _process(2, stderr="%Error: f.sv:1:1: syntax error\n")
+    missing_linter = _process(2, stderr="make: verilator: No such file or directory\n")
+
+    result, commands = run_lint(design_fail, missing_linter, target="lite,lint_style")
+
+    assert len(commands) == 2
+    assert result.exit_code == EXIT_ERROR
+
+
+@pytest.mark.parametrize("published", [True, False], ids=["published", "publish-failed"])
+def test_hard_fail_cites_the_published_log(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published: bool,
+) -> None:
+    """The report cites the numbered run.log, and never a log that was not published."""
+    real_publish = flow_artifacts.publish_bytes
+
+    def publish_except_run_log(invocation_dir, parts, *args, **kwargs):
+        # Fail only the per-Target run.log; the report still publishes.
+        if parts[-1] == "run.log":
+            raise OSError("disk full")
+        return real_publish(invocation_dir, parts, *args, **kwargs)
+
+    if not published:
+        monkeypatch.setattr(flow_artifacts, "publish_bytes", publish_except_run_log)
+
+    result, _ = run_lint(
+        _process(2, stderr="%Error: rtl/x.v:1:1: rejected\n"),
+        args=("--report-dir", str(tmp_path / "reports")),
+    )
+
+    text = result.outcome.report_text
+    assert "%Error: rtl/x.v:1:1: rejected" in text
+    assert ("reports/lint/1/artifacts/lite/run.log" in text) is published
+    assert ("full log:" in text) is published
+
+
+def test_previous_runs_log_is_erased_before_the_run(run_lint: _LintRun, tmp_path: Path) -> None:
+    """F-26: lint's run.log is only written at the END of a run, so it is
+    claimed (truncated to a run header) at the start — a tail during the
+    run must never show the previous run's findings."""
+    live_log = tmp_path / ".booley/.runtime/edalize/lint/lite/run.log"
+    live_log.parent.mkdir(parents=True)
+    live_log.write_text("%Warning: stale finding from an older run\n", encoding="utf-8")
+    seen: list[str] = []
+
+    def resolved(handle: TargetHandle, _build_root: Path) -> object:
+        # Read the log back mid-run: by resolution time it must be claimed.
+        seen.append(live_log.read_text(encoding="utf-8"))
+        return _stub_resolved(build_root=tmp_path / handle.selector)
+
+    run_lint(_process(), resolved=resolved)
+
+    (mid_run,) = seen
+    assert "stale finding" not in mid_run
+    assert mid_run.startswith("[BOOLEY RUN_LOG] ")
+    assert "flow=lint target=lite" in mid_run
 
 
 # ---------------------------------------------------------------------------
@@ -1317,7 +912,6 @@ class TestFullRun:
     ):
         flow = LintFlow()
         flow.parse_args(["--target", "lite,full"])
-        flow.read_state()
         with patch.object(
             LintFlow,
             "_prepare_lint_command",
@@ -1339,7 +933,7 @@ class TestFullRun:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_clean_run(self, mock_cmd, mock_exec, state_file: Path, capsys):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="",
             stderr="",
@@ -1353,7 +947,6 @@ class TestFullRun:
                 "lite",
             ]
         )
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == 0
         captured = capsys.readouterr()
@@ -1366,7 +959,7 @@ class TestFullRun:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_warnings_exit_1(self, mock_cmd, mock_exec, state_file: Path, capsys):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERILATOR_OUTPUT,
             stderr="",
@@ -1380,7 +973,6 @@ class TestFullRun:
                 "lite",
             ]
         )
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == 1
         captured = capsys.readouterr()
@@ -1396,7 +988,7 @@ class TestFullRun:
         assert "rule/file:line/message" in summary
 
     def test_summary_no_pointer_without_report(self):
-        """No report dir (Interactive Mode) вЂ” summary stays count-only."""
+        """No report dir (Developer Agent session) вЂ” summary stays count-only."""
         warnings = [LintWarning("UNUSEDSIGNAL", "f.sv", 1, 5, "unused 'x'", "lite")]
         exit_code, summary = LintFlow._build_summary(warnings, None)
         assert exit_code == EXIT_FAILURE
@@ -1423,7 +1015,7 @@ class TestFullRun:
         capsys,
     ):
         """Same warning from two configs counts once."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-UNUSEDSIGNAL: f.sv:42:5: unused 'x'\n",
             stderr="",
@@ -1439,7 +1031,6 @@ class TestFullRun:
                 str(tmp_path / "reports"),
             ]
         )
-        flow.read_state()
         result = flow._run()
         captured = capsys.readouterr()
         assert "1 unique in-scope warning" in captured.out
@@ -1459,14 +1050,14 @@ class TestFullRun:
         tmp_path: Path,
     ):
         mock_exec.side_effect = [
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="%Warning-SHARED: rtl/top.sv:4:2: message\n",
                 stderr="",
                 timed_out=False,
                 duration_s=0.5,
             ),
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="rtl/top.sv:4:9: other [SHARED]\n",
                 stderr="",
@@ -1483,7 +1074,6 @@ class TestFullRun:
                 str(tmp_path / "reports"),
             ]
         )
-        flow.read_state()
 
         with patch.object(
             LintFlow,
@@ -1513,7 +1103,7 @@ class TestFullRun:
     )
     def test_scope_filtering_in_run(self, mock_cmd, mock_exec, state_file: Path, capsys):
         """--scope filters warnings to matching files."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=(
                 "%Warning-UNUSEDSIGNAL: rtl/mod_a.sv:42:5: unused\n"
@@ -1532,7 +1122,6 @@ class TestFullRun:
                 "mod_a",
             ]
         )
-        flow.read_state()
         result = flow._run()
         captured = capsys.readouterr()
         # Only 1 warning in scope; a scope matched through a warning path is accepted
@@ -1548,11 +1137,11 @@ class TestFullRun:
             _stub_resolved(files=("rtl/ticket.sv", "rtl/baseline.sv")),
         ),
     )
-    def test_scope_filtering_sets_clean_criterion(
+    def test_out_of_scope_warnings_pass_a_scoped_run(
         self, mock_cmd, mock_exec, state_file: Path, capsys
     ):
         """Out-of-scope baseline warnings must not keep a scoped ticket dirty."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-WIDTH: rtl/baseline.sv:10:1: width mismatch\n",
             stderr="",
@@ -1561,14 +1150,11 @@ class TestFullRun:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite", "--scope", "rtl/ticket.sv"])
-        flow.read_state()
 
         result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
         assert "0 unique in-scope warnings" in capsys.readouterr().out
-        state = DevelopmentState.load(state_file)
-        assert state.is_met("lint_clean_lite") is True
 
 
 class TestUnmatchedScope:
@@ -1585,8 +1171,8 @@ class TestUnmatchedScope:
         monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
 
     @staticmethod
-    def _lint_result() -> MagicMock:
-        return MagicMock(
+    def _lint_result() -> SubprocessResult:
+        return SubprocessResult(
             returncode=0,
             stdout=TestUnmatchedScope._STDOUT,
             stderr="",
@@ -1615,7 +1201,6 @@ class TestUnmatchedScope:
         assert "RESULT: PASS" not in out
         assert "'nonexistent/'" in out
         assert "rtl/mod_b.sv" in out  # example from the file list only, no warning there
-        assert "lint_clean_lite" not in DevelopmentState.load(state_file).criteria
 
     def test_mixed_scope_is_error(self, state_file: Path, capsys):
         with (
@@ -1634,7 +1219,6 @@ class TestUnmatchedScope:
         assert "'rtl/mod_a.sv'" not in out
 
     def test_unmatched_scope_is_error_mcp(self, state_file: Path, tmp_path: Path, capsys):
-        from booley.flows.lint.request import LintRequest
         from booley.mcp.server import _params_to_argv
 
         argv = _params_to_argv({"target": "lite", "scope": "nonexistent/"})
@@ -1662,9 +1246,9 @@ class TestUnmatchedScope:
         assert outcome.exit_code == EXIT_ERROR
         assert "nonexistent/" in outcome.outcome.report_text
 
-    def test_unmatched_scope_still_records_design_failure(self, state_file: Path, capsys):
-        """A scope typo must not hide a design FAIL: its False criterion is recorded."""
-        failing = MagicMock(
+    def test_unmatched_scope_still_reports_design_failure(self, state_file: Path, capsys):
+        """A scope typo must not hide a design FAIL: the errored Target is reported."""
+        failing = SubprocessResult(
             returncode=1,
             stdout="%Error: rtl/mod_a.sv:3:1: syntax error\n",
             stderr="",
@@ -1682,7 +1266,7 @@ class TestUnmatchedScope:
             code = LintFlow().main(["--target", "lite", "--scope", "nonexistent/"])
 
         assert code == EXIT_ERROR
-        assert DevelopmentState.load(state_file).is_met("lint_clean_lite") is False
+        assert "lite: %Error: rtl/mod_a.sv:3:1: syntax error" in capsys.readouterr().out
 
     def test_unmatched_scope_entries(self):
         from booley.flows.lint.flow import unmatched_scope_entries
@@ -1710,7 +1294,7 @@ class TestUnmatchedScope:
             patch.object(
                 LintFlow,
                 "_execute",
-                return_value=MagicMock(
+                return_value=SubprocessResult(
                     returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.5
                 ),
             ),
@@ -1738,14 +1322,14 @@ class TestStructuredReport:
     ) -> None:
         report_dir = tmp_path / "reports"
         mock_exec.side_effect = [
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="%Warning-WIDTH: first.sv:1:1: first run\n",
                 stderr="",
                 timed_out=False,
                 duration_s=1.0,
             ),
-            MagicMock(
+            SubprocessResult(
                 returncode=0,
                 stdout="%Warning-WIDTH: second.sv:2:2: second run\n",
                 stderr="",
@@ -1757,7 +1341,6 @@ class TestStructuredReport:
         def run() -> object:
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--report-dir", str(report_dir)])
-            flow.read_state()
             return flow._run()
 
         first = run()
@@ -1793,7 +1376,7 @@ class TestStructuredReport:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_report_written(self, mock_cmd, mock_exec, state_file: Path, tmp_path: Path):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-UNUSEDSIGNAL: f.sv:1:1: unused\n",
             stderr="",
@@ -1810,7 +1393,6 @@ class TestStructuredReport:
                 str(report_dir),
             ]
         )
-        flow.read_state()
         flow._run()
 
         report_path = report_dir / "lint_report.json"
@@ -1896,7 +1478,7 @@ class TestStructuredReport:
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
     def test_report_clean(self, mock_cmd, mock_exec, state_file: Path, tmp_path: Path):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="",
             stderr="",
@@ -1913,7 +1495,6 @@ class TestStructuredReport:
                 str(report_dir),
             ]
         )
-        flow.read_state()
         flow._run()
 
         data = json.loads((report_dir / "lint_report.json").read_text(encoding="utf-8"))
@@ -1978,7 +1559,10 @@ class TestConfigDiscovery:
         assert result.exit_code == EXIT_ERROR
         assert "Eligible Targets: (none)" in result.outcome.report_text
 
-    def test_run_refuses_an_explicit_empty_target(self, tmp_path):
+    @pytest.mark.parametrize("with_state_file", [False, True], ids=["no-state-file", "state-file"])
+    def test_run_refuses_an_explicit_empty_target(self, tmp_path, request, with_state_file):
+        if with_state_file:
+            request.getfixturevalue("state_file")
         flow = LintFlow()
         flow.parse_args(["--target", "", "--work-dir", str(tmp_path)])
         result = flow._run()
@@ -2077,7 +1661,6 @@ class TestVeribleTargets:
         flow.parse_args(
             ["--work-dir", str(tmp_path), "--target", targets, *(extra or [])],
         )
-        flow.read_state()
         return flow
 
     @patch.object(LintFlow, "_execute")
@@ -2095,8 +1678,8 @@ class TestVeribleTargets:
         capsys,
     ):
         """--parse_fatal without --lint_fatal: findings arrive with rc 0 and
-        must score WARN with the criterion unmet (ADR 0033 decision 5)."""
-        mock_exec.return_value = MagicMock(
+        must score WARN (ADR 0033 decision 5)."""
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERIBLE_OUTPUT,
             stderr="",
@@ -2107,8 +1690,6 @@ class TestVeribleTargets:
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
         assert "RESULT: WARN" in capsys.readouterr().out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lint_style") is False
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -2124,7 +1705,7 @@ class TestVeribleTargets:
         tmp_path: Path,
         capsys,
     ):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="",
             stderr="",
@@ -2135,8 +1716,6 @@ class TestVeribleTargets:
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "RESULT: PASS" in capsys.readouterr().out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lint_style") is True
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -2158,7 +1737,7 @@ class TestVeribleTargets:
         The linter ran and rejected the source, so this is a design FAIL, not
         a Flow ERROR — the same grading `elaborate` gives the identical source
         (F-29). What must never happen is a PASS."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=1,
             stdout="",
             stderr=SAMPLE_VERIBLE_PARSE_ERROR,
@@ -2172,8 +1751,6 @@ class TestVeribleTargets:
         assert "RESULT: FAIL" in out
         assert "RESULT: PASS" not in out
         assert "syntax error" in out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lint_style") is False
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -2191,7 +1768,7 @@ class TestVeribleTargets:
     ):
         """An image predating the Verible binary must name cause + fix
         (ADR 0033 decision 8), not a generic spawn failure."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=127,
             stdout="",
             stderr="make: verible-verilog-lint: No such file or directory\n",
@@ -2220,7 +1797,7 @@ class TestVeribleTargets:
         capsys,
     ):
         """The (rule, file, line) dedup key works unchanged for Verible rules."""
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="rtl/top.sv:4:11: Interface names. [interface-name-style]\n",
             stderr="",
@@ -2245,7 +1822,7 @@ class TestVeribleTargets:
         state_file: Path,
         tmp_path: Path,
     ):
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERIBLE_OUTPUT,
             stderr="",
@@ -2278,15 +1855,14 @@ class TestVeribleTargets:
         flow.parse_args(
             ["--work-dir", str(tmp_path), "--target", "lint_style", "--dry-run"],
         )
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "_resolve_target",
+            "resolve_target_handle",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()
         assert result.exit_code == 0
-        data = json.loads(capsys.readouterr().out)
+        data = _dry_run_plan(capsys)
         cmd = data["work_units"][0]["commands"][0]["argv"]
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
@@ -2360,11 +1936,10 @@ class TestLintObservability:
         tmp_path: Path,
         capsys,
     ):
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         report_dir = tmp_path / "reports"
         flow = LintFlow()
         flow.parse_args(["--target", "lite", "--report-dir", str(report_dir)])
-        flow.read_state()
         result = flow._run()
         out = capsys.readouterr().out
         assert "[verible]" in out
@@ -2404,10 +1979,9 @@ class TestLintObservability:
             build_root=tmp_path,
             edam_path=tmp_path / "demo.eda.yml",
         )
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         with patch.object(
             LintFlow,
             "_prepare_lint_command",
@@ -2420,9 +1994,6 @@ class TestLintObservability:
         assert "vacuous" in out
         # The lint make never ran — its verdict would be untrustworthy.
         mock_exec.assert_not_called()
-        # The gate records the truth: not clean.
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
 
     @patch.object(LintFlow, "_execute")
     def test_toplevel_in_fileset_stays_silent(
@@ -2447,10 +2018,9 @@ class TestLintObservability:
             build_root=tmp_path,
             edam_path=tmp_path / "demo.eda.yml",
         )
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         with patch.object(
             LintFlow,
             "_prepare_lint_command",
@@ -2491,10 +2061,9 @@ class TestLintObservability:
             "    toplevel: top\n",
             encoding="utf-8",
         )
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
+        mock_exec.return_value = SubprocessResult(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "smoke_sim"])
-        flow.read_state()
         with pytest.raises(IncompatibleTargetError, match="cannot be driven"):
             flow._run()
         mock_cmd.assert_not_called()
@@ -2524,11 +2093,11 @@ class TestLintObservability:
         capsys,
     ):
         """End-to-end: the knob turns a warnings-only run into exit 0, while
-        the lint_clean criterion still records the warning truthfully."""
+        the run still reports the warning."""
         from booley.flows.lint import flow as lint_mod
 
         monkeypatch.setattr(lint_mod, "_lint_warnings_as_errors", lambda _wd: False)
-        mock_exec.return_value = MagicMock(
+        mock_exec.return_value = SubprocessResult(
             returncode=0,
             stdout="%Warning-UNUSEDSIGNAL: f.sv:1:1: unused\n",
             stderr="",
@@ -2537,12 +2106,9 @@ class TestLintObservability:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "RESULT: WARN" in capsys.readouterr().out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
 
 
 @pytest.mark.parametrize(
@@ -2592,7 +2158,7 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     prepared = SimpleNamespace(
         result=LintConfigResult(target="lite"),
         command=[sys.executable, str(fake)],
-        resolved=SimpleNamespace(configured_eda_tool=family),
+        resolved=SimpleNamespace(configured_eda_tool=family, files=(), build_root=tmp_path),
         attempt_token="",
     )
     result = flow._run_lint_target(_target_handle("lite"), prepared=prepared)
@@ -2648,9 +2214,8 @@ def test_authored_verible_public_plan(tmp_path: Path, state_file: Path, capsys, 
     _author_verible_alias_core(tmp_path, spelling)
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style", "--dry-run"])
-    flow.read_state()
     result = flow._run()
-    plan = json.loads(capsys.readouterr().out)
+    plan = _dry_run_plan(capsys)
     assert plan["aggregate_errors"] == []
     assert result.exit_code == EXIT_SUCCESS
     commands = plan["work_units"][0]["commands"]
@@ -2672,9 +2237,15 @@ def _real_lint_setup(monkeypatch, command: list[str], root: Path) -> None:
         env[f"XDG_{kind}_HOME"] = str(root / f"isolated-{kind.lower()}")
 
     def bounded_runner(*args, **kwargs):
+        assert set(kwargs) <= {
+            "cwd",
+            "env",
+            "capture_output",
+            "text",
+        }  # the helper captures text itself
         assert kwargs["env"] == env
         assert args[0][args[0].index("--config") + 1] == str(config)
-        return subprocess.run(*args, **kwargs, timeout=30, check=False)
+        return run_bounded_child(args[0], cwd=kwargs.get("cwd"), env=kwargs["env"])
 
     def resolve(*args, **kwargs):
         return real_resolve(
@@ -2703,9 +2274,8 @@ def test_authored_verible_public_run(
     _real_lint_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, spelling), tmp_path)
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style"])
-    flow.read_state()
     execute = MagicMock(
-        return_value=MagicMock(
+        return_value=SubprocessResult(
             returncode=0,
             stdout=SAMPLE_VERIBLE_OUTPUT,
             stderr="",
@@ -2784,7 +2354,6 @@ def test_mixed_lint_rejects_before_preparation(
     flow = LintFlow()
     argv = ["--work-dir", str(tmp_path), "--target", "lint_style"]
     flow.parse_args([*argv, *(["--dry-run"] if dry_run else [])])
-    flow.read_state()
     monkeypatch.setattr(flow, "_execute", execute)
     with pytest.raises(IncompatibleTargetError, match="default_tool does not supply it"):
         flow._run()
@@ -2803,7 +2372,7 @@ def test_job_report_lint_findings_cap(tmp_path, state_file):
             patch.object(
                 LintFlow,
                 "_execute",
-                return_value=MagicMock(
+                return_value=SubprocessResult(
                     returncode=0,
                     stdout=output,
                     stderr="",
@@ -2814,7 +2383,6 @@ def test_job_report_lint_findings_cap(tmp_path, state_file):
         ):
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--report-dir", str(tmp_path / "reports")])
-            flow.read_state()
             result = flow._run()
         detail = result.detail
         assert "findings" in detail
@@ -2882,7 +2450,6 @@ def test_job_report_lint_findings_targets():
 def test_invocation_report_records_tools_by_target(tmp_path, state_file, target):
     flow = LintFlow()
     flow.parse_args(["--target", target, "--report-dir", str(tmp_path / "reports")])
-    flow.read_state()
     with (
         patch.object(
             flow,
@@ -2892,7 +2459,7 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, target)
         patch.object(
             flow,
             "_execute",
-            return_value=MagicMock(
+            return_value=SubprocessResult(
                 returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.5
             ),
         ),
@@ -2906,3 +2473,177 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, target)
         else {"eda_tools": {"lite": "Verilator", "full": "Verilator"}}
     )
     assert {key: report[key] for key in ("eda_tool", "eda_tools") if key in report} == expected
+
+
+def test_lint_label_carries_target_source_bytes(tmp_path):
+    from types import SimpleNamespace
+
+    from booley.flows import job_resources
+    from booley.flows.base import SubprocessResult
+    from booley.fusesoc.fusesoc_registry import ResolvedFile
+
+    (tmp_path / "top.sv").write_bytes(b"module top; endmodule\n")
+    (tmp_path / "pkg.sv").write_bytes(b"package p; endpackage\n")
+    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.sv"))
+    flow = LintFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    prepared = SimpleNamespace(
+        result=LintConfigResult(target="lite"),
+        command=["true"],
+        resolved=SimpleNamespace(
+            configured_eda_tool="verilator",
+            build_root=tmp_path,
+            files=(
+                ResolvedFile("top.sv", "systemVerilogSource"),
+                ResolvedFile("pkg.sv", "systemVerilogSource"),
+            ),
+        ),
+        attempt_token="",
+    )
+    seen: list[job_resources.ResourceLabel | None] = []
+
+    def execute(*_args, **_kwargs):
+        seen.append(job_resources.current_label())
+        return SubprocessResult(returncode=0)
+
+    with patch.object(flow, "_execute_boundary", side_effect=execute):
+        flow._run_lint_target(_target_handle("lite"), prepared=prepared)
+
+    assert seen == [job_resources.ResourceLabel("lite", "lint", source_bytes=expected_bytes)]
+    assert expected_bytes > 0
+
+
+# ---------------------------------------------------------------------------
+# Typed metrics (issue #3497)
+# ---------------------------------------------------------------------------
+
+_VERILATOR_FINDINGS = (
+    "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
+    "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
+    "%Warning-WIDTH: rtl/b.v:9:1: Operator ASSIGNW expects 8 bits\n"
+    "%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n"
+    "%Error: rtl/x.v:9:5: second diagnostic\n"
+    "%Error: rtl/x.v:9:5: second diagnostic\n"
+    "%Error: Exiting due to 3 error(s)\n"
+)
+_VERIBLE_FINDINGS = (
+    "rtl/top.sv:4:11: Interface names must end with _if. [interface-name-style]\n"
+    "rtl/top.sv:4:11: Interface names must end with _if. [interface-name-style]\n"
+    "rtl/top.sv:9:1: Line length exceeds 100. [line-length]\n"
+    'rtl/top.sv:3:1: syntax error at token "endmodule"\n'
+    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+)
+
+
+class TestFlowMetrics:
+    """A Lint run returns its unique warning and error counts as typed metrics."""
+
+    @staticmethod
+    def _lint(
+        tmp_path: Path, family: str, *, stdout: str, returncode: int, timed_out: bool = False
+    ) -> LintConfigResult:
+        """Run one Target through ``_run_lint_target`` against canned linter output."""
+        with (
+            patch.object(
+                LintFlow,
+                "_execute",
+                return_value=SubprocessResult(
+                    returncode=returncode,
+                    stdout=stdout,
+                    stderr="",
+                    timed_out=timed_out,
+                    duration_s=0.1,
+                ),
+            ),
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["make", "-C", "x"], _stub_resolved(family)),
+            ),
+        ):
+            flow = LintFlow()
+            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+            return flow._run_lint_target(_target_handle("lite", eda_tool=family))
+
+    @pytest.mark.parametrize(
+        ("family", "output", "returncode"),
+        [
+            pytest.param("verilator", _VERILATOR_FINDINGS, 2, id="verilator"),
+            pytest.param("verible", _VERIBLE_FINDINGS, 1, id="verible"),
+        ],
+    )
+    def test_findings_return_unique_warning_and_error_counts(
+        self, tmp_path: Path, state_file: Path, family: str, output: str, returncode: int
+    ) -> None:
+        result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
+
+        assert result.flow_metrics().plain == {"warnings": 2, "errors": 2}
+
+    def test_clean_run_returns_zero_counts(self, tmp_path: Path, state_file: Path) -> None:
+        result = self._lint(tmp_path, "verilator", stdout="", returncode=0)
+
+        assert result.flow_metrics().plain == {"warnings": 0, "errors": 0}
+
+    def test_warnings_only_run_does_not_count_the_epilogue_as_an_error(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        output = (
+            "%Warning-WIDTH: rtl/b.v:9:1: Operator ASSIGNW expects 8 bits\n"
+            "%Error: Exiting due to 1 warning(s)\n"
+        )
+
+        result = self._lint(tmp_path, "verilator", stdout=output, returncode=2)
+
+        assert result.flow_metrics().plain == {"warnings": 1, "errors": 0}
+
+    def test_linter_that_could_not_run_produces_no_metrics(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        from booley.flows.metric_declarations import MetricsUnavailableError
+
+        result = self._lint(tmp_path, "verilator", stdout="", returncode=-9, timed_out=True)
+
+        with pytest.raises(MetricsUnavailableError, match="Timed out"):
+            result.flow_metrics()
+
+    def test_rejected_design_without_a_readable_error_produces_no_metrics(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        from booley.flows.metric_declarations import MetricsUnavailableError
+
+        result = self._lint(tmp_path, "verilator", stdout="boom\n", returncode=3)
+
+        with pytest.raises(MetricsUnavailableError, match="exited 3"):
+            result.flow_metrics()
+
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [
+            # Two different errors on one line count twice; a rule-less, location-less one once.
+            pytest.param(
+                "%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n",
+                3,
+                id="same-line-and-locationless",
+            ),
+            # A repeated line counts once; the same message under another rule counts again.
+            pytest.param(
+                "%Error-UNSUPPORTED: a.v:2:1: nope\n%Error-UNSUPPORTED: a.v:2:1: nope\n"
+                "%Error: a.v:2:1: nope\n",
+                2,
+                id="repeated-and-other-rule",
+            ),
+            # Continuation lines of a multi-line message are not errors.
+            pytest.param(
+                "%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n",
+                1,
+                id="multi-line-message",
+            ),
+            pytest.param("%Error: Exiting due to 1 error(s)\n", 0, id="epilogue-only"),
+            pytest.param("", 0, id="empty"),
+        ],
+    )
+    def test_count_lint_errors_verilator(self, output: str, expected: int) -> None:
+        from booley.flows.lint.flow import count_lint_errors
+
+        assert count_lint_errors(output, "verilator") == expected

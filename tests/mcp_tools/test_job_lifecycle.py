@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import json
+import math
 import os
-import subprocess
 import sys
 import textwrap
 import time
@@ -24,11 +25,16 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
-pytestmark = pytest.mark.timeout(120)
-JOB_TIMEOUT = 30
-WAIT_TIMEOUT = 20
+pytestmark = pytest.mark.timeout(math.ceil(4 * hang_guard_s()))
+JOB_TIMEOUT = hang_guard_s()
+WAIT_TIMEOUT = hang_guard_s()
+# Job timeouts the tests assert fire; whole seconds because the message formats them.
+_KILL_AFTER_S = math.ceil(scaled(1))
+_MEASURE_KILL_AFTER_S = math.ceil(scaled(4))
 
 
 @pytest.fixture
@@ -42,9 +48,9 @@ def context(tmp_path, monkeypatch):
     }
     for key, value in overrides.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(job_results, "project_goal_store", lambda: None)
+    monkeypatch.setattr(job_results, "project_booley_dir", lambda: None)
     monkeypatch.delenv("BOOLEY_MCP_NESTED", raising=False)
-    return CallContext(tmp_path, runtime / "jobs", None, tmp_path / "logs", runtime, overrides)
+    return CallContext(tmp_path, runtime / "jobs", tmp_path / "logs", runtime, overrides)
 
 
 class Activity:
@@ -75,7 +81,7 @@ async def stop_jobs(jobs):
     for task in tasks:
         if not task.done():
             task.cancel()
-    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=15)
+    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=hang_guard_s())
 
 
 def gated_command(context):
@@ -85,7 +91,7 @@ def gated_command(context):
         ready = Path({str(context.work_dir / "ready")!r})
         release = Path({str(context.work_dir / "release")!r})
         ready.write_text('ready')
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + {2 * hang_guard_s()}
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         if not release.exists():
@@ -158,21 +164,6 @@ async def test_job_creation_allocates_handles_and_broken_maps_do_not_gate_execut
         assert tuple(store.load().entries.values()) == ("J-LINT1",)
 
 
-def test_goal_job_handle_uses_bound_project_directory(context, tmp_path, monkeypatch):
-    from dataclasses import replace
-
-    project = tmp_path / "bound-project"
-    monkeypatch.setattr(
-        "booley.runtime.booley_dir.resolve_common_booley_dir",
-        lambda: pytest.fail("Goal handle must use its admitted binding"),
-    )
-    binding = SimpleNamespace(booley_dir=project, to_json=lambda: {})
-    bound = replace(context, binding=binding)
-    rec = job_records.JobRecord("goal-run", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
-    JobLifecycle._stamp_context(rec, bound)
-    assert HandleStore(project, jobs=True).load().entries == {"goal-run": "J-SIM1"}
-
-
 def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monkeypatch):
     """Progress behind a Job report is read and repaired through the linked entry."""
     real = tmp_path / "real-booley-dir"
@@ -183,10 +174,8 @@ def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monk
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(entry / "runtime"))
     monkeypatch.setattr(
         job_results,
-        "project_goal_store",
-        lambda: SimpleNamespace(
-            booley_dir=entry, list_records=lambda: SimpleNamespace(records=())
-        ),
+        "project_booley_dir",
+        lambda: entry,
     )
     rec = job_records.JobRecord("run-1", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
     job_records.write_record(rec, root=entry / "runtime" / "jobs")
@@ -263,14 +252,14 @@ async def test_timeout_persists_failure_and_balances_activity(context):
     jobs = JobLifecycle(activity)
     submission = await jobs.submit_and_wait(
         "lint",
-        command("import time; time.sleep(10)"),
-        1,
+        command(f"import time; time.sleep({10 * _KILL_AFTER_S})"),
+        _KILL_AFTER_S,
         context=context,
         wait_seconds=WAIT_TIMEOUT,
     )
     result = submission.poll.result
     assert result.exit_code == 2
-    assert "timed out after 1s" in result.stderr
+    assert f"timed out after {_KILL_AFTER_S}s" in result.stderr
     rec = job_records.read_record(submission.poll.run_id, context.jobs_root)
     assert rec.status == "failed" and not is_pid_alive(rec.pid)
     assert activity.starts == activity.ends == 1
@@ -329,7 +318,7 @@ async def test_adopted_cancel_keeps_completion_that_wins_race(context, monkeypat
     job_records.write_record(rec, context.jobs_root)
     jobs = JobLifecycle()
 
-    async def finish_before_termination(_pid):
+    async def finish_before_termination(_pid, _grace=None):
         assert job_records.read_record(run_id, context.jobs_root).status == "running"
         write_report(context, run_id, {"exit_code": 0, "passed": True})
 
@@ -400,7 +389,7 @@ async def test_adopted_cancel_keeps_a_terminal_record_written_by_its_owner(
         _finish_record(context, run_id)
         return False
 
-    async def owner_finishes_during_termination(_pid):
+    async def owner_finishes_during_termination(_pid, _grace=None):
         _finish_record(context, run_id)
 
     if owner_state == "dead":
@@ -420,7 +409,7 @@ async def test_adopted_cancel_still_cancels_an_owner_that_fails_on_sigterm(conte
     job_records.write_record(rec, context.jobs_root)
     jobs = JobLifecycle()
 
-    async def owner_records_failure_on_sigterm(_pid):
+    async def owner_records_failure_on_sigterm(_pid, _grace=None):
         failed = job_records.read_record(run_id, context.jobs_root)
         assert failed is not None
         failed.status, failed.exit_code, failed.ended_at = "failed", 2, utc_now_rfc3339()
@@ -453,7 +442,7 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         from booley.mcp.job_lifecycle import JobLifecycle
         from booley.mcp.report_encoding import ReportEncoder
         root = Path({str(context.runtime_dir)!r})
-        context = CallContext(None, root / 'jobs', None, None, root, {{}})
+        context = CallContext(None, root / 'jobs', None, root, {{}})
         async def run():
             jobs = JobLifecycle()
             run_id = jobs.submit('lint', [sys.executable, '-c', 'print("ok")'], {JOB_TIMEOUT}, context=context)
@@ -464,15 +453,14 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         asyncio.run(run())
         assert 'mcp' not in sys.modules and 'booley.mcp.server' not in sys.modules
     """)
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=context.work_dir,
-        capture_output=True,
-        text=True,
-        timeout=40,
-        check=False,
+    result = run_bounded_child(
+        [sys.executable, "-c", script], cwd=context.work_dir, timeout=2 * hang_guard_s()
     )
     assert result.returncode == 0, result.stderr
+
+
+#: A Job that runs alone: any other claim of the memory class waits behind it.
+_RUN_ALONE = job_slots.MemoryClaim(budget_mb=1024.0, run_alone=True)
 
 
 class FastSupervisor(JobLifecycle):
@@ -487,10 +475,11 @@ def queued_command(context):
     return command(f"""
         from pathlib import Path
         import os, time
-        from booley.runtime.job_slots import SlotStore, slots_dir
+        from booley.runtime.job_slots import MemoryClaim, SlotStore, slots_dir
         store = SlotStore(slots_dir())
-        deadline = time.monotonic() + 60
-        token = store.acquire('heavy', pid=os.getpid(), timeout_s=30, poll_interval=0.01,
+        deadline = time.monotonic() + {2 * hang_guard_s()}
+        token = store.acquire("memory", pid=os.getpid(), timeout_s={hang_guard_s()}, poll_interval=0.01,
+            memory=MemoryClaim(budget_mb=1024.0, run_alone=True),
             on_submitted=lambda _: Path({str(context.work_dir / "queued")!r}).touch(),
             should_abort=lambda: time.monotonic() > deadline)
         try:
@@ -505,7 +494,9 @@ def queued_command(context):
 @pytest.mark.parametrize("withdraw", [False, True])
 async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
     store = job_slots.SlotStore(job_slots.slots_dir())
-    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=60)
+    holder = store.acquire(
+        "memory", pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=_RUN_ALONE
+    )
     jobs = FastSupervisor()
     try:
         run_id = jobs.submit("lint", queued_command(context), JOB_TIMEOUT, context=context)
@@ -529,6 +520,118 @@ async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
         await stop_jobs(jobs)
 
 
+def requeued_command(context):
+    """A child that claims memory again after an OOM kill: run alone, with the reason."""
+    return command(f"""
+        from pathlib import Path
+        import os, time
+        from booley.runtime import job_slots
+        store = job_slots.SlotStore(job_slots.slots_dir())
+        deadline = time.monotonic() + {2 * hang_guard_s()}
+        claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=None, run_alone=True)
+        token = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s={hang_guard_s()},
+            poll_interval=0.01, memory=claim, queue_reason='requeued after out-of-memory',
+            on_submitted=lambda _: Path({str(context.work_dir / "queued")!r}).touch(),
+            should_abort=lambda: time.monotonic() > deadline)
+        store.release(token)
+    """)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_requeued_job_names_the_requeue(context):
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    holder_claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0)
+    holder = store.acquire(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=holder_claim
+    )
+    jobs = FastSupervisor()
+    try:
+        run_id = jobs.submit("lint", requeued_command(context), JOB_TIMEOUT, context=context)
+        await wait_until((context.work_dir / "queued").exists)
+        queued = await jobs.poll(run_id)
+        assert queued.phase.startswith("QUEUED (position 1): waits to run alone")
+        assert queued.phase.endswith("; requeued after out-of-memory")
+        rec = job_records.read_record(run_id, context.jobs_root)
+        assert jobs._child_requeued(rec) is True
+        assert await jobs.cancel(run_id) == "queued"
+        result = (await jobs.poll(run_id)).result
+        assert result.exit_code == 130
+        assert "while queued again (requeued after out-of-memory)" in result.stderr
+    finally:
+        store.release(holder)
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_cancellation_keeps_no_requeue_reason(context, monkeypatch):
+    """A reason saved for a cancellation that never got recorded must not linger."""
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    holder_claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0)
+    holder = store.acquire(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=holder_claim
+    )
+    jobs = FastSupervisor()
+    try:
+        run_id = jobs.submit("lint", requeued_command(context), JOB_TIMEOUT, context=context)
+        await wait_until((context.work_dir / "queued").exists)
+
+        async def task_already_finished(*_args):
+            return None
+
+        monkeypatch.setattr(jobs, "_cancel_tracked_task", task_already_finished)
+        assert jobs._cancel_waiter(job_records.read_record(run_id, context.jobs_root))
+        assert jobs._requeue_reasons == {run_id: "requeued after out-of-memory"}
+
+        await jobs.cancel(run_id)
+
+        assert jobs._requeue_reasons == {}
+    finally:
+        store.release(holder)
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_child_requeued_needs_a_claim_with_a_reason(context):
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    jobs = JobLifecycle()
+    no_pid = job_records.JobRecord(
+        run_id="lint-1",
+        endpoint="lint",
+        started_at=utc_now_rfc3339(),
+        timeout_s=JOB_TIMEOUT,
+        pid=None,
+        status=job_records.STATUS_RUNNING,
+    )
+    assert jobs._child_requeued(no_pid) is False
+    mine = job_records.JobRecord(
+        run_id="lint-2",
+        endpoint="lint",
+        started_at=utc_now_rfc3339(),
+        timeout_s=JOB_TIMEOUT,
+        pid=os.getpid(),
+        status=job_records.STATUS_RUNNING,
+    )
+    assert jobs._child_requeued(mine) is False  # no claim at all
+    plain = store.acquire(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=_RUN_ALONE
+    )
+    try:
+        assert jobs._child_requeued(mine) is False  # a first claim has no reason
+    finally:
+        store.release(plain)
+    reasoned = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=os.getpid(),
+        timeout_s=2 * hang_guard_s(),
+        memory=_RUN_ALONE,
+        queue_reason="requeued after out-of-memory",
+    )
+    try:
+        assert jobs._child_requeued(mine) is True
+    finally:
+        store.release(reasoned)
+
+
 def _sharing_violation() -> PermissionError:
     """The error Windows raises when unlinking a file another handle holds open."""
     exc = PermissionError(13, "The process cannot access the file")
@@ -548,13 +651,15 @@ async def test_queued_cancel_withdrawal_unlink_faults(context, monkeypatch, faul
     """A transient sharing error on the withdrawal unlink is retried (queued, #2089);
     a missing entry means promotion won the race (running)."""
     store = job_slots.SlotStore(job_slots.slots_dir())
-    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=60)
+    holder = store.acquire(
+        "memory", pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=_RUN_ALONE
+    )
     jobs = FastSupervisor()
     real_unlink = Path.unlink
     raised: list[Path] = []
 
     def faulty_unlink(path, *args, **kwargs):
-        is_waiter = path.parent.name == "heavy" and path.name.startswith("w-")
+        is_waiter = path.parent.name == "memory" and path.name.startswith("w-")
         if is_waiter and not raised:
             raised.append(path)
             raise fault()
@@ -583,21 +688,21 @@ import os, signal, time
 from pathlib import Path
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 Path({str(descendant_ready)!r}).write_text(str(os.getpid()))
-time.sleep(10)
+time.sleep({2 * WAIT_TIMEOUT})
 """
     return command(f"""
         import subprocess, sys, time
         from pathlib import Path
         child = subprocess.Popen([sys.executable, '-c', {child_script!r}],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + {hang_guard_s()}
         while not Path({str(descendant_ready)!r}).exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         ready = Path({str(context.work_dir / "ready")!r})
         pending = ready.with_suffix('.tmp')
         pending.write_text(str(child.pid))
         pending.replace(ready)
-        time.sleep(10)
+        time.sleep({2 * WAIT_TIMEOUT})
     """)
 
 
@@ -609,7 +714,7 @@ def test_event_loop_shutdown_aborts_real_process_group(context, monkeypatch):
     jobs = FastSupervisor(activity)
 
     async def start():
-        run_id = jobs.submit("lint", descendant_command(context), 10, context=context)
+        run_id = jobs.submit("lint", descendant_command(context), JOB_TIMEOUT, context=context)
         await wait_until((context.work_dir / "ready").exists)
         return run_id
 
@@ -646,7 +751,9 @@ def test_restart_preserves_existing_submit_deadline_for_unstamped_queued_child(c
         "queued-legacy", "lint", "2000-01-01T00:00:00Z", 5, pid=os.getpid()
     )
     store = job_slots.SlotStore(job_slots.slots_dir())
-    token = store.submit("heavy", pid=os.getpid())  # Unpromoted, live waiter.
+    token = store.submit(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), memory=_RUN_ALONE
+    )  # Unpromoted, live waiter.
     job_records.write_record(rec, context.jobs_root)
     try:
         JobLifecycle().reconcile_orphaned()
@@ -737,7 +844,6 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
         clock.elapsed += timeout
         return await awaitable
 
-    monkeypatch.setattr(endpoint_process, "time", clock)
     monkeypatch.setattr(endpoint_process, "asyncio", SimpleNamespace(wait_for=wait_for))
     exited = await endpoint_process._wait_with_queue_credit(
         SimpleNamespace(wait=wait),
@@ -745,11 +851,69 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
         lambda: len(attempts) < 4,
         lambda: active.append(clock.elapsed),
         tick_seconds=5,
+        clock=clock.monotonic,
     )
     assert exited is True
     assert attempts == [5, 5, 5, 5, 2]
     assert active == [20]
     assert clock.elapsed == 22
+
+
+class _TickedProcess:
+    """A child whose ``wait()`` blocks until the watchdog has sampled *exit_after* times."""
+
+    def __init__(self, exit_after: int):
+        self.exit_after = exit_after
+        self.samples = 0  # one per watchdog loop pass, counted by ``is_queued``
+
+    def is_queued(self) -> bool:
+        self.samples += 1
+        return False
+
+    async def wait(self) -> int:
+        if self.samples >= self.exit_after:
+            return 0
+        await asyncio.sleep(3600)  # cancelled by the watchdog's per-tick timeout
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_requeued_child_gets_its_full_budget_again():
+    ticks_before_requeue = 2
+    ticks_after_requeue = 2
+    # Samples 1..4 are charged ticks; the child exits during the fifth pass.
+    exit_after = ticks_before_requeue + ticks_after_requeue + 1
+    budget = 2.5  # fits either half of the run, never both
+
+    async def run(*, requeue_signal: bool) -> bool:
+        child = _TickedProcess(exit_after)
+        clock_value = 0.0
+
+        def clock() -> float:
+            # Every sample advances one second, so each timed-out tick charges 1.0.
+            nonlocal clock_value
+            clock_value += 1.0
+            return clock_value
+
+        def is_requeued() -> bool:
+            # The claim says "requeued" for the attempt's whole life; the watchdog
+            # first sees it once the killed attempt has used up its two ticks, and
+            # the new claim is granted at once (is_queued stays False throughout).
+            return child.samples >= ticks_before_requeue
+
+        return await endpoint_process._wait_with_queue_credit(
+            child,
+            budget,
+            child.is_queued,
+            None,
+            tick_seconds=0.001,
+            is_requeued=is_requeued if requeue_signal else None,
+            clock=clock,
+        )
+
+    assert await run(requeue_signal=True) is True
+    # Contrast: without the reset the same sequence overruns the budget.
+    assert await run(requeue_signal=False) is False
 
 
 def _orphan_with_report(context):
@@ -807,7 +971,7 @@ def log_gate_command(context, first="started", second="finished"):
         import sys, time
         release = Path({str(context.work_dir / "release")!r})
         sys.stdout.buffer.write(b'{first}\\n'); sys.stdout.buffer.flush()
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + {2 * hang_guard_s()}
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         sys.stdout.buffer.write(b'{second}\\n'); sys.stdout.buffer.flush()
@@ -934,3 +1098,80 @@ async def test_job_log_write_failure_mid_run_keeps_job_and_reports_once(context,
     assert result.exit_code == 0 and result.stdout == "first\nsecond\n"
     assert result.stderr.count("job.log unavailable") == 1
     assert log_bytes(context, run_id) == b"first\n"
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_measure_job_is_cancelled_with_the_measure_stop_grace(
+    context, monkeypatch
+):
+    """After a server restart, only a ``measure`` Job gets the longer stop grace (#4134)."""
+    jobs = JobLifecycle()
+    graces: list[float] = []
+
+    async def remember(_pid, grace):
+        graces.append(grace)
+
+    monkeypatch.setattr(jobs, "_cancel_process", remember)
+    for endpoint in ("measure", "sim"):
+        rec = job_records.JobRecord(
+            f"{endpoint}-adopted", endpoint, utc_now_rfc3339(), 5, pid=os.getpid()
+        )
+        job_records.write_record(rec, context.jobs_root)
+
+        assert await jobs.cancel(rec.run_id) == "running"
+
+    assert graces == [
+        endpoint_process.MEASURE_STOP_GRACE_SECONDS,
+        endpoint_process.CANCEL_GRACE_SECONDS,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGTERM are POSIX")
+async def test_a_timed_out_measure_job_is_terminated_before_it_is_killed(tmp_path):
+    """A timeout SIGTERMs first, so a child in its own process group is stopped, not orphaned."""
+    pid_file = tmp_path / "grandchild.pid"
+    script = textwrap.dedent(f"""
+        import signal, subprocess, sys, time
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep({15 * _MEASURE_KILL_AFTER_S})"], start_new_session=True
+        )
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+
+        def stop(*_):  # what ``booley measure`` does: stop the children, then exit
+            child.kill()
+            child.wait()
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, stop)
+        time.sleep({15 * _MEASURE_KILL_AFTER_S})
+    """)
+    try:
+        _, _, stderr, timed_out = await endpoint_process._run_subprocess(
+            [sys.executable, "-c", script],
+            timeout=_MEASURE_KILL_AFTER_S,
+            stop_grace=hang_guard_s(),
+        )
+        grandchild = int(pid_file.read_text(encoding="utf-8"))
+
+        assert timed_out and f"timed out after {_MEASURE_KILL_AFTER_S}s" in stderr
+        assert not is_pid_alive(grandchild)
+    finally:
+        if pid_file.exists():
+            with contextlib.suppress(OSError):
+                os.kill(int(pid_file.read_text(encoding="utf-8")), 9)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_the_process_publishes_its_pid_stops_the_job(context):
+    activity = Activity()
+    jobs = JobLifecycle(activity)
+    run_id = jobs.submit("lint", gated_command(context), JOB_TIMEOUT, context=context)
+    try:
+        assert job_records.read_record(run_id, context.jobs_root).pid is None
+        assert await jobs.cancel(run_id) == "running"
+        rec = job_records.read_record(run_id, context.jobs_root)
+        assert rec.status == "cancelled" and rec.exit_code == 130
+        assert activity.starts == activity.ends == 1
+    finally:
+        await stop_jobs(jobs)

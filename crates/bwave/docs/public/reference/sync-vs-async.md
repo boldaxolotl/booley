@@ -103,10 +103,37 @@ Pre-edge details:
 
 By default sync mode skips output until the reset
 deasserts, so your first cycle is "real" simulation
-rather than initialisation. See
-`troubleshooting/reset-skipping` for the deassertion
-rules and how to override with `--with-reset` or
-`--reset PATTERN`.
+rather than initialisation.
+
+- **Detection**: the shallowest 1-bit signal (then
+  alphabetically first) whose last name part contains
+  `rst` or `reset`, such as `tb.rst_n` or `tb.dut.reset`.
+  `--reset PATTERN` picks a 1-bit signal by glob
+  instead.
+- **Polarity**: from the name. `rstn`, `rst_n`, `rst_ni`,
+  `reset_b` and `rst_l` are active-low, also with a suffix such as
+  `rst_n_sync`; `rst`, `reset`, `rst_gen`, `rst_in` and `reset_en`
+  are active-high.
+- **Deassertion**: the first transition to the inactive
+  value. A reset that starts at X or Z stays asserted
+  until then, and one that never deasserts skips
+  nothing.
+- **Header**: every sync query prints one line on stderr
+  and `overview` prints it on stdout. Async output has
+  none.
+
+  ```
+  # reset: tb.rst_n (active-low by name, auto) deasserts @ 25ns; 2 cycles skipped (--with-reset to include)
+  ```
+
+  Without a reset it reads
+  `# reset: none detected; no cycles skipped`.
+- **JSON**: `--format json` adds a `reset` object with the
+  same facts.
+- **`--with-reset`** keeps the reset phase; the header
+  then says so and `skipped_cycles` is 0.
+- **Bad `--reset`**: a glob that does not compile or
+  matches no 1-bit signal exits 2 naming the pattern.
 
 ## Async mode (`--async`)
 
@@ -148,33 +175,15 @@ window or you'll hit `--limit` in milliseconds.
 
 ## Switching between modes
 
-A single store supports both modes. There is no rebuild
-required. `bwave signal sim.fst -s "*" -t 0:100` and
-`bwave signal sim.fst -s "*" -t 0t:1000t --async`
-inspect the same data.
+A single store supports both modes, with no rebuild. The store holds the
+full asynchronous transition stream, and sync mode is a view computed from
+it at query time, so the two modes always agree:
+`bwave signal sim.fst -s "*" -t 0:100` and
+`bwave signal sim.fst -s "*" -t 0t:1000t --async` inspect the same data.
 
-The store holds the full asynchronous transition stream
-— it is a plain, lossless FST file. Sync mode is a
-sampling view computed over that stream at query time:
-per-cycle post-edge values are derived from the same
-transitions async mode reports. So the two modes always
-agree, and switching between them never requires a
-rebuild.
-
-Time arguments switch meaning:
-
-| Flag       | Sync     | Async                |
-|------------|----------|----------------------|
-| `-t 100:200` | cycles 100-200 | rejected — suffix required: `-t 100t:200t`, `-t 1us:2us` |
-| `--at 100`   | cycle 100      | rejected — use `--at 100t` |
-| `<T1> <T2>`  | cycles         | ticks, suffix required (`100t`, `100ns`) |
-| `--before N` | cycle N        | tick N (bare bound)  |
-
-Bare integers mean cycles in sync mode; async mode
-rejects them outright and requires a unit suffix
-(`100t` for ticks, `100ns` for physical time, `100c` to
-convert cycles). See `reference/time-tokens` for the
-full grammar.
+Time arguments change meaning with the mode: bare integers are cycles in
+sync mode, and async mode rejects them and requires a unit suffix (`100t`,
+`100ns`, or `100c` to convert cycles). See `reference/time-tokens`.
 
 ## Quick decision guide
 

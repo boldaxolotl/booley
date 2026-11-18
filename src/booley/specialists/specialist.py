@@ -3,10 +3,6 @@
 Handles Agent CLI and model selection from booley.toml ([models] pins), prompt
 construction, and transcript capture. Reuses the existing agent.py / _claude_backend.py /
 _codex_backend.py infrastructure.
-
-Code-modifying Specialists: subclasses that set ``code_modifying = True`` can
-use ``_commit_agent_changes()`` to commit the agent's work from Python
-instead of relying on the agent to run git commands.
 """
 
 from __future__ import annotations
@@ -16,27 +12,21 @@ import contextlib
 import dataclasses
 import logging
 import os
-import subprocess
+import threading
 from abc import abstractmethod
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from booley.agent_workspace.isolation import remove_shadow_package
-from booley.commit_policy import ALLOWED_TYPES, banned_phrases, stealth_enabled, validate_message
 from booley.core.boundary import parse_positive_int_arg
 from booley.core.models import AgentCallParams
-
-# Also re-exported for backward compatibility: tests import
-# _git_head_sha / _read_commit_info from this module.
-from booley.dev_support.commit_git_io import (
-    _git_head_sha,
-    _git_revert_files,
-    _read_commit_info,
-    _save_files_to_logs,
-)
-from booley.dev_support.commit_message_format import _auto_format_commit_message
+from booley.flows import job_resources
 from booley.flows.cli_arguments import HumanParser, add_timeout_args
 from booley.flows.cli_help import SurfaceHelp
+from booley.flows.job_estimates import JobRequest
+from booley.flows.memory_admission import MemoryAdmissionPlan, measure_specialist_claim
+from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.agent_execution import configure_agent_call
@@ -74,9 +64,14 @@ class Specialist(McpTool):
     endpoint_kind = "specialist"
     report_schema = "booley.specialist-report/v1"
 
-    # Specialists are model-API-bound with ~no local footprint (ADR 0028):
-    # every Specialist admits under the LIGHT class pool.
-    JOB_CLASS = job_slots.CLASS_LIGHT
+    # A Specialist is admitted by memory (ADR 0087): a companion claim that
+    # reserves its own history's peak, or a default.
+    JOB_CLASS = job_slots.CLASS_MEMORY
+
+    def _memory_admission_plan(
+        self, project: Path | None, requests: Sequence[JobRequest] | None
+    ) -> MemoryAdmissionPlan:
+        return measure_specialist_claim(project, self.name)
 
     # Default max conversation turns
     default_max_turns: int | None = None
@@ -104,6 +99,11 @@ class Specialist(McpTool):
         self._last_session_id: str | None = None
         # The model the latest agent call ran on (and any [models] list fallback).
         self._model_run: ModelRun | None = None
+        # Concurrent agent calls (one per Reviewer guide kind) share the totals above.
+        self._usage_lock = threading.Lock()
+        self._thread_model_run = threading.local()
+        # The agent CLI call windows of this run, measured for the resource history.
+        self._agent_calls: list[job_resources.AgentCallUsage] = []
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         """Add agent-specific arguments."""
@@ -154,18 +154,19 @@ class Specialist(McpTool):
             )
         return None
 
+    def model_call_timeout_ms(self, asked_ms: int) -> int:
+        """The timeout a model call really gets: *asked_ms*, raised to this Specialist's minimum."""
+        return max(asked_ms, self.min_timeout * 1000)
+
     def timeout_seconds(self, timeout_ms: int | None = None) -> int:
-        """Convert model-call milliseconds to the provider's whole seconds."""
-        milliseconds = self.args.timeout_ms if timeout_ms is None else timeout_ms
+        """Convert model-call milliseconds to the provider's whole seconds, never below the minimum."""
+        milliseconds = self.model_call_timeout_ms(
+            self.args.timeout_ms if timeout_ms is None else timeout_ms
+        )
         return (milliseconds + 999) // 1000
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         """Hook for subclasses to add additional arguments."""
-
-    @staticmethod
-    def _add_scope_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
-        """Register the shared, explicit source-scope interface."""
-        parser.add_argument("--scope", required=True, help=help_text)
 
     @staticmethod
     def _add_steer_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
@@ -319,8 +320,16 @@ class Specialist(McpTool):
                 self.emit_progress(f"trying [models] entry {model} on {cli}")
             return self._invoke_agent_once(call_params, on_event)
 
-        result, self._model_run = call_with_fallback(settings, self.name, attempt)
+        result, model_run = call_with_fallback(settings, self.name, attempt)
+        with self._usage_lock:
+            self._model_run = model_run
+        # Concurrent calls share ``_model_run``; each thread also keeps the model its own call ran on.
+        self._thread_model_run.value = model_run
         return result
+
+    def last_call_model_run(self) -> ModelRun | None:
+        """The model the calling thread's latest ``_invoke_agent`` ran on."""
+        return getattr(self._thread_model_run, "value", None)
 
     def _invoke_agent_once(
         self,
@@ -360,51 +369,26 @@ class Specialist(McpTool):
             call_params,
             snapshot,
         ):
-            with parent_death_watchdog(self.name):
+            with (
+                parent_death_watchdog(self.name),
+                job_resources.measure_agent_call(self._agent_calls),
+            ):
                 result = _call_agent_sync(call_params, on_event=on_event)
             if snapshot is not None:
                 result = restore_result_paths(result, snapshot)
-        self._total_input_tokens += getattr(result, "input_tokens", 0)
-        self._total_output_tokens += getattr(result, "output_tokens", 0)
-        self._total_cached_tokens += getattr(result, "cached_tokens", 0)
-        self._total_cache_create_tokens += getattr(result, "cache_create_tokens", 0)
-        self._total_cost_usd += getattr(result, "cost_usd", 0.0)
         # A session id is a string or nothing. Backends have handed back other
         # shapes (and test doubles hand back mocks), and since F-42 gave
         # standalone runs a real persistence path, anything non-str would now
         # reach `Path.write_text` and raise instead of being quietly ignored.
         session_id = getattr(result, "session_id", None)
-        self._last_session_id = session_id if isinstance(session_id, str) else None
+        with self._usage_lock:
+            self._total_input_tokens += getattr(result, "input_tokens", 0)
+            self._total_output_tokens += getattr(result, "output_tokens", 0)
+            self._total_cached_tokens += getattr(result, "cached_tokens", 0)
+            self._total_cache_create_tokens += getattr(result, "cache_create_tokens", 0)
+            self._total_cost_usd += getattr(result, "cost_usd", 0.0)
+            self._last_session_id = session_id if isinstance(session_id, str) else None
         return result
-
-    def _invoke_agent_with_resume(
-        self,
-        params: AgentCallParams,
-        on_event: Any = None,
-    ) -> Any:
-        """Call an agent with resume; fall back to fresh session on failure.
-
-        Only catches SDK/API errors that could be caused by a stale session.
-        Timeouts and hard crashes propagate unchanged.
-        """
-        if not params.resume_session:
-            return self._invoke_agent(params, on_event=on_event)
-        from claude_agent_sdk import ClaudeSDKError
-
-        from booley.runtime.agent_errors import ModelUnavailableError, TransientAPIError
-
-        try:
-            return self._invoke_agent(params, on_event=on_event)
-        except ModelUnavailableError:
-            raise  # a fresh session asks the same refused model; the fix is config
-        except (ClaudeSDKError, TransientAPIError, RuntimeError) as exc:
-            logger.warning(
-                "%s: resumed session failed (%s), retrying as fresh invocation",
-                self.name,
-                exc,
-            )
-            fresh = dataclasses.replace(params, session_id=None, resume_session=False)
-            return self._invoke_agent(fresh, on_event=on_event)
 
     # --- Session persistence helpers ---
 
@@ -440,29 +424,6 @@ class Specialist(McpTool):
         except OSError:
             logger.warning("Failed to persist session_id to %s", path)
 
-    def _load_session_id(self, key: str) -> str | None:
-        """Load a previously persisted session_id. Returns None if missing/corrupt."""
-        path = self._session_file_path(key)
-        if path is None or not path.exists():
-            return None
-        try:
-            sid = path.read_text(encoding="utf-8").strip()
-            return sid if sid else None
-        except OSError:
-            logger.warning("Failed to load session_id from %s", path)
-            return None
-
-    def _clear_session_id(self, key: str) -> None:
-        """Delete a persisted session_id file."""
-        path = self._session_file_path(key)
-        if path is not None and path.exists():
-            with contextlib.suppress(OSError):
-                path.unlink()
-
-    def _build_resume_params(self, params: AgentCallParams, session_id: str) -> AgentCallParams:
-        """Return a copy of params configured for session resume."""
-        return dataclasses.replace(params, session_id=session_id, resume_session=True)
-
     def _make_streaming_callback(self) -> Any:
         """Create an on_event callback that streams agent text to display.jsonl."""
         from booley.flows.endpoint_events import _specialist_thinking_event, _write_display_event
@@ -475,8 +436,8 @@ class Specialist(McpTool):
 
         return _on_event
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
-        """Interactive-Mode argument validation hook.
+    def _validate_call_args(self) -> McpToolResult | None:
+        """Developer Agent session argument validation hook.
 
         Default: no-op. Specialists override this to catch missing arguments
         with a useful message before prompt construction or command assembly.
@@ -509,9 +470,32 @@ class Specialist(McpTool):
             report_text=exception_report_text(self.name, exc, diagnostic_path),
         )
 
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | McpToolResult:
+        """The ordinary run, wrapped to record its agent calls in the resource history."""
+        return OrdinaryRunInvocation(self._measured_run)
+
+    def _measured_run(self) -> McpToolResult:
+        """Run the Specialist, then append its agent calls' record; the result is unchanged.
+
+        A run that made no agent call (a dry run, a refused argument) records
+        nothing. A run that raises is recorded as an error and raises again.
+        """
+        self._agent_calls.clear()
+        try:
+            result = self._run()
+        except Exception:
+            self._record_agent_calls(None)
+            raise
+        self._record_agent_calls(result.exit_code)
+        return result
+
+    def _record_agent_calls(self, returncode: int | None) -> None:
+        if self._agent_calls:
+            job_resources.record_specialist(self.name, self._agent_calls, returncode)
+
     def _run(self) -> McpToolResult:
         """Invoke the agent and interpret results."""
-        validation_err = self._validate_interactive_args()
+        validation_err = self._validate_call_args()
         if validation_err is not None:
             return validation_err
 
@@ -549,235 +533,6 @@ class Specialist(McpTool):
         self.emit_progress("Specialist completed, interpreting output")
         return self._interpret_output(result.output, result.structured)
 
-    # --- Git commit helpers for code-modifying Specialists ---
-
-    # Subclasses override to provide a Specialist-specific fallback message.
-    _default_commit_message: str = "wip: apply Specialist changes"
-
-    # Shared commit-message guidance injected into code-modifying Specialist prompts.
-    # NOTE: do not bake the banned-phrase list into this static string — the
-    # list is loaded from booley.toml at module import in
-    # ``commit_msg_utils`` and is project-specific. Use
-    # ``commit_msg_banned_phrase_note()`` to get a dynamic warning string.
-    COMMIT_MSG_GUIDANCE = (
-        "## Commit Message Format\n"
-        "Your `commit_message` output MUST follow conventional commits:\n"
-        "  <type>(<scope>): <summary>\n"
-        # Built from the validator's ALLOWED_TYPES so the prompt can never
-        # advertise a type the commit-msg hook rejects (or omit one it
-        # accepts — a hardcoded copy here once missed `chore`).
-        f"Valid types: {', '.join(ALLOWED_TYPES)}\n"
-        "Scope: lowercase module/file name, e.g. iir_filter, tb, rtl (required).\n"
-        "Summary: max 72 chars, lowercase start, no trailing period.\n"
-        "Single line only — no body.\n"
-        "Examples: 'feat(cla_adder): add carry-lookahead pipeline',\n"
-        "  'test(tb): add pipelined adder coverage',\n"
-        "  'fix(rtl): correct byte alignment in stage 2'\n"
-    )
-
-    @staticmethod
-    def commit_msg_banned_phrase_note(project_root: Path | None = None) -> str:
-        """Build a "do not use these words" note from the live banned-phrase list.
-
-        Loaded dynamically so project-local overrides (booley.toml
-        ``[stealth] banned_words``) are honored. Used by code-modifying Specialists
-        to warn the agent up front and avoid burning a full agent run to a
-        post-hoc commit-msg rejection (Pattern A4 — see field reports).
-        """
-        # Stealth mode is opt-in ([stealth] enabled = true); when off, neither
-        # the commit-msg hook nor this prompt warning applies.
-        phrases = banned_phrases(project_root)
-        if not stealth_enabled(project_root) or not phrases:
-            return ""
-        joined = ", ".join(sorted(set(phrases)))
-        return (
-            "## Banned Words in Commit Message\n"
-            "Your `commit_message` MUST NOT contain any of the following "
-            "phrases (case-insensitive identifier-token matching, including "
-            "CamelCase and digits; known identity names and configured "
-            "banned_substrings match anywhere). They are "
-            "rejected by the commit-msg validator and will fail the commit "
-            "after the work is done, forcing a fallback to a generic "
-            f"message:\n  {joined}\n"
-            "Pick neutral hardware-design vocabulary instead "
-            "(e.g. 'utility', 'helper', 'module', 'block').\n"
-        )
-
-    class GitStatusError(RuntimeError):
-        """Raised when ``git status`` fails (e.g. ownership / config issues)."""
-
-    def _get_uncommitted_files(self) -> list[str]:
-        """Return repo-relative paths of modified/untracked files.
-
-        Raises ``GitStatusError`` if ``git status`` itself fails so callers
-        can distinguish "no changes" from "git is broken".
-        """
-        try:
-            result = subprocess.run(
-                ["git", "status", "--porcelain", "-uall"],
-                cwd=self.args.work_dir,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if result.returncode != 0:
-                logger.error(
-                    "git status failed (rc=%d): %s",
-                    result.returncode,
-                    result.stderr.strip(),
-                )
-                raise self.GitStatusError(result.stderr.strip())
-        except subprocess.TimeoutExpired as exc:
-            logger.error("git status timed out in %s", self.args.work_dir)
-            raise self.GitStatusError("git status timed out") from exc
-        except FileNotFoundError as exc:
-            logger.error("git not found on PATH")
-            raise self.GitStatusError("git not found") from exc
-        files: list[str] = []
-        for line in result.stdout.splitlines():
-            if len(line) > 3:
-                path = line[3:].split(" -> ")[-1].strip()
-                files.append(path.replace("\\", "/"))
-        return files
-
-    def _commit_agent_changes(
-        self,
-        message: str | None = None,
-        *,
-        scope_files: list[str],
-    ) -> dict[str, Any] | None:
-        """Stage and commit the agent's file changes from Python.
-
-        If the agent already committed (HEAD advanced past ``_before_sha``),
-        returns that commit's info without creating another.
-
-        Returns:
-            Dict with ``sha``, ``subject``, ``stat_summary``, ``changed_files``
-            on success; ``None`` if nothing to commit.
-        """
-        work_dir = self.args.work_dir
-        before_sha = getattr(self, "_before_sha", None)
-        msg = self._prepare_commit_message(message)
-
-        # Agent may have committed despite being told not to — use it.
-        current_sha = _git_head_sha(work_dir)
-        if before_sha and current_sha and current_sha != before_sha:
-            logger.info("Specialist already committed — using existing commit")
-            return _read_commit_info(work_dir, before_sha)
-
-        # Stage selected files while preserving other authored changes
-        to_stage, reverted = self._resolve_stageable_files(scope_files)
-        if not to_stage:
-            return None
-
-        # Stage and commit
-        self._git_add_and_commit(work_dir, to_stage, msg)
-        info = _read_commit_info(work_dir, before_sha or "")
-        if reverted:
-            info["reverted_files"] = reverted
-        return info
-
-    def _prepare_commit_message(self, message: str | None) -> str:
-        """Auto-format and validate commit message, raising on failure."""
-        work_dir = self.args.work_dir
-        msg = message or self._default_commit_message
-        category_hint = getattr(self, "modifies_category", "") or ""
-        msg = _auto_format_commit_message(msg, category=category_hint)
-
-        # Guard: never commit in main worktree (must be a linked worktree)
-        git_path = Path(work_dir) / ".git"
-        if git_path.is_dir():
-            raise self.GitStatusError(
-                f"Refusing to commit in main worktree ({work_dir}). "
-                "Commits must happen in a linked worktree (.git must be a file)."
-            )
-
-        errors = validate_message(msg, project_root=work_dir)
-        if errors:
-            # Salvage: if the only errors are banned-phrase hits in the
-            # agent's subject, retry with the Specialist's default commit message.
-            # The agent's freeform text is lost (subject only), but this
-            # avoids burning a full multi-minute agent run to exit-2 on a
-            # stylistic violation the agent could not have known about
-            # (banned-phrase list is project-local config).
-            if all("Banned phrase" in e for e in errors):
-                fallback = _auto_format_commit_message(
-                    self._default_commit_message,
-                    category=category_hint,
-                )
-                fallback_errors = validate_message(fallback, project_root=work_dir)
-                if not fallback_errors:
-                    logger.warning(
-                        "Commit message rejected for banned phrase(s) "
-                        "(%s); falling back to default %r",
-                        "; ".join(errors),
-                        fallback,
-                    )
-                    return fallback
-            raise self.GitStatusError(f"Commit message validation failed: {'; '.join(errors)}")
-        return msg
-
-    def _resolve_stageable_files(
-        self,
-        scope_files: list[str],
-    ) -> tuple[list[str], list[dict[str, str]]]:
-        """Determine which selected files to stage; preserve other edits.
-
-        Returns (to_stage, reverted_info).
-        """
-        try:
-            uncommitted = self._get_uncommitted_files()
-        except self.GitStatusError as exc:
-            logger.error("Cannot list changes — git is broken: %s", exc)
-            raise
-        if not uncommitted:
-            return [], []
-        allowed = {f.replace("\\", "/") for f in scope_files}
-        to_stage = [f for f in uncommitted if f in allowed]
-        # Preserve other authored work for the Developer to commit and explain.
-        return to_stage, []
-
-    def _git_add_and_commit(
-        self,
-        work_dir: Path,
-        to_stage: list[str],
-        msg: str,
-    ) -> None:
-        """Stage files and create a commit. Raises GitStatusError on failure."""
-        from booley.runtime.git import git_run
-
-        add_result = git_run(work_dir, ["add", "--", *to_stage], timeout=30)
-        if add_result.returncode != 0:
-            logger.error("Git add failed: %s\nstdout: %s", add_result.stderr, add_result.stdout)
-            raise self.GitStatusError(f"git add failed: {add_result.stderr.strip()}")
-
-        commit_result = git_run(work_dir, ["commit", "-m", msg], timeout=30)
-        if commit_result.returncode != 0:
-            logger.error(
-                "Git commit failed: %s\nstdout: %s", commit_result.stderr, commit_result.stdout
-            )
-            raise self.GitStatusError(f"git commit failed: {commit_result.stderr.strip()}")
-
-    def _revert_out_of_scope(self, paths: list[str]) -> list[dict[str, str]]:
-        """Copy out-of-scope files to logs, then revert them from worktree.
-
-        Returns a list of dicts with ``original_path`` and ``saved_path``.
-        """
-        work_dir = Path(self.args.work_dir)
-        saved = _save_files_to_logs(work_dir, paths)
-        _git_revert_files(work_dir, paths)
-        return saved
-
-    @staticmethod
-    def _extract_commit_message(structured: dict | None) -> str | None:
-        """Extract commit_message from agent's structured output, if present."""
-        if structured and isinstance(structured, dict):
-            msg = structured.get("commit_message")
-            if msg and isinstance(msg, str) and msg.strip():
-                return msg.strip()
-        return None
-
     def _stamp_model_note(self, detail: dict[str, Any]) -> None:
         """Record the model that ran (and any ``[models]`` fallback) in *detail*.
 
@@ -788,19 +543,6 @@ class Specialist(McpTool):
             detail.pop("specialist_model", None)
         else:
             detail["specialist_model"] = self._model_run.note()
-
-    def set_criterion(
-        self,
-        key: str,
-        met: bool,
-        *,
-        detail: dict[str, Any] | None = None,
-        source_target: str | None = None,
-    ) -> None:
-        """Record a Criterion with the model note, which the Review Package then shows."""
-        if detail is not None:
-            self._stamp_model_note(detail)
-        super().set_criterion(key, met, detail=detail, source_target=source_target)
 
     def _finalize_result(self, result: McpToolResult) -> None:
         """Stamp accumulated agent token/cost data onto the McpToolResult."""

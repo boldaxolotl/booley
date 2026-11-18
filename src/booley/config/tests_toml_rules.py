@@ -52,7 +52,7 @@ TEST_NAME_RULES = (
 #: The seed a Test Run uses when none is named. Never ``0``: Verilator reads
 #: ``+verilator+seed+0`` as "pick a seed at startup".
 DEFAULT_SEED = 1
-#: Largest seed Booley accepts or draws. Verilator 5.052 accepts
+#: Largest seed Booley accepts or draws. Verilator 5.054 accepts
 #: ``+verilator+seed+`` values ``0..INT_MAX`` (``verilated.cpp``, bounded by
 #: ``std::numeric_limits<int>::max()``); cocotb parses its seed variable with
 #: Python ``int`` and has no bound. So ``1..2**31-1`` is the common range.
@@ -301,7 +301,7 @@ def _parse_variant_args(raw: object, where: str) -> tuple[str, ...]:
     """Validate a Variant's argument list: one option token per entry."""
     if not is_str_list(raw):
         raise TestVariantError(f"{where} arguments must be a list of strings")
-    arguments = cast(list[str], raw)
+    arguments = raw
     for argument in arguments:
         problem = argument_token_problem(argument)
         if problem:

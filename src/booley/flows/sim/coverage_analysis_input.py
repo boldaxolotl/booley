@@ -1,4 +1,4 @@
-"""Read canonical Campaign identity and verify optional source snapshots."""
+"""Read canonical Coverage Record identity and verify optional source snapshots."""
 
 from __future__ import annotations
 
@@ -11,38 +11,41 @@ from typing import TYPE_CHECKING, cast
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_dict
-from booley.flows.sim.campaign import (
-    SimulationProjection,
-    decode_simulation_projection,
-    resolve_artifact_reference,
-)
-from booley.flows.sim.campaign.codec import (
-    MANIFEST_MAX_BYTES,
-    UnsupportedSimulationCampaignFormatError,
-)
-from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
-from booley.flows.sim.coverage_campaign import CoverageCampaign
-from booley.flows.sim.coverage_campaign_store import (
-    LoadedCoverageCampaign,
-    load_coverage_campaign,
-)
 from booley.flows.sim.coverage_json import FrozenJson, freeze_coverage_mapping
+from booley.flows.sim.coverage_record import CoverageRecord
+from booley.flows.sim.coverage_record_store import (
+    LoadedCoverageRecord,
+    load_coverage_record,
+)
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
     REFERENCE_SCHEMA,
-    ResolvedCoverageCampaign,
-    authenticate_coverage_campaign_owner,
-    resolve_coverage_campaign_reference,
+    ResolvedCoverageRecord,
+    authenticate_coverage_record_owner,
+    resolve_coverage_record_reference,
 )
+from booley.flows.sim.record import (
+    SimulationProjection,
+    SimulationRecordManifestView,
+    decode_simulation_projection,
+    resolve_artifact_reference,
+)
+from booley.flows.sim.record.codec import (
+    MANIFEST_MAX_BYTES,
+    UnsupportedSimulationRecordFormatError,
+    raise_if_retired_schema,
+)
+from booley.flows.sim.record_layout import RECORD_DIRECTORY
+from booley.flows.sim.record_reports import report_link_ancestor, target_report_directory
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
-    from booley.flows.sim.campaign import CampaignWorkItemEvidence
+    from booley.flows.sim.record import SimulationRecordWorkItemEvidence
 
 
 class CoverageAnalysisError(ValueError):
-    """Campaign evidence cannot support advisory Coverage Analysis."""
+    """Coverage Record evidence cannot support advisory Coverage Analysis."""
 
 
 @dataclass(frozen=True)
@@ -53,7 +56,7 @@ class CoverageSourceClosure:
     files: Mapping[str, FrozenJson]
 
 
-def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
+def read_coverage_record(path: Path) -> LoadedCoverageRecord:
     """Require an exact canonical path and a matching completed Target projection."""
     try:
         path = canonical_project_alias_path(path.absolute())
@@ -63,34 +66,37 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
         invocation = path.parent.parent.parent
         if invocation.parent.name != "sim" or not invocation.name.isdecimal():
             raise CoverageAnalysisError(
-                "Campaign must belong to one numbered Simulation invocation"
+                "Coverage Record must belong to one numbered Simulation invocation"
             )
         schema = require_dict(json.loads(path.read_text(encoding="utf-8"))).get("$schema")
-        resolved = (
-            resolve_coverage_campaign_reference(path) if schema == REFERENCE_SCHEMA else None
-        )
-        loaded = resolved.loaded if resolved is not None else load_coverage_campaign(path)
-        campaign = loaded.campaign
+        try:
+            raise_if_retired_schema(schema)
+        except UnsupportedSimulationRecordFormatError as exc:
+            # An older Booley's reference or record: name the invocation to delete.
+            raise exc.located(invocation) from None
+        resolved = resolve_coverage_record_reference(path) if schema == REFERENCE_SCHEMA else None
+        loaded = resolved.loaded if resolved is not None else load_coverage_record(path)
+        coverage_record = loaded.coverage_record
         if str(
-            campaign.invocation["id"]
+            coverage_record.invocation["id"]
         ) != invocation.name or path.parent != target_report_directory(
-            invocation, campaign.target.selector
+            invocation, coverage_record.target.selector
         ):
-            raise CoverageAnalysisError("Campaign identity disagrees with its exact path")
+            raise CoverageAnalysisError("Coverage Record identity disagrees with its exact path")
         projection = _projection(
             path.parent / "simulation.json",
-            campaign,
+            coverage_record,
             coverage_expected=resolved is not None,
         )
         if resolved is not None:
-            authenticated = authenticate_coverage_campaign_owner(resolved)
+            authenticated = authenticate_coverage_record_owner(resolved)
             _reference_projection(path, projection, resolved, authenticated)
         return loaded
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise CoverageAnalysisError(str(exc)) from exc
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
-            f"Cannot analyze Campaign at {path}: {exc}. Use an exact retained, completed Target Campaign; fully pruned invocations cannot be analyzed."
+            f"Cannot analyze Coverage Record at {path}: {exc}. Use an exact retained, completed Coverage Record; fully pruned invocations cannot be analyzed."
         ) from exc
 
 
@@ -101,14 +107,14 @@ def _safe_path(path: Path) -> None:
         or report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
     ):
         raise CoverageAnalysisError(
-            "Campaign and source paths must not contain links or traversal"
+            "Coverage Record and source paths must not contain links or traversal"
         )
     if not path.is_file():
         raise CoverageAnalysisError(f"Expected a retained regular file: {path}")
 
 
 def _projection(
-    path: Path, campaign: CoverageCampaign, *, coverage_expected: bool
+    path: Path, coverage_record: CoverageRecord, *, coverage_expected: bool
 ) -> SimulationProjection:
     _safe_path(path)
     try:
@@ -116,77 +122,95 @@ def _projection(
             require_dict(json.loads(path.read_text(encoding="utf-8"))),
             coverage_expected=coverage_expected,
         )
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise exc.located(path.parents[2]) from None
     expected = {
         "flow": "sim",
-        "target": campaign.target.selector,
-        "target_identity": campaign.target.identity,
-        "collection": campaign.collection["status"],
-        "evaluation": campaign.evaluation["status"],
+        "target": coverage_record.target.selector,
+        "target_identity": coverage_record.target.identity,
+        "collection": coverage_record.collection["status"],
+        "evaluation": coverage_record.evaluation["status"],
     }
     if projection.document.get("complete") is not True or any(
         projection.document.get(key) != value for key, value in expected.items()
     ):
-        raise CoverageAnalysisError("Campaign lacks a matching completed Simulation projection")
+        raise CoverageAnalysisError(
+            "Coverage Record lacks a matching completed Simulation projection"
+        )
     return projection
 
 
 def _reference_projection(
     public_path: Path,
     projection: SimulationProjection,
-    resolved: ResolvedCoverageCampaign,
-    authenticated: CampaignWorkItemEvidence,
+    resolved: ResolvedCoverageRecord,
+    authenticated: SimulationRecordWorkItemEvidence,
 ) -> None:
-    """Authenticate a Simulation projection through local Simulation Campaign bytes.
+    """Authenticate a Simulation projection through local Simulation Record bytes.
 
     Authority comes from the locally supplied Coverage reference, its enclosing
-    authenticated Simulation Campaign, and the projection's Target/verdict fields.
+    authenticated Simulation Record, and the projection's Target/verdict fields.
     """
-    expected_manifest = (public_path.parent / "campaign" / "manifest.json").absolute()
+    expected_manifest = (public_path.parent / RECORD_DIRECTORY / "manifest.json").absolute()
     document = projection.document
-    owner = str(resolved.reference.document["simulation_campaign_id"])
-    if document.get("campaign_id") != owner:
-        raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
+    owner = str(resolved.reference.document["simulation_record_id"])
+    if document.get("simulation_record_id") != owner:
+        raise CoverageAnalysisError("Simulation Record projection owner disagrees")
     entry = crossed_booley_dir_entry(public_path)
     manifest_artifact = resolve_artifact_reference(
-        document.get("campaign_manifest"),
+        document.get("simulation_record_manifest"),
         bases={"origin_target": public_path.parent},
         allowed_bases={"origin_target"},
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner=owner,
         maximum=MANIFEST_MAX_BYTES,
         booley_dir=entry,
     )
     coverage_artifact = resolve_artifact_reference(
-        document.get("coverage_campaign"),
+        document.get("coverage_record"),
         bases={"origin_target": public_path.parent},
         allowed_bases={"origin_target"},
-        expected_kind="coverage_campaign_reference",
+        expected_kind="coverage_record_reference",
         expected_owner=owner,
         maximum=MAX_REFERENCE_BYTES,
         booley_dir=entry,
     )
     if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
-        raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
+        raise CoverageAnalysisError("Simulation Record projection pointers disagree")
     _safe_path(expected_manifest)
     manifest = authenticated.manifest
     reference = resolved.reference.document
-    target = manifest.document["target"]
-    if not isinstance(target, Mapping):
-        raise CoverageAnalysisError("Simulation Campaign Target is invalid")
+    view = SimulationRecordManifestView(manifest)
     if (
-        manifest.document["campaign_id"] != reference["simulation_campaign_id"]
+        view.simulation_record_id != reference["simulation_record_id"]
         or authenticated.manifest_path != expected_manifest.absolute()
         or authenticated.manifest_sha256 != reference["simulation_manifest_sha256"]
-        or target["selector"] != resolved.loaded.campaign.target.selector
-        or f"{target['vlnv']}#{target['name']}" != resolved.loaded.campaign.target.identity
+        or view.target.selector != resolved.loaded.coverage_record.target.selector
+        or view.target.identity != resolved.loaded.coverage_record.target.identity
     ):
-        raise CoverageAnalysisError("Simulation Campaign manifest disagrees with reference")
+        raise CoverageAnalysisError("Simulation Record manifest disagrees with reference")
+
+
+STEALTH_SOURCE_LIMITATION = (
+    "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
+    "report evidence only and no Waiver Candidate is ready for human review."
+)
+
+
+def stealth_source_limitation(project_root: Path) -> str | None:
+    """Return the Stealth Mode reason sources are unavailable, or None outside it."""
+    from booley.fusesoc.core_projection import projection_enabled
+
+    try:
+        enabled = projection_enabled(project_root)
+    except ValueError:
+        # An unreadable configuration is a report-only cause coverage_sources already folds in.
+        return None
+    return STEALTH_SOURCE_LIMITATION if enabled else None
 
 
 def coverage_sources(
-    campaign: CoverageCampaign, project_root: Path
+    coverage_record: CoverageRecord, project_root: Path
 ) -> CoverageSourceClosure | None:
     """Return the complete verified closure, or report-only on any mismatch."""
     from booley.flows.sim.coverage_json import content_digest
@@ -201,12 +225,12 @@ def coverage_sources(
         if projection_enabled(project_root):
             raise CoverageAnalysisError("Source inspection requires project reconciliation")
         catalog = TargetCatalog.build(project_root)
-        handle = catalog.select(campaign.target.identity)
+        handle = catalog.select(coverage_record.target.identity)
         _safe_path(handle.core_file)
         fingerprint = coverage_digest(
             {"core": handle.core_file.read_text(), "identity": handle.identity}
         )
-        if fingerprint != campaign.fingerprints["target_definition"]:
+        if fingerprint != coverage_record.fingerprints["target_definition"]:
             return None
         inspection = catalog.inspect(handle)
         expected = {"rtl": [], "testbench": []}
@@ -231,8 +255,9 @@ def coverage_sources(
             files[name] = {"category": category, "sha256": digest, "text": data.decode("utf-8")}
         for category in ("rtl", "testbench"):
             if (
-                coverage_digest(expected[category]) != campaign.fingerprints[category + "_sources"]
-                or tuple(expected[category]) != campaign.source_closure[category]
+                coverage_digest(expected[category])
+                != coverage_record.fingerprints[category + "_sources"]
+                or tuple(expected[category]) != coverage_record.source_closure[category]
             ):
                 return None
         return CoverageSourceClosure(handle.identity, freeze_coverage_mapping(files))
@@ -241,18 +266,18 @@ def coverage_sources(
 
 
 def verified_source_snapshot(
-    campaign: CoverageCampaign, sources: CoverageSourceClosure | None
+    coverage_record: CoverageRecord, sources: CoverageSourceClosure | None
 ) -> CoverageSourceClosure | None:
-    """Return a source snapshot only when every Campaign-bound digest agrees."""
+    """Return a source snapshot only when every Coverage Record-bound digest agrees."""
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
 
-    if sources is None or sources.target_identity != campaign.target.identity:
+    if sources is None or sources.target_identity != coverage_record.target.identity:
         return None
     expected = {}
     for category in ("rtl", "testbench"):
-        records = cast(tuple[Mapping[str, str], ...], campaign.source_closure[category])
-        if coverage_digest(records) != campaign.fingerprints[category + "_sources"]:
+        records = cast(tuple[Mapping[str, str], ...], coverage_record.source_closure[category])
+        if coverage_digest(records) != coverage_record.fingerprints[category + "_sources"]:
             return None
         for record in records:
             expected[record["path"]] = (category, record["sha256"])

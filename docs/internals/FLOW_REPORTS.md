@@ -1,442 +1,253 @@
 # Built-in Flow reports
 
-This is the file-level reference for what the built-in `sim`, `lint`, `synth`,
-and `fpga` Flows write to disk: where the reports go, which JSON fields they
-contain, and how simulation Campaigns are laid out. It is for contributors
-changing what the Flows write or code that reads it. The user docs explain the
-files a person opens; keep them consistent with this page.
+Where the built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` Flows write
+their reports, how a Simulation Record is laid out, and the few rules a reader
+of those files must know. The JSON is self-describing: read a report to see its
+fields. User docs ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the
+per-Flow pages) say how to run each Flow and read its verdict.
 
-| Document | Covers |
-|---|---|
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run each Flow and read its verdict |
-| **This document** | Report files, JSON fields, and on-disk layout |
-| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the Flows produce these files: planning, verdict rules, recovery |
-| [MCP-TOOLS.md](MCP-TOOLS.md#built-in-flow-calls) | How the same results reach an agent over MCP |
+The reports are evidence that resume and the Coverage Analyst
+read later, often in another process. So every run gets its own numbered
+directory, and files point at each other by relative path plus size and
+SHA-256.
 
 ## Where reports go
 
 Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
-2. When `BOOLEY_RUNTIME_DIR` is set, `<runtime>/flow-reports`. Every MCP endpoint subprocess sets it: Goal-bound calls use the Goal Record's runtime directory, ordinary Interactive calls use the server's session runtime under `.interactive_logs/<session>/.runtime`.
-3. Otherwise, `flow-reports/` in the Booley Directory.
+2. `$BOOLEY_RUNTIME_DIR/flow-reports`, when that variable is set. Every MCP
+   endpoint subprocess sets it: a Developer Agent call uses the server's
+   session runtime
+   (`.interactive_logs/<session>/.runtime` in the Booley Directory).
+3. Otherwise, `flow-reports/` in the Booley Directory of the checkout.
 
-Booley never writes `flow-reports/` into the RTL checkout itself.
+Each run reserves the next number `N` under `<report-root>/<flow>/`. Every Flow
+writes these files:
 
-Every Flow report below also carries `flow` and `timestamp`. The `synth` and
-`fpga` reports additionally carry an `implementation` block with the grade,
-metrics, recipe, provenance, and baseline comparison (see
-[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#shared-implementation-report-envelope)).
+| Flow | Files |
+|---|---|
+| all five | `<flow>/<N>/report.json`, the [invocation report](#invocation-report), and `<flow>.json`, a copy of the newest one |
+| `sim` | `sim/<N>/progress.json`, the per-Target [Record layout](#simulation-record-layout) under `sim/<N>/targets/`, and `sim/.invocation-<N>.lock` |
+| `lint` | `lint/<N>/lint_report.json` and `lint_report.json`, a copy of the newest one |
+| `synth`, `fpga` | `<flow>/<N>/progress.json`, `<flow>/<N>/targets/<slug>.json`, and `<flow>_<slug>.json`, the per-Target report |
+| `mutation` | `mutation/<N>/report.json` and the [`campaign/` evidence directory](#mutation) |
+
+`<slug>` is the Target selector with every character outside `A-Za-z0-9_.-`
+replaced by `_`, plus a `-<8 hex of its SHA-256>` suffix when that changed the
+name.
+
+The unnumbered copies (`<flow>.json`, `lint_report.json`,
+`<flow>_<slug>.json`) are overwritten by the next run, including a failed one
+that leaves `detail` empty. Code that needs a stable pointer must use the
+numbered paths.
 
 ## Invocation report
 
-Every persisted run writes `<report-root>/<name>/<N>/report.json` for the whole
-invocation. MCP attaches the same file to its result. Endpoint reporting also
-writes `<report-root>/<name>.json` (for example `sim.json`), a mutable
-last-writer-wins copy of the newest invocation report kept for backward
-compatibility. This copy may contain Campaign pointers but is not a stable
-Campaign pointer; a later failed run can overwrite it with empty `detail`.
-Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
+`<flow>/<N>/report.json` covers the whole invocation. Specialists write the
+same report, with `mcp_tool` in place of `flow`. Its `$schema` is
+`booley.simulation-report/v3` for `sim`, `booley.flow-report/v1` for the other
+Flows, and `booley.specialist-report/v1` for Specialists.
 
-| Field | Contents |
-|---|---|
-| `flow`, `target`, `argv` | Which Flow ran, the requested Target selector, and the parsed arguments. |
-| `exit_code`, `passed` | Execution result: `passed` means exit `0`, independently of Criterion satisfaction. |
-| `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
-| `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
-| `detail` | Flow-specific results and pointers to per-Target files. |
-| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; a standalone sweep that used exactly one frontend fills the scalar, a mixed sweep leaves it unset. Specialists omit these keys when they run no EDA tool. |
-| `resources` | Optional process accounting: `cpu_user_s`, `cpu_sys_s` in seconds and `peak_rss_mb` in MiB. |
-| `run_id`, `report_text` | The Job ID and printed verdict card, when present. |
-| `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
+- `passed` means exit `0`.
+- `resources` (`cpu_user_s`, `cpu_sys_s`, `peak_rss_mb`) is a process-lifetime
+  snapshot. Repeated calls inside one process include earlier work, and a
+  resumed run counts only the resuming process. When the platform cannot
+  measure, the field is missing: treat that as unknown, never as zero.
 
-Final resource accounting is a process-lifetime snapshot shared by numbered and
-flat reports. CPU sums the endpoint and its waited-for children; peak memory
-is the **largest process**, not a simultaneous process-tree total. Detached or
-unwaited children are excluded. `elapsed_s` remains wall time.
-
-Repeated in-process calls can include earlier work; resumed Campaigns account
-only for the resuming process. Unsupported or failed accounting omits `resources`
-without preventing report publication (failures are logged). Older reports may
-also omit it; consumers must not substitute zeros.
+`synth` and `fpga` also carry a shared `implementation` envelope: the grade,
+QoR metrics, baseline deltas, and artifact pointers.
 
 ## Progress
 
-Long `sim`, `synth`, and `fpga` runs also write `progress.json` while they
-work, so you can watch a run or tell what state an interrupted one was left in.
-Every update includes `run_id` and `timestamp`.
+`sim`, `synth`, and `fpga` keep `<flow>/<N>/progress.json` current while they
+run, so you can watch a run or see where an interrupted one stopped. `lint` and
+`mutation` write none. Every update carries `run_id` and `timestamp`.
 
-- `complete: true` means the run has stopped. It does not mean it succeeded.
+- `complete: true` means the run has stopped, not that it passed.
 - `phase: complete`: every planned Target was processed.
 - `phase: aborted`: the run stopped early; `pending_targets` lists the Targets
   that did not finish.
-- `phase: superseded`: this was an interrupted coverage run that was later
-  resumed. `superseded_by` names the resuming run (`invocation` number and,
-  when known, `run_id`); look there for the outcome. This run's Target lists
-  still show where it stopped. Marking is best effort, so an `aborted` run may
-  still have been resumed.
-
-Coverage runs add `coverage: true` and per-Target detail to their progress file.
+- `phase: superseded`: an interrupted coverage run that a later run resumed.
+  `superseded_by` names that run; look there for the outcome. Marking is best
+  effort, so an `aborted` run may also have been resumed.
 
 ## Dry-run plan
 
 `--dry-run` prints a JSON `FlowPlan` and writes it to
-`<report-root>/<flow>/flow_plan.json`. It does not take a numbered run
-directory.
-
-The plan has `schema_version`, `flow`, `mode`, `semantic_plan_fingerprint`,
-the ordered `work_units`, `aggregate_errors`, and `planning_disclosures`. Each
-work unit lists its Target, timeout, sources and constraints, resolved
-parameters, the exact command it would run, and the files it would produce.
-Paths are relative to `work_dir` where possible, and no environment values or
-secrets are included. The fingerprint ignores scratch paths, so a dry run and
-the real run of the same work have the same fingerprint.
-
-A dry run runs no EDA tool, touches no Criteria, and fills no caches. It may
-run FuseSoC setup or generators in a throwaway directory when resolving the
-Target requires it; `planning_disclosures` says so when that happens.
-
-For Simulation, ordinary candidate and baseline units expose the simulator
-budget as `timeout_ms` and the invocation-carried build budget as recipe
-`build_timeout_ms`. Elaboration Check units expose their build budget in both
-fields because the Target build is their only subprocess. Standalone units
-retain the standalone-sweep `timeout_ms` and have no build field.
+`<report-root>/<flow>/flow_plan.json`, without a numbered directory, and runs no EDA tool. The plan's commands are templates (`template: true`): paths are relative to
+`work_dir` and the environment is left out. For `sim`, only the Elaboration
+Check prints this plan; an ordinary or coverage dry run prints its Record
+preview instead.
 
 ## `sim`
 
-### Simulation Campaign layout
+### Simulation Record layout
 
-Every `sim` run uses the same layout, whatever the testbench (HDL or cocotb) and
-whether or not it collects coverage. Each run takes the next number `N` under
-`<report-root>/sim/`, and each Target gets its own directory:
+Every `sim` run uses one layout, whatever the testbench (HDL or cocotb) and
+whether it collects coverage. Each Target gets its own directory, named by its
+percent-encoded selector (so `vendor:ip:core:1.0#sim_core` stays one path
+component):
 
 ```text
 <report-root>/sim/<N>/
   report.json
   progress.json
   targets/<target>/
-    campaign/
+    record/
       manifest.json                    what this run will execute (fixed at start)
       summary.json                     where it stands now
-      build-variants/.../              simulator builds and their results
-      work-items/.../                  one directory per test or batch, with its attempts
-    simulation.json                    the Target's results (see below)
-    coverage.json                      coverage runs only: v1 Campaign reference
+      build-variants/.../              shared simulator builds (launched read-only by every attempt) and their results
+      work-items/.../attempts/.../     one directory per test or batch, with its attempts
+    simulation.json                    the Target's results
+    coverage.json                      coverage runs only: the Coverage Record reference
 ```
-
-Qualified Target selectors (such as `vendor:ip:core:1.0#sim`) are
-percent-encoded into one directory name.
 
 Three cases add to this layout:
 
-- **Coverage** adds a Target-level reference selecting one attempt's nested
-  Coverage Campaign, whose own directory holds its manifest, point store, native
-  databases, and hook evidence (see [Coverage Campaign files](#coverage-campaign-files)).
+- **Coverage** nests a Coverage Record inside one attempt (see
+  [Coverage Record files](#coverage-record-files)).
 - **Resume** takes a new run number for its own `report.json` and
-  `progress.json`, but writes Campaign results into the *original* run's
-  `campaign/` directory, so one Campaign stays in one place.
-- **A Cycle Count baseline** gets its own Target directory next to the
-  candidate's, named from `<target>@baseline-<first 12 hex of revision>`.
+  `progress.json`, but writes results into the original run's `record/`
+  directory, so one Record stays in one place.
+- **A Cycle Count baseline** gets its own Target directory beside the
+  candidate's, for the selector `<target>@baseline-<first 12 characters of the
+  baseline revision>`.
 
-The Campaign files reference each other by size and SHA-256 digest. Two digest
-forms exist for the same manifest. Durable records (`summary.json`, work-item
-results) carry the canonical manifest digest: SHA-256 of `manifest.json`
-without its trailing newline. Typed artifact references, such as
-`simulation.json`'s `campaign_manifest`, carry the SHA-256 of the file's exact
-bytes. Compare each against its own form. Resume
-checks that whole chain, plus the Target's current sources and test suite,
-before it runs anything. If the suite or sources changed, the old Campaign can
-no longer be resumed.
+### Attempt files
 
-### Report schemas and references
+An attempt directory (`work-items/<id>/attempts/<ordinal>-<attempt id>/`) keeps
+each evidence file once:
 
-- `simulation.json` uses `booley.simulation-projection/v3`.
-- `report.json` uses `booley.simulation-report/v3`; other Flow reports use `booley.flow-report/v1` and Specialist reports use `booley.specialist-report/v1`. Older v2 and unversioned files retain their historical ambiguity; existing files are not migrated.
-- Target-level `coverage.json` uses `booley.coverage-campaign-reference/v1`.
-- The selected nested `coverage.json` is the current Coverage Campaign manifest.
+```text
+attempt.json
+execution-evidence/    the run log, the trace and the adapter result, where the run wrote them
+evidence/              files Booley derives, and copies of files written outside the attempt
+private-build/         builds made per test only
+runtime-inputs/        the attempt's runtime inputs
+pre-sim/               pre-sim command evidence
+coverage-record/       coverage runs only
+```
 
-To find a Simulation Campaign Target's results, follow
-`detail.campaigns.<selector>.artifacts.simulation` in `report.json` (legacy
-reports keep their old artifact hints). Every path inside these files is
-relative, and each reference
-says what it is relative to: `report_invocation` (this run's directory),
-`reports_root` (the report root, used when a resumed run points at the original
-run's Campaign), or `external_origin_target` (an original run under a different
-report root; the caller supplies that directory).
+`execution-evidence/run.log` is the file the live pointer in `progress.json`
+names, so a reader tailing it during the run finds the final log there
+afterwards. The work-item result references the log, the trace and the adapter
+result at `execution-evidence/<name>`. `evidence/` holds the Cocotb transport
+and infrastructure-failure documents Booley derives, plus a copy of any trace
+or adapter file the simulator wrote outside the attempt (for example in a
+configured run directory) whose original is removed with that directory.
+
+Record files reference each other by size and SHA-256, in two forms. Durable
+records (`summary.json`, work-item results) carry the canonical manifest
+digest: the SHA-256 of `manifest.json` without its trailing newline. Typed
+artifact references, such as `simulation.json`'s `simulation_record_manifest`,
+carry the SHA-256 of the file's exact bytes. Compare each against its own form.
+Resume checks the whole chain, plus the Target's current sources and test
+suite, before it runs anything, and refuses when the suite or sources changed.
+
+A typed reference stores a relative `path` and names its base in `path_base`:
+
+- `report_invocation`: this run's directory;
+- `reports_root`: the report root, when a resumed run points at the original
+  run's Record;
+- `external_origin_target`: an original run under a different report root; the
+  caller supplies that Target directory;
+- `origin_target`: the Target directory (used inside `simulation.json` and
+  `coverage.json`).
+
 Copying a whole run directory, or the whole report root, keeps every reference
-valid. A resumed run's report points back to the original run's Campaign, so
-copying only the resumed run leaves those references dangling.
+valid. Copying only a resumed run does not: its report points back into the
+original run. Existing files are never migrated to a newer schema, and a
+directory or schema from Booley 0.4.0 or earlier (`campaign/`,
+`booley.coverage-campaign/v5`) is refused, not read.
 
 If writing the final report fails, the run exits `2` with
-`detail.completion_error`; results already written are kept.
+`detail.completion_error`; results already written stay.
 
-`report.json` also stores every observed cycle count in top-level
-`cycle_counts.<Target selector>[]` rows `{test, cycle_count}`; both fields are
-nullable (`test: null` = unnamed test). This is distinct from the legacy
-`detail.cycle_counts[]` rows. The `detail.campaigns.<selector>.observations`
-preview keeps only the first 32. Inline MCP output drops the full mapping. If
-the counts can't be computed, the report records `cycle_counts_error:
-unavailable` instead; the verdict and Criteria are unaffected.
+### Coverage Record files
 
-### `simulation.json`
-
-`sim/<N>/targets/<target>/simulation.json`:
-
-| Field | Contents |
-|---|---|
-| `$schema`, `flow`, `mode` | Schema id, `sim`, and `simulate`. |
-| `target`, `target_identity` | Target selector and its full FuseSoC identity. |
-| `passed`, `inconclusive`, `complete` | Target verdict, whether it was inconclusive, and whether the run finished writing its results. `complete: false` means the run was interrupted while publishing and can be resumed. |
-| `tests[]` | One entry per test (see below). |
-| `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed invocation; `variant` and `seed` are null when the run has none. |
-| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`, shaped `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
-| `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference (same shape as `campaign_manifest`) to the Target's `coverage.json` and the collection and evaluation statuses. |
-
-Each `tests[]` entry has `name` (`default` for an unnamed test), `passed`,
-nullable `cycles`, `sva_errors`, `timed_out`, `execution`, `failure_kind`,
-and `error_tail`.
-Every `tests[]` entry that observed a Test Run also names it: `test_run` (the
-Test Run name, `test[+variant][@seed]`), `variant`, `seed`, and `fingerprint`.
-
-Elaboration checks write the same file with `mode` set to `elab_only` or
-`elab_only_standalone`, and these fields:
-
-| Field | Contents |
-|---|---|
-| `target`, `target_identity`, `eda_tool`, `toplevel` | The Target and its top module. |
-| `passed`, `verdict`, `failure_class`, `reason`, `elapsed_s` | The outcome, why it failed, and duration. |
-| `compile_command`, `fileset` | The build command and source lists, when setup succeeded. |
-| `log` | The full build log. |
-
-For `elab_only_standalone`, `report.json` also has `detail.standalone` with
-`modules_checked`, `shared_files`, `frontend`, `probes`, `failures`, any
-`unparsed` modules, and the log path. `frontend` is the `+`-joined probe
-frontends (`iverilog+verilator` for a mixed sweep, the plain name otherwise).
-`probes` groups the `{module, file}` pairs by `{frontend, fallback}`. Each
-`failures` and `unparsed` entry also carries `frontend` and `fallback`.
-
-### Coverage Campaign files
-
-A coverage run publishes this reference and nested evidence:
+A coverage run adds a reference at Target level and the Coverage Record inside
+the attempt it measured:
 
 ```text
 <report-root>/sim/<N>/targets/<target>/
-  coverage.json              booley.coverage-campaign-reference/v1
-  simulation.json            the completed Target projection
-  campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/
-    coverage.json            current Coverage Campaign manifest
-    coverage-points.jsonl.gz  every coverage point and which runs hit it
-    native/raw/              one Verilator database per Test Run
-    native/merged/           the merged database
-    hooks/                   hook evidence, when collected
+  coverage.json               booley.coverage-record-reference/v1
+  simulation.json             the completed Target results
+  record/work-items/<item>/attempts/<attempt>/coverage-record/
+    coverage.json             booley.coverage-record/v1, the Coverage Record manifest
+    coverage-points.jsonl.gz  booley.coverage-points/v2: every point and which Test Runs hit it
+    native/raw/               one Verilator database per Test Run
+    native/merged/            the merged database
+    hooks/                    hook evidence, when collected
 ```
 
-The Target reference's `coverage_campaign` object contains `path`, `path_base`,
-`schema`, `campaign_id`, `bytes`, and `sha256`. Its `path_base: origin_target`
-resolves `path` against the origin Target directory to the exact nested manifest;
-size, digest, and identities authenticate the selection. Native artifact paths
-in the nested manifest resolve from its **Coverage Campaign directory**, not
-from the Target directory.
+The reference's `coverage_record` object has `path`, `path_base`, `schema`,
+`coverage_record_id`, `bytes`, and `sha256`. Its `path_base: origin_target`
+resolves `path` against the Target directory to the nested manifest; size,
+digest, and identities authenticate it. Native paths inside the manifest
+resolve from the **Coverage Record directory**, not the Target directory.
 
-Pass the canonical numbered Target-level `coverage.json` to the Coverage Analyst.
-It resolves the reference and authenticates the enclosing Simulation Campaign
-and completed Target projection; the nested path alone is not an Analyst input.
-Manifest readers in
-`booley.flows.sim.coverage_campaign_store` accept the resolved Campaign manifest,
-not the V1 reference. Always read points through the manifest rather than opening
-the point store directly.
+Give the Coverage Analyst the numbered Target-level `coverage.json`: it
+resolves the reference and checks the enclosing Simulation Record and the
+completed `simulation.json`, so the nested path alone is not a valid input.
+Booley code reads a Coverage Record through
+`booley.flows.sim.coverage_record_store`, which checks the point store's size
+and digest; never open the point store directly. Keep the reference, the
+attempt, and the enclosing Simulation Record together.
 
-The nested manifest holds fingerprints, capabilities, the evaluation against
-any Coverage Criterion, and rollups per metric and per source file (line,
-branch, expression, toggle). Its `scoring` field says whether the numbers can
-be trusted: `valid` when collection completed normally, otherwise `invalid`
-with the reason, and empty rollups. Keep the Target reference, selected attempt,
-and enclosing Simulation Campaign together.
-
-Each `rollups` entry (and each per-source entry in `source_rollups`, keyed by
-`source`) has `metric`, `semantics` (one sentence on what one point means),
-`total_points`, `eligible_points`, `covered_points`, `waived_points`, and
-`percent` (covered / eligible, rounded to 2 decimals, `null` when nothing is
-eligible). A metric with no points is omitted. For example:
-
-```json
-{"metric": "branch", "total_points": 810, "eligible_points": 732,
- "covered_points": 565, "waived_points": 0, "percent": 77.19, "semantics": "…"}
-```
-
-#### Point store
-
-`coverage-points.jsonl.gz` is gzipped JSON Lines. The first line is a header,
-`{"$schema": "booley.coverage-points/v1", "campaign_id": …, "target_identity": …}`;
-every other line is one coverage point:
-
-```json
-{
-  "id": "cp1:…",
-  "identity": {
-    "metric": "toggle",
-    "location": {"source": "rtl/fifo.sv",
-                 "start": {"line": 42, "column": 17}, "end": {"line": 42, "column": 17}},
-    "hierarchy": "TOP.tb.dut.u_fifo",
-    "subject": {"signal_bit_direction": "wr_ptr[2]:1->0"},
-    "collector": {"record_type": "toggle", "native_key": "…"}
-  },
-  "hits_by_run": {"run:002:stress@1": 3},
-  "disposition": {"kind": "eligible"}
-}
-```
-
-| Field | Contents |
-|---|---|
-| `id` | Stable point id: `cp1:` plus the base64url of the canonical `identity` JSON. Waivers and Waiver Candidates name points by it. |
-| `identity.metric` | `line`, `branch`, `expression`, `toggle`, `cover_property`, or the unscored `fsm` / `covergroup`. |
-| `identity.location` | Project-relative `source` and the start/end line and column Verilator reported. |
-| `identity.hierarchy` | Instance path; points are per instance. |
-| `identity.subject` | One key per metric: `basic_block` (line), `outcome` (branch: `if`, `else`, a case item; expression: the term combination, e.g. `(rst_ni==0) => 1`), `signal_bit_direction` (toggle: `signal[bit]:0->1`), `cover_property`, `native_fsm`, `native_covergroup`. |
-| `identity.collector` | Verilator's `record_type` and raw record key, for tracing a point back to the native database. |
-| `hits_by_run` | Hit count per Test Run id (`run:<NNN>:<test run>`); runs with zero hits are omitted, so an uncovered point has `{}`. |
-| `disposition` | `kind` is `eligible` (scored RTL), `unscored` (a `testbench`, `generated` or `foreign` source, or an unscored metric), or `waived`; a waived point also carries `reason`, `waiver_id`, `waiver_file`, `waiver_fingerprint` and `provenance`. |
-
-Booley code reads points through the manifest
-(`booley.flows.sim.coverage_campaign_store`), which checks the store's size and
-digest. `docs/user/COVERAGE.md` gives users `zcat | jq` commands that open the
-store directly for a quick look; keep those consistent with this format.
-
-In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
-`collection`, and `evaluation` results even when another Target decided the
-exit code. `coverage_campaign` points to the Target-level reference once it
-has been written. A Target with an authenticated Coverage Campaign also has
-`coverage_metrics`: native metric name →
-`{percent: number|null, threshold: number|null, met: bool|null}`, taken from
-the same evaluated Coverage Campaign as `coverage.json`. `met` compares the
-exact metric ratio with its floor, independent of the aggregate Criterion
-verdict (`criterion_key` / `criterion_met`). No floor: `threshold` and `met`
-are null. No eligible points: `percent` is null, and a configured floor gets
-`met: false`. Unscored Campaigns give an empty map. `coverage_overall: number`
-is reserved for a producer-supplied overall percentage; no producer supplies
-one, so the field is absent.
-
-A coverage threshold miss exits `0` when execution succeeds.
-For an acceptance-bound invocation with one evaluated Criterion,
-`criterion_met` is false on that miss; unbound reports omit Criterion fields
-while retaining the per-Target evaluation.
-
-`COV_RTL_SOURCE_WITHOUT_POINTS` findings are the only record of source gaps.
-They address exact paths through `/source_closure/rtl/<index>/path`; a pointer
-outside the closure is skipped. These warnings do not change collection,
-evaluation, Criteria, percentages, or exit codes. The verdict card appears only
-when at least one finding exists and previews three escaped paths; the Analyst
-overview previews 50 and `zero_point_sources` pages through the complete sorted
-list with `limit` (1–100) and `cursor`. Report-only access works without current
-Project source files.
-
-### Coverage retention
-
-`python -m booley.flows.sim.campaign_retention` deletes the evidence of one
-exact run. Nothing is ever deleted automatically. User docs tell people to
-delete finished run folders directly ([Cleaning up reports](../user/FLOW_REFERENCE.md#cleaning-up-reports));
-this command is the guarded version, for tooling and for removing a run that
-others depend on. Run it as
-`python -m booley.flows.sim.campaign_retention --reports-root <root> --invocation <N>`
-with one of the options below. The algorithm is in
-[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
-
-- **`--native-target <target>`** removes the `native/` directory (raw and merged
-  Verilator databases) of the Coverage Campaign that the Target's `coverage.json`
-  references. `coverage.json` and the point store stay, so the
-  Campaign can still be analyzed. `availability.json` in that
-  directory records the pruning.
-- **`--full`** removes the whole run. It leaves an empty `.pruned-N` marker so
-  the run number is not reused. It refuses when later resumed runs depend on
-  this one, unless `--include-dependents` is given.
-
-Both refuse to touch a run that is still active. `--full` also refuses any file
-the run did not produce; `--native-target` removes the Target's whole `native/`
-directory. An interrupted cleanup is safe to retry with the same arguments.
+In `report.json`, `detail.targets[<target>]` keeps each Target's results and a
+`coverage_record` reference to the Target-level `coverage.json`.
+`coverage_metrics` maps each native metric to `{percent, threshold, met}`. A
+threshold miss on a run that executed cleanly still exits `0`.
 
 ## `lint`
 
-Job report `detail` includes a bounded findings preview:
+`lint_report.json` is the full record. `report.json` `detail` holds a bounded
+findings preview: `findings` (up to 20), `findings_total`,
+`findings_truncated`, and, with several Targets, `findings_by_target`.
 
-| Field | Type and contents |
-|---|---|
-| `findings` | Up to 20 findings: distinct in-scope warnings in order, then Target errors in report order. |
-| `findings_total` | Integer: distinct in-scope warnings plus Target errors, before truncation. |
-| `findings_truncated` | Boolean: `findings_total > 20`. |
-| `findings_by_target` | Multiple Targets only: every selected Target → `{warnings: int, errors: int}`, zeros included. |
-
-Every finding has string `severity`, `message`, and `target` (even for a
-single Target), plus `rule`, `file`, and `line`. Warnings have
-`severity: "warning"`, string `rule` and `file`, and `line: int`. Errors have
-`severity: "error"` and null `rule`, `file`, and `line`. A warning shared by
-several Targets shows its first reporting Target in the preview but counts
-toward each contributing Target in `findings_by_target` (after deduplication
-and scope filtering, truncated findings included), so per-Target warning
-counts can sum past the distinct total. Errors count once per Target, without
-deduplication.
-
-`lint_report.json` is the full record:
-
-| Field | Contents |
-|---|---|
-| `targets`, `eda_tools` | The Targets and the linter used for each. |
-| `passed`, `elapsed_s`, `total_warnings` | Whether lint is clean, duration, and the number of distinct findings. `passed` is false whenever there are findings, even when `warnings_as_errors = false` lets the CLI exit `0`. |
-| `warnings[]` | One `rule`, `file`, `line`, `message`, and sorted `targets` (the Targets that reported it) per distinct finding. `eda_tools` maps each Target to its linter when the findings come from more than one EDA tool family. |
-| `errors[]` | `target` and `message` for each Target that could not be linted. |
-| `target_results[]` | Per Target: `target`, `eda_tool`, raw `warnings` count (before deduplication and `--scope`), `files_linted`, `toplevel`, `toplevel_linted`, `duration_s`, `error`, and `log`. |
-| `artifacts` | The report and per-Target logs. |
-
-The invocation `report.json` puts `targets`, `eda_tools`, `total_warnings`,
-and artifact references in `detail`. Individual `warnings[]` and
-`target_results[]` remain in `lint_report.json`, rather than in that Job detail.
+- A warning reported by several Targets shows its first Target in the preview
+  but counts toward each of them in `findings_by_target`, so per-Target counts
+  can sum past `findings_total`. Errors count once per Target.
+- `passed` in `lint_report.json` is false whenever there are findings, even when
+  `warnings_as_errors = false` lets the CLI exit `0`.
 
 ## `synth`
 
-`synth_<target>.json` (a qualified selector becomes a sanitized file name with
-a hash suffix):
+`synth_<slug>.json`, also published as `synth/<N>/targets/<slug>.json`, is the
+per-Target report. Its `artifacts.live_dirs` are mutable work directories that
+the next run overwrites; read the numbered copies of the STA reports
+(`artifacts/synth_<slug>/timing/`) instead.
 
-| Field | Contents |
-|---|---|
-| `target`, `eda_tool`, `synth_mode` | The Target, the tool, and logical or physical mode. |
-| `passed`, `elapsed_s`, `returncode`, `timed_out`, `termination`, `infra_error`, `has_metrics` | The verdict and how the run ended. |
-| `yosys_complete`, `timing_complete`, `structural_checks_complete`, `ppa_complete`, `peak_rss_mb` | Which stages finished, and peak memory. |
-| `area_um2`, `area_source`, `area_kge`, `cells` | Area and cell count. |
-| `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry has `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. Logical mode reports `estimated_fmax_mhz` instead. |
-| `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical`. |
-| `total_warnings`, `warning_summary` | Warning count, plus `unique_warnings` and counts grouped by tool, category, and disposition, with a few sample messages. |
-| `baseline`, `delta_pct`, `timing_delta_pct` | With `--baseline`: the baseline's metrics and the deltas. `baseline.ref` is the compared revision. `baseline.timing_unavailable` says why no baseline timing reports were kept (none were written, or they could not be published). |
-| `baseline_target`, `candidate_target` | Selectors of the compared Targets. |
-| `baseline_target_identity`, `candidate_target_identity` | Their full FuseSoC identities. |
-| `run_evidence`, `baseline_run_evidence` | Source and recipe provenance for each side. |
-| `failure_output`, `io_bound_critical` | A failure excerpt, and whether the critical path runs through I/O. |
-| `openroad_reuse` | Present only when OpenROAD was reused: `producer_run_id` and `producer_started_at` of the run whose OpenROAD results these are. On such a run `elapsed_s` and `peak_rss_mb` cover this run's own work (Yosys), not the producer's OpenROAD. |
-| `artifacts` | The report, run log, build directory, and timing directory. With `--baseline`, `baseline_timing` is the copy of whatever STA reports the baseline run wrote, at `artifacts/synth_<target>/baseline_timing/` in this invocation. |
-
-Actionable warnings set `grade: "warn"` but keep `passed: true`. Known-benign
-warnings are still counted, with a rationale. `artifacts.log` has every raw
-message.
+Actionable warnings (dispositions `advisory` and `structural`) set
+`implementation.status.grade` to `warn` but keep `passed: true`. Located
+frontend warnings are counted too and never set `warn`.
 
 ## `fpga`
 
-`fpga_<target>.json`:
+`fpga_<slug>.json`, also published as `fpga/<N>/targets/<slug>.json`, is the
+per-Target report; the tool is always Vivado. On an implementation-cache hit
+(`cached: true`), `run_evidence` describes the run that produced the cached
+results, and `cache_consumer_run_id` is this run's ID.
 
-| Field | Contents |
-|---|---|
-| `target`, `eda_tool` | The Target; the tool is always Vivado. |
-| `passed`, `returncode`, `timed_out`, `infra_error` | The verdict and how the run ended. |
-| `cached`, `cache_fingerprint` | Whether results came from the implementation cache, and the cache key. |
-| `metrics` | `lut_count`, `ff_count`, `bram_count`, `dsp_count`, `wns_ns`, `whs_ns`, `per_clock`, `latches`, `comb_loops`, `multi_driven`, `elapsed_s`, `cached`, `cache_fingerprint`, `failure_output`, `log_path`, and `artifacts`. Each clock has `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. |
-| `baseline_ref`, `baseline_metrics` | With `--baseline`: the baseline revision and the same metrics, without artifact paths. |
-| `recipe_fingerprint`, `recipe_snapshot`, `run_evidence` | The implementation recipe and provenance for this run. |
-| `baseline_recipe_fingerprint`, `baseline_recipe_snapshot`, `baseline_run_evidence` | The same for the baseline. |
-| `cache_consumer_run_id` | Set when this run reused another run's cached results. |
-| `baseline_target`, `candidate_target` | Selectors of the compared Targets. |
-| `baseline_target_identity`, `candidate_target_identity` | Their full FuseSoC identities. |
-| `artifacts` | The report, run log, and build, synthesis, and implementation directories. |
+## `mutation`
 
-The invocation `report.json` keeps per-Target metrics in
-`detail.implementation.results.<target>.metrics`, alongside `status` and
-`conditions`. The top-level `metrics` above belongs to the per-Target side report.
+Each run takes the next number `N` under `<report-root>/mutation/`. The
+invocation `report.json` carries the verdict, and `campaign/` holds the
+durable evidence of the one campaign:
 
-The baseline and candidate may use different PPA profiles, but a comparison is
-refused when their measurement recipes differ.
+```text
+<report-root>/mutation/<N>/
+  report.json
+  campaign/
+    manifest.json            run identity, baseline and per-Mutant status
+    mutation-specs.md        every Mutant: operator, file:line, original, mutated
+    mutation-results.md      the outcome of each Mutant
+    baseline.log             pristine baseline simulator output
+    mutant-logs/             one simulator log per tested Mutant
+    variants/mutant_<i>/...  the mutated source of each Mutant
+```
+
+A run without a report directory keeps the variants only under the Booley
+Directory's `.runtime/mutation/` scratch tree. A run passes when
+`detected >= min_detected`.

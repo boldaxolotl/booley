@@ -22,6 +22,8 @@ from unittest.mock import patch
 
 import pytest
 from tests.conftest import add_git_command_config
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.dev_support import pre_push_hook
 from booley.dev_support.pre_push_hook import main
@@ -37,14 +39,7 @@ def _git(repo: Path, *args: str, **env_overrides: str) -> str:
         "PATH": os.environ.get("BOOLEY_TEST_GIT_PATH", "/usr/bin:/bin:/usr/local/bin"),
         **env_overrides,
     }
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-        env=env,
-        timeout=30,
-    )
+    proc = run_bounded_child(["git", "-C", str(repo), *args], env=env, check=True)
     return proc.stdout.strip()
 
 
@@ -390,17 +385,10 @@ def actual_git(request, monkeypatch):
                 "optional minimum Git matrix requires BOOLEY_TEST_MIN_GIT; not local gate evidence"
             )
         assert Path(executable).is_absolute() and Path(executable).is_file()
-        version = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, timeout=10, check=True
-        )
+        version = run_bounded_child([executable, "--version"], check=True)
         assert re.fullmatch(r"git version 2\.37\.2(?:\.windows\.\d+)?\n?", version.stdout)
-        probe = subprocess.run(
-            [executable, "--no-lazy-fetch", "--version"],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-        assert probe.returncode == 129 and b"unknown option: --no-lazy-fetch" in probe.stderr
+        probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"])
+        assert probe.returncode == 129 and "unknown option: --no-lazy-fetch" in probe.stderr
         print(f"minimum Git receipt: {Path(executable).resolve()} {version.stdout.strip()}")
     assert executable
     path = str(Path(executable).resolve().parent) + os.pathsep + os.environ.get("PATH", "")
@@ -499,9 +487,7 @@ def test_minimum_git_partial_state_preflight(
         }[state]
         _git(repo, "config", key, "false" if state != "partial" else "origin")
     executable = shutil.which("git")
-    probe = subprocess.run(
-        [executable, "--no-lazy-fetch", "--version"], capture_output=True, timeout=10, check=False
-    )
+    probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"])
     if probe.returncode == 0:
         # The current capability safely inspects local complete objects; file
         # authority preflight remains strict on this path (tested separately).
@@ -715,7 +701,7 @@ def test_deep_history_oldest_leak_and_bounded_batches(
     "trail",
     [
         "Co-Authored-By: Cursor Agent <cursor@example.test>",
-        "Generated with Cursor",
+        "Generated with Copilot",
         "Generated with GPT-5",
         "llm metadata",
     ],
@@ -989,12 +975,8 @@ def test_real_blobless_clone_missing_committed_symlink_never_fetches(
     _git(repo, "clone", "--filter=blob:none", "--no-checkout", upstream.as_uri(), str(clone))
     _enable_stealth(clone / ".booley")
     monkeypatch.chdir(clone)
-    absent_before = subprocess.run(
-        ["git", "--no-lazy-fetch", "cat-file", "-e", blob],
-        cwd=clone,
-        capture_output=True,
-        check=False,
-        timeout=10,
+    absent_before = run_bounded_child(
+        ["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone
     )
     assert absent_before.returncode != 0
     before = {
@@ -1012,13 +994,7 @@ def test_real_blobless_clone_missing_committed_symlink_never_fetches(
     }
     assert before == after
     assert '"fetch"' not in trace.read_text()
-    absent = subprocess.run(
-        ["git", "--no-lazy-fetch", "cat-file", "-e", blob],
-        cwd=clone,
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
+    absent = run_bounded_child(["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone)
     assert absent.returncode != 0
 
 
@@ -1858,6 +1834,7 @@ def test_minimum_git_upstream_ancestry_has_bounded_output(
             "committer Real Dev <dev@example.com> 1700000000 +0000\n"
             f"data 13\nupstream work\nfrom {parent}\n\n"
         )
+    # Kept on subprocess.run: the helper cannot feed stdin data.
     subprocess.run(
         ["git", "fast-import", "--quiet"],
         cwd=repo,
@@ -1865,7 +1842,7 @@ def test_minimum_git_upstream_ancestry_has_bounded_output(
         input="".join(records).encode("utf-8"),
         check=True,
         capture_output=True,
-        timeout=30,
+        timeout=hang_guard_s(),
     )
     upstream = _clone_upstream(repo)
     _git(upstream, "update-ref", "-d", "refs/heads/main")
@@ -2315,3 +2292,79 @@ def test_local_destination_history_preserved(repo, monkeypatch, capsys, case):
         assert _git(repo, "rev-parse", "refs/remotes/destination/main") == tip
     assert _push(tip, old) == 1
     assert forbidden[:12] in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Remote ref names (issue #3608)
+# ---------------------------------------------------------------------------
+
+
+def _ref_line(local_ref: str, remote_ref: str, repo: Path, *, delete: bool = False) -> str:
+    """One pre-push protocol line; a deletion carries the all-zero local object."""
+    local = _ZERO_SHA if delete else _head(repo)
+    old = _head(repo) if delete else _ZERO_SHA
+    return f"{local_ref} {local} {remote_ref} {old}\n"
+
+
+@pytest.mark.parametrize(
+    ("local_ref", "remote_ref", "delete", "blocked"),
+    [
+        pytest.param("refs/heads/main", "refs/heads/booley/s1", False, True, id="branch"),
+        pytest.param("refs/tags/v1", "refs/tags/booley-v1", False, True, id="tag"),
+        pytest.param("refs/heads/main", "refs/for/booley", False, True, id="other-namespace"),
+        pytest.param("(delete)", "refs/heads/booley/s1", True, False, id="deletion"),
+        pytest.param("(delete)", "refs/tags/booley-v1", True, False, id="tag-deletion"),
+        pytest.param(
+            "refs/heads/booley/s1", "refs/heads/wt/s1", False, False, id="renamed-to-clean-name"
+        ),
+        pytest.param("refs/heads/main", "refs/heads/main", False, False, id="clean"),
+    ],
+)
+def test_ref_name_check(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    local_ref: str,
+    remote_ref: str,
+    delete: bool,
+    blocked: bool,
+) -> None:
+    monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+    line = _ref_line(local_ref, remote_ref, repo, delete=delete)
+    if blocked:
+        _forbid_discovery(monkeypatch)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(line))
+    assert main() == (1 if blocked else 0)
+    error = capsys.readouterr().err
+    if blocked:
+        assert f"{remote_ref}: booley" in error
+        assert "git push <remote> <local>:<new-name>" in error
+    else:
+        assert "banned" not in error
+
+
+def test_ref_name_check_only_scans_the_name_below_the_namespace(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git's own `refs/heads/` words are not user content."""
+    (repo / ".booley" / "booley.toml").write_text(
+        '[stealth]\nenabled = true\nbanned_words = ["heads", "tags"]\n', encoding="utf-8"
+    )
+    monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+    for ref in ("refs/heads/main", "refs/tags/v1"):
+        monkeypatch.setattr(sys, "stdin", io.StringIO(_ref_line(ref, ref, repo)))
+        assert main() == 0
+
+
+@pytest.mark.parametrize("mode", ["stealth-off", "skip-env"])
+def test_ref_name_check_is_skipped(repo: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    if mode == "stealth-off":
+        (repo / ".booley" / "booley.toml").write_text(
+            "[stealth]\nenabled = false\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_SKIP_PUSH_GUARD", "1")
+    line = _ref_line("refs/heads/main", "refs/heads/booley/s1", repo)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(line))
+    assert main() == 0

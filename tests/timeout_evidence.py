@@ -31,11 +31,13 @@ from typing import Any, TextIO
 
 import pytest
 
+from tests.time_budget import scaled
+
 # Weak references: a strong registry would keep each Popen's pipes open and
 # could stop a child from ever seeing stdin EOF.
 _CHILDREN: weakref.WeakSet[subprocess.Popen[Any]] = weakref.WeakSet()
 _CHILDREN_LOCK = threading.Lock()
-_LOCK_WAIT_SECONDS = 1.0
+_LOCK_WAIT_SECONDS = 1.0  # base seconds; scaled at use
 
 
 def _utc_now() -> str:
@@ -92,7 +94,7 @@ def _command_args(popen: subprocess.Popen[Any]) -> str | list[str]:
 
 def _child_evidence() -> list[dict[str, Any]]:
     """Describe each unreaped child without blocking on it."""
-    if not _CHILDREN_LOCK.acquire(timeout=_LOCK_WAIT_SECONDS):
+    if not _CHILDREN_LOCK.acquire(timeout=scaled(_LOCK_WAIT_SECONDS)):
         raise TimeoutError("child registry lock is held")
     try:
         popens = list(_CHILDREN)
@@ -222,7 +224,7 @@ def pytest_testnodedown(node: Any, error: object | None) -> None:
     exit_code = None
     if process is not None:
         with suppress(subprocess.TimeoutExpired):
-            exit_code = process.wait(timeout=5)
+            exit_code = process.wait(timeout=scaled(5))
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
     metadata = {"worker": node.gateway.id, "exit_code": exit_code, "error": str(error)}

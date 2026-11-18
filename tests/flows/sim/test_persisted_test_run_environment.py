@@ -8,25 +8,27 @@ integration do not own. The export renderer refuses anything else again.
 
 from __future__ import annotations
 
-import os
 import shlex
-import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from booley.config.tests_toml_rules import TestRunNameError
-from booley.flows.sim.campaign.projection import _validate_test_runs
-from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
-from booley.flows.sim.campaign.test_run_binding import observation_test_runs
-from booley.flows.sim.campaign.test_run_report import _manifest_test_runs
+
+# Private seam: each decoder is the unit; resume, its only public caller, needs a prior record.
 from booley.flows.sim.execution.engine import _export_line
-from booley.flows.sim.flow import _manifest_run_groups
+from booley.flows.sim.flow_resume import _manifest_run_groups
+from booley.flows.sim.record.projection import _validate_test_runs
+from booley.flows.sim.record.test_run_binding import observation_test_runs, work_item_test_runs
+
+# Private seam: the manifest decoder is the unit under test; resume is its only public caller.
+from booley.flows.sim.record.test_run_report import _manifest_test_runs
 from booley.flows.test_runs import (
     build_test_run,
     declared_inputs_fingerprint,
     test_run_from_document,
 )
+from tests.subprocess_budget import run_bounded_child
 
 _HOSTILE = ["X; id #", "A B", "$(id)", "A=B", "1X", "", "X\nY", "`id`"]
 _RESERVED = ["BOOLEY_TARGET", "COCOTB_RANDOM_SEED", "RANDOM_SEED", "PYTHONPATH", "MODULE"]
@@ -63,7 +65,7 @@ def test_every_decoder_of_a_persisted_test_run_refuses_the_name(name: str):
     with pytest.raises(ValueError, match="Test Run environment"):
         _validate_test_runs([{**record, "grade": "pass"}])
     with pytest.raises(ValueError, match="Test Run environment"):
-        _work_item_test_runs(item)
+        work_item_test_runs(item)
     with pytest.raises(ValueError, match="Test Run environment"):
         _manifest_test_runs(manifest)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Test Run environment"):
@@ -88,12 +90,8 @@ def test_a_valid_environment_renders_shell_safe_exports(value: str):
     line = _export_line("FAULT_MODE", value)
 
     assert shlex.split(line) == ["export", f"FAULT_MODE={value}"]
-    shown = subprocess.run(
+    shown = run_bounded_child(
         ["sh", "-c", f'{line} && printf %s "$FAULT_MODE"'],
-        capture_output=True,
-        text=True,
-        # MSYS sh spawns slowly on a loaded Windows runner; this only guards a hang.
-        timeout=60 if os.name == "nt" else 10,
         check=True,
     )
     assert shown.stdout == value

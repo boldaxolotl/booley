@@ -51,7 +51,10 @@ def test_text_tails_and_whole_line_deduplication(monkeypatch):
     text = ReportEncoder().text_result(1, "noise\nRESULT: FAIL", "warning", report)
 
     assert text.startswith("EXIT_CODE: 1")
-    assert "truncated, showing last 13 bytes" in text
+    assert (
+        "... (truncated: at least 5 earlier bytes dropped, showing last 13 bytes; "
+        "the cap is fixed \u2014 narrow the request rather than rerun it)\n"
+    ) in text
     assert text.count("RESULT: FAIL") == 1
     assert "detail.reason: invalid design" in text
 
@@ -141,6 +144,23 @@ def test_sim_projection_and_live_oversize_keep_nonterminal_semantics():
     assert report == before
     small = ReportEncoder().structured_report({"flow": "sim", "cycle_counts": {"dut": 123}})
     assert small == {"reports": [{"flow": "sim"}]}
+
+
+def test_sim_projection_drops_the_per_test_run_metrics_of_each_record():
+    report = {
+        "flow": "sim",
+        "detail": {
+            "records": {
+                "dut": {"grade": "pass", "metrics": {"per_test": {"cycle_count": {"t": 1}}}}
+            }
+        },
+    }
+    before = copy.deepcopy(report)
+    payload = ReportEncoder().structured_report(report)
+    assert payload == {
+        "reports": [{"flow": "sim", "detail": {"records": {"dut": {"grade": "pass"}}}}]
+    }
+    assert report == before  # the stored report keeps them
 
 
 @pytest.mark.parametrize("report", [None, {}, {"flow": object()}])

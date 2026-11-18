@@ -50,6 +50,7 @@ from pathlib import Path
 
 from booley.config.gateway import (
     GATEWAY_AUTH,
+    VISITOR_AUTH,
     GatewayConfigError,
     gateway_settings_from_env,
 )
@@ -266,7 +267,7 @@ def _gateway_credential(app: str) -> EffectiveCredential | None:
 
 
 def effective_credential(
-    app: str = APP_CLAUDE, policy: str = "auto", *, home: Path | None = None
+    app: str = APP_CLAUDE, policy: str = "subscription", *, home: Path | None = None
 ) -> EffectiveCredential | None:
     """Resolve which credential *app*'s agents would actually use under *policy*.
 
@@ -279,7 +280,7 @@ def effective_credential(
 
 
 def login_credential(
-    app: str, policy: str = "auto", *, home: Path | None = None
+    app: str, policy: str = "subscription", *, home: Path | None = None
 ) -> EffectiveCredential | None:
     """The credential *app* is logged in with under *policy*, or ``None``; no network call.
 
@@ -297,7 +298,7 @@ def login_credential(
     return credential
 
 
-def cli_logged_in(app: str, policy: str = "auto", *, home: Path | None = None) -> bool:
+def cli_logged_in(app: str, policy: str = "subscription", *, home: Path | None = None) -> bool:
     """Whether *app* has a login its agents could use under *policy*."""
     return login_credential(app, policy, home=home) is not None
 
@@ -307,8 +308,8 @@ def _native_credential(
 ) -> EffectiveCredential | None:
     """Resolve which credential *app*'s agents would actually use, CLI-style.
 
-    *policy* is the project's ``[agent] auth`` knob. ``auto`` models the bare
-    CLI precedence below. ``subscription`` resolves as if the API-key env var
+    *policy* is the project's ``[agent] auth`` knob. The Sandbox's ``visitor`` models the
+    bare CLI precedence below. ``subscription`` resolves as if the API-key env var
     were scrubbed (which is what Booley does to agent envs under that policy);
     for Codex the API key IS the rotation-free credential, so only the login
     file remains. ``api_key`` resolves the API key alone — ``None`` then means
@@ -475,9 +476,17 @@ CREDENTIAL_ENV_KEYS = frozenset(
 CREDENTIAL_SCHEMA = "1"
 
 
+def defers_to_cli(policy: str) -> bool:
+    """Whether *policy* leaves the credential choice to the CLI's own precedence.
+
+    Only the env-only ``visitor`` mode does; ``auto`` is retired and defers to nothing.
+    """
+    return policy == VISITOR_AUTH
+
+
 def subscription_available(app: str, policy: str, path: Path) -> bool:
     """Inspect explicit-policy login material without exposing its contents."""
-    if policy == "auto":
+    if defers_to_cli(policy):
         return path.is_file()
     if not path.exists():
         return False
@@ -507,7 +516,7 @@ def subscription_available(app: str, policy: str, path: Path) -> bool:
 
 def allowed_credential_keys(app: str, policy: str) -> frozenset[str]:
     """Deterministic transport permissions, independent of shell exports."""
-    if policy not in {"auto", "subscription", "api_key", GATEWAY_AUTH}:
+    if policy not in {VISITOR_AUTH, "subscription", "api_key", GATEWAY_AUTH}:
         raise ValueError("invalid credential policy; refresh the Sandbox")
     if app not in CREDENTIALS or policy == GATEWAY_AUTH:
         return frozenset()
@@ -517,7 +526,7 @@ def allowed_credential_keys(app: str, policy: str) -> frozenset[str]:
         return frozenset({ENV_VAR}) if app == APP_CLAUDE else frozenset()
     allowed = {API_KEY_ENV[app], CREDENTIALS[app].env_var}
     if app == APP_CLAUDE:
-        # ``auto`` leaves the CLI's own precedence untouched, bearer included.
+        # ``visitor`` leaves the CLI's own precedence untouched, bearer included.
         allowed |= SCRUB_ONLY_ENV_KEYS
     return frozenset(allowed)
 
@@ -551,10 +560,10 @@ class CredentialPlan:
         if self.policy == GATEWAY_AUTH and self.selected is None:
             if self.app != APP_CODEX:
                 raise ValueError(
-                    f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] provider = 'codex'"
+                    f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] default = 'codex'"
                 )
             gateway_settings_from_env()  # raises GatewayConfigError naming the variable
-        if self.policy != "auto" and self.selected is None:
+        if not defers_to_cli(self.policy) and self.selected is None:
             raise ValueError(
                 f"{self.app}: no usable credential under auth = '{self.policy}'; provide that credential and refresh the Sandbox"
             )
@@ -562,7 +571,7 @@ class CredentialPlan:
 
 def inspect_config_seed(path: Path, policy: str) -> None:
     """Refuse ambiguous auth-bearing Claude config; never edit host config."""
-    if policy == "auto" or not path.exists():
+    if defers_to_cli(policy) or not path.exists():
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -579,7 +588,7 @@ def inspect_config_seed(path: Path, policy: str) -> None:
 
 
 def credential_plan(
-    app: str = APP_CLAUDE, policy: str = "auto", *, home: Path | None = None
+    app: str = APP_CLAUDE, policy: str = "subscription", *, home: Path | None = None
 ) -> CredentialPlan:
     """Resolve once, keeping secrets out of repr and serialized metadata."""
     allowed = allowed_credential_keys(app, policy)
@@ -624,7 +633,7 @@ def credential_plan(
     )
 
 
-def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
+def link_codex_auth(source: Path, destination: Path, policy: str = "subscription") -> None:
     """Make a Booley-owned private auth entry a link to the real login.
 
     A link, not a copy: Codex rotates ``auth.json`` in place, so a copy would
@@ -632,7 +641,7 @@ def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> No
     the policy excludes the login, or it is missing, no entry remains.
     """
     allowed_credential_keys(APP_CODEX, policy)
-    allowed = policy == "auto" or (
+    allowed = defers_to_cli(policy) or (
         policy == "subscription" and subscription_available(APP_CODEX, policy, source)
     )
     if not (source.is_file() and allowed):
@@ -666,3 +675,17 @@ def credential_warnings(plan: CredentialPlan) -> tuple[str, ...]:
             "Claude config records interactive API-key approval/rejection state; source selection does not attest interactive approval",
         )
     return ()
+
+
+def missing_credential_fix(cli: str, policy: str) -> str:
+    """The sign-in that *policy* accepts for *cli* (see ``allowed_credential_keys``)."""
+    if cli == APP_CLAUDE:
+        if policy == "api_key":
+            return f"export {API_KEY_ENV[cli]}"
+        return "run claude and use /login, or on the host: booley auth --cli claude"
+    host_login = f"booley auth --cli {cli}"
+    if policy == "subscription":
+        return "codex login"
+    if policy == "api_key":
+        return f"export {API_KEY_ENV[cli]}, or on the host: {host_login}"
+    return f"codex login, or on the host: {host_login}"

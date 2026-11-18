@@ -14,12 +14,12 @@ import time
 import tracemalloc
 from pathlib import Path
 
-from booley.flows.sim.coverage_campaign_store import (
-    load_coverage_campaign,
-    publish_coverage_campaign,
-)
 from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-from tests.flows.sim.coverage_scale_fixture import scale_campaign
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+    publish_coverage_record,
+)
+from tests.flows.sim.coverage_scale_fixture import scale_coverage_record
 
 WORKER_TIMEOUT_SECONDS = 300
 SAMPLE_TIMEOUT_SECONDS = WORKER_TIMEOUT_SECONDS + 60
@@ -36,12 +36,12 @@ def _measure(call):
     return result, elapsed, peak
 
 
-def _worker(campaign_path: Path, point_count: int) -> dict[str, object]:
-    loaded, load_seconds, load_peak = _measure(lambda: load_coverage_campaign(campaign_path))
+def _worker(coverage_record_path: Path, point_count: int) -> dict[str, object]:
+    loaded, load_seconds, load_peak = _measure(lambda: load_coverage_record(coverage_record_path))
     session, session_seconds, session_peak = _measure(
-        lambda: CoverageEvidenceSession(loaded.campaign, None)
+        lambda: CoverageEvidenceSession(loaded.coverage_record, None)
     )
-    point_id = loaded.campaign.points[point_count // 2].id
+    point_id = loaded.coverage_record.points[point_count // 2].id
     _, exact_seconds, exact_peak = _measure(
         lambda: session.query({"view": "points", "point_ids": [point_id], "limit": 1})
     )
@@ -62,7 +62,7 @@ def _worker(campaign_path: Path, point_count: int) -> dict[str, object]:
     reference = loaded.summary.point_store
     assert reference is not None
     return {
-        "campaign_id": loaded.campaign.campaign_id,
+        "coverage_record_id": loaded.coverage_record.coverage_record_id,
         "points": point_count,
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -91,9 +91,9 @@ def _resident_kib(process_id: int) -> int:
     return 0
 
 
-def _sample(campaign_path: Path, point_count: int) -> dict[str, object]:
+def _sample(coverage_record_path: Path, point_count: int) -> dict[str, object]:
     analyzer, analyzer_load_seconds, analyzer_load_peak = _measure(
-        lambda: load_coverage_campaign(campaign_path)
+        lambda: load_coverage_record(coverage_record_path)
     )
     command = [
         sys.executable,
@@ -102,8 +102,8 @@ def _sample(campaign_path: Path, point_count: int) -> dict[str, object]:
         "--worker",
         "--points",
         str(point_count),
-        "--campaign",
-        str(campaign_path),
+        "--record",
+        str(coverage_record_path),
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.monotonic() + WORKER_TIMEOUT_SECONDS
@@ -123,13 +123,14 @@ def _sample(campaign_path: Path, point_count: int) -> dict[str, object]:
                 command, WORKER_TIMEOUT_SECONDS, output=stdout, stderr=stderr
             )
         time.sleep(RSS_SAMPLE_INTERVAL_SECONDS)
+    # Kept on Popen: standalone script outside pytest, cannot import the test helper.
     stdout, stderr = process.communicate(timeout=5)
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
     evidence = json.loads(stdout)
     evidence_peak_rss = max(evidence_peak_rss, int(evidence["evidence_process_max_rss_kib"]))
     analyzer_peak_rss = max(analyzer_peak_rss, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    assert analyzer.campaign.campaign_id == evidence["campaign_id"]
+    assert analyzer.coverage_record.coverage_record_id == evidence["coverage_record_id"]
     return {
         **evidence,
         "analyzer_load_seconds": analyzer_load_seconds,
@@ -143,18 +144,19 @@ def _sample(campaign_path: Path, point_count: int) -> dict[str, object]:
 def _controller(point_count: int, samples: int) -> None:
     command = [sys.executable, "-m", "tests.performance.coverage_query_profile"]
     with tempfile.TemporaryDirectory(prefix="booley-coverage-profile-") as raw_directory:
-        campaign_path = publish_coverage_campaign(
-            Path(raw_directory), scale_campaign(point_count)
-        ).campaign
+        coverage_record_path = publish_coverage_record(
+            Path(raw_directory), scale_coverage_record(point_count)
+        ).coverage_record
         for sample in range(samples):
+            # Kept on subprocess.run: standalone script outside pytest, cannot import the test helper.
             completed = subprocess.run(
                 [
                     *command,
                     "--sample-process",
                     "--points",
                     str(point_count),
-                    "--campaign",
-                    str(campaign_path),
+                    "--record",
+                    str(coverage_record_path),
                 ],
                 check=False,
                 capture_output=True,
@@ -171,21 +173,21 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--points", type=int, required=True)
     parser.add_argument("--samples", type=int, default=3)
-    parser.add_argument("--campaign", type=Path)
+    parser.add_argument("--record", dest="coverage_record", type=Path)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sample-process", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.points <= 0 or args.samples <= 0:
         parser.error("points and samples must be positive")
     if args.worker:
-        if args.campaign is None:
-            parser.error("--campaign is required with --worker")
-        print(json.dumps(_worker(args.campaign, args.points), sort_keys=True))
+        if args.coverage_record is None:
+            parser.error("--record is required with --worker")
+        print(json.dumps(_worker(args.coverage_record, args.points), sort_keys=True))
         return
     if args.sample_process:
-        if args.campaign is None:
-            parser.error("--campaign is required with --sample-process")
-        print(json.dumps(_sample(args.campaign, args.points), sort_keys=True))
+        if args.coverage_record is None:
+            parser.error("--record is required with --sample-process")
+        print(json.dumps(_sample(args.coverage_record, args.points), sort_keys=True))
         return
     _controller(args.points, args.samples)
 

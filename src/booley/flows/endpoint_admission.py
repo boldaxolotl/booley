@@ -2,26 +2,37 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import sys
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from booley.config.jobs import parse_caps
+from booley.config.jobs import SeatCapError, required_seats
 from booley.core.boundary import as_float
 from booley.flows.endpoint_events import (
     _endpoint_progress_event,
     _write_display_event,
 )
 from booley.flows.endpoint_session import PreparedExecution
-from booley.runtime import job_slots
+from booley.flows.memory_admission import (
+    MemoryAdmissionPlan,
+    MemorySizing,
+    fixed_job_threads,
+    job_threads_at_start,
+)
+from booley.flows.reservation_phases import PhasePlan, ReservationShrinker, shrinking
+from booley.runtime import job_slots, oom_priority
 from booley.runtime.booley_dir import resolve_common_booley_dir
+from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
+    OOM_REQUEUE_REASON,
     EndpointOutcome,
     EndpointRejectedError,
 )
@@ -32,7 +43,6 @@ from booley.runtime.supervised_execution import no_cancellation_cause
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
-    from booley.targets.domain import TargetHandle
 
 
 logger = logging.getLogger(__name__)
@@ -46,31 +56,33 @@ class AdmissionIdentityError(ValueError):
 class AdmissionContext:
     """Borrowed outer admission facts for one admitted endpoint invocation.
 
-    ``max_heavy`` is the store's heavy cap, used by Simulation Campaign
-    capacity; other endpoints ignore it.
+    A Simulation Record sizes lanes from the container's cores and admits
+    each work item by its own claim, once ``memory_sizing`` is set.
+    ``memory_warning`` is the warning that Job's result carries (it ran alone
+    because its estimate exceeded the Memory Budget, or the budget was
+    unavailable). ``memory_sizing`` lets a Job give each Simulation Record work item
+    its own claim, and is set for every managed admission (a Job's work items,
+    such as a mutation campaign's builds and simulations, take claims too).
     """
 
     mode: str
     slot_store: job_slots.SlotStore | None
     outer_token: object | None
-    max_heavy: int
     role: str
     execution_id: ExecutionId | None
     timeout_seconds: float | None
     cancellation: Callable[[], bool]
     cancellation_cause: Callable[[], str | None] = no_cancellation_cause
+    memory_warning: str | None = None
+    memory_sizing: MemorySizing | None = None
     parent_execution_id: ExecutionId = field(init=False)
 
     def __post_init__(self) -> None:
         if self.mode not in {"managed", "unmanaged"}:
             raise ValueError("admission mode must be managed or unmanaged")
-        if self.max_heavy < 1:
-            raise ValueError("admission max_heavy must be positive")
         managed = self.mode == "managed"
         if managed != (self.slot_store is not None and self.outer_token is not None):
             raise ValueError("managed admission requires a store and outer token")
-        if not managed and self.max_heavy != 1:
-            raise ValueError("unmanaged admission has exactly one logical lane")
         execution_id = _coerce_execution_id(self.execution_id)
         object.__setattr__(self, "execution_id", execution_id)
         object.__setattr__(
@@ -79,13 +91,60 @@ class AdmissionContext:
             execution_id or ExecutionId(uuid.uuid4().hex),
         )
 
+    def work_item_label(self, target: str, tests: Sequence[str]) -> job_slots.JobLabel | None:
+        """The label for a work item's claim: the Job's own, narrowed to the item.
+
+        ``None`` when the Job's claim carries no label, so the item's holder reads ``pid N``.
+        """
+        token = self.outer_token
+        label = token.job if isinstance(token, job_slots.SlotToken) else None
+        return None if label is None else label.for_work_item(target, tests)
+
+
+@dataclass(frozen=True, slots=True)
+class _Claim:
+    """What one Job's admission claimed; all ``None`` when nothing was claimed.
+
+    ``plan`` sized a memory-admitted Job's claim; ``threads`` is the Job's
+    share of the cores, fixed when its Memory Reservation is admitted. Only a
+    memory-admitted Job has either. ``sizing`` is what it lends its work items:
+    every managed claim has it.
+    """
+
+    store: job_slots.SlotStore | None
+    token: job_slots.SlotToken | None
+    plan: MemoryAdmissionPlan | None = None
+    threads: int | None = None
+    sizing: MemorySizing | None = None
+
 
 class AdmissionGate:
     """Lazy admission entered once, after Target authorization and the binding gate."""
 
-    def __init__(self, endpoint: EndpointState) -> None:
+    def __init__(
+        self,
+        endpoint: EndpointState,
+        prepared: PreparedExecution | None = None,
+        *,
+        requeued: bool = False,
+    ) -> None:
         self._endpoint = endpoint
+        # What the Job will run sizes its Memory Reservation; ``None`` is unknown.
+        self._prepared = prepared
+        # The Job's second attempt, after an OOM kill: it claims the memory to itself.
+        self._requeued = requeued
         self._entered = False
+
+    def _claim(self) -> _Claim:
+        """Claim the Job's admission: a Memory Reservation, or nothing for an unclassed endpoint.
+
+        Sim, synth, fpga, lint, Custom Flow, Specialist and Mutation Flow Jobs are
+        memory-admitted; the claim carries the plan that sized it.
+        """
+        endpoint = self._endpoint
+        if endpoint._memory_admitted():
+            return _acquire_memory_reservation(endpoint, self._prepared, requeued=self._requeued)
+        return _Claim(None, None)
 
     @contextmanager
     def enter(self) -> Iterator[AdmissionContext]:
@@ -93,56 +152,49 @@ class AdmissionGate:
             raise RuntimeError("AdmissionGate may be entered exactly once")
         self._entered = True
         store: job_slots.SlotStore | None = None
-        token: object | None = None
+        token: job_slots.SlotToken | None = None
         try:
             execution_id = _runtime_execution_id()
-            store, token = self._endpoint._acquire_job_slot()
+            claim = self._claim()
+            store, token = claim.store, claim.token
             token_execution_id = getattr(token, "execution_id", None)
             if token_execution_id is not None and token_execution_id != execution_id:
                 raise AdmissionIdentityError(
-                    f"managed Job Slot execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
+                    f"managed Memory Reservation execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
                 )
             role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
-            max_heavy = store.caps.max_heavy if store is not None else 1
             cause = _admission_cancellation_cause(store, token)
-            yield AdmissionContext(
-                mode="managed" if store is not None else "unmanaged",
-                slot_store=store,
-                outer_token=token,
-                max_heavy=max_heavy,
-                role=role,
-                execution_id=execution_id,
-                timeout_seconds=timeout,
-                cancellation=lambda: cause() is not None,
-                cancellation_cause=cause,
-            )
+            with ExitStack() as scope:
+                # Phase ends lower the claim only while the Job holds it.
+                memory_plan = claim.plan
+                if (
+                    memory_plan is not None
+                    and memory_plan.phases
+                    and memory_plan.claim.reservation_mb is not None
+                    and store is not None
+                    and isinstance(token, job_slots.SlotToken)
+                ):
+                    phase_plan = PhasePlan(memory_plan.phases, memory_plan.claim.reservation_mb)
+                    scope.enter_context(shrinking(ReservationShrinker(phase_plan, store, token)))
+                scope.enter_context(fixed_job_threads(claim.threads))
+                # Entered last, so ranking stops before the claim is released.
+                scope.enter_context(oom_priority.job_oom_priority(store, token))
+                yield AdmissionContext(
+                    mode="managed" if store is not None else "unmanaged",
+                    slot_store=store,
+                    outer_token=token,
+                    role=role,
+                    execution_id=execution_id,
+                    timeout_seconds=timeout,
+                    cancellation=lambda: cause() is not None,
+                    cancellation_cause=cause,
+                    memory_warning=None if memory_plan is None else memory_plan.warning,
+                    memory_sizing=claim.sizing,
+                )
         finally:
             if store is not None and token is not None:
                 store.release(token)
-
-
-def authorize_targets(
-    endpoint: EndpointState,
-    targets: tuple[TargetHandle, ...],
-) -> EndpointOutcome | None:
-    """Authorize the complete ordered Target tuple without acquiring admission."""
-    if not endpoint.state.strict_criteria or getattr(endpoint.args, "diagnostic", False):
-        return None
-    missing = [
-        target.selector
-        for target in targets
-        if not endpoint._bound_criterion_keys_for_target(target)
-    ]
-    if not missing:
-        return None
-    return EndpointOutcome(
-        exit_code=EXIT_ERROR,
-        report_text=(
-            f"{endpoint.name}: Goal Mode has no authorized Criterion binding for Target(s): "
-            + ", ".join(missing)
-        ),
-    )
 
 
 def _slot_timeout_seconds() -> float | None:
@@ -173,9 +225,9 @@ def _admission_cancellation_cause(
 
     def cause() -> str | None:
         if token.lease_health.lost.is_set():
-            return f"Job Slot lease lost: {slot}"
+            return f"Memory Reservation lease lost: {slot}"
         if store.token_absent(token):
-            return f"Job Slot token missing: {slot}"
+            return f"Memory Reservation missing: {slot}"
         return None
 
     return cause
@@ -183,142 +235,208 @@ def _admission_cancellation_cause(
 
 @contextmanager
 def admission(
-    endpoint: EndpointState, prepared: PreparedExecution
+    endpoint: EndpointState, prepared: PreparedExecution, *, requeued: bool = False
 ) -> Iterator[AdmissionContext | None]:
     """Gate, then hold one Flow-neutral admission through final reporting.
 
-    The same for every endpoint: a non-Flow endpoint passes its binding gate
-    first; a dry run takes no slot and yields ``None``; every other invocation
-    yields the borrowed ``AdmissionContext``, whose slot (if any) is released
-    when the invocation body ends, however it ends.
+    The same for every endpoint: a dry run takes no slot and yields ``None``;
+    every other invocation yields the borrowed ``AdmissionContext``, whose slot
+    (if any) is released when the invocation body ends, however it ends.
     """
-    if endpoint.endpoint_kind != "flow":
-        rejection = endpoint._criterion_binding_gate()
-        if rejection is not None:
-            raise EndpointRejectedError(rejection)
     if prepared.non_persisting_dry_run:
         yield None
         return
     with ExitStack() as held:
-        borrowed = _enter_admission(endpoint, held)
+        borrowed = _enter_admission(endpoint, held, prepared, requeued=requeued)
         endpoint._pre_run_head = endpoint._get_head_sha()
         yield borrowed
 
 
-def _enter_admission(endpoint: EndpointState, held: ExitStack) -> AdmissionContext:
+def _enter_admission(
+    endpoint: EndpointState,
+    held: ExitStack,
+    prepared: PreparedExecution | None = None,
+    *,
+    requeued: bool = False,
+) -> AdmissionContext:
     """Enter the gate on ``held``, mapping admission failures to a rejection.
 
     Only entry failures are mapped; exceptions raised later by the invocation
     body must pass through unchanged.
     """
     try:
-        return held.enter_context(AdmissionGate(endpoint).enter())
+        return held.enter_context(AdmissionGate(endpoint, prepared, requeued=requeued).enter())
     except (
-        job_slots.QueueFullError,
         job_slots.ClaimLostError,
         AdmissionIdentityError,
+        SeatCapError,
     ) as exc:
         raise EndpointRejectedError(_admission_rejection(endpoint, exc)) from exc
 
 
 def _admission_rejection(
     endpoint: EndpointState,
-    exc: job_slots.QueueFullError | job_slots.ClaimLostError | AdmissionIdentityError,
+    exc: job_slots.ClaimLostError | AdmissionIdentityError | SeatCapError,
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
-    if isinstance(exc, job_slots.QueueFullError):
-        logger.error("Job admission refused: %s", exc)
-        text = f"BLOCKED: {exc}. Retry when queued work drains."
-    elif isinstance(exc, job_slots.ClaimLostError):
-        logger.error("Queued %s run was cancelled before it started", endpoint.name)
+    if isinstance(exc, job_slots.ClaimLostError):
+        logger.debug("Queued %s run was cancelled before it started", endpoint.name)
         text = (
             f"CANCELLED: this queued '{endpoint.name}' run was "
             f"withdrawn (booley_cancel) before it started."
         )
+    elif isinstance(exc, SeatCapError):
+        logger.debug("%s admission refused: %s", endpoint.name, exc)
+        text = f"{endpoint.name}: {exc}"
     else:
-        logger.error(
+        logger.debug(
             "%s admission refused: invalid %s: %s", endpoint.name, RUNTIME_EXECUTION_ENV, exc
         )
         text = f"{endpoint.name}: invalid {RUNTIME_EXECUTION_ENV}: {exc}"
     return EndpointOutcome(exit_code=EXIT_ERROR, report_text=text)
 
 
-def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | None, object | None]:
-    """Claim this run's admission slot, waiting in queue order if needed.
+def _admission_root(endpoint: EndpointState) -> tuple[Path | None, Path] | None:
+    """The Main Booley Directory and slot store root, or ``None`` when nothing is claimed.
 
-    Returns ``(store, token)`` to release in main()'s finally, or
-    ``(None, None)`` when no admission applies: the endpoint is unclassed, the
-    parent process already holds this run's slot (``INHERITED_SLOT_ENV``;
-    claiming again would double-count it and deadlock at a cap of 1), or
-    no runtime is configured (bare invocations outside a project keep
-    working unguarded). Raises QueueFullError when the class queue is at
-    ``queue_max`` — the only admission outcome surfaced as BLOCKED.
+    Nothing is claimed when the parent process already holds this run's slot
+    (``INHERITED_SLOT_ENV``; claiming again would double-count it and wait
+    behind its own parent) or no runtime is configured.
     """
-    job_class = endpoint._resolve_job_class()
-    if job_class is None:
-        return (None, None)  # unclassed: skip even the store lookup
     inherited = os.environ.get(job_slots.INHERITED_SLOT_ENV)
     if inherited:
-        logger.debug("%s runs under its parent's %s slot", endpoint.name, inherited)
-        return (None, None)
+        logger.debug("%s runs under its parent's %s Memory Reservation", endpoint.name, inherited)
+        return None
     try:
         project = resolve_common_booley_dir()
     except (OSError, ValueError, RuntimeError):
         project = None
     root = job_slots.slots_dir(project)
-    if root is None:
-        return (None, None)
+    return None if root is None else (project, root)
 
-    # Caps must come from the SAME project the slot store belongs to: the Main
-    # Booley Directory (Common Booley State), never work_dir or a linked
-    # worktree's diverged booley.toml.
-    caps = parse_caps(load_job_budget_config(booley_dir=project))
-    role = job_slots.ROLE_INTERACTIVE
-    # Claim identity is this live process: record the argv exactly as
-    # /proc reports it so the ghost guards can match it later.
-    pid = os.getpid()
-    argv = _proc_cmdline(pid) or []
 
-    store = job_slots.SlotStore(root, caps)
+def _holder_deadline_seconds() -> float | None:
+    """Holder deadline for the reaper (``job_slots._is_stale``).
 
-    # Holder deadline for the reaper (job_slots._is_stale): the MCP
-    # dispatch layer exports its real watchdog budget; 2x headroom keeps
-    # the deadline a strict upper bound of any legitimate run (reaping a
-    # LIVE holder frees an occupied slot → overcommit), while a wedged
-    # unsupervised holder is still reclaimed eventually. Bare CLI runs
-    # have no exported budget and keep no deadline — they are
-    # user-supervised, and the PID guards still apply.
-    timeout_s: float | None = None
+    The MCP dispatch layer exports its real watchdog budget; 2x headroom keeps
+    the deadline a strict upper bound of any legitimate run (reaping a LIVE
+    holder frees an occupied slot, which overcommits), while a wedged
+    unsupervised holder is still reclaimed eventually. Bare CLI runs have no
+    exported budget and keep no deadline: they are user-supervised, and the PID
+    guards still apply.
+    """
     env_budget = os.environ.get("BOOLEY_SLOT_TIMEOUT_S", "")
-    if env_budget:
-        try:
-            timeout_s = 2.0 * float(env_budget)
-        except ValueError:
-            logger.warning("Ignoring unparseable BOOLEY_SLOT_TIMEOUT_S=%r", env_budget)
+    if not env_budget:
+        return None
+    try:
+        return 2.0 * float(env_budget)
+    except ValueError:
+        logger.warning("Ignoring unparseable BOOLEY_SLOT_TIMEOUT_S=%r", env_budget)
+        return None
 
-    def _narrate(position: int) -> None:
-        # stderr as well as the log: direct Flow diagnostics run in-process without
-        # logging configured and without BOOLEY_LOGS_DIR, so both of the
-        # other sinks are no-ops there — a queued run looked like a hang
-        # with no hint that another job held the slot (F-27).
-        held_by = store.describe_holders(job_class)
-        line = f"waiting for {job_class} slot (position {position + 1}); held by {held_by}"
-        logger.info("%s: %s", endpoint.name, line)
-        print(f"[slot] {endpoint.name}: {line}", file=sys.stderr, flush=True)
-        _write_display_event(
-            _endpoint_progress_event(
-                endpoint.name,
-                line,
-                identity=endpoint._display_identity,
+
+def _narrate_line(endpoint: EndpointState, line: str) -> None:
+    """Narrate one queued-claim *line* on stderr, the log and the display.
+
+    Direct Flow diagnostics run in-process without logging configured and
+    without BOOLEY_LOGS_DIR, so stderr is the sink that keeps a queued run from
+    looking like a hang with no hint that another job held the Memory Reservation (F-27).
+    """
+    logger.info("%s: %s", endpoint.name, line)
+    print(f"[admission] {endpoint.name}: {line}", file=sys.stderr, flush=True)
+    _write_display_event(
+        _endpoint_progress_event(endpoint.name, line, identity=endpoint._display_identity)
+    )
+
+
+def _memory_narrator(
+    endpoint: EndpointState, store: job_slots.SlotStore, pid: int
+) -> Callable[[int | None], None]:
+    """Narrate a queued memory claim: its need, the free memory, its position and the holders."""
+
+    def narrate(_position: int | None) -> None:
+        wait = store.memory_wait(pid)
+        if wait is not None:  # None: promoted since the tick, nothing left to wait for
+            _narrate_line(
+                endpoint, f"waiting for memory (position {wait.position}): {wait.describe()}"
+            )
+
+    return narrate
+
+
+def _acquire_memory_reservation(
+    endpoint: EndpointState, prepared: PreparedExecution | None, *, requeued: bool = False
+) -> _Claim:
+    """Claim this memory-admitted Job's Memory Reservation, waiting in queue order if needed.
+
+    Returns the claim with the Job's thread count; an empty claim when nothing
+    is claimed (the parent process already holds this run's slot, or no runtime is
+    configured: bare invocations outside a project keep working unguarded). That check comes before any
+    sizing, so a child under its parent's claim does no estimate work.
+
+    A *requeued* Job (its first attempt was OOM-killed) claims the whole
+    budget, run alone, and waits at the back of the queue with the reason.
+    """
+    found = _admission_root(endpoint)
+    if found is None:
+        return _Claim(None, None)
+    project, root = found
+    config = load_job_budget_config(booley_dir=project)
+    # Refused before any sizing or store entry: a Job that runs a licensed tool
+    # without a Seat Cap never queues (SeatCapError is mapped by _enter_admission).
+    seats = required_seats(endpoint._licensed_tools(), config)
+    store = job_slots.SlotStore(root)
+    requests = None if prepared is None else prepared.invocation.job_requests()
+    plan = endpoint._memory_admission_plan(project, requests)
+    if requeued:
+        _refuse_waiting_behind_own_claim(endpoint, store)
+        plan = plan.alone()
+    claim = dataclasses.replace(plan.claim, seats=seats)
+    pid = os.getpid()
+    # A Job that names no request (an unknown invocation) reports the selected Target, if any;
+    # a Flow whose input is not prepared has none.
+    selected = endpoint._selected_target if endpoint._args is not None else ""
+    targets = ", ".join(dict.fromkeys(request.target for request in requests or ())) or selected
+    label = job_slots.JobLabel(os.environ.get("BOOLEY_RUN_ID", ""), endpoint.name, targets)
+    token = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=pid,
+        argv=_proc_cmdline(pid) or [],
+        role=job_slots.ROLE_INTERACTIVE,
+        timeout_s=_holder_deadline_seconds(),
+        on_queued=_memory_narrator(endpoint, store, pid),
+        memory=claim,
+        job=label,
+        queue_reason=OOM_REQUEUE_REASON if requeued else None,
+    )
+    if claim.companion:
+        # A Specialist or coordinator fixes no thread count and shrinks no Flow's share.
+        return _Claim(store, token, plan, None, MemorySizing(project))
+    try:
+        threads = job_threads_at_start(store, available_cpu_count())
+    except BaseException:
+        # The caller never sees the token, so it cannot release it.
+        store.release(token)
+        raise
+    return _Claim(store, token, plan, threads, MemorySizing(project))
+
+
+def _refuse_waiting_behind_own_claim(endpoint: EndpointState, store: job_slots.SlotStore) -> None:
+    """Refuse a requeued claim while this process still holds an entry in any class.
+
+    A deferred release (a Simulation Record whose shutdown overruns) can keep the killed
+    attempt's claim past its end; queueing behind it would wait for ourselves.
+    The process runs one Job, so a held entry of any class is the killed attempt's.
+    """
+    state = store.state_for_pid(os.getpid())
+    if state is not None and state.state == job_slots.HOLDING:
+        raise EndpointRejectedError(
+            EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    f"{endpoint.name}: the killed attempt's work still holds its claim, "
+                    "so the Job cannot wait for the memory to itself."
+                ),
+                oom_killed=True,
             )
         )
-
-    token = store.acquire(
-        job_class,
-        pid=pid,
-        argv=argv,
-        role=role,
-        timeout_s=timeout_s,
-        on_queued=_narrate,
-    )
-    return (store, token)

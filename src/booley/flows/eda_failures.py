@@ -6,11 +6,12 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from booley.flows.base import SubprocessResult
 
 FailureKind = Literal["missing_eda_tool", "missing_required_file", "missing_output"]
+_FAILURE_KINDS: tuple[FailureKind, ...] = get_args(FailureKind)
 FailureOwner = Literal["design", "infrastructure"]
 
 _STAGES = frozenset({"lint", "simulation", "sv2v", "yosys", "openroad", "vivado"})
@@ -46,6 +47,12 @@ _SHELL_MISSING_PROGRAM_RE = re.compile(
     r"^(?:\S*/)?(?:sh|bash|dash|loader|[\w.+-]+\.sh)(?::\s*(?:line\s+)?\d+)?:\s*"
     r"[\w.+-]+:\s*(?:command\s+)?not found"
 )
+# The spawn-failure phrases below must start a line, optionally behind plain
+# ``Label:`` wrappers (``setup failed:``, ``ERROR:root:``, ``FileNotFoundError:``).
+# Unanchored, they also matched source that Verilator echoes into an exit-0 lint
+# log (``    6 | $display("could not invoke ...")``). ``[ \t]``, not ``\s``, so a
+# prefix never spans lines.
+_LABEL_PREFIX = r"^(?:[\w.-]+(?: [\w.-]+)*:[ \t]*)*"
 _MISSING_EXE_PATTERNS = (
     re.compile(
         r"^(?:[\w./-]*(?:sh|bash|dash))(?::\s*(?:line\s+)?\d+)?:\s*"
@@ -58,8 +65,14 @@ _MISSING_EXE_PATTERNS = (
         re.MULTILINE | re.IGNORECASE,
     ),
     re.compile(r"^(?P<name>[\w.+-]+):\s*command not found", re.MULTILINE),
-    re.compile(r"could not invoke\s+(?P<name>[\w.+-]+)\b", re.IGNORECASE),
-    re.compile(r"No such file or directory:\s*'(?P<name>[\w.+-]+)'"),
+    re.compile(
+        _LABEL_PREFIX + r"could not invoke\s+(?P<name>[\w.+-]+)\b",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+    re.compile(
+        _LABEL_PREFIX + r"(?:\[Errno \d+\]\s*)?No such file or directory:\s*'(?P<name>[\w.+-]+)'",
+        re.MULTILINE,
+    ),
 )
 _MISSING_REQUIRED_RE = re.compile(
     r"(?:fatal error|error):\s*(?P<name>[A-Za-z0-9_.+/-]+):\s*"
@@ -161,7 +174,9 @@ def _authenticated_marker(
     stage = marker["stage"]
     if stage not in _STAGES or (expected_stage is not None and stage != expected_stage):
         return None
-    return marker["kind"], stage, marker["subject"]
+    kind = marker["kind"]
+    assert kind in _FAILURE_KINDS, "_MARKER_RE admits only these kinds"
+    return kind, stage, marker["subject"]
 
 
 def _marker_failure(kind: FailureKind, stage: str, subject: str, text: str) -> EdaFailure:
@@ -183,7 +198,7 @@ def _termination_failure(
     """Classify terminal states that preclude any design verdict."""
     if result.timed_out:
         return EdaFailure("infrastructure", "timeout", stage, "", "EDA execution timed out", text)
-    if result.oom_kill_delta <= 0 and 0 <= result.returncode < 128:
+    if not result.oom_blamed and 0 <= result.returncode < 128:
         return None
     if result.returncode == -1 and boundary_executable:
         subject = Path(boundary_executable).name

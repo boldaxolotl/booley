@@ -1,0 +1,3 @@
+1. Executing Verilog-2005 frontend: /work/verilogerr/sv2v_converted.v
+/work/verilogerr/sv2v_converted.v:3: ERROR: syntax error, unexpected TOK_ASSIGN
+Parsing Verilog input from `/work/verilogerr/sv2v_converted.v' to AST representation.

@@ -1,0 +1,67 @@
+CAPI=2:
+name: booley:qa:mutation:1
+filesets:
+  rtl:
+    files:
+    - rtl/mutation_top.sv
+    - rtl/alu.sv
+    - rtl/counter.sv
+    - rtl/status.sv
+    - rtl/handshake.sv
+    - rtl/self_check.sv
+    - rtl/decoys.sv
+    file_type: systemVerilogSource
+  vendored:
+    files:
+    - rtl/vendor/sync2.sv
+    file_type: systemVerilogSource
+    tags:
+    - vendored
+  generated:
+    files:
+    - rtl/gen/version.sv
+    file_type: systemVerilogSource
+    tags:
+    - generated
+  tb:
+    files:
+    - tb/mutation_tb.sv
+    file_type: systemVerilogSource
+    tags:
+    - tb
+  cocotb:
+    files:
+    - tb/test_mutation.py:
+        file_type: user
+        copyto: test_mutation.py
+    tags:
+    - tb
+targets:
+  sim_icarus:
+    flow: sim
+    filesets:
+    - rtl
+    - vendored
+    - generated
+    - tb
+    toplevel: mutation_tb
+    flow_options:
+      tool: icarus
+      iverilog_options:
+      - -g2012
+  sim_cocotb:
+    flow: sim
+    filesets:
+    - rtl
+    - vendored
+    - generated
+    - cocotb
+    toplevel: mutation_top
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      - -Werror-USERERROR
+      cocotb_module: test_mutation
+      timescale: 1ns/1ps

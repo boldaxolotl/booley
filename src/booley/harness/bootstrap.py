@@ -41,6 +41,7 @@ from booley.runtime.image_lifecycle import (
     Status as ImageStatus,
 )
 from booley.runtime.paths import skills_dir
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.qa_skill_selection import (
     QA_SKILL_NAMES,
     QaSkillSelectionError,
@@ -76,6 +77,8 @@ class BootstrapFinding:
     state: BootstrapState
     detail: str
     remedy: str | None = None
+    doctor_fix: str | None = None
+    """Doctor's FAIL hint when it differs from rerunning `booley bootstrap`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,14 +89,6 @@ class BootstrapResult:
     findings: tuple[BootstrapFinding, ...]
     policy: SandboxHostPolicy | None = None
     base_image: LifecycleResult | None = None
-
-    @property
-    def ready(self) -> bool:
-        return all(
-            finding.state
-            in {BootstrapState.CURRENT, BootstrapState.CHANGED, BootstrapState.WARNING}
-            for finding in self.findings
-        )
 
     @property
     def exit_status(self) -> int:
@@ -261,8 +256,8 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         findings.append(BootstrapFinding("host-install", BootstrapState.ERROR, error))
         return BootstrapResult(intent, tuple(findings), policy)
 
-    if qa_opt_out:
-        findings.append(_reconcile_qa_skills(intent, opt_out=True))
+    if qa_opt_out and (qa_finding := _reconcile_qa_skills(intent, opt_out=True)):
+        findings.append(qa_finding)
 
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
@@ -416,7 +411,8 @@ def parse_git_version(line: str) -> tuple[int, int, int] | None:
     match = _GIT_VERSION_LINE.fullmatch(line.strip())
     if match is None or _GIT_PRERELEASE_SUFFIX.search(match.group("suffix")):
         return None
-    return tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
+    major, minor, patch = (int(match.group(name)) for name in ("major", "minor", "patch"))
+    return major, minor, patch
 
 
 def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:
@@ -424,9 +420,7 @@ def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:
     if executable is None:
         return BootstrapFinding(name, BootstrapState.ERROR, f"{name} is required but not on PATH")
     try:
-        result = subprocess.run(
-            [executable, version_arg], capture_output=True, text=True, timeout=5, check=False
-        )
+        result = run_captured_bounded([executable, version_arg], timeout=5)
     except (OSError, subprocess.SubprocessError) as exc:
         return BootstrapFinding(name, BootstrapState.ERROR, f"cannot run {name}: {exc}")
     if result.returncode:
@@ -440,9 +434,7 @@ def _docker_daemon_error() -> str | None:
     executable = shutil.which("docker")
     assert executable is not None
     try:
-        result = subprocess.run(
-            [executable, "info"], capture_output=True, text=True, timeout=10, check=False
-        )
+        result = run_captured_bounded([executable, "info"], timeout=10)
     except subprocess.TimeoutExpired:
         return "Docker daemon did not respond within 10 seconds"
     except (OSError, subprocess.SubprocessError) as exc:
@@ -472,7 +464,7 @@ def _vscode_finding() -> BootstrapFinding:
     return BootstrapFinding(
         "vscode",
         BootstrapState.ERROR,
-        "VS Code or a supported compatible editor is required for Interactive Mode",
+        "VS Code or a supported compatible editor is required to open the Sandbox",
     )
 
 
@@ -575,8 +567,6 @@ def _reconcile_skills(intent: Intent) -> BootstrapFinding:
         return BootstrapFinding(
             "skills", BootstrapState.ERROR, f"packaged skills missing: {source}"
         )
-    if error := host_install_error(source):
-        return BootstrapFinding("skills", BootstrapState.ERROR, error)
     reconciliations = reconcile_host_skills(
         source,
         dry_run=intent is Intent.CHECK,
@@ -600,9 +590,7 @@ def _skill_reconciliation_finding(
     )
     if errors:
         detail = "; ".join(errors)
-        return (
-            _qa_warning(detail) if qa else BootstrapFinding(resource, BootstrapState.ERROR, detail)
-        )
+        return _qa_warning(detail) if qa else _skill_error_finding(detail, reconciliations)
     changes = tuple(
         (item.target, sum(event.changed for event in item.report.events))
         for item in reconciliations
@@ -624,6 +612,27 @@ def _skill_reconciliation_finding(
         resource,
         state,
         f"{action} {len(reconciliations)} skill target(s): {targets}",
+    )
+
+
+def _skill_error_finding(
+    detail: str, reconciliations: tuple[HostSkillReconciliation, ...]
+) -> BootstrapFinding:
+    """Make conflict texts, which name their entry and fix, Doctor's hint.
+
+    Any other failure in the same run keeps the generic hints.
+    """
+    reports = tuple(item.report for item in reconciliations)
+    failed = [event for report in reports for event in report.events if event.failed]
+    others = any(report.diagnostics or report.fatal for report in reports)
+    if others or any(event.outcome != "conflict" for event in failed):
+        return BootstrapFinding("skills", BootstrapState.ERROR, detail)
+    return BootstrapFinding(
+        "skills",
+        BootstrapState.ERROR,
+        detail,
+        remedy="",
+        doctor_fix="; ".join(event.detail for event in failed),
     )
 
 

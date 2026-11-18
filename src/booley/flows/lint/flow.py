@@ -30,9 +30,19 @@ from booley.flows.eda_failures import (
     new_attempt_token,
     render_failure_marker,
 )
-from booley.flows.job_resources import resource_phase
+from booley.flows.job_resources import resolved_source_bytes, resource_phase
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    MetricsUnavailableError,
+    metric_values,
+    metrics_document,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -77,6 +87,36 @@ _first_error_line = eda_parsers.first_error_line
 _WARNING_EPILOGUE_RE = re.compile(r"%Error: Exiting due to \d+ warning\(s\)")
 _VERIBLE_FINDING_RE = eda_parsers.VERIBLE_FINDING_RE
 _verible_first_error_line = eda_parsers.verible_first_error_line
+
+
+# Verilator's exit epilogue, ``%Error: Exiting due to N error(s)`` or ``... warning(s)``:
+# a summary of the findings above it, not a finding.
+_EXIT_EPILOGUE_RE = re.compile(r"Exiting due to \d+ (?:error|warning)\(s\)")
+
+LINT_METRIC_DECLARATIONS = (
+    MetricDeclaration("warnings", "warnings", Better.LOWER, CostTier.LOW, MetricKind.PLAIN),
+    MetricDeclaration("errors", "errors", Better.LOWER, CostTier.LOW, MetricKind.PLAIN),
+)
+
+
+def count_lint_errors(output: str, family: str) -> int:
+    """Count the unique error findings in one Target's linter *output*.
+
+    Verilator: every ``%Error`` line but the exit epilogue, keyed by rule, location and
+    message (rule-less, location-less lines are common, so the message tells two apart;
+    a multi-line message counts once because its continuation lines do not start with
+    ``%Error``). Verible: every parse-error line, keyed by file and line.
+    """
+    if family == "verible":
+        return len(
+            {tuple(line.split(":")[:2]) for line in eda_parsers.VERIBLE_ERROR_RE.findall(output)}
+        )
+    findings = {
+        match.groups()
+        for match in eda_parsers.VERILATOR_ERROR_FINDING_RE.finditer(output)
+        if not _EXIT_EPILOGUE_RE.match(match.group("message"))
+    }
+    return len(findings)
 
 
 def _lint_eda_tool_family(eda_tool: str | None) -> str:
@@ -145,11 +185,27 @@ class LintConfigResult:
     real and pass vacuously. Hard-fails the Target (same spirit as the ADR
     0026 doctor hard-fail: an integrity hole must not stay a silent WARN).
     Defaults True to avoid false alarms when unknown."""
+    error_count: int = 0
+    """Unique error findings in the linter output (0 when none could be read)."""
     log_path: str = ""
     """Project-relative path of this Target's persisted ``run.log``. The parsed
     report carries rule/file:line/message and Target provenance per warning,
     but the linter's raw output — banner, include resolution, the lines around
     a diagnostic — only exists there. Empty when the log could not be written."""
+
+    def flow_metrics(self) -> FlowMetricValues:
+        """Typed metrics of this Target: its unique warning and error counts.
+
+        The counts cover the whole Target, whatever ``--scope`` filtered from the
+        printed report. Raises :class:`MetricsUnavailableError` when the linter could
+        not run, or rejected the design without an error finding that could be read.
+        """
+        if self.error_is_eda_tool_failure or (self.error and not self.error_count):
+            raise MetricsUnavailableError(self.error)
+        return metric_values(
+            LINT_METRIC_DECLARATIONS,
+            {"warnings": len(deduplicate_warnings(self.warnings)), "errors": self.error_count},
+        )
 
 
 @dataclass
@@ -193,7 +249,7 @@ def parse_verible_warnings(output: str, target: str) -> list[LintWarning]:
 
     ``file:line:col: message [rule]`` lines map into the same
     :class:`LintWarning` shape as Verilator's (``rule`` = the Verible rule
-    name), so dedup keys, scope filtering, criteria, and the report are
+    name), so dedup keys, scope filtering, and the report are
     shared unchanged. Findings arrive with rc 0 (``--parse_fatal
     --lint_fatal=false``); parse errors are the caller's rc!=0 branch.
     """
@@ -245,8 +301,8 @@ def _classify_lint_failure(
     A non-zero make/linter return code is never a clean lint (Verilator: an
     undeclared signal -> ``%Error`` -> rc=2; Verible: a parse failure under
     ``--parse_fatal``). Without recording it the verdict keys only off the
-    parsed warning count, so RTL that fails to elaborate/parse would satisfy
-    ``lint_clean`` — a false green on the gate (QA-7).
+    parsed warning count, so RTL that fails to elaborate/parse would pass
+    — a false green (QA-7).
 
     Whether that grades ERROR or FAIL depends on who failed. A linter that ran
     and rejected the design is the linter working, so it is a design FAIL —
@@ -338,12 +394,6 @@ def filter_by_scope(warnings: list[LintWarning], scope: str) -> list[LintWarning
     if not scope_paths:
         return warnings
     return [w for w in warnings if any(sp in w.file for sp in scope_paths)]
-
-
-def _scoped_warning_count(warnings: list[LintWarning], scope: str) -> int:
-    """Count deduplicated warnings after applying the invocation scope."""
-    unique = deduplicate_warnings(warnings)
-    return len(filter_by_scope(unique, scope)) if scope else len(unique)
 
 
 def _toplevel_declared(
@@ -472,6 +522,11 @@ def _lint_findings(
     return detail
 
 
+def _lint_metrics_detail(results: list[LintConfigResult]) -> dict[str, dict[str, object]]:
+    """Each Target's typed values for the report, or the reason it has none."""
+    return {result.target: metrics_document(result.flow_metrics) for result in results}
+
+
 def _lint_result_parts(
     targets: list[str],
     unique: list[LintWarning],
@@ -492,6 +547,8 @@ def _lint_result_parts(
         **_lint_findings(targets, unique, target_results or []),
         "elapsed_s": round(elapsed, 2),
     }
+    if target_results:
+        detail["metrics"] = _lint_metrics_detail(target_results)
     eda_tools = sorted({cr.eda_tool for cr in (target_results or []) if cr.eda_tool})
     if eda_tools:
         display.append(f"linter: {', '.join(eda_tools)}")
@@ -539,12 +596,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
         example="booley flow lint --target lint_soc",
     )
     code_modifying: bool = False
-    satisfies: ClassVar[list[str]] = ["lint_clean"]
-    conventional_families: ClassVar[frozenset[str]] = frozenset({"lint_clean"})
 
     # The built-in path is make-driven end-to-end in the Sandbox.
 
     # --- Command building ---
+
+    def _memory_admitted(self) -> bool:
+        """A lint Job runs the linter in the Sandbox, so memory admission covers it (ADR 0087)."""
+        return True
 
     def _build_command(self) -> list[str]:
         """Not used вЂ” LintFlow overrides _run() for multi-config logic."""
@@ -580,8 +639,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
         runs ``fusesoc run --setup``, which itself runs Edalize ``configure()``
         and leaves a ready-to-``make`` build dir — superseding the Booley-built
         EDAM of 0019. Booley contributes nothing to the design here: sources,
-        ``--lint-only``/``-Wall`` (the lint flow + the Target's
-        ``flow_options.verilator_options``), the top module, and every define
+        ``--lint-only`` (from Edalize's lint flow), any warning switch such
+        as ``-Wall`` (only from the Target's ``flow_options.verilator_options``;
+        this Flow adds none), the top module, and every define
         (now a declared ``vlogdefine``, decision 8 — ``-d/--define`` is gone)
         all come from the ``.core`` lint Target. Verilator's ``%Warning-``
         output is still parsed downstream by Booley (interpretation stays
@@ -623,9 +683,11 @@ class LintFlow(BuiltinFlow[LintRequest]):
         )
         return _PreparedLintCommand(["sh", "-c", script], resolved, token)
 
-    def _run_linter(self, selector: str, cmd: list[str]) -> SubprocessResult:
+    def _run_linter(
+        self, selector: str, cmd: list[str], source_bytes: int | None
+    ) -> SubprocessResult:
         """Run one Target's linter under its resource-history label."""
-        with resource_phase(selector, "lint"):
+        with resource_phase(selector, "lint", source_bytes=source_bytes):
             return self._execute_boundary(cmd)
 
     def _dry_run_command(self, target: TargetHandle) -> list[str]:
@@ -724,9 +786,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     def _lint_plan_inspection(self, target: TargetHandle) -> Any | None:
         """Inspect a Target, tolerating only the supported legacy no-top shape."""
-        catalog = getattr(self, "_target_catalog", None)
         try:
-            return (catalog or TargetCatalog.build(target.project_root)).inspect(target)
+            return TargetCatalog.build(target.project_root).inspect(target)
         except fusesoc_registry.FuseSocError as exc:
             if not isinstance(exc, MissingTargetToplevelError) and not target.doctor_private:
                 raise
@@ -773,7 +834,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         the Sandbox. Warning parsing is keyed off the resolved Target's
         eda_tool (ADR 0033): Verilator
         ``%Warning`` lines or Verible ``file:line:col: msg [rule]`` findings —
-        everything else (run.log, criteria, report, QA-7 error handling) is
+        everything else (run.log, report, QA-7 error handling) is
         one shared path.
         """
         selector = target.selector
@@ -784,10 +845,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             work_root_for(self.args.work_dir, "lint", selector),
         )
         if prepared is None:
-            prepared_units, errors = self._prepare_lint_targets((target,))
-            if errors:
-                return errors[0]
-            prepared = prepared_units[target.identity]
+            prepared = self._prepare_lint_targets((target,))[0][target.identity]
         result = prepared.result
         self.record_eda_tool(selector, prepared.resolved.configured_eda_tool)
         cmd = prepared.command
@@ -796,7 +854,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         from booley.flows.terminal_progress import announce_unit
 
         announce_unit("checking", target=selector)
-        proc = self._run_linter(selector, cmd)
+        proc = self._run_linter(selector, cmd, resolved_source_bytes(prepared.resolved))
         result.duration_s = time.monotonic() - start
         result.returncode = proc.returncode
 
@@ -808,14 +866,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # lint regression had nothing on disk to act on.
         result.log_path = self._persist_lint_output(selector, combined)
         evidence_log = self.args.work_dir / result.log_path if result.log_path else None
-        if proc.timed_out:
-            result.error = f"Timed out after {self._get_timeout()}s"
-            result.error_is_eda_tool_failure = True
+        if stopped := self._linter_stop_reason(proc):
+            result.error, result.error_is_eda_tool_failure = stopped, True
             return result
         if family == "verible":
             result.warnings = parse_verible_warnings(combined, selector)
         else:
             result.warnings = parse_warnings(combined, selector)
+        result.error_count = count_lint_errors(combined, family)
         if not result.error:
             _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
             if result.error and evidence_log is not None:
@@ -825,6 +883,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 pointer = posix_relpath(evidence_log, self.args.work_dir)
                 result.error += f" (full log: {pointer})"
         return result
+
+    def _linter_stop_reason(self, proc: SubprocessResult) -> str:
+        """Why the linter stopped before its output could be judged, or ``""`` when it ran."""
+        if proc.timed_out:
+            return f"Timed out after {self._get_timeout()}s"
+        if proc.oom_blamed:
+            return "the linter was killed for running out of memory"
+        return ""
 
     def _prepare_lint_targets(
         self,
@@ -1024,7 +1090,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         ``warnings_as_errors`` (``[flows.lint].warnings_as_errors``, default
         True) decides whether surviving warnings fail the run: False keeps the
         WARN verdict text but exits 0, so a CI gate can pass on warnings-only
-        while ``lint_clean`` criteria still record the truth.
+        while the report still lists them.
         """
         if unique:
             summary = f"RESULT: WARN ({len(unique)} warnings)"
@@ -1037,21 +1103,19 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return (EXIT_FAILURE if warnings_as_errors else EXIT_SUCCESS), summary
         return EXIT_SUCCESS, "RESULT: PASS"
 
-    def _validate_interactive_args(self) -> EndpointOutcome | None:
-        """Interactive-Mode argument validation.
+    def _validate_call_args(self) -> EndpointOutcome | None:
+        """Developer Agent session argument validation.
 
-        In Interactive Mode there is no project_config import path priming
+        In a Developer Agent session there is no project_config import path priming
         the discovery list, so silently falling back to the hardcoded
         ``["lite", "full", "combo"]`` defaults runs lint against configs that
         don't exist.  Refuse explicitly instead.
         """
-        if self._state is not None and self._state._file_path is not None:
-            return None  # Persisted execution state supplies Criterion-based target discovery
         if not getattr(self.args, "target", "").strip():
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    "lint: --target is required outside Goal-bound MCP calls. "
+                    "lint: --target is required. "
                     "Pass --target <name>; available Targets are the .core "
                     "lint Targets in .booley/."
                 ),
@@ -1092,25 +1156,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 block[f"log_{config_result.target}"] = relative_log
         return block
 
-    def _record_design_failures(self, errored: list[LintConfigResult]) -> None:
-        """Record ``lint_clean_<target> = False`` for Targets whose linter rejected the RTL.
-
-        Skips EDA-tool failures (no verdict). Independent of ``--scope``: an
-        error is reported regardless of scope.
-        """
-        for cr in errored:
-            if cr.error_is_eda_tool_failure:
-                continue
-            self.set_criterion(
-                f"lint_clean_{cr.target}",
-                False,
-                detail={
-                    "warnings": _scoped_warning_count(cr.warnings, self.args.scope),
-                    "error": cr.error,
-                },
-                source_target=cr.target,
-            )
-
     def _unmatched_scope_outcome(
         self,
         selectors: list[str],
@@ -1122,10 +1167,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
         A scope that matches nothing would otherwise report zero in-scope
         warnings and pass. Like the other no-verdict paths (linter failure,
-        preparation failure) this never records a passing ``lint_clean_*``
-        criterion and writes no ``lint_report.json``, which would claim
-        ``passed: true``. Targets whose linter rejected the design still record
-        their scope-independent ``False``.
+        preparation failure) this writes no ``lint_report.json``, which would claim
+        ``passed: true``. Targets whose linter rejected the design are still
+        named in the summary.
         Returns ``None`` when every entry matches.
         """
         linted_paths = self._linted_paths(prepared, all_warnings)
@@ -1148,9 +1192,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
         errored = [cr for cr in target_results if cr.error]
         if errored:
             summary += "; " + _target_errors_text(errored)
-        # A scope typo hides no design failure: a Target whose linter rejected
-        # the RTL still records its scope-independent False criterion.
-        self._record_design_failures(errored)
         print(f"\n{summary}")
         detail: dict[str, Any] = {
             "targets": selectors,
@@ -1162,7 +1203,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     def _run(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear aggregate orchestration
         """Run lint across configured build Targets."""
-        err = self._validate_interactive_args()
+        err = self._validate_call_args()
         if err is not None:
             return err
         targets = self._get_targets()
@@ -1212,7 +1253,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="lint planning failed: " + "; ".join(messages),
-                detail={"plan": self._flow_plan.as_dict()},
+                detail={
+                    "plan": self._flow_plan.as_dict(),
+                    "metrics": _lint_metrics_detail(preparation_errors),
+                },
             )
 
         overall_start = time.monotonic()
@@ -1241,18 +1285,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         )
         _echo_warnings(unique, invocation_report)
 
-        # Set per-Target criteria
         errored = [cr for cr in target_results if cr.error]
-        for cr in target_results:
-            if cr.error_is_eda_tool_failure:
-                continue
-            key = f"lint_clean_{cr.target}"
-            warning_count = _scoped_warning_count(cr.warnings, self.args.scope)
-            is_clean = warning_count == 0 and not cr.error
-            detail: dict[str, Any] = {"warnings": warning_count}
-            if cr.error:
-                detail["error"] = cr.error
-            self.set_criterion(key, is_clean, detail=detail, source_target=cr.target)
 
         elapsed = time.monotonic() - overall_start
         report_path = self._write_lint_report(

@@ -1,7 +1,7 @@
 """Who started a Job: the owner an argument-free ``booley_poll`` waits on.
 
 An owner is the submitting MCP server plus, when the client names one, the agent
-tab (Codex thread or Claude Code process) that made the call: Interactive Mode
+tab (Codex thread or Claude Code process) that made the call: the Sandbox
 serves every tab of a Sandbox from one HTTP server. Ownership only selects which
 result an argument-free poll hands back; any Job stays reachable by its ``run_id``.
 """
@@ -13,15 +13,17 @@ from dataclasses import dataclass
 
 from booley.mcp.application import McpRequestContext
 from booley.mcp.session_registry import Attribution
+from booley.measurement.mcp_job import MEASURE_ENDPOINT
 from booley.runtime.display_identity import DisplayScope
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
 
-# Endpoints run as background Jobs (submit, then poll). Only these may fall back
-# to the worktree ``session_key`` for records written before Jobs had an owner.
-ASYNC_JOB_ENDPOINTS = frozenset(
-    {"sim", "fpga", "synth", "reviewer", "mutation_tester", "coverage_analyst"}
+# Endpoints that ran as background Jobs (submit, then poll) before Jobs had an
+# owner. Only these may fall back to the worktree ``session_key`` for such records;
+# this is that history, not the routing rule (the catalog's ``memory_admitted``).
+_PRE_OWNER_BACKGROUND_ENDPOINTS = frozenset(
+    {"sim", "fpga", "synth", "reviewer", "mutation", "coverage_analyst", MEASURE_ENDPOINT}
 )
 
 
@@ -50,7 +52,7 @@ def server_identity() -> str:
 
 
 def http_server_identity(hostname: str, port: int) -> str:
-    """Identity of the Interactive Mode HTTP server; stable across Sandbox restarts."""
+    """Identity of the Sandbox HTTP server; stable across Sandbox restarts."""
     return f"mcp-http:{DisplayScope.current().value}:{hostname}:{port}"
 
 
@@ -78,7 +80,7 @@ def owns(rec: JobRecord, caller: Caller) -> bool:
     if rec.owner is not None:
         return rec.owner == caller.owner
     return (
-        rec.endpoint in ASYNC_JOB_ENDPOINTS
+        rec.endpoint in _PRE_OWNER_BACKGROUND_ENDPOINTS
         and caller.session_key is not None
         and caller.session_key == rec.session_key
     )

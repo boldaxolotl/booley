@@ -14,6 +14,7 @@ import pytest
 
 from booley.runtime import lifecycle_lock
 from booley.runtime.file_lock import acquire_file_lock, release_file_lock
+from tests.time_budget import hang_guard_s
 
 
 def _hold_lock(path_text: str, owner: str, ready: Any, release: Any) -> None:
@@ -24,7 +25,7 @@ def _hold_lock(path_text: str, owner: str, ready: Any, release: Any) -> None:
         handle.write(f"{owner}\n")
         handle.flush()
         ready.set()
-        release.wait(5)
+        release.wait(2 * hang_guard_s())
         release_file_lock(handle)
 
 
@@ -52,14 +53,14 @@ def held_lifecycle_lock(
     process.start()
     holder = LifecycleLockHolder(process, release)
     try:
-        assert ready.wait(5)
+        assert ready.wait(hang_guard_s())
         yield holder
     finally:
         holder.release()
-        process.join(5)
+        process.join(hang_guard_s())
         if process.is_alive():
             process.terminate()
-            process.join(5)
+            process.join(hang_guard_s())
 
 
 def observe_lifecycle_contention(monkeypatch: pytest.MonkeyPatch) -> threading.Event:

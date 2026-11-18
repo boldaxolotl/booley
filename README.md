@@ -1,6 +1,6 @@
 # Booley
 
-**The open-source Agentic Development Environment (ADE) for FPGA and ASIC development**
+**The open-source Agentic Development Environment (ADE) for RTL design and verification**
 
 [![Tests](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml/badge.svg)](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/booley-rtl)](https://pypi.org/project/booley-rtl/)
@@ -13,7 +13,9 @@ Booley is an agentic development environment (ADE) for RTL design and verificati
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://booley.dev/docs/assets/booley-screenshot-light.png">
-  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley Dashboard with Goal progress, and waveform inspection" src="https://booley.dev/docs/assets/booley-screenshot.png">
+  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley
+  Dashboard, and waveform inspection"
+  src="https://booley.dev/docs/assets/booley-screenshot.png">
 </picture>
 
 ## What it does
@@ -128,6 +130,7 @@ Support for additional commercial EDA tools is coming soon; see the
 - [Architecture](https://booley.dev/docs/architecture/)
 - [Setup](https://booley.dev/docs/setup/)
 - [Usage](https://booley.dev/docs/usage/)
+- [Metric-Driven Development](https://booley.dev/docs/metric-driven-development/)
 - [Flow reference](https://booley.dev/docs/flow-reference/)
 - [Supported EDA tools](https://booley.dev/docs/supported-eda-tools/)
 - [Limitations](https://booley.dev/#limitations)

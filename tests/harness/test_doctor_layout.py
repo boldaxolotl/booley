@@ -34,7 +34,7 @@ def test_phase_sections_render_as_headers_with_glyph_rows(capsys, monkeypatch):
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     reporter = doctor._Reporter.create()
 
-    doctor._run_flow_and_core_phase(None, None, False, reporter, lambda *_args: None)
+    doctor._run_flow_and_core_phase(None, None, reporter, lambda *_args: None)
 
     assert capsys.readouterr().out.splitlines() == [
         "",

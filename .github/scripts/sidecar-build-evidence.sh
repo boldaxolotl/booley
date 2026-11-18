@@ -55,7 +55,7 @@ readonly FLEXNET_PYTHON
 REAPER_PYTHON="$(python_version_of "${REAPER_BASE}")"
 readonly REAPER_PYTHON
 # No Dockerfile owns the daemon image; tests hold its release equal to DOCKER_CLI's.
-readonly DOCKER_DIND="docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
+readonly DOCKER_DIND="docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121"
 
 mkdir -p "${EVIDENCE_DIR}"
 : > "${EVIDENCE_DIR}/build-commands.txt"
@@ -133,16 +133,16 @@ capture_source() {
 }
 
 build_image egress-proxy-candidate src/booley/data/docker/Dockerfile.egress-proxy \
-  booley-egress-proxy:py314 src/booley/docker
+  booley-egress-proxy:py315 src/booley/docker
 build_image flexnet-relay-candidate src/booley/data/docker/Dockerfile.flexnet-relay \
-  booley-flexnet-relay:py314 src/booley/eda/provisioning/licensing
+  booley-flexnet-relay:py315 src/booley/eda/provisioning/licensing
 build_image reaper-candidate src/booley/data/docker/Dockerfile.reaper \
-  booley-reaper:py314 src/booley/docker
+  booley-reaper:py315 src/booley/docker
 
 : > "${EVIDENCE_DIR}/image-sizes.tsv"
-capture_image egress-proxy-candidate booley-egress-proxy:py314 "${EGRESS_PYTHON}"
-capture_image flexnet-relay-candidate booley-flexnet-relay:py314 "${FLEXNET_PYTHON}"
-capture_image reaper-candidate booley-reaper:py314 "${REAPER_PYTHON}"
+capture_image egress-proxy-candidate booley-egress-proxy:py315 "${EGRESS_PYTHON}"
+capture_image flexnet-relay-candidate booley-flexnet-relay:py315 "${FLEXNET_PYTHON}"
+capture_image reaper-candidate booley-reaper:py315 "${REAPER_PYTHON}"
 
 : > "${EVIDENCE_DIR}/source-repodigests.tsv"
 capture_source python-bookworm-candidate "${BOOKWORM_CANDIDATE}"
@@ -150,13 +150,13 @@ capture_source python-alpine-candidate "${ALPINE_CANDIDATE}"
 capture_source docker-cli "${DOCKER_CLI}"
 capture_source docker-dind "${DOCKER_DIND}"
 
-docker tag booley-flexnet-relay:py314 booley-flexnet-relay:1
+docker tag booley-flexnet-relay:py315 booley-flexnet-relay:1
 
 python .github/scripts/release_validation/evidence.py \
   --candidate-sha "${GITHUB_SHA}" \
-  --image "egress-proxy=$(docker image inspect --format '{{.Id}}' booley-egress-proxy:py314)" \
-  --image "flexnet-relay=$(docker image inspect --format '{{.Id}}' booley-flexnet-relay:py314)" \
-  --image "reaper=$(docker image inspect --format '{{.Id}}' booley-reaper:py314)" \
+  --image "egress-proxy=$(docker image inspect --format '{{.Id}}' booley-egress-proxy:py315)" \
+  --image "flexnet-relay=$(docker image inspect --format '{{.Id}}' booley-flexnet-relay:py315)" \
+  --image "reaper=$(docker image inspect --format '{{.Id}}' booley-reaper:py315)" \
   --check helper-images.build --check helper-images.runtime \
   --check helper-images.metadata --check helper-images.source-digests \
   --evidence "${EVIDENCE_DIR}/summary.json"

@@ -39,12 +39,25 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
 from tests.execution_test_support import wait_for
+from tests.time_budget import hang_guard_s
 
 _REPO = Path(__file__).parents[2]
 _HOOK = _REPO / "src" / "booley" / "data" / "docker" / "session_activity_hook.py"
-_WAIT_SECONDS = 15.0
+_WAIT_SECONDS = hang_guard_s()
 _SETTLE_SECONDS = 0.3
 _AGENT_EXIT_CODE = 7
+
+
+def _with_budgets(source: str) -> str:
+    """Fill a child's hang guard and outer deadline into its *source*.
+
+    The child cannot import the time-budget policy, so the parent formats the values in:
+    ``__HANG_S__`` is the hang guard and ``__OUTER_S__`` twice that, outlasting a parent wait.
+    """
+    return source.replace("__HANG_S__", str(hang_guard_s())).replace(
+        "__OUTER_S__", str(2 * hang_guard_s())
+    )
+
 
 # The fake agent. Runs as the `claude` script and, in a copy of the interpreter
 # named `codex`, via `-c`. Its identity (agent.json) is written before AGENT-READY.
@@ -56,7 +69,7 @@ OUT = Path(os.environ["AGENT_OUT"])
 VARIANT = os.environ["AGENT_VARIANT"]
 KIND = os.environ["AGENT_KIND"]
 BOOLEY_DIR = Path(os.environ["AGENT_BOOLEY_DIR"])
-DEADLINE = time.monotonic() + 40
+DEADLINE = time.monotonic() + __OUTER_S__
 SETTLE = 0.5
 counts = {"INT": 0, "HUP": 0, "TERM": 0, "CONT": 0}
 state = {"first": None, "first_name": None, "resumed": False}
@@ -102,10 +115,11 @@ if KIND == "claude":  # what the MCP server's registry row would be
     sessions = BOOLEY_DIR / "runtime" / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / hook._signal_filename(key)).write_text("{}")
+# Kept on subprocess.run: inside generated agent source run outside pytest
 hook_run = subprocess.run(
     [os.environ["AGENT_HOOK_PYTHON"], "-I", "-c", os.environ["AGENT_HOOK_PROGRAM"],
      os.environ["AGENT_HOOK"], KIND, str(BOOLEY_DIR)],
-    capture_output=True, text=True, timeout=30,
+    capture_output=True, text=True, timeout=__HANG_S__,
 )
 cmdline = Path("/proc/self/cmdline").read_bytes().split(b"\0")[:-1]
 write_json("agent.json", {
@@ -123,7 +137,7 @@ def trip_when_blocked(main_tid):
     # check) once the main thread sleeps in the kernel waiting for input. A real
     # kernel signal would interrupt read(2); this one lands "just before" it.
     task = Path("/proc/self/task") / str(main_tid)
-    stop = time.monotonic() + 10
+    stop = time.monotonic() + __HANG_S__
     state_name, wchan = "?", "?"
     while time.monotonic() < stop:
         try:
@@ -160,6 +174,10 @@ elif VARIANT == "bg":
 elif VARIANT == "bg-fg-read":
     wait_until(lambda: state["resumed"] and (OUT / "fg-done").exists())
     sys.stdin.readline()
+elif VARIANT == "hup-exit":
+    # Exits normally (status 0) once its terminal hangs up, as an agent that handles SIGHUP does.
+    wait_until(lambda: counts["HUP"] > 0)
+    sys.exit(0)
 elif VARIANT == "wait":
     wait_until(lambda: state["first"] is not None)
     wait_until(lambda: time.monotonic() > state["first"] + SETTLE)
@@ -171,6 +189,7 @@ elif VARIANT == "wait":
         time.sleep(30)
 sys.exit(7)
 """
+_AGENT_SOURCE = _with_budgets(_AGENT_SOURCE)
 
 # Runs as the hook does (isolated interpreter, hook loaded by path) from a
 # grandchild of the agent, so the hook's real ancestor walk is exercised.
@@ -198,6 +217,8 @@ from types import SimpleNamespace
 provider = sys.argv[1]
 os.chdir(os.environ["DRIVER_ROOT"])  # the shell the user launched `booley chat` from
 OUT = Path(os.environ["DRIVER_OUT"])
+if os.environ.get("DRIVER_STDERR"):  # stderr off the terminal, as in `booley chat 2>log`
+    os.dup2(os.open(os.environ["DRIVER_STDERR"], os.O_WRONLY | os.O_CREAT | os.O_APPEND), 2)
 (OUT / "driver.json").write_text(json.dumps({"pid": os.getpid(), "pgrp": os.getpgrp()}))
 
 from booley.harness import chat_cmd, codex_chat
@@ -323,7 +344,7 @@ while True:
         continue
     os.killpg(job, signal.SIGCONT)  # `bg`
     if mode == "bg-fg":  # a later `fg` of the running job: no SIGCONT
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + __HANG_S__
         while not (OUT / "trigger").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         os.tcsetpgrp(0, job)
@@ -333,6 +354,7 @@ owner_is_shell = os.tcgetpgrp(0) == os.getpgrp()
     "stops": stops, "code": os.waitstatus_to_exitcode(status), "owner_is_shell": owner_is_shell,
 }))
 """
+_SHELL_SOURCE = _with_budgets(_SHELL_SOURCE)
 
 
 class _Terminal:
@@ -470,8 +492,13 @@ class _Scene:
         assert probe.returncode == 0, f"relocated interpreter copy failed: {probe.stderr}"
         return env
 
-    def env(self, variant: str, provider: str, slot: str = "", flag: str = "") -> dict[str, str]:
-        """The environment of one launch; its markers go to `out/<slot>` (a second chat's own)."""
+    def env(
+        self, variant: str, provider: str, slot: str = "", flag: str = "", stderr_log: str = ""
+    ) -> dict[str, str]:
+        """The environment of one launch; its markers go to `out/<slot>` (a second chat's own).
+
+        *stderr_log* names a file in that directory that receives Booley's stderr.
+        """
         out = self.out / slot
         out.mkdir(exist_ok=True)
         return {
@@ -481,6 +508,7 @@ class _Scene:
             "DRIVER_OUT": str(out),
             "AGENT_OUT": str(out),
             "DRIVER_FLAG": flag,
+            "DRIVER_STDERR": str(out / stderr_log) if stderr_log else "",
         }
 
     def start(
@@ -491,13 +519,14 @@ class _Scene:
         shell: str | None = None,
         slot: str = "",
         flag: str = "",
+        stderr_log: str = "",
         ready: bool = True,
     ) -> _Terminal:
         """Start the driver (or the job-control shell around it) and wait for the agent."""
         argv = [sys.executable, str(self.driver), provider]
         if shell is not None:
             argv = [sys.executable, str(self.shell), shell, str(self.driver), provider]
-        terminal = _Terminal(argv, self.env(variant, provider, slot, flag))
+        terminal = _Terminal(argv, self.env(variant, provider, slot, flag, stderr_log))
         self.terminals.append(terminal)
         if ready:
             terminal.expect("AGENT-READY")
@@ -563,6 +592,7 @@ class _Scene:
             _kill_group(group)
         for process in self.processes:
             _kill_group(process.pid)
+            # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
             process.wait(timeout=_WAIT_SECONDS)
             for pipe in (process.stdin, process.stdout, process.stderr):
                 if pipe is not None:
@@ -595,6 +625,15 @@ def _assert_forked(scene: _Scene) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def _finish_with_line(terminal: _Terminal) -> None:
     terminal.write("done\n")
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
+
+
+def _finish_worktree_session(terminal: _Terminal) -> None:
+    """End a worktree session: the agent reads its line and exits, then Enter keeps the worktree."""
+    terminal.write("done\n")
+    terminal.expect("Keep or discard worktree")
+    terminal.write("\n")
+    terminal.expect("Kept worktree")
     assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
 
 
@@ -792,6 +831,7 @@ def test_exit_status_propagates_without_a_terminal(scene: _Scene) -> None:
 
     process.stdin.write(b"done\n")
     process.stdin.flush()
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
     assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
 
 
@@ -827,6 +867,7 @@ def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) 
 
     process.stdin.write(b"done\n")
     process.stdin.flush()
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
     assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
 
 
@@ -836,7 +877,7 @@ def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) 
 
 _THREAD_ID = "019a0000-0000-7000-8000-000000000000"
 _SLOW_HOOK = (
-    "import pathlib, time\npathlib.Path({marker!r}).write_text('started')\ntime.sleep(60)\n"
+    "import pathlib, time\npathlib.Path({marker!r}).write_text('started')\ntime.sleep({outer!r})\n"
 )
 
 
@@ -884,7 +925,92 @@ def test_second_concurrent_chat_runs_in_the_worktree_named_after_its_handle(
         "(the main checkout is in use by another booley chat)."
     ) in " ".join(second.output.split())
     _finish_with_line(first)
-    _finish_with_line(second)
+    # A session in the main checkout gets neither the prompt nor the `Kept` line.
+    first.drain()
+    assert "Keep or discard" not in first.output
+    assert "Kept worktree" not in first.output
+    _finish_worktree_session(second)
+
+
+def test_worktree_session_exit_lists_losses_and_discard_forces_after_refusal(
+    scene: _Scene,
+) -> None:
+    # Bug caught: no prompt on a real terminal after the agent exits (or one shown before
+    # the terminal is back), a discard that skips `rm`'s refusal, or a changed exit code.
+    scene.git_project()
+    terminal = scene.start("claude", flag="always")
+    worktree = scene.booley_dir / "worktrees" / "s1"
+    (worktree / "unsaved.txt").write_bytes(b"work\n")
+
+    terminal.write("done\n")
+    terminal.expect("Work not in main yet:")
+    terminal.expect("  - 1 uncommitted change(s) in the worktree")
+    terminal.expect("Keep or discard worktree s1? [K/d]")
+    terminal.write("d\n")
+    terminal.expect("cannot be removed safely")
+    terminal.expect("Remove it anyway and lose this work? [y/N]")
+    assert (worktree / "unsaved.txt").is_file(), "removed before the second question"
+    terminal.write("y\n")
+    terminal.expect("Removed worktree s1.")
+
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
+    assert scene.worktree_names() == ["booley/s1"]  # the branch outlives the worktree
+
+
+def test_worktree_session_without_a_terminal_keeps_it(scene: _Scene) -> None:
+    # Bug caught: a piped launch prompting (and hanging on) a question nobody can answer.
+    scene.git_project()
+    process = subprocess.Popen(
+        [sys.executable, str(scene.driver), "claude"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=scene.env("read", "claude", flag="always"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stdout is not None
+    assert process.stdin is not None
+    assert process.stderr is not None
+    _read_until(process.stdout.fileno(), b"AGENT-READY")
+
+    process.stdin.write(b"done\n")
+    process.stdin.flush()
+    assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
+
+    err = process.stderr.read().decode()
+    worktree = scene.booley_dir / "worktrees" / "s1"
+    assert f"Kept worktree s1: {worktree}" in err
+    assert "Keep or discard" not in err
+    assert scene.worktree_names() == ["s1", "booley/s1"]
+
+
+def test_closing_the_terminal_of_a_worktree_session_keeps_it(scene: _Scene) -> None:
+    # Bug caught: Booley prompting on the hung terminal, or removing the worktree, after an
+    # agent that exits normally on SIGHUP. Stderr goes to a file so the outcome can be read.
+    scene.git_project()
+    terminal = scene.start("claude", "hup-exit", flag="always", stderr_log="stderr.log")
+
+    terminal.hang_up()
+    status = terminal.wait_exit()
+
+    assert os.waitstatus_to_exitcode(status) == 0
+    log = (scene.out / "stderr.log").read_text()
+    assert f"Kept worktree s1: {scene.booley_dir / 'worktrees' / 's1'}" in log
+    assert "Keep or discard" not in log
+    assert scene.worktree_names() == ["s1", "booley/s1"]
+
+
+def test_closing_the_terminal_keeps_the_agents_exit_code_with_stderr_on_it(scene: _Scene) -> None:
+    # Bug caught: the `Kept` line that cannot reach the hung-up terminal stays in Python's
+    # buffer, so the interpreter exits with 120 instead of the agent's status.
+    scene.git_project()
+    terminal = scene.start("claude", "hup-exit", flag="always")
+
+    terminal.hang_up()
+
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == 0
+    assert scene.worktree_names() == ["s1", "booley/s1"]
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
@@ -914,7 +1040,7 @@ def test_worktree_session_calls_without_work_dir_route_to_its_worktree(
 
     assert routed == (scene.booley_dir / "worktrees" / "s2").resolve()
     _finish_with_line(first)
-    _finish_with_line(second)
+    _finish_worktree_session(second)
 
 
 @pytest.mark.parametrize("interrupt", ["SIGINT", "SIGHUP"])
@@ -922,7 +1048,7 @@ def test_interrupted_worktree_setup_rolls_back(scene: _Scene, interrupt: str) ->
     # Bug caught: a signal during setup leaves worktree s1 and branch booley/s1 behind (and
     # Ctrl-C then dumps a traceback), or lets the agent start in a half-made worktree.
     marker = scene.out / "hook-started"
-    scene.git_project(hook=_SLOW_HOOK.format(marker=str(marker)))
+    scene.git_project(hook=_SLOW_HOOK.format(marker=str(marker), outer=2 * hang_guard_s()))
     terminal = scene.start("claude", flag="always", ready=False)
     wait_for(marker.exists, failure="the post-setup hook never started", timeout_s=_WAIT_SECONDS)
 
@@ -1002,6 +1128,7 @@ def test_launch_window_interrupt_without_a_terminal(scene: _Scene, at: str) -> N
     )
     scene.processes.append(process)
     assert process.stderr is not None
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
     returncode = process.wait(timeout=_WAIT_SECONDS)
     assert returncode == -signal.SIGINT, f"expected death by SIGINT, got exit status {returncode}"
     assert "Traceback" not in process.stderr.read().decode(errors="replace")

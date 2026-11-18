@@ -12,13 +12,14 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 import yaml
 from tests.flows.sim.prepared_group import run_prepared_group
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.compiler_cache import (
@@ -35,7 +36,7 @@ pytestmark = pytest.mark.skipif(
     shutil.which("verilator") is None or shutil.which("ccache") is None,
     reason="real smoke runs inside the pinned Booley Sandbox Image",
 )
-_TOOL_TIMEOUT_S = 300
+_TOOL_TIMEOUT_S = 10 * hang_guard_s()
 
 
 def _write_project(root: Path, revision: int) -> Path:
@@ -87,12 +88,10 @@ def _write_rtl(root: Path, revision: int) -> None:
 
 def _cache_hits(cache_dir: Path) -> int:
     """Return ccache's cumulative direct + preprocessed hit count for *cache_dir*."""
-    result = subprocess.run(
+    result = run_bounded_child(
         ["ccache", "--print-stats"],
         env={**os.environ, "CCACHE_DIR": str(cache_dir)},
-        capture_output=True,
-        text=True,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
         check=True,
     )
     stats = {
@@ -107,14 +106,11 @@ def _simulate(root: Path) -> str:
     """Run the ``check`` test through the real Simulation Flow; return all output."""
     outputs: list[str] = []
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        result = subprocess.run(
+    def invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
+        result = run_bounded_child(
             command,
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=min(timeout + 120, _TOOL_TIMEOUT_S),
-            check=False,
+            cwd=cwd or root,
+            timeout=min(timeout + 4 * hang_guard_s(), _TOOL_TIMEOUT_S),
         )
         outputs.append(result.stdout + result.stderr)
         return SubprocessResult(
@@ -123,7 +119,9 @@ def _simulate(root: Path) -> str:
 
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
     result = run_prepared_group(
-        SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=30000)),
+        SimulationExecution(
+            invoke=invoke, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
+        ),
         handle,
         ("check",),
     )
@@ -169,7 +167,7 @@ def _cached_build(root: Path, revision: int, cache_dir: Path) -> str:
         **execution_environment(policy, managed, ambient=os.environ),
     }
     assert environment["OBJCACHE"] == "ccache"
-    subprocess.run(
+    run_bounded_child(
         [
             "verilator",
             "--binary",
@@ -182,18 +180,11 @@ def _cached_build(root: Path, revision: int, cache_dir: Path) -> str:
         ],
         cwd=root,
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=_TOOL_TIMEOUT_S,
         check=True,
     )
-    return subprocess.run(
-        [str(build_root / "sim")],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=True,
+    return run_bounded_child(
+        [str(build_root / "sim")], cwd=root, timeout=2 * hang_guard_s(), check=True
     ).stdout
 
 

@@ -1,0 +1,144 @@
+{
+  "complete": true,
+  "completed_targets": [
+    "sim_0"
+  ],
+  "detail": {
+    "sim_0": {
+      "artifacts": {},
+      "build_stage": [
+        {
+          "cache_decision": "reuse unsupported; Target=acme:demo:counter:1#sim_0; digest=unavailable; generation=4c2e9efab8b2e459",
+          "elapsed_s": 0.004,
+          "failure_class": "infrastructure",
+          "oom_kill_delta": 0,
+          "peak_rss_mb": 2.51171875,
+          "ran": true,
+          "reason": "missing tool: verilator. Rebuild the Sandbox Image, then run `booley doctor` to verify EDA provisioning.",
+          "returncode": 2,
+          "terminal_record": true,
+          "timed_out": false,
+          "verdict": null
+        }
+      ],
+      "campaign_id": "8bcf70f3-e295-4197-8d89-1dbd9ca1d97c",
+      "complete": true,
+      "dependency": "external_origin_campaign",
+      "dependency_available": false,
+      "grade": "error",
+      "manifest_sha256": "sha256:3a4ad3806f1faefc19702385bd055f1241570acf209c34a8af4a8a12491ba1d0",
+      "observation_counts": {
+        "assertions": {
+          "not_observed": 2
+        },
+        "execution": {
+          "aborted": 2
+        },
+        "functional": {
+          "not_observed": 2
+        }
+      },
+      "observation_total": 2,
+      "observations": [
+        {
+          "assertion_count": 0,
+          "assertions": "not_observed",
+          "cycle_count": null,
+          "detail": {
+            "build_stage": {
+              "cache_decision": "reuse unsupported; Target=acme:demo:counter:1#sim_0; digest=unavailable; generation=4c2e9efab8b2e459",
+              "elapsed_s": 0.004,
+              "failure_class": "infrastructure",
+              "oom_kill_delta": 0,
+              "peak_rss_mb": 2.51171875,
+              "ran": true,
+              "reason": "missing tool: verilator. Rebuild the Sandbox Image, then run `booley doctor` to verify EDA provisioning.",
+              "returncode": 2,
+              "terminal_record": true,
+              "timed_out": false,
+              "verdict": null
+            },
+            "code": "build",
+            "missing_executable": "verilator",
+            "phase": "elaboration",
+            "reason": "missing tool: verilator. Rebuild the Sandbox Image, then run `booley doctor` to verify EDA provisioning.\n--- output tail ---\n directory '/booley-0.4.0-capture/.booley/.runtime/edalize/sim/d97661ba87c5f3996ba5/g/4c2e9efab8b2e459/acme_demo_counter_1/sim_0'\n\nmake: verilator: No such file or directory\nmake: *** [Makefile:8: Vcounter.mk] Error 127",
+            "text": "missing tool: verilator. Rebuild the Sandbox Image, then run `booley doctor` to verify EDA provisioning.\n--- output tail ---\n directory '/booley-0.4.0-capture/.booley/.runtime/edalize/sim/d97661ba87c5f3996ba5/g/4c2e9efab8b2e459/acme_demo_counter_1/sim_0'\n\nmake: verilator: No such file or directory\nmake: *** [Makefile:8: Vcounter.mk] Error 127"
+          },
+          "execution": "aborted",
+          "failure_class": "infrastructure",
+          "functional": "not_observed",
+          "test": "reset"
+        },
+        {
+          "assertion_count": 0,
+          "assertions": "not_observed",
+          "cycle_count": null,
+          "detail": {
+            "build_stage": {
+              "cache_decision": "reuse unsupported; Target=acme:demo:counter:1#sim_0; digest=unavailable; generation=4c2e9efab8b2e459",
+              "elapsed_s": 0.004,
+              "failure_class": "infrastructure",
+              "oom_kill_delta": 0,
+              "peak_rss_mb": 2.51171875,
+              "ran": true,
+              "reason": "missing tool: verilator. Rebuild the Sandbox Image, then run `booley doctor` to verify EDA provisioning.",
+              "returncode": 2,
+              "terminal_record": true,
+              "timed_out": false,
+              "verdict": null
+            },
+            "code": "build",
+            "missing_executable": "verilator",
+            "phase": "elaboration",
+            "reason": "missing tool: verilator. Rebuild the Sandbox Image, then run `booley doctor` to verify EDA provisioning.\n--- output tail ---\n directory '/booley-0.4.0-capture/.booley/.runtime/edalize/sim/d97661ba87c5f3996ba5/g/4c2e9efab8b2e459/acme_demo_counter_1/sim_0'\n\nmake: verilator: No such file or directory\nmake: *** [Makefile:8: Vcounter.mk] Error 127",
+            "text": "missing tool: verilator. Rebuild the Sandbox Image, then run `booley doctor` to verify EDA provisioning.\n--- output tail ---\n directory '/booley-0.4.0-capture/.booley/.runtime/edalize/sim/d97661ba87c5f3996ba5/g/4c2e9efab8b2e459/acme_demo_counter_1/sim_0'\n\nmake: verilator: No such file or directory\nmake: *** [Makefile:8: Vcounter.mk] Error 127"
+          },
+          "execution": "aborted",
+          "failure_class": "infrastructure",
+          "functional": "not_observed",
+          "test": "wrap"
+        }
+      ],
+      "observations_truncated": false,
+      "origin_invocation_id": 1,
+      "resolved_artifacts": {
+        "manifest": "/booley-0.4.0-capture/reports/sim/1/targets/sim_0/campaign/manifest.json",
+        "simulation": "/booley-0.4.0-capture/reports/sim/1/targets/sim_0/simulation.json"
+      },
+      "termination_counts": {},
+      "test_run_total": 2,
+      "test_runs": [
+        {
+          "args": [],
+          "env": {},
+          "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+          "grade": "error",
+          "name": "reset@1",
+          "seed": 1,
+          "test": "reset",
+          "variant": null
+        },
+        {
+          "args": [],
+          "env": {},
+          "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+          "grade": "error",
+          "name": "wrap@1",
+          "seed": 1,
+          "test": "wrap",
+          "variant": null
+        }
+      ],
+      "test_runs_truncated": false
+    }
+  },
+  "flow": "sim",
+  "mode": "simulate",
+  "pending_targets": [],
+  "phase": "complete",
+  "run_id": "",
+  "targets": [
+    "sim_0"
+  ],
+  "timestamp": "2026-11-13T04:56:00Z"
+}

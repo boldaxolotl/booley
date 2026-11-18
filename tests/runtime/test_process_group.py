@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import time
 
 import pytest
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.runtime import process_group
 
@@ -28,9 +30,7 @@ def test_group_identity_is_captured_from_spawn_not_rediscovered() -> None:
     assert group == process_group.ProcessGroup(417)
 
 
-def test_windows_spawn_uses_new_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
-
+def test_windows_spawn_uses_new_process_group() -> None:
     assert process_group.new_group_kwargs(is_windows=True) == {"creationflags": 0x200}
 
 
@@ -189,7 +189,7 @@ async def test_async_termination_kills_descendant_after_leader_exits(tmp_path) -
         "import pathlib, signal, time; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         f"pathlib.Path({str(ready)!r}).write_text('ready'); "
-        "time.sleep(1); "
+        f"time.sleep({scaled(1)}); "
         f"pathlib.Path({str(survived)!r}).write_text('survived')"
     )
     leader = await asyncio.create_subprocess_exec(
@@ -200,14 +200,13 @@ async def test_async_termination_kills_descendant_after_leader_exits(tmp_path) -
     )
     group = process_group.capture_process_group(leader)
     try:
-        for _ in range(100):
-            if ready.exists():
-                break
+        deadline = time.monotonic() + hang_guard_s()
+        while not ready.exists() and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
         assert ready.exists(), "grandchild never started"
 
-        await process_group.terminate_async_process_group(leader, group, grace_seconds=0.1)
-        await asyncio.sleep(1.1)
+        await process_group.terminate_async_process_group(leader, group, grace_seconds=scaled(0.1))
+        await asyncio.sleep(scaled(1.1))
 
         assert not survived.exists()
     finally:
@@ -223,7 +222,7 @@ async def test_adopted_group_termination_kills_descendant_after_leader_exit(tmp_
         "import pathlib, signal, time; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         f"pathlib.Path({str(ready)!r}).write_text('ready'); "
-        "time.sleep(1); "
+        f"time.sleep({scaled(1)}); "
         f"pathlib.Path({str(survived)!r}).write_text('survived')"
     )
     leader = await asyncio.create_subprocess_exec(
@@ -235,14 +234,13 @@ async def test_adopted_group_termination_kills_descendant_after_leader_exit(tmp_
     group = process_group.capture_process_group(leader)
     await leader.wait()
     try:
-        for _ in range(100):
-            if ready.exists():
-                break
+        deadline = time.monotonic() + hang_guard_s()
+        while not ready.exists() and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
         assert ready.exists(), "adopted grandchild never started"
 
-        await process_group.terminate_adopted_process_group(group, grace_seconds=0.1)
-        await asyncio.sleep(1.1)
+        await process_group.terminate_adopted_process_group(group, grace_seconds=scaled(0.1))
+        await asyncio.sleep(scaled(1.1))
 
         assert not survived.exists()
     finally:

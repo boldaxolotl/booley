@@ -1,51 +1,33 @@
 # bwave list
 
-## Synopsis
-
-```bash
-bwave list <FST_FILE> [-s PATTERN ...] [--tree] [--format text|json]
-```
-
 ## Semantics
 
-List signals (or scopes) in an `.fst` store. No values,
-just names, widths, and VCD var types. Use this first
-when you don't yet know what's in the store or you're
-hunting for the right pattern to feed to other queries.
+List signals (or, with `--tree`, scopes) in a store: names, widths, and
+VCD var types, no values. Run it first, to learn what the store holds and
+which pattern to pass to other queries (`reference/patterns`).
 
-Output is sorted hierarchically and indented; a common
-scope prefix (the deepest scope shared by all matches) is
-stripped from each line and shown once as `# scope:` on
+Output is an indented hierarchical tree. The deepest scope shared by all
+matches is stripped from each line and printed once as `# scope:` on
 stderr.
 
-## Defaults and requiredness
-
-- `<FST_FILE>` is required.
-- `-s PATTERN` is optional and repeatable. Omitted means
-  `*` (everything).
-- `--tree` lists scopes only (modules), no leaf signals,
-  in text mode; `--tree --format json` exits with code 2.
-- `--clock` overrides the reported clock metadata.
-  `--async`, `--reset`, `--with-reset` are no-ops here
-  (there are no sampled values).
-- `--limit N` bounds the printed leaf-signal count (the
-  Booley wrapper defaults it to 400 so a listing fits the
-  MCP output window). Truncation is announced on stderr;
-  `--tree` is never truncated.
+`--clock` changes only the reported clock metadata; `--async` and
+`--with-reset` have no effect, and `--reset` is only checked: a bad pattern
+exits 2. `--limit` never truncates `--tree`. The
+Booley wrapper defaults `--limit` to 400.
 
 ## Output shape
 
-Text mode: indented tree, one signal per line, columns are
-`NAME WIDTH VAR_TYPE`. A footer on stderr reports the
-match count and a hint.
+Text mode: indented tree on stdout. A scope row is
+`NAME (N signals)`; a signal row is `NAME VAR_TYPE WIDTH`.
+The scope prefix and a footer with the match count and a
+hint go to stderr.
 
 ```
-# scope: tb.dut
-clk            1 wire
-rst_n          1 wire
-state          3 reg
-data_out      32 wire
-# 4 signals — narrow with -s PATTERN or use --tree
+clk                            wire     1-bit
+data[7:0]                      wire     8-bit
+rstn                           wire     1-bit
+# scope: tb
+# 3 signals — narrow with -s PATTERN or use --tree
 ```
 
 A store that contains no signals at all (header-only
@@ -75,44 +57,12 @@ JSON mode produces a `listData` envelope:
 }
 ```
 
-See `bwave docs show reference/json-envelope` for the full
-schema.
-
-## Common errors
-
-- **Empty output, no error**: pattern matched nothing.
-  Bare names *suffix-match*: `data` matches `*.data` but
-  not `data_out`. Use `*data*` for substring. See
-  `troubleshooting/empty-results`.
-- **`requires a built waveform store`**: pass an `.fst`
-  store, not a `.vcd`. Build one first:
-  `bwave build <vcd> -o trace.fst`.
-- **Garbage signal names**: wrong `--scope` at build
-  time. Rebuild with the right scope (or with no scope to
-  capture everything).
+`bwave schema` has the full grammar.
 
 ## Examples
 
-List every signal in the store:
-
 ```bash
 bwave list sim.fst
-```
-
-Look for AXI-related signals:
-
-```bash
 bwave list sim.fst -s "axi*valid" -s "axi*ready"
-```
-
-Module-tree only, no leaves, quick structural view:
-
-```bash
-bwave list sim.fst --tree
-```
-
-Pipe to JSON for downstream tooling:
-
-```bash
 bwave list sim.fst -s "*fsm*" --format json | jq '.data.signals[].name'
 ```

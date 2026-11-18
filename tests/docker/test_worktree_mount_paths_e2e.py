@@ -6,15 +6,19 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from tests.docker.isolation.container_names import next_ci_container_name
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 
 def _run(args: list[str], *, cwd: Path | None = None):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=90, check=False)
+    return run_bounded_child(args, cwd=cwd, timeout=3 * hang_guard_s())
 
 
 @pytest.fixture(scope="module")
@@ -77,10 +81,10 @@ def _container(image: str, root: Path, state: Path, script: str, *, duplicate: b
         "-e",
         "PYTHONPATH=/opt/booley-test-src",
         "-e",
-        "BOOLEY_DIR=/booley-project",
+        "BOOLEY_DIR=/booley",
     ]
     if duplicate:
-        args += ["--mount", f"type=bind,source={state},target=/booley-project"]
+        args += ["--mount", f"type=bind,source={state},target=/booley"]
     return _run([*args, image, "-c", script])
 
 
@@ -93,7 +97,7 @@ metadata = Path('/work/.git/worktrees/demo')
 subprocess.run(['git', '-C', '/work', 'config', 'core.repositoryformatversion', '1'], check=True)
 subprocess.run(['git', '-C', '/work', 'config', 'extensions.relativeWorktrees', 'true'], check=True)
 (checkout / '.git').write_text('gitdir: ../../../work/.git/worktrees/demo\\n')
-(metadata / 'gitdir').write_text('../../../../booley-project/worktrees/demo/.git\\n')
+(metadata / 'gitdir').write_text('../../../../former-mount/worktrees/demo/.git\\n')
 """
 
 
@@ -131,8 +135,8 @@ def test_external_directory_layout_uses_actual_guarded_builder(
             output,
             root,
             external,
-            "from pathlib import Path; assert not Path('/booley-project').is_symlink(); "
-            "assert Path('/booley-project/proof').read_text() == 'external-state\\n'; "
+            "from pathlib import Path; assert not Path('/booley').is_symlink(); "
+            "assert Path('/booley/proof').read_text() == 'external-state\\n'; "
             "assert not Path('/work/.booley').exists()",
         )
         assert result.returncode == 0, result.stderr
@@ -152,7 +156,7 @@ def test_canonical_mount_pins_state_and_preserves_discovery_boundary(tmp_path: P
 import errno
 import subprocess
 from pathlib import Path
-assert Path('/booley-project').resolve() == Path('/work/.booley')
+assert Path('/booley').resolve() == Path('/work/.booley')
 try:
     Path('/work/.booley').rename('/work/replaced-state')
 except OSError as exc:
@@ -179,7 +183,7 @@ from booley.harness import worktree_cmd
 sys.exit(worktree_cmd.run(argparse.Namespace(worktree_command='new', name='demo'), Path('/work')))
 """
 
-_SANDBOX_PATHS = ("/work/", "/booley-project")
+_SANDBOX_PATHS = ("/work/", "/booley")
 
 
 def _host_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -253,8 +257,7 @@ def test_worktree_new_in_sandbox_refuses_external_booley_dir(tmp_path: Path, doc
     with tempfile.TemporaryDirectory(prefix="booley2916-image-") as directory:
         recipe = Path(directory) / "Dockerfile"
         recipe.write_text(
-            f"FROM {parent}\nUSER root\n"
-            "RUN rm -rf /booley-project && mkdir /booley-project\nUSER agent\n"
+            f"FROM {parent}\nUSER root\nRUN rm -rf /booley && mkdir /booley\nUSER agent\n"
         )
         build = _run(
             ["docker", "build", "--pull=false", "-f", str(recipe), "-t", plain, directory]
@@ -272,13 +275,56 @@ def test_worktree_new_in_sandbox_refuses_external_booley_dir(tmp_path: Path, doc
     assert _host_git(root, "worktree", "list", "--porcelain").stdout.count("worktree ") == 1
 
 
+@contextmanager
+def _derived_image_id(parent_id: str, run: str) -> Iterator[str]:
+    """Build a derivative of *parent_id* that runs *run* as root; yield its image ID."""
+    output = f"booley4090-layout-{uuid4().hex}:local"
+    parent = f"127.0.0.1:1/booley4090-parent-{uuid4().hex}:local"
+    assert _run(["docker", "tag", parent_id, parent]).returncode == 0
+    try:
+        with tempfile.TemporaryDirectory(prefix="booley4090-image-") as directory:
+            recipe = Path(directory) / "Dockerfile"
+            recipe.write_text(f"FROM {parent}\nUSER root\nRUN {run}\nUSER agent\n")
+            build = _run(
+                ["docker", "build", "--pull=false", "-f", str(recipe), "-t", output, directory]
+            )
+        assert build.returncode == 0, build.stderr
+        inspect = _run(["docker", "image", "inspect", "--format", "{{.Id}}", output])
+        assert inspect.returncode == 0, inspect.stderr
+        yield inspect.stdout.strip()
+    finally:
+        _run(["docker", "image", "rm", output, parent])
+
+
+@pytest.mark.slow
+def test_layout_probe_reads_real_images(docker_image):
+    from booley.runtime import project_image
+
+    alias_id = docker_image[1]
+    layouts = {
+        "rm -rf /booley": None,
+        "rm -rf /booley && mkdir /booley && chown root:root /booley": False,
+        "rm -rf /booley && mkdir /booley && chown agent:agent /booley": None,
+    }
+    project_image.project_data_alias_capable.cache_clear()
+
+    assert project_image.project_data_alias_capable(alias_id) is True
+    for run, capable in layouts.items():
+        with _derived_image_id(alias_id, run) as image_id:
+            if capable is None:
+                with pytest.raises(project_image.ImageLayoutMissingError):
+                    project_image.project_data_alias_capable(image_id)
+            else:
+                assert project_image.project_data_alias_capable(image_id) is capable
+
+
 def _canonical_alias_recipe() -> str:
     recipe_root = Path(__file__).resolve().parents[2] / "src/booley/data/docker"
     wheel = (recipe_root / "Dockerfile.wheel").read_text()
     legacy = (recipe_root / "Dockerfile").read_text()
     alias = wheel[
-        wheel.index("RUN if test -e /booley-project") : wheel.index(
-            "USER agent", wheel.index("RUN if test -e /booley-project")
+        wheel.index("RUN if test -e /booley") : wheel.index(
+            "USER agent", wheel.index("RUN if test -e /booley")
         )
     ]
     assert alias in legacy
@@ -370,13 +416,13 @@ def _external_container(image: str, root: Path, external: Path, script: str):
             "--mount",
             f"type=bind,source={root},target=/work",
             "--mount",
-            f"type=bind,source={external},target=/booley-project",
+            f"type=bind,source={external},target=/booley",
             "--mount",
             f"type=bind,source={source},target=/opt/booley-test-src,readonly",
             "-e",
             "PYTHONPATH=/opt/booley-test-src",
             "-e",
-            "BOOLEY_DIR=/booley-project",
+            "BOOLEY_DIR=/booley",
             image,
             "-c",
             script,

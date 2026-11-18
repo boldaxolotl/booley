@@ -37,7 +37,7 @@ _STANDARD_RELEASE_JOBS = {
 }
 _RISCV_RELEASE_JOBS = {
     "riscv-image-contract",
-    "demo-goal-surface",
+    "demo-surface",
     "picorv32-demo-flows",
     "ibex-lint-demo",
 }
@@ -173,7 +173,23 @@ def _picorv32_errors(jobs: dict[str, Any]) -> list[str]:
         errors.append("picorv32-demo-flows must enable lint and simulation")
     if "-e BOOLEY_RUN_PICORV32_FLOWS" not in str(flow_step.get("run", "")):
         errors.append("picorv32-demo-flows must pass its flow flag into the container")
+    errors.extend(_measurement_errors(picorv32))
     return errors
+
+
+def _measurement_errors(picorv32: dict[str, Any]) -> list[str]:
+    """The release records its measurement check only after validating the round trip."""
+    record = _named_step(picorv32, "Record PicoRV32 evidence")
+    command = str(record.get("run", "")) if record is not None else ""
+    validator = "release_validation/measurement_evidence.py"
+    check = "--check picorv32.measured"
+    if (
+        validator not in command
+        or check not in command
+        or command.index(validator) > command.index(check)
+    ):
+        return ["picorv32-demo-flows must validate measurement evidence before recording it"]
+    return []
 
 
 def _provenance_errors(jobs: dict[str, Any]) -> list[str]:

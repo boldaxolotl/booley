@@ -7,11 +7,10 @@ from pathlib import Path
 import pytest
 
 from booley.audit.diagnostic_results import Severity
+from booley.core.host_shell import quote_arg
 from booley.harness.setup import readiness
 from booley.harness.setup.line_endings import (
-    LineEndingActionKind,
     LineEndingActionResult,
-    LineEndingActionState,
     LineEndingObservation,
     LineEndingObservationCode,
     LineEndingReport,
@@ -28,13 +27,12 @@ _UNREADABLE = "git.line-endings-unreadable"
 _CRLF_FIX = "booley init   (automatically repairs a clean tree; commit or stash first)"
 _AUTOCRLF_TRUE = (
     "core.autocrlf=true — the tree is LF today, but the next clone or checkout "
-    "will re-create it with CRLF and break Goal Mode"
+    "will re-create it with CRLF and break measurements"
 )
 _AUTOCRLF_UNSET = (
     "core.autocrlf is not set locally — the effective value is false today, but a "
     "global config change can re-create CRLF checkouts"
 )
-_POLICY_FIX = "inspect attributes policy, then re-run booley init"
 
 # (id, observations, actions, expected (severity, message, fix, check_id, subject) with
 # "{id}" standing for the repository identity). Literal text from the pre-move Doctor.
@@ -90,19 +88,6 @@ _CASES = [
             _ROLE,
         ),
     ),
-    *(
-        (
-            code.value,
-            (LineEndingObservation(code, detail="policy detail text"),),
-            (),
-            (Severity.WARN, "{id}: policy detail text", _POLICY_FIX, _UNREADABLE, _ROLE),
-        )
-        for code in (
-            Code.LOCAL_POLICY_MISSING,
-            Code.LEAKED_ROOT_POLICY,
-            Code.LOCAL_POLICY_CONFLICT,
-        )
-    ),
     (
         "autocrlf-unreadable",
         (LineEndingObservation(Code.AUTOCRLF_UNREADABLE),),
@@ -152,43 +137,14 @@ _CASES = [
         ),
     ),
     (
-        "candidate-unsafe-without-detail",
-        (LineEndingObservation(Code.CANDIDATE_UNSAFE),),
+        "status-unreadable-without-detail",
+        (LineEndingObservation(Code.STATUS_UNREADABLE),),
         (),
         (
             Severity.WARN,
             "line endings: {id}: inspection was incomplete",
             "",
             _UNREADABLE,
-            _ROLE,
-        ),
-    ),
-    (
-        "planned-attributes-migration",
-        (),
-        (
-            LineEndingActionResult(
-                LineEndingActionKind.MIGRATE_ATTRIBUTES, LineEndingActionState.PLANNED
-            ),
-        ),
-        (
-            Severity.WARN,
-            "{id}: repository-local line-ending default awaits Stealth opt-out migration",
-            "booley init   (migrates the local default to the root attributes policy)",
-            "git.line-ending-migration",
-            _ROLE,
-        ),
-    ),
-    (
-        "unknown-attributes-policy",
-        (LineEndingObservation(Code.ATTRIBUTES_POLICY_UNKNOWN, detail="source unreadable"),),
-        (),
-        (
-            Severity.WARN,
-            "{id}: attributes policy inspection incomplete: source unreadable",
-            "preserve existing attributes and worktree registrations; inspect the policy "
-            "at its source",
-            "git.attributes-policy-unknown",
             _ROLE,
         ),
     ),
@@ -223,22 +179,23 @@ def test_line_ending_findings_keep_exact_text(
     actions: tuple[LineEndingActionResult, ...],
     expected: tuple[Severity, str, str, str | None, str | None],
 ) -> None:
-    repository = LineEndingRepository(_ROLE, tmp_path)
+    root = tmp_path / "it's a root"
+    repository = LineEndingRepository(_ROLE, root)
     report = LineEndingReport(
         LineEndingStatus.UNSAFE,
         (RepositoryLineEndingReport(repository, LineEndingStatus.UNSAFE, observations, actions),),
         (),
     )
-    identity = f"Project Root ({tmp_path})"
+    identity = f"Project Root ({root})"
     severity, message, fix, check_id, subject = expected
 
-    findings = _inspect(tmp_path, report, monkeypatch).findings
+    findings = _inspect(root, report, monkeypatch).findings
 
     assert [(f.severity, f.message, f.fix, f.check_id, f.subject) for f in findings] == [
         (
             severity,
             message.format(id=identity),
-            fix.format(root=tmp_path),
+            fix.format(root=quote_arg(str(root))),
             check_id,
             subject,
         )

@@ -7,6 +7,7 @@ from booley.mcp import server, session_observer, session_peer, session_registry
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from tests.mcp_tools.test_session_registry import IDENTITY, SCOPE
 from tests.mcp_tools.test_session_requests import _sdk_session
+from tests.time_budget import hang_guard_s
 
 
 def _lifetime(tmp_path, monkeypatch, *, nested):
@@ -21,7 +22,7 @@ def _lifetime(tmp_path, monkeypatch, *, nested):
     monkeypatch.setattr(session_registry, "_worktree_facts", lambda p: (p, "fixture", "main"))
     lifetime = server._McpLifetime(None, None)
     monkeypatch.setattr(lifetime.sessions, "_registry", lambda: SessionRegistry(tmp_path))
-    lifetime.sessions.budget = 1
+    lifetime.sessions.budget = hang_guard_s()
     return lifetime
 
 
@@ -55,7 +56,7 @@ async def test_nested_server_writes_no_session_rows(tmp_path, monkeypatch, neste
 
 
 @pytest.mark.asyncio
-async def test_nested_server_neither_writes_nor_prunes_but_still_warns(tmp_path, monkeypatch):
+async def test_nested_server_neither_writes_nor_prunes(tmp_path, monkeypatch):
     observer = _lifetime(tmp_path, monkeypatch, nested=True).sessions
     _seed(tmp_path, "codex:other", at=observer.now())
     request = await server._observed_request_context(
@@ -67,8 +68,7 @@ async def test_nested_server_neither_writes_nor_prunes_but_still_warns(tmp_path,
     )
     if observer._pending is not None:
         await observer._pending
-    # Reads still work: the caller sees the other session sharing its worktree.
-    assert request.presentation_warning == "WARNING: another session shares this Goal worktree"
+    assert request.attribution is not None
     registry = SessionRegistry(tmp_path)
     assert not registry.path("codex:mine").exists()
     # Maintenance is read-only too: an expired row is left for the interactive server.

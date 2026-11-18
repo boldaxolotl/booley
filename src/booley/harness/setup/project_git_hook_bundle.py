@@ -16,6 +16,7 @@ _SOURCE_INVENTORY = (
     ("boundary.py", Path("core") / "boundary.py"),
     ("checkout_role.py", Path("core") / "checkout_role.py"),
     ("run_command.py", Path("core") / "run_command.py"),
+    ("host_shell.py", Path("core") / "host_shell.py"),
     ("booley_commit_policy.py", Path("commit_policy") / "policy.py"),
     ("booley_commit_validation.py", Path("commit_policy") / "validation.py"),
     ("commit_msg_utils.py", Path("dev_support") / "commit_msg_utils.py"),

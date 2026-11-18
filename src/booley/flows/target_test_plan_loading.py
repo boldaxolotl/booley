@@ -84,7 +84,7 @@ def load_checkout_target_test_plan(work_dir: Path | str, target: str) -> TargetT
     """*target*'s Test Run plan in the checkout at *work_dir*, from its ``.core`` and ``tests.toml``.
 
     For callers outside the Simulation Flow that need the plan the Flow would
-    build (Goal Mode freezes a Goal's Test Runs with it). Raises
+    build Raises
     ``FuseSocError`` (``UnknownTargetError`` included) when the Target cannot
     be selected or inspected, ``ValueError`` for a ``tests.toml`` the Target
     cannot apply, and ``OSError`` when it cannot be read.

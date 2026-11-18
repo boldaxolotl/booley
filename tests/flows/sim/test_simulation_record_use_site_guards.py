@@ -1,0 +1,267 @@
+"""Guards that replaced decode-time validation of manifest paths and baselines (#2136)."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from booley.flows.sim.config import parse_run_cwd_template
+from booley.flows.sim.record.bundle import verify_bundle_in_place
+from booley.flows.sim.record.codec import (
+    SimulationRecordIntegrityError,
+    canonical_json_bytes,
+    decode_simulation_result,
+    decode_simulator_bundle,
+    linked_manifest_path,
+)
+from booley.flows.sim.record.coordinator import result_observations
+from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
+from booley.flows.sim.record.inspection import (
+    read_durable_results,
+)
+from booley.flows.sim.record.model import BundleBuildResult
+from booley.flows.sim.record.planning import manifest_digest
+from tests.flows.sim.simulation_record_test_support import (
+    _completed,
+    _read,
+    _recovery_executor,
+    _request,
+    _write,
+)
+from tests.flows.sim.test_simulation_record_codec_golden import _simulation_result
+from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
+
+
+@pytest.mark.parametrize(
+    ("path", "contained"),
+    [
+        ("targets/x%40baseline-abc/record/manifest.json", True),
+        ("../outside/targets/x/record/manifest.json", False),
+        ("targets/../record/manifest.json", False),
+        ("targets/x/record/manifest.json/extra", False),
+        ("/abs/targets/x/record/manifest.json", False),
+        (None, False),
+    ],
+)
+def test_a_planned_prerequisite_path_is_a_contained_manifest_or_refused(
+    tmp_path: Path, path: str | None, contained: bool
+) -> None:
+    if contained:
+        assert linked_manifest_path(tmp_path, {"path": path}) == tmp_path / str(path)
+    else:
+        with pytest.raises(SimulationRecordIntegrityError):
+            linked_manifest_path(tmp_path, {"path": path})
+
+
+def test_planning_refuses_a_prerequisite_not_planned_as_a_baseline(tmp_path: Path) -> None:
+    """A Cocotb baseline is planned as a candidate, so its link would point nowhere."""
+    _project, handle, inspection, preview = _planning_fixture(tmp_path)
+    prerequisite = {"target": {"selector": "base", "role": "candidate"}}
+
+    with pytest.raises(
+        SimulationRecordIntegrityError, match=r"'base' was not planned as a Cycle Count baseline"
+    ):
+        plan_ordinary_hdl_simulation_record(
+            handle=handle,
+            inspection=inspection,
+            preview=preview,
+            groups=preview.groups,
+            required_suite=("reset", "count"),
+            revision="abc123",
+            invocation_id=1,
+            execution_id="",
+            trace=False,
+            prerequisite_documents=(prerequisite,),
+        )
+
+
+@pytest.mark.parametrize("template", ["../shared", "a/../b", "..\\shared", "a\\..\\b"])
+def test_run_cwd_refuses_a_parent_component_with_either_separator(template: str) -> None:
+    with pytest.raises(ValueError, match=r"must not contain a '\.\.' component"):
+        parse_run_cwd_template(template)
+
+
+def bundle_document() -> dict[str, Any]:
+    """The committed simulator bundle fixture, parsed fresh for the caller to alter."""
+    return json.loads(
+        (Path(__file__).parents[1] / "fixtures/simulation_record/bundle.json").read_bytes()
+    )
+
+
+def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path: Path) -> None:
+    """The decoder no longer checks artifact paths, so the file operation must (#1743)."""
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    escaped = tmp_path / "escape"
+    escaped.write_bytes(b"x")
+    document = bundle_document()
+    artifact = document["artifacts"][0]
+    artifact.update(path="../escape", bytes=1, sha256="sha256:" + hashlib.sha256(b"x").hexdigest())
+    bundle = decode_simulator_bundle(canonical_json_bytes(document))
+
+    with pytest.raises(SimulationRecordIntegrityError, match="contained"):
+        verify_bundle_in_place(bundle, BundleBuildResult({}), bundle_root)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "shared_failure",
+        "shared_failure_text",
+        "shared_failure_detail",
+        "ordinal",
+        "ready_bundle",
+        "bundle_path",
+        "build_state",
+    ],
+)
+def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: str) -> None:
+    """Nested data the decoders no longer check fails as the integrity error where it is read."""
+    completed = _completed(tmp_path)
+    store = completed.store
+    build_path = completed.build_dir / "build-result.json"
+    build_result = _read(build_path)
+    variant = build_result["build_variant_id"]
+    if case.startswith("shared_failure"):
+        # A second item of the same variant reuses the tampered shared result at launch.
+        observation = {
+            "shared_failure": None,
+            "shared_failure_text": {"class": "design", "code": "c", "message": 42, "detail": {}},
+            "shared_failure_detail": {
+                "class": "design",
+                "code": "c",
+                "message": "m",
+                "detail": "x",
+            },
+        }[case]
+        build_result.update(state="design_failure", bundle=None, observation=observation)
+        _write(build_path, build_result)
+        manifest = store.load_manifest()
+        item = manifest.document["work_items"][0]
+        request = _request(store, manifest, item, tmp_path / "project", invocation=1)
+        with pytest.raises(SimulationRecordIntegrityError):
+            _recovery_executor(tmp_path / "engine-build").execute(request)
+    elif case == "ordinal":
+        attempt_path = completed.attempt_dir / "attempt.json"
+        _write(attempt_path, _read(attempt_path) | {"attempt_ordinal": "1"})
+        with pytest.raises(SimulationRecordIntegrityError):
+            store.scan()
+    else:
+        if case == "ready_bundle":
+            build_result["bundle"] = None
+        elif case == "bundle_path":
+            build_result["bundle"]["manifest_path"] = "../escape"
+        else:
+            build_result["state"] = "bogus"
+        _write(build_path, build_result)
+        with pytest.raises(SimulationRecordIntegrityError):
+            store.recover_shared_build(variant, 1)
+
+
+def _bundle_with_artifacts(artifacts: list[dict[str, object]]):
+    document = bundle_document()
+    document["artifacts"] = artifacts
+    return decode_simulator_bundle(canonical_json_bytes(document))
+
+
+@pytest.mark.parametrize("case", ["unknown_kind", "duplicate_path", "no_executable"])
+def test_a_bundle_inventory_the_decoder_no_longer_checks_is_refused(case: str) -> None:
+    from booley.flows.sim.record.bundle import require_bundle_inventory
+
+    executable = {"bytes": 1, "kind": "simulator_executable", "path": "simv", "sha256": "sha256:b"}
+    artifacts = {
+        "unknown_kind": [executable | {"kind": "bogus"}],
+        "duplicate_path": [executable, executable],
+        "no_executable": [executable | {"kind": "runtime_data"}],
+    }[case]
+    with pytest.raises(SimulationRecordIntegrityError):
+        require_bundle_inventory(_bundle_with_artifacts(artifacts))
+
+
+def test_a_deeply_nested_record_is_refused_at_decode() -> None:
+    """Skipping the nested-field checks must not skip the nesting ceiling (#1743)."""
+    document = bundle_document()
+    document["created_at"] = "X"
+    raw = canonical_json_bytes(document).replace(b'"X"', b"[" * 600 + b"]" * 600)
+    with pytest.raises(SimulationRecordIntegrityError, match="nesting"):
+        decode_simulator_bundle(raw)
+
+
+@pytest.mark.parametrize("case", ["grade", "observation_missing", "observation_enum"])
+def test_a_malformed_published_result_is_corrupt_storage(tmp_path: Path, case: str) -> None:
+    """Nested result data the decoder no longer checks fails as the integrity error at its use (#1744)."""
+    completed = _completed(tmp_path)
+    store = completed.store
+    result_path = store.work_item_directory(completed.item_id) / "result.json"
+    result = _read(result_path)
+    if case == "grade":
+        result["grade"] = "PASS"
+    elif case == "observation_missing":
+        del result["observations"][0]["execution"]
+    else:
+        result["observations"][0]["assertions"] = "unknown"
+    _write(result_path, result)
+    manifest = store.load_manifest()
+    digest = manifest_digest(manifest)
+    with pytest.raises(SimulationRecordIntegrityError):
+        if case == "grade":
+            store.regenerate_summary(manifest, digest)
+        else:
+            read_durable_results(store.manifest_path, digest)
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        # The prerequisite baseline path reads the observation's cycle count (#1744).
+        lambda document: document["observations"][0].update(cycle_count="7"),
+        lambda document: document["observations"][0].update(cycle_count=-1),
+        lambda document: document["observations"][0].update(cycle_count=True),
+        # An extra member would override the work item identity in acceptance facts (#1744).
+        lambda document: document["observations"][0].update(role="candidate"),
+        # A mapping in place of the observation list is refused, not iterated by key (#1744).
+        lambda document: document.update(observations={}),
+    ],
+    ids=[
+        "cycle_count_text",
+        "cycle_count_negative",
+        "cycle_count_bool",
+        "identity_member",
+        "not_a_list",
+    ],
+)
+def test_result_observations_refuses_a_malformed_observation(alter) -> None:
+    document = json.loads(_simulation_result("completed"))
+    alter(document)
+    result = decode_simulation_result(canonical_json_bytes(document))
+    with pytest.raises(SimulationRecordIntegrityError):
+        result_observations(result)
+
+
+def test_coverage_owner_refuses_malformed_result_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A result whose evidence lacks a member the owner check reads is a reference error (#1744)."""
+    from booley.flows.sim import coverage_reference, record
+    from booley.flows.sim.coverage_reference import CoverageRecordReferenceError
+
+    evidence = {"kind": "coverage_record_manifest"}
+    authenticated = SimpleNamespace(
+        manifest=SimpleNamespace(document={"target": {}}),
+        result=SimpleNamespace(document={"evidence": (evidence,)}),
+    )
+    monkeypatch.setattr(record, "authenticate_work_item", lambda *_args, **_kwargs: authenticated)
+    monkeypatch.setattr(coverage_reference, "crossed_booley_dir_entry", lambda _path: None)
+    resolved = SimpleNamespace(
+        reference=SimpleNamespace(
+            document={"coverage_record": {}, "simulation_work_item_id": "item"}
+        ),
+        reference_path=tmp_path / "reference.json",
+    )
+    with pytest.raises(CoverageRecordReferenceError, match="evidence is malformed"):
+        coverage_reference.authenticate_coverage_record_owner(resolved)  # type: ignore[arg-type]

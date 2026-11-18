@@ -8,6 +8,9 @@ modules are ignored and a renamed module is stressed under its new path.
 Modules marked ``native_bwave`` as a whole are skipped: they need the Rust
 binary and run only in bwave-integration, and the job deselects that marker.
 
+Only ordinary pull requests run the job: pushes, scheduled and manual runs, and
+Mergify queue drafts skip it. A failed repetition fails ``ci-required``.
+
 Cost cap: one repeat count serves the whole job, sized so the estimated serial
 Windows test time stays within ``BUDGET_SECONDS``. The Windows timing model
 records only slow tests, so each test function costs its recorded time or the
@@ -25,7 +28,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from ci_goal_tests import GOAL_TESTS_PREFIX
 from ci_test_shards import load_timings
 
 MAX_COUNT = 10
@@ -37,11 +39,11 @@ MODULE_FLOOR_SECONDS = 5.0
 # Mergify validates queued pull requests on draft PRs from these branches. The
 # PR already passed flake-stress, so the queue skips it.
 QUEUE_BRANCH_PREFIX = "mergify/merge-queue/"
+# One repeat count serves both operating systems, so it is sized from the Windows
+# model, which therefore keeps the Sandbox-only entries Windows skips.
 TIMING_MODEL = Path(__file__).parents[2] / ".github/ci/windows-test-timings.json"
-# tests/fixtures/ holds sample projects whose tests run only inside them. CI never
-# runs Goal Mode unit tests (#3329), and an explicit path would bypass the
-# collection ignore in tests/conftest.py.
-_EXCLUDED_PREFIXES = ("tests/fixtures/", GOAL_TESTS_PREFIX)
+# tests/fixtures/ holds sample projects whose tests run only inside them.
+_EXCLUDED_PREFIXES = ("tests/fixtures/",)
 _ADDED_STATUSES = frozenset("AC")
 _CHANGED_STATUSES = frozenset("ACMRT")
 

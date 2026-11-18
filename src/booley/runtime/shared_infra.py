@@ -146,7 +146,7 @@ def _core_source_dirs(
     used to yield. Falls back to the legacy defaults outside a ``.core``
     project — these accessors feed module-level path constants that must
     stay importable anywhere; the Source-Isolation-critical consumers
-    (mutation_tester, diff classification) call
+    (the Mutation Flow, diff classification) call
     ``fusesoc_registry.source_dirs_from_core`` directly and get the hard
     ADR 0039 no-``.core`` error instead of a guessed partition.
     """
@@ -156,7 +156,7 @@ def _core_source_dirs(
 
         return source_dirs_from_core(root)
     except Exception:  # noqa: BLE001 — no project context; legacy defaults
-        return (["rtl", "fw"], ["tb"], [])
+        return (["rtl"], ["tb"], [])
 
 
 def get_rtl_dir(project_root: Path | None = None) -> Path:
@@ -172,7 +172,7 @@ def get_rtl_dir(project_root: Path | None = None) -> Path:
 
 
 def get_rtl_source_dirs(project_root: Path | None = None) -> list[str]:
-    """RTL source entries from the ``.core`` RTL filesets (fallback: ['rtl', 'fw'])."""
+    """RTL source entries from the ``.core`` RTL filesets (fallback: ['rtl'])."""
     return _core_source_dirs(project_root)[0]
 
 
@@ -186,10 +186,11 @@ def get_syn_output_dir(project_root: Path | None = None) -> Path:
     root = project_root or resolve_project_root()
     cfg = _load_rtl_config(project_root)
     if cfg:
+        from booley.core.boundary import require_str_value
         from booley.targets.flow_names import config_section
 
         raw = config_section(cfg.get("flows", {}), "synth").get("output_dir", "util/syn")
-        return root / raw
+        return root / require_str_value(raw, field="[flows.synth].output_dir", allow_empty=True)
     return root / "util" / "syn"
 
 
@@ -248,12 +249,9 @@ def get_rtl_prefixes(project_root: Path | None = None) -> tuple[str, ...]:
     """RTL prefixes for diff classification, from the ``.core`` RTL filesets.
 
     Directory entries yield trailing '/' and '\\' variants; file entries (ADR
-    0026 flat repos) yield an exact-path prefix. ``'fw'`` is always included as
-    an RTL prefix. Fallback: ('rtl/', 'rtl\\\\', 'fw/', 'fw\\\\').
+    0026 flat repos) yield an exact-path prefix. Fallback: ('rtl/', 'rtl\\\\').
     """
-    dirs = list(_core_source_dirs(project_root)[0])
-    if "fw" not in {d.rstrip("/\\") for d in dirs}:
-        dirs.append("fw")
+    dirs = _core_source_dirs(project_root)[0]
     return source_dir_prefixes(dirs, project_root or resolve_project_root())
 
 

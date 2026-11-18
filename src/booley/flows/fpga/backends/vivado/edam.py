@@ -67,7 +67,8 @@ def build_fpga_edam(
     default (it is in the :mod:`edam` whitelist and unambiguously safe). The XDC
     constraint files (``recipe.xdc_files``, per-target and sourced from the Target's
     ``file_type: xdc`` fileset since ADR 0031) are each carried as a typed
-    constraint file (``file_type: xdc``, inferred from suffix), ``recipe.defines`` become
+    constraint file (``file_type: xdc``), the sources keep their declared types,
+    ``recipe.defines`` become
     ``vlogdefine`` parameters, ``recipe.vlogparams`` remain top-level parameter
     overrides, and ``recipe.top`` is the EDAM ``toplevel``. *name* names the
     EDAM project; the caller owns that choice.
@@ -90,7 +91,7 @@ def build_fpga_edam(
         name=name,
         flow="vivado",
         eda_tool="vivado",
-        files=[*recipe.sv_files, *recipe.v_files, *recipe.xdc_files],
+        files=[*recipe.sources, *(edam_layer.EdamFile(path, "xdc") for path in recipe.xdc_files)],
         include_dirs=list(recipe.include_dirs),
         toplevel=recipe.top,
         defines=list(recipe.defines),
@@ -238,7 +239,11 @@ def _post_route_completion_hook(work_root: Path) -> str:
 
 
 def profile_completion_error(text: str, profile: VivadoProfile) -> str:
-    """Require a final-step witness, independently of route or bitstream status."""
+    """Require a final-step witness, independently of route or bitstream status.
+
+    A run without the marker is neither accepted nor cached even when routing
+    succeeded, because its numbers would not come from the profile's final step.
+    """
     if profile.final_step == "route_design":
         return ""
     if POST_ROUTE_COMPLETION_MARKER in {line.strip() for line in text.splitlines()}:
@@ -437,7 +442,7 @@ def parse_fpga_reports(text: str) -> dict[str, Any]:
     plus any ``report_utilization`` / ``report_timing_summary`` report files,
     concatenated by the caller) and returns the metric dict
     ``fpga_impl._metrics_from_parsed_reports`` already consumes, so the metric
-    normalization / criterion mapping downstream is unchanged.
+    normalization downstream is unchanged.
 
     Returns a dict with ``lut_count``/``ff_count``/``bram_count``/``dsp_count``
     (numeric|None; BRAM tiles may be fractional), aggregate

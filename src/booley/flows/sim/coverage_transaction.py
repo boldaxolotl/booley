@@ -1,4 +1,4 @@
-"""One Target's ordered collection, evaluation and durable Campaign publication."""
+"""One Target's ordered collection, evaluation and durable Coverage Record publication."""
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -8,19 +8,19 @@ from typing import cast
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .coverage_acceptance import coverage_test_run_rows
-from .coverage_campaign import (
-    CoverageCampaign,
-    CoverageCampaignValidationError,
+from .coverage_invocation import CoverageTargetPlan
+from .coverage_json import FrozenJson, freeze_coverage_mapping
+from .coverage_policy import coverage_metrics, evaluate_coverage_record, threshold_number
+from .coverage_provenance import coverage_digest, validate_coverage_sources
+from .coverage_record import (
     CoverageCollector,
+    CoverageRecord,
+    CoverageRecordValidationError,
     CoverageRun,
     CoverageTarget,
     derive_coverage_rollups,
 )
-from .coverage_campaign_store import POINT_STORE_NAME, publish_coverage_campaign
-from .coverage_invocation import CoverageTargetPlan
-from .coverage_json import FrozenJson, freeze_coverage_mapping
-from .coverage_policy import coverage_metrics, evaluate_coverage_campaign, threshold_number
-from .coverage_provenance import coverage_digest, validate_coverage_sources
+from .coverage_record_store import POINT_STORE_NAME, publish_coverage_record
 from .coverage_source_gaps import source_gap_findings
 from .coverage_waivers import CoverageWaiverValidationError, load_approved_waiver_set
 from .execution.contract import PreSimStatus, pre_sim_failure_message
@@ -31,19 +31,19 @@ from .verilator_coverage import CoverageCollectionResult, SimulationExecutionPor
 class CoverageTargetOutcome:
     target: str
     exit_code: int
-    campaign_path: Path
+    coverage_record_path: Path
     detail: Mapping[str, FrozenJson]
     abort_remaining: bool = False
 
 
-def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> CoverageCampaign:
+def _coverage_record(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> CoverageRecord:
     assert plan.invocation_dir is not None
     build = _build_metadata(plan, result)
     incompatible = result.native_format.compatibility == "incompatible"
     points = () if incompatible else result.points
     scoreable = result.status == "complete" and not incompatible
-    return CoverageCampaign(
-        campaign_id=f"campaign:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
+    return CoverageRecord(
+        coverage_record_id=f"campaign:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
         invocation=freeze_coverage_mapping(
             {"id": int(plan.invocation_dir.name), "started_at": plan.started_at}
         ),
@@ -140,7 +140,15 @@ def run_coverage_target(
     embedded_root: Path,
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
-    """Collect, evaluate and publish one Target's Campaign under the attempt-owned root."""
+    """Collect, evaluate and publish one Target's Coverage Record under the attempt-owned root.
+
+    The nested ``coverage.json`` manifest is the commit marker: the point store
+    is written first and removed if the manifest never lands. Late-failure rule:
+    before the manifest is published, a persistence error keeps any observed
+    simulation verdict but reports collection as ``infrastructure_error`` and
+    blocks a requested evaluation; after it, later failures keep the committed
+    collection and evaluation and never turn them into ``blocked``.
+    """
     assert plan.invocation_dir is not None and plan.collection_request is not None
     return _execute_coverage_transaction(
         plan, execution, embedded_root, publication_checkpoint=publication_checkpoint
@@ -155,32 +163,37 @@ def _execute_coverage_transaction(
     publication_checkpoint: Callable[[str], None] | None,
 ) -> CoverageTargetOutcome:
     result = None
-    campaign = None
-    campaign_published = False
+    coverage_record = None
+    coverage_record_published = False
     request = plan.collection_request
     assert request is not None
 
-    def record_campaign_publication() -> None:
-        nonlocal campaign_published
-        campaign_published = True
+    def record_coverage_record_publication() -> None:
+        nonlocal coverage_record_published
+        coverage_record_published = True
 
     try:
         validate_coverage_sources(plan)
         _start_target(root)
         result = collect(replace(request, artifact_root=root), execution)
         validate_coverage_sources(plan)
-        campaign = _evaluate(plan, _campaign(plan, result))
+        coverage_record = _evaluate(plan, _coverage_record(plan, result))
         outcome = _publish(
             plan,
             result,
             root,
-            campaign,
+            coverage_record,
             publication_checkpoint=publication_checkpoint,
-            campaign_published=record_campaign_publication,
+            coverage_record_published=record_coverage_record_publication,
         )
     except (OSError, ValueError) as exc:
         return _transaction_error(
-            plan, root, result, exc, campaign, campaign_published=campaign_published
+            plan,
+            root,
+            result,
+            exc,
+            coverage_record,
+            coverage_record_published=coverage_record_published,
         )
     return outcome
 
@@ -198,39 +211,39 @@ def _publish(
     plan: CoverageTargetPlan,
     result: CoverageCollectionResult,
     root: Path,
-    campaign: CoverageCampaign,
+    coverage_record: CoverageRecord,
     *,
     publication_checkpoint: Callable[[str], None] | None,
-    campaign_published: Callable[[], None],
+    coverage_record_published: Callable[[], None],
 ) -> CoverageTargetOutcome:
-    campaign_path = root / "coverage.json"
+    coverage_record_path = root / "coverage.json"
     checkpoint = publication_checkpoint or (lambda _boundary: None)
-    checkpoint("before:coverage_campaign")
-    publish_coverage_campaign(root, campaign)
-    campaign_published()
-    checkpoint("after:coverage_campaign")
+    checkpoint("before:coverage_record")
+    publish_coverage_record(root, coverage_record)
+    coverage_record_published()
+    checkpoint("after:coverage_record")
     observed = _has_completed_run(result)
     passed = all(run.simulation_verdict == "pass" for run in result.runs) if observed else None
-    detail = _simulation_projection(plan, campaign, result, passed)
-    status = campaign.evaluation["status"]
+    detail = _simulation_projection(plan, coverage_record, result, passed)
+    status = coverage_record.evaluation["status"]
     exit_code = _coverage_exit_code(result, status, passed)
     outcome = CoverageTargetOutcome(
         plan.handle.selector,
         exit_code,
-        campaign_path,
+        coverage_record_path,
         freeze_coverage_mapping(detail),
         abort_remaining=result.infrastructure_error,
     )
     return outcome
 
 
-def _evaluate(plan: CoverageTargetPlan, campaign: CoverageCampaign) -> CoverageCampaign:
-    """Evaluate the Campaign; approved waivers load in every run unless ``--no-waivers``."""
+def _evaluate(plan: CoverageTargetPlan, coverage_record: CoverageRecord) -> CoverageRecord:
+    """Evaluate the Coverage Record; approved waivers load in every run unless ``--no-waivers``."""
     assert plan.roots is not None
     try:
         waivers = load_approved_waiver_set(plan.waiver_config, plan.roots, plan.known_targets)
     except CoverageWaiverValidationError as exc:
-        evaluation: dict[str, object] = dict(campaign.evaluation)
+        evaluation: dict[str, object] = dict(coverage_record.evaluation)
         evaluation.update(
             status="blocked",
             thresholds={
@@ -245,15 +258,15 @@ def _evaluate(plan: CoverageTargetPlan, campaign: CoverageCampaign) -> CoverageC
             ],
         )
         return replace(
-            campaign,
+            coverage_record,
             evaluation=freeze_coverage_mapping(evaluation),
-            findings=(*campaign.findings, *exc.findings),
+            findings=(*coverage_record.findings, *exc.findings),
         )
-    return evaluate_coverage_campaign(campaign, plan.criterion, waivers)
+    return evaluate_coverage_record(coverage_record, plan.criterion, waivers)
 
 
 def _transaction_error(
-    plan, root, result, exc, campaign, *, campaign_published: bool
+    plan, root, result, exc, coverage_record, *, coverage_record_published: bool
 ) -> CoverageTargetOutcome:
     detail = {
         "target": plan.handle.selector,
@@ -264,7 +277,7 @@ def _transaction_error(
         "error": str(exc),
         "abort_remaining": True,
     }
-    if isinstance(exc, CoverageCampaignValidationError):
+    if isinstance(exc, CoverageRecordValidationError):
         detail["findings"] = [
             {"code": f.code, "pointer": f.pointer, "message": f.message} for f in exc.findings
         ]
@@ -277,12 +290,16 @@ def _transaction_error(
             tests=[_coverage_test_projection(run) for run in result.runs],
             simulation=_simulation_status(result) if observed else "not_run",
         )
-        if campaign_published and campaign is not None and not result.infrastructure_error:
-            if campaign.collection["status"] != "collector_error":
-                detail["collection"] = campaign.collection["status"]
-            detail["evaluation"] = campaign.evaluation["status"]
-    if campaign_published and campaign is not None:
-        detail["coverage_metrics"] = coverage_metrics(campaign)
+        if (
+            coverage_record_published
+            and coverage_record is not None
+            and not result.infrastructure_error
+        ):
+            if coverage_record.collection["status"] != "collector_error":
+                detail["collection"] = coverage_record.collection["status"]
+            detail["evaluation"] = coverage_record.evaluation["status"]
+    if coverage_record_published and coverage_record is not None:
+        detail["coverage_metrics"] = coverage_metrics(coverage_record)
     return CoverageTargetOutcome(
         plan.handle.selector,
         2,
@@ -345,7 +362,7 @@ def _ungated_evaluation() -> Mapping[str, FrozenJson]:
 
 def _simulation_projection(
     plan: CoverageTargetPlan,
-    campaign: CoverageCampaign,
+    coverage_record: CoverageRecord,
     result: CoverageCollectionResult,
     passed: bool | None,
 ) -> dict[str, object]:
@@ -364,10 +381,10 @@ def _simulation_projection(
         "abort_remaining": result.infrastructure_error,
         "tests": tests,
         "test_runs": coverage_test_run_rows(plan.test_runs, result.runs),
-        "collection": _public_collection_status(campaign, result),
-        "evaluation": campaign.evaluation["status"],
-        "coverage_campaign": "coverage.json",
-        "coverage_metrics": coverage_metrics(campaign),
+        "collection": _public_collection_status(coverage_record, result),
+        "evaluation": coverage_record.evaluation["status"],
+        "coverage_record": "coverage.json",
+        "coverage_metrics": coverage_metrics(coverage_record),
     }
     infrastructure_error = next(
         (finding.message for finding in result.findings if finding.severity == "error"), ""
@@ -381,11 +398,11 @@ def _simulation_projection(
 
 
 def _public_collection_status(
-    campaign: CoverageCampaign, result: CoverageCollectionResult
+    coverage_record: CoverageRecord, result: CoverageCollectionResult
 ) -> object:
     if result.infrastructure_error:
         return "infrastructure_error"
-    return campaign.collection["status"]
+    return coverage_record.collection["status"]
 
 
 def _coverage_test_projection(run: CoverageRun) -> dict[str, object]:

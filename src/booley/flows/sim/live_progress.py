@@ -14,8 +14,9 @@ from pathlib import Path
 from booley.core.progress_shape import TERMINAL_PHASES
 from booley.flows.job_resources import label_commands
 from booley.flows.progress_lifecycle import write_progress_json
+from booley.flows.reservation_phases import report_phase_end
 from booley.flows.run_log import RunLogIdentity, current_run_token
-from booley.flows.sim.campaign_reports import simulation_booley_dir
+from booley.flows.sim.record_reports import simulation_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 # Each lifecycle stage, and the Job resource history phase of the commands it runs.
@@ -184,14 +185,16 @@ def attempt_scope(
     operation: str = "simulation",
 ) -> Iterator[None]:
     parent = _scope.get()
-    nested = (
-        parent is not None
+    nested_parent = (
+        parent
+        if parent is not None
         and parent.target == target
         and (not attempt_id or attempt_id == parent.attempt_id)
+        else None
     )
     scope = AttemptScope(
         target,
-        parent.key if nested else uuid.uuid4().hex,
+        nested_parent.key if nested_parent is not None else uuid.uuid4().hex,
         identity,
         tests,
         attempt_id or (parent.attempt_id if parent else ""),
@@ -219,11 +222,22 @@ def observe_stage(
     attempt_token: str = "",
     log: RunLogIdentity | None = None,
     tests: tuple[str, ...] = (),
+    history_tests: tuple[str, ...] | None = None,
+    source_bytes: int | None = None,
 ) -> None:
-    """Publish one real lifecycle transition, never infer a verdict."""
+    """Publish one real lifecycle transition, never infer a verdict.
+
+    *history_tests* are the Resource History names (Test Variants); they
+    default to *tests*, which keep driving progress.
+    """
     if stage not in _STAGES:
         raise ValueError(f"invalid Simulation observation stage: {stage}")
-    label_commands(target, _RESOURCE_PHASES[stage], tests=tests)
+    label_commands(
+        target,
+        _RESOURCE_PHASES[stage],
+        tests=tests if history_tests is None else history_tests,
+        source_bytes=source_bytes,
+    )
     sink = _sink.get()
     if sink is None:
         return
@@ -235,6 +249,18 @@ def observe_stage(
     if scope.role not in {"candidate", "baseline"} or not scope.target:
         raise ValueError("Simulation observations require a Target and valid attempt role")
     sink.observe(scope, stage, evidence_root, attempt_token, log)
+
+
+def end_phase(target: str, phase: str, *, tests: tuple[str, ...] = ()) -> None:
+    """Tell the running Job a candidate phase finished, so its Memory Reservation can shrink.
+
+    A baseline run never reports: its phases may share keys with the candidate's
+    and run first, so counting them out could under-reserve the candidate.
+    """
+    scope = _scope.get()
+    if scope is not None and scope.role == "baseline":
+        return
+    report_phase_end(target, phase, tests=tests)
 
 
 def current_progress() -> LiveProgressSink | None:

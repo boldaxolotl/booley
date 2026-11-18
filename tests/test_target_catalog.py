@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import textwrap
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +25,7 @@ from booley.targets.domain import (
     UnknownTargetError,
 )
 from tests.conftest import require_symlinks, symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 def _write_core(root: Path, filename: str, vlnv: str, targets: str) -> Path:
@@ -46,14 +46,7 @@ def _write_core(root: Path, filename: str, vlnv: str, targets: str) -> Path:
 
 
 def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    result = run_bounded_child(["git", *args], cwd=root, check=True)
     return result.stdout.strip()
 
 
@@ -928,3 +921,23 @@ def test_prepared_sole_omission_keeps_one_snapshot(project):
     assert selection.target_arg == "sim"
     assert selection.matches(project, "sim")
     assert not selection.matches(project, "")
+
+
+def test_inspection_failure_names_unprovided_dependency(tmp_path: Path) -> None:
+    (tmp_path / "top.core").write_bytes(
+        b"CAPI=2:\nname: acme:lib:top:0\nfilesets:\n  rtl:\n    depend: ['>=::vlog_tb_utils:1.1']\n"
+        b"targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n"
+    )
+    catalog = TargetCatalog.build(tmp_path)
+
+    with pytest.raises(fusesoc_registry.FuseSocError) as excinfo:
+        catalog.inspect(catalog.select("sim"))
+
+    assert str(excinfo.value).endswith(
+        "\n"
+        "no Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC libraries "
+        "and cannot fetch them; copy it into the repository as a .core, or drop the depend: "
+        "(check first whether the testbench guards its use with an `ifdef` or defines the module "
+        "itself)"
+    )

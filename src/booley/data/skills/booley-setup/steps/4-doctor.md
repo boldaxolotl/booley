@@ -74,9 +74,9 @@ over that severity bug with a project waiver.
 - **Simulation**: one full Simulation smoke is the authoritative elaboration
   plus runtime check. Doctor does not run a redundant elab-only smoke.
 - **FPGA**: plain Doctor runs the marked FPGA Targets through the real setup and
-  source-inspection path and probes Vivado. Deep Doctor does not launch a full
-  implementation; each marked Target gets an explicit SKIP with the exact
-  `booley flow fpga --target ...` command to run manually.
+  source-inspection path and probes Vivado. Deep Doctor runs a full
+  implementation on each marked Target, which can take a long time; tell the
+  user before launching it, and fix a failure like any other deep failure.
 - **fail-path self-test**: each verification Flow WARNs
   `fail-path unvalidated` until its conventional project-owned bad fixture
   exists. Doctor infers the good case from the first marked Doctor Target and
@@ -100,14 +100,13 @@ Doctor runs every Target whose `flow_options.booley.doctor` contains `synth`.
 Mark the complete supported synthesis matrix; do not finish setup while an
 intended matrix member is unmarked.
 
-The run must reach a terminal, completed PPA report. After it passes, Doctor
-records each synthesis boundary's process-tree peak RSS, retains the largest,
-and adds 15% rounded-up headroom to the HEAVY
-job reservation. Re-run plain Doctor and use its memory-invariant arithmetic to
-settle both `[jobs].heavy_memory` and `[sandbox].memory`, then recreate the
+The run must reach a terminal, completed PPA report. After it passes, read the
+largest synthesis peak memory from `booley resources`, add 15% rounded-up
+headroom, and set `[sandbox].memory` to cover it plus the agents. Re-run plain
+Doctor, which warns while `[sandbox].memory` is unset, then recreate the
 Sandbox if the container limit changed and repeat the heaviest synthesis.
 
-- `termination = "oom"`: increase the container limit and HEAVY reservation
+- `termination = "oom"`: increase the container limit
   when the host has capacity, recreate the Sandbox, and rerun. If the
   host cannot provide the required memory, stop and report setup blocked; do
   not waive a target that the project claims to support.
@@ -194,7 +193,7 @@ the user report.
 
 Setup is not finished until `.booley/` has a decided home in git.
 Leaving it merely untracked-and-unmentioned is wrong in both modes: the config,
-hooks, Goalsets, and authored cores under it are real work, and nothing is
+hooks and authored cores under it are real work, and nothing is
 versioning them. The plan's row 16 says which of the two outcomes applies. Do
 this once, at the end, when the config has stopped moving.
 
@@ -221,9 +220,8 @@ allowlist exactly—hybrid does not authorize committing operational state.
   footprint step re-ran `booley init`, which wrote `/.devcontainer`,
   `/.booley`, and `/.claude` there, so normally you are only **verifying**:
   `git check-ignore -v .booley` should name `.git/info/exclude`, and `git
-  status --porcelain` must not list `.booley/` or a Booley-added root
-  `.gitattributes`. Repair a missing entry by running that host step
-  (idempotent), not by hand-editing. A fresh init records no Stealth choice,
+  status --porcelain` must not list `.booley/`. Repair a missing entry by
+  running that host step (idempotent), not by hand-editing. A fresh init records no Stealth choice,
   so it never hides `.booley/` itself.
   Worktree gotcha: git honors `info/exclude` only from `$GIT_COMMON_DIR`, so
   check there, not in `.git/worktrees/<id>/info/`.
@@ -238,7 +236,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   otherwise. Hidden authored cores require `[stealth] enabled = true`; with
   it, `booley init` creates the inner repo and ignored root-level projections.
   Its `.gitignore` (written by `booley init`) already keeps the
-  transient state — `tmp/`, `.runtime/`, `worktrees/`, Goal logs and locks —
+  transient state — `tmp/`, `.runtime/`, `worktrees/`, and logs and locks —
   out. The inner repo is invisible to the parent, which sees only an excluded
   directory.
 - Also confirm the RTL repo's own `.gitignore` picked up **no** Booley lines
@@ -254,21 +252,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   migration; row 16 does not authorize deleting that history.
 - When preserving an independently versioned Booley Directory, retain its Git
   metadata and the outer exclusion when present; leave an already absent
-  exclusion absent. Read the current checkout's non-concise Doctor result:
-  - For an actual `goals.history-ignored:independent-booley-history` **WARN**,
-    record the accepted preservation policy using **Using Doctor waivers**:
-    copy that exact check and subject into a waiver, explain the independent
-    history and local-summary policy, and use `permanent = true` for that stable
-    project decision. Commit the waiver in the independent Booley repository so
-    future Paired Checkouts receive it and their inner checkout stays clean.
-    Rerun the warning's original command and verify the `!` row becomes a `~` row.
-  - An unexcluded authenticated Paired Checkout reports **PASS**:
-    `Goal summaries remain local; Paired Checkout preserves independent Booley history`.
-    That result needs no preservation waiver. A standalone current checkout's
-    unchanged `Goal history is eligible for commits` **PASS** also needs no
-    waiver; it describes that checkout, not a later Paired Checkout. If the
-    preservation warning became a PASS, remove its now-unmatched waiver using
-    the existing waiver cleanup and commit that change in independent history.
+  exclusion absent.
   Complete the existing final Doctor invocations with zero failures and active
   warnings. Continue below only after the human's chosen history migration into
   the RTL repository is complete.
@@ -287,7 +271,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   is to track the directory, not to re-hide it.
 - Verify what landed with `git ls-files .booley | head`: the inner
   `.gitignore` should have kept `tmp/`, `.runtime/`, `worktrees/`, and the
-  Goal logs/locks out. If transient state slipped in, unstage it and fix the
+  logs/locks out. If transient state slipped in, unstage it and fix the
   inner `.gitignore` before committing — a committed `.runtime/` churns every
   run.
 - Rerun Doctor. With Stealth off, removing the Booley exclusion requires no
@@ -305,7 +289,7 @@ the RTL repo's tracked tree.
 The Doctor command owns its Flow output locations, so do not redirect them with
 invented environment variables. Write only setup-authored command captures and
 exit-code sidecars beneath the run's scratch root; nothing is registered. Flow
-output, Job state, clean stamps, Goal Records, worktrees, and reusable
+output, Job state, clean stamps, worktrees, and reusable
 `.runtime/edalize` slots stay where Doctor writes them and are never removed by
 Step 7.
 

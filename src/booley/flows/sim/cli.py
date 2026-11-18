@@ -38,15 +38,15 @@ class SimArguments(BuiltinArguments):
             (
                 HelpOption(
                     "coverage",
-                    "Default: off for new Simulation Campaigns; resume restores the manifest's coverage policy and rejects this flag.",
+                    "Default: off for new Simulation Records; resume restores the manifest's coverage policy and rejects this flag.",
                 ),
                 HelpOption(
                     "no_waivers",
-                    "When omitted, approved waivers apply on new coverage-collecting Simulation Campaigns; resume restores the manifest's raw-coverage/waiver policy and rejects this flag.",
+                    "When omitted, approved waivers apply on new coverage-collecting Simulation Records; resume restores the manifest's raw-coverage/waiver policy and rejects this flag.",
                 ),
                 HelpOption(
                     "mode",
-                    "When omitted, use simulate for new Simulation Campaigns; on resume omission is required because the manifest owns the workload.",
+                    "When omitted, use simulate for new Simulation Records; on resume omission is required because the manifest owns the workload.",
                 ),
                 HelpOption("_legacy_elab_only", ""),
                 HelpOption("_legacy_standalone", ""),
@@ -62,10 +62,10 @@ class SimArguments(BuiltinArguments):
                     "tests_file",
                     "When omitted, use --test or the configured suite and skip policy. Cannot combine with --test or --resume-from.",
                 ),
-                HelpOption("resume_from", "When omitted, start a new Simulation Campaign."),
+                HelpOption("resume_from", "When omitted, start a new Simulation Record."),
                 HelpOption(
                     "trace",
-                    "Default: off for new Simulation Campaigns; resume restores the manifest's trace policy and rejects this flag.",
+                    "Default: off for new Simulation Records; resume restores the manifest's trace policy and rejects this flag.",
                 ),
                 HelpOption("no_kill", "When omitted, zombie process cleanup is enabled."),
             ),
@@ -117,13 +117,12 @@ class SimArguments(BuiltinArguments):
             "--coverage",
             "--cov",
             action="store_true",
-            help="Collect a native Verilator Coverage Campaign for each selected Target",
+            help="Collect a native Verilator Coverage Record for each selected Target",
         )
         parser.add_argument(
             "--no-waivers",
             action="store_true",
-            help="With --coverage, report raw coverage without applying approved waivers; "
-            "with a Coverage Criterion also requires --diagnostic",
+            help="With --coverage, report raw coverage without applying approved waivers",
         )
         SimArguments._add_elaboration_args(parser)
         SimArguments._add_test_run_args(parser)
@@ -132,12 +131,12 @@ class SimArguments(BuiltinArguments):
             type=Path,
             default=None,
             metavar="MANIFEST",
-            help="Resume one exact Simulation Campaign manifest.json",
+            help="Resume one exact Simulation Record manifest.json",
         )
         parser.add_argument(
             "--verbose",
             action="store_true",
-            help="Include full Simulation Campaign resume mismatch pointers and values",
+            help="Include full Simulation Record resume mismatch pointers and values",
         )
         SimArguments._add_run_control_args(parser)
 

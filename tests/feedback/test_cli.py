@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 
 import pytest
 
@@ -17,6 +16,8 @@ from booley.feedback.findings import read_log
 from booley.feedback.storage import feedback_storage_dir
 from booley.runtime import booley_dir as booley_dir_mod
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 
 @pytest.fixture
@@ -79,11 +80,11 @@ def test_source_feedback_uses_shared_git_metadata(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", str(source)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(source)], check=True)
     parser = argparse.ArgumentParser()
     cli.add_subparser(parser.add_subparsers(dest="command"))
 
-    args = parser.parse_args(["feedback", "add", "--title", "boom"])
+    args = parser.parse_args(["feedback", "add", "--title", "boom", "--origin", "setup"])
 
     assert cli.run(args, source, list_view=lambda _log, _entries: "") == 0
 
@@ -99,8 +100,8 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True, timeout=10)
-    subprocess.run(
+    run_bounded_child(["git", "init", "-q", "-b", "main", str(source)], check=True)
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -113,9 +114,8 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "pyproject.toml",
         ],
         check=True,
-        timeout=10,
     )
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -129,13 +129,11 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "fixture",
         ],
         check=True,
-        timeout=10,
     )
     linked = tmp_path / "linked"
-    subprocess.run(
+    run_bounded_child(
         ["git", "-C", str(source), "worktree", "add", "-q", "-b", "linked", str(linked)],
         check=True,
-        timeout=10,
     )
 
     assert feedback_storage_dir(source) == feedback_storage_dir(linked)
@@ -150,13 +148,10 @@ class TestLogging:
         assert entry.attachments == ["run.log"]
 
     def test_attach_is_repeatable(self, run, project):
-        run("add", "--title", "boom", "--attach", "a.log", "--attach", "b.log")
+        run(
+            "add", "--title", "boom", "--origin", "setup", "--attach", "a.log", "--attach", "b.log"
+        )
         assert _log(project).entries[0].attachments == ["a.log", "b.log"]
-
-    def test_origin_defaults_to_setup(self, run, project):
-        """The setup skill passes no --origin and must keep working unchanged."""
-        run("add", "--title", "boom")
-        assert _log(project).entries[0].origin == "setup"
 
     def test_friction_logs_a_friction_entry(self, run, project):
         assert (
@@ -215,12 +210,12 @@ class TestLogging:
         assert "needs these" not in capsys.readouterr().err
 
     def test_triage_adds_attachments_without_dropping_the_old_ones(self, run, project):
-        run("add", "--title", "boom", "--attach", "first.log")
+        run("add", "--title", "boom", "--origin", "setup", "--attach", "first.log")
         run("triage", "F-1", "--attach", "second.log")
         assert _log(project).entries[0].attachments == ["first.log", "second.log"]
 
     def test_triage_does_not_duplicate_the_same_attachment(self, run, project):
-        run("add", "--title", "boom", "--attach", "first.log")
+        run("add", "--title", "boom", "--origin", "setup", "--attach", "first.log")
         run("triage", "F-1", "--attach", "first.log")
         assert _log(project).entries[0].attachments == ["first.log"]
 
@@ -235,12 +230,12 @@ class TestFiled:
         assert entries[1].filed == ""
 
     def test_it_defaults_to_manual(self, run, project):
-        run("add", "--title", "boom")
+        run("add", "--title", "boom", "--origin", "setup")
         run("filed", "F-1")
         assert _log(project).entries[0].filed == "manual"
 
     def test_an_unknown_id_fails_without_touching_the_log(self, run, project):
-        run("add", "--title", "boom")
+        run("add", "--title", "boom", "--origin", "setup")
         assert run("filed", "F-1", "F-99") == 1
         assert _log(project).entries[0].filed == ""
 
@@ -250,6 +245,8 @@ class TestReporting:
     def filable(self, run):
         run(
             "add",
+            "--origin",
+            "setup",
             "--title",
             "simulate exits 2",
             "--bucket",
@@ -272,7 +269,7 @@ class TestReporting:
     @pytest.mark.parametrize(
         "finding_args",
         [
-            ("add", "--title", "project note", "--bucket", "project"),
+            ("add", "--title", "project note", "--bucket", "project", "--origin", "setup"),
             ("add", "--title", "bug note", "--bucket", "project", "--origin", "bug"),
         ],
         ids=["setup-report", "bug-report"],
@@ -471,10 +468,10 @@ def test_export_all_keeps_every_legacy_duplicate_and_redacts(
 @pytest.mark.parametrize(
     "argv",
     [
-        ("add", "--title", "blocked"),
-        ("friction", "--title", "blocked"),
+        ("add", "--title", "blocked", "--origin", "setup"),
+        ("friction", "--title", "blocked", "--origin", "setup"),
         ("say", "blocked"),
-        ("win", "--title", "blocked"),
+        ("win", "--title", "blocked", "--origin", "setup"),
         ("filed", "F-1"),
         ("triage", "F-1", "--bucket", "booley"),
     ],
@@ -489,7 +486,7 @@ def test_mutating_dispatch_reports_lock_timeout_without_success(
     findings.append(findings.Finding(title="original"), directory)
     path = findings.log_path(directory)
     before = path.read_bytes()
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
     with holding_findings_lock(directory):
         assert run(*argv) == 2
     captured = capsys.readouterr()
@@ -591,6 +588,8 @@ def test_worktree_feedback_writes_main_findings(tmp_path, monkeypatch, layout, r
     title = f"fails in {main} and in {worktree}"
     added = feedback(
         "add",
+        "--origin",
+        "setup",
         "--title",
         title,
         "--bucket",
@@ -610,3 +609,129 @@ def test_worktree_feedback_writes_main_findings(tmp_path, monkeypatch, layout, r
     assert not (worktree / ".booley" / "findings.jsonl").exists()
     body = exported.read_text(encoding="utf-8")
     assert str(main) not in body and str(worktree) not in body
+
+
+@pytest.mark.parametrize("command", ["add", "friction", "win"])
+def test_logging_commands_require_origin(run, project, capsys, command):
+    """No default flow: a writer that forgets `--origin` is told, not guessed."""
+    with pytest.raises(SystemExit) as raised:
+        run(command, "--title", "forgot the origin")
+
+    assert raised.value.code == 2
+    assert "--origin" in capsys.readouterr().err
+    assert not (project / ".booley" / "findings.jsonl").exists()
+
+
+def _log_booley_finding(run, title, origin):
+    """A filable Booley-bucket finding, logged through the real parser."""
+    return run(
+        "add",
+        "--title",
+        title,
+        "--origin",
+        origin,
+        "--bucket",
+        "booley",
+        "--repro",
+        "booley flow sim",
+        "--observed",
+        "exit 2",
+        "--expected",
+        "a result",
+    )
+
+
+class TestReportSplit:
+    """Setup entries and everything else land in separate local reports."""
+
+    def test_bug_after_setup_goes_to_feedback_report_and_leaves_setup_report_untouched(
+        self, run, project, monkeypatch, capsys
+    ):
+        state = project / ".booley"
+        setup_report = state / "SETUP-REPORT.md"
+        feedback_report = state / "FEEDBACK-REPORT.md"
+        run("add", "--title", "setup project note", "--bucket", "project", "--origin", "setup")
+        assert run("report") == 0
+        # What the setup skill does after rendering.
+        with setup_report.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n## Delivered Flow results\n\nsim passed\n")
+        before = setup_report.read_bytes()
+        before_mtime = setup_report.stat().st_mtime_ns
+        monkeypatch.setattr("booley.feedback.render.format_human_date", lambda _when: "1 Jan 2099")
+        capsys.readouterr()
+
+        _log_booley_finding(run, "bug found months later", "bug")
+        assert run("report") == 0
+
+        out = capsys.readouterr().out
+        assert setup_report.read_bytes() == before
+        assert setup_report.stat().st_mtime_ns == before_mtime
+        text = feedback_report.read_text(encoding="utf-8")
+        assert "bug found months later" in text
+        assert "setup project note" not in text
+        assert f"Unchanged {setup_report}" in out
+        assert f"Wrote {feedback_report}" in out
+
+    def test_old_mixed_log_splits_by_origin(self, run, project):
+        state = project / ".booley"
+        rows = [
+            {"id": "F-1", "title": "setup item one", "bucket": "project", "origin": "setup"},
+            {"id": "F-2", "title": "legacy row item", "bucket": "project"},
+            {"id": "F-3", "title": "setup win item", "kind": "win", "origin": "setup"},
+            {"id": "F-4", "title": "bug item", "bucket": "project", "origin": "bug"},
+            {"id": "F-5", "title": "bug win item", "kind": "win", "origin": "bug"},
+            {
+                "id": "F-6",
+                "title": "impression item",
+                "kind": "impression",
+                "bucket": "booley",
+                "origin": "impression",
+            },
+        ]
+        (state / "findings.jsonl").write_bytes(
+            "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
+        )
+        # An old Booley wrote everything here.
+        (state / "SETUP-REPORT.md").write_text("old mixed render: bug item\n", encoding="utf-8")
+
+        assert run("report") == 0
+
+        assert (state / "FEEDBACK-REPORT.md").is_file()
+        setup_text = (state / "SETUP-REPORT.md").read_text(encoding="utf-8")
+        feedback_text = (state / "FEEDBACK-REPORT.md").read_text(encoding="utf-8")
+        for title in ("setup item one", "legacy row item", "setup win item"):
+            assert title in setup_text
+            assert title not in feedback_text
+        for title in ("bug item", "bug win item", "impression item"):
+            assert title in feedback_text
+            assert title not in setup_text
+
+    @pytest.mark.parametrize(
+        ("origins", "framing", "other_framing"),
+        [
+            (("setup",), "produced 1 finding(s)", "A Booley user hit"),
+            (("bug",), "A Booley user hit 1 issue(s) during normal use", "`booley-setup` run"),
+            (
+                ("bug", "setup-project-note"),
+                "A Booley user hit 1 issue(s) during normal use",
+                "`booley-setup` run",
+            ),
+        ],
+        ids=["setup", "bug", "bug-beside-setup-project-note"],
+    )
+    def test_export_frames_from_exported_entries(
+        self, run, project, tmp_path, origins, framing, other_framing
+    ):
+        origin = origins[0]
+        _log_booley_finding(run, "simulate exits 2", origin)
+        if "setup-project-note" not in origins:
+            run("win", "--title", "lint was clean", "--origin", origin)
+        else:
+            run("add", "--title", "fix your config", "--bucket", "project", "--origin", "setup")
+        output = tmp_path / "export.md"
+
+        assert run("export", "--all", "--output", str(output)) == 0
+
+        body = " ".join(output.read_text(encoding="utf-8").split())
+        assert framing in body
+        assert other_framing not in body

@@ -19,32 +19,29 @@ import pytest
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.runtime import dockerfile_syntax
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 DIND_IMAGE = (
-    "docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
+    "docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121"
 )
 _DOCKER_DIR = Path(__file__).parents[1] / "src/booley/data/docker"
 
 
-def _from_reference(dockerfile: str, alias: str | None = None) -> str:
-    """Return the FROM reference of a sidecar Dockerfile (the pin's one source).
-
-    ``alias`` names a stage of a multi-stage file; without it the file must have one stage.
-    """
+def _from_reference(dockerfile: str) -> str:
+    """Return the FROM reference of a one-stage sidecar Dockerfile (the pin's one source)."""
     references = dockerfile_syntax.from_references(
         (_DOCKER_DIR / dockerfile).read_text(encoding="utf-8")
     )
-    chosen = [r for r in references if alias is None or r.alias == alias]
-    if len(chosen) != 1 or (alias is None and len(references) != 1):
-        raise ValueError(f"{dockerfile}: expected one FROM for {alias!r}, found {references}")
-    return chosen[0].image
+    if len(references) != 1:
+        raise ValueError(f"{dockerfile}: expected one FROM, found {references}")
+    return references[0].image
 
 
 # Sidecar bases derive from the Dockerfile FROM lines; the evidence script derives them
 # the same way, and tests compare the remaining in-repo copies against these.
 SIDECAR_BOOKWORM_BASE = _from_reference("Dockerfile.egress-proxy")
 SIDECAR_ALPINE_BASE = _from_reference("Dockerfile.flexnet-relay")
-SIDECAR_DOCKER_CLI = _from_reference("Dockerfile.reaper", "docker-cli")
 
 
 def sidecar_python_version(base_image: str) -> str:
@@ -62,15 +59,11 @@ class DockerClient:
 
     command_prefix: tuple[str, ...] = ()
 
-    def run(self, *args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-        """Run one bounded Docker command without raising."""
-        return subprocess.run(
-            ["docker", *self.command_prefix, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+    def run(
+        self, *args: str, timeout: float = 2 * hang_guard_s()
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one Docker command, killing its process tree after *timeout* seconds."""
+        return run_bounded_child(["docker", *self.command_prefix, *args], timeout=timeout)
 
 
 HOST_DOCKER = DockerClient()
@@ -84,7 +77,7 @@ class IsolatedDockerDaemon:
     image_id: str
 
 
-def docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+def docker(*args: str, timeout: float = 2 * hang_guard_s()) -> subprocess.CompletedProcess[str]:
     """Run Docker without raising so tests can report stdout and stderr."""
     return HOST_DOCKER.run(*args, timeout=timeout)
 
@@ -133,11 +126,11 @@ def _start_dind(name: str) -> None:
     assert_ok(result)
 
 
-def _wait_for_dind(client: DockerClient, *, timeout: float = 30.0) -> str:
+def _wait_for_dind(client: DockerClient, *, timeout: float = hang_guard_s()) -> str:
     deadline = time.monotonic() + timeout
     captured = ""
     while time.monotonic() < deadline:
-        result = client.run("info", "--format", "{{.ID}}", timeout=5)
+        result = client.run("info", "--format", "{{.ID}}", timeout=scaled(5))
         captured = result.stdout + result.stderr
         daemon_id = result.stdout.strip()
         if result.returncode == 0 and daemon_id:
@@ -204,9 +197,9 @@ def _load_candidate(name: str, client: DockerClient, archive: Path) -> str:
 
 def _report_dind_failure(name: str) -> None:
     try:
-        logs = HOST_DOCKER.run("logs", name, timeout=30)
+        logs = HOST_DOCKER.run("logs", name, timeout=SUBPROCESS_TIMEOUT_S)
         captured = logs.stdout + logs.stderr
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, pytest.fail.Exception) as exc:
         captured = f"could not read logs: {exc}"
     if captured:
         print(f"isolated Docker daemon logs:\n{captured}", file=sys.stderr)
@@ -215,11 +208,11 @@ def _report_dind_failure(name: str) -> None:
 def _cleanup_dind(name: str, primary_error: BaseException | None) -> None:
     cause: BaseException | None = None
     try:
-        cleanup = HOST_DOCKER.run("rm", "-f", "-v", name, timeout=30)
+        cleanup = HOST_DOCKER.run("rm", "-f", "-v", name, timeout=SUBPROCESS_TIMEOUT_S)
         detail = cleanup.stderr.strip()
         if cleanup.returncode == 0:
             return
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, pytest.fail.Exception) as exc:
         cause = exc
         detail = str(exc)
     message = f"failed to remove isolated Docker daemon {name}: {detail}"
@@ -235,7 +228,7 @@ def isolated_docker_daemon(
     archive_dir: Path,
     *,
     name_prefix: str | None = None,
-    readiness_timeout: float = 30.0,
+    readiness_timeout: float = hang_guard_s(),
 ) -> Iterator[IsolatedDockerDaemon]:
     """Load *candidate* into a networkless disposable Docker daemon."""
     if readiness_timeout <= 0:

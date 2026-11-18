@@ -31,6 +31,7 @@ from booley.mcp.base import EXIT_SUCCESS
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.server import _params_to_argv
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 pytestmark = pytest.mark.skipif(
@@ -69,6 +70,8 @@ class Bench:
     sdc: str = SDC
     netlist: str = NETLIST
     argv: list[str] = field(default_factory=list)
+    #: Every boundary command, in order.
+    commands: list[list[str]] = field(default_factory=list)
     openroad_calls: int = 0
     #: Read the SDC in place in the Project, as projection mode (ignore_native_cores) does.
     sdc_in_place: bool = False
@@ -91,8 +94,9 @@ class Bench:
     def _build_root(self, target: str) -> Path:
         return work_root_for(self.root, "synth", target) / "dut_0" / "syn"
 
-    def resolve(self, target: str = TARGET, **_kwargs) -> fusesoc_registry.ResolvedTarget:
+    def resolve(self, handle: TargetHandle, **_kwargs) -> fusesoc_registry.ResolvedTarget:
         """Stage sources and SDC under the Target work root, as FuseSoC export does."""
+        target = handle.selector
         build_root = self._build_root(target)
         (build_root / "src").mkdir(parents=True, exist_ok=True)
         (build_root / "src" / "dut.sv").write_text("module dut(input clk); endmodule\n")
@@ -123,6 +127,7 @@ class Bench:
         # Stamped before writing: the stale guard stays active while the coarse
         # file clock cannot make this call's own writes look stale.
         dispatched = time.time() - 1
+        self.commands.append(cmd)
         build = self.root / cmd[2]
         stage = cmd[3] if len(cmd) > 3 else "all"
         stdout = ""
@@ -132,6 +137,7 @@ class Bench:
                 "sv2v_converted.v": "module dut(input clk); endmodule\n",
                 "yosys.log": "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
                 "stat_dut.txt": "Number of cells: 100\n",
+                "premap_check_dut.txt": "Found and reported 0 problems.\n",
                 "check_dut.txt": "Found and reported 0 problems.\n",
                 "synth_dut.v": self.netlist,
                 "sta_dut.v": self.netlist,
@@ -180,7 +186,9 @@ class Bench:
                 *argv,
             ]
         )
-        flow.read_state()
+        # `_execute_boundary` is the faked Sandbox boundary (no OpenROAD on test
+        # hosts). `_run` rather than `execute_cli`: the CLI's Job admission sets the
+        # host's thread share, which the thread-share test below must control.
         with patch.object(flow, "_execute_boundary", side_effect=self.boundary):
             outcome = flow._run()
         report = json.loads((self.root / "reports" / f"synth_{target}.json").read_text())
@@ -234,7 +242,8 @@ def bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Bench:
             root, selector, flow="generic", eda_tool="yosys", drivable_by=("synth",)
         ),
     )
-    monkeypatch.setattr(fusesoc_registry, "_resolve_target", bench.resolve)
+    # The public handle resolver is the seam where Target resolution is faked.
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", bench.resolve)
     return bench
 
 
@@ -243,6 +252,29 @@ def _without_volatile(value: object) -> object:
     if not isinstance(value, dict):
         return value
     return {k: _without_volatile(v) for k, v in value.items() if k not in _VOLATILE_REPORT_KEYS}
+
+
+def test_openroad_gets_the_job_thread_share_without_changing_the_reuse_key(bench: Bench) -> None:
+    from booley.flows.memory_admission import fixed_job_threads
+
+    def stage_commands(stage: str) -> list[list[str]]:
+        return [cmd for cmd in bench.commands if cmd[3:4] == [stage]]
+
+    bench.run_fresh()
+    rel = bench.commands[0][2]
+    assert stage_commands("openroad") == [["make", "-C", rel, "openroad"]]
+
+    bench.commands.clear()
+    with fixed_job_threads(2):
+        bench.run_fresh("--no-cache")
+    assert stage_commands("openroad") == [
+        ["make", "-C", rel, "openroad", "BOOLEY_OPENROAD_THREAD_OPTION=-threads 2"]
+    ]
+    assert stage_commands("yosys") == [["make", "-C", rel, "yosys"]]
+
+    # The slot stored at 2 threads (and the none before) matches at 8: same key.
+    with fixed_job_threads(8):
+        bench.run_hit()
 
 
 def test_unchanged_rerun_reuses_openroad_with_producer_label(bench: Bench) -> None:
@@ -362,7 +394,7 @@ def test_project_sdc_edit_during_openroad_cannot_reach_it(bench: Bench) -> None:
         bench._openroad(build)
 
     bench.on_openroad = edit_project_sdc
-    bench.run("--fresh-openroad")
+    bench.run("--no-cache")
     bench.on_openroad = None
 
     assert (bench.slot_root / "slot.json").exists()  # stored under the bytes OpenROAD read
@@ -413,9 +445,9 @@ def test_unfinished_openroad_stage_leaves_no_hittable_slot(
     bench.on_openroad = stage
     if stage is _interrupt:
         with pytest.raises(KeyboardInterrupt):
-            bench.run("--fresh-openroad")
+            bench.run("--no-cache")
     else:
-        bench.run("--fresh-openroad")
+        bench.run("--no-cache")
     bench.on_openroad = None
 
     bench.run_fresh()
@@ -453,7 +485,7 @@ def test_input_change_during_openroad_stores_nothing(bench: Bench) -> None:
         bench._openroad(build)
 
     bench.on_openroad = edit_sdc_mid_run
-    bench.run("--fresh-openroad")
+    bench.run("--no-cache")
     bench.on_openroad = None
 
     assert not (bench.slot_root / "slot.json").exists()
@@ -478,7 +510,7 @@ def test_stale_guard_still_rejects_old_openroad_outputs(bench: Bench, case: str)
 
     bench.on_openroad = leave_old_outputs
     if case == "fresh_run":
-        _, report = bench.run("--fresh-openroad")
+        _, report = bench.run("--no-cache")
     else:
         bench.sdc = SDC.replace("4.0", "5.0")
         _, report = bench.run()
@@ -491,20 +523,20 @@ def test_stale_guard_still_rejects_old_openroad_outputs(bench: Bench, case: str)
 
 
 @pytest.mark.parametrize("surface", ["cli", "mcp"])
-def test_fresh_openroad_runs_and_refreshes_slot(bench: Bench, surface: str) -> None:
+def test_no_cache_runs_and_refreshes_slot(bench: Bench, surface: str) -> None:
     _, first = bench.run_fresh()
     bench.run_hit()
     if surface == "cli":
-        argv = ["--target", TARGET, "--fresh-openroad"]
-        assert parse_request(AsicSynthesizeFlow(), argv).fresh_openroad is True
+        argv = ["--target", TARGET, "--no-cache"]
+        assert parse_request(AsicSynthesizeFlow(), argv).no_cache is True
     else:
-        assert (
-            flow_schema(AsicSynthesizeFlow())["properties"]["fresh_openroad"]["type"] == "boolean"
-        )
-        argv = _params_to_argv({"target": TARGET, "fresh_openroad": True})
-    assert "--fresh-openroad" in argv
+        assert flow_schema(AsicSynthesizeFlow())["properties"]["no_cache"]["type"] == "boolean"
+        # `_params_to_argv` is the MCP server's argv builder; no public entry
+        # reaches it below the transport.
+        argv = _params_to_argv({"target": TARGET, "no_cache": True})
+    assert "--no-cache" in argv
 
-    _, refreshed = bench.run_fresh("--fresh-openroad")
+    _, refreshed = bench.run_fresh("--no-cache")
     _, reused = bench.run_hit()
 
     producer = refreshed["run_evidence"]["run_id"]

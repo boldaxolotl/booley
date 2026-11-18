@@ -14,8 +14,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
-import shlex
 import shutil
 import socket
 import subprocess
@@ -24,7 +22,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from time import time as wall_clock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -33,6 +31,7 @@ import booley
 from booley.agent_workspace.isolation import get_category_dirs
 from booley.agent_workspace.legacy_stashes import legacy_stash_manifests
 from booley.audit import (
+    core_tree_inspection,
     design_size,
     eda_environment,
     host_environment,
@@ -53,6 +52,7 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
+from booley.audit.output_excerpt import output_excerpt_lines
 from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
@@ -62,7 +62,7 @@ from booley.config.gateway import (
     gateway_model_pin_from_env,
     gateway_settings_from_env,
 )
-from booley.config.jobs import parse_caps
+from booley.config.jobs import SeatCapError, parse_seat_caps, seat_cap_fix
 from booley.config.project_config import (
     lookup_target_section,
     normalize_tests_toml,
@@ -70,15 +70,18 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
-    is_str_list,
-    require_bool,
+    as_dict,
+    as_int,
     require_dict,
     require_int,
     require_list,
     require_str,
 )
-from booley.flows import execution, target_test_plan_inspection
+from booley.core.host_shell import quote_arg
+from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.fpga import vivado_startup
+from booley.flows.invocation import default_timeout_ms
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -92,11 +95,10 @@ from booley.flows.sim.config import (
 from booley.flows.target_test_plan_inspection import TargetTestPlanInspectionRequest
 from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
-    core_security,
     fusesoc_registry,
     selftest_overlay,
 )
-from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, lexical_stealth_path
+from booley.fusesoc.core_projection import STATE_CORES_SUBDIR
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
@@ -112,13 +114,17 @@ from booley.harness.setup import readiness
 from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.readiness import ProjectAudit
+from booley.mcp import server_inspection
 from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
 from booley.presentation.terminal_table import render_table
 from booley.runtime import (
     auth_token,
+    core_repository_hygiene,
+    core_resolution,
     doctor_stamp,
     health,
     image_identity,
+    incontainer_setup,
     inspection,
     project_repositories,
     runtime_context,
@@ -129,24 +135,25 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import (
     handles as handle_maps,
 )
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.agent_errors import ModelUnavailableError
 from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     contains,
-    in_checkout_booley_dir,
     own_booley_dir,
     own_booley_dir_repo_path,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
+    sandbox_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
-from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
 from booley.runtime.image_provenance import is_local_image_id
-from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
+from booley.runtime.resource_history import DOCTOR_RUN_ENV
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -174,20 +181,21 @@ _DEEP_TIMEOUTS_S = {
     "sim": 900,
     "lint": 300,
     "synth": 1800,
+    "fpga": default_timeout_ms("fpga") // 1000,
 }
-# The synthesis Flow's timeout is an inner, per-target boundary. Doctor owns
-# an outer subprocess that must leave time for configure work, process-tree
-# cleanup, boundary interpretation, and the eager terminal report write after
-# that inner boundary expires.
-_SYNTH_DEEP_FINALIZE_MARGIN_S = 180
+# The synthesis and FPGA Flows' timeouts are inner, per-work-unit boundaries.
+# Doctor owns an outer subprocess that must leave time for configure work,
+# process-tree cleanup, boundary interpretation, and the eager terminal report
+# write after that inner boundary expires.
+_IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S = 180
 _SIM_DEEP_FINALIZE_MARGIN_S = 30
 
 # The three core Flow tables remain required project configuration. FPGA is an
-# optional axis: plain Doctor covers it when configured or selected by Target
-# metadata, while deep Doctor deliberately stops short of implementation.
+# optional axis: plain and deep Doctor cover it only when it is configured or
+# selected by Target metadata (see _fpga_doctor_applicable).
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
-_DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
+_DEEP_DOCTOR_FLOWS = _PLAIN_DOCTOR_FLOWS
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
@@ -204,7 +212,6 @@ _PROJECT_CONTEXT_ENV = frozenset(
         "BOOLEY_PAIRED_PROJECT_REPOSITORY",
         "BOOLEY_RUNTIME_DIR",
         "BOOLEY_SLUG",
-        "BOOLEY_STATE_FILE",
         "BOOLEY_TICKET_FILE",
         "BOOLEY_TICKET_SLUG",
         "BOOLEY_TICKET_TYPE",
@@ -239,24 +246,10 @@ _SELFTEST_FOOTPRINT_NOTE = {
 # 0 = pass, 1 = graded design failure (fail/elab_error), 2 = infra/contract error.
 _TOOL_EXIT_PASS = 0
 _TOOL_EXIT_DESIGN_FAIL = 1
-# HDL source suffixes used by Doctor's readmem scan. Design sizing owns its own
+# HDL source suffixes used by Doctor's interface-port scan. Design sizing owns its own
 # source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
-# B-Wave is unconditionally required; enabled deterministic Flows are added below.
-_BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
-# Specialist MCP tools worth a heads-up when expected-but-absent from
-# the MCP surface. An explicit ``[specialists.<name>].enabled = false`` opts out.
-_ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
-    {
-        "mutation_tester",
-        "reviewer",
-    }
-)
-_MCP_PROBE_TIMEOUT_S = 60
-# Budget for the one Sandbox container that resolves every selected Target.
-_CORE_RESOLVE_TIMEOUT_S = 600
-
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
@@ -702,12 +695,12 @@ _LINE_STATUS = {
 
 #: Counts-table rows in display order: (counter key, label).
 _COUNT_LABELS = (
-    ("pass", "passed"),
-    ("warn", "warnings"),
-    ("waived", "waived"),
-    ("note", "notes"),
-    ("skip", "skipped"),
-    ("fail", "failed"),
+    (Severity.PASS, "passed"),
+    (Severity.WARN, "warnings"),
+    (Severity.WAIVED, "waived"),
+    (Severity.NOTE, "notes"),
+    (Severity.SKIP, "skipped"),
+    (Severity.FAIL, "failed"),
 )
 
 
@@ -855,11 +848,11 @@ def run_doctor_result(
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
     flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
-    _run_flow_and_core_phase(project, flow_runtime, verbose, reporter, report_progress)
+    _run_flow_and_core_phase(project, flow_runtime, reporter, report_progress)
 
     summary = None
     if deep:
-        summary = _run_deep_phase(project, docker_exe, flow_runtime, reporter)
+        summary = _run_deep_phase(project, flow_runtime, reporter)
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
@@ -953,9 +946,7 @@ def _observe_sandbox_identity(
     )
     try:
         # exec_argv keeps stdin open (-i); never forward the caller's stdin into the probe.
-        result = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=15
-        )
+        result = run_captured_bounded(argv, timeout=15, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None, None
     lines = result.stdout.splitlines() if result.returncode == 0 else []
@@ -974,7 +965,7 @@ def _run_project_phase(
     *,
     read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
-    """Run host, config, Git, and Goal presence checks."""
+    """Run host, config, Git, and leftover-directory checks."""
     _section("Host checks")
     host = host_diagnostics.inspect_host()
     reporter.diagnostics(host.report)
@@ -983,11 +974,11 @@ def _run_project_phase(
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
-    # Goal and upgrade-review records are Common Booley State, read from main.
+    # Upgrade-review records are Common Booley State, read from main.
     common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
     _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
-    _check_goal_presence(project_root, common_dir, reporter)
+    _check_goal_leftovers(common_dir, booley_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -1018,9 +1009,12 @@ def _check_legacy_source_stashes(project_root: Path, reporter: _Reporter) -> Non
                 f"An older run left a source stash record at {manifest}",
                 subject=str(manifest),
             ),
-            "Inspect the record before Sandbox rebuild or temp cleanup. Recovery is "
-            "manual; never overwrite current sources. Guide: "
-            + docs_url("TROUBLESHOOTING.md", "recover-sources-hidden-by-an-interrupted-older-run"),
+            "Recovery is manual, in this Sandbox, before a Sandbox rebuild or temp "
+            "cleanup: (1) back up the worktree, including untracked files; (2) open "
+            "the record: each `moved` pair lists the original path, then its copy "
+            "under `stash_dir`; (3) if the stash directory has mode 000, run "
+            "`chmod u+rwx <stash-dir>`; (4) copy back only missing files and never "
+            "overwrite one that exists; (5) delete the stash and its record",
         )
 
 
@@ -1081,8 +1075,8 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
 
     ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
-    made by hand looks healthy, but Goal Mode then records no paired revision
-    and its baselines read the copy's live files instead of versioned ones.
+    made by hand looks healthy, but it records no paired revision, and measurements of
+    its commits read the copy's live files instead of versioned ones.
     """
     from booley.core.booley_layout import BooleyLayoutError
     from booley.runtime.directory_migration_git import primary_checkout
@@ -1102,7 +1096,7 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
         return  # A Snapshot of a non-versioned Booley Directory is the expected layout.
     _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
         f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
-        f"{versioned}; Goal Mode and baselines will not use its committed revisions",
+        f"{versioned}; measurements will not use its committed revisions",
         "save any work in this worktree, then recreate it with `booley worktree new <name>` "
         f"from {primary}",
     )
@@ -1200,7 +1194,7 @@ def _warn_missing_project_data_branch(
         f"Booley Directory's repository {project_repo} has no local branch {outer_branch!r}; "
         "implicit Paired Checkout routing will fail"
     )
-    command = shlex.join(["git", "-C", str(project_repo), "switch", "-c", outer_branch])
+    command = f"git -C {quote_arg(str(project_repo))} switch -c {quote_arg(outer_branch)}"
     fix = (
         f"commit or otherwise clean changes to the Booley Directory, then run `{command}` and rerun "
         "Doctor; if branch names intentionally differ, set project_destination_ref explicitly"
@@ -1268,23 +1262,31 @@ def _common_booley_dir(root: Path, reporter: _Reporter) -> Path | None:
         return None
 
 
-def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporter) -> None:
-    from booley.harness.dashboard.doctor import inspect_presence
+_GOAL_LEFTOVER_DIRECTORIES = ("goals", "goalsets")
 
-    if booley_dir is None:
-        return
-    common = _common_booley_dir(root, reporter)
-    if common is None:
-        return
-    result = inspect_presence(
-        root, common, inside_sandbox=runtime_context.inside_session_runtime()
-    )
-    if result.unavailable:
-        reporter.skip_(result.unavailable)
-    for finding in result.warnings:
-        reporter.warn_(
-            finding, "inspect the Goal worktree and resume its work, or explicitly abandon it"
-        )
+
+def _check_goal_leftovers(
+    main_booley_dir: Path | None, checkout_booley_dir: Path | None, reporter: _Reporter
+) -> None:
+    """Warn about ``goals/`` and ``goalsets/`` directories an earlier version left behind.
+
+    Goal Mode was removed and nothing reads them; Doctor only looks, and nothing
+    deletes them.
+    """
+    seen: set[Path] = set()
+    for booley_dir in (main_booley_dir, checkout_booley_dir):
+        if booley_dir is None:
+            continue
+        for name in _GOAL_LEFTOVER_DIRECTORIES:
+            leftover = booley_dir / name
+            if leftover in seen or not leftover.is_dir():
+                continue
+            seen.add(leftover)
+            _warning_sink(reporter.warn_, "goals.leftover", subject=str(leftover))(
+                f"{leftover} is left over from Goal Mode, which was removed; "
+                "Booley no longer reads it",
+                "delete it when you no longer need its records",
+            )
 
 
 def _check_upgrade_review(booley_dir: Path | None, reporter: _Reporter) -> None:
@@ -1329,7 +1331,11 @@ def _run_runtime_phase(
         reporter.skip_,
         reporter.fail_,
     )
-    _check_memory_invariant(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_swap(
+        project, docker_exe, sandbox_image, reporter.pass_, reporter.warn_, reporter.skip_
+    )
+    _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
         docker_exe,
@@ -1344,7 +1350,6 @@ def _run_runtime_phase(
         project,
         docker_exe,
         sandbox_image,
-        verbose,
         reporter,
     )
     progress("Project checks")
@@ -1354,7 +1359,6 @@ def _run_runtime_phase(
 def _run_flow_and_core_phase(
     project: ProjectAudit | None,
     flow_runtime: _DoctorFlowRuntime | None,
-    verbose: bool,
     reporter: _Reporter,
     progress: Check,
 ) -> None:
@@ -1388,13 +1392,11 @@ def _run_flow_and_core_phase(
             reporter.fail_,
             _diagnostics=reporter.diagnostics,
             _note=reporter.note_,
-            _detail=info if verbose else None,
         )
 
 
 def _run_deep_phase(
     project: ProjectAudit | None,
-    docker_exe: str | None,
     flow_runtime: _DoctorFlowRuntime | None,
     reporter: _Reporter,
 ) -> doctor_deep.DeepAttemptSummary:
@@ -1418,19 +1420,41 @@ def _run_deep_phase(
         _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
-    _run_core_resolve_checks(
-        project,
-        docker_exe,
-        reporter.pass_,
-        reporter.skip_,
-        reporter.fail_,
-        flow_runtime=flow_runtime,
-        completeness=tracker,
-    )
+    _run_core_resolution(project, flow_runtime, reporter, tracker)
     issues = _deep_identity_reasons(image_id, sandbox_version)
     if not reporter.profile.records_health_evidence:
         tracker.require("agent-checks")
     return doctor_deep.DeepAttemptSummary(tracker.missing, issues, image_id)
+
+
+def _run_core_resolution(
+    project: ProjectAudit,
+    flow_runtime: _DoctorFlowRuntime,
+    reporter: _Reporter,
+    tracker: doctor_deep.DeepCheckTracker,
+) -> None:
+    """Deep: resolve each Doctor-selected Target in the Sandbox; track completion.
+
+    The owner grades resolvability; Doctor keeps one completeness identifier per
+    selected Target, required before the owner runs so a skip stays incomplete.
+    """
+    selected = _project_target_matrix(project).seed_targets
+    if not selected:
+        return
+    identifiers = {
+        selector: f"core.resolve.{hashlib.sha256(selector.encode()).hexdigest()[:16]}"
+        for selector in selected
+    }
+    for identifier in identifiers.values():
+        tracker.require(identifier)
+    result = core_resolution.inspect_core_resolution(
+        core_resolution.CoreResolutionRequest(
+            project.project_root, tuple(selected), flow_runtime.available, flow_runtime.command
+        )
+    )
+    reporter.diagnostics(result.report)
+    for selector in result.completed:
+        tracker.completed(identifiers[selector], True)
 
 
 def _track_developer_probe(
@@ -1465,14 +1489,6 @@ def _deep_identity_reasons(image_id: str | None, sandbox_version: str | None) ->
     return tuple(reasons)
 
 
-#: ``.core`` security violations whose verdict depends on the agent's write
-#: Scope. doctor only has a synthetic project-wide Scope, so these are
-#: advisory there; the execution Scope check at commit time is the real gate.
-#: Everything else (``fpga_hook``, ``expr_param``) is a property of the
-#: ``.core`` itself and stays a hard FAIL.
-_SCOPE_DEPENDENT_VIOLATIONS = frozenset({"in_scope_script", "unconfinable_script"})
-
-
 def _sandbox_image(project: ProjectAudit | None) -> str:
     """Return configured sandbox image, falling back to the base image."""
     if project is None:
@@ -1500,12 +1516,9 @@ def _image_env_value(docker_exe: str, image: str, key: str) -> str | None:
     missing image, malformed output.
     """
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [docker_exe, "image", "inspect", image, "--format", "{{json .Config.Env}}"],
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
@@ -1581,7 +1594,7 @@ def _check_worktree_prune_guard(
     _fail(
         f"{WORKTREE_PRUNE_KEY} is {detail} — a host-side `git gc` can prune "
         f"legacy or fallback worktree registrations in {repository}",
-        f"git -C {repository} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
+        f"git -C {quote_arg(str(repository))} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
     )
 
 
@@ -1590,7 +1603,7 @@ def _check_worktree_core_shadow_guard(
     _pass: Check,
     _warn: Check,
     *,
-    project_root: Path | None = None,
+    project_root: Path,
 ) -> None:
     """Ensure ``.booley/FUSESOC_IGNORE`` keeps worktree cores out of scan.
 
@@ -1602,6 +1615,8 @@ def _check_worktree_core_shadow_guard(
     this; catch a project that predates the fix (or whose marker was removed),
     escalating the message when a live shadowing ``.core`` is already present.
     """
+    from booley.runtime.worktree_paths import worktree_state_dir
+
     _warn = _warning_sink(_warn, "fusesoc.worktree-core-shadow")
     marker = booley_dir / "FUSESOC_IGNORE"
     if marker.is_file():
@@ -1613,7 +1628,7 @@ def _check_worktree_core_shadow_guard(
     # Authored stealth cores (.booley/cores/, ADR 0036) are sources, not
     # shadow threats — they are scanned deliberately and must not be counted.
     stealth_root = booley_dir / STATE_CORES_SUBDIR
-    worktrees = _worktree_core_directory(booley_dir, project_root)
+    worktrees = worktree_state_dir(project_root, booley_dir=booley_dir) / "worktrees"
     shadow_cores = [
         p
         for sub in (worktrees, booley_dir)
@@ -1634,146 +1649,183 @@ def _check_worktree_core_shadow_guard(
         )
 
 
-def _worktree_core_directory(booley_dir: Path, project_root: Path | None) -> Path:
-    from booley.runtime.worktree_paths import worktree_state_dir
-
-    state = (
-        worktree_state_dir(project_root, booley_dir=booley_dir)
-        if project_root is not None
-        else booley_dir
-    )
-    return state / "worktrees"
-
-
 # Booley Directory subtrees that legitimately hold transient .core COPIES (worktree /
 # baseline checkouts, build caches) — never authored sources, never "stranded".
 
 
 # ---------------------------------------------------------------------------
-# ADR 0028 Decision 12: container memory invariant + runtime detection health
+# ADR 0087 Sandbox memory + ADR 0028 runtime detection health
 # ---------------------------------------------------------------------------
 
 # Actionable fix shared by both runtime-marker failures: the marker is baked by
 # the sandbox image build, and the derived-image drift gotcha means the base
 # rebuild alone silently leaves per-project images stale.
 _RUNTIME_MARKER_FIX = (
-    "rebuild the base AND derived sandbox images (booley init --force) — "
-    "the image predates the ADR 0028 runtime marker"
+    f"the image predates the Sandbox runtime marker; recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
 )
 
 
-def _developer_mem_bytes(booley_dir: Path) -> tuple[int, bool]:
-    """(agent memory term, measured?) for the invariant arithmetic.
+def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
+    """The licensed EDA tools Booley would run for *project*: Vivado, when it provisions it.
 
-    Uses the peak RSS ``doctor --deep`` recorded into runtime state when
-    present, else the ADR 0028 1 GiB fallback.
+    Booley provisions Vivado when the FPGA Flow is enabled and ``[eda.vivado]``
+    is declared; a Project that asks Doctor to cover the FPGA axis also uses it.
     """
-    from booley.harness import developer_probe
-
-    measured = developer_probe.load_measurement(booley_dir)
-    if measured is not None:
-        return (measured, True)
-    return (developer_probe.FALLBACK_BYTES, False)
-
-
-def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMemoryReservation:
-    """Load project evidence and apply the extracted HEAVY-memory policy."""
-    jobs = project.booley_toml.get("jobs", {})
-    raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
-    from booley.harness import synth_probe
-
-    measurement = synth_probe.load_measurement(project.common_booley_dir)
-    calibration = (
-        resource_policy.SynthesisMemoryCalibration(
-            target=str(measurement["target"]),
-            peak_rss_bytes=int(measurement["peak_rss_bytes"]),
-        )
-        if measurement is not None
-        else None
-    )
-    return resource_policy.heavy_memory_reservation(
-        raw,
-        calibration,
-        target_matrix.doctor_targets(project.project_root, "synth"),
-    )
+    eda = project.booley_toml.get("eda")
+    declared = isinstance(eda, dict) and "vivado" in eda
+    if _flow_enabled(project, "fpga") and (declared or _fpga_doctor_applicable(project)):
+        return ("vivado",)
+    return ()
 
 
-def _check_memory_invariant(
+def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) -> None:
+    """ADR 0087: every licensed EDA tool in use needs a Seat Cap.
+
+    Only the user knows how many licence seats they own, so this never writes a
+    value: a missing Seat Cap FAILs with the entry to add. A malformed
+    ``[jobs.seats]`` is the schema audit's finding, not a second one here.
+    """
+    if project is None:
+        return
+    try:
+        caps = parse_seat_caps(project.booley_toml)
+    except SeatCapError:
+        return
+    for tool in _licensed_tools_in_use(project):
+        if tool in caps:
+            _pass(f"Seat Cap: {tool} = {caps[tool]}")
+        else:
+            _fail(
+                f"{tool} has no Seat Cap: every licensed EDA tool the Project uses needs one",
+                f"add {seat_cap_fix(tool)} to booley.toml; only you know how many seats you own",
+            )
+
+
+def _check_sandbox_memory(
     project: ProjectAudit | None,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
 ) -> None:
-    """ADR 0028 Decision 12 (advisory): the one container fits its caps.
+    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
 
-    Agent calls and every HEAVY EDA job
-    share one cgroup — a limit sized below what the ``[jobs]`` caps admit is
-    an OOM waiting to take the whole session down. WARN, never FAIL: the
-    budget terms are estimates, and an over-committed container still works
-    until the jobs actually coincide.
+    Unset, the budget falls back to the installed memory, which an agent and the
+    Jobs then share, so Doctor WARNs. Reads configuration only, so it runs
+    inside and outside the Sandbox.
     """
-    _warn = _warning_sink(_warn, "sandbox.memory-overcommit")
-
+    _warn = _warning_sink(_warn, "sandbox.memory-unset")
     if project is None:
-        _skip("memory invariant skipped - no valid project config")
+        _skip("sandbox memory skipped - no valid project config")
         return
-
-    if runtime_context.inside_session_runtime():
-        limit = resource_policy.cgroup_memory_limit_bytes()
-        if limit is None:
-            _pass(
-                "memory invariant: container memory is unlimited "
-                "(no cgroup limit) — nothing to enforce"
-            )
-            return
-        source = "container memory"
-    else:
-        mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
-        if not mem_str:
-            _skip("memory invariant: no [sandbox] memory limit configured — nothing to check")
-            return
-        limit = resource_policy.parse_memory_limit(mem_str)
-        if limit is None:
-            _warn(
-                f"[sandbox] memory = {mem_str!r} is unparseable — "
-                "cannot check the memory invariant"
-            )
-            return
-        source = "[sandbox] memory"
-
-    caps = parse_caps(project.booley_toml)
-    reservation = _heavy_memory_reservation(project)
-    if reservation.error:
-        _warn(reservation.error)
-        return
-    orch, measured = _developer_mem_bytes(project.common_booley_dir)
-    requirement = resource_policy.memory_requirement(
-        max_heavy=caps.max_heavy,
-        heavy_job_bytes=reservation.bytes,
-        agent_count=1,
-        agent_bytes=orch,
-    )
-    fmt = resource_policy.format_memory
-    arithmetic = (
-        f"{caps.max_heavy}x{fmt(reservation.bytes)} + 1x{fmt(orch)} "
-        f"+ 2g = {fmt(requirement.required_bytes)}"
-    )
-    orch_note = (
-        "measured agent RSS per Sandbox session"
-        if measured
-        else "1g agent fallback per Sandbox session — doctor --deep measures it"
-    )
-    if limit >= requirement.required_bytes:
-        _pass(
-            f"memory invariant holds: {source} {fmt(limit)} ≥ {arithmetic} "
-            f"({reservation.evidence}; {orch_note})"
-        )
-    else:
+    mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
+    if not mem_str:
         _warn(
-            f"{source} {fmt(limit)} < {arithmetic} — raise the "
-            "devcontainer memory or lower [jobs] caps; set [jobs].heavy_memory "
-            f"to record the calibrated reservation ({reservation.evidence}; {orch_note})"
+            "[sandbox].memory is unset: the Memory Budget falls back to installed memory",
+            'set [sandbox] memory = "<size>" (booley resources shows Job peaks)',
         )
+        return
+    limit = resource_policy.parse_memory_limit(mem_str)
+    if limit is None:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is unparseable: the Memory Budget "
+            "falls back to installed memory",
+            'set [sandbox] memory to a size such as "16g"',
+        )
+        return
+    _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
+
+
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+
+def _read_host_memory(
+    docker_exe: str | None, sandbox_image: str
+) -> tuple[resource_policy.HostMemory | None, str]:
+    """The Docker host's memory and swap, or ``None`` and why it cannot be read.
+
+    Inside the Sandbox ``/proc/meminfo`` is the Docker host's already; outside, a
+    short probe container of the Sandbox Image reads it.
+    """
+    if runtime_context.inside_session_runtime():
+        try:
+            text = _PROC_MEMINFO.read_text(encoding="utf-8")
+            return resource_policy.parse_meminfo(text), ""
+        except (OSError, ValueError) as exc:
+            return None, f"cannot read /proc/meminfo: {exc}"
+    if docker_exe is None:
+        return None, "Docker is not available"
+    try:
+        return pi.probe_docker_host_memory(sandbox_image), ""
+    except pi.DockerImageError as exc:
+        return None, str(exc)
+
+
+def _swap_setting_problem(booley_toml: Mapping[str, object]) -> tuple[str, str] | None:
+    """The warning and fix for a ``[sandbox].swap`` that is not a parseable size string."""
+    raw = (as_dict(booley_toml.get("sandbox"), default={}) or {}).get("swap")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return (
+            f"[sandbox] swap = {raw!r} is not a string: the default swap limit applies",
+            'set [sandbox] swap to a quoted size such as "4g", or "0" for no swap',
+        )
+    if raw.strip() and resource_policy.parse_memory_limit(raw.strip()) is None:
+        return (
+            f"[sandbox] swap = {raw.strip()!r} is unparseable: the default swap limit applies",
+            'set [sandbox] swap to a size such as "4g", or "0" for no swap',
+        )
+    return None
+
+
+def _check_sandbox_swap(
+    project: ProjectAudit | None,
+    docker_exe: str | None,
+    sandbox_image: str,
+    _pass: Check,
+    _warn: Warn,
+    _skip: Check,
+) -> None:
+    """ADR 0087: warn when ``[sandbox].swap`` asks for swap the Docker host cannot back.
+
+    Checks the allowance issuance writes (``memory_swap_limit``), so a current
+    Sandbox specification and this check agree; a stale one is the drift WARN.
+    """
+    _warn = _warning_sink(_warn, "sandbox.swap-unbacked")
+    if project is None:
+        _skip("sandbox swap skipped - no valid project config")
+        return
+    mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
+    memory = resource_policy.parse_memory_limit(mem_str)
+    if memory is None:
+        _skip("sandbox swap skipped - no swap limit without a parseable [sandbox].memory")
+        return
+    problem = _swap_setting_problem(project.booley_toml)
+    if problem is not None:
+        _warn(*problem)
+        return
+    swap_str = resource_policy.configured_sandbox_swap(project.booley_toml)
+    host, why = _read_host_memory(docker_exe, sandbox_image)
+    if host is None:
+        _skip(f"sandbox swap skipped - the Docker host's swap is unknown: {why}")
+        return
+    swap = resource_policy.sandbox_swap_bytes(mem_str, swap_str, host.swap_bytes) or 0
+    fmt = resource_policy.format_memory
+    if swap > host.swap_bytes:
+        _warn(
+            f"[sandbox].swap = {fmt(swap)} is more than the {fmt(host.swap_bytes)} of swap "
+            "the Docker host has",
+            'lower [sandbox].swap ("0" disables swap) or add host swap, '
+            "then run `booley session refresh`",
+        )
+    elif memory + swap > host.memory_bytes + host.swap_bytes:
+        _warn(
+            f"[sandbox].memory + swap = {fmt(memory + swap)} is more than the "
+            f"{fmt(host.memory_bytes + host.swap_bytes)} of memory plus swap the Docker host has",
+            "lower [sandbox].memory or [sandbox].swap, then run `booley session refresh`",
+        )
+    else:
+        _pass(f"[sandbox].swap: the Sandbox may swap up to {fmt(swap)} beyond its memory")
 
 
 def _check_runtime_location(
@@ -1824,7 +1876,7 @@ def _check_host_agent_session(_pass: Check) -> None:
 
     app = runtime_context.agent_session_app()
     if app is None:
-        message = "host shell — Booley Flows live in the Sandbox (ADR 0028)"
+        message = "host shell — Booley Flows live in the Sandbox"
     else:
         message = (
             f"{app} is running on the HOST, as expected for host-side Project Setup. "
@@ -1843,7 +1895,7 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
     root = job_slots.slots_dir()
     if root is None:
         _fail(
-            "slot store root unresolvable (no Booley Directory) — job admission cannot arbitrate",
+            "Memory Reservation store root unresolvable (no Booley Directory) — Job admission cannot arbitrate",
             "run doctor from the project workspace or set BOOLEY_DIR",
         )
         return
@@ -1854,11 +1906,11 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
         probe.unlink()
     except OSError as exc:
         _fail(
-            f"slot store root not writable: {root} ({exc})",
+            f"Memory Reservation store root not writable: {root} ({exc})",
             f"fix ownership/permissions on {root}",
         )
         return
-    _pass(f"slot store root writable: {root}")
+    _pass(f"Memory Reservation store root writable: {root}")
 
 
 def _check_image_bakes_runtime_marker(
@@ -1874,12 +1926,9 @@ def _check_image_bakes_runtime_marker(
         _skip("sandbox image runtime marker check skipped - container runtime unavailable")
         return
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [docker_exe, "image", "inspect", sandbox_image, "--format", "{{json .Config.Env}}"],
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         _skip("sandbox image runtime marker check skipped - image inspect failed")
@@ -1935,12 +1984,11 @@ def _run_developer_probe(
     *,
     completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> _AgentCallRecord | None:
-    """ADR 0028 Decision 12: measure the invariant's developer term.
+    """ADR 0028 Decision 12: measure the provider CLI's peak RSS.
 
     ``--deep``-only and in-container-only: the number that matters is the
     agent CLI's footprint *inside* the Sandbox. Fail-soft for probe LIMITATIONS (no process accounting, no RSS
-    reading, hit usage cap) — those degrade to a SKIP and the invariant keeps
-    its 1 GiB fallback. But a failure of the agent CALL itself (auth, dead
+    reading, hit usage cap) — those degrade to a SKIP. But a failure of the agent CALL itself (auth, dead
     backend) is a real project defect — other agent calls would fail
     for the same reason — and is reported as a FAIL, not hidden in a SKIP
     (the 2026-07-23 expired-creds incident sailed through a green doctor
@@ -1984,25 +2032,13 @@ def _run_developer_probe(
                     "container recreate); see the harness log for the provider's error",
                 )
             return record
-        _skip(
-            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
-        )
+        _skip(f"Specialist provider memory probe skipped - {exc}")
         return record
     record = _AgentCallRecord("agent probe", measurement.usage)
-    try:
-        path = developer_probe.record_measurement(
-            project.common_booley_dir, measurement.peak_rss_bytes
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
-        _skip(
-            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
-        )
-        return record
     bound = "" if measurement.exact else " (upper bound)"
     _pass(
         "provider CLI peak RSS measured: "
-        f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound} — "
-        f"recorded to {path}"
+        f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound}"
     )
     _pass("Specialist provider live authorization check completed successfully")
     if completeness is not None:
@@ -2019,7 +2055,7 @@ def _run_model_access_probes(
     tracker: doctor_deep.DeepCheckTracker,
     internal_record: _AgentCallRecord | None,
 ) -> None:
-    """Probe every model the ``[models]`` table resolves, so a refusal fails Doctor, not a Goal.
+    """Probe every model the ``[models]`` table resolves, so a refusal fails Doctor, not a later Specialist run.
 
     The memory probe already exercised the internal model. Each distinct Specialist model
     gets one trivial provider turn on the Agent CLI it implies. A gateway fixes the model
@@ -2228,12 +2264,8 @@ def _image_created_epoch(docker_exe: str, image: str) -> float | None:
     staleness verdict.
     """
     try:
-        result = subprocess.run(
-            [docker_exe, "image", "inspect", "--format", "{{.Created}}", image],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        result = run_captured_bounded(
+            [docker_exe, "image", "inspect", "--format", "{{.Created}}", image], timeout=10
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
@@ -2242,7 +2274,17 @@ def _image_created_epoch(docker_exe: str, image: str) -> float | None:
     return _parse_docker_created(result.stdout)
 
 
+def _image_stale_remedy(project: ProjectAudit | None) -> str:
+    """Name the documented steps that recreate the Sandbox on a fresh image."""
+    from booley.runtime import session_runtime
+
+    if project is None:
+        return UNKNOWN_SANDBOX_STEPS
+    return session_runtime.sandbox_remedy(project.project_root)
+
+
 def _check_image_freshness(
+    project: ProjectAudit | None,
     docker_exe: str | None,
     image: str,
     _pass: Check,
@@ -2250,8 +2292,8 @@ def _check_image_freshness(
 ) -> None:
     """Warn when the built sandbox image predates the Booley Dockerfile.
 
-    ``booley init`` only builds the image when it is missing, so a Dockerfile
-    edit (e.g. the agent-uid fix) is silently ignored until a forced rebuild.
+    A Dockerfile edit (e.g. the agent-uid fix) reaches a Sandbox only once the
+    Sandbox is recreated on the rebuilt image.
     """
     _warn = _warning_sink(
         _warn,
@@ -2273,8 +2315,8 @@ def _check_image_freshness(
         return
     if dockerfile_mtime > created:
         _warn(
-            f"sandbox image '{image}' predates {dockerfile.name}; booley init "
-            "will not rebuild it - run booley init --force (or rebuild the image)"
+            f"sandbox image '{image}' predates {dockerfile.name}; "
+            f"recreate the Sandbox: {_image_stale_remedy(project)}"
         )
     else:
         _pass(f"sandbox image '{image}' is newer than {dockerfile.name}")
@@ -2319,7 +2361,7 @@ def _check_derived_image_freshness(
         _warn(
             f"project image '{image}' predates its base '{DOCKER_IMAGE}'; it "
             "carries a stale Booley build (e.g. missing a newer flow stage). "
-            "Rebuild it with booley init --force."
+            f"Recreate the Sandbox: {_image_stale_remedy(project)}."
         )
     else:
         _pass(f"project image '{image}' is newer than its base '{DOCKER_IMAGE}'")
@@ -2365,8 +2407,8 @@ def _check_custom_image_freshness(
     if dockerfile_mtime > created:
         _warn(
             f"custom sandbox image '{image}' predates {dockerfile}; the container "
-            "runs the old toolchain until you rebuild it (edited Dockerfile, no "
-            "rebuild)"
+            "runs the old toolchain (edited Dockerfile, no rebuild); "
+            f"{_image_stale_remedy(project)}"
         )
     else:
         _pass(f"custom sandbox image '{image}' is newer than its Dockerfile")
@@ -2407,7 +2449,7 @@ def _check_image_bakes_current_booley(
                 f"issued Sandbox Image '{issued_image}' bakes Booley sources that no longer "
                 f"match the canonical host installation ({result.detail}); the sandbox runs "
                 "stale code (egress is locked, so it can't pip-install the "
-                "fix). Rebuild with booley session refresh."
+                f"fix). Recreate the Sandbox: {_image_stale_remedy(project)}."
             )
             return
         if result.status is image_identity.Status.MATCH:
@@ -2436,13 +2478,7 @@ def _check_container_uid(  # noqa: PLR0911 — ordered precondition ladder; each
     if not sys.platform.startswith("linux") or not hasattr(os, "getuid"):
         return
     try:
-        result = subprocess.run(
-            [docker_exe, "run", "--rm", image, "id", "-u"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        result = run_captured_bounded([docker_exe, "run", "--rm", image, "id", "-u"], timeout=30)
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         _warn(f"could not probe container uid: {exc}")
         return
@@ -2552,7 +2588,7 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 
 
 def _check_current_runtime_git_identity(
-    project: ProjectAudit | None, _pass: Check, _warn: Check, _skip: Check
+    project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
     """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
     if project is None:
@@ -2668,7 +2704,7 @@ def _run_container_checks(
         _fail(f"{image} image missing", "booley init or build the configured sandbox image")
         return
 
-    _check_image_freshness(docker_exe, image, _pass, _warn)
+    _check_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_derived_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_custom_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_image_bakes_current_booley(project, docker_exe, image, _pass, _warn)
@@ -2688,13 +2724,7 @@ def _container_command_check(
 
     def _container_check(description: str, cmd: list[str], fix: str = "") -> None:
         try:
-            result = subprocess.run(
-                [docker_exe, "run", "--rm", image, *cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
+            result = run_captured_bounded([docker_exe, "run", "--rm", image, *cmd], timeout=30)
             if result.returncode == 0:
                 _pass(description)
                 if verbose and result.stdout.strip():
@@ -2723,7 +2753,7 @@ def _run_container_tool_checks(
         _container_check(
             "verible-verilog-lint (a .core lint Target selects verible)",
             ["verible-verilog-lint", "--version"],
-            "rebuild the sandbox image — it predates Verible support (ADR 0033)",
+            "rebuild the sandbox image — it predates Verible support",
         )
     _container_check("ripgrep", ["rg", "--version"], "rebuild sandbox image")
     # Two distinct things, and an image can have one without the other:
@@ -2747,13 +2777,6 @@ def _run_container_tool_checks(
         )
 
 
-# RISC-V variant checks fire only when the image bakes this flavour marker
-# (Dockerfile.riscv), so the vanilla base sandbox is never faulted for lacking a
-# cross-toolchain it was never meant to carry.
-_RISCV_IMAGE_FIX = eda_environment.RISCV_IMAGE_FIX
-_RISCV_DOC_FILES = eda_environment.RISCV_DOC_FILES
-
-
 def _check_riscv_toolchain(
     docker_exe: str,
     image: str,
@@ -2767,7 +2790,7 @@ def _check_riscv_toolchain(
         docker_exe,
         image,
         flavor,
-        run=subprocess.run,
+        run=run_captured_bounded,
     )
     for finding in findings:
         if finding.severity is eda_environment.EdaFindingSeverity.PASS:
@@ -2776,7 +2799,7 @@ def _check_riscv_toolchain(
             _fail(finding.message, finding.fix)
 
 
-def _expected_interactive_spec(project_root: Path) -> Callable[[str | None], dict] | None:
+def _expected_sandbox_spec(project_root: Path) -> Callable[[str | None], dict] | None:
     """How inspection rebuilds the spec ``booley init`` would write; ``None`` in the Sandbox.
 
     Inside the Sandbox the host inputs init reads are invisible, so inspection
@@ -2793,14 +2816,15 @@ def _run_mcp_checks(
     project: ProjectAudit | None,
     docker_exe: str | None,
     image: str,
-    verbose: bool,
     reporter: _Reporter,
 ) -> None:
-    """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
+    """Validate the Sandbox: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
-    _section("Interactive Mode checks")
+    _section("Sandbox setup checks")
+    if runtime_context.inside_session_runtime():
+        _check_sandbox_mcp_server(reporter)
     if project is None:
-        reporter.skip_("Interactive Mode checks skipped - project config invalid")
+        reporter.skip_("Sandbox setup checks skipped - project config invalid")
         return
 
     request = inspection.RuntimeInspectionRequest(
@@ -2812,7 +2836,7 @@ def _run_mcp_checks(
         eda=project.eda,
         fpga_enabled=_flow_enabled(project, "fpga"),
         booley_dir=project.booley_dir,
-        expected_spec=_expected_interactive_spec(project.project_root),
+        expected_spec=_expected_sandbox_spec(project.project_root),
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     reporter.diagnostics(
@@ -2834,8 +2858,41 @@ def _run_mcp_checks(
     if not _docker_image_exists_by_name(image):
         reporter.skip_("MCP server probe skipped - sandbox image unavailable")
         return
-    _run_mcp_probe(
-        project, docker_exe, image, verbose, reporter.pass_, reporter.warn_, reporter.fail_
+    reporter.diagnostics(
+        server_inspection.inspect_mcp_server(
+            _mcp_server_inspection_request(project, docker_exe, image)
+        )
+    )
+
+
+def _check_sandbox_mcp_server(reporter: _Reporter) -> None:
+    """Check the running HTTP MCP server from inside the Sandbox, where Docker is absent."""
+    from booley.config import agent, agent_app
+
+    try:
+        clis = agent.sandbox_agent_clis()
+    except agent_app.AgentAppError as exc:
+        # The start hook exits before starting the server; the agent checks FAIL this choice.
+        reporter.skip_(f"Sandbox MCP server check skipped - {exc}")
+        return
+    reporter.diagnostics(
+        incontainer_setup.inspect_http_server(
+            incontainer_setup.HttpServerInspectionRequest(agent_clis=clis)
+        )
+    )
+
+
+def _mcp_server_inspection_request(
+    project: ProjectAudit, docker_exe: str, image: str
+) -> server_inspection.McpServerInspectionRequest:
+    """Describe the MCP probe; Doctor alone knows whether it covers the FPGA axis."""
+    return server_inspection.McpServerInspectionRequest(
+        project_root=project.project_root,
+        booley_dir=project.booley_dir,
+        docker_exe=docker_exe,
+        image=image,
+        booley_toml=project.booley_toml,
+        fpga_covered=_fpga_doctor_applicable(project),
     )
 
 
@@ -2847,7 +2904,8 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     if not reported:
         return
     default_cli = _configured_provider(project)
-    allowed = _allowed_clis(project, default_cli)
+    _check_auth_recorded(project, _allowed_clis(project, default_cli), reporter)
+    allowed = _auto_allowed_clis(auto_choice, default_cli) or _allowed_clis(project, default_cli)
     _warn_ignored_gateway_handoff(reporter)
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
@@ -2862,6 +2920,59 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
             runs_specialist=cli in specialist_clis,
             auto_choice=auto_choice,
         )
+
+
+def _recorded_auth_fix(
+    declared: DeclaredAgent | None, clis: tuple[str, ...], cli: str, value: str
+) -> str:
+    """How to record *value* for *cli*, in the form ``[agent] auth`` already has."""
+    auth = declared.auth if declared else None
+    if isinstance(auth, dict):
+        where = f'set {cli} = "{value}" under [agent.auth]'
+    elif len(clis) == 1:
+        where = f'set auth = "{value}" under [agent]'
+    elif auth is None:
+        where = f'set {cli} = "{value}" under [agent.auth]'
+    else:
+        where = (
+            f'replace auth = "{auth}" under [agent] with an [agent.auth] table that sets '
+            f'{cli} = "{value}"'
+        )
+    return f"{where} in booley.toml, or re-run booley init"
+
+
+def _check_auth_recorded(
+    project: ProjectAudit, clis: tuple[str, ...], reporter: _Reporter
+) -> None:
+    """FAIL each Project CLI whose ``[agent] auth`` is missing or the retired ``auto``.
+
+    A Project records its billing choice. The finding names the value ``booley init``
+    would record.
+    """
+    from booley.config.agent import RETIRED_AUTH
+    from booley.harness import init_cmd
+
+    declared = _declared_agent(project)
+    auth = declared.auth if declared else None
+    for cli in clis:
+        recorded = auth if isinstance(auth, str) else (auth or {}).get(cli)
+        if recorded not in (None, RETIRED_AUTH):
+            continue
+        value = init_cmd.detected_auth_policy(cli)
+        state = "is not set" if recorded is None else f"{RETIRED_AUTH!r} is retired"
+        reporter.fail_(
+            f"{cli}: booley.toml [agent] auth {state}; detected: {value}",
+            _recorded_auth_fix(declared, clis, cli, value),
+            check_id="agent.credential-policy",
+            subject=cli,
+        )
+
+
+def _auto_allowed_clis(choice: AgentAppChoice | None, default_cli: str) -> tuple[str, ...]:
+    """The CLIs ``BOOLEY_AGENT_APP=auto`` allowed, the default first; empty for an explicit app."""
+    if choice is None:
+        return ()
+    return (default_cli, *(cli for cli in choice.clis if cli != default_cli))
 
 
 def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
@@ -2892,7 +3003,7 @@ def _check_cli_credentials(
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
     The default CLI keeps its grading (FAIL under a pinned policy, WARN under
-    ``auto``). Another allowed CLI WARNs for a missing credential, with the CLI's
+    the visitor mode). Another allowed CLI WARNs for a missing credential, with the CLI's
     own login fix, unless a ``[models]`` pin runs a Specialist on it: then it
     FAILs under every policy, because that Specialist's calls would fail.
     """
@@ -2927,7 +3038,7 @@ def _check_cli_credentials(
             if required
             else None
         ),
-        missing_fix="" if is_default else _missing_credential_fix(cli, auth_policy),
+        missing_fix="" if is_default else auth_token.missing_credential_fix(cli, auth_policy),
         is_default=is_default,
         missing_fails=runs_specialist and not is_default,
     )
@@ -2965,20 +3076,6 @@ def _check_cli_rotation_risk(
     )
 
 
-def _missing_credential_fix(cli: str, policy: str) -> str:
-    """The sign-in that *policy* accepts for *cli* (see ``auth_token.allowed_credential_keys``)."""
-    if cli == auth_token.APP_CLAUDE:
-        if policy == "api_key":
-            return f"export {auth_token.API_KEY_ENV[cli]}"
-        return "run claude and use /login, or on the host: booley auth --cli claude"
-    host_login = f"booley auth --cli {cli}"
-    if policy == "subscription":
-        return "codex login"
-    if policy == "api_key":
-        return f"export {auth_token.API_KEY_ENV[cli]}, or on the host: {host_login}"
-    return f"codex login, or on the host: {host_login}"
-
-
 def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice | None]:
     """PASS the app ``BOOLEY_AGENT_APP=auto`` chose; FAIL when it cannot be honored.
 
@@ -2994,8 +3091,13 @@ def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice 
         reporter.fail_(str(exc), check_id="agent.credential-policy", subject="BOOLEY_AGENT_APP")
         return False, None
     if choice is not None:
-        label = _AGENT_APP_LABELS[choice.app]
-        reporter.pass_(f"Agent app: {label} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
+        labels = [_AGENT_APP_LABELS[cli] for cli in choice.clis]
+        if len(labels) > 1:
+            labels[0] += " (default)"
+            subject = "Agent CLIs: " + ", ".join(labels)
+        else:
+            subject = f"Agent app: {labels[0]}"
+        reporter.pass_(f"{subject} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
     return True, choice
 
 
@@ -3065,7 +3167,7 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
             run_token_command(settings.token_command)
         except GatewayTokenCommandError as exc:
             if chosen_by_auto:
-                # Like a missing login under auth = 'auto': the user has not signed in
+                # Like a missing login in the visitor mode: the user has not signed in
                 # yet, which is a warning, not a broken setup.
                 reporter.warn_(
                     warning("agent.credential-missing", str(exc), subject=provider),
@@ -3090,7 +3192,8 @@ def _declared_agent(project: ProjectAudit | None) -> DeclaredAgent | None:
     if not isinstance(agent_section, dict):
         return None
     try:
-        return parse_agent_section(agent_section)
+        # A retired ``auth = "auto"`` is read, not refused, so Doctor can name its fix.
+        return parse_agent_section(agent_section, keep_retired_auth=True)
     except BackendConfigError:
         return None
 
@@ -3100,7 +3203,7 @@ def _declared_provider(project: ProjectAudit | None) -> str | None:
 
     Deliberately NOT env-aware: this exists to drift-check the on-disk devcontainer
     spec, so it must mirror exactly what re-seeding would decide --
-    ``init_cmd._select_interactive_app`` consults booley.toml and nothing else.
+    ``init_cmd._select_agent_app`` consults booley.toml and nothing else.
     An undeclared default means the seeder falls back to host detection, which no
     on-disk value can be compared against, so the caller skips the check.
     """
@@ -3148,11 +3251,13 @@ def _allowed_clis(project: ProjectAudit | None, default_cli: str) -> tuple[str, 
 def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None) -> str:
     """Audit *cli*'s policy (default CLI when omitted); ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
-        _DEFAULT_AUTH,
-        _VALID_AUTH_MODES,
+        DEFAULT_AUTH,
+        RETIRED_AUTH,
+        VALID_AUTH_MODES,
         _inside_container,
         env_auth_handoff,
         gateway_handoff_active,
+        missing_auth_policy,
     )
 
     default_cli = _configured_provider(project)
@@ -3165,15 +3270,21 @@ def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None
         return GATEWAY_AUTH  # env-only policy: it outranks the Project toml
     env_auth = env_auth_handoff() or ""
     if project is None:
-        return env_auth if env_auth in _VALID_AUTH_MODES else _DEFAULT_AUTH
+        return (
+            env_auth
+            if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH)
+            else missing_auth_policy()
+        )
     declared = _declared_agent(project)
     if declared is None:
-        return _DEFAULT_AUTH
+        return missing_auth_policy()
     auth = declared.auth
     policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
     if policy == GATEWAY_AUTH and not _inside_container():
-        return _DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
-    return policy or _DEFAULT_AUTH
+        return DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
+    if policy is None or policy == RETIRED_AUTH:
+        return missing_auth_policy()
+    return policy
 
 
 _AGENT_APP_LABELS = {auth_token.APP_CLAUDE: "Claude Code", auth_token.APP_CODEX: "Codex"}
@@ -3190,18 +3301,18 @@ def _agent_app_installed(provider: str) -> bool:
 def _provider_not_installed_reason(provider: str, *, is_default: bool = True) -> str:
     """Explain an unchecked auth audit: the selected provider is absent here."""
     if is_default:
-        return f"the configured [agent] provider ({provider}) is not installed on this host"
+        return f"the configured [agent] default ({provider}) is not installed on this host"
     return f"the allowed Agent CLI ({provider}) is not installed on this host"
 
 
 def _check_agent_auth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
-    policy: str = "auto",
+    policy: str = "subscription",
     *,
-    _fail: Check | None = None,
+    _fail: Fail | None = None,
     plan: auth_token.CredentialPlan | None = None,
     missing_fix: str = "",
     is_default: bool = True,
@@ -3218,11 +3329,11 @@ def _check_agent_auth_token(
 
     Scoped to one allowed CLI (see :func:`_allowed_clis`): a CLI the Project does
     not list is never audited. *missing_fix* names the sign-in for a missing credential;
-    *missing_fails* grades a missing credential FAIL (through *_fail*) even under ``auto``.
+    *missing_fails* grades a missing credential FAIL (through *_fail*) even in the visitor mode.
     """
     _warn = _warning_sink(_warn, "agent.credential-missing", subject=provider)
     plan = plan or auth_token.credential_plan(provider, policy)
-    if policy != "auto" and plan.selected is None:
+    if not auth_token.defers_to_cli(policy) and plan.selected is None:
         message = f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
         if _fail:
             _fail(message, missing_fix)
@@ -3239,7 +3350,7 @@ def _check_agent_auth_token(
         hint = (
             f"[agent] auth = '{policy}' pins the billing mode — provide that credential "
             "or change the knob"
-            if policy != "auto"
+            if not auth_token.defers_to_cli(policy)
             else "run its login or export an API key"
         )
         message = (
@@ -3299,9 +3410,9 @@ def _host_login_can_rotate(provider: str) -> bool:
 def _check_oauth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
-    policy: str = "auto",
+    policy: str = "subscription",
     *,
     _note: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
@@ -3317,7 +3428,7 @@ def _check_oauth_token(
     neither can be revoked by a refresh elsewhere. Advisory: plenty of short runs
     are fine on subscription creds, but a multi-hour headless run is not.
 
-    Stays a WARN (see :class:`_Reporter`) under automatic credential selection:
+    Stays a WARN (see :class:`_Reporter`) in the visitor mode and under ``api_key``:
     it names a real, reachable failure mode with a one-command remedy. An
     explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
     In a Sandbox without the app's seed sidecar the login was made inside it, no
@@ -3367,7 +3478,7 @@ def _check_oauth_token(
     ):
         _warn(
             f"{label}: stored credential is readable by others: {auth_token.token_path(provider)}",
-            f"chmod 600 {auth_token.token_path(provider)}",
+            f"chmod 600 {quote_arg(str(auth_token.token_path(provider)))}",
         )
         return
     if api_key:
@@ -3416,8 +3527,8 @@ def _subscription_expiry_message(
 def _check_subscription_creds_health(
     provider: str,
     _pass: Check,
-    _warn: Check,
-    policy: str = "auto",
+    _warn: Warn,
+    policy: str = "subscription",
     *,
     plan: auth_token.CredentialPlan | None = None,
     display_overrides: dict[str, str] | None = None,
@@ -3508,155 +3619,6 @@ def _check_subscription_creds_health(
         )
 
 
-def _run_mcp_probe(
-    project: ProjectAudit,
-    docker_exe: str,
-    image: str,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    cmd = _mcp_probe_command(project, docker_exe, image)
-    env = os.environ.copy()
-    env["BOOLEY_DIR"] = str(project.booley_dir)
-    env["BOOLEY_MCP_MODE"] = "interactive"
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=project.project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=_MCP_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        _fail(f"MCP server probe failed to start: {exc}", "rebuild sandbox image")
-        return
-    _check_mcp_probe_result(project, result, verbose, _pass, _warn, _fail)
-
-
-def _sandbox_booley_dir(project_root: Path) -> str:
-    """Return the in-Sandbox ``BOOLEY_DIR`` for the repo mounted at ``/work``.
-
-    The Project's own Booley Directory (``.booley`` by default, or the
-    checkout's relocated ``[project].dir``) under the ``/work`` bind mount.
-    """
-    return f"/work/{own_booley_dir_repo_path(project_root).as_posix()}"
-
-
-def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> list[str]:
-    return [
-        docker_exe,
-        "run",
-        "--init",
-        "--rm",
-        "-v",
-        f"{docker_mount_path(project.project_root)}:/work",
-        "-w",
-        "/work",
-        "-e",
-        f"BOOLEY_DIR={_sandbox_booley_dir(project.project_root)}",
-        "-e",
-        "BOOLEY_MCP_MODE=interactive",
-        image,
-        "python",
-        "-m",
-        "booley.mcp.probe",
-    ]
-
-
-def _check_mcp_probe_result(
-    project: ProjectAudit,
-    result: subprocess.CompletedProcess[str],
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    if result.returncode != 0:
-        _fail(f"MCP server probe failed with exit {result.returncode}", "rebuild sandbox image")
-        _print_output_excerpt(result)
-        return
-    payload = _parse_mcp_probe_stdout(result.stdout)
-    if payload is None:
-        _fail("MCP server probe did not return valid JSON", "rebuild sandbox image")
-        _print_output_excerpt(result)
-        return
-    _check_mcp_tool_payload(project, payload, verbose, _pass, _warn, _fail)
-
-
-def _parse_mcp_probe_stdout(stdout: str) -> dict[str, Any] | None:
-    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-    if not lines:
-        return None
-    try:
-        payload = json.loads(lines[-1])
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _check_mcp_tool_payload(
-    project: ProjectAudit,
-    payload: dict[str, Any],
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    _warn = _warning_sink(_warn, "interactive.mcp-tool-advisory-missing")
-    mcp_tools = payload.get("tools")
-    errors = payload.get("errors", [])
-    if not is_str_list(mcp_tools) or not is_str_list(errors):
-        _fail("MCP server probe returned malformed payload", "rebuild sandbox image")
-        return
-    if errors:
-        _fail(f"MCP tool discovery reported {len(errors)} error(s)", errors[0])
-        return
-    if payload.get("logs_dir_ok") is not True:
-        _fail("MCP interactive log setup failed", "check .booley mount and permissions")
-        return
-    missing = _required_mcp_tools(project) - set(mcp_tools)
-    if missing:
-        _fail(
-            f"MCP missing required endpoint(s): {', '.join(sorted(missing))}",
-            "fix [flows.<name>].enabled or reinstall Booley",
-        )
-        return
-    _pass(f"MCP server exposes {len(mcp_tools)} MCP tool(s)")
-    advisory_missing = _advisory_mcp_tools(project) - set(mcp_tools)
-    if advisory_missing:
-        _warn(
-            f"MCP missing documented interactive endpoint(s): {', '.join(sorted(advisory_missing))}",
-        )
-    if verbose:
-        info(f"    {', '.join(mcp_tools)}")
-
-
-def _required_mcp_tools(project: ProjectAudit) -> set[str]:
-    required = set(_BASE_REQUIRED_MCP_TOOLS)
-    for flow_name in _REQUIRED_FLOW_TABLES:
-        if _flow_enabled(project, flow_name):
-            required.add(flow_name)
-    if _fpga_doctor_applicable(project) and _flow_enabled(project, "fpga"):
-        required.add("fpga")
-    return required
-
-
-def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
-    """Advisory interactive MCP tools that have not been explicitly disabled."""
-    specialists_cfg = project.booley_toml.get("specialists", {})
-    if not isinstance(specialists_cfg, dict):
-        specialists_cfg = {}
-    return {
-        name
-        for name in _ADVISORY_INTERACTIVE_MCP_TOOLS
-        if config_section(specialists_cfg, name).get("enabled") is not False
-    }
-
-
 def _run_project_checks(
     project: ProjectAudit | None,
     reporter: _Reporter,
@@ -3668,15 +3630,13 @@ def _run_project_checks(
         return
 
     _check_ticket_leftovers(project.common_booley_dir, reporter.warn_)
-    _check_handle_map_size(project.common_booley_dir, reporter.warn_)
+    _check_handle_map_size(project.common_booley_dir, project.project_root, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
-    _check_goal_history_ignored(
-        project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
-    )
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
-    _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    _check_custom_endpoints(project.project_root, reporter.pass_, reporter.warn_, reporter.fail_)
+    _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
             project.project_root,
@@ -3731,7 +3691,7 @@ def _check_leftover_board(booley_dir: Path, _warn: Check) -> None:
     for path, message in nonempty.items():
         _warning_sink(_warn, "tickets.leftover-board", subject=path.name)(
             message + suffix,
-            f"move any Ticket you still need into a Goalset or archive it, then delete {path}",
+            f"archive any Ticket you still need, then delete {path}",
         )
 
 
@@ -3746,19 +3706,50 @@ def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
         except OSError as exc:
             warning(
                 f"could not read leftover Ticket guidance in {path}: {exc}",
-                f"check permissions for {path}; move any needed rules into a Goalset before deleting it",
+                f"check permissions for {path}; keep any needed rules in the Project's AGENTS.md before deleting it",
             )
             continue
         shipped = hashlib.sha256(content).hexdigest() in _SHIPPED_TICKET_GUIDANCE_HASHES
         fix = (
             f"delete {path}"
             if shipped
-            else (f"move its rules into a Goalset under .booley/goalsets/, then delete {path}")
+            else (f"move its rules into the Project's AGENTS.md, then delete {path}")
         )
         warning(f"leftover Ticket guidance in {path}", fix)
 
 
-def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
+_HANDLE_MAP_VSCODE = (
+    "stop the Sandbox through Dev Containers, then reopen the folder in the container"
+)
+
+
+def _handle_map_restart(project_root: Path) -> str:
+    """Name the smallest step that restarts the MCP server, which prunes handles at start.
+
+    The server starts from ``postStartCommand``, so stopping and resuming the
+    container restarts it. ``booley session down`` would remove a headless
+    container, and refuses a running VS Code one, so neither owner is told to
+    run it. Inside the Sandbox, or when the owner cannot be found, both steps
+    are named.
+    """
+    attachment = None
+    if not runtime_context.inside_session_runtime():
+        try:
+            attachment = session_runtime.sandbox_attachment(project_root)
+        except session_runtime.SessionError:
+            attachment = None
+    if attachment is Attachment.VSCODE:
+        return _HANDLE_MAP_VSCODE
+    if attachment is Attachment.HEADLESS:
+        name = quote_arg(session_runtime.session_container_name(project_root))
+        return f"run `docker stop {name}`, then `booley session up` on the host"
+    return (
+        f"in VS Code, {_HANDLE_MAP_VSCODE}; headless, stop the Sandbox container "
+        "with `docker stop`, then run `booley session up` on the host"
+    )
+
+
+def _check_handle_map_size(booley_dir: Path, project_root: Path, _warn: Check) -> None:
     """Warn when a display handle map nears the cap past which allocation fails."""
     for jobs in (False, True):
         path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
@@ -3771,12 +3762,12 @@ def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
             _warning_sink(_warn, "handles.map-size", subject=subject)(
                 f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
                 f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
-                "run `booley session down`, then `booley session up`: the MCP server "
-                "prunes expired handles at start",
+                "restart the Sandbox so its MCP server prunes expired handles at start: "
+                + _handle_map_restart(project_root),
             )
 
 
-def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> None:
+def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Warn when ``.booley/.gitignore`` lacks a transient-state pattern ``init`` adds.
 
     A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
@@ -3812,7 +3803,6 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
         STEALTH_UNSET,
         STEALTH_UNSET_FIX,
         fix,
-        history_probe,
         inspect_project_trackability,
         unrecorded_stealth_exclusions,
     )
@@ -3824,102 +3814,12 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
             STEALTH_UNSET.format(name=name), STEALTH_UNSET_FIX
         )
     inspection = inspect_project_trackability(root, booley_dir)
-    probe = history_probe(root)
     for group in inspection.ignored:
-        # The existing outer publication check owns this exact synthetic path.
-        if group.history and probe is not None and probe in group.paths:
-            continue
-        check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
-        _warning_sink(_warn, check_id, subject=group.subject)(group.message, fix())
+        _warning_sink(_warn, "project.inputs-ignored", subject=group.subject)(group.message, fix())
     for error in inspection.errors:
         _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
             error, "repair repository access and rerun booley doctor"
         )
-
-
-def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
-    from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
-
-    project = root / own_booley_dir_repo_path(root)
-    healthy = is_git_worktree_root(project)
-    if (project / ".git").exists() and not healthy:
-        raise RepositoryCheckoutError(f"Booley repository metadata is unavailable at {project}")
-    if healthy:
-        return (
-            " Independently versioned Booley Directory preserves its own history.",
-            "retain the outer exclusion while preserving independent Booley history; "
-            "to publish through RTL, preserve or migrate that history into the RTL repository first, "
-            "then remove the exclusion and rerun booley doctor",
-        )
-    return "", "edit the reported exclusion when publication is wanted, then rerun booley doctor"
-
-
-def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _warn: Warn) -> None:
-    """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
-    from booley.commit_policy import stealth_enabled
-    from booley.runtime.project_trackability import history_probe, query_ignores
-
-    if stealth_enabled(root, booley_dir=booley_dir):
-        return
-    relative = history_probe(root)
-    if relative is None:
-        return  # The RTL repository cannot publish that history; trackability owns the layout.
-    inspect_warning = _warning_sink(_warn, "goals.history-inspection")
-    try:
-        matches = query_ignores(root, (relative,))
-        result = subprocess.CompletedProcess(
-            ["git", "check-ignore"],
-            0 if matches else 1,
-            "\n".join(f"{m.source}:{m.line}:{m.pattern}\t{m.path}" for m in matches),
-            "",
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        inspect_warning(
-            f"cannot inspect Goal history exclusions: {exc}",
-            "check Git exclusions and rerun booley doctor",
-        )
-        return
-    _report_goal_history_policy(root, relative, result, _pass, _warn)
-
-
-def _report_goal_history_policy(
-    root: Path, relative: str, result: subprocess.CompletedProcess[str], _pass: Check, _warn: Warn
-) -> None:
-    from booley.runtime.project_repositories import (
-        RepositoryCheckoutError,
-        paired_project_repository,
-    )
-
-    if result.returncode not in {0, 1}:
-        _warning_sink(_warn, "goals.history-ignored")(
-            f"cannot inspect Goal history exclusions: {result.stderr.strip()}",
-            "check Git exclusions and rerun booley doctor",
-        )
-        return
-    try:
-        paired = paired_project_repository(root)
-        layout, hint = _goal_history_layout_advice(root)
-    except RepositoryCheckoutError as exc:
-        _warning_sink(_warn, "goals.history-layout-unreadable")(
-            f"cannot inspect Goal history repository layout: {exc}",
-            "preserve the exclusion and independent history; repair Booley repository metadata "
-            "and rerun booley doctor",
-        )
-        return
-    if result.returncode == 1:
-        _pass(
-            "Goal summaries remain local; Paired Checkout preserves independent Booley history"
-            if paired is not None
-            else "Goal history is eligible for commits"
-        )
-        return
-    _warning_sink(
-        _warn, "goals.history-ignored", subject="independent-booley-history" if layout else None
-    )(
-        f"Goal Session Summary path {relative} is gitignored; summaries remain local. "
-        f"Exclusion: {result.stdout.strip()}{layout}",
-        hint,
-    )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:
@@ -4038,30 +3938,57 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _pass("no Booley scaffolding files tracked in the repo")
 
 
-def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail: Fail) -> None:
+def _check_custom_endpoints(project_root: Path, _pass: Check, _warn: Warn, _fail: Fail) -> None:
     try:
-        from booley.mcp.endpoint_validation import (
-            EndpointValidationError,
-            validate_custom_endpoints_and_criteria,
-        )
+        from booley.mcp.endpoint_validation import validate_custom_endpoints
 
-        validate_custom_endpoints_and_criteria(project_root)
-    except EndpointValidationError as exc:
-        _fail("custom endpoint/Criteria validation failed", exc.failures[0])
-        return
+        skipped = validate_custom_endpoints(project_root)
     except SourceCheckoutProjectError as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
+            f"custom endpoint validation failed: {exc}",
             "run Doctor from the Project's workspace, not a Booley source checkout",
         )
         return
     except (ImportError, OSError, ValueError) as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
-            "fix .booley/mcp_tools and Criteria configuration",
+            f"custom endpoint validation failed: {exc}",
+            "fix .booley/mcp_tools and the [flows]/[specialists] tables in booley.toml",
         )
         return
-    _pass("custom endpoints and Criteria validated")
+    for item in skipped:
+        _warning_sink(_warn, "project.custom-endpoint-skipped", subject=item.file)(
+            f"custom endpoint {item.file} skipped: {item.reason}", item.fix
+        )
+    if not skipped:
+        _pass("custom endpoints validated")
+
+
+def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:
+    """NOTE the Specialists and custom Flows that ``booley.toml`` turns off.
+
+    Built-in Flows are left out: the Flow audit already prints a line for each.
+    Invalid endpoint configuration is reported by the custom-endpoint check instead.
+    """
+    from booley.mcp.endpoint_config import EndpointConfigError, parse_endpoint_config
+    from booley.mcp.registry import BUILTIN_FLOW_PACKAGES, discover_mcp_inventory, filter_mcp_tools
+
+    try:
+        specialists, flows = parse_endpoint_config(project.booley_toml)
+        inventory = discover_mcp_inventory(project_mcp_tools_dir=project.booley_dir / "mcp_tools")
+        enabled = filter_mcp_tools(inventory, specialist_config=specialists, flow_config=flows)
+    except EndpointConfigError:
+        return
+    enabled_names = {info.name for info in enabled}
+    disabled = sorted(
+        {
+            info.name
+            for info in inventory
+            if info.name not in enabled_names
+            and not (info.kind == "flow" and info.name in BUILTIN_FLOW_PACKAGES)
+        }
+    )
+    if disabled:
+        _note(f"MCP endpoints disabled in booley.toml: {', '.join(disabled)}")
 
 
 def _check_agent_backend_health(
@@ -4147,7 +4074,7 @@ def _run_flow_audit(
 ) -> None:
     """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
-    rejected_cores = _fusesoc_rejected_cores(project.project_root)
+    rejected_cores = core_tree_inspection.fusesoc_rejected_cores(project.project_root)
     for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
@@ -4169,7 +4096,7 @@ def _run_flow_audit(
                 _note(
                     f"sim pre_run_commands configured ({len(pre_sim_commands)} "
                     f"line(s)); they run in the Sandbox before "
-                    "each sim run (BOOLEY_* env contract, ADR 0039)"
+                    "each sim run (BOOLEY_* env contract)"
                 )
         if flow_name == "sim":
             _check_sim_run_cwd(project, _pass, _warn)
@@ -4182,17 +4109,17 @@ def _run_flow_audit(
         )
         if not targets:
             continue
-        _check_flow_runtime_reality(
+        _run_flow_runtime_inspection(
             project,
             flow_name,
             targets,
             flow_runtime=flow_runtime,
-            _pass=_pass,
-            _skip=_skip,
-            _fail=_fail,
+            _diagnostics=_diagnostics,
         )
         for target in targets:
-            rejected_core = _rejected_target_core(project, target, rejected_cores)
+            rejected_core = core_tree_inspection.rejected_target_core(
+                project.project_root, target, rejected_cores
+            )
             if rejected_core is not None:
                 _skip(
                     f"{flow_name} dry-run [{target}] skipped - FuseSoC rejects "
@@ -4211,212 +4138,27 @@ def _run_flow_audit(
             _diagnostics(outcome.report)
 
 
-def _rejected_target_core(
-    project: ProjectAudit,
-    target: str,
-    rejected_cores: Mapping[Path, fusesoc_registry.FuseSocCoreRejection],
-) -> Path | None:
-    """Return the FuseSoC-rejected core hosting Doctor Target *target*, if any."""
-    if not rejected_cores:
-        return None
-    try:
-        core_file = TargetCatalog.build(project.project_root).select(target).core_file
-    except FuseSocError:
-        return None  # target-resolution diagnostics report this elsewhere
-    core_file = lexical_stealth_path(project.project_root, core_file)
-    return core_file if core_file in rejected_cores else None
-
-
-def _check_flow_runtime_reality(
+def _run_flow_runtime_inspection(
     project: ProjectAudit,
     flow_name: str,
     targets: list[str],
     *,
     flow_runtime: _DoctorFlowRuntime,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
+    _diagnostics: Diagnostics,
 ) -> None:
-    """Probe every selected Target's EDA binary in the Sandbox."""
-    for binary in _runtime_probe_binaries(project, targets, flow_name=flow_name):
-        _check_session_binary(
-            flow_name,
-            binary,
-            flow_runtime=flow_runtime,
-            _pass=_pass,
-            _skip=_skip,
-            _fail=_fail,
-        )
-
-
-_EDA_TOOL_BINARIES = {
-    "verilator": "verilator",
-    "icarus": "iverilog",
-    "yosys": "yosys",
-    "vivado": "vivado",
-    "verible": "verible-verilog-lint",
-}
-
-
-def _runtime_probe_binaries(
-    project: ProjectAudit,
-    targets: list[str],
-    *,
-    flow_name: str | None = None,
-) -> list[str]:
-    """Return the distinct runtime executables required by selected Targets."""
-    if flow_name == "fpga":
-        return ["vivado"]
-    binaries: list[str] = []
-    try:
-        catalog = TargetCatalog.build(project.project_root)
-    except FuseSocError:
-        return binaries
-    for target in targets:
-        try:
-            handle = catalog.select(target)
-        except FuseSocError:
-            continue
-        eda_tool = handle.eda_tool or ""
-        family = LINT_EDA_TOOL_FAMILIES.get(eda_tool, eda_tool)
-        binary = _EDA_TOOL_BINARIES.get(family.lower())
-        if binary and binary not in binaries:
-            binaries.append(binary)
-    return binaries
-
-
-def _check_session_binary(
-    flow_name: str,
-    binary: str,
-    *,
-    flow_runtime: _DoctorFlowRuntime,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """PASS/FAIL on *binary* being on the Sandbox PATH."""
-    if flow_name == "fpga" and binary == "vivado":
-        _check_vivado_startup(flow_runtime, _pass=_pass, _skip=_skip, _fail=_fail)
-        return
-    label = f"{flow_name}: '{binary}' on the Sandbox PATH"
-    if flow_runtime.inside:
-        if shutil.which(binary):
-            _pass(label)
-        else:
-            _fail(
-                f"{flow_name}: '{binary}' is not on this container's PATH",
-                f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
-            )
-        return
-    if not flow_runtime.available:
-        _skip(f"{label} - container runtime unavailable")
-        return
-    try:
-        command = flow_runtime.command(["sh", "-c", f"command -v {binary}"])
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
-        _fail(f"{label} (runtime/probe error: {exc})", "run 'booley init --seed' and retry")
-        return
-    if result.returncode == 0:
-        _pass(label)
-    else:
-        _fail(
-            f"{flow_name}: '{binary}' is not on the issued Sandbox PATH",
-            f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
-        )
-
-
-def _vivado_startup_command(marker: str) -> list[str]:
-    """Keep the Tcl probe, side files and tool process group Sandbox-local."""
-    script = (
-        "command -v timeout >/dev/null 2>&1 || { echo 'Vivado startup probe requires GNU timeout'; exit 127; }; "
-        "probe_dir=$(mktemp -d) || exit 1; "
-        "trap 'rm -rf -- \"$probe_dir\"' EXIT HUP INT TERM; "
-        'cd "$probe_dir" || exit 1; '
-        f"printf '%s\\n' 'puts {marker}' 'exit 0' > startup.tcl; "
-        "timeout --kill-after=2s 27s vivado -mode batch -nolog -nojournal -source startup.tcl"
+    """Render the Flow's runtime probe: Vivado startup for FPGA, else per-binary checks."""
+    request = runtime_reality.FlowRuntimeInspectionRequest(
+        flow_name=flow_name,
+        targets=tuple(targets),
+        project_root=project.project_root,
+        runtime_available=flow_runtime.available,
+        inside_sandbox=flow_runtime.inside,
+        sandbox_command=flow_runtime.command,
     )
-    return ["sh", "-c", script]
-
-
-def _check_vivado_startup(
-    flow_runtime: _DoctorFlowRuntime, *, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Require this attempt's Tcl marker from a bounded actual batch startup."""
-    label = "fpga: Vivado batch startup"
-    if not flow_runtime.inside and not flow_runtime.available:
-        _skip(f"{label} - container runtime unavailable")
-        return
-    marker = "BOOLEY_VIVADO_STARTUP_" + secrets.token_hex(16)
-    try:
-        result = subprocess.run(
-            flow_runtime.command(_vivado_startup_command(marker)),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _fail(
-            f"{label}: runtime did not complete within 30s",
-            "check Sandbox transport and Vivado startup",
-        )
-        return
-    except (session_runtime.SessionError, subprocess.SubprocessError, OSError) as exc:
-        _fail(
-            f"{label}: runtime/probe error: {str(exc)[:500]}", "run 'booley init --seed' and retry"
-        )
-        return
-    if result.returncode == 0 and marker in result.stdout.splitlines():
-        _pass(label)
-        return
-    if result.returncode in (124, 137):
-        cause = "Vivado did not start within 27s"
+    if flow_name == "fpga":
+        _diagnostics(vivado_startup.inspect_vivado_startup(request))
     else:
-        lines = (result.stdout + "\n" + result.stderr).splitlines()
-        cause = next(
-            (
-                line.strip()[:500]
-                for line in lines
-                if re.search(
-                    r"error|fatal|failed|cannot|missing|requires|not found", line, re.IGNORECASE
-                )
-            ),
-            f"current Tcl startup marker missing (exit {result.returncode})",
-        )
-    _fail(f"{label}: {cause}", "verify Vivado runtime dependencies in the Sandbox Image")
-
-
-def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
-    """The ``.core`` files whose findings the project can act on (ADR 0036).
-
-    A core is "owned" when it hosts a Target selected by Doctor metadata (the
-    project drives it, so its defects are the project's problem) or lives in the
-    state zone (``.booley/cores/`` is always Booley-authored). Everything
-    else is vendored upstream content — advice like "fix the .core" is
-    unfollowable for a repo that must stay byte-identical to upstream.
-    """
-    owned: set[Path] = set()
-    try:
-        catalog = TargetCatalog.build(root)
-    except FuseSocError:
-        catalog = None
-    if catalog is not None:
-        for token in _project_target_matrix(project).seed_targets:
-            try:
-                owned.add(lexical_stealth_path(root, catalog.select(token).core_file))
-            except FuseSocError:
-                continue  # unresolvable config tokens are their own doctor finding
-    for core_file in fusesoc_registry.discover_cores(root):
-        if fusesoc_registry.is_stealth_core(root, core_file):
-            owned.add(core_file)
-    return owned
+        _diagnostics(runtime_reality.inspect_flow_runtime_reality(request))
 
 
 def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path, str]]:
@@ -4441,210 +4183,6 @@ def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path,
             continue  # target-resolution diagnostics report this elsewhere
         selected.add((handle.core_file, handle.name))
     return selected
-
-
-def _check_core_schema(
-    project: ProjectAudit,
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-    *,
-    _note: Check | None = None,
-) -> None:
-    """Flag CAPI2 schema violations in any discovered ``.core``.
-
-    Booley's tolerant ``yaml.safe_load`` accepts a scalar — or a bare ``depend:``
-    that parses to ``None`` — where FuseSoC's schema demands an array, and an
-    unknown property (a ``booley:`` mapping beside ``flow_options``); cheap
-    enumeration then greenlights a ``.core`` the deep resolve later rejects.
-    Reproduce FuseSoC's verdict host-side (no subprocess): Booley's array-field
-    subset plus FuseSoC's own parser.
-
-    Severity follows ownership. A violation FAILs when the core is one the
-    project actually drives — it hosts a Doctor-selected Target — or
-    lives in the state zone (``.booley/cores/``, always Booley-authored,
-    ADR 0036). A vendored upstream core the project never selects (the pristine
-    YosysHQ ``picorv32.core`` ships a bare ``depend:``) is a WARN instead:
-    FuseSoC drops such a core at resolve time, so only *its own* targets are
-    unusable — the configured flows are unaffected, and "fix the .core" is
-    unfollowable advice for a repo that must stay byte-identical to upstream.
-    """
-    note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
-    schema_clean = True
-    for core_file in fusesoc_registry.discover_cores(root):
-        findings, rejection = _core_schema_findings(core_file)
-        if not findings:
-            continue
-        schema_clean = False
-        # A misplaced ``booley:`` marker is the project's own Doctor intent that
-        # FuseSoC's rejection hides from Booley's reader, so the core is driven.
-        owned = core_file in owned_cores or (rejection is not None and rejection.misplaced_booley)
-        for msg, fix in findings:
-            if owned:
-                _fail(f".core schema {core_file.name}: {msg}", fix)
-            else:
-                note_sink(
-                    f".core schema {core_file.name}: {msg} — vendored core, no "
-                    "Doctor Target selects it; FuseSoC skips it at resolve, "
-                    "so only that core's own Targets are unusable"
-                )
-    if schema_clean:
-        _pass(".core CAPI2 schema valid")
-
-
-_CORE_SCHEMA_FIX = (
-    "fix the .core — FuseSoC's CAPI2 schema requires this "
-    "(caught here so it does not only surface under --deep)"
-)
-
-
-def _core_schema_findings(
-    core_file: Path,
-) -> tuple[list[tuple[str, str]], fusesoc_registry.FuseSocCoreRejection | None]:
-    """Return ``([(message, fix), ...], FuseSoC's rejection)`` for one ``.core``.
-
-    Booley's host-side subset runs first; FuseSoC's own verdict follows as one
-    more row unless a FuseSoC-class subset row (array fields, per-file keys)
-    already describes the same CAPI2 entry. Booley-only metadata rows never
-    suppress it: they do not say why FuseSoC ignores the file.
-    """
-    findings = [(msg, _CORE_SCHEMA_FIX) for msg in fusesoc_registry.core_schema_errors(core_file)]
-    rejection = _fusesoc_core_rejection(core_file)
-    if rejection is None:
-        return findings, None
-    entry = rejection.entry
-    if entry is not None and any(
-        msg == entry or msg.startswith((f"{entry}.", f"{entry} "))
-        for msg, _ in findings
-        if ".flow_options.booley" not in msg
-    ):
-        return findings, rejection
-    fix = _CORE_SCHEMA_FIX
-    if rejection.misplaced_booley:
-        fix = f"move the booley: mapping under targets.{rejection.target}.flow_options"
-    findings.append(
-        (
-            f"{rejection.message} — FuseSoC ignores this whole .core, "
-            "so none of its Targets resolve",
-            fix,
-        )
-    )
-    return findings, rejection
-
-
-def _fusesoc_core_rejection(
-    core_file: Path,
-) -> fusesoc_registry.FuseSocCoreRejection | None:
-    """FuseSoC's verdict on a readable ``.core``; unreadable files have their own row."""
-    try:
-        fusesoc_registry.read_core(core_file)
-    except FuseSocError:
-        return None
-    return fusesoc_registry.fusesoc_core_rejection(core_file)
-
-
-def _fusesoc_rejected_cores(root: Path) -> dict[Path, fusesoc_registry.FuseSocCoreRejection]:
-    """Map every discovered ``.core`` FuseSoC ignores to its rejection."""
-    rejected: dict[Path, fusesoc_registry.FuseSocCoreRejection] = {}
-    for core_file in fusesoc_registry.discover_cores(root):
-        rejection = _fusesoc_core_rejection(core_file)
-        if rejection is not None:
-            rejected[core_file] = rejection
-    return rejected
-
-
-_RECURSIVE_SYMLINK_FIX = (
-    "add a FUSESOC_IGNORE marker in each link's containing directory or an enclosing "
-    "subtree (excludes all cores there); ensure markers are present in worktrees too, "
-    "or remove the links"
-)
-
-
-def _report_recursive_symlink_group(
-    root: Path,
-    target: Path,
-    paths: list[Path],
-    _fail: Fail,
-    _detail: Check | None,
-) -> None:
-    """Summarize one ancestor and expose every link in the verbose report."""
-    relative = sorted(path.relative_to(root).as_posix() for path in paths)
-    shown = ", ".join(relative[:3])
-    if len(relative) > 3:
-        shown += f", +{len(relative) - 3} more; run booley doctor --verbose for all link paths"
-    noun = "link" if len(relative) == 1 else "links"
-    verb = "resolves" if len(relative) == 1 else "resolve"
-    _fail(
-        f"FuseSoC recursive symlinks: {len(relative)} {noun} {verb} "
-        f"to ancestor {target} ({shown})",
-        _RECURSIVE_SYMLINK_FIX,
-    )
-    if _detail is not None:
-        for path in relative:
-            _detail(f"  recursive symlink {path}: directory link resolves to ancestor {target}")
-
-
-def _report_recursive_symlink_hazards(
-    root: Path,
-    hazards: list[fusesoc_registry.CoreSetupHazard],
-    _fail: Fail,
-    _detail: Check | None,
-) -> None:
-    """Group resolved ancestors without conflating unresolved chain cycles."""
-    groups: dict[Path, list[Path]] = {}
-    for hazard in hazards:
-        if hazard.kind != "recursive-symlink":
-            continue
-        if hazard.target is None:
-            rel = hazard.path.relative_to(root).as_posix()
-            _fail(f"FuseSoC recursive symlink {rel}: {hazard.detail}", _RECURSIVE_SYMLINK_FIX)
-        else:
-            groups.setdefault(hazard.target, []).append(hazard.path)
-    for target in sorted(groups, key=str):
-        _report_recursive_symlink_group(root, target, groups[target], _fail, _detail)
-
-
-def _check_core_setup_hazards(
-    project: ProjectAudit,
-    root: Path,
-    _pass: Check,
-    _fail: Fail,
-    *,
-    _note: Check | None = None,
-    _detail: Check | None = None,
-) -> None:
-    """Catch offline-provider and recursive-symlink failures before FuseSoC."""
-    note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
-    catalog = TargetCatalog.build(root)
-    selected_handles = []
-    for selector in _project_target_matrix(project).seed_targets:
-        try:
-            selected_handles.append(catalog.select(selector))
-        except FuseSocError:
-            continue
-    selected_closure = catalog.core_closure(selected_handles)
-    required_cores = owned_cores | set(selected_closure or ())
-    hazards = fusesoc_registry.core_setup_hazards(root)
-    if not hazards:
-        _pass(".core tree has no provider or recursive-symlink setup hazards")
-        return
-    for hazard in hazards:
-        if hazard.kind == "recursive-symlink":
-            continue
-        rel = hazard.path.relative_to(root)
-        if hazard.path in required_cores:
-            _fail(
-                f"in-tree .core {rel} has a provider block that requests a remote fetch",
-                "remove provider: from the in-tree core",
-            )
-        else:
-            note_sink(
-                f"vendored .core {rel} has a provider block, but no Doctor Target selects it"
-            )
-    _report_recursive_symlink_hazards(root, hazards, _fail, _detail)
 
 
 def _doctor_target_incompatibility(
@@ -4735,13 +4273,15 @@ def _enumerate_core_audit_targets(
     except FuseSocError as exc:
         _fail(f".core enumeration failed: {exc}", "fix the malformed .core")
         return None
+    # The first handle per name; ``core_tree_inspection.inspect_core_security``
+    # keeps the same rule over the same cached TargetCatalog snapshot.
     refs: dict[str, TargetHandle] = {}
     for handle in handles:
         refs.setdefault(handle.name, handle)
     if not refs:
         _fail(
             "project has no .core: a resolvable FuseSoC .core Target is a "
-            "precondition for every Booley Flow (ADR 0039)",
+            "precondition for every Booley Flow",
             "author a .core (the booley-setup skill's project-config step walks through it)",
         )
     else:
@@ -4859,10 +4399,10 @@ def _check_target_sources(
         audit.fail,
         _note=audit.note,
         selected_targets=set(_project_target_matrix(audit.project).seed_targets) or None,
-        _inputs=inputs,
+        inputs=inputs,
     )
-    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
-    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
+    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
     _check_sim_copyto_collisions(audit.root, refs, inputs, audit.warn)
 
 
@@ -4916,48 +4456,6 @@ def _check_sim_copyto_collisions(
             )
 
 
-def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
-    """Check that authored core inputs are represented safely in Git."""
-    _check_core_files_tracked(audit.root, audit.pass_, audit.warn)
-    _check_readmemh_targets_tracked(audit.root, audit.pass_, audit.warn)
-    _check_committed_build_artifacts(audit.root, audit.pass_, audit.warn)
-
-
-def _run_core_security_audit(
-    audit: _CoreAuditContext,
-    refs: dict[str, TargetHandle],
-) -> None:
-    """Report authored-core provenance and confinement violations."""
-    catalog = TargetCatalog.build(audit.root)
-    violations = core_security.validate_project_cores(
-        audit.root,
-        scope=_project_write_scope(audit.root),
-        audit_scope=catalog.core_closure(tuple(refs.values())),
-    )
-    for violation in violations:
-        target = f" target '{violation.target}'" if violation.target else ""
-        line = (
-            f".core security [{violation.kind}] {violation.core_file.name}"
-            f"{target}: {violation.message}"
-        )
-        if violation.kind in _SCOPE_DEPENDENT_VIOLATIONS:
-            _warning_sink(
-                audit.warn,
-                "core.security-scope-advisory",
-                subject=f"{violation.core_file.name}:{violation.target or '-'}",
-            )(
-                f"{line} (advisory: doctor audits the union of writable "
-                "category dirs, without a change-specific scope — the binding "
-                "check runs at commit time)"
-            )
-        else:
-            audit.fail(line, "ADR 0022 decision 21")
-    if not violations and refs:
-        audit.pass_(
-            ".core security validation passed (no fpga hooks / expr-params / in-scope scripts)"
-        )
-
-
 def _run_core_audit(
     project: ProjectAudit,
     _pass: Check,
@@ -4967,12 +4465,16 @@ def _run_core_audit(
     *,
     _diagnostics: Diagnostics,
     _note: Check | None = None,
-    _detail: Check | None = None,
 ) -> None:
     """Coordinate the structural, security, and metadata core audits."""
     audit = _CoreAuditContext(project, _pass, _warn, _skip, _fail, _note or _pass)
-    _check_core_setup_hazards(project, audit.root, _pass, _fail, _note=audit.note, _detail=_detail)
-    _check_core_schema(project, audit.root, _pass, _warn, _fail, _note=audit.note)
+    _diagnostics(
+        core_tree_inspection.inspect_core_tree(
+            core_tree_inspection.CoreTreeInspectionRequest(
+                project.project_root, _project_target_matrix(project).seed_targets
+            )
+        )
+    )
     catalog_and_refs = _enumerate_core_audit_targets(audit.root, _pass, _fail)
     if catalog_and_refs is None:
         return
@@ -4981,8 +4483,18 @@ def _run_core_audit(
         inputs = _CoreAuditInputs(catalog, refs)
         _check_target_metadata(audit, refs, _diagnostics)
         _check_target_sources(audit, refs, inputs)
-        _check_core_repository_hygiene(audit)
-    _run_core_security_audit(audit, refs)
+        _diagnostics(
+            core_repository_hygiene.inspect_core_repository_hygiene(
+                core_repository_hygiene.CoreRepositoryHygieneRequest(project.project_root)
+            )
+        )
+    _diagnostics(
+        core_tree_inspection.inspect_core_security(
+            core_tree_inspection.CoreSecurityInspectionRequest(
+                project.project_root, tuple(_project_write_scope(project.project_root))
+            )
+        )
+    )
     _diagnostics(
         target_test_plan_inspection.inspect_target_test_plans(
             TargetTestPlanInspectionRequest(project.project_root, project.booley_dir)
@@ -5004,7 +4516,7 @@ def _check_sim_target_tb_staging(
     the design:
 
     - files staged but none tagged ``tags:[tb]`` (ADR 0022 dec 13): Source
-      Isolation would mis-classify the TB as RTL (mutation_tester would
+      Isolation would mis-classify the TB as RTL (the Mutation Flow would
       mutate it).
     - ZERO files staged at all: the untagged-TB predicate needs RTL files to
       fire, so a sim Target whose filesets list stages nothing (e.g. the tb
@@ -5014,15 +4526,14 @@ def _check_sim_target_tb_staging(
     if sources.rtl_source_files and not sources.tb_files:
         _fail(
             f"sim Target '{name}' has files but none tagged tags:[tb]",
-            "tag the testbench fileset tags:[tb] so Source Isolation can "
-            "partition RTL vs TB (ADR 0022 dec 13)",
+            "tag the testbench fileset tags:[tb] so Source Isolation can partition RTL vs TB",
         )
     elif not sources.tb_files:
         _fail(
             f"sim Target '{name}' stages zero files — no testbench "
             "(or design) ever reaches the simulator",
             "list the rtl + tb filesets in the Target's filesets: "
-            "entry (the tb fileset tagged tags:[tb], ADR 0022 dec 13)",
+            "entry (the tb fileset tagged tags:[tb])",
         )
     else:
         _pass(f"sim Target '{name}' TB fileset tagged")
@@ -5061,7 +4572,7 @@ def _warn_missing_sim_sentinel(
         emit(
             f"sim Target '{name}' TB emits no configured pass sentinel ({shown}) "
             "and its TB fileset is Python — for a cocotb TB declare "
-            "flow_options.cocotb_module on the Target (ADR 0034) so the verdict "
+            "flow_options.cocotb_module on the Target so the verdict "
             "comes from results.xml; $display sentinels only apply to SV TBs"
         )
         return
@@ -5209,7 +4720,8 @@ def _check_target_naming(
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
     :mod:`booley.targets.target_naming` for the rule.
 
-    A note, never a failure, and only for owned cores (:func:`_owned_core_files`): a
+    A note, never a failure, and only for owned cores
+    (:func:`core_tree_inspection.owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
@@ -5243,8 +4755,7 @@ def _check_target_naming(
         )
         _note(
             f"Target '{name}' in {ref.core_file.name}: {target_naming.violation(name)} "
-            f"— {fix} (renaming also touches tests.toml keys and any "
-            "Goals naming it)"
+            f"— {fix} (renaming also touches tests.toml keys)"
         )
 
 
@@ -5270,7 +4781,9 @@ def _check_stray_default_targets(
     """
     _warn = _warning_sink(_warn, "core.stray-default-target")
     note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
+    owned_cores = core_tree_inspection.owned_core_files(
+        root, _project_target_matrix(project).seed_targets
+    )
     if not owned_cores:
         return
     depended = fusesoc_registry.depended_on_core_keys(root)
@@ -5409,7 +4922,7 @@ def _check_icarus_sv_language_mode(
     *,
     _note: Check | None = None,
     selected_targets: set[str] | None = None,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Flag Icarus Targets whose SystemVerilog sources lack an SV flag."""
     icarus_targets = [
@@ -5419,7 +4932,6 @@ def _check_icarus_sv_language_mode(
     ]
     if not icarus_targets:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in icarus_targets:
         try:
             sources = inputs.sources_for(name)
@@ -5538,7 +5050,7 @@ def _check_sim_dump_declared(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when an owned C++ main's hardcoded dump is not in ``trace_files``.
 
@@ -5555,7 +5067,6 @@ def _check_sim_dump_declared(
     candidates = _owned_main_verilator_sims(refs)
     if not candidates:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     patterns = resolve_trace_files(root)
     run_cwd = resolve_run_cwd(root)
     is_template = bool(_safe_run_cwd_fields(run_cwd))
@@ -5703,10 +5214,9 @@ def _check_toplevel_interface_ports(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when a lint/synth toplevel cannot elaborate without interfaces."""
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in sorted(refs.items()):
         if ref.flow == "sim":
             continue
@@ -5727,238 +5237,6 @@ def _check_toplevel_interface_ports(
             "instantiates the interfaces with real parameters, instantiates the "
             "toplevel, and exposes plain signal ports of its own",
         )
-
-
-# A committed compiled artifact (firmware image, memory init) whose *source*
-# lives in the same directory is a "ship the toolchain, not the artifact"
-# violation (booley-setup SKILL.md): it should be rebuilt on demand inside the
-# sandbox, not frozen into git. Suffixes that read as build outputs, and the
-# sibling-source signals that mark them as buildable-in-repo.
-_BUILD_ARTIFACT_SUFFIXES = frozenset({".hex", ".mem", ".bin", ".elf"})
-_BUILD_SOURCE_SUFFIXES = frozenset({".c", ".s", ".cc", ".cpp", ".cxx", ".asm", ".rs"})
-_BUILD_SOURCE_NAMES = frozenset({"makefile", "cmakelists.txt"})
-
-
-def _looks_built_from_sibling_source(path: Path) -> bool:
-    """True when ``path``'s directory also holds compiler/assembler source.
-
-    Case-folded so ``start.S`` (assembly) and a ``Makefile`` both count. A
-    firmware ``.hex`` next to ``hello.c`` / ``start.S`` / a ``Makefile`` is a
-    build output of in-repo source, not an opaque vendored blob.
-    """
-    parent = path.parent
-    if not parent.is_dir():
-        return False
-    for entry in parent.iterdir():
-        if not entry.is_file():
-            continue
-        name = entry.name.lower()
-        if name in _BUILD_SOURCE_NAMES or entry.suffix.lower() in _BUILD_SOURCE_SUFFIXES:
-            return True
-    return False
-
-
-def _check_committed_build_artifacts(
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Warn when a compiled artifact built from in-repo source is committed.
-
-    A vendored ``firmware.hex`` sitting next to its ``*.c`` / ``*.S`` / Makefile
-    is a frozen build output: it hides the real dependency (the cross-compiler)
-    and rots on the first source change. The supported fix is to bake the
-    toolchain into the project sandbox image and rebuild on demand from a
-    post-setup hook (booley-setup SKILL.md: "ship the toolchain, not the
-    artifact"). Warn, not fail — the committed blob still simulates locally.
-    An opaque vendored blob with no sibling source is left alone (may be the
-    only option); the untracked-data trap is handled by
-    :func:`_check_core_files_tracked`. A file the ``.core`` explicitly tags
-    ``tags: [vendored]`` is exempt too — that is the maintainer asserting the
-    blob is upstream-shipped with no rebuildable in-repo source, which the
-    sibling-source heuristic cannot otherwise tell from a frozen local build.
-    (``tags`` is the CAPI2-valid marker; a bare ``vendored: true`` key breaks
-    real fusesoc and is rejected by the shallow ``.core`` check — see QA-3.)
-    """
-    referenced = fusesoc_registry.all_referenced_files(root)
-    vendored = fusesoc_registry.vendored_files(root)
-    suspects = [
-        rel
-        for rel in referenced
-        if Path(rel).suffix.lower() in _BUILD_ARTIFACT_SUFFIXES
-        and rel not in vendored
-        and (root / rel).is_file()
-        and _looks_built_from_sibling_source(root / rel)
-    ]
-    if not suspects:
-        return  # nothing that looks built-from-source; stay quiet (no _pass noise)
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", *suspects],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return  # not a git repo / git missing — tracking is unknowable, stay quiet
-    if result.returncode != 0:
-        return
-    tracked = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    committed = [rel for rel in suspects if rel.replace("\\", "/") in tracked]
-    if committed:
-        shown = ", ".join(committed[:5]) + (", …" if len(committed) > 5 else "")
-        _warning_sink(
-            _warn,
-            "project.committed-build-artifact",
-            subject=",".join(sorted(committed)),
-        )(
-            f"{len(committed)} committed artifact(s) look built from in-repo "
-            f"source ({shown}) — ship the toolchain in the sandbox image and "
-            "rebuild on demand (project Dockerfile + post-setup hook) instead of "
-            "committing a frozen blob (booley-setup SKILL.md)"
-        )
-
-
-def _check_core_files_tracked(
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Warn when a ``.core`` references a file that exists on disk but is untracked.
-
-    The silent vendored-data trap: a data file (firmware ``.hex``, memory-init
-    image) matching the upstream ``.gitignore`` gets ``git add``-ed to no effect,
-    so it stays untracked. On disk it is present (doctor sees it), but a fresh
-    clone / CI checkout would lack it and the testbench would fail opaquely. A
-    warn with the ``git add -f`` remedy, not a fail: the local run still works.
-
-    Files in a Versioned Booley Directory (ADR 0036 stealth cores) are judged
-    against its own Git repository — ``.booley/`` is invisible to the host repo by
-    design, so asking the host is guaranteed noise. No repo there → skip them
-    (nothing knowable). Tracking is symlink-aware in both zones: a path whose
-    ancestor is a tracked symlink (a stealth core's reach-through like
-    ``cores/dhrystone -> ../../dhrystone``) arrives with a fresh clone, so it
-    counts as tracked. It is submodule-aware for the same reason — see
-    ``_tracked_set``.
-    """
-    referenced = fusesoc_registry.all_referenced_files(root)
-    on_disk = [rel for rel in referenced if (root / rel).is_file()]
-    if not on_disk:
-        return
-    state_dir = in_checkout_booley_dir(root)
-    state_prefix = state_dir.relative_to(root).as_posix()  # ".booley" or the relocated dir
-    host_files = [
-        rel for rel in on_disk if not rel.replace("\\", "/").startswith(state_prefix + "/")
-    ]
-    state_files = [rel for rel in on_disk if rel.replace("\\", "/").startswith(state_prefix + "/")]
-
-    def _tracked_set(cwd: Path) -> set[str] | None:
-        """Tracked paths under *cwd*, submodule contents included.
-
-        Plain ``git ls-files`` stops at a submodule boundary and lists only the
-        gitlink, so every file *inside* a vendored submodule read as untracked —
-        a false alarm, since the submodule's own repo tracks them and
-        `git submodule update` restores them on a fresh clone.
-        ``--recurse-submodules`` descends and reports each file at its
-        superproject-relative path, which is the vocabulary the caller compares
-        against. A git too old for the flag retries plain rather than go silent.
-        """
-        for cmd in (["git", "ls-files", "--recurse-submodules"], ["git", "ls-files"]):
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                )
-            except (FileNotFoundError, subprocess.SubprocessError):
-                return None  # git missing — tracking is unknowable, stay quiet
-            if result.returncode == 0:
-                return {line.strip() for line in result.stdout.splitlines() if line.strip()}
-        return None  # not a git repo
-
-    def _is_tracked(rel: str, tracked: set[str]) -> bool:
-        # git ls-files reports repo-relative forward-slash paths. An ancestor
-        # entry in the tracked set can only be a tracked symlink (git never
-        # lists directories) — reach-through content still ships with a clone.
-        norm = rel.replace("\\", "/")
-        if norm in tracked:
-            return True
-        parts = norm.split("/")
-        return any("/".join(parts[:i]) in tracked for i in range(1, len(parts)))
-
-    untracked: list[str] = []
-    host_tracked = _tracked_set(root)
-    if host_tracked is not None:
-        untracked += [rel for rel in host_files if not _is_tracked(rel, host_tracked)]
-    if state_files and (state_dir / ".git").exists():
-        state_tracked = _tracked_set(state_dir)
-        if state_tracked is not None:
-            untracked += [
-                rel
-                for rel in state_files
-                if not _is_tracked(
-                    PurePosixPath(rel.replace("\\", "/")).relative_to(state_prefix).as_posix(),
-                    state_tracked,
-                )
-            ]
-    if untracked:
-        shown = ", ".join(untracked[:5]) + (", …" if len(untracked) > 5 else "")
-        _warning_sink(
-            _warn,
-            "project.core-file-untracked",
-            subject=",".join(sorted(untracked)),
-        )(
-            f"{len(untracked)} .core-referenced file(s) exist on disk but are "
-            f"untracked by git ({shown}) — if gitignored (vendored firmware / "
-            "build artifact), force-add with `git add -f <file>` and verify with "
-            "`git ls-files <file>`; a fresh clone or CI checkout will lack them"
-        )
-    else:
-        _pass(f"all {len(on_disk)} .core-referenced on-disk file(s) tracked by git")
-
-
-# The $readmemh/$readmemb memory-load call pattern (HDL suffixes: _HDL_SUFFIXES).
-_READMEM_RE = re.compile(r"\$readmem[hb]\s*\(\s*\"([^\"]+)\"")
-
-
-def _readmem_literal_targets(root: Path) -> list[str]:
-    """Project-relative memory images named by a *literal* $readmemh/$readmemb.
-
-    Scans the ``.core``-referenced HDL for ``$readmem[hb]("path")`` calls and
-    resolves each literal against the Project Root and the calling file's own
-    directory. Only plain literals are considered; a path built from a plusarg,
-    a format specifier, or concatenation can't be resolved statically and is
-    skipped. Used to catch memory images the testbench hardcodes but that no
-    ``.core`` fileset lists — the gap :func:`_check_core_files_tracked` misses.
-    """
-    targets: set[str] = set()
-    root_res = root.resolve()
-    for rel in fusesoc_registry.all_referenced_files(root):
-        if Path(rel).suffix.lower() not in _HDL_SUFFIXES:
-            continue
-        src = root / rel
-        if not src.is_file():
-            continue
-        try:
-            text = src.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for match in _READMEM_RE.finditer(text):
-            literal = match.group(1)
-            if any(ch in literal for ch in "%{}+*?"):
-                continue  # constructed / format / plusarg / glob — not a static path
-            for base in (root, src.parent):
-                cand = base / literal
-                if cand.is_file():
-                    with contextlib.suppress(ValueError):
-                        targets.add(cand.resolve().relative_to(root_res).as_posix())
-                    break
-    return sorted(targets)
 
 
 def _git_output(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
@@ -6027,55 +5305,6 @@ def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> Non
         )
         return
     _pass(f"sim run_cwd {configured} is committed")
-
-
-def _check_readmemh_targets_tracked(
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Warn when a hardcoded $readmemh memory image exists on disk but is untracked.
-
-    A testbench that boots from ``$readmemh("firmware.vmem", mem)`` depends on a
-    file no ``.core`` fileset lists, so :func:`_check_core_files_tracked` can't
-    see it. If that image matches a blanket ``.gitignore`` (vendored firmware,
-    build output), ``git add`` no-ops and a fresh clone / CI checkout lacks it —
-    the sim then spins on uninitialized RAM (SETUP-12, and the static companion
-    to the runtime readmemh-missing guard). Warn with the ``git add -f`` remedy.
-    """
-    targets = _readmem_literal_targets(root)
-    if not targets:
-        return
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", *targets],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return  # not a git repo / git missing — tracking is unknowable, stay quiet
-    if result.returncode != 0:
-        return
-    tracked = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    untracked = [rel for rel in targets if rel.replace("\\", "/") not in tracked]
-    if untracked:
-        shown = ", ".join(untracked[:5]) + (", …" if len(untracked) > 5 else "")
-        _warning_sink(
-            _warn,
-            "project.memory-image-untracked",
-            subject=",".join(sorted(untracked)),
-        )(
-            f"{len(untracked)} $readmemh/$readmemb memory image(s) exist on disk "
-            f"but are untracked by git ({shown}) — if gitignored (vendored "
-            "firmware / build output), force-add with `git add -f <file>`; a "
-            "fresh clone or CI checkout will lack them and the sim boots "
-            "uninitialized RAM"
-        )
-    else:
-        _pass(f"all {len(targets)} $readmemh-referenced image(s) tracked by git")
 
 
 def _project_write_scope(root: Path) -> list[str]:
@@ -6151,308 +5380,6 @@ def _native_dependency_request(project: ProjectAudit) -> pi.NativeDependencyRequ
     )
 
 
-def _report_core_resolve(
-    name: str,
-    ok: bool,
-    err: str,
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Grade one Doctor-selected Target resolution."""
-    if ok:
-        _pass(f".core Target '{name}' resolves")
-        return
-    _fail(f".core Target '{name}' fails to resolve", "fix the .core / depends graph")
-    _print_text_excerpt(err)
-
-
-def _run_core_resolve_checks(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-    *,
-    flow_runtime: _DoctorFlowRuntime | None = None,
-    completeness: doctor_deep.DeepCheckTracker | None = None,
-) -> None:
-    """Deep: resolve each Doctor-selected Target through ``fusesoc``.
-
-    Resolution runs Edalize's ``configure()``, which needs the ``fusesoc``
-    console script + toolchain — that environment IS the Sandbox image, so we
-    resolve INSIDE the container (mirroring the deep Flow checks). Only when the
-    image is unavailable do we fall back to a host ``fusesoc`` if one happens to
-    be installed; failing that, the check skips rather than failing.
-
-    Transitive dependencies remain covered because FuseSoC resolves the full
-    dependency closure of every selected Target. Unselected vendored Targets
-    are not configured merely to produce advisory notes.
-    """
-    if flow_runtime is not None:
-        assert completeness is not None
-        _resolve_deep_core_targets(project, flow_runtime, completeness, _pass, _skip, _fail)
-        return
-    matrix = _project_target_matrix(project)
-    catalog = TargetCatalog.build(project.project_root)
-    refs: dict[str, TargetHandle] = {}
-    for selector in matrix.seed_targets:
-        try:
-            refs[selector] = catalog.select(selector)
-        except FuseSocError as exc:
-            _report_core_resolve(
-                selector,
-                False,
-                str(exc),
-                _pass,
-                _fail,
-            )
-    if not refs:
-        return
-
-    image = _sandbox_image(project)
-    if docker_exe and _docker_image_exists_by_name(image):
-        _announce_long_check(
-            f".core resolvability of {len(refs)} Target(s) in the Sandbox",
-            f"FuseSoC configure; timeout {format_duration(_CORE_RESOLVE_TIMEOUT_S)}",
-        )
-        _run_core_resolve_in_docker(
-            project,
-            docker_exe,
-            image,
-            refs,
-            _pass,
-            _fail,
-        )
-        return
-
-    if shutil.which("fusesoc") is None:
-        _skip(
-            ".core resolvability skipped - Sandbox image unavailable and "
-            "fusesoc not on host PATH (build the image with 'booley init')"
-        )
-        return
-    _announce_long_check(
-        f".core resolvability of {len(refs)} Target(s) on the host",
-        "FuseSoC configure; no timeout",
-    )
-    for selector, ref in sorted(refs.items()):
-        build_key = hashlib.sha256(selector.encode()).hexdigest()[:16]
-        build_root = project.booley_dir / "runtime" / "doctor" / "core-resolve" / build_key
-        try:
-            fusesoc_registry.resolve_target_handle(
-                ref,
-                build_root=build_root,
-            )
-            _report_core_resolve(selector, True, "", _pass, _fail)
-        except FuseSocError as exc:
-            _report_core_resolve(
-                selector,
-                False,
-                str(exc),
-                _pass,
-                _fail,
-            )
-
-
-def _resolve_deep_core_targets(
-    project: ProjectAudit,
-    flow_runtime: _DoctorFlowRuntime,
-    tracker: doctor_deep.DeepCheckTracker,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Resolve in the same pinned runtime as the smoke and self-test checks."""
-    selected = _project_target_matrix(project).seed_targets
-    if not selected:
-        return
-    identifiers = {
-        selector: f"core.resolve.{hashlib.sha256(selector.encode()).hexdigest()[:16]}"
-        for selector in selected
-    }
-    for identifier in identifiers.values():
-        tracker.require(identifier)
-    if not flow_runtime.available:
-        _skip(".core resolvability skipped - Sandbox runtime unavailable")
-        return
-    catalog = TargetCatalog.build(project.project_root)
-    refs = {}
-    for selector in selected:
-        try:
-            refs[selector] = catalog.select(selector)
-        except FuseSocError as exc:
-            _report_core_resolve(selector, False, str(exc), _pass, _fail)
-    if not refs:
-        return
-    completed = _execute_core_resolution(project, flow_runtime, refs, _pass, _fail)
-    for selector in completed:
-        tracker.completed(identifiers[selector], True)
-
-
-def _execute_core_resolution(
-    project: ProjectAudit,
-    flow_runtime: _DoctorFlowRuntime,
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> tuple[str, ...]:
-    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
-    try:
-        command = flow_runtime.command(["python3", "-c", _CORE_RESOLVE_SNIPPET, payload])
-        proc = subprocess.run(
-            command,
-            cwd=project.project_root,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, session_runtime.SessionError) as exc:
-        _fail(f".core resolvability could not complete in the Sandbox: {exc}", "check the Sandbox")
-        return ()
-    return _grade_core_resolution(proc, refs, _pass, _fail)
-
-
-def _grade_core_resolution(
-    proc: subprocess.CompletedProcess[str],
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> tuple[str, ...]:
-    """Require exactly one bounded verdict for every selected Target."""
-    marker = "[[CORE_RESOLVE_JSON]]"
-    line = next(
-        (line for line in reversed(proc.stdout.splitlines()) if line.startswith(marker)), None
-    )
-    try:
-        if line is None or proc.returncode != 0:
-            raise BoundaryError("missing completed Sandbox resolution verdict")
-        entries = require_list(json.loads(line[len(marker) :]), field="core resolution verdicts")
-        if len(entries) != len(refs):
-            raise BoundaryError("incomplete Target resolution verdicts")
-        seen: set[str] = set()
-        for raw in entries:
-            entry = require_dict(raw, field="core resolution")
-            selector = require_str(entry, "selector")
-            ok = require_bool(entry, "ok")
-            if selector not in refs or selector in seen:
-                raise BoundaryError("invalid Target resolution verdict")
-            seen.add(selector)
-            _report_core_resolve(selector, ok, str(entry.get("err", "")), _pass, _fail)
-        return tuple(sorted(seen))
-    except (ValueError, BoundaryError):
-        _fail(
-            ".core resolvability produced incomplete Sandbox evidence",
-            "check the Sandbox / FuseSoC",
-        )
-        return ()
-
-
-# Container-side resolver: resolve the host-selected Targets in one docker run
-# and emit a machine-readable JSON verdict line the host parses back into checks.
-# Kept as a module constant so the quoting is auditable in one place.
-_CORE_RESOLVE_SNIPPET = (
-    "import json, os, sys\n"
-    "from pathlib import Path\n"
-    "from booley.runtime.booley_dir import resolve_checkout_booley_dir\n"
-    "from booley.fusesoc import fusesoc_registry as fr\n"
-    "from booley.targets.catalog import TargetCatalog\n"
-    "root = os.getcwd()\n"
-    "catalog = TargetCatalog.build(root)\n"
-    "targets = json.loads(sys.argv[1])\n"
-    "out = []\n"
-    "for target in targets:\n"
-    "    selector = target['selector']\n"
-    "    br = resolve_checkout_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
-    "    try:\n"
-    "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
-    "        out.append({'selector': selector, 'ok': True})\n"
-    "    except fr.FuseSocError as exc:\n"
-    "        out.append({'selector': selector, 'ok': False, 'err': str(exc)})\n"
-    "print('[[CORE_RESOLVE_JSON]]' + json.dumps(out))\n"
-)
-
-
-def _core_resolve_payload(
-    refs: Mapping[str, TargetHandle],
-) -> list[dict[str, str]]:
-    """Serialize the immutable selected Target set for the Sandbox."""
-    return [
-        {
-            "selector": selector,
-            "name": ref.name,
-            "vlnv": ref.vlnv,
-            "build_key": hashlib.sha256(selector.encode()).hexdigest()[:16],
-        }
-        for selector, ref in sorted(refs.items())
-    ]
-
-
-def _run_core_resolve_in_docker(
-    project: ProjectAudit,
-    docker_exe: str,
-    image: str,
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Resolve selected ``.core`` Targets inside the Sandbox image."""
-    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
-    inner = ["python3", "-c", _CORE_RESOLVE_SNIPPET, payload]
-    cmd = _docker_wrap(docker_exe, image, project.project_root, inner)
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=_CORE_RESOLVE_TIMEOUT_S,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _fail(
-            f".core resolvability timed out after {_CORE_RESOLVE_TIMEOUT_S}s in sandbox",
-            "check the .core / depends graph for a resolution hang",
-        )
-        return
-    except OSError as exc:
-        _fail(f".core resolvability failed to start container: {exc}", "check docker")
-        return
-
-    if _sandbox_guard_failed(proc):
-        # The in-container self-assertion refused: the resolve snippet was
-        # composed for the sandbox but executed outside it (doctor misrouting,
-        # b5e8681's failure class). Loud FAIL — never let this look like a mere
-        # "no verdict" or resolve failure.
-        _fail(
-            ".core resolvability was routed into the sandbox but executed "
-            "OUTSIDE it (in-container self-assertion failed)",
-            "doctor routing bug - report this, and rebuild the image "
-            "('booley init --force') to rule out a stale sandbox",
-        )
-        return
-
-    marker = "[[CORE_RESOLVE_JSON]]"
-    line = next(
-        (ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith(marker)),
-        None,
-    )
-    if line is None:
-        _fail(
-            ".core resolvability produced no verdict from the sandbox",
-            f"exit {proc.returncode}: {(proc.stderr or proc.stdout)[-400:]}",
-        )
-        return
-    for entry in json.loads(line[len(marker) :]):
-        selector = entry["selector"]
-        _report_core_resolve(
-            selector,
-            bool(entry.get("ok")),
-            str(entry.get("err", "")),
-            _pass,
-            _fail,
-        )
-
-
 def _run_deep_checks(
     project: ProjectAudit,
     flow_runtime: _DoctorFlowRuntime,
@@ -6469,6 +5396,8 @@ def _run_deep_checks(
     for flow_name in _DEEP_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
+            continue
+        if flow_name == "fpga" and not _fpga_doctor_applicable(project):
             continue
         targets = _doctor_targets(project, flow_name)
         if not targets:
@@ -6492,32 +5421,8 @@ def _run_deep_checks(
                 timeout_s=timeout_s,
             )
             _diagnostics(outcome.report)
-            if flow_name == "synth" and outcome.process is not None:
-                _record_synth_memory_calibration(
-                    project, target, _flow_report_dir(project), _pass, _warn
-                )
             tracker.completed(identifier, outcome.completed)
-    _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
-
-
-def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
-    """Disclose that ``fpga_impl`` gets no deep smoke (F-15).
-
-    FPGA is deliberately excluded from :data:`_DEEP_DOCTOR_FLOWS` — a full FPGA
-    implementation is far too slow for ``--deep`` — but it was *silently*
-    absent: ``--deep`` produced no line for it at all. Nothing ever smokes it
-    end-to-end, and nothing said so. Emit an
-    explicit SKIP naming the manual command, so the gap is loud, not invisible.
-    """
-    if not _flow_enabled(project, "fpga"):
-        return
-    for target in _doctor_targets(project, "fpga"):
-        _skip(
-            f"fpga deep smoke [{target}] skipped - a full FPGA implementation is too "
-            "slow for --deep; smoke it manually end-to-end: "
-            f"booley flow fpga --target {target}"
-        )
 
 
 @dataclass(frozen=True)
@@ -6549,7 +5454,10 @@ def _warn_unvalidated_selftest(flow_name: str, _warn: Check) -> None:
     _warning_sink(_warn, "flow.fail-path-unvalidated", subject=flow_name)(
         f"{flow_name} fail-path unvalidated - {requirement} so --deep proves a "
         "known-bad grades as a failure (not a false pass). The setup agent authors "
-        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]}"
+        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]} "
+        "A waiver stops this warning counting as a problem but doesn't make deep "
+        f"checks current: deep Doctor stays due until {flow_name} has its known-bad "
+        "fixture, so both its good and bad self-tests run."
     )
 
 
@@ -6648,13 +5556,6 @@ def _run_selftest_checks(
         tracker.completed(f"{flow_name}.selftest.bad", completed)
 
 
-def _sandbox_failure_remedy(exc: session_runtime.SessionError) -> str:
-    """Keep admission-control remediation distinct from stale issuance."""
-    if str(exc).startswith("Sandbox start refused:"):
-        return "free Sandbox capacity using the command in the refusal, then retry"
-    return "run 'booley init --seed' and retry"
-
-
 def _prepare_selftest_invocation(
     project: ProjectAudit,
     flow_name: str,
@@ -6686,7 +5587,7 @@ def _prepare_selftest_invocation(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
     env = _doctor_subprocess_env(project)
@@ -6702,6 +5603,8 @@ def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
 
     env["BOOLEY_DIR"] = str(project.booley_dir)
     env[INVOCATION_ORIGIN_ENV] = "transport"
+    # Flow runs Doctor starts must not write Resource History records.
+    env[DOCTOR_RUN_ENV] = "1"
     return env
 
 
@@ -6721,15 +5624,7 @@ def _execute_selftest(
     returns the completed process for the caller to grade.
     """
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=project.project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        result = run_captured_bounded(cmd, timeout=timeout_s, cwd=project.project_root, env=env)
     except subprocess.TimeoutExpired:
         remedy = (
             "raise [flows.sim].build_timeout_ms for credible compiler progress, "
@@ -6753,28 +5648,28 @@ def _selftest_report_path(project: ProjectAudit) -> Path:
     return project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / "sim.json"
 
 
-def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
+def _read_selftest_simulation_record(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
     report = require_dict(json.loads(_selftest_report_path(project).read_text(encoding="utf-8")))
     if report.get("$schema") != "booley.simulation-report/v3" or report.get("flow") != "sim":
         raise ValueError("report is not a Simulation Flow v3 report")
     if require_int(report.get("exit_code"), field="exit_code") != rc:
         raise ValueError("report exit code does not match this invocation")
-    campaigns = require_dict(require_dict(report.get("detail")).get("campaigns"))
-    campaign = require_dict(campaigns.get(case.target), field="selected campaign")
-    if campaign.get("complete") is not True:
-        raise ValueError("selected Simulation Campaign is incomplete")
-    return campaign
+    records = require_dict(require_dict(report.get("detail")).get("records"))
+    simulation_record = require_dict(records.get(case.target), field="selected Simulation Record")
+    if simulation_record.get("complete") is not True:
+        raise ValueError("selected Simulation Record is incomplete")
+    return simulation_record
 
 
-def _selftest_observation_pairs(campaign: dict) -> list[tuple[dict, dict]]:
-    rows = require_list(campaign.get("test_runs"), field="test_runs")
-    observations = require_list(campaign.get("observations"), field="observations")
+def _selftest_observation_pairs(simulation_record: dict) -> list[tuple[dict, dict]]:
+    rows = require_list(simulation_record.get("test_runs"), field="test_runs")
+    observations = require_list(simulation_record.get("observations"), field="observations")
     if (
-        require_int(campaign.get("test_run_total")) != len(rows)
-        or require_int(campaign.get("observation_total")) != len(observations)
+        require_int(simulation_record.get("test_run_total")) != len(rows)
+        or require_int(simulation_record.get("observation_total")) != len(observations)
         or len(rows) != len(observations)
-        or campaign.get("test_runs_truncated") is not False
-        or campaign.get("observations_truncated") is not False
+        or simulation_record.get("test_runs_truncated") is not False
+        or simulation_record.get("observations_truncated") is not False
     ):
         raise ValueError("Test Run rows and observations are truncated or inconsistent")
     pairs = [
@@ -6801,14 +5696,16 @@ def _selftest_row_selected(row: dict, case: _SelftestCase) -> bool:
     return recorded.test == selected.test and recorded.variant == selected.variant
 
 
-def _sim_selftest_evidence(campaign: dict, case: _SelftestCase) -> tuple[bool, str | None]:
-    pairs = _selftest_observation_pairs(campaign)
+def _sim_selftest_evidence(
+    simulation_record: dict, case: _SelftestCase
+) -> tuple[bool, str | None]:
+    pairs = _selftest_observation_pairs(simulation_record)
     selected = [(row, obs) for row, obs in pairs if _selftest_row_selected(row, case)]
     for _row, obs in selected:
         if obs.get("execution") == "blocked_by_build" and obs.get("failure_class") == "design":
             detail = require_dict(obs.get("detail"))
             return False, require_str(detail, "reason")
-    if require_list(campaign.get("build_stage"), field="build_stage"):
+    if require_list(simulation_record.get("build_stage"), field="build_stage"):
         raise ValueError("report contains failed build-stage evidence")
     for row, obs in selected:
         if (
@@ -6823,8 +5720,8 @@ def _sim_selftest_evidence(campaign: dict, case: _SelftestCase) -> tuple[bool, s
 
 def _grade_sim_bad_selftest(project, case, result, label, _pass, _warn) -> bool:
     try:
-        campaign = _read_selftest_campaign(project, case, result.returncode)
-        accepted, compiler_reason = _sim_selftest_evidence(campaign, case)
+        simulation_record = _read_selftest_simulation_record(project, case, result.returncode)
+        accepted, compiler_reason = _sim_selftest_evidence(simulation_record, case)
     except (OSError, ValueError, BoundaryError) as exc:
         _warning_sink(_warn, "flow.selftest-evidence-unvalidated", subject="sim")(
             f"{label} fail-path unvalidated - {exc}"
@@ -6944,7 +5841,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     """Wall-clock budget for a ``--deep`` Flow smoke, in seconds (F5).
 
     The hardcoded :data:`_DEEP_TIMEOUTS_S` floor is a *minimum*, not the
-    authority. Synthesis honors its configured run budget plus finalization.
+    authority. Synthesis and FPGA honor their configured run budget plus
+    finalization.
     Simulation validates and reserves its distinct build, Pre-Sim, run, and
     finalization budgets. Other legacy calculations retain their established
     fallback behavior for unparseable values.
@@ -6955,8 +5853,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
         planned_s = build_s + DEFAULT_TIMEOUT_S + run_s + _SIM_DEEP_FINALIZE_MARGIN_S
         return max(_DEEP_TIMEOUTS_S["sim"], planned_s)
     timeout_s = _configured_timeout_s(project, flow_name, _DEEP_TIMEOUTS_S[flow_name])
-    if flow_name == "synth":
-        timeout_s += _SYNTH_DEEP_FINALIZE_MARGIN_S
+    if flow_name in ("synth", "fpga"):
+        timeout_s += _IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
     return timeout_s
 
 
@@ -6991,21 +5889,17 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
     section = config_section(flows, flow_name) if isinstance(flows, dict) else {}
     if not isinstance(section, dict):
         return floor
-    raw = section.get("timeout_ms")
-    if raw is None:
+    configured_ms = as_int(section.get("timeout_ms"))
+    if configured_ms is None:
         return floor
-    try:
-        configured_s = int(raw) // 1000
-    except (TypeError, ValueError):
-        return floor
-    return max(floor, configured_s)
+    return max(floor, configured_ms // 1000)
 
 
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """Render *report_dir* so the hint is valid where it is READ, not where run.
 
     Doctor may run inside the Sandbox, where the Booley Directory is the
-    ``/booley-project`` bind mount — a path that exists in no other runtime, while
+    ``/booley`` bind mount — a path that exists in no other runtime, while
     the FAIL hint is often read from the host (where the same files sit under
     ``<repo>/.booley/``). For that well-known mount, print the
     repo-relative rendering that resolves on both host and runtime; any other Booley Directory
@@ -7013,7 +5907,7 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """
     if project.booley_dir.as_posix() not in {
         dc.BOOLEY_DIR_TARGET,
-        _sandbox_booley_dir(project.project_root),
+        sandbox_booley_dir(project.project_root),
     }:
         return str(report_dir)
     own_dir = own_booley_dir_repo_path(project.project_root)
@@ -7036,15 +5930,7 @@ def _run_flow_check_subprocess(
     """Run *cmd* for a Flow check; ``None`` means a FAIL was already recorded."""
     env = _doctor_subprocess_env(project)
     try:
-        return subprocess.run(
-            cmd,
-            cwd=project.project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        return run_captured_bounded(cmd, timeout=timeout_s, cwd=project.project_root, env=env)
     except subprocess.TimeoutExpired:
         findings.fail(
             f"{label} timed out after {timeout_s}s",
@@ -7127,7 +6013,7 @@ def _record_output_excerpt(
     verbose_only: bool = True,
 ) -> None:
     """Attach the informative slice of *result*'s output to the last finding."""
-    for line in _output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
+    for line in output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
         findings.detail(line, verbose_only=verbose_only)
 
 
@@ -7232,7 +6118,7 @@ def _doctor_flow_command(
     except session_runtime.SessionError as exc:
         findings.fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
 
@@ -7304,50 +6190,6 @@ def _run_flow_check(
         result,
         completed=not _is_simulate_tb_top_skip(project, flow_name, dry_run, result),
     )
-
-
-def _record_synth_memory_calibration(
-    project: ProjectAudit,
-    target: str,
-    report_dir: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Record boundary-process peak RSS from a completed Doctor synthesis."""
-    from booley.flows.implementation_publication import target_report_path
-
-    path = target_report_path("synth", target, report_dir)
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return  # the Flow failure above owns the missing-report diagnostic
-    if not isinstance(report, dict) or not report.get("ppa_complete"):
-        return
-    peak = report.get("peak_rss_mb")
-    if isinstance(peak, bool) or not isinstance(peak, (int, float)) or peak <= 0:
-        _warning_sink(_warn, "synth.memory-calibration-unavailable", subject=target)(
-            f"synthesis Target {target} completed, but its process-tree "
-            "peak RSS could not be measured; [jobs].heavy_memory remains uncalibrated"
-        )
-        return
-    from booley.harness import synth_probe
-
-    synth_probe.record_measurement(
-        project.common_booley_dir,
-        target,
-        float(peak),
-        selected_targets=_doctor_targets(project, "synth"),
-    )
-    reservation = _heavy_memory_reservation(project)
-    _pass(
-        f"synth memory calibrated: {target} peaked at {float(peak) / 1024:.1f}g; "
-        f"HEAVY reservation {resource_policy.format_memory(reservation.bytes)} "
-        f"({reservation.evidence})"
-    )
-    # The runtime-phase invariant ran before the deep synthesis created this
-    # measurement. Re-evaluate now so the same Doctor invocation cannot finish
-    # green on the stale 4 GiB fallback.
-    _check_memory_invariant(project, _pass, _warn, lambda _message: None)
 
 
 def _is_simulate_tb_top_skip(
@@ -7506,10 +6348,13 @@ def _flow_argv(
         report_dir,
         "--target",
         target,
-        "--diagnostic",
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout-ms", "30000"])
+    if flow_name == "fpga" and not dry_run:
+        # A warm implementation cache returns stored metrics before Vivado
+        # runs, so a deep run must bypass it to prove the tool works.
+        argv.append("--no-cache")
     if flow_name == "sim":
         if test_override is not None:
             argv.extend(["--test", test_override])
@@ -7552,151 +6397,15 @@ def _flow_command(
 
     command_env = dict.fromkeys(_PROJECT_CONTEXT_ENV, "")
     command_env[INVOCATION_ORIGIN_ENV] = "transport"
+    command_env[DOCTOR_RUN_ENV] = "1"
     if doctor_selftest_kind is not None:
         command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind
     return flow_runtime.command(inner, env=command_env)
 
 
-# In-container self-assertion (b5e8681's failure class: sandbox-semantics
-# checks silently running on the host). Every inner command routed through
-# _docker_wrap is prefixed with a POSIX-sh guard that re-verifies the command
-# really IS inside the sandbox before exec'ing it. If a wrapped command ever
-# executes outside the container (misrouting, argv recomposition dropping the
-# docker prefix), the guard refuses with a distinctive exit code + stderr
-# marker that callers convert into a loud FAIL — never a silent pass or SKIP.
-_SANDBOX_GUARD_MARKER = "[[BOOLEY_SANDBOX_GUARD_FAIL]]"
-# Distinctive code so callers can tell "guard refused" apart from ordinary Flow
-# failures (Flows exit 0/1/2) and from Docker's own 125-127 range.
-_SANDBOX_GUARD_EXIT = 97
-# The assertion is deliberately env-only, NOT a marker-file probe
-# (/.dockerenv): BOOLEY_IN_SANDBOX=1 is
-# injected by _docker_wrap's own ``-e`` below, so it proves the command went
-# through THIS wrapper's docker invocation. A /.dockerenv fallback would
-# falsely pass when doctor itself runs inside the Interactive-Mode
-# devcontainer and a misrouted "sandbox" check lands there instead of the
-# real sandbox image.
-_SANDBOX_GUARD_SCRIPT = (
-    'if [ "$BOOLEY_IN_SANDBOX" = "1" ]; then exec "$@"; fi; '
-    f'echo "{_SANDBOX_GUARD_MARKER} refusing to run: not inside the sandbox '
-    "(BOOLEY_IN_SANDBOX unset - the command did not go through doctor's "
-    'docker wrapper)" >&2; '
-    f"exit {_SANDBOX_GUARD_EXIT}"
-)
-
-
-def _sandbox_guard_failed(result: subprocess.CompletedProcess[str]) -> bool:
-    """Return whether *result* is the sandbox guard refusing a misrouted run.
-
-    Requires BOTH the reserved exit code and the stderr marker so a Flow that
-    happens to exit 97 for its own reasons is not misreported as misrouting.
-    """
-    if result.returncode != _SANDBOX_GUARD_EXIT:
-        return False
-    return _SANDBOX_GUARD_MARKER in f"{result.stderr or ''}{result.stdout or ''}"
-
-
-def _docker_wrap(
-    docker_exe: str,
-    image: str,
-    project_root: Path,
-    inner: list[str],
-    *,
-    memory: str = "",
-    doctor_selftest_kind: str | None = None,
-) -> list[str]:
-    """Wrap *inner* argv in a ``docker run`` that mounts the repo at ``/work``.
-
-    The single source of truth for how doctor executes a command inside the
-    Sandbox image: repo bind-mounted at ``/work``, network isolated, and the
-    in-container ``BOOLEY_DIR`` / ``BOOLEY_IN_SANDBOX`` env set so the
-    Flow resolves the project the same way a real sandbox run would.
-
-    The inner argv is additionally prefixed with the sandbox self-assertion
-    guard (see ``_SANDBOX_GUARD_SCRIPT``): *inner* is passed as positional
-    parameters to ``sh -c '... exec "$@"'`` — never spliced into the script
-    string — so arbitrary argv (including ``python3 -c`` snippets) survives
-    unquoted, and every command wrapped here gets the assertion for free.
-    """
-    resource_args = ["--memory", memory] if memory else []
-    selftest_env = (
-        ["-e", f"{selftest_overlay.INTERNAL_KIND_ENV}={doctor_selftest_kind}"]
-        if doctor_selftest_kind is not None
-        else []
-    )
-    return [
-        docker_exe,
-        "run",
-        "--init",
-        "--rm",
-        *resource_args,
-        "-v",
-        f"{docker_mount_path(project_root)}:/work",
-        "-w",
-        "/work",
-        "--network",
-        "none",
-        "-e",
-        f"BOOLEY_DIR={_sandbox_booley_dir(project_root)}",
-        "-e",
-        "BOOLEY_IN_SANDBOX=1",
-        *selftest_env,
-        image,
-        # $0 for the guard shell; *inner* lands in "$@" untouched.
-        "sh",
-        "-c",
-        _SANDBOX_GUARD_SCRIPT,
-        "booley-sandbox-guard",
-        *inner,
-    ]
-
-
-# Substrings that mark the informative failure lines in EDA/fusesoc output. The
-# reason for a fusesoc parse error is printed on the line AFTER
-# "Parse error. Ignoring file X:", so a first-line-only excerpt dropped it.
-_OUTPUT_ERROR_MARKERS = (
-    "error",
-    "must be array",
-    "ignoring file",
-    "could not",
-    "cannot",
-    "traceback",
-    "failed",
-    "exception",
-    "not found",
-    "requires",
-)
-
-
-def _output_excerpt_lines(text: str, max_lines: int = 8) -> list[str]:
-    """Return the informative slice of multi-line command output (indented).
-
-    A first-line-only excerpt truncated multi-line diagnostics — notably a
-    fusesoc parse error whose reason (``... must be array``) lands on the *next*
-    line. When any line looks like an error, take from the first such line
-    through the line after the last one (to catch the trailing reason); otherwise
-    fall back to the head of the output. Capped at *max_lines* with a "… N more"
-    note so the report dir is still the full record.
-    """
-    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return []
-    flagged = [
-        i for i, ln in enumerate(lines) if any(m in ln.lower() for m in _OUTPUT_ERROR_MARKERS)
-    ]
-    if flagged and max_lines > 1:
-        selected = lines[flagged[0] : flagged[-1] + 2][:max_lines]
-    else:
-        selected = lines[:max_lines]
-    excerpt = [f"    {ln}" for ln in selected]
-    hidden = len(lines) - len(selected)
-    if hidden > 0:
-        excerpt.append(f"    … ({hidden} more line(s); see the report dir)")
-    return excerpt
-
-
 def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
-    """Print :func:`_output_excerpt_lines` of *text*."""
-    for line in _output_excerpt_lines(text, max_lines):
+    """Print :func:`output_excerpt_lines` of *text*."""
+    for line in output_excerpt_lines(text, max_lines):
         info(line)
 
 

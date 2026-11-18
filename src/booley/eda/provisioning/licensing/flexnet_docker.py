@@ -139,27 +139,23 @@ def relay_image_build_argv(*, image: str = RELAY_IMAGE) -> list[str]:
     return ["image", "build", "--tag", image, "--file", str(dockerfile), str(context)]
 
 
-def build_relay_image(*, image: str = RELAY_IMAGE, runner: Runner | None = None) -> None:
+def build_relay_image(*, image: str = RELAY_IMAGE, runner: Runner) -> None:
     """Build the pinned minimal relay image or raise with Docker's diagnostic."""
-    run = runner or _run_docker
-    result = run(relay_image_build_argv(image=image), BUILD_TIMEOUT)
+    result = runner(relay_image_build_argv(image=image), BUILD_TIMEOUT)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "Docker returned no detail"
         raise RelayDockerError(f"could not build FlexNet relay image: {detail}")
 
 
-def relay_image_exists(*, image: str = RELAY_IMAGE, runner: Runner | None = None) -> bool:
+def relay_image_exists(*, image: str = RELAY_IMAGE, runner: Runner) -> bool:
     """Return whether Docker can resolve the exact production relay image."""
-    run = runner or _run_docker
     try:
-        return run(["image", "inspect", image], DOCKER_TIMEOUT).returncode == 0
+        return runner(["image", "inspect", image], DOCKER_TIMEOUT).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
 
-def ensure_relay_image(
-    *, image: str = RELAY_IMAGE, force: bool = False, runner: Runner | None = None
-) -> bool:
+def ensure_relay_image(*, image: str = RELAY_IMAGE, force: bool = False, runner: Runner) -> bool:
     """Build the relay image when absent or forced; return whether it was built."""
     if not force and relay_image_exists(image=image, runner=runner):
         return False
@@ -167,10 +163,9 @@ def ensure_relay_image(
     return True
 
 
-def resolve_relay_image_id(*, image: str = RELAY_IMAGE, runner: Runner | None = None) -> str:
+def resolve_relay_image_id(*, image: str = RELAY_IMAGE, runner: Runner) -> str:
     """Resolve one relay tag/digest to the immutable local Docker image ID."""
-    run = runner or _run_docker
-    image_id = _inspect_value(run, "image", image, "{{.Id}}")
+    image_id = _inspect_value(runner, "image", image, "{{.Id}}")
     if _IMAGE_ID_RE.fullmatch(image_id) is None:
         raise RelayDockerError(f"Docker returned an invalid relay image ID for {image!r}")
     return image_id
@@ -219,6 +214,10 @@ def outbound_network_create_argv(
     )
 
 
+# The relay never swaps: its memory and its memory-plus-swap are the same 64 MiB.
+_RELAY_MEMORY_FLAGS = ("--memory", "64m", "--memory-swap", "64m")
+
+
 def relay_run_argv(
     resources: RelayResources,
     profile: RelayProfile,
@@ -248,8 +247,7 @@ def relay_run_argv(
         "no-new-privileges",
         "--pids-limit",
         "64",
-        "--memory",
-        "64m",
+        *_RELAY_MEMORY_FLAGS,
         "--cpus",
         "0.50",
         "--ulimit",
@@ -315,7 +313,7 @@ def provision_relay(
     session_identity: str,
     *,
     image: str = RELAY_IMAGE,
-    runner: Runner | None = None,
+    runner: Runner,
     health_attempts: int = DEFAULT_HEALTH_ATTEMPTS,
     poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL,
     issuance_labels: tuple[str, ...] = (),
@@ -323,25 +321,24 @@ def provision_relay(
     """Create, connect, and health-gate one topology with reverse-order rollback."""
     if health_attempts < 1 or poll_interval < 0:
         raise RelayDockerError("health polling bounds are invalid")
-    run = runner or _run_docker
     resources = resources_for_session(session_identity)
-    image_id = resolve_relay_image_id(image=image, runner=run)
+    image_id = resolve_relay_image_id(image=image, runner=runner)
     created: list[tuple[str, str]] = []
     try:
         _checked(
-            run,
+            runner,
             private_network_create_argv(resources, issuance_labels=issuance_labels),
             "create private license network",
         )
         created.append(("network", resources.private_network))
         _checked(
-            run,
+            runner,
             outbound_network_create_argv(resources, issuance_labels=issuance_labels),
             "create outbound license network",
         )
         created.append(("network", resources.outbound_network))
         _checked(
-            run,
+            runner,
             relay_run_argv(
                 resources,
                 profile,
@@ -351,24 +348,23 @@ def provision_relay(
             "create license relay",
         )
         created.append(("container", resources.relay_container))
-        _checked(run, relay_private_connect_argv(resources, profile), "connect license relay")
-        _wait_healthy(run, resources.relay_container, health_attempts, poll_interval)
+        _checked(runner, relay_private_connect_argv(resources, profile), "connect license relay")
+        _wait_healthy(runner, resources.relay_container, health_attempts, poll_interval)
         return resources
     except (OSError, subprocess.SubprocessError, RelayDockerError) as exc:
-        residual = _rollback(run, created)
+        residual = _rollback(runner, created)
         suffix = f"; rollback left: {', '.join(residual)}" if residual else ""
         raise RelayDockerError(f"license relay startup failed: {exc}{suffix}") from exc
 
 
-def remove_relay(resources: RelayResources, *, runner: Runner | None = None) -> None:
+def remove_relay(resources: RelayResources, *, runner: Runner) -> None:
     """Remove one Session relay and both networks, reporting every residual."""
-    run = runner or _run_docker
     objects = [
         ("network", resources.private_network),
         ("network", resources.outbound_network),
         ("container", resources.relay_container),
     ]
-    residual = _rollback(run, objects)
+    residual = _rollback(runner, objects)
     if residual:
         raise RelayDockerError(f"failed to remove license relay objects: {', '.join(residual)}")
 
@@ -378,7 +374,7 @@ def recreate_relay(
     session_identity: str,
     *,
     image: str = RELAY_IMAGE,
-    runner: Runner | None = None,
+    runner: Runner,
     health_attempts: int = DEFAULT_HEALTH_ATTEMPTS,
     poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL,
     issuance_labels: tuple[str, ...] = (),
@@ -401,12 +397,11 @@ def connect_session(
     resources: RelayResources,
     session_container: str,
     *,
-    runner: Runner | None = None,
+    runner: Runner,
 ) -> None:
     """Attach the Session only to the private license network."""
-    run = runner or _run_docker
     _checked(
-        run,
+        runner,
         session_private_connect_argv(resources, session_container),
         "connect Sandbox to private license network",
     )
@@ -481,21 +476,20 @@ def validate_relay(
     *,
     issuance_labels: tuple[str, ...],
     image: str = RELAY_IMAGE,
-    runner: Runner | None = None,
+    runner: Runner,
 ) -> None:
     """Fail closed unless the complete relay security contract matches issuance."""
-    run = runner or _run_docker
-    image_id = resolve_relay_image_id(image=image, runner=run)
-    _validate_relay_labels_and_health(run, resources, issuance_labels)
+    image_id = resolve_relay_image_id(image=image, runner=runner)
+    _validate_relay_labels_and_health(runner, resources, issuance_labels)
     _validate_container_contract(
-        run,
+        runner,
         resources.relay_container,
         image_id=image_id,
         expected_env=_expected_relay_environment(profile),
     )
-    _validate_relay_membership(run, resources, session_container)
+    _validate_relay_membership(runner, resources, session_container)
     _validate_network(
-        run,
+        runner,
         resources.private_network,
         True,
         PRIVATE_NETWORK_LABEL,
@@ -503,14 +497,14 @@ def validate_relay(
         issuance_labels,
     )
     _validate_network_endpoints(
-        run,
+        runner,
         resources,
         profile,
         session_container,
         issuance_labels,
     )
     _validate_network(
-        run,
+        runner,
         resources.outbound_network,
         False,
         OUTBOUND_NETWORK_LABEL,
@@ -519,27 +513,28 @@ def validate_relay(
     )
 
 
-def cleanup_project_resources(
-    project_root: Path, *, runner: Runner | None = None
-) -> tuple[str, ...]:
+def project_resource_filter(project_root: str) -> str:
+    """The Docker label filter that selects every resource of a persisted Project identity."""
+    return f"label=booley.project-id={project_label_id(project_root)}"
+
+
+def cleanup_project_resources(project_root: Path, *, runner: Runner) -> tuple[str, ...]:
     """Remove exact Project-labeled containers before networks and report residue."""
     return cleanup_project_resources_for_identity(str(project_root.resolve()), runner=runner)
 
 
 def cleanup_project_resources_for_identity(
-    project_root: str, *, runner: Runner | None = None
+    project_root: str, *, runner: Runner
 ) -> tuple[str, ...]:
     """Remove resources for an already-canonical persisted Project identity."""
-    run = runner or _run_docker
-    project_id = project_label_id(project_root)
-    label = f"booley.project-id={project_id}"
+    label = project_resource_filter(project_root)
     residual: list[str] = []
     for kind, list_args in (
-        ("container", ["container", "ls", "-aq", "--filter", f"label={label}"]),
-        ("network", ["network", "ls", "-q", "--filter", f"label={label}"]),
+        ("container", ["container", "ls", "-aq", "--filter", label]),
+        ("network", ["network", "ls", "-q", "--filter", label]),
     ):
         try:
-            listed = run(list_args, DOCKER_TIMEOUT)
+            listed = runner(list_args, DOCKER_TIMEOUT)
         except (OSError, subprocess.SubprocessError):
             residual.append(f"<{kind}-list-failed>")
             continue
@@ -553,25 +548,13 @@ def cleanup_project_resources_for_identity(
                 ["container", "rm", "-f", name] if kind == "container" else ["network", "rm", name]
             )
             try:
-                removed = run(args, DOCKER_TIMEOUT)
+                removed = runner(args, DOCKER_TIMEOUT)
             except (OSError, subprocess.SubprocessError):
                 residual.append(f"{kind}:{name}")
                 continue
             if removed.returncode != 0 and not _is_missing(removed.stderr):
                 residual.append(f"{kind}:{name}")
     return tuple(residual)
-
-
-def _run_docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        check=False,
-    )
 
 
 def _checked(run: Runner, args: list[str], action: str) -> None:

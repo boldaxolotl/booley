@@ -2,69 +2,13 @@
   "coverage_analyst": {
     "additionalProperties": false,
     "properties": {
-      "campaign": {
-        "description": "Exact canonical coverage.json path",
-        "type": "string"
-      },
-      "diagnostic": {
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
-        "type": "boolean"
-      },
       "instruction": {
         "default": "",
         "description": "Freeform instruction for the Specialist (e.g. distilled plan)",
         "type": "string"
       },
-      "work_dir": {
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
-        "type": "string"
-      }
-    },
-    "required": [
-      "campaign"
-    ],
-    "type": "object"
-  },
-  "mutation_tester": {
-    "additionalProperties": false,
-    "properties": {
-      "count": {
-        "description": "Number of mutations: integer or 'auto' (default: 10)",
-        "type": "string"
-      },
-      "diagnostic": {
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
-        "type": "boolean"
-      },
-      "dry_run": {
-        "default": false,
-        "description": "Validate inputs and preview planned work without invoking Specialists or EDA tools",
-        "type": "boolean"
-      },
-      "min_detected": {
-        "description": "Pass threshold: minimum mutations that must be killed (default: all of --count, i.e. all-or-nothing). Lower it to accept a partial mutation score.",
-        "type": "integer"
-      },
-      "regen_lock": {
-        "default": false,
-        "description": "Wipe the mutation lock dir and re-run the Mutation Tester Specialist from scratch.",
-        "type": "boolean"
-      },
-      "scope": {
-        "description": "Comma-separated RTL files eligible for mutation",
-        "type": "string"
-      },
-      "steer": {
-        "description": "Developer Agent context for mutation targeting. Repeatable; over MCP pass an array of strings, not a bare string.",
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
-      },
-      "target": {
-        "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string.",
+      "record": {
+        "description": "Exact canonical coverage.json path",
         "type": "string"
       },
       "work_dir": {
@@ -73,8 +17,7 @@
       }
     },
     "required": [
-      "target",
-      "scope"
+      "record"
     ],
     "type": "object"
   },
@@ -93,26 +36,38 @@
         ],
         "type": "string"
       },
-      "diagnostic": {
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
-        "type": "boolean"
-      },
       "dry_run": {
         "default": false,
         "description": "Validate inputs and preview planned work without invoking Specialists or EDA tools",
         "type": "boolean"
       },
+      "fail_on": {
+        "description": "Exit with failure when an open finding is at or above this severity; without it a completed review exits 0.",
+        "enum": [
+          "critical",
+          "major",
+          "minor"
+        ],
+        "type": "string"
+      },
       "focus": {
         "description": "Review focus category. RTL: bugs, code_style, optimization, protocol, security, spec. TB: quality.",
         "type": "string"
       },
+      "recheck": {
+        "description": "Re-check the open findings of the Reviewer evidence file at PATH, which an earlier review or re-check wrote, against the current sources: each becomes fixed, still open or can't tell, and no new finding is reported. Category, focus and scope come from the file.",
+        "type": "string"
+      },
       "scope": {
-        "description": "Interactive Mode: comma-separated review files",
+        "description": "Comma-separated review files",
         "type": "string"
       },
       "spec": {
-        "description": "Path to the specification the review checks. Required for spec-focused reviews; pass the Project specification path.",
+        "description": "Path to the specification the review checks. Required for spec-focused reviews unless --spec-text is given; pass the Project specification path.",
+        "type": "string"
+      },
+      "spec_text": {
+        "description": "Specification text the review checks, instead of a --spec file.",
         "type": "string"
       },
       "steer": {
@@ -122,14 +77,8 @@
         },
         "type": "array"
       },
-      "verify": {
-        "default": false,
-        "description": "Verify only the latest review call's open findings; no discovery",
-        "type": "boolean"
-      },
       "waive": {
-        "default": [],
-        "description": "Propose a waiver during --verify; repeatable",
+        "description": "Propose waiving the open finding FINDING_ID for REASON, only with --recheck; repeatable. The Reviewer may refuse a waiver. Over MCP, pass [finding ID, reason] pairs.",
         "items": {
           "items": {
             "type": "string"

@@ -8,18 +8,22 @@ command and turn one completed process into typed build evidence.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shlex
-from collections.abc import Mapping
+import shutil
+import subprocess
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.build_paths import work_root_for
+from booley.flows import job_resources
 from booley.flows.eda_failures import classify_eda_failure
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInspection
 from booley.targets.parameter_integrity import (
@@ -30,7 +34,7 @@ from booley.targets.parameter_integrity import (
 from .. import edam as edam_layer
 from ..base import SubprocessResult
 from ..simulator_family import matching_eda_tool
-from .build_parallelism import LaneKind, verilator_backend_arguments
+from .build_parallelism import LaneKind, authored_make_tokens, verilator_backend_arguments
 from .build_reuse import capture_core_closure
 from .compiler_cache import (
     CompilerCacheConfigurationError,
@@ -38,7 +42,14 @@ from .compiler_cache import (
     compose_environment,
     execution_environment,
     resolve_policy,
+    warn_make_option_overrides,
 )
+from .config import DEFAULT_SIM_BUILD_TIMEOUT_MS
+
+# Runs one command for ``fusesoc_registry``: ``(cmd, *, cwd, env, capture_output, text)``.
+SetupRunner = Callable[..., subprocess.CompletedProcess[str]]
+# What the Flow's process transport accepts: ``(command, *, timeout, cwd)``.
+SetupInvoker = Callable[..., SubprocessResult]
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
@@ -143,8 +154,9 @@ def prepare_simulation_build(
     build_root: Path | None = None,
     resolution_vlnv: str | None = None,
     environment: Mapping[str, str] | None = None,
-    lane_kind: LaneKind = "heavy",
+    lane_kind: LaneKind = "admitted",
     core_library: fusesoc_registry.CoreLibraryPlan | None = None,
+    setup_runner: SetupRunner | None = None,
 ) -> PreparedSimulationBuild:
     """Resolve and prepare the simulator image used by normal Simulation.
 
@@ -152,6 +164,9 @@ def prepare_simulation_build(
     with a private per-build mirror that a build may edit. Without it, an
     ``ignore_native_cores`` Project resolves through a fresh private mirror
     under the build root, which holds only fileset-listed files.
+
+    *setup_runner* runs the FuseSoC setup command (see
+    :func:`measured_setup_runner`); without one the setup runs unmeasured.
     """
     try:
         return _prepare_simulation_build(
@@ -162,6 +177,7 @@ def prepare_simulation_build(
             environment=environment,
             lane_kind=lane_kind,
             core_library=core_library,
+            setup_runner=setup_runner,
         )
     except (
         fusesoc_registry.FuseSocError,
@@ -182,6 +198,7 @@ def _prepare_simulation_build(
     environment: Mapping[str, str] | None,
     lane_kind: LaneKind,
     core_library: fusesoc_registry.CoreLibraryPlan | None,
+    setup_runner: SetupRunner | None,
 ) -> PreparedSimulationBuild:
     """Prepare one supported simulator Target after boundary normalization."""
     root, inspection, backend_arguments = _simulation_recipe_inputs(handle, lane_kind=lane_kind)
@@ -197,6 +214,8 @@ def _prepare_simulation_build(
         resolution_vlnv=resolution_vlnv,
         backend_arguments=backend_arguments,
         library_plan=core_library,
+        # Without a measured runner FuseSoC setup runs unmeasured, as for a Mutation Flow.
+        runner=setup_runner or subprocess.run,
     )
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
@@ -205,7 +224,7 @@ def _prepare_simulation_build(
     build_environment = dict(environment or {})
     if eda_tool == "verilator":
         cache_policy, build_environment = _verilator_cache_environment(
-            root, build_environment, Path(resolved.build_root)
+            root, build_environment, Path(resolved.build_root), inspection
         )
         core_closure = capture_core_closure(resolved.edam_path, root, generation=work_root)
     _stage_doctor_overlay(root, resolved.build_root)
@@ -234,9 +253,16 @@ def _verilator_cache_environment(
     root: Path,
     environment: Mapping[str, str],
     build_root: Path,
+    inspection: TargetInspection,
 ) -> tuple[CompilerCachePolicy, dict[str, str]]:
-    """Resolve the compiler-cache policy and its managed build environment."""
+    """Resolve the compiler-cache policy and its managed build environment.
+
+    Also warns about ``make_options`` that override it.
+    """
     policy = resolve_policy(root, os.environ)
+    warn_make_option_overrides(
+        inspection.handle.selector, authored_make_tokens(inspection), cache_active=policy.active
+    )
     return policy, compose_environment(
         policy, environment, ambient=os.environ, build_root=build_root
     )
@@ -254,7 +280,6 @@ def _simulation_recipe_inputs(
     backend_arguments = verilator_backend_arguments(
         selected,
         lane_kind=lane_kind,
-        project_root=root,
     )
     return root, selected, backend_arguments
 
@@ -264,7 +289,7 @@ def simulation_setup_command(
     *,
     build_root: Path,
     resolution_vlnv: str | None = None,
-    lane_kind: LaneKind = "heavy",
+    lane_kind: LaneKind = "admitted",
     inspection: TargetInspection | None = None,
 ) -> list[str]:
     """Preview the exact FuseSoC setup command used by Simulation preparation."""
@@ -294,7 +319,7 @@ def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
 
     if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) != selftest_overlay.BAD_KIND:
         return
-    booley_dir = resolve_booley_dir(project_root)
+    booley_dir = resolve_checkout_booley_dir(project_root)
     copied = selftest_overlay.stage_bad_overlay(booley_dir, "sim", build_root)
     if copied == 0:
         raise selftest_overlay.SelftestOverlayError(
@@ -413,6 +438,65 @@ def classify_build_outcome(
     )
 
 
+def setup_timeout_s(build_timeout_s: int) -> int:
+    """The bound on FuseSoC setup: the build timeout, never below the default hour.
+
+    Setup had no bound before it was measured; the floor keeps a Project with a
+    short ``build_timeout_ms`` from newly failing a slow setup.
+    """
+    return max(build_timeout_s, DEFAULT_SIM_BUILD_TIMEOUT_MS // 1000)
+
+
+def _setup_oom_reason(result: SubprocessResult) -> str:
+    """Name the OOM evidence of a FuseSoC setup, as :func:`_build_oom_reason` does for a build."""
+    peak_rss_mb = result.peak_rss_mb
+    peak = "peak RSS unknown" if peak_rss_mb is None else f"peak RSS {peak_rss_mb:.0f} MB"
+    if result.host_oom_kill:
+        return f"FuseSoC setup failed: the host ran out of memory and killed it ({peak})"
+    return (
+        f"FuseSoC setup failed while the Sandbox recorded an OOM kill ({peak}; raise "
+        "[sandbox].memory and recreate the Sandbox, or run fewer Jobs at once)"
+    )
+
+
+def measured_setup_runner(invoke: SetupInvoker, *, target: str, timeout_s: int) -> SetupRunner:
+    """Run FuseSoC setup through the Flow's measured transport as phase ``sim_prepare``.
+
+    *invoke* is the Flow's process runner. The result is a runner for
+    ``fusesoc_registry.resolve_target_handle``: it records the setup in the
+    Resource History under *target* and no Test Run (the key the Job request
+    lists), so memory admission can reserve it and see an OOM kill of it.
+
+    The passed environment is ignored: the transport builds the same one
+    (``os.environ`` plus the checkout's ``BOOLEY_DIR``). A timeout or an OOM
+    blame is appended to stderr, which the registry puts in its error text.
+    """
+
+    def run(
+        cmd: Sequence[str],
+        *,
+        cwd: str | os.PathLike[str],
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = True,
+        text: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output, text
+        if shutil.which(cmd[0]) is None:
+            # The transport turns a missing program into a bare failure; the
+            # registry words this OSError ("could not invoke fusesoc ...").
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), cmd[0])
+        with job_resources.resource_phase(target, "sim_prepare"):
+            result = invoke(list(cmd), timeout=timeout_s, cwd=Path(cwd))
+        stderr = result.stderr
+        if result.timed_out:
+            stderr = f"{stderr}\nFuseSoC setup timed out after {timeout_s} s".lstrip("\n")
+        elif result.oom_blamed:
+            stderr = f"{stderr}\n{_setup_oom_reason(result)}".lstrip("\n")
+        return subprocess.CompletedProcess(list(cmd), result.returncode, result.stdout, stderr)
+
+    return run
+
+
 def _build_timeout_reason(timeout_s: int | None) -> str:
     limit = f" after {timeout_s} s" if timeout_s is not None else ""
     return f"build timed out{limit} (raise [flows.sim].build_timeout_ms)"
@@ -427,15 +511,19 @@ _OOM_REMEDY = (
 )
 
 
-def _build_oom_reason(peak_rss_mb: float | None) -> str:
+def _build_oom_reason(result: SubprocessResult) -> str:
     """Name the OOM evidence without claiming the build process itself was killed.
 
     The Sandbox OOM counter is cgroup-wide, so a sibling process may have
-    raised it; the wording states only what was observed.
+    raised it; the wording states only what was observed. A host kill names
+    no Sandbox remedy: the Job's own line carries it.
     """
+    peak_rss_mb = result.peak_rss_mb
     peak = (
         "build peak RSS unknown" if peak_rss_mb is None else f"build peak RSS {peak_rss_mb:.0f} MB"
     )
+    if result.host_oom_kill:
+        return f"build failed: the host ran out of memory and killed it ({peak})"
     return f"build failed while the Sandbox recorded an OOM kill ({peak}; {_OOM_REMEDY})"
 
 
@@ -443,8 +531,8 @@ def _abnormal_build_reason(result: SubprocessResult, timeout_s: int | None, gene
     """Pick the most specific reason: Booley's own timeout kill, then OOM, then *generic*."""
     if result.timed_out:
         return _build_timeout_reason(timeout_s)
-    if result.oom_kill_delta > 0:
-        return _build_oom_reason(result.peak_rss_mb)
+    if result.oom_blamed:
+        return _build_oom_reason(result)
     return generic
 
 
@@ -477,7 +565,7 @@ def _failed_build_outcome(
     timeout_s: int | None,
 ) -> BuildOutcome:
     """Classify one authenticated nonzero build result."""
-    if result.timed_out or result.oom_kill_delta > 0 or build_rc < 0 or build_rc >= 128:
+    if result.timed_out or result.oom_blamed or build_rc < 0 or build_rc >= 128:
         reason = _abnormal_build_reason(result, timeout_s, "abnormal build termination")
         return _infrastructure_outcome(
             result,
@@ -564,7 +652,7 @@ def _infrastructure_outcome(
 
 # Bounds for the agent-visible excerpt of a failed build's output. Sized so the
 # canonical JSON of ``{"text": report}`` (worst case: every byte escaped to two
-# characters) stays under the campaign codec's 2 KiB detail ceiling.
+# characters) stays under the record codec's 2 KiB detail ceiling.
 BUILD_REPORT_TAIL_LINES = 15
 BUILD_REPORT_TAIL_BYTES = 800
 
@@ -595,12 +683,3 @@ def build_failure_report(outcome: BuildOutcome) -> str:
     if not tail:
         return outcome.reason
     return f"{outcome.reason}\n--- output tail ---\n{tail}"
-
-
-class SimulationBuildInfrastructureError(RuntimeError):
-    """An authenticated build attempt ended without a design verdict."""
-
-    def __init__(self, target: str, outcome: BuildOutcome) -> None:
-        super().__init__(build_failure_report(outcome))
-        self.target = target
-        self.outcome = outcome

@@ -275,7 +275,7 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
         encoding="utf-8",
     )
     os.utime(running_paths.record, (1, 1))
-    slot = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "holder.json"
+    slot = tmp_path / "runtime" / "jobs" / "slots" / "memory" / "holder.json"
     slot.parent.mkdir(parents=True)
     slot.write_text(json.dumps({"execution_id": referenced}), encoding="utf-8")
 
@@ -287,9 +287,34 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
     assert running_paths.root.exists()
 
 
+def test_gc_collects_record_lock_and_staged_leftovers(tmp_path: Path) -> None:
+    execution_id = "a" * 32
+    _old_terminal(tmp_path, execution_id)
+    paths = execution_paths(execution_id, booley_dir=tmp_path)
+    (paths.root / "record.lock").write_bytes(b"")
+    (paths.root / ".context.json.x.booley-staged").write_bytes(b"{")
+
+    removed = gc_terminal_executions(tmp_path, now=1_000_000, retention_seconds=10)
+
+    assert removed == [execution_id]
+    assert not paths.root.exists()
+
+
+def test_update_execution_record_never_recreates_a_collected_execution(tmp_path: Path) -> None:
+    from booley.runtime.execution_records import update_execution_record
+
+    paths = execution_paths("a" * 32, booley_dir=tmp_path)
+    seen: list[object] = []
+
+    update_execution_record(paths, lambda current: seen.append(current) or {"state": "running"})
+
+    assert seen == [None]
+    assert not paths.root.exists()
+
+
 def _unreadable_slot(tmp_path: Path, monkeypatch, execution_id: str) -> Path:
     """A slot entry that exists but cannot be opened (Windows scanner, sharing error)."""
-    slot = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "holder.json"
+    slot = tmp_path / "runtime" / "jobs" / "slots" / "memory" / "holder.json"
     slot.parent.mkdir(parents=True)
     slot.write_text(json.dumps({"execution_id": execution_id}), encoding="utf-8")
     original_open = Path.open
@@ -328,10 +353,10 @@ def _child_context(tmp_path: Path):
     """A valid child context sidecar."""
     paths = _protocol_paths(tmp_path)
     context = {
-        "$schema": "booley.supervised-child-context/v1",
+        "$schema": "booley.supervised-child-context/v2",
         "child_execution_id": _EXEC_ID,
         "parent_execution_id": "sim-20260925T153819Z-1",
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "simulation_record_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "manifest_sha256": "sha256:" + "1" * 64,
         "work_item_id": "item:0000:0123456789abcdef",
         "attempt_id": "550e8400-e29b-41d4-a716-446655440001",

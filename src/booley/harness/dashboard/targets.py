@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
-from booley.flows.sim.workload import CONSTRAINT_FILE_TYPES
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import (
@@ -37,6 +36,9 @@ _READ_ERRORS = (FuseSocError, OSError, ValueError)
 # Flow whose Targets can have Tests.
 _SIM_FLOW = "sim"
 _NO_TESTS: tuple[str, ...] = ("only Simulation Targets have tests",)
+# A Flow that is not Target-aware but drives another Flow's Targets: the Mutation Flow runs one
+# Simulation Target, so Targets offer it and its Target picker lists what the Simulation Flow can drive.
+TARGET_KIND_OF_FLOW = {"mutation": "sim"}
 
 
 def first_line(error: BaseException) -> str:
@@ -44,6 +46,14 @@ def first_line(error: BaseException) -> str:
     return next(
         (line.strip() for line in str(error).splitlines() if line.strip()), type(error).__name__
     )
+
+
+def launchable_flows(flows: tuple[str, ...]) -> tuple[str, ...]:
+    """The Flows a Target detail offers: those that drive it, then those that run what they drive.
+
+    ``("sim",)`` becomes ``("sim", "mutation")``; the driving Flows keep their order and lead.
+    """
+    return (*flows, *(flow for flow, kind in TARGET_KIND_OF_FLOW.items() if kind in flows))
 
 
 @dataclass(frozen=True)
@@ -86,6 +96,20 @@ class TargetDetail:
 
 
 @dataclass(frozen=True)
+class RunChoices:
+    """The Test Runs one Target offers as ``--test`` values, or why they cannot be listed.
+
+    ``worktree`` and ``selector`` name the request it answers. Not called ``Test*``:
+    pytest would try to collect such a class.
+    """
+
+    worktree: Path
+    selector: str
+    runs: tuple[str, ...]
+    problem: str = ""
+
+
+@dataclass(frozen=True)
 class WorktreeList:
     """Git's registered worktrees (the first is the main checkout) or why they are unknown."""
 
@@ -108,7 +132,8 @@ def order_worktrees(
     """Worktrees with a connected session first, other linked ones next, the main checkout last.
 
     ``sessions`` holds each connected session's checkout and its label
-    (``S3 Interactive``), already in handle-number order. Linked worktrees
+    (``S3 Interactive``, or ``S3 · uart-fix Interactive`` for a named session), already
+    in handle-number order. Linked worktrees
     with sessions keep the order of their first session; the others keep
     Git's order. The first Git entry is the main checkout and always comes
     last, with its sessions' labels too. Bare and prunable entries are dropped.
@@ -195,6 +220,30 @@ class TargetsReader:
         with self._detail_lock:
             return self._detail(worktree, selector)
 
+    def test_runs(self, worktree: Path, selector: str) -> RunChoices:
+        """The Test Runs of one Target: each Test, then ``test+variant`` per Test Variant.
+
+        Reads nothing when inspecting the Target would write Stealth core
+        projections (the same guard as :meth:`detail`); the reason is the problem.
+        """
+        with self._detail_lock:
+            blocker = inspection_blocker(worktree)
+            if blocker:
+                return RunChoices(worktree, selector, (), f"Tests unavailable: {blocker}")
+            try:
+                plan = load_checkout_target_test_plan(worktree, selector)
+            except _READ_ERRORS as exc:
+                return RunChoices(worktree, selector, (), f"Tests unavailable: {first_line(exc)}")
+        runs: list[str] = []
+        for test in plan.tests:
+            runs.append(test)
+            table = plan.variants_of(test)
+            if table is not None:
+                runs.extend(f"{test}+{item.name}" for item in table.variants)
+        if not runs:
+            return RunChoices(worktree, selector, (), "This Target registers no tests")
+        return RunChoices(worktree, selector, tuple(runs))
+
     def _detail(self, worktree: Path, selector: str) -> TargetDetail:
         try:
             catalog = TargetCatalog.build(worktree)
@@ -255,12 +304,16 @@ def _filesets(handle: TargetHandle) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+# File types of timing and pin constraints.
+_CONSTRAINT_FILE_TYPES = frozenset({"sdc", "xdc"})
+
+
 def _constraints(catalog: TargetCatalog, handle: TargetHandle) -> tuple[str, ...]:
     """Paths of the selected SDC and XDC inputs."""
     return tuple(
         item.path
         for item in catalog.inspect(handle).inputs
-        if item.file_type.lower() in CONSTRAINT_FILE_TYPES
+        if item.file_type.lower() in _CONSTRAINT_FILE_TYPES
     )
 
 

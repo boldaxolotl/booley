@@ -1,0 +1,116 @@
+:root {
+  color-scheme: light dark;
+  --background: oklch(99.2% 0 0);
+  --foreground: oklch(21% 0.006 285.885);
+  --card: #fff;
+  --border: oklch(92% 0.004 286.32);
+  --muted: oklch(55.2% 0.016 285.938);
+  --primary: oklch(48.8% 0.217 264);
+  --error: oklch(63.7% 0.237 25.331);
+  --error-text: oklch(50.5% 0.213 27.518);
+  --error-surface: color-mix(in srgb, var(--error) 8%, transparent);
+  --success-text: oklch(50.8% 0.118 165.612);
+  --radius: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #000;
+    --foreground: oklch(97% 0 0);
+    --card: #111;
+    --border: #ffffff14;
+    --muted: oklch(70.8% 0 0);
+    --primary: oklch(57.1% 0.21 264);
+    --error: #fb414a;
+    --error-text: oklch(70.4% 0.191 22.216);
+    --error-surface: color-mix(in srgb, var(--error) 16%, transparent);
+    --success-text: oklch(76.5% 0.177 163.223);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+a {
+  color: var(--primary);
+}
+
+h2,
+summary {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+summary {
+  cursor: pointer;
+}
+
+.header,
+.card,
+.error {
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.header .path {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.card {
+  margin-bottom: 0.4rem;
+}
+
+.card .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.card .handle {
+  font-weight: 600;
+}
+
+.card .result {
+  font-weight: 600;
+}
+
+.card.passed .result {
+  color: var(--success-text);
+}
+
+.card.failed {
+  border-left: 3px solid var(--error);
+  background: var(--error-surface);
+}
+
+.card.failed .result {
+  color: var(--error-text);
+}
+
+.error {
+  border-color: var(--error);
+  background: var(--error-surface);
+  color: var(--error-text);
+}

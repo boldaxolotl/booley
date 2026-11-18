@@ -39,6 +39,7 @@ from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecu
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim import test_verilator_build_reuse_engine as engine
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -62,7 +63,9 @@ class _Invoker:
         self.builds = 0
         self.launches: list[str] = []
 
-    def __call__(self, command: list[str], *, timeout: int) -> SubprocessResult:
+    def __call__(
+        self, command: list[str], *, timeout: int, cwd: Path | None = None
+    ) -> SubprocessResult:
         if command == ["verilator", "--version"]:
             return SubprocessResult(
                 returncode=0,
@@ -71,7 +74,7 @@ class _Invoker:
         started = time.monotonic()
         result = subprocess.run(
             command,
-            cwd=self._cwd,
+            cwd=cwd or self._cwd,
             env={**os.environ, "PYTHONPATH": self._python_path},
             capture_output=True,
             text=True,
@@ -118,7 +121,7 @@ def _execution(project: Path, invoker: _Invoker) -> VerilatorCoverageExecution:
     return VerilatorCoverageExecution(
         _handle(project),
         invoke=invoker,
-        options=SimulationOptions(timeout_ms=10_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
         provenance_path=project.parent / "BOOLEY-SOURCE.txt",
         pre_sim_commands=(),
     )
@@ -245,14 +248,16 @@ def test_coverage_source_edit_rebuilds_and_never_launches_old_image(
     assert _current_build_root(coverage_env, _PLAIN) == new_root
 
 
-def test_tampered_retained_read_closure_file_rebuilds(coverage_env: Path) -> None:
+@pytest.mark.parametrize("tampered", ["header", "image"])
+def test_tampered_retained_read_closure_file_rebuilds(coverage_env: Path, tampered: str) -> None:
     invoker = _Invoker(coverage_env)
     execution = _execution(coverage_env, invoker)
     _build(execution, coverage_env)
-    old_root = execution.authenticated_image()[0]
+    old_root, artifacts = execution.authenticated_image()
     # A generated header lies outside the staged-input snapshot; only the
     # read closure recorded from the dependency files can notice the edit.
-    (old_root / "Vtb.h").write_text("// tampered generated header\n", encoding="utf-8")
+    target = old_root / "Vtb.h" if tampered == "header" else artifacts[0]
+    target.write_text("// tampered retained file\n", encoding="utf-8")
 
     rebuilt = _build(execution, coverage_env)
 

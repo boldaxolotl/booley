@@ -2,7 +2,6 @@
 """booley -- CLI entry point for the Booley RTL development harness.
 
 Subcommands:
-    goal      Work with Goal Records and evidence
     chat      Open the Project's default (or --cli chosen) Agent CLI
     worktree  Create, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
@@ -17,9 +16,11 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import io
 import itertools
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -30,34 +31,22 @@ from contextlib import nullcontext
 from datetime import UTC
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from booley.config.agent import AGENT_CLIS
+from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
-from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
     cheatsheet,
     coverage_cli,
-    feedback_view,
-    projects_view,
     resources_cli,
     upgrade_cli,
-    upgrade_review,
 )
-from booley.harness.auth_cmd import run_auth
-from booley.harness.bootstrap_cli import run_bootstrap
-from booley.harness.chat_cmd import run as run_chat
-from booley.harness.doctor import run_doctor
-from booley.harness.feedback_environment import resolve_feedback_environment
-from booley.harness.init_cmd import run_init
-from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
-from booley.harness.setup.common import configure_progress_output
 from booley.harness.terminal_status import MAX_WIDTH, section_header
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
-from booley.presentation import colors
 from booley.presentation.terminal_table import render_table, width_budget
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
@@ -67,10 +56,15 @@ from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
+    from booley.harness.sandbox import DockerSandboxConfig
+
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
     from booley.runtime.session_admission import Sandbox
+    from booley.targets.target_surface import TargetDetailPayload
 
 # --- Constants ---
 
@@ -90,7 +84,6 @@ class CommandLocation(Enum):
 
 COMMAND_LOCATIONS = {
     "help": CommandLocation.EITHER,
-    "goal": CommandLocation.SESSION_RUNTIME,
     "dashboard": CommandLocation.SESSION_RUNTIME,
     "chat": CommandLocation.SESSION_RUNTIME,
     "worktree": CommandLocation.SESSION_RUNTIME,
@@ -108,11 +101,12 @@ COMMAND_LOCATIONS = {
     "resources": CommandLocation.EITHER,
     "flow": CommandLocation.SESSION_RUNTIME,
     "specialist": CommandLocation.SESSION_RUNTIME,
+    "measure": CommandLocation.SESSION_RUNTIME,
     "feedback": CommandLocation.EITHER,
     "cleanup": CommandLocation.EITHER,
 }
 
-_HIDDEN_COMMANDS = frozenset({"feedback", "cleanup", "upgrade", "session", "goal", "shell"})
+_HIDDEN_COMMANDS = frozenset({"feedback", "cleanup", "upgrade", "session", "shell"})
 _COMMAND_LOCATION_ORDER = {
     CommandLocation.SESSION_RUNTIME: 0,
     CommandLocation.EITHER: 1,
@@ -131,7 +125,6 @@ class ProjectBinding(Enum):
 
 COMMAND_PROJECT_BINDINGS = {
     "help": ProjectBinding.INDEPENDENT,
-    "goal": ProjectBinding.REQUIRED,
     "dashboard": ProjectBinding.REQUIRED,
     "chat": ProjectBinding.REQUIRED,
     "worktree": ProjectBinding.REQUIRED,
@@ -149,14 +142,15 @@ COMMAND_PROJECT_BINDINGS = {
     "resources": ProjectBinding.REQUIRED,
     "flow": ProjectBinding.REQUIRED,
     "specialist": ProjectBinding.REQUIRED,
+    "measure": ProjectBinding.REQUIRED,
     "feedback": ProjectBinding.FEEDBACK,
     "cleanup": ProjectBinding.REQUIRED,
     "shell": ProjectBinding.REQUIRED,
 }
 
 RETIRED_COMMAND_POINTERS = {
-    command: f"`booley {command}` is not available; Goal Mode replaces it: "
-    "open an agent session in the Sandbox and run /booley-goal"
+    command: f"`booley {command}` is not available; `booley measure` replaces it: "
+    "run `booley measure --help`"
     for command in ("run", "board")
 }
 
@@ -181,6 +175,9 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 
 
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
+    # `cheat --metrics` lists the selected Project's Targets, so it needs one.
+    if command == "cheat" and getattr(args, "metrics", False) and not _cheat_lists_sections(args):
+        return ProjectBinding.REQUIRED
     return command_project_bindings()[command]
 
 
@@ -220,9 +217,20 @@ class _RootHelpAction(argparse.Action):
 def _agent_auth_arg(value: str) -> str:
     """Normalize the CLI's hyphenated auth spelling to the TOML vocabulary."""
     normalized = value.strip().lower().replace("-", "_")
-    if normalized not in {"auto", "subscription", "api_key"}:
-        raise argparse.ArgumentTypeError("choose auto, subscription, or api-key")
+    if normalized not in {"subscription", "api_key"}:
+        raise argparse.ArgumentTypeError("choose subscription or api-key")
     return normalized
+
+
+def _tcp_port(value: str) -> int:
+    """A TCP port number, for ``booley dashboard --port``."""
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be a whole number from 1 to 65535")
+    return port
 
 
 logger = logging.getLogger("booley")
@@ -262,8 +270,9 @@ def _force_utf8() -> None:
     """Force UTF-8 for all text I/O — prevents CP1252 encoding errors on Windows."""
     os.environ.setdefault("PYTHONUTF8", "1")
     if sys.stdout.encoding.lower().replace("-", "") != "utf8":
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        for stream in (sys.stdout, sys.stderr):
+            if isinstance(stream, io.TextIOWrapper):
+                stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _baked_identity() -> tuple[str, str]:
@@ -438,7 +447,6 @@ def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
     from booley.flows.cli_selection import CliInvocation
-    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
@@ -451,10 +459,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
             file=sys.stderr,
         )
         return 2
-    # Flow code must not import Harness, so the command layer supplies the human advisory.
-    endpoint._cli_invocation = CliInvocation(
-        project=selected, goal_recording_advisory=warn_cli_goal_recording
-    )
+    endpoint._cli_invocation = CliInvocation(project=selected)
     return endpoint.main(argv, **kwargs)
 
 
@@ -492,6 +497,19 @@ class _RootHelpFormatter(argparse.RawDescriptionHelpFormatter):
         super().__init__(prog, width=_help_width())
 
 
+_SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}")
+
+
+def _session_name(value: str) -> str:
+    """Validate a `--name` label (argparse ``type=``): the trimmed text, or a usage error."""
+    name = value.strip()
+    if _SESSION_NAME.fullmatch(name) is None:
+        raise argparse.ArgumentTypeError(
+            "use 1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or digit"
+        )
+    return name
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with subcommands + legacy flags."""
     parser = argparse.ArgumentParser(
@@ -527,16 +545,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
-    _add_goal_subparser(sub)
-    dashboard = sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
-    attach = dashboard.add_mutually_exclusive_group()
-    attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
-    attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
+    _add_dashboard_subparser(sub)
 
     _install_project_options(parser)
     _describe_commands(parser, sub)
 
     return parser
+
+
+def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
+    dashboard = sub.add_parser(
+        "dashboard",
+        help="Open the Sandbox Dashboard",
+        description=(
+            "Open the Sandbox Dashboard: sessions, Jobs and Targets, and Run to start a Booley "
+            "Flow. With --web, serve each worktree's Jobs as a web page and JSON "
+            "instead."
+        ),
+    )
+    attach = dashboard.add_mutually_exclusive_group()
+    attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
+    attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
+    attach.add_argument(
+        "--web",
+        action="store_true",
+        help="Serve each worktree's Jobs page and JSON on 127.0.0.1 instead of opening the "
+        "terminal Dashboard",
+    )
+    dashboard.add_argument(
+        "--port",
+        type=_tcp_port,
+        default=None,
+        metavar="PORT",
+        help="Port of --web (default: 8090)",
+    )
 
 
 def _describe_commands(
@@ -642,7 +684,7 @@ def _add_doctor_subparser(sub) -> None:
     doctor_p.add_argument(
         "--deep",
         action="store_true",
-        help="Run real first-config sim/lint/synthesis smoke checks",
+        help="Run real sim/lint/synthesis smoke checks and FPGA implementation",
     )
     doctor_p.add_argument(
         "--skip-agent-checks",
@@ -650,6 +692,28 @@ def _add_doctor_subparser(sub) -> None:
         help=(
             "With --deep, skip agent credential inspection and the live "
             "Specialist provider authorization and memory probe"
+        ),
+    )
+
+
+def _add_init_lint_arguments(init_p) -> None:
+    """Add the scaffold lint Target controls to ``booley init``."""
+    init_p.add_argument(
+        "--lint-eda-tool",
+        choices=("verilator", "verible"),
+        help=(
+            "Scaffold: lint EDA tool of lint_<name> (default verilator, with -Wall; "
+            "verible makes it the only, style, lint Target)"
+        ),
+    )
+    init_p.add_argument(
+        "--style-lint",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="style_lint",
+        help=(
+            "Scaffold: add the Verible style lint Target lint_<name>_style "
+            "(default on with the Verilator lint Target)"
         ),
     )
 
@@ -675,11 +739,7 @@ def _add_init_scaffold_arguments(init_p) -> None:
         choices=("sv", "cocotb"),
         help="Scaffold: testbench style (default sv; cocotb is sandbox-sim only)",
     )
-    init_p.add_argument(
-        "--lint-eda-tool",
-        choices=("verilator", "verible"),
-        help="Scaffold: lint EDA tool (default verilator --lint-only; verible = style lint)",
-    )
+    _add_init_lint_arguments(init_p)
     init_p.add_argument("--lint-tool", action=_RetiredEdaToolOptionAction, help=argparse.SUPPRESS)
     init_p.add_argument(
         "--asic",
@@ -740,7 +800,7 @@ def _add_init_subparser(sub) -> None:
     init_p.add_argument(
         "--seed",
         action="store_true",
-        help="Seed only the Interactive Mode devcontainer for this folder/worktree "
+        help="Seed only the Sandbox devcontainer for this folder/worktree "
         "(no project scaffolding); run once per worktree",
     )
     init_p.add_argument(
@@ -751,8 +811,8 @@ def _add_init_subparser(sub) -> None:
     init_p.add_argument(
         "--auth",
         type=_agent_auth_arg,
-        metavar="{auto,subscription,api-key}",
-        help="Agent authentication policy to record (default: auto)",
+        metavar="{subscription,api-key}",
+        help="Agent authentication policy to record (default: detected from your credentials)",
     )
     init_p.add_argument(
         "--repin-booley-dir",
@@ -841,6 +901,49 @@ def _add_specialist_subparser(sub) -> None:
     )
 
 
+def _add_measure_subparser(sub) -> None:
+    """Add `booley measure`: measure a commit against `metrics.toml`, or validate the file."""
+    parser = sub.add_parser(
+        "measure", help="Measure a commit against the Target Metrics rules in metrics.toml"
+    )
+    parser.add_argument(
+        "revision",
+        nargs="?",
+        default="HEAD",
+        metavar="<sha>",
+        help="The commit to measure (default: HEAD); uncommitted work is never measured",
+    )
+    parser.add_argument(
+        "--base",
+        metavar="<sha>",
+        help="Compare with this commit instead of the default Base",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Evaluate every table even after an unmet or error verdict",
+    )
+    parser.add_argument(
+        "--again",
+        action="store_true",
+        help="Measure again even when the commit is already Measured; "
+        "otherwise its stored run is shown",
+    )
+    parser.add_argument(
+        "--target",
+        metavar="<name>",
+        help="Measure only this Target's tables; the run is kept with the Job, "
+        "never stored or Measured",
+    )
+    parser.add_argument("--json", action="store_true", help="Print the report as JSON")
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Check the working tree's metrics.toml against the Flows, Targets and tests; "
+        "measure nothing",
+    )
+
+
 def _add_session_subparser(sub) -> None:
     """Add lifecycle controls for the Sandbox."""
     from booley.flows.cli_arguments import add_project_root_alias
@@ -873,7 +976,9 @@ def _add_session_subparser(sub) -> None:
         help="Optional command, e.g. `booley session enter -- booley doctor`",
     )
     session_sub.add_parser("down", help="Stop and remove the Sandbox", parents=[root_opt])
-    session_sub.add_parser("status", help="Print running/stopped/absent")
+    session_sub.add_parser(
+        "status", help="Print running/stopped/absent, or a pending start/recovery"
+    )
     session_sub.add_parser(
         "validate",
         help="Validate the host-issued Sandbox specification",
@@ -921,14 +1026,15 @@ def _add_utility_subparsers(sub) -> None:
         ),
         usage=(
             "%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] "
-            "[--new-worktree | --here] [--] [ARGS ...]"
+            "[--new-worktree | --here] [--name NAME] [--] [ARGS ...]"
         ),
         epilog=(
             "Arguments after `chat` and its own options are passed unchanged to the "
             "Agent CLI, after Booley's own launch arguments, for example "
-            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex). "
-            "Booley reads -h/--help, -C/--project, --cli, --new-worktree and --here only "
-            "before any other argument. Put `--` first to forward them to the agent: "
+            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); "
+            "a resumed conversation reopens in the worktree it ran in. "
+            "Booley reads -h/--help, -C/--project, --cli, --new-worktree, --here and --name "
+            "only before any other argument. Put `--` first to forward them to the agent: "
             "`booley chat -- --help`. Claude Code's own `--worktree` is not Booley's and "
             "goes to the agent."
         ),
@@ -951,7 +1057,7 @@ def _add_utility_subparsers(sub) -> None:
         default=None,
         help=(
             "Start in a new worktree `s<N>` even if the main checkout is free "
-            "(overrides [chat] worktree for this launch)"
+            "(overrides [worktree] chat for this launch)"
         ),
     )
     placement.add_argument(
@@ -962,7 +1068,20 @@ def _add_utility_subparsers(sub) -> None:
         default=None,
         help=(
             "Start in the main checkout even if another session uses it; from inside a "
-            "linked worktree, stay there (overrides [chat] worktree for this launch)"
+            "linked worktree, stay there (overrides [worktree] chat for this launch)"
+        ),
+    )
+    chat_p.add_argument(
+        "--name",
+        dest="session_name",
+        metavar="NAME",
+        type=_session_name,
+        default=None,
+        help=(
+            "Label the session: the tab title and the Dashboard show `S3 · NAME` "
+            "(1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or "
+            "digit). A conversation resumed in its worktree keeps its label unless --name sets a "
+            "new one"
         ),
     )
     _add_cheat_subparser(sub)
@@ -976,6 +1095,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_init_subparser(sub)
     _add_flow_subparser(sub)
     _add_specialist_subparser(sub)
+    _add_measure_subparser(sub)
     _add_targets_subparser(sub)
     resources_cli.add_subparser(sub)
     coverage_cli.add_subparser(sub)
@@ -989,132 +1109,19 @@ def _add_utility_subparsers(sub) -> None:
     _add_shell_subparser(sub)
 
 
-def _add_goal_subparser(sub) -> None:
-    """Add the Goal Mode group `booley goal` (ADR 0067 D13).
-
-    Kept available to the Goal Mode skill without advertising it in top-level help.
-    """
-    goal_p = cast(
-        "argparse.ArgumentParser",
-        sub.add_parser(
-            "goal",
-            help="Inspect or abandon this worktree's Goal Mode; status shows every active Goal Mode in the Project when this worktree hosts none",
-            description="Inspect this worktree's Goal Mode, or every active Goal Mode in the Project when this worktree hosts none. Abandon applies to this worktree's Goal Mode.",
-        ),
-    )
-    goal_sub = goal_p.add_subparsers(
-        dest="goal_command", metavar="{status,abandon}", required=True
-    )
-    status_help = (
-        "Show this worktree's Goal Mode, or every active Goal Mode in the Project "
-        "when this worktree hosts none."
-    )
-    status_p = goal_sub.add_parser("status", help=status_help, description=status_help)
-    detail = status_p.add_mutually_exclusive_group()
-    detail.add_argument("--short", action="store_true", help="One-line summary")
-    detail.add_argument("--long", action="store_true", help="Full detail")
-    abandon_p = goal_sub.add_parser("abandon", help="Abandon this worktree's Goal Mode")
-    abandon_p.add_argument("--record-id", help="Exact expected Goal record for a retry")
-    abandon_p.add_argument("--operation-id", help="Stable UUID operation for a retry")
-    abandon_p.add_argument(
-        "--instruction-quote",
-        default="Human invoked booley goal abandon",
-        help="Human instruction retained in the record",
-    )
-
-
 def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
+    if args.port is not None and not args.web:
+        print("booley dashboard: --port needs --web", file=sys.stderr)
+        return 2
+    if args.web:
+        from booley.harness.dashboard.web import DEFAULT_PORT, serve
+
+        return serve(project_root, args.port or DEFAULT_PORT)
     from booley.harness.dashboard.command import run_attach, run_dashboard
 
     if args.attach_policy or args.on_attach:
         return run_attach(project_root, policy_only=args.attach_policy)
     return run_dashboard(project_root)
-
-
-def _goal_checkout(args: argparse.Namespace, project_root: Path) -> Path:
-    """Use explicit CLI selection while retaining ambient checkout defaults."""
-    return project_root if hasattr(args, "_cli_selection") else Path.cwd()
-
-
-def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
-    """Show Goal status using the Booley Directory discovered for this command."""
-    if args.goal_command == "status":
-        from booley.criteria.evidence_ledger import AcceptanceLedgerError
-        from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
-        from booley.goals.ended_records import with_last_ended
-        from booley.goals.proposal_errors import ProposalError
-        from booley.goals.state_store import GoalStateError
-        from booley.goals.status import select_status
-        from booley.goals.store import GoalStore, GoalStoreError
-        from booley.harness.goal_status_view import render_goal_status
-        from booley.runtime.booley_dir import resolve_booley_dir
-
-        try:
-            from booley.flows.sim.unpublished_results import read_unpublished_results
-
-            store = GoalStore(resolve_booley_dir(_project_root))
-            checkout = _goal_checkout(args, _project_root)
-            selection = select_status(store, checkout, campaign_reader=read_unpublished_results)
-            from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
-
-            for view in selection.views:
-                schedule_goal_baselines(resolve_booley_dir(_project_root), view.record)
-            short = True if args.short else False if args.long else None
-            text = (
-                render_goal_status(
-                    selection.views, short=short, project_wide=selection.project_wide
-                )
-                if selection.views
-                else "No active Goal Mode."
-            )
-            print(with_last_ended(text, store, checkout, project_wide=selection.project_wide))
-            return 0
-        except (GoalStoreError, GoalStateError, ProposalError, AcceptanceLedgerError) as exc:
-            message = unavailable_diagnostic(exc) if is_unnamable_error(exc) else str(exc)
-            print(f"ERROR: {message}", file=sys.stderr)
-            return 2
-    return _abandon_goal_cli(args, _project_root)
-
-
-def _abandon_goal_cli(args: argparse.Namespace, _project_root: Path) -> int:
-    """Render the shared lifecycle result and its exact retry identity."""
-    from booley.goals.abandon import abandon_goal
-    from booley.goals.checkout import CheckoutError
-    from booley.goals.entry import EntryEnvironment
-    from booley.goals.lifecycle import LifecycleError
-    from booley.goals.proposals import ProposalError
-    from booley.goals.store import GoalStore, GoalStoreError
-    from booley.mcp.goal_completion import completion_environment
-    from booley.runtime.booley_dir import resolve_booley_dir
-    from booley.runtime.history_commit import FileCommitError
-
-    try:
-        booley_dir = resolve_booley_dir(_project_root)
-        result = abandon_goal(
-            GoalStore(booley_dir),
-            _goal_checkout(args, _project_root),
-            completion_environment(EntryEnvironment(booley_dir)),
-            record_id=args.record_id,
-            operation_id=args.operation_id,
-            instruction_quote=args.instruction_quote,
-            on_bound=lambda request: print(
-                f"Retry IDs: --record-id {request.record_id} --operation-id {request.operation_id}",
-                flush=True,
-            ),
-        )
-        print(result["message"])
-        return 0
-    except (
-        LifecycleError,
-        GoalStoreError,
-        ProposalError,
-        CheckoutError,
-        FileCommitError,
-        OSError,
-        ValueError,
-    ) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
 
 
 def _add_targets_subparser(sub) -> None:
@@ -1233,18 +1240,20 @@ def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser
 def _chat_option_width(tail: list[str], position: int) -> int:
     """Return how many tokens Booley's own `chat` option takes at `position`.
 
-    Those are -C/--project, --cli, --new-worktree and --here.
+    Those are -C/--project, --cli, --new-worktree, --here and --name.
     """
     if position >= len(tail):
         return 0
     token = tail[position]
     if token in ("-C", "--project"):
         return 2 if position + 1 < len(tail) else 1
-    if token == "--cli":
+    if token in ("--cli", "--name"):
         return 2 if position + 1 < len(tail) else 1
     if token in ("--new-worktree", "--here"):
         return 1
-    if token.startswith(("--project=", "--cli=")) or (token.startswith("-C") and len(token) > 2):
+    if token.startswith(("--project=", "--cli=", "--name=")) or (
+        token.startswith("-C") and len(token) > 2
+    ):
         return 1
     return 0
 
@@ -1252,10 +1261,11 @@ def _chat_option_width(tail: list[str], position: int) -> int:
 def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
     """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
 
-    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree` and `--here` only while they
-    lead the tail. Everything after them goes to the agent CLI untouched, with one leading
-    `--` dropped so `booley chat -- --help` forwards `--help`. A leading `-h`/`--help`
-    stays Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree`, `--here` and `--name` only
+    while they lead the tail. Everything after them goes to the agent CLI untouched, with
+    one leading `--` dropped so `booley chat -- --help` forwards `--help`. A leading
+    `-h`/`--help` stays Booley's: the whole argv goes to argparse, which prints the `chat`
+    help.
     """
     tail = argv[command_index + 1 :]
     own_end = 0
@@ -1279,7 +1289,7 @@ def _parse_cli() -> argparse.Namespace:
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
     agent_args: list[str] = []
-    if command == "chat":
+    if command == "chat" and command_index is not None:
         argv, agent_args = _split_chat_tail(argv, command_index)
     args = parser.parse_args(argv)
     if args.command == "chat":
@@ -1288,24 +1298,6 @@ def _parse_cli() -> argparse.Namespace:
         parser.print_help()
         parser.exit()
     return _normalize_args(parser, args)
-
-
-def _live_criterion_endpoint_catalog(project_root: Path):
-    """Compose the active project's Criteria with its discovered endpoints."""
-    from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
-    from booley.mcp.registry import (
-        criterion_endpoint_relationships,
-        discover_mcp_tools,
-    )
-    from booley.runtime.booley_dir import resolve_checkout_booley_dir
-
-    booley_dir = resolve_checkout_booley_dir(project_root)
-    return CriterionEndpointCatalog.load(
-        booley_dir / "criteria.toml",
-        criterion_endpoint_relationships(
-            discover_mcp_tools(project_mcp_tools_dir=booley_dir / "mcp_tools")
-        ),
-    )
 
 
 def _cheat_lists_sections(args: argparse.Namespace) -> bool:
@@ -1326,17 +1318,10 @@ def _cheat_flow_reference(text: str, project_root: Path | None) -> str:
         )
         from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
-        # No Execution column: keep the terminal table within a terminal width
-        # — a 4th column overflowed and truncated the Sets column (QA_REPORT
-        # A3). Its reader is an agent, which doesn't pick execution backends
-        # anyway; the docs blocks carry the matrix.
         if project_root is None:
             raise ValueError("No selected Project for live reference")
         project_mcp_tools_dir = resolve_checkout_booley_dir(project_root) / "mcp_tools"
-        body = render_flow_reference(
-            project_mcp_tools_dir=project_mcp_tools_dir,
-            execution_column=False,
-        )
+        body = render_flow_reference(project_mcp_tools_dir=project_mcp_tools_dir)
         text = splice_generated(text, body)
         text = splice_generated(
             text,
@@ -1352,49 +1337,24 @@ def _cheat_flow_reference(text: str, project_root: Path | None) -> str:
     return text
 
 
-def _cheat_criteria_reference(text: str, project_root: Path | None) -> str:
-    """Splice the active Project's Criteria and endpoint relationships."""
-    try:
-        from booley.criteria.reference import (
-            splice_generated as splice_criteria,
-        )
-        from booley.goals.reference import render_goal_reference as render_criteria_reference
-        from booley.runtime.booley_dir import resolve_checkout_booley_dir
-
-        if project_root is None:
-            raise ValueError("No selected Project for live Criteria")
-        project_criteria = resolve_checkout_booley_dir(project_root) / "criteria.toml"
-        text = splice_criteria(
-            text,
-            render_criteria_reference(
-                _live_criterion_endpoint_catalog(project_root),
-                project_criteria_path=project_criteria,
-            ),
-            name="criteria",
-        )
-    except Exception:  # noqa: BLE001 — best-effort live criteria splice; committed block remains on failure
-        pass
-    return text
+# Stands for the raw metrics listing while `render` wraps the prose around it.
+_METRICS_PLACEHOLDER = "METRICSLISTING"
+_METRICS_BLOCK = re.compile(
+    r"<!-- BEGIN GENERATED: metrics -->.*?<!-- END GENERATED: metrics -->", re.DOTALL
+)
 
 
-def _cheat_criteria_params_reference(text: str) -> str:
-    """Splice threshold flavours from the parameter registry."""
-    try:
-        from booley.criteria.reference import (
-            render_criteria_params_reference,
-        )
-        from booley.criteria.reference import (
-            splice_generated as splice_criteria,
-        )
+def _cheat_metrics_listing(args: argparse.Namespace, project_root: Path | None) -> str | None:
+    """The live metrics listing when ``--metrics`` asks for it, else ``None``.
 
-        text = splice_criteria(
-            text,
-            render_criteria_params_reference(),
-            name="criteria-params",
-        )
-    except Exception:  # noqa: BLE001 — best-effort live splice; committed block remains on failure
-        pass
-    return text
+    Raises ``FuseSocError``, ``OSError`` or ``ValueError`` when it cannot be built.
+    """
+    if not getattr(args, "metrics", False):
+        return None
+    from booley.measurement import metrics_listing
+
+    assert project_root is not None, "`cheat --metrics` is bound to a Project"
+    return metrics_listing.render_metrics_listing(project_root)
 
 
 def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
@@ -1412,11 +1372,18 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         return 1
     text = cs.read_text(encoding="utf-8")
     text = _cheat_flow_reference(text, project_root)
-    text = _cheat_criteria_reference(text, project_root)
-    text = _cheat_criteria_params_reference(text)
+    from booley.targets.domain import FuseSocError
+
+    try:
+        listing = _cheat_metrics_listing(args, project_root)
+    except (FuseSocError, OSError, ValueError) as exc:
+        print(f"ERROR: cannot list metrics: {exc}", file=sys.stderr)
+        return 2
+    if listing is not None:
+        text = _METRICS_BLOCK.sub(_METRICS_PLACEHOLDER, text)
 
     # Narrow to the requested sections (after splicing, so a filtered view still
-    # shows live registry/criteria tables). --all keeps the whole sheet.
+    # shows live registry tables). --all keeps the whole sheet.
     text = cheatsheet.select(
         text,
         []
@@ -1427,7 +1394,11 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     # Drop the HTML-comment markers so they don't reach the terminal.
     text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("<!--"))
 
-    print(render(text, width=width_budget()), end="")
+    from booley.harness.render_md import render
+
+    rendered = render(text, width=width_budget())
+    # The listing is TOML, not prose: it is never wrapped or inline-formatted.
+    print(rendered if listing is None else rendered.replace(_METRICS_PLACEHOLDER, listing), end="")
     return 0
 
 
@@ -1477,9 +1448,11 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
 
 def _report_upgrade_before_session(project_root: Path) -> None:
     """Observe host version state and advise before starting a Sandbox."""
-    try:
-        from booley.runtime.booley_dir import resolve_common_booley_dir
+    # Imported before the `try` so an import failure is not swallowed as advisory noise.
+    from booley.harness import upgrade_review
+    from booley.runtime.booley_dir import resolve_common_booley_dir
 
+    try:
         status = upgrade_review.observe(resolve_common_booley_dir(project_root))
     except Exception:  # noqa: BLE001 — advisory state must never block Session startup
         return
@@ -1490,9 +1463,11 @@ def _report_upgrade_before_session(project_root: Path) -> None:
 
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
     """Reconcile the Sandbox Image and replace its Sandbox."""
-    configure_progress_output()
     from booley.harness.session_refresh import refresh
+    from booley.harness.setup.common import configure_progress_output
     from booley.runtime import health
+
+    configure_progress_output()
 
     verbose = getattr(args, "verbose", False)
     result = refresh(project_root, verbose=verbose)
@@ -1604,6 +1579,19 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
         return 2
 
 
+def _set_shell_memory_swap(docker_cfg: DockerSandboxConfig, swap: str) -> str | None:
+    """Set the shell container's ``--memory-swap``; return an error message when it cannot."""
+    from booley.audit.resource_policy import memory_swap_limit
+    from booley.runtime.project_image import DockerImageError, probe_docker_host_memory
+
+    try:
+        host = probe_docker_host_memory(docker_cfg.image)
+    except DockerImageError as exc:
+        return str(exc)
+    docker_cfg.memory_swap = memory_swap_limit(docker_cfg.memory_limit, swap, host.swap_bytes)
+    return None
+
+
 def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     """Open an interactive shell (or run a one-off command) in a fresh sandbox.
 
@@ -1616,7 +1604,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     if runtime_context.inside_session_runtime():
         print(
             "ERROR: `booley shell` cannot run inside the Booley container.\n\n"
-            "  The sandbox has no Docker access by design (ADR 0016), so it "
+            "  The sandbox has no Docker access by design, so it "
             "cannot spawn\n  another container. You are already inside a sandbox "
             "— just use this shell.\n"
             "  Run `booley shell` from a HOST terminal to get a fresh sandbox.",
@@ -1634,7 +1622,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     try:
         load_agent_settings(project_root)
     except (OSError, ValueError, RuntimeError) as exc:
-        # RuntimeError covers BackendConfigError (invalid [agent] provider /
+        # RuntimeError covers BackendConfigError (invalid [agent] default /
         # sandbox mode) — mirror doctor, which warns-and-defaults rather than
         # tracebacking a `booley shell` on a fixable toml typo.
         print(
@@ -1657,7 +1645,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
         # Sandbox the same Flows and Specialists normally run in.
         memory_limit=cfg.sandbox.memory or "4g",
     )
-    error = docker_cfg.verify()
+    error = docker_cfg.verify() or _set_shell_memory_swap(docker_cfg, cfg.sandbox.swap)
     if error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -1731,22 +1719,15 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     return None
 
 
-def _flow_blurb(description: str) -> str:
-    """Return the first sentence of a Flow description, on one line.
-
-    Endpoint descriptions can run to paragraphs; the listing shows the lead
-    sentence whole. Width fitting belongs to the table (TTY only), so piped
-    output is never cut mid-sentence.
-    """
-    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
-
-
 def _flow_listing(flows: list[McpToolInfo]) -> str:
     """Render available Flows for the CLI."""
+    from booley.mcp.registry import flow_blurb
+    from booley.presentation import colors
+
     if not flows:
         return "  (none discovered)"
     rows = [
-        [colors.accent(flow.name), _flow_blurb(flow.description)]
+        [colors.accent(flow.name), flow_blurb(flow.description)]
         for flow in sorted(flows, key=lambda item: item.name)
     ]
     return "\n".join(render_table(["Name", "Description"], rows, width=width_budget()))
@@ -1754,7 +1735,8 @@ def _flow_listing(flows: list[McpToolInfo]) -> str:
 
 def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
     """List or select a registered endpoint, with wrong-command guidance."""
-    from booley.targets.flow_names import canonical
+    from booley.presentation import colors
+    from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW, canonical
 
     choices = [item for item in endpoints if item.kind == kind]
     heading = "Flows" if kind == "flow" else "Specialists"
@@ -1770,6 +1752,8 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
         _enforce_runtime_location(args.command)
     other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
     suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
+    if other is None and raw_name in RETIRED_SPECIALIST_TO_FLOW:
+        suggestion = f" Use booley flow {RETIRED_SPECIALIST_TO_FLOW[raw_name]}."
     # Colour follows stdout, so the stderr listing is printed plain.
     listing = colors.strip_ansi(f"Available {heading}\n{_flow_listing(choices)}")
     print(
@@ -1790,12 +1774,28 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
     )
 
 
+class _CancelledRun(KeyboardInterrupt):
+    """A Ctrl-C the Standalone Job runner already recorded as cancelled and reported."""
+
+
+def _quiet_keyboard_interrupt(
+    previous: Callable[[type[BaseException], BaseException, TracebackType | None], object],
+) -> Callable[[type[BaseException], BaseException, TracebackType | None], None]:
+    """Return an excepthook that drops ``KeyboardInterrupt`` and delegates everything else."""
+
+    def hook(exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None) -> None:
+        if not issubclass(exc_type, KeyboardInterrupt):
+            previous(exc_type, exc, tb)
+
+    return hook
+
+
 def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: bool) -> int:
     """Dispatch a Flow or Specialist through its execution adapter.
 
     A shell run is a Standalone Job: it gets a Job record and a ``job.log`` copy of its output.
     """
-    from booley.harness.standalone_job import StandaloneJob
+    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 
     try:
         endpoint_cls = _load_mcp_tool_class(info)
@@ -1812,7 +1812,12 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
     if argv and argv[0] == "--":
         argv = argv[1:]
     # Prepared before the endpoint exists: it reads BOOLEY_RUN_ID as its invocation identity.
-    job = StandaloneJob.prepare(project_root, args.command, info.name, argv)
+    job = StandaloneJob.prepare(
+        project_root,
+        info.name,
+        ["booley", args.command, info.name, *argv],
+        report_root=checkout_report_root(project_root),
+    )
     try:
         endpoint = endpoint_cls()
         if _endpoint_help_candidate(args):
@@ -1834,7 +1839,12 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
             runtime_context.ensure_proxy_env()
         if job is None:
             return _invoke_endpoint(endpoint, argv, args)
-        return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+        try:
+            return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+        except KeyboardInterrupt:
+            # The Job runner records a started run as cancelled with exit 130 (when it can).
+            print("interrupted; run cancelled", file=sys.stderr)
+            raise _CancelledRun from None
     finally:
         if job is not None:
             job.discard()
@@ -1872,7 +1882,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
 
 def _target_detail_payload(
     project_root: Path, selector: str, *, as_json: bool
-) -> dict[str, object]:
+) -> TargetDetailPayload:
     """Resolve Target detail in-Sandbox, or return actionable host metadata."""
     from booley.targets import target_surface
 
@@ -1947,30 +1957,135 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _measure_commit(args: argparse.Namespace, project_root: Path) -> int:
+    """`booley measure [<sha>]`: measure one commit as a Standalone Job."""
+    from booley.harness.measure_command import MeasureRequest, run_measure
+
+    shown = [args.revision] if args.revision != "HEAD" else []
+    if args.base is not None:
+        shown += ["--base", args.base]
+    if args.target is not None:
+        shown += ["--target", args.target]
+    shown += ["--all"] * args.all + ["--again"] * args.again + ["--json"] * args.json
+    request = MeasureRequest(
+        revision=args.revision,
+        base=args.base,
+        all_tables=args.all,
+        again=args.again,
+        as_json=args.json,
+        argv=tuple(shown),
+        target=args.target,
+    )
+    try:
+        return run_measure(project_root, request)
+    except KeyboardInterrupt:
+        # The Job runner recorded the run as cancelled with exit 130.
+        print("interrupted; measurement cancelled", file=sys.stderr)
+        raise _CancelledRun from None
+
+
+def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
+    """`booley measure`: measure a commit, or with `--validate` read metrics.toml; run no Flow."""
+    from booley.measurement.metrics_file import MetricsFileError, load_metrics_rules, table_header
+
+    if not args.validate:
+        return _measure_commit(args, project_root)
+    if (
+        args.revision != "HEAD"
+        or args.base is not None
+        or args.all
+        or args.again
+        or args.json
+        or args.target is not None
+    ):
+        print(
+            "ERROR: --validate checks the working tree's metrics.toml and takes no other option",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        rules = load_metrics_rules(project_root)
+    except MetricsFileError as exc:
+        for error in exc.errors:
+            print(error.render(), file=sys.stderr)
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not rules.path.exists():
+        print(f"no metrics.toml in {rules.path.parent}: declares nothing")
+    elif not rules.tables:
+        print("metrics.toml is valid and declares no `[<target>.<flow>]` table")
+    else:
+        count = len(rules.tables)
+        print(f"metrics.toml is valid: {count} table{'s' if count != 1 else ''}")
+        for table in rules.tables:
+            print(
+                f"  {table_header(table.target, table.flow)} {len(table.bounds)} bounds, "
+                f"{len(table.tracked)} tracked"
+            )
+    return 0
+
+
 def _cmd_feedback(args: argparse.Namespace, project_root: Path) -> int:
     """Compose Doctor state only for Feedback operations that render it."""
+    from booley.feedback.storage import feedback_storage_dir
+    from booley.harness import feedback_view
+    from booley.harness.feedback_environment import resolve_feedback_environment
+
     env = None
     if feedback_cli.requires_environment(args):
         env = resolve_feedback_environment(feedback_storage_dir(project_root))
     return feedback_cli.run(args, project_root, env=env, list_view=feedback_view.render_listing)
 
 
+def _cmd_chat(args: argparse.Namespace, project_root: Path) -> int:
+    """Dispatch `booley chat`; the chat module loads only when it runs."""
+    from booley.harness.chat_cmd import run
+
+    return run(args, project_root)
+
+
+def _cmd_doctor(args: argparse.Namespace, project_root: Path) -> int:
+    """Dispatch `booley doctor`; Doctor and its audits load only when it runs."""
+    from booley.harness.doctor import run_doctor
+
+    return run_doctor(args, project_root)
+
+
+def _cmd_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Dispatch `booley init`; the init module loads only when it runs."""
+    from booley.harness.init_cmd import run_init
+
+    return run_init(args, project_root)
+
+
+def _cmd_auth(args: argparse.Namespace, project_root: Path | None) -> int:
+    """Dispatch `booley auth`; the auth module loads only when it runs."""
+    from booley.harness.auth_cmd import run_auth
+
+    return run_auth(args, project_root)
+
+
+# Startup rule (enforced by tests/harness/test_cli_startup_imports.py): a module that only a
+# handler needs is imported inside that handler, never at the top of this file. Top-level
+# imports serve parser build, CLI normalization and dispatch, so `booley --help` and
+# `--version` do not pay for commands they never run. Entries that name an imported module's
+# function (`resources_cli.run`, ...) are fine: those modules also register their subparser.
 _EARLY_COMMANDS: dict[str, Callable] = {
-    "chat": run_chat,
+    "chat": _cmd_chat,
     "cheat": _cmd_cheat,
-    "doctor": run_doctor,
-    "init": run_init,
-    "auth": run_auth,
+    "doctor": _cmd_doctor,
+    "init": _cmd_init,
+    "auth": _cmd_auth,
     "shell": _cmd_shell,
     "session": _cmd_session,
     "targets": _cmd_targets,
     "resources": resources_cli.run,
     "coverage": coverage_cli.run,
     "worktree": run_worktree,
-    "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,
     "flow": _cmd_flow,
     "specialist": _cmd_specialist,
+    "measure": _cmd_measure,
     "feedback": _cmd_feedback,
     "cleanup": cleanup_cli.run,
     "upgrade": upgrade_cli.run,
@@ -1989,7 +2104,7 @@ def _cmd_eda(args: argparse.Namespace, project_root: Path) -> int:
 _EARLY_COMMANDS["eda"] = _cmd_eda
 
 
-def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | None:
+def _handle_early_exits(args: argparse.Namespace, project_root: Path | None) -> int | None:
     """Dispatch non-run subcommands; returns exit code or None for 'run'."""
     handler = _EARLY_COMMANDS.get(args.command)
     if handler is not None:
@@ -2217,6 +2332,21 @@ def _selected_project_root(
     return _command_project_root(command)
 
 
+def _deleted_session_down_root(command: str, args: argparse.Namespace) -> Path | None:
+    """Return the Project Root a `session down` names when that directory is gone.
+
+    Only an absolute, nonexistent selector qualifies: a relative one is still a typo
+    and keeps the existing-directory error, and an existing path keeps discovery.
+    """
+    selection = getattr(args, "_cli_selection", None)
+    if command != "session" or getattr(args, "session_command", None) != "down":
+        return None
+    if selection is None or not Path(selection.value).is_absolute():
+        return None
+    root = Path(selection.value).resolve()
+    return None if root.exists() else root
+
+
 def _host_session_selection(
     command: str, args: argparse.Namespace, selected: Path | None
 ) -> Path | None:
@@ -2258,14 +2388,21 @@ def _dispatch_main() -> int:
     """Parse CLI, handle early exits, and dispatch the selected command."""
     args = _parse_cli()
     command = _effective_command(args)
+    assert command is not None, "CLI normalization always supplies a command"
 
     default_chat = getattr(args, "default_chat", False)
     if default_chat:
         _enforce_runtime_location(command)
 
+    if deleted_root := _deleted_session_down_root(command, args):
+        # A deleted Project has no checkout to discover or guard; INDEPENDENT skips
+        # only those checks, while the host-only and host-install gates still run.
+        return _dispatch_selected(args, command, deleted_root, ProjectBinding.INDEPENDENT)
+
     binding = _command_project_binding(command, args)
     project_root = _selected_project_root(command, args, binding)
     if binding not in {ProjectBinding.INDEPENDENT, ProjectBinding.OPTIONAL}:
+        assert project_root is not None, "a Project-bound command resolves a Project Root"
         source_rejection = _reject_source_project_command(command, project_root)
         if source_rejection is not None:
             return source_rejection
@@ -2274,7 +2411,12 @@ def _dispatch_main() -> int:
         project_root = _host_session_selection(command, args, project_root)
 
     if binding is ProjectBinding.REQUIRED:
+        assert project_root is not None, "a REQUIRED command resolves a Project Root"
         _require_command_project(command, project_root)
+    # Doctor reports the retired keys as a FAIL; upgrade is booley-heal's first step.
+    exempt = command in {"doctor", "upgrade"} or binding is ProjectBinding.INDEPENDENT
+    if project_root is not None and not exempt:
+        refuse_retired_config(project_root)
 
     return _dispatch_selected(args, command, project_root, binding)
 
@@ -2294,8 +2436,11 @@ def _dispatch_selected(
         print(authority_error, file=sys.stderr)
         return 2
     if command == "bootstrap":
+        from booley.harness.bootstrap_cli import run_bootstrap
+
         return run_bootstrap(args)
     if command == "projects":
+        from booley.harness import projects_view
         from booley.runtime import image_keepers as runtime_image_keepers
 
         return project_inventory_cli.run(
@@ -2330,10 +2475,11 @@ def _dispatch_selected(
     raise AssertionError(f"unhandled command: {command}")
 
 
-def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> int:
+def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path | None) -> int:
     """Keep metadata admission while avoiding execution-path runtime setup."""
     from booley.runtime.layout_consumers import directory_consumer
 
+    assert project_root is not None, "endpoint help applies to Project-bound commands"
     if _outer_endpoint_selection(args):
         args._cli_endpoint_project = project_root
     with directory_consumer(project_root):
@@ -2357,11 +2503,18 @@ def main() -> int:
         ProjectRootDiscoveryError,
         EndpointConfigError,
         ProjectRequiredError,
+        RetiredConfigError,
         SourceCheckoutProjectError,
         runtime_context.EgressModeError,
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    except _CancelledRun:
+        # Die by SIGINT like any interrupted program, so a calling shell loop stops
+        # too; only the traceback is dropped. Re-raise the plain class: Python 3.11
+        # exits by SIGINT only for exactly KeyboardInterrupt, not a subclass (exit 1).
+        sys.excepthook = _quiet_keyboard_interrupt(sys.excepthook)
+        raise KeyboardInterrupt from None
 
 
 if __name__ == "__main__":

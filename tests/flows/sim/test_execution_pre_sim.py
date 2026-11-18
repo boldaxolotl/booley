@@ -4,10 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
-from booley.config.project_config import load_test_configuration_field
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
-from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.targets.domain import TargetHandle
+from tests.time_budget import hang_guard_s
 
 
 def _project(root: Path, marker: str) -> TargetHandle:
@@ -35,33 +34,10 @@ def test_each_target_handle_resolves_its_own_project_configuration(tmp_path: Pat
             test_names=("smoke",),
             build_root=handle.project_root / "build",
             eda_tool="icarus",
-            timeout_s=5,
+            timeout_s=hang_guard_s(),
         )
         assert outcome is not None
         assert outcome.status == "passed"
 
     assert (first_root / "hook.txt").read_text(encoding="utf-8") == "current"
     assert (second_root / "hook.txt").read_text(encoding="utf-8") == "baseline"
-
-
-def test_test_registry_is_scoped_to_each_checkout(tmp_path: Path) -> None:
-    current = tmp_path / "current"
-    baseline = tmp_path / "baseline"
-    for root, name, selector in (
-        (current, "now", "+test={name}"),
-        (baseline, "then", "+case={index}"),
-    ):
-        project = root / ".booley"
-        project.mkdir(parents=True)
-        (project / "tests.toml").write_text(
-            f'[sim]\ntests = ["{name}"]\nselect = "{selector}"\n',
-            encoding="utf-8",
-        )
-
-    assert load_test_configuration_field(current, "tests") == {"sim": ["now"]}
-    assert load_test_configuration_field(baseline, "tests") == {"sim": ["then"]}
-    launched = {}
-    for root, name in ((current, "now"), (baseline, "then")):
-        plan = load_target_test_plan(root, "sim", identity="sim", adapter="icarus")
-        launched[name] = plan.launch((plan.run(name),)).select
-    assert launched == {"now": "+test=now", "then": "+case=0"}

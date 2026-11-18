@@ -23,7 +23,7 @@ class BuildMetadata:
 def _baked_revision() -> str:
     """Read the legacy wheel-build revision stamp when available."""
     try:
-        from booley._build_commit import COMMIT
+        from booley._build_commit import COMMIT  # pyright: ignore[reportMissingImports]
     except (ImportError, AttributeError):
         return ""
     return COMMIT

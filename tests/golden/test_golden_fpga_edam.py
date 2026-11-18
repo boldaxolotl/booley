@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from booley.flows.edam import EdamFile
 from booley.flows.fpga.backends.vivado.edam import build_fpga_edam
 from booley.flows.fpga.profiles import VIVADO_PROFILES
 from booley.flows.run_evidence import FlowSourceEvidence
@@ -40,8 +41,11 @@ def _build(extra_eda_tool_options: dict | None = None) -> str:
         part="xc7a100tcsg324-1",
         top="dut_top",
         xdc_files=(_WS / "constraints" / "board.xdc",),
-        sv_files=(_WS / "rtl" / "pkg.sv", _WS / "rtl" / "dut.sv"),
-        v_files=(_WS / "rtl" / "legacy_blk.v",),
+        sources=(
+            EdamFile(_WS / "rtl" / "pkg.sv", "systemVerilogSource"),
+            EdamFile(_WS / "rtl" / "dut.sv", "systemVerilogSource"),
+            EdamFile(_WS / "rtl" / "legacy_blk.v", "verilogSource"),
+        ),
         include_dirs=(_WS / "rtl" / "include",),
         defines=("SYNTHESIS", "WIDTH=8"),
         vlogparams={"DEPTH": 16},

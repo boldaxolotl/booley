@@ -17,7 +17,7 @@ NAMED_HOTSPOTS = (
     "booley.flows.synth.flow",
     "booley.mcp.server",
     "booley.flows.fpga.flow",
-    "booley.specialists.mutation_tester",
+    "booley.flows.mutation.flow",
     "booley.specialists.coverage_analyst",
 )
 

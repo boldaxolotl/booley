@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,7 +30,9 @@ from booley.flows.synth.backends import configure as run_yosys_syn
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.timing import StaTimingConfig
+from booley.flows.target_parameters import ParameterValue
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 def _spec(
@@ -79,26 +82,55 @@ def _build_dir(tmp_path: Path) -> Path:
     return tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "s" / "synth"
 
 
+def _sv2v_line(plan: syn_make.SynthPlan) -> str:
+    """The Makefile's sv2v command, without its log redirection."""
+    makefile = (plan.build_dir / "Makefile").read_text(encoding="utf-8")
+    line = next(l for l in makefile.splitlines() if l.lstrip("\t").startswith("sv2v "))
+    return line.lstrip("\t").split(" > ")[0]
+
+
+_SLANG_OPTIONS = ("--single-unit", "--allow-use-before-declare")
+
+
+def _synth_ys(plan: syn_make.SynthPlan) -> str:
+    return (plan.build_dir / "synth.ys").read_text(encoding="utf-8")
+
+
 # ===========================================================================
 # Configure half — rendering
 # ===========================================================================
 
 
 class TestConfigureSynthesis:
-    def test_slang_options_reach_rendered_synth_ys(self, tmp_path: Path):
-        """spec.slang_options land on the read_slang line of synth.ys.
+    def test_declared_string_receiver_and_numeric_arguments_stay_distinct(self, tmp_path: Path):
+        """Declared strings travel escaped; numeric values stay plain; slang options pass through.
 
-        Regression (ravenoc halt #2b tail): the knob was dropped by the
-        configure path (resolve_spec -> SynthSpec -> _write_yosys_script), so
-        the rendered script silently lacked --single-unit.
+        Regression (ravenoc halt #2b tail): the slang_options knob was dropped
+        on the configure path, so the rendered script lacked --single-unit.
         """
-        plan = syn_make.configure_synthesis(
-            _spec(tmp_path, frontend="slang", slang_options=("--single-unit",)),
-            _build_dir(tmp_path),
+        params = {
+            "NAME": ParameterValue("str", 'a" b\\c; d'),
+            "N": "12",
+            "B": "1",
+            "R": "1.25",
+        }
+        slang = dataclasses.replace(
+            _spec(tmp_path, frontend="slang", slang_options=_SLANG_OPTIONS), params=params
         )
-        script = (plan.build_dir / "synth.ys").read_text(encoding="utf-8")
-        read_line = next(l for l in script.splitlines() if l.startswith("read_slang"))
-        assert "--single-unit" in read_line
+        slang_ys = _synth_ys(syn_make.configure_synthesis(slang, _build_dir(tmp_path)))
+        read_line = next(l for l in slang_ys.splitlines() if l.startswith("read_slang"))
+        # Pin the escaped form: a readable literal would let "; " split the script.
+        assert read_line == (
+            "read_slang --top dut -I ../../../../../../rtl/include -D SYNTHESIS"
+            ' -G NAME="\\141\\042\\040\\142\\134\\143\\073\\040\\144"'
+            " -G N=12 -G B=1 -G R=1.25 --single-unit --allow-use-before-declare"
+            " ../../../../../../rtl/dut.sv"
+        )
+        sv2v = dataclasses.replace(_spec(tmp_path), params=params)
+        sv2v_ys = _synth_ys(syn_make.configure_synthesis(sv2v, _build_dir(tmp_path)))
+        assert "-set N 12 -set B 1 -set R 1.25" in sv2v_ys
+        # The string travels as its UTF-8 bytes in one sized hex literal.
+        assert "-set NAME 72'h612220625c633b2064" in sv2v_ys
 
     def test_renders_scripts_and_makefile(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
@@ -120,6 +152,14 @@ class TestConfigureSynthesis:
         script = (plan.build_dir / "synth.ys").read_text(encoding="utf-8")
         assert "synth -top dut -noabc -flatten" in script
         assert script.count("abc -liberty") == 1
+
+    def test_premap_check_follows_synth_and_precedes_mapping(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+        lines = (plan.build_dir / "synth.ys").read_text(encoding="utf-8").splitlines()
+
+        synth_index = next(i for i, line in enumerate(lines) if line.startswith("synth -top"))
+        assert lines[synth_index + 1] == "tee -q -o ./premap_check_dut.txt check"
+        assert lines[synth_index + 2].startswith("dfflibmap -liberty")
 
     def test_final_mapped_netlist_gets_a_dedicated_structural_check(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
@@ -219,13 +259,19 @@ class TestConfigureSynthesis:
         build_dir = work / ".booley" / ".runtime" / "edalize" / "synth" / "t" / "synth"
         build_dir.mkdir(parents=True)
 
-        rel = syn_make._rel(source, build_dir)
+        spec = dataclasses.replace(_spec(tmp_path, mode="logical"), sources=(source,))
+        plan = syn_make.configure_synthesis(spec, build_dir)
+        tokens = _sv2v_line(plan).split()
+        rel = tokens[tokens.index("-w") - 1]
         # The kernel resolves the result from the physical build dir, as make -C does.
         assert (build_dir.resolve() / rel).resolve() == source.resolve()
-        # Without a crossed link the lexical spelling is kept unchanged.
-        plain = tmp_path / "plain" / "build"
-        plain.mkdir(parents=True)
-        assert syn_make._rel(source, plain) == os.path.relpath(source, plain).replace("\\", "/")
+
+    def test_sv2v_recipe_carries_includes_defines_sources_and_output(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+        assert _sv2v_line(plan) == (
+            "sv2v -I../../../../../../rtl/include -DSYNTHESIS"
+            " ../../../../../../rtl/dut.sv -w sv2v_converted.v"
+        )
 
     def test_logical_mode_skips_physical_timing_stage(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
@@ -267,6 +313,28 @@ class TestConfigureSynthesis:
         assert "stage=openroad" in result.stdout
         assert "subject=openroad" in result.stdout
 
+    @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires a POSIX shell")
+    def test_openroad_thread_assignment_reaches_the_openroad_argv(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+
+        def openroad_argv(*assignment: str) -> list[str]:
+            result = subprocess.run(
+                ["make", "-n", "-C", str(plan.build_dir), "openroad", *assignment],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            (line,) = (
+                line
+                for line in result.stdout.splitlines()
+                if line.lstrip().startswith("openroad ")
+            )
+            return shlex.split(line.split(">", 1)[0])
+
+        threaded = openroad_argv(syn_make.openroad_thread_assignment(3))
+        assert threaded == ["openroad", "-threads", "3", "-no_init", "-exit", "run_openroad.tcl"]
+        assert openroad_argv() == ["openroad", "-no_init", "-exit", "run_openroad.tcl"]
+
     def test_slang_frontend_skips_sv2v_stage(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(
             _spec(tmp_path, frontend="slang"), _build_dir(tmp_path)
@@ -276,7 +344,10 @@ class TestConfigureSynthesis:
         assert "BOOLEY_STAGE: sv2v" not in makefile
         assert "sv2v.log" not in makefile
         assert "yosys:\n" in makefile  # no sv2v prerequisite
-        assert "read_slang" in script
+        assert (
+            "read_slang --top dut -I ../../../../../../rtl/include -D SYNTHESIS -G WIDTH=8"
+            " ../../../../../../rtl/dut.sv"
+        ) in script.splitlines()
         assert "sv2v_converted" not in script
 
     def test_sv2v_frontend_reads_converted_file(self, tmp_path: Path):
@@ -381,6 +452,9 @@ class TestBoundaryOutput:
             "Warning: found logic loop in module dut:\n    wire \\feedback\n",
             encoding="utf-8",
         )
+        (plan.build_dir / "premap_check_dut.txt").write_text(
+            "Found and reported 0 problems.\n", encoding="utf-8"
+        )
         (plan.build_dir / "check_dut.txt").write_text(
             "Warning: multiple conflicting drivers for dut.sig:\n"
             "    port Q[0] of cell $procdff$1 ($dff)\n"
@@ -406,15 +480,22 @@ class TestBoundaryOutput:
             if group.category == "combinational_loop"
         )
         assert "\\feedback" in loop.message
-        assert "completed final netlist check" in loop.rationale
-        assert "--- check_dut.txt ---" in outcome.text
+        assert "completed post-optimisation check" in loop.rationale
+        # Both checks reach run.log, the pre-mapping one first.
+        assert outcome.text.index("--- premap_check_dut.txt ---") < outcome.text.index(
+            "--- check_dut.txt ---"
+        )
 
-    def test_stale_final_check_is_not_complete(self, tmp_path: Path):
+    @pytest.mark.parametrize("stale_name", ["premap_check_dut.txt", "check_dut.txt"])
+    def test_stale_structural_check_is_not_complete(self, tmp_path: Path, stale_name: str):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-        check = plan.build_dir / "check_dut.txt"
-        check.write_text("Found and reported 0 problems.\n", encoding="utf-8")
+        for name in ("premap_check_dut.txt", "check_dut.txt"):
+            (plan.build_dir / name).write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
+        stale = plan.build_dir / stale_name
 
-        outcome = syn_make.boundary_output(plan, 0, is_stale=lambda path: path == check)
+        outcome = syn_make.boundary_output(plan, 0, is_stale=lambda path: path == stale)
 
         assert outcome.diagnostics.structural.complete is False
 
@@ -504,47 +585,34 @@ class TestBoundaryOutput:
         assert outcome.forced_failure is not None
         assert "despite exit 0" in outcome.text
 
-    def test_effective_parameter_mismatch_forces_failure(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("literal", "forced", "fragments"),
+        [
+            pytest.param(
+                "1'0",
+                True,
+                ("effective top-level parameter mismatch", "paramtype: vlogparam"),
+                id="mismatch",
+            ),
+            pytest.param("1'1", False, ("effective_params_dut.il",), id="macro-driven"),
+            pytest.param("32'00000000000000000000000000000001", False, (), id="padded-nonzero"),
+        ],
+    )
+    def test_effective_parameter_artifact(
+        self, tmp_path: Path, literal: str, forced: bool, fragments: tuple[str, ...]
+    ):
         spec = dataclasses.replace(_spec(tmp_path), defines=("ENABLE_ZBB=1",))
         plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
         artifact = plan.build_dir / syn_core.effective_params_filename("dut")
         artifact.write_text(
-            "module \\dut\n  parameter \\ENABLE_ZBB 1'0\nend\n",
-            encoding="utf-8",
+            f"module \\dut\n  parameter \\ENABLE_ZBB {literal}\nend\n", encoding="utf-8"
         )
 
         outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
 
-        assert outcome.forced_failure is not None
-        assert "effective top-level parameter mismatch" in outcome.text
-        assert "paramtype: vlogparam" in outcome.text
-
-    def test_macro_driven_enabled_parameter_passes(self, tmp_path: Path):
-        spec = dataclasses.replace(_spec(tmp_path), defines=("ENABLE_ZBB=1",))
-        plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
-        artifact = plan.build_dir / syn_core.effective_params_filename("dut")
-        artifact.write_text(
-            "module \\dut\n  parameter \\ENABLE_ZBB 1'1\nend\n",
-            encoding="utf-8",
-        )
-
-        outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
-
-        assert outcome.forced_failure is None
-        assert "effective_params_dut.il" in outcome.text
-
-    def test_padded_nonzero_effective_parameter_passes(self, tmp_path: Path):
-        spec = dataclasses.replace(_spec(tmp_path), defines=("ENABLE_ZBB=1",))
-        plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
-        artifact = plan.build_dir / syn_core.effective_params_filename("dut")
-        artifact.write_text(
-            "module \\dut\n  parameter \\ENABLE_ZBB 32'00000000000000000000000000000001\nend\n",
-            encoding="utf-8",
-        )
-
-        outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
-
-        assert outcome.forced_failure is None
+        assert (outcome.forced_failure is not None) is forced
+        for fragment in fragments:
+            assert fragment in outcome.text
 
     def test_provenance_hint_on_failure(self, tmp_path: Path):
         spec = _spec(tmp_path)
@@ -643,48 +711,13 @@ class TestResolveSpec:
         assert args.top == "top"
 
 
-class TestSv2vRecipeSharesTheArgvBuilder:
-    """The make recipe must not hand-roll a second sv2v command line (F-31).
-
-    ``elaborate`` now runs the same transpile; two hand-rolled argvs is exactly
-    how an include path or a define quietly stops reaching one of them.
-    """
-
-    def test_recipe_matches_syn_core_sv2v_argv(self, tmp_path: Path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        spec = _spec(tmp_path)
-        build_dir = tmp_path / "build"
-        recipe = syn_make._sv2v_recipe(spec, build_dir)
-        expected = syn_core.sv2v_argv(
-            [Path(syn_make._rel(f, build_dir)) for f in spec.sources],
-            [Path(syn_make._rel(d, build_dir)) for d in spec.inc_dirs],
-            list(spec.defines),
-            syn_core.SV2V_OUTPUT_NAME,
-        )
-        assert recipe.split() == expected
-        # And it still carries the pieces the transpile actually needs.
-        assert "-DSYNTHESIS" in recipe
-        assert recipe.endswith("-w sv2v_converted.v")
-
-
-@pytest.mark.parametrize("empty", ["yosys.log", "stat_dut.txt", "check_dut.txt", "synth_dut.v"])
-def test_authenticated_empty_required_yosys_output_is_missing(tmp_path, empty):
-    plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-    for name in ["yosys.log", "stat_dut.txt", "check_dut.txt", "synth_dut.v", "sv2v_converted.v"]:
-        (plan.build_dir / name).write_text("Found and reported 0 problems.\n")
-    (plan.build_dir / empty).write_text("")
-    outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
-    assert f"kind=missing_output stage=yosys subject={empty}" in outcome.text
-    assert not outcome.yosys_complete
-
-
 @pytest.mark.parametrize(
     "subject,stage",
     [
         ("sv2v_converted.v", "sv2v"),
         ("yosys.log", "yosys"),
         ("stat_dut.txt", "yosys"),
+        ("premap_check_dut.txt", "yosys"),
         ("check_dut.txt", "yosys"),
         ("synth_dut.v", "yosys"),
         ("reports/timing/overall.rpt", "openroad"),
@@ -699,6 +732,7 @@ def test_all_authenticated_required_artifacts(tmp_path, subject, stage, state):
         "sv2v_converted.v",
         "yosys.log",
         "stat_dut.txt",
+        "premap_check_dut.txt",
         "check_dut.txt",
         "synth_dut.v",
         "reports/timing/overall.rpt",
@@ -722,15 +756,11 @@ def test_all_authenticated_required_artifacts(tmp_path, subject, stage, state):
     assert outcome.yosys_complete is (stage != "yosys")
 
 
-@pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
-@pytest.mark.parametrize("failing_stage", ["yosys", "openroad"])
-def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
-    tmp_path, monkeypatch, failing_stage
-):
-    from booley.flows.base import SubprocessResult
-    from booley.flows.synth.flow import AsicSynthesizeFlow
-    from booley.flows.synth.implementation_report import _run
+def _run_fake_make(tmp_path: Path, monkeypatch, spec, scripts: dict[str, str]):
+    """Render *spec* with a stub PDK, then run its Makefile over fake EDA tools.
 
+    Returns ``(plan, make result, dispatch time)``.
+    """
     liberty = tmp_path / "cells.lib"
     liberty.write_text("library(cells) {}")
     monkeypatch.setattr(
@@ -738,37 +768,33 @@ def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
         "openroad_pdk_paths",
         lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
     )
-    spec = dataclasses.replace(
-        _spec(tmp_path, mode="physical" if failing_stage == "openroad" else "logical"),
-        liberty=liberty,
-        params={},
+    plan = syn_make.configure_synthesis(
+        dataclasses.replace(spec, liberty=liberty), _build_dir(tmp_path)
     )
-    plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    scripts = {
-        "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
-        "yosys": "#!/bin/sh\nexit 0\n"
-        if failing_stage == "yosys"
-        else '#!/bin/sh\necho "Chip area for module dut: 1000.0" > stat_dut.txt\ncat stat_dut.txt\necho "Found and reported 0 problems." > check_dut.txt\necho "module dut; endmodule" > synth_dut.v\n',
-        "openroad": "#!/bin/sh\nexit 0\n",
-    }
     for name, script in scripts.items():
         path = fake_bin / name
         path.write_text(script)
         path.chmod(0o755)
     started = time.time()
-    result = subprocess.run(
+    result = run_bounded_child(
         ["make", "-C", str(plan.build_dir)],
         env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=5,
     )
-    assert f"kind=missing_output stage={failing_stage}" in result.stdout
+    return plan, result, started
+
+
+def _interpret(tmp_path: Path, plan, result, started: float):
+    """The Flow's metrics for a finished fake make run."""
+    from booley.flows.base import SubprocessResult
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+
     flow = AsicSynthesizeFlow()
     flow.parse_args(["--target", "dut", "--work-dir", str(tmp_path)])
+    # Private seam: the Flow interprets a boundary run only inside _run_configured, after
+    # _run_synth_make launches the Makefile through the Sandbox; no public entry point
+    # accepts a finished make result.
     metrics, _ = flow._interpret_boundary_run(
         "dut",
         plan,
@@ -780,12 +806,32 @@ def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
         ),
         0.1,
     )
+    return metrics
+
+
+@pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
+@pytest.mark.parametrize("failing_stage", ["yosys", "openroad"])
+def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
+    tmp_path, monkeypatch, failing_stage
+):
+    spec = dataclasses.replace(
+        _spec(tmp_path, mode="physical" if failing_stage == "openroad" else "logical"), params={}
+    )
+    scripts = {
+        "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
+        "yosys": "#!/bin/sh\nexit 0\n"
+        if failing_stage == "yosys"
+        else '#!/bin/sh\necho "Chip area for module dut: 1000.0" > stat_dut.txt\ncat stat_dut.txt\necho "Found and reported 0 problems." > premap_check_dut.txt\necho "Found and reported 0 problems." > check_dut.txt\necho "module dut; endmodule" > synth_dut.v\n',
+        "openroad": "#!/bin/sh\nexit 0\n",
+    }
+    plan, result, started = _run_fake_make(tmp_path, monkeypatch, spec, scripts)
+    assert f"kind=missing_output stage={failing_stage}" in result.stdout
+    metrics = _interpret(tmp_path, plan, result, started)
     assert metrics.returncode == 2
     assert failing_stage in metrics.infra_error
-    flags = _run(metrics, fatal_timing=True).completion
-    assert flags["yosys"] is (failing_stage == "openroad")
-    assert flags["timing"] is False
-    assert flags["ppa"] is False
+    assert metrics.yosys_complete is (failing_stage == "openroad")
+    assert metrics.timing_complete is False
+    assert metrics.ppa_complete is False
 
 
 @pytest.mark.parametrize("stage", ["sv2v", "yosys", "openroad"])
@@ -816,68 +862,24 @@ def test_openroad_generic_master_diagnostic_is_fresh_stage_owned(tmp_path, stale
 @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
 @pytest.mark.parametrize("frontend", ["sv2v", "slang"])
 def test_generated_fake_generic_master_latch_design_failure(tmp_path, monkeypatch, frontend):
-    from booley.flows.base import SubprocessResult
-    from booley.flows.synth.flow import AsicSynthesizeFlow
-    from booley.flows.synth.implementation_report import _run
-
-    liberty = tmp_path / "cells.lib"
-    liberty.write_text("library(cells) {}")
-    monkeypatch.setattr(
-        syn_make.openroad_timing,
-        "openroad_pdk_paths",
-        lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
-    )
-    spec = dataclasses.replace(_spec(tmp_path, frontend=frontend), liberty=liberty, params={})
-    plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
-    fake_bin = _fake_generic_master_bin(tmp_path)
-    started = time.time()
-    result = subprocess.run(
-        ["make", "-C", str(plan.build_dir)],
-        env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=5,
-    )
+    scripts = {
+        "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
+        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > premap_check_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
+        "openroad": "#!/bin/sh\necho '[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found.'\nexit 1\n",
+    }
+    spec = dataclasses.replace(_spec(tmp_path, frontend=frontend), params={})
+    plan, result, started = _run_fake_make(tmp_path, monkeypatch, spec, scripts)
     assert "ORD-2013" in result.stdout
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(["--target", "dut", "--work-dir", str(tmp_path)])
-    metrics, _ = flow._interpret_boundary_run(
-        "dut",
-        plan,
-        SubprocessResult(
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            dispatched_unix=started,
-        ),
-        0.1,
-    )
-    run = _run(metrics, fatal_timing=True)
+    metrics = _interpret(tmp_path, plan, result, started)
     assert metrics.returncode == 1
     assert metrics.termination == "design_failure"
     assert metrics.infra_error == ""
     assert metrics.latches == metrics.unexpected_latches == 8
-    assert "$_DLATCH_P_" in run.diagnostic_excerpt
-    assert "actual=8, expected=0, excess=8" in run.diagnostic_excerpt
-    assert run.completion["yosys"] is True
-    assert run.completion["timing"] is False
-    assert run.completion["ppa"] is False
-
-
-def _fake_generic_master_bin(tmp_path):
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    scripts = {
-        "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
-        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
-        "openroad": "#!/bin/sh\necho '[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found.'\nexit 1\n",
-    }
-    for name, script in scripts.items():
-        executable = fake_bin / name
-        executable.write_text(script)
-        executable.chmod(0o755)
-    return fake_bin
+    assert "$_DLATCH_P_" in metrics.failure_output
+    assert "actual=8, expected=0, excess=8" in metrics.failure_output
+    assert metrics.yosys_complete is True
+    assert metrics.timing_complete is False
+    assert metrics.ppa_complete is False
 
 
 @pytest.mark.parametrize(
@@ -974,41 +976,19 @@ def test_1095_preflight_without_log_keeps_tool_owner(tmp_path, tool):
 @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
 @pytest.mark.parametrize("tool", ["sv2v", "yosys", "openroad"])
 def test_1095_generated_make_usage_failure(tmp_path, monkeypatch, tool):
-    liberty = tmp_path / "cells.lib"
-    liberty.write_text("library(cells) {}\n")
-    monkeypatch.setattr(
-        syn_make.openroad_timing,
-        "openroad_pdk_paths",
-        lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
-    )
     mode = "physical" if tool == "openroad" else "logical"
-    spec = dataclasses.replace(_spec(tmp_path, mode=mode), liberty=liberty)
-    plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
+    scripts = {}
     for name, script in {
         "sv2v": "echo 'module dut; endmodule' > sv2v_converted.v",
-        "yosys": "echo 'Number of cells: 2' > stat_dut.txt; echo 'Found and reported 0 problems.' > check_dut.txt; echo 'module dut; endmodule' > synth_dut.v",
+        "yosys": "echo 'Number of cells: 2' > stat_dut.txt; echo 'Found and reported 0 problems.' > premap_check_dut.txt; echo 'Found and reported 0 problems.' > check_dut.txt; echo 'module dut; endmodule' > synth_dut.v",
         "openroad": "exit 0",
     }.items():
-        shim = fake_bin / name
-        shim.write_text(
-            "#!/bin/sh\n"
-            + (
-                f"echo '{name}: unrecognized option --bogus' >&2\nexit 1\n"
-                if name == tool
-                else script + "\n"
-            )
+        scripts[name] = "#!/bin/sh\n" + (
+            f"echo '{name}: unrecognized option --bogus' >&2\nexit 1\n"
+            if name == tool
+            else script + "\n"
         )
-        shim.chmod(0o755)
-    proc = subprocess.run(
-        ["make", "-C", str(plan.build_dir)],
-        env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
+    plan, proc, _ = _run_fake_make(tmp_path, monkeypatch, _spec(tmp_path, mode=mode), scripts)
     assert proc.returncode == 2
     outcome = syn_make.boundary_output(plan, proc.returncode, is_stale=_fresh, stdout=proc.stdout)
     assert outcome.stage == tool
@@ -1022,6 +1002,7 @@ def test_1095_false_pass_uses_offending_frontend_log(tmp_path, mode):
     plan = dataclasses.replace(plan, attempt_token="a" * 32)
     for name in (
         "stat_dut.txt",
+        "premap_check_dut.txt",
         "check_dut.txt",
         "synth_dut.v",
         syn_core.SV2V_OUTPUT_NAME,
@@ -1043,8 +1024,6 @@ def test_1095_false_pass_uses_offending_frontend_log(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", ["logical", "physical"])
 def test_structural_script_keeps_complete_frontend_assignment_commands(tmp_path, mode):
-    from booley.flows.target_parameters import ParameterValue
-
     spec = dataclasses.replace(
         _spec(tmp_path, mode=mode), params={"NAME": ParameterValue("str", "a; b"), "WIDTH": "8"}
     )
@@ -1053,3 +1032,65 @@ def test_structural_script_keeps_complete_frontend_assignment_commands(tmp_path,
     script = (build / "synth.ys").read_text()
     # The declared string travels byte-escaped, so the "; " split keeps the command whole.
     assert "-set NAME 32'h613b2062 -set WIDTH 8" in script
+
+
+# Real Yosys 0.70+ (28ba3cb92) ``yosys.log`` text from the bundled Sandbox
+# Image, captured through Booley's own generated script. In 0.70 the slang
+# frontend's diagnostics are Yosys log lines (``file:line: ERROR: ...``) and the
+# column is gone.
+_FIXTURES = Path(__file__).parents[1] / "fixtures"
+
+
+def _reorder_generic_banner_first(log: str) -> str:
+    """Move the generic elaboration banner above the located error line."""
+    lines = log.splitlines()
+    banner = next(line for line in lines if line.startswith("ERROR: Design elaboration failed"))
+    located = next(line for line in lines if line.startswith("bad.sv:2: ERROR:"))
+    lines.remove(banner)
+    lines.insert(lines.index(located), banner)
+    return "\n".join(lines) + "\n"
+
+
+def _yosys_failure(
+    tmp_path: Path, frontend: str, log: str, converted: str | None = None
+) -> syn_make.BoundaryOutcome:
+    """The boundary outcome of a failed Yosys stage whose fresh log is *log*."""
+    plan = syn_make.configure_synthesis(
+        _spec(tmp_path, mode="logical", frontend=frontend), _build_dir(tmp_path)
+    )
+    (plan.build_dir / "yosys.log").write_text(log)
+    if converted is not None:
+        (plan.build_dir / "sv2v_converted.v").write_text(converted)
+    return syn_make.boundary_output(plan, 2, is_stale=_fresh, stdout="BOOLEY_STAGE: yosys\n")
+
+
+@pytest.mark.parametrize("banner_first", [False, True])
+def test_yosys_0_70_slang_error_is_a_design_diagnostic(tmp_path: Path, banner_first: bool) -> None:
+    from booley.flows.eda_failures import first_tool_diagnostic
+
+    log = (_FIXTURES / "slang_error_yosys_0_70.txt").read_text()
+    if banner_first:
+        # A ``2>&1`` file does not fix stdout/stderr order.
+        log = _reorder_generic_banner_first(log)
+
+    outcome = _yosys_failure(tmp_path, "slang", log)
+
+    # The design-failure path scans every line, so order cannot hide the located one.
+    assert outcome.design_diagnostic == "bad.sv:2: ERROR: expected ';'"
+    if not banner_first:
+        # The generic fallback reports the first error line: the located one in
+        # the real capture's order.
+        assert first_tool_diagnostic(log) == "bad.sv:2: ERROR: expected ';'"
+
+
+def test_yosys_0_70_verilog_error_is_a_design_diagnostic(tmp_path: Path) -> None:
+    log = (_FIXTURES / "verilog_error_yosys_0_70.txt").read_text()
+    converted = "// converted\nwire x;\nmodule dut(input clk);\n  wire bad = ;\nendmodule\n"
+
+    outcome = _yosys_failure(tmp_path, "sv2v", log, converted)
+
+    assert outcome.design_diagnostic is not None
+    assert outcome.design_diagnostic.endswith(
+        "sv2v_converted.v:3: ERROR: syntax error, unexpected TOK_ASSIGN"
+    )
+    assert "Offending module 'dut' is declared in:" in outcome.text

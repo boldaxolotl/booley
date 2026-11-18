@@ -3,28 +3,30 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.base import SubprocessResult
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim import trace_overlay as trace_overlay_module
-from booley.flows.sim.campaign.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
-)
-from booley.flows.sim.campaign.flow_planning import (
-    plan_coarse_simulation_campaign,
-    plan_ordinary_hdl_campaign,
-)
-from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.execution.contract import NamedTests
 from booley.flows.sim.execution.engine import PreparedOrdinaryGroup
+from booley.flows.sim.record.coordinator import (
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
+)
+from booley.flows.sim.record.flow_planning import (
+    plan_coarse_simulation_record,
+    plan_ordinary_hdl_simulation_record,
+)
+from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.trace_overlay import (
-    _target_includes_dump_module,
     packaged_vcd_dump_source,
     trace_overlay_vlnv,
     write_trace_overlay,
@@ -33,10 +35,10 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
-    _enumerate_all,
-    _resolve_target,
     discover_cores,
     read_core,
+    resolve_target_handle,
+    setup_command_for_handle,
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import UnknownTargetError
@@ -45,9 +47,20 @@ from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.fusesoc_test_support import write_core as _write_core
 
 
-def enumerate_targets(project_root: Path | str):
-    """Return adapter-discovered Targets for overlay-discovery assertions."""
-    return {name: refs[0] for name, refs in _enumerate_all(project_root).items()}
+def _target_names(project_root: Path) -> set[str]:
+    return {handle.name for handle in TargetCatalog.build(project_root).list()}
+
+
+def _stealth_booley_dir(directory: Path, *, isolated: bool = False) -> Path:
+    """Create a stealth Booley Directory and return its ``cores/`` directory."""
+    cores = directory / "cores"
+    cores.mkdir(parents=True, exist_ok=True)
+    toggle = "ignore_native_cores = true\n" if isolated else ""
+    (directory / "booley.toml").write_text(
+        f"[stealth]\nenabled = true\n{toggle}", encoding="utf-8"
+    )
+    (directory / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    return cores
 
 
 class _PlanningDisclosureAuthenticatedError(RuntimeError):
@@ -56,13 +69,7 @@ class _PlanningDisclosureAuthenticatedError(RuntimeError):
 
 def _isolated_icarus_target(tmp_path: Path, core_text: str, *, cocotb: bool):
     project = tmp_path / "project"
-    cores = project / ".booley" / "cores"
-    cores.mkdir(parents=True)
-    (project / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    (project / ".booley" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    cores = _stealth_booley_dir(project / ".booley", isolated=True)
     (project / "rtl").mkdir()
     (project / "tb").mkdir()
     (project / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
@@ -80,7 +87,17 @@ def _isolated_icarus_target(tmp_path: Path, core_text: str, *, cocotb: bool):
     return TargetCatalog.build(project).select("sim")
 
 
-def _trace_campaign_plan(handle, execution: SimulationExecution, *, cocotb: bool):
+def _run_locally(
+    command: list[str], *, timeout: float | None = None, cwd: Path | None = None
+) -> SubprocessResult:
+    """Run planning's FuseSoC setup for real; nothing here builds or launches."""
+    done = subprocess.run(
+        command, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
+    )
+    return SubprocessResult(returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
+
+
+def _trace_simulation_record_plan(handle, execution: SimulationExecution, *, cocotb: bool):
     names = ("smoke",)
     catalog = TargetCatalog.build(handle.project_root)
     inspection = catalog.inspect(handle)
@@ -99,8 +116,8 @@ def _trace_campaign_plan(handle, execution: SimulationExecution, *, cocotb: bool
         "required_suite_catalog_backed": False,
     }
     if cocotb:
-        return plan_coarse_simulation_campaign(**common, selected_tests=names, kind="cocotb_batch")
-    return plan_ordinary_hdl_campaign(**common, groups=(names,))
+        return plan_coarse_simulation_record(**common, selected_tests=names, kind="cocotb_batch")
+    return plan_ordinary_hdl_simulation_record(**common, groups=(names,))
 
 
 def _stop_after_planning_authentication(_group: PreparedOrdinaryGroup):
@@ -108,7 +125,7 @@ def _stop_after_planning_authentication(_group: PreparedOrdinaryGroup):
 
 
 def _admission() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
+    return AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +188,7 @@ class TestWriteTraceOverlay:
 
     def test_overlay_is_skipped_by_discovery(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
+        before = _target_names(tmp_path)
         overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             # The overlay .core exists on disk beside the base...
@@ -179,7 +197,7 @@ class TestWriteTraceOverlay:
             # selectable Target list (no `sim` collision, no overlay Target).
             found = discover_cores(tmp_path)
             assert overlay.core_file not in found
-            assert set(enumerate_targets(tmp_path)) == {"sim"}
+            assert _target_names(tmp_path) == before == {"sim"}
         finally:
             overlay.cleanup()
 
@@ -238,26 +256,6 @@ class TestWriteTraceOverlay:
         [
             ("--trace-fst, --trace-vcd", "both native FST and VCD"),
             ("--trace-saif", "SAIF tracing is not supported"),
-        ],
-    )
-    def test_rejects_unsupported_authored_trace_recipe(
-        self,
-        tmp_path: Path,
-        options: str,
-        message: str,
-    ):
-        core = _CORE_TEXT.replace(
-            "    flow_options:\n      tool: verilator\n",
-            f"    flow_options:\n      tool: verilator\n      verilator_options: [{options}]\n",
-        )
-        _write_core(tmp_path / "ip", core)
-
-        with pytest.raises(FuseSocError, match=message):
-            write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
-
-    @pytest.mark.parametrize(
-        ("options", "message"),
-        [
             (
                 "-CFLAGS, -DVM_TRACE_FMT_FST",
                 "VM_TRACE_FMT_FST.*requires --trace-fst",
@@ -276,7 +274,7 @@ class TestWriteTraceOverlay:
             ),
         ],
     )
-    def test_rejects_incoherent_trace_format_cflags(
+    def test_rejects_unsupported_authored_trace_recipe(
         self,
         tmp_path: Path,
         options: str,
@@ -418,30 +416,12 @@ class TestWriteTraceOverlay:
         tmp_path: Path,
     ):
         pytest.importorskip("fusesoc")
-        project = tmp_path / "project"
-        cores = project / ".booley" / "cores"
-        cores.mkdir(parents=True)
-        (project / ".booley" / "booley.toml").write_text(
-            "[stealth]\nenabled = true\nignore_native_cores = true\n",
-            encoding="utf-8",
-        )
-        (project / ".booley" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        (project / "rtl").mkdir()
-        (project / "tb").mkdir()
-        (project / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        (project / "tb" / "tb_dut.sv").write_text(
-            "module tb_dut; dut dut(); endmodule\n",
-            encoding="utf-8",
-        )
-        core = self._ICARUS_CORE_NO_DUMP
-        _write_core(cores, core, create_sources=False)
-        overlay = write_trace_overlay(TargetCatalog.build(project).select("sim"))
+        handle = _isolated_icarus_target(tmp_path, self._ICARUS_CORE, cocotb=False)
+        project = handle.project_root
+        overlay = write_trace_overlay(handle)
         try:
-            resolved = _resolve_target(
-                "sim",
-                project_root=project,
-                build_root=project / "build",
-                vlnv=overlay.vlnv,
+            resolved = resolve_target_handle(
+                handle, build_root=project / "build", resolution_vlnv=overlay.vlnv
             )
         finally:
             overlay.cleanup()
@@ -453,10 +433,12 @@ class TestWriteTraceOverlay:
         ]
         assert len(dumps) == 1
         assert dumps[0].is_file()
-        assert not (cores / f"booley_vcd_dump{TRACE_OVERLAY_MARKER}.sv").exists()
+        assert not (
+            project / ".booley" / "cores" / f"booley_vcd_dump{TRACE_OVERLAY_MARKER}.sv"
+        ).exists()
 
     @pytest.mark.parametrize("cocotb", [False, True], ids=["ordinary", "cocotb"])
-    def test_native_core_isolation_discloses_packaged_dump_source_for_campaign(
+    def test_native_core_isolation_discloses_packaged_dump_source_for_simulation_record(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -464,10 +446,8 @@ class TestWriteTraceOverlay:
     ) -> None:
         pytest.importorskip("fusesoc")
         handle = _isolated_icarus_target(tmp_path, self._ICARUS_CORE, cocotb=cocotb)
-        execution = SimulationExecution(
-            invoke=lambda *_args, **_kwargs: None, options=SimulationOptions(trace=True)
-        )
-        plan = _trace_campaign_plan(handle, execution, cocotb=cocotb)
+        execution = SimulationExecution(invoke=_run_locally, options=SimulationOptions(trace=True))
+        plan = _trace_simulation_record_plan(handle, execution, cocotb=cocotb)
         disclosure = plan.manifest.document["planning_disclosures"][0]
 
         raw = packaged_vcd_dump_source().read_bytes()
@@ -489,41 +469,34 @@ class TestWriteTraceOverlay:
         executor = OrdinaryHdlSerialExecutor(
             invoke=lambda *_args, **_kwargs: None,
             execution_factory=lambda options: SimulationExecution(
-                invoke=lambda *_args, **_kwargs: None, options=options
+                invoke=_run_locally, options=options
             ),
         )
         invocation = tmp_path / "reports" / "000001"
         invocation.mkdir(parents=True)
 
         with pytest.raises(_PlanningDisclosureAuthenticatedError):
-            SimulationCampaign(executor).run(
-                NewCampaignRunRequest(
+            SimulationRecord(executor).run(
+                NewSimulationRecordRunRequest(
                     plan,
                     handle.project_root,
                     invocation.parent,
-                    CampaignPolicy(),
+                    SimulationRecordPolicy(),
                     invocation,
                     _admission(),
                 )
             )
 
     def test_projected_icarus_overlay_rebases_injected_dump(self, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        (booley_dir / "cores").mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        core = self._ICARUS_CORE_NO_DUMP
-        _write_core(booley_dir / "cores", core, create_sources=False)
-        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
+        cores = _stealth_booley_dir(tmp_path / ".booley")
+        _write_core(cores, self._ICARUS_CORE_NO_DUMP, create_sources=False)
+        handle = TargetCatalog.build(tmp_path).select("sim")
+        overlay = write_trace_overlay(handle)
         try:
-            from booley.fusesoc.fusesoc_registry import _setup_command
-
-            _setup_command(
-                "sim",
-                project_root=tmp_path,
-                build_root=tmp_path / "build",
-                vlnv=overlay.vlnv,
+            argv = setup_command_for_handle(
+                handle, build_root=tmp_path / "build", resolution_vlnv=overlay.vlnv
             )
+            assert overlay.vlnv in argv
             projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
             doc = read_core(projected)
             entry = doc["filesets"]["booley_trace_dump"]["files"][0]
@@ -565,11 +538,8 @@ class TestWriteTraceOverlay:
     ):
         # A failure after the injected dump module or the overlay `.core` is
         # written must remove them, or they linger untracked in the Project.
-        booley_dir = tmp_path / ".booley"
-        (booley_dir / "cores").mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        _write_core(booley_dir / "cores", self._ICARUS_CORE_NO_DUMP, create_sources=False)
+        cores = _stealth_booley_dir(tmp_path / ".booley")
+        _write_core(cores, self._ICARUS_CORE_NO_DUMP, create_sources=False)
         handle = TargetCatalog.build(tmp_path).select("sim")
         before = sorted(tmp_path.rglob("*"))
 
@@ -578,11 +548,13 @@ class TestWriteTraceOverlay:
 
         if fails_at == "core_write":
 
-            def write_partially(overlay_path: Path, _doc: dict) -> None:
-                overlay_path.write_text("CAPI=2:\n", encoding="utf-8")
-                fail()
+            def fail_after_marker(*_args: object, **_kwargs: object) -> None:
+                raise OSError("injected failure")
 
-            monkeypatch.setattr(trace_overlay_module, "_write_overlay_core_file", write_partially)
+            # The serializer fails after the `CAPI=2:` line reached the `.core`.
+            monkeypatch.setattr(
+                trace_overlay_module, "yaml", SimpleNamespace(safe_dump=fail_after_marker)
+            )
         else:
             monkeypatch.setattr(trace_overlay_module, "projected_core_path", fail)
 
@@ -595,24 +567,16 @@ class TestWriteTraceOverlay:
         project = tmp_path / "project"
         project.mkdir()
         external = symlinked_booley_dir(project, tmp_path / "external-booley")
-        toggle = "ignore_native_cores = true\n" if isolated else ""
-        (external / "booley.toml").write_text(
-            f"[stealth]\nenabled = true\n{toggle}", encoding="utf-8"
-        )
-        (external / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        core = self._ICARUS_CORE_NO_DUMP
-        _write_core(external / "cores", core, create_sources=False)
-        overlay = write_trace_overlay(TargetCatalog.build(project).select("sim"))
+        _stealth_booley_dir(external, isolated=isolated)
+        _write_core(external / "cores", self._ICARUS_CORE_NO_DUMP, create_sources=False)
+        handle = TargetCatalog.build(project).select("sim")
+        overlay = write_trace_overlay(handle)
         try:
             projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
-            from booley.fusesoc.fusesoc_registry import _setup_command
-
-            _setup_command(
-                "sim",
-                project_root=project,
-                build_root=project / "build",
-                vlnv=overlay.vlnv,
+            argv = setup_command_for_handle(
+                handle, build_root=project / "build", resolution_vlnv=overlay.vlnv
             )
+            assert overlay.vlnv in argv
             entry = read_core(projected)["filesets"]["booley_trace_dump"]["files"][0]
             declared = next(iter(entry))
             # Projection roots the dump module under `.booley/cores/`; isolated
@@ -627,10 +591,11 @@ class TestWriteTraceOverlay:
         assert not projected.exists()
 
 
-def test_dump_module_detection_walks_filesets_append(tmp_path: Path):
-    """The trace-overlay readiness check shares the blind spot: a
-    booley_vcd_dump.sv fileset added via append would false-warn 'no dump
-    module' and provoke a duplicate overlay injection."""
+def test_dump_module_added_by_filesets_append_is_not_injected_again(tmp_path: Path):
+    """A booley_vcd_dump.sv fileset added via ``filesets_append`` counts as present.
+
+    Missing it would inject a duplicate dump module into the overlay.
+    """
     text = textwrap.dedent(
         """\
         CAPI=2:
@@ -647,9 +612,21 @@ def test_dump_module_detection_walks_filesets_append(tmp_path: Path):
             filesets: [rtl]
           sim:
             <<: *default_target
+            default_tool: icarus
+            flow: sim
+            flow_options:
+              tool: icarus
             filesets_append: [trace]
             toplevel: counter
         """
     )
-    core = _write_core(tmp_path, text)
-    assert _target_includes_dump_module(read_core(core), "sim") is True
+    _write_core(tmp_path, text)
+
+    overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
+    try:
+        doc = read_core(overlay.core_file)
+        assert overlay.extra_files == ()
+        assert "booley_trace_dump" not in doc["filesets"]
+        assert "-sbooley_vcd_dump" in doc["targets"]["sim"]["flow_options"]["iverilog_options"]
+    finally:
+        overlay.cleanup()

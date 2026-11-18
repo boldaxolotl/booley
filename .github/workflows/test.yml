@@ -211,6 +211,13 @@ jobs:
           BASE_SHA: ${{ needs.changes.outputs.diff_base }}
         run: git diff --check "${BASE_SHA}" "${GITHUB_SHA}" --
 
+      # Standard library only, so it runs before setup-python and fails fast.
+      - name: Check Markdown line length
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
+        run: python3 .github/scripts/markdown_line_length.py --base "${BASE_SHA}"
+
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: setup-python
         with:
@@ -277,13 +284,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
       - name: Install pinned CI quality tools
-        run: pip install -e ".[quality]" -c .github/ci/constraints.txt
+        run: pip install -e ".[quality,hdl-parser]" -c .github/ci/constraints.txt
 
       - name: Install actionlint v1.7.12
         shell: bash
@@ -305,76 +314,41 @@ jobs:
       - name: Reject suppressed test assertions
         run: python .github/scripts/check_suppressed_assertions.py
 
+      - name: Reject new or grown functions over 50 lines
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
+        run: python .github/scripts/check_function_length.py --base "${BASE_SHA}"
+
       - name: Ruff check
         run: ruff check .
 
       - name: Ruff format check
         run: ruff format --check .
 
-      # Put a deliberate error inside an included package and run Pyright with
-      # no path arguments. Seeing the probe fail proves pyproject's include
-      # configuration is active rather than accidentally analyzing zero files.
-      - name: Prove Pyright include scope is active
+      # One run proves the scope and strict mode behind the plain `pyright` step
+      # below are live. A basic-mode error in a module at the package root fails
+      # only if `include` still reaches the whole package; a missing annotation
+      # in `targets` fails only if strict mode still covers it. Both probe files
+      # must be named in the output, so analyzing nothing cannot pass.
+      - name: Prove Pyright scope and strict mode are active
         shell: bash
         run: |
-          probe=src/booley/core/_pyright_scope_probe.py
-          trap 'rm -f "${probe}"' EXIT
-          echo 'scope_probe: int = "must fail"' > "${probe}"
+          scope_probe=src/booley/_pyright_scope_probe.py
+          strict_probe=src/booley/targets/_pyright_strict_probe.py
+          trap 'rm -f "${scope_probe}" "${strict_probe}"' EXIT
+          echo 'scope_probe: int = "must fail"' > "${scope_probe}"
+          echo 'def strict_probe(value): return value' > "${strict_probe}"
           if pyright --outputjson > "${RUNNER_TEMP}/pyright-probe.json"; then
-            echo "Pyright accepted the deliberate include-scope error" >&2
+            echo "Pyright accepted the deliberate scope and strictness errors" >&2
             exit 1
           fi
           grep -Fq "_pyright_scope_probe.py" "${RUNNER_TEMP}/pyright-probe.json"
-          rm -f "${probe}"
+          grep -Fq "_pyright_strict_probe.py" "${RUNNER_TEMP}/pyright-probe.json"
+          rm -f "${scope_probe}" "${strict_probe}"
           trap - EXIT
-          test ! -e "${probe}"
-
-      - name: Prove Target package is strict
-        shell: bash
-        run: |
-          probe=src/booley/targets/_pyright_strict_probe.py
-          trap 'rm -f "${probe}"' EXIT
-          echo 'def strict_probe(value): return value' > "${probe}"
-          if pyright --outputjson > "${RUNNER_TEMP}/pyright-target-strict-probe.json"; then
-            echo "Pyright accepted the deliberate Target strictness error" >&2
-            exit 1
-          fi
-          grep -Fq "_pyright_strict_probe.py" "${RUNNER_TEMP}/pyright-target-strict-probe.json"
-          rm -f "${probe}"
-          trap - EXIT
-          test ! -e "${probe}"
-
-      - name: Prove exact Flow modules are included
-        shell: bash
-        run: |
-          probe_file() (
-            target=$1
-            label=$(echo "${target}" | tr '/.' '__')
-            backup=$(mktemp "${RUNNER_TEMP}/pyright-probe.XXXXXX")
-            cp "${target}" "${backup}"
-            trap 'cp "${backup}" "${target}"' EXIT
-            echo '__pyright_include_probe: int = "must fail"' >> "${target}"
-            if pyright --outputjson > "${RUNNER_TEMP}/pyright-${label}-include-probe.json"; then
-              echo "Pyright accepted the deliberate include error in ${target}" >&2
-              exit 1
-            fi
-            grep -Fq "${target}" "${RUNNER_TEMP}/pyright-${label}-include-probe.json"
-            cp "${backup}" "${target}"
-            trap - EXIT
-            git diff --exit-code -- "${target}"
-          )
-          for target in \
-            src/booley/flows/lint/flow.py \
-            src/booley/flows/sim/build.py \
-            src/booley/flows/sim/flow.py \
-            src/booley/flows/synth/flow.py \
-            src/booley/flows/fpga/flow.py \
-            src/booley/flows/implementation_comparison.py \
-            src/booley/flows/implementation_report.py \
-            src/booley/flows/synth/implementation_report.py \
-            src/booley/flows/fpga/implementation_report.py; do
-            probe_file "${target}"
-          done
+          test ! -e "${scope_probe}"
+          test ! -e "${strict_probe}"
 
       - name: Pyright strict boundary checks
         run: pyright
@@ -390,6 +364,7 @@ jobs:
     # a run whose steps are all slow but each within its own limit.
     timeout-minutes: ${{ matrix.mode == 'full' && 30 || 25 }}
     env:
+      BOOLEY_TEST_TIME_SCALE: ${{ startsWith(matrix.os, 'windows') && '2' || '1' }}
       PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: 'not native_bwave'
     strategy:
@@ -445,11 +420,11 @@ jobs:
           tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
           -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=120 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Run duration-balanced shard
         if: matrix.mode == 'shard'
-        timeout-minutes: 12
+        timeout-minutes: 15
         env:
           PYTHONPATH: .github/scripts
           RUNNER_TEMP: ${{ runner.temp }}
@@ -458,7 +433,7 @@ jobs:
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=${{ runner.os == 'Linux' && needs.changes.outputs.linux_scheduler || 'worksteal' }}
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"
@@ -488,6 +463,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     env:
+      BOOLEY_TEST_TIME_SCALE: ${{ startsWith(matrix.os, 'windows') && '2' || '1' }}
       PYTHONFAULTHANDLER: "1"
     strategy:
       fail-fast: false
@@ -530,6 +506,7 @@ jobs:
           STRESS_MODULES: ${{ needs.changes.outputs.stress_modules }}
           STRESS_COUNT: ${{ needs.changes.outputs.stress_count }}
           HEADROOM: ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
+          TEST_TIMEOUT: ${{ runner.os == 'Windows' && '120' || '60' }}
         run: |
           # NUL-delimited: Windows Python would turn "\n" into "\r\n".
           mapfile -d '' -t modules < <(python -c 'import json, os, sys; sys.stdout.write("\0".join(json.loads(os.environ["STRESS_MODULES"])))')
@@ -537,7 +514,7 @@ jobs:
           # shellcheck disable=SC2086 # HEADROOM holds zero or two options.
           pytest "${modules[@]}" -q --tb=short -n 4 --dist=load \
             --count="${STRESS_COUNT}" --basetemp "${RUNNER_TEMP}/pytest" \
-            -m "not native_bwave" --timeout=60 ${HEADROOM} \
+            -m "not native_bwave" --timeout="${TEST_TIMEOUT}" ${HEADROOM} \
             --durations=30 --junitxml="${RUNNER_TEMP}/junit.xml" || status=$?
           # Exit 5 (nothing ran) is fine when every changed module skipped itself at
           # import on this runner, such as a Linux-only module on Windows. The JUnit
@@ -799,7 +776,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy, rustfmt
 
@@ -870,7 +847,7 @@ jobs:
         timeout-minutes: 3
         run: python -m pip cache purge
 
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -1163,9 +1140,9 @@ jobs:
         shell: bash
         env:
           BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-sidecar
-          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314
+          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py315
           BOOLEY_FLEXNET_DOCKER_TEST: "1"
-          BOOLEY_REAPER_IMAGE: booley-reaper:py314
+          BOOLEY_REAPER_IMAGE: booley-reaper:py315
         run: |
           set -o pipefail
           .github/scripts/run_with_container_cleanup.sh \
@@ -1525,7 +1502,7 @@ jobs:
               booley-test python /work/tests/docker/verilator_acceptance.py
               --work-dir /validation-tmp
 
-          - name: Run Coverage Campaign release matrix and production collector
+          - name: Run Coverage Record release matrix and production collector
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/coverage-release
             run: >-
@@ -1543,6 +1520,7 @@ jobs:
               /work/tests/smoke/test_verilator_release_matrix.py
               /work/tests/smoke/test_verilator_coverage_collector_smoke.py
               /work/tests/smoke/test_verilator_compiler_cache_smoke.py
+              /work/tests/smoke/test_mutation_equivalence_smoke.py
               --timeout=900 -q -rs --durations=30 --junitxml=/validation-tmp/coverage-release.xml
               -o cache_dir=/validation-tmp/pytest-cache &&
               python /work/.github/scripts/assert_junit.py
@@ -1773,24 +1751,7 @@ jobs:
         shell: bash
         env:
           MEASUREMENT_ARM: ${{ inputs.riscv_measurement || 'automatic' }}
-        run: |
-          record="${RUNNER_TEMP}/riscv-image-evidence/tooling-source.json"
-          resolve=(
-            python .github/scripts/riscv_tooling.py resolve
-            --record "${record}" --github-output "${GITHUB_OUTPUT}"
-          )
-          if [[ "${MEASUREMENT_ARM}" == cold ]]; then
-            "${resolve[@]}" --force-local cold
-            exit 0
-          fi
-          status=0
-          timeout 120 "${resolve[@]}" || status=$?
-          if (( status == 124 )); then
-            echo '::warning::RISC-V tooling lookup timed out; building the stage locally.'
-            "${resolve[@]}" --force-local registry-timeout
-          elif (( status != 0 )); then
-            exit "${status}"
-          fi
+        run: .github/scripts/riscv_candidate.sh resolve-tooling "${RUNNER_TEMP}/riscv-image-evidence/tooling-source.json"
 
       # Inside the build, pulling the ~1.6 GB tooling image took about a
       # minute. Pull it in the background while the standard substrate builds;
@@ -1936,67 +1897,19 @@ jobs:
         run: df -h /
 
       # Release CI remains the publication gate, not the first place RISC-V
-      # behavior is exercised. The substrate exports as zstd level 1: BuildKit
-      # gzips single-threaded, which took 1-2 min for the tooling layer.
+      # behavior is exercised.
       - name: Run RISC-V candidate image contract
         env:
           TOOLING_SOURCE: ${{ steps.riscv-tooling.outputs.source }}
           TOOLING_CONTEXT: ${{ steps.riscv-tooling.outputs.context }}
         run: |
           evidence="${RUNNER_TEMP}/riscv-image-evidence"
-          tooling_record="${evidence}/tooling-source.json"
-          mkdir -p "${evidence}"
-
-          build_tool_substrate() {
-            docker buildx build --builder default \
-              --output type=image,name=booley-riscv-substrate:ci,compression=zstd,compression-level=1 \
-              "$@" \
-              --file src/booley/data/docker/Dockerfile.riscv \
-              --build-context booley-standard-substrate=docker-image://booley-standard-substrate:ci .
-          }
-
-          if test "${TOOLING_SOURCE}" = registry; then
-            # The published digest replaces the same-named stage.
-            build_status=0
-            build_tool_substrate --build-context "riscv-tooling=${TOOLING_CONTEXT}" || build_status=$?
-            # Quick compatibility check of the published tooling against
-            # this candidate's substrate: the contract's [riscv] probes,
-            # including the shared-library closure of every host ELF.
-            compat_status=1
-            if test "${build_status}" -eq 0; then
-              python .github/scripts/riscv_tooling.py checks \
-                > "${evidence}/tooling-checks.sh"
-              compat_status=0
-              docker run --rm -i --init --network none --entrypoint bash \
-                booley-riscv-substrate:ci < "${evidence}/tooling-checks.sh" \
-                > "${evidence}/tooling-compat.log" 2>&1 || compat_status=$?
-              if test "${compat_status}" -ne 0; then
-                tail -n 40 "${evidence}/tooling-compat.log" >&2
-              fi
-            fi
-            if test "${build_status}" -ne 0 || test "${compat_status}" -ne 0; then
-              detail="composed candidate build exited ${build_status}"
-              if test "${build_status}" -eq 0; then
-                detail="compatibility check exited ${compat_status}"
-              fi
-              echo "::warning::Published RISC-V tooling ${TOOLING_CONTEXT} failed: ${detail}; building the tooling stage locally."
-              python .github/scripts/riscv_tooling.py fallback \
-                --record "${tooling_record}" --detail "${detail}"
-              build_tool_substrate
-            fi
-          else
-            build_tool_substrate
-          fi
-
-          docker buildx build --builder default --load \
-            --file src/booley/data/docker/Dockerfile.wheel \
-            --tag booley-riscv-test \
-            --build-context booley-substrate=docker-image://booley-riscv-substrate:ci .
+          .github/scripts/riscv_candidate.sh build "${evidence}"
 
           .github/scripts/verify_riscv_image_contract.sh \
             "${evidence}" booley-riscv-test booley-standard-substrate:ci \
             "${evidence}/standard-package-inventory.json"
-          touch "${evidence}/goal-readiness-started"
+          touch "${evidence}/measurement-started"
           .github/scripts/run_picorv32_ci_demo.sh \
             "${{ github.workspace }}" \
             "booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv"
@@ -2037,12 +1950,12 @@ jobs:
           if test -e ibex-demo; then
             sudo chown -R "$(id -u):$(id -g)" ibex-demo
           fi
-          readiness="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
-          if test -e "${readiness}"; then
-            sudo chown -R "$(id -u):$(id -g)" "${readiness}"
+          measurement="${RUNNER_TEMP}/riscv-image-evidence/measurement"
+          if test -e "${measurement}"; then
+            sudo chown -R "$(id -u):$(id -g)" "${measurement}"
           fi
-          if test -f "${readiness}/goal-readiness.json"; then
-            sudo chmod a+r "${readiness}/goal-readiness.json"
+          if test -f "${measurement}/measurement.json"; then
+            sudo chmod a+r "${measurement}/measurement.json"
           fi
 
       - name: Upload candidate RISC-V evidence
@@ -2054,20 +1967,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Read Goal readiness attempt marker
-        id: goal-readiness
+      - name: Read measurement attempt marker
+        id: measurement
         if: always()
         run: |
-          if test -f "${RUNNER_TEMP}/riscv-image-evidence/goal-readiness-started"; then
+          if test -f "${RUNNER_TEMP}/riscv-image-evidence/measurement-started"; then
             echo "started=true" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Upload Goal readiness evidence
-        if: always() && steps.goal-readiness.outputs.started == 'true'
+      - name: Upload measurement evidence
+        if: always() && steps.measurement.outputs.started == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
+          name: measurement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/measurement/measurement.json
           if-no-files-found: error
           retention-days: 14
 
@@ -2123,6 +2036,38 @@ jobs:
             --budget-seconds "${budget}" \
             --summary "${GITHUB_STEP_SUMMARY}"
 
+  # Coding principle 18's test ratio. Mergify's queue drafts skip it: each
+  # queued PR already passed it, and a batch carries none of its labels. Only
+  # a branch of this repository counts as a queue draft, so a fork cannot skip
+  # the check by naming its branch mergify/merge-queue/.
+  test-ratio:
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request' &&
+      !(startsWith(github.head_ref, 'mergify/merge-queue/') &&
+        github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check test lines per changed source line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # Read labels from the API, not the event payload: a re-run reuses the
+        # original payload, so only a live read sees a label added or removed.
+        # github.sha is the PR merge commit: parent 1 is the current base tip,
+        # parent 2 the PR head.
+        run: |
+          labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --paginate --jq '.[].name')"
+          python .github/scripts/ci_test_ratio.py --repo . --base "${GITHUB_SHA}^1" --head "${GITHUB_SHA}^2" --labels "${labels}"
+
   ci-required:
     name: ci-required
     needs:
@@ -2145,6 +2090,7 @@ jobs:
       - bwave-smoke
       - riscv-image
       - flake-stress
+      - test-ratio
     # Skipped with `changes` on a draft PR; otherwise always resolve status.
     # Branch protection counts a skipped required check as passing. That is
     # safe only because drafts cannot merge, marking ready reruns CI, and

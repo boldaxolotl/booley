@@ -70,6 +70,22 @@ def _findings(
     return list(reporter.findings)
 
 
+_PIN = "agent.credential-policy"
+_REINIT = "or re-run booley init"
+
+
+def _pin_fails(findings: list[DiagnosticFinding]) -> list[DiagnosticFinding]:
+    return [f for f in findings if f.check_id == _PIN and f.severity is Severity.FAIL]
+
+
+def _without_pin(findings: list[DiagnosticFinding]) -> list[DiagnosticFinding]:
+    return [f for f in findings if f.check_id != _PIN]
+
+
+def _visitor_policy(_project, cli=None) -> str:
+    return auth_token.VISITOR_AUTH
+
+
 def _with_id(findings, check_id: str, subject: str) -> list[DiagnosticFinding]:
     return [f for f in findings if (f.check_id, f.subject) == (check_id, subject)]
 
@@ -78,15 +94,17 @@ def test_other_allowed_cli_missing_credentials_warn_with_login_fix(home, tmp_pat
     auth_token.store_token("sk-ant-oat01-x")
     # Codex policy -> (text its fix must contain, text it must not contain)
     cases = {
-        "auto": ("codex login", None),
+        "subscription": ("codex login", None),
         "api_key": ("booley auth --cli codex", "codex login"),
     }
     for codex_auth, (fix_has, fix_lacks) in cases.items():
-        findings = _findings(
-            tmp_path,
-            clis=["claude", "codex"],
-            default="claude",
-            auth={"claude": "auto", "codex": codex_auth},
+        findings = _without_pin(
+            _findings(
+                tmp_path,
+                clis=["claude", "codex"],
+                default="claude",
+                auth={"claude": "subscription", "codex": codex_auth},
+            )
         )
 
         assert not [f for f in findings if f.severity is Severity.FAIL]
@@ -100,27 +118,31 @@ def test_other_allowed_cli_missing_credentials_warn_with_login_fix(home, tmp_pat
 def test_specialist_pinned_cli_missing_credentials_fail(home, tmp_path):
     """A non-default CLI that a [models] pin runs a Specialist on FAILs under every policy."""
     auth_token.store_token("sk-ant-oat01-x")
-    for codex_auth in ("auto", "api_key"):
-        findings = _findings(
-            tmp_path,
-            models={"reviewer": "gpt-5"},
-            clis=["claude", "codex"],
-            default="claude",
-            auth={"claude": "auto", "codex": codex_auth},
+    for codex_auth in ("subscription", "api_key"):
+        findings = _without_pin(
+            _findings(
+                tmp_path,
+                models={"reviewer": "gpt-5"},
+                clis=["claude", "codex"],
+                default="claude",
+                auth={"claude": "subscription", "codex": codex_auth},
+            )
         )
 
         (missing,) = _with_id(findings, "agent.credential-missing", "codex")
         assert missing.severity is Severity.FAIL
-        assert doctor._missing_credential_fix("codex", codex_auth) in missing.fix
+        assert auth_token.missing_credential_fix("codex", codex_auth) in missing.fix
         assert not [f for f in findings if f.severity is Severity.FAIL and f is not missing]
         assert not _with_id(findings, "agent.rotation-risk", "codex")
 
     # Guard: a pin on the default CLI leaves the other CLI at its WARN.
-    findings = _findings(
-        tmp_path,
-        models={"reviewer": "claude-sonnet-5-5"},
-        clis=["claude", "codex"],
-        default="claude",
+    findings = _without_pin(
+        _findings(
+            tmp_path,
+            models={"reviewer": "claude-sonnet-5-5"},
+            clis=["claude", "codex"],
+            default="claude",
+        )
     )
     (missing,) = _with_id(findings, "agent.credential-missing", "codex")
     assert missing.severity is Severity.WARN
@@ -132,7 +154,7 @@ def test_specialist_pinned_gateway_codex_grades_like_default(home, tmp_path, mon
     monkeypatch.setattr(
         doctor,
         "_configured_auth_policy",
-        lambda _project, cli=None: "gateway" if cli == "codex" else "auto",
+        lambda _project, cli=None: "gateway" if cli == "codex" else "subscription",
     )
     monkeypatch.setattr(
         doctor,
@@ -156,7 +178,7 @@ def test_default_cli_missing_credentials_fail(home, tmp_path, monkeypatch):
         tmp_path,
         clis=["claude", "codex"],
         default="claude",
-        auth={"claude": "subscription", "codex": "auto"},
+        auth={"claude": "subscription", "codex": "api_key"},
     )
 
     (missing,) = _with_id(findings, "agent.credential-missing", "claude")
@@ -164,7 +186,9 @@ def test_default_cli_missing_credentials_fail(home, tmp_path, monkeypatch):
     assert any(f.message.startswith("Codex auth:") for f in findings)
 
 
-def test_rotation_risk_ids_keep_per_cli_subjects(home, tmp_path):
+def test_rotation_risk_ids_keep_per_cli_subjects(home, tmp_path, monkeypatch):
+    # An explicit ``subscription`` accepts the risk as a NOTE; the visitor mode warns.
+    monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)
     _login(home, "claude")
     _login(home, "codex")
     findings = _findings(tmp_path, clis=["claude", "codex"], default="claude")
@@ -178,15 +202,16 @@ def test_rotation_risk_ids_keep_per_cli_subjects(home, tmp_path):
 _RISK = "{label}: no rotation-free credential; agents use a refreshing one, which a host-side login can revoke mid-run"
 
 
-def test_single_cli_project_output_is_unchanged(home, tmp_path):
+def test_single_cli_project_output_is_unchanged(home, tmp_path, monkeypatch):
     """The other CLI's login is present and installed, yet it is never audited."""
+    monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)
     _login(home, "claude")
     _login(home, "codex")
     for only, label, login in (
         ("claude", "Claude Code", home / ".claude/.credentials.json"),
         ("codex", "Codex", home / ".codex/auth.json"),
     ):
-        findings = _findings(tmp_path, clis=[only], default=only)
+        findings = _without_pin(_findings(tmp_path, clis=[only], default=only))
 
         # The login-expiry line (Claude only) carries a host-timezone date; compare the rest.
         rows = [f for f in findings if not f.message.startswith("subscription login valid until ")]
@@ -200,3 +225,88 @@ def test_single_cli_project_output_is_unchanged(home, tmp_path):
             ),
         ]
         assert {f.subject for f in findings} <= {None, only}
+
+
+@pytest.mark.parametrize(
+    ("agent", "logins", "env", "expected"),
+    [
+        (
+            {"clis": ["claude"], "default": "claude"},
+            [],
+            {"ANTHROPIC_API_KEY": "sk-ant-api03-x"},
+            [("claude", "auth is not set", "api_key", 'set auth = "api_key" under [agent]')],
+        ),
+        (
+            {"clis": ["claude", "codex"], "default": "claude", "auth": "auto"},
+            ["claude"],
+            {"OPENAI_API_KEY": "sk-test"},
+            [
+                (
+                    "claude",
+                    "auth 'auto' is retired",
+                    "subscription",
+                    'with an [agent.auth] table that sets claude = "subscription"',
+                ),
+                (
+                    "codex",
+                    "auth 'auto' is retired",
+                    "api_key",
+                    'with an [agent.auth] table that sets codex = "api_key"',
+                ),
+            ],
+        ),
+        (
+            {"clis": ["claude", "codex"], "default": "claude", "auth": {"claude": "subscription"}},
+            ["claude"],
+            {"OPENAI_API_KEY": "sk-test"},
+            [("codex", "auth is not set", "api_key", 'set codex = "api_key" under [agent.auth]')],
+        ),
+        (
+            {"clis": ["codex"], "default": "codex", "auth": {"codex": "auto"}},
+            ["codex"],
+            {},
+            [
+                (
+                    "codex",
+                    "auth 'auto' is retired",
+                    "subscription",
+                    'set codex = "subscription" under [agent.auth]',
+                )
+            ],
+        ),
+    ],
+    ids=["missing-string", "auto-string", "missing-table", "auto-table"],
+)
+def test_unrecorded_auth_fails_with_detected_value(
+    home, tmp_path, monkeypatch, agent, logins, env, expected
+):
+    for cli in logins:
+        _login(home, cli)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    fails = _pin_fails(_findings(tmp_path, **agent))
+
+    assert [(f.subject, f.message) for f in fails] == [
+        (
+            cli,
+            f"{cli}: booley.toml [agent] {state}; detected: {value}",
+        )
+        for cli, state, value, _fragment in expected
+    ]
+    for fail, (_cli, _state, _value, fragment) in zip(fails, expected, strict=True):
+        assert fragment in fail.fix
+        assert fail.fix.endswith(_REINIT)
+
+
+def test_recorded_subscription_passes_with_an_exported_api_key(home, tmp_path, monkeypatch):
+    _login(home, "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
+
+    recorded = _findings(tmp_path, clis=["claude"], default="claude", auth="subscription")
+    unrecorded = _findings(tmp_path, clis=["claude"], default="claude")
+
+    assert not [f for f in recorded if f.severity is Severity.FAIL]
+    assert [f.message.rsplit("; ", 1)[-1] for f in _pin_fails(unrecorded)] == [
+        "detected: subscription"
+    ]

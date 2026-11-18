@@ -79,8 +79,8 @@ class TestFlowCanDrive:
         assert not flow_can_drive("sim", self._ref(flow, None))
 
     def test_specialist_name_is_rejected(self):
-        with pytest.raises(ValueError, match=r"mutation_tester.*not a target-aware"):
-            flow_can_drive("mutation_tester", self._ref("sim", "verilator"))
+        with pytest.raises(ValueError, match=r"reviewer.*not a target-aware"):
+            flow_can_drive("reviewer", self._ref("sim", "verilator"))
 
     def test_retired_elab_name_is_rejected(self):
         with pytest.raises(ValueError, match=r"elab.*not a target-aware"):

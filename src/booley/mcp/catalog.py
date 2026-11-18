@@ -6,7 +6,6 @@ import logging
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +17,8 @@ _REPORT_MCP_TOOL_NAME = "booley_report"
 POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
-    "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation_tester / "
-    "coverage_analyst) that were started in the background. When such an endpoint takes "
+    "Wait for long-running endpoints (sim / fpga / synth / lint / reviewer / mutation / "
+    "coverage_analyst / measure / Custom Flows) that were started in the background. When such an endpoint takes "
     "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
     "several Jobs running, call with no run_id: it returns the full result of the first of "
     "your Jobs to finish (or one that finished but whose result you have not read), lists "
@@ -103,15 +102,20 @@ def _find_mcp_tool_class_in_module(
     return None
 
 
-def _mcp_tool_def_from_class(
-    cls: type,
+def _mcp_tool_def_from_endpoint(
+    endpoint: Any,
     schema: dict,
     module_name: str,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Build an MCP tool definition dict from an endpoint class and extracted schema."""
+    """Build an MCP tool definition dict from an endpoint instance and extracted schema.
+
+    ``memory_admitted`` records whether Job memory admission can queue the
+    endpoint, which decides whether its MCP call runs as a background Job.
+    """
     from booley.flows.base import BuiltinFlow, FlowMechanics
 
+    cls = type(endpoint)
     result = {
         "name": cls.name,
         "module": module_name,
@@ -122,6 +126,7 @@ def _mcp_tool_def_from_class(
         "is_flow": issubclass(cls, FlowMechanics),
         "is_builtin_flow": issubclass(cls, BuiltinFlow),
         "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
+        "memory_admitted": endpoint._memory_admitted(),
     }
     result.update(extra)
     return result
@@ -162,11 +167,11 @@ def _import_and_extract(
         logger.warning(msg)
         return None, msg
 
-    cls, instance, schema = found
+    _, instance, schema = found
     is_custom = not import_prefix.startswith("booley.")
     return (
-        _mcp_tool_def_from_class(
-            cls,
+        _mcp_tool_def_from_endpoint(
+            instance,
             schema,
             module_name,
             negative_flags=flow_negative_flags(instance),
@@ -178,10 +183,10 @@ def _import_and_extract(
 
 
 def _status_mcp_tool_def() -> dict[str, Any]:
-    """Return the synthetic Interactive Mode status MCP tool definition."""
+    """Return the synthetic Sandbox status MCP tool definition."""
     return {
         "name": _STATUS_MCP_TOOL_NAME,
-        "description": "Show whether Booley Interactive Mode is ready in this tab.",
+        "description": "Show whether Booley is ready in this tab.",
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
     }
 
@@ -201,7 +206,7 @@ def _report_mcp_tool_def() -> dict[str, Any]:
             "properties": {
                 "work_dir": {
                     "type": "string",
-                    "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
+                    "description": "Worktree whose reports to fetch. Omit to use the session workspace.",
                 },
                 "endpoint": {
                     "type": "string",
@@ -283,7 +288,7 @@ def _targets_mcp_tool_def() -> dict[str, Any]:
         "name": _TARGETS_MCP_TOOL_NAME,
         "description": (
             "List the project's FuseSoC .core Targets — the values a Booley Flow's 'target' argument"
-            " accepts (ADR 0030). Cheap .core-YAML enumeration, no fusesoc run: per Target it "
+            " accepts. Cheap .core-YAML enumeration, no fusesoc run: per Target it "
             "reports the copy-pasteable selector (vlnv#name when the bare name is ambiguous), flow "
             "(sim/lint/generic), declared EDA tool, cocotb module, declared toplevel, which Doctor "
             "Flows the Target selects via flow_options.booley.doctor, and which Booley Flows could "
@@ -328,7 +333,7 @@ def _coverage_evidence_tool_def() -> dict[str, Any]:
     return {
         "name": _COVERAGE_EVIDENCE_TOOL_NAME,
         "description": (
-            "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
+            "Query bounded, read-only evidence from the validated Coverage Record bound to this "
             "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' to page "
             "through RTL sources with no native records, and view='points' for filtered exact "
             "Coverage Points and view='source' for verified excerpts associated with previously "
@@ -371,7 +376,7 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
         "description": (
             "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold this MCP "
             "tool call open for 'seconds' server-side, then return timing details. Exists to measure"
-            " the MCP client's MCP-tool-call kill ceiling (ADR 0027) — it does no RTL work and is "
+            " the MCP client's MCP-tool-call kill ceiling — it does no RTL work and is "
             "intended for timing diagnostics."
         ),
         "schema": {
@@ -398,7 +403,7 @@ class Exposure:
     nested: frozenset[str] | None = None
     explicit: frozenset[str] | None = None
     debug: bool = False
-    campaign: bool = False
+    coverage_record: bool = False
     project: bool = False
 
     @classmethod
@@ -418,7 +423,7 @@ class Exposure:
             explicit=names("BOOLEY_MCP_TOOLS") if "BOOLEY_MCP_TOOLS" in values else None,
             debug=values.get("BOOLEY_MCP_DEBUG_TOOLS", "").strip().lower()
             not in {"", "0", "false", "no"},
-            campaign=bool(values.get("BOOLEY_COVERAGE_CAMPAIGN")),
+            coverage_record=bool(values.get("BOOLEY_COVERAGE_RECORD")),
             project=bool(values.get("BOOLEY_COVERAGE_PROJECT")),
         )
 
@@ -441,6 +446,19 @@ def status_visible(exposure: Exposure) -> bool:
     return _interactive_utility_visible(_STATUS_MCP_TOOL_NAME, exposure)
 
 
+def measure_visible(exposure: Exposure) -> bool:
+    """The Developer Agent's interactive server, or one naming ``booley_measure``."""
+    from booley.mcp.measure_tool import MEASURE_TOOL_NAME
+
+    return _interactive_utility_visible(MEASURE_TOOL_NAME, exposure)
+
+
+def _measure_mcp_tool_def() -> dict[str, Any]:
+    from booley.mcp.measure_tool import measure_tool_def
+
+    return measure_tool_def()
+
+
 def report_visible(exposure: Exposure) -> bool:
     return _interactive_utility_visible(_REPORT_MCP_TOOL_NAME, exposure)
 
@@ -452,18 +470,14 @@ def _interactive_utility_visible(name: str, exposure: Exposure) -> bool:
 
 
 def utilities_visible(exposure: Exposure) -> bool:
-    return not exposure.campaign
-
-
-def goals_visible(exposure: Exposure) -> bool:
-    return exposure.interactive and exposure.nested is None
+    return not exposure.coverage_record
 
 
 def coverage_visible(exposure: Exposure) -> bool:
     return (
         exposure.nested is not None
         and _COVERAGE_EVIDENCE_TOOL_NAME in exposure.nested
-        and exposure.campaign
+        and exposure.coverage_record
         and exposure.project
     )
 
@@ -490,8 +504,6 @@ def visible_definitions(
     exposure: Exposure, endpoint_definitions: Sequence[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Assemble supplemental tools with already-filtered endpoints, preserving objects."""
-    from booley.mcp.goal_tools import goal_tool_defs
-
     definitions = [
         *endpoint_definitions,
         *(tool for tool in _BWAVE_MCP_TOOLS if tool_visible(tool["name"], exposure)),
@@ -499,6 +511,7 @@ def visible_definitions(
     for visible, builder in (
         (status_visible(exposure), _status_mcp_tool_def),
         (report_visible(exposure), _report_mcp_tool_def),
+        (measure_visible(exposure), _measure_mcp_tool_def),
         (utilities_visible(exposure), _poll_mcp_tool_def),
         (utilities_visible(exposure), _cancel_mcp_tool_def),
         (utilities_visible(exposure), _targets_mcp_tool_def),
@@ -507,42 +520,4 @@ def visible_definitions(
     ):
         if visible:
             definitions.append(builder())
-    if goals_visible(exposure):
-        definitions.extend(goal_tool_defs())
     return sorted(definitions, key=lambda item: item["name"])
-
-
-def _default_interactive_definitions() -> list[dict[str, Any]]:
-    from booley.mcp.goal_tools import GOAL_TOOL_NAMES
-    from booley.mcp.registry import discover_mcp_tools
-
-    endpoints, errors = discover_builtin_definitions(discover_mcp_tools(), Exposure())
-    if errors:
-        raise RuntimeError("Interactive builtin discovery incomplete: " + "; ".join(errors))
-    return [
-        {**tool, "is_goal": True} if tool["name"] in GOAL_TOOL_NAMES else tool
-        for tool in visible_definitions(Exposure(), endpoints)
-    ]
-
-
-def partition_work_dir(
-    definitions: Sequence[dict[str, Any]],
-) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """Classify actual schemas, rejecting configurable endpoints that break the category rule."""
-    accepting, nonaccepting = [], []
-    for definition in sorted(definitions, key=lambda item: item["name"]):
-        accepts = "work_dir" in definition["schema"].get("properties", {})
-        if definition.get("module") and not accepts:
-            raise ValueError(
-                f"Configurable endpoint {definition['name']} lacks work_dir in its schema"
-            )
-        (accepting if accepts else nonaccepting).append(definition)
-    return tuple(accepting), tuple(nonaccepting)
-
-
-@cache
-def work_dir_guidance() -> str:
-    """Compose Goal routing text from the installed default Interactive schemas."""
-    from booley.goals.rules import work_dir_guidance as render_guidance
-
-    return render_guidance(partition_work_dir(_default_interactive_definitions()))

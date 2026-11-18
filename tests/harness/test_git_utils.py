@@ -9,7 +9,11 @@ scope_matches_file, is_scope_unknown, commit_scope with mocks).  This file adds:
 
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,7 +31,9 @@ from booley.runtime.git import (
     is_linked_worktree,
 )
 from tests.conftest import symlink_or_skip
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 # ---------------------------------------------------------------------------
 # Helpers — tiny git repo factory
@@ -36,31 +42,16 @@ from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 def _init_repo(path: Path) -> Path:
     """Create a bare-minimum git repo with one commit. Returns its repository root."""
-    subprocess.run(
-        ["git", "init", str(path)], capture_output=True, check=True, timeout=SUBPROCESS_TIMEOUT_S
+    run_bounded_child(["git", "init", str(path)], check=True)
+    run_bounded_child(
+        ["git", "-C", str(path), "config", "user.email", "test@test.com"], check=True
     )
-    subprocess.run(
-        ["git", "-C", str(path), "config", "user.email", "test@test.com"],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    subprocess.run(
-        ["git", "-C", str(path), "config", "user.name", "Test"],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
     # Initial commit so HEAD exists
     (path / "init.txt").write_text("init", encoding="utf-8")
-    subprocess.run(
-        ["git", "-C", str(path), "add", "init.txt"],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "-C", str(path), "add", "init.txt"], check=True)
     # A detached maintenance process would race later byte-for-byte repository snapshots.
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-c",
@@ -73,20 +64,15 @@ def _init_repo(path: Path) -> Path:
             "-m",
             "init",
         ],
-        capture_output=True,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return path
 
 
 def _make_worktree(repo: Path, wt_path: Path, branch: str = "test-branch") -> Path:
     """Create a linked worktree (has .git file, not .git directory)."""
-    subprocess.run(
-        ["git", "-C", str(repo), "worktree", "add", str(wt_path), "-b", branch],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    run_bounded_child(
+        ["git", "-C", str(repo), "worktree", "add", str(wt_path), "-b", branch], check=True
     )
     return wt_path
 
@@ -359,12 +345,7 @@ class TestCommitScopeIntegration:
 
 def _is_ignored(wt: Path, rel: str) -> bool:
     """True if git treats *rel* under *wt* as ignored/excluded."""
-    result = subprocess.run(
-        ["git", "-C", str(wt), "check-ignore", "-q", rel],
-        capture_output=True,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    result = run_bounded_child(["git", "-C", str(wt), "check-ignore", "-q", rel], check=False)
     return result.returncode == 0
 
 
@@ -478,7 +459,7 @@ def test_git_helpers_resolve_intended_linked_worktree_with_foreign_selectors(
     tmp_path, monkeypatch
 ):
     from booley.runtime.git import _git_dir_for_worktree
-    from tests.goals.test_attribute_projection import hostile
+    from tests.git_support import hostile
 
     main = _init_repo(tmp_path / "main")
     linked = _make_worktree(main, tmp_path / "linked")
@@ -499,7 +480,7 @@ def test_git_helpers_resolve_intended_linked_worktree_with_foreign_selectors(
 
 def test_git_run_stale_lock_retry_keeps_intended_repository(tmp_path, monkeypatch):
     from booley.runtime import git as git_module
-    from tests.goals.test_attribute_projection import hostile
+    from tests.git_support import hostile
 
     main = _init_repo(tmp_path / "main")
     linked = _make_worktree(main, tmp_path / "linked")
@@ -585,3 +566,68 @@ def test_git_exclude_entries_ignores_an_undecodable_exclude_file(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     (repo / ".git" / "info" / "exclude").write_bytes(b"/.booley\n\xff\xfe\n")
     assert git_exclude_entries(repo, [".booley"]) == ()
+
+
+# ---------------------------------------------------------------------------
+# Bounded capture (#3860)
+# ---------------------------------------------------------------------------
+
+
+def _hanging_alias(argv: list[str]) -> list[str]:
+    """Git arguments running *argv* as a ``!`` shell alias, so Git is the hung command's parent."""
+    # POSIX spellings for the interpreter and script, so Git for Windows ``sh`` accepts them.
+    command = " ".join(
+        shlex.quote(Path(part).as_posix() if index < 2 else part)
+        for index, part in enumerate(argv)
+    )
+    return ["-c", f"alias.hang=!{command}", "hang"]
+
+
+def test_git_run_timeout_kills_the_tree_and_returns_promptly(tmp_path: Path) -> None:
+    """A hung Git tree (git -> sh -> python -> heartbeat) is killed at the timeout."""
+    with heartbeat_tree(tmp_path) as paths:
+        argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
+        start = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            git_run(tmp_path, _hanging_alias(argv), timeout=scaled(5))
+        elapsed = time.monotonic() - start
+        # Timeout plus the helper's documented Windows worst case (~32 s), inside the test budget.
+        assert elapsed < scaled(40), f"git_run took {elapsed:.1f}s to give up"
+        assert paths["heartbeat"].exists(), "the hung command never started"
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "a descendant is still running"
+
+
+def test_git_run_keeps_its_result_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Success, non-zero exit and a missing executable behave as before the bounded helper."""
+    repo = _init_repo(tmp_path / "repo")
+    ok = git_run(repo, ["rev-parse", "--is-inside-work-tree"])
+    assert (ok.returncode, ok.stdout.strip()) == (0, "true")
+    failed = git_run(repo, ["rev-parse", "--verify", "no-such-ref"])
+    assert failed.returncode != 0
+    assert isinstance(failed.stderr, str)
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(FileNotFoundError):
+        git_run(repo, ["status"])
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a fake `powershell` script cannot shadow powershell.exe"
+)
+def test_windows_git_process_probe_stops_a_hung_tree(tmp_path: Path, monkeypatch) -> None:
+    from booley.runtime.git import _iter_git_process_cmdlines_windows
+
+    with heartbeat_tree(tmp_path) as paths:
+        fake = tmp_path / "bin" / "powershell"
+        fake.parent.mkdir()
+        argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
+        fake.write_text(f"#!/bin/sh\nexec {shlex.join(argv)}\n", encoding="utf-8")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+        started = time.monotonic()
+
+        assert _iter_git_process_cmdlines_windows() == []
+
+        assert time.monotonic() - started < scaled(38)
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"

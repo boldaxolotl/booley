@@ -4,9 +4,8 @@ Status: accepted (2026-11-06/07 triage of
 [#2711](https://github.com/boldaxolotl/booley/issues/2711))
 
 Supersedes the campaign terminology of
-[ADR 0062](0062-split-coverage-campaign-summary-from-point-storage.md),
-[ADR 0064](0064-make-simulation-campaign-the-resume-authority.md) and
-[ADR 0072](0072-declare-test-variants-and-seeds-instead-of-run-overrides.md).
+[ADR 0062](0062-split-coverage-campaign-summary-from-point-storage.md) and
+[ADR 0064](0064-make-simulation-campaign-the-resume-authority.md).
 Their other decisions stand.
 
 ## Context

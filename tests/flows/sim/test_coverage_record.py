@@ -1,0 +1,1009 @@
+from __future__ import annotations
+
+import copy
+import json
+
+import pytest
+
+from booley.flows.sim.coverage_record import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
+    CoverageFinding,
+    CoverageRecordValidationError,
+    DurableTargetIdentity,
+    _decode_run,
+    encode_coverage_record,
+)
+from tests.flows.sim.coverage_record_test_support import decode_document
+
+_POINT_ID = (
+    "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEwOmJhc2ljLWJsb2NrLTAiLCJyZWNvcm"
+    "RfdHlwZSI6InZfbGluZSJ9LCJoaWVyYXJjaHkiOiJUT1AuY291bnRlciIsImxvY2F0aW9uIjp7"
+    "ImVuZCI6eyJjb2x1bW4iOjI4LCJsaW5lIjoxMH0sInNvdXJjZSI6InJ0bC9jb3VudGVyLnN2Ii"
+    "wic3RhcnQiOnsiY29sdW1uIjozLCJsaW5lIjoxMH19LCJtZXRyaWMiOiJsaW5lIiwic3ViamVj"
+    "dCI6eyJiYXNpY19ibG9jayI6MH19"
+)
+_TESTBENCH_POINT_ID = (
+    "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEwOmJhc2ljLWJsb2NrLTAiLCJyZWNvcm"
+    "RfdHlwZSI6InZfbGluZSJ9LCJoaWVyYXJjaHkiOiJUT1AuY291bnRlciIsImxvY2F0aW9uIjp7"
+    "ImVuZCI6eyJjb2x1bW4iOjI4LCJsaW5lIjoxMH0sInNvdXJjZSI6InRiL2NvdW50ZXJfdGIuc3"
+    "YiLCJzdGFydCI6eyJjb2x1bW4iOjMsImxpbmUiOjEwfX0sIm1ldHJpYyI6ImxpbmUiLCJzdWJq"
+    "ZWN0Ijp7ImJhc2ljX2Jsb2NrIjowfX0"
+)
+_FSM_POINT_ID = (
+    "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEwOmZzbS1ydW4td3JhcCIsInJlY29yZF90eX"
+    "BlIjoidl9mc20ifSwiaGllcmFyY2h5IjoiVE9QLmNvdW50ZXIiLCJsb2NhdGlvbiI6eyJlbmQiOnsi"
+    "Y29sdW1uIjoyOCwibGluZSI6MTB9LCJzb3VyY2UiOiJydGwvY291bnRlci5zdiIsInN0YXJ0Ijp7Im"
+    "NvbHVtbiI6MywibGluZSI6MTB9fSwibWV0cmljIjoiZnNtIiwic3ViamVjdCI6eyJtYWNoaW5lIjoi"
+    "Y291bnRlcl9zdGF0ZSIsInRyYW5zaXRpb24iOiJSVU5fdG9fV1JBUCJ9fQ"
+)
+_BRANCH_POINT_ID = (
+    "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEyOmJyYW5jaC10cnVlIiwicmVjb3JkX3"
+    "R5cGUiOiJ2X2JyYW5jaCJ9LCJoaWVyYXJjaHkiOiJUT1AuY291bnRlciIsImxvY2F0aW9uIjp7"
+    "ImVuZCI6eyJjb2x1bW4iOjI4LCJsaW5lIjoxMn0sInNvdXJjZSI6InJ0bC9jb3VudGVyLnN2Ii"
+    "wic3RhcnQiOnsiY29sdW1uIjozLCJsaW5lIjoxMn19LCJtZXRyaWMiOiJicmFuY2giLCJzdWJq"
+    "ZWN0Ijp7Im91dGNvbWUiOiJ0cnVlIn19"
+)
+
+
+def _fingerprint(character: str) -> str:
+    return f"sha256:{character * 64}"
+
+
+def _valid_provenance() -> dict[str, object]:
+    return {
+        "invocation": {"id": 12, "started_at": "2026-09-01T10:30:00Z"},
+        "target": {"identity": "acme:demo:counter:1.0#sim_counter", "selector": "sim_counter"},
+        "collector": {
+            "kind": "verilator",
+            "version": {"tag": "v5.046", "commit": "24b2ac24c721fdad89bba75a492e02c6aa63f32e"},
+            "native_format": {"name": "verilator-coverage", "compatibility": "compatible"},
+            "capabilities": [{"record_class": "line", "status": "reported"}],
+        },
+        "build": {
+            "recipe_fingerprint": _fingerprint("5"),
+            "instrumentation": ["--coverage-line", "--coverage-per-instance"],
+            "trace": False,
+            "coverage": True,
+        },
+        "coverage_window": {"mode": "whole_run", "hook_evidence_artifacts": []},
+        "fingerprints": {
+            "target_definition": _fingerprint("1"),
+            "rtl_sources": _fingerprint("2"),
+            "testbench_sources": _fingerprint("3"),
+            "test_declarations": _fingerprint("4"),
+            "instrumented_build": _fingerprint("5"),
+        },
+        "source_closure": {
+            "rtl": [{"path": "rtl/counter.sv", "sha256": _fingerprint("6")}],
+            "testbench": [{"path": "tb/counter_tb.sv", "sha256": _fingerprint("7")}],
+        },
+    }
+
+
+def _valid_tests() -> dict[str, object]:
+    return {
+        "declared": ["reset"],
+        "selected": ["reset"],
+        "runs": [
+            {
+                "id": "run:reset",
+                "test": "reset",
+                "test_run": "reset",
+                "variant": None,
+                "seed": None,
+                "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
+                "simulation_verdict": "pass",
+                "collection": "included",
+                "raw_artifact": "artifact:raw-reset",
+            },
+        ],
+    }
+
+
+def _valid_artifacts() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "artifact:raw-reset",
+            "kind": "raw_native",
+            "owner_run": "run:reset",
+            "path": "native/raw/reset.dat",
+            "sha256": _fingerprint("a"),
+            "bytes": 4120,
+            "state": "fresh_queryable",
+        },
+        {
+            "id": "artifact:merged",
+            "kind": "merged_native",
+            "path": "native/merged/coverage.dat",
+            "sha256": _fingerprint("b"),
+            "bytes": 4250,
+            "state": "fresh_queryable",
+        },
+    ]
+
+
+def _valid_points() -> list[dict[str, object]]:
+    return [
+        {
+            "id": _POINT_ID,
+            "identity": {
+                "metric": "line",
+                "location": {
+                    "source": "rtl/counter.sv",
+                    "start": {"line": 10, "column": 3},
+                    "end": {"line": 10, "column": 28},
+                },
+                "hierarchy": "TOP.counter",
+                "subject": {"basic_block": 0},
+                "collector": {"record_type": "v_line", "native_key": "10:basic-block-0"},
+            },
+            "hits_by_run": {"run:reset": 2},
+            "disposition": {"kind": "eligible"},
+        }
+    ]
+
+
+def _valid_outcomes() -> dict[str, object]:
+    return {
+        "rollups": [
+            {
+                "metric": "line",
+                "semantics": "One Verilator basic-block point; covered when its count is greater than zero.",
+                "total_points": 1,
+                "eligible_points": 1,
+                "covered_points": 1,
+                "waived_points": 0,
+                "percent": 100.0,
+            }
+        ],
+        "collection": {
+            "status": "complete",
+            "merge": {"status": "equivalent", "artifact": "artifact:merged"},
+            "diagnostics": [],
+        },
+        "findings": [],
+        "evaluation": {
+            "status": "not_requested",
+            "criterion_fingerprint": None,
+            "suite": {"status": "not_evaluated"},
+            "thresholds": {},
+            "metrics": [],
+            "diagnostics": [],
+        },
+    }
+
+
+def _valid_document() -> dict[str, object]:
+    return {
+        "$schema": "booley.coverage-record-document/v1",
+        "coverage_record_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
+        **_valid_provenance(),
+        "tests": _valid_tests(),
+        "artifacts": _valid_artifacts(),
+        "normalization": {"status": "complete", "unrecognized_records": []},
+        "points": _valid_points(),
+        **_valid_outcomes(),
+    }
+
+
+_TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
+
+
+def _codes(document: dict[str, object]) -> list[tuple[str, str]]:
+    with pytest.raises(CoverageRecordValidationError) as caught:
+        decode_document(document, _TARGET)
+    return [(finding.code, finding.pointer) for finding in caught.value.findings]
+
+
+def test_known_literal_decodes_to_immutable_coverage_record_and_encodes_canonically() -> None:
+    document = _valid_document()
+
+    coverage_record = decode_document(
+        copy.deepcopy(document),
+        _TARGET,
+    )
+
+    assert coverage_record.coverage_record_id == "campaign:sim_counter:2026-09-01T10:30:00Z"
+    assert coverage_record.target.identity == "acme:demo:counter:1.0#sim_counter"
+    assert coverage_record.runs[0].simulation_verdict == "pass"
+    assert coverage_record.points[0].hits_by_run["run:reset"] == 2
+    assert coverage_record.rollups[0].covered_points == 1
+    assert encode_coverage_record(coverage_record) == document
+    with pytest.raises(TypeError):
+        coverage_record.points[0].hits_by_run["run:reset"] = 4
+    with pytest.raises(TypeError):
+        coverage_record.points[0].identity.subject["basic_block"] = 3
+
+
+def test_evaluated_coverage_record_preserves_exact_metric_evidence() -> None:
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "pass",
+        "criterion_fingerprint": _fingerprint("c"),
+        "approved_waiver_set_digest": _fingerprint("d"),
+        "suite": {
+            "status": "match",
+            "required": ["reset"],
+            "selected": ["reset"],
+        },
+        "thresholds": {"line": 100},
+        "metrics": [
+            {
+                "metric": "line",
+                "total_points": 1,
+                "eligible_points": 1,
+                "covered_points": 1,
+                "waived_points": 0,
+                "actual_numerator": 100,
+                "actual_denominator": 1,
+                "actual_percent": 100.0,
+                "minimum_percent": 100,
+                "verdict": "pass",
+            }
+        ],
+        "diagnostics": [],
+    }
+
+    coverage_record = decode_document(document, _TARGET)
+
+    assert encode_coverage_record(coverage_record) == document
+
+
+def test_gated_coverage_record_requires_approved_waiver_set_digest() -> None:
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "blocked",
+        "criterion_fingerprint": _fingerprint("c"),
+        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "thresholds": {"line": 100},
+        "metrics": [],
+        "diagnostics": [
+            {
+                "code": "COV_EVAL_EMPTY_DENOMINATOR",
+                "pointer": "/rollups",
+                "message": "Configured metric has no eligible points: line.",
+            }
+        ],
+    }
+
+    assert _codes(document) == [("COV_FIELD_REQUIRED", "/evaluation/approved_waiver_set_digest")]
+
+
+def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() -> None:
+    document = _valid_document()
+    document["collector"]["capabilities"].append({"record_class": "branch", "status": "reported"})
+    document["points"].append(
+        {
+            "id": _BRANCH_POINT_ID,
+            "identity": {
+                "metric": "branch",
+                "location": {
+                    "source": "rtl/counter.sv",
+                    "start": {"line": 12, "column": 3},
+                    "end": {"line": 12, "column": 28},
+                },
+                "hierarchy": "TOP.counter",
+                "subject": {"outcome": "true"},
+                "collector": {
+                    "record_type": "v_branch",
+                    "native_key": "12:branch-true",
+                },
+            },
+            "hits_by_run": {"run:reset": 1},
+            "disposition": {"kind": "eligible"},
+        }
+    )
+    document["rollups"].append(
+        {
+            "metric": "branch",
+            "semantics": (
+                "One branch outcome; each outcome is a separate point covered when count is "
+                "greater than zero."
+            ),
+            "total_points": 1,
+            "eligible_points": 1,
+            "covered_points": 1,
+            "waived_points": 0,
+            "percent": 100.0,
+        }
+    )
+    metric_evidence = [
+        {
+            "metric": metric,
+            "total_points": 1,
+            "eligible_points": 1,
+            "covered_points": 1,
+            "waived_points": 0,
+            "actual_numerator": 100,
+            "actual_denominator": 1,
+            "actual_percent": 100.0,
+            "minimum_percent": 90,
+            "verdict": "pass",
+        }
+        for metric in ("line", "branch")
+    ]
+    document["evaluation"] = {
+        "status": "pass",
+        "criterion_fingerprint": _fingerprint("c"),
+        "approved_waiver_set_digest": _fingerprint("d"),
+        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "thresholds": {"branch": 90, "line": 90},
+        "metrics": metric_evidence,
+        "diagnostics": [],
+    }
+
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
+
+    assert [item["metric"] for item in coverage_record.evaluation["metrics"]] == ["line", "branch"]
+
+
+def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> None:
+    document = _valid_document()
+    document["target"]["identity"] = "acme:demo:other:1.0#sim_other"
+    document["tests"]["declared"] = ["reset", "reset"]
+    document["artifacts"][0]["path"] = "../../outside.dat"
+    document["points"][0]["id"] = "cp1:not-the-identity"
+    document["points"][0]["hits_by_run"] = {"run:ghost": 0}
+
+    with pytest.raises(CoverageRecordValidationError) as caught:
+        decode_document(
+            document,
+            _TARGET,
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_TARGET_MISMATCH", "/target/identity"),
+        ("COV_DECLARED_TEST_DUPLICATE", "/tests/declared/1"),
+        ("COV_ARTIFACT_PATH_UNSAFE", "/artifacts/0/path"),
+        ("COV_POINT_ID_MISMATCH", "/points/0/id"),
+        ("COV_POINT_ID_INCOMPLETE", "/points/0/id"),
+        ("COV_POINT_RUN_UNKNOWN", "/points/0/hits_by_run/run:ghost"),
+        ("COV_POINT_HIT_NONPOSITIVE", "/points/0/hits_by_run/run:ghost"),
+    ]
+    message = str(caught.value)
+    assert "COV_TARGET_MISMATCH at /target/identity" in message
+    assert "COV_DECLARED_TEST_DUPLICATE at /tests/declared/1" in message
+    assert "COV_ARTIFACT_PATH_UNSAFE at /artifacts/0/path" in message
+    assert "COV_POINT_ID_MISMATCH" not in message
+    assert message.endswith("+4 more")
+
+
+def test_invalid_coverage_record_message_is_bounded_and_control_safe() -> None:
+    pointer = "/points/0/hits_by_run/run:bad\n\t\x1b[31m" + "x" * 2_000
+    finding = CoverageFinding(
+        severity="error",
+        code="COV_POINT_RUN_UNKNOWN",
+        pointer=pointer,
+        message="Unknown run id.\r" + "y" * 2_000,
+    )
+
+    findings = (finding, finding, finding, finding)
+    error = CoverageRecordValidationError(findings)
+
+    assert len(str(error)) <= 1_024
+    assert "\\n" in str(error)
+    assert "\\t" in str(error)
+    assert "\\u001b" in str(error)
+    assert "..." in str(error)
+    assert "\n" not in str(error)
+    assert "\r" not in str(error)
+    assert "\t" not in str(error)
+    assert "\x1b" not in str(error)
+    assert str(error).endswith("+1 more")
+    assert error.findings[0].pointer == pointer
+
+
+def test_invalid_coverage_record_message_names_all_point_defects_in_stable_order() -> None:
+    document = _valid_document()
+    duplicate = copy.deepcopy(document["points"][0])
+    duplicate["hits_by_run"] = {"run:reset": -1}
+    document["points"].append(duplicate)
+    document["rollups"][0].update(
+        {
+            "total_points": 2,
+            "eligible_points": 2,
+            "covered_points": 1,
+            "waived_points": 0,
+            "percent": 50.0,
+        }
+    )
+
+    with pytest.raises(CoverageRecordValidationError) as caught:
+        decode_document(
+            document,
+            _TARGET,
+        )
+
+    error = caught.value
+    duplicate_text = "COV_POINT_ID_DUPLICATE at /points/1/id"
+    hit_text = "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset"
+    assert duplicate_text in str(error)
+    assert hit_text in str(error)
+    assert str(error).index(duplicate_text) < str(error).index(hit_text)
+    assert [(finding.code, finding.pointer) for finding in error.findings] == [
+        ("COV_POINT_ID_DUPLICATE", "/points/1/id"),
+        ("COV_POINT_HIT_NONPOSITIVE", "/points/1/hits_by_run/run:reset"),
+    ]
+
+
+def test_unknown_native_record_is_retained_without_blocking_known_evidence() -> None:
+    document = _valid_document()
+    document["collector"]["capabilities"].append(
+        {"record_class": "native:mystery-27", "status": "reported"}
+    )
+    document["normalization"] = {
+        "status": "complete_with_unknown_records",
+        "unrecognized_records": [
+            {
+                "raw_artifact": "artifact:raw-reset",
+                "record_ordinal": 27,
+                "native_type": "mystery-27",
+                "state": "unknown_retained",
+            }
+        ],
+    }
+    document["findings"] = [
+        {
+            "severity": "info",
+            "code": "COV_NATIVE_RECORD_UNKNOWN",
+            "pointer": "/normalization/unrecognized_records/0",
+            "message": "Native record class is retained but not normalized as a point.",
+        }
+    ]
+
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
+
+    assert coverage_record.collector.capabilities[-1].status == "reported"
+    assert coverage_record.normalization["unrecognized_records"][0]["record_ordinal"] == 27
+    assert encode_coverage_record(coverage_record) == document
+
+
+def test_incompatible_native_format_round_trips_without_normalized_evidence() -> None:
+    document = _valid_document()
+    document["collector"]["native_format"]["compatibility"] = "incompatible"
+    document["normalization"] = {"status": "incompatible", "unrecognized_records": []}
+    document["points"] = []
+    document["rollups"] = []
+    document["collection"] = {
+        "status": "incompatible",
+        "merge": {"status": "not_attempted", "artifact": None},
+        "diagnostics": ["COV_NATIVE_FORMAT_INCOMPATIBLE"],
+    }
+    document["evaluation"]["status"] = "blocked"
+    document["evaluation"]["diagnostics"] = ["COV_NATIVE_FORMAT_INCOMPATIBLE"]
+
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
+
+    assert coverage_record.points == ()
+    assert coverage_record.normalization["status"] == "incompatible"
+    assert encode_coverage_record(coverage_record) == document
+
+
+def test_decoder_aggregates_structural_findings_before_model_construction() -> None:
+    document = _valid_document()
+    del document["coverage_record_id"]
+    document["invocation"] = []
+    document["collector"]["capabilities"][0]["status"] = 7
+    document["tests"]["runs"][0]["test"] = False
+    document["artifacts"][0]["bytes"] = True
+    document["points"][0]["identity"]["location"] = []
+
+    assert _codes(document) == [
+        ("COV_FIELD_REQUIRED", "/coverage_record_id"),
+        ("COV_FIELD_TYPE", "/invocation"),
+        ("COV_FIELD_TYPE", "/collector/capabilities/0/status"),
+        ("COV_FIELD_TYPE", "/tests/runs/0/test"),
+        ("COV_FIELD_TYPE", "/artifacts/0/bytes"),
+        ("COV_FIELD_TYPE", "/points/0/identity/location"),
+    ]
+
+
+def test_decoder_aggregates_safe_semantic_findings_with_structural_findings() -> None:
+    document = _valid_document()
+    del document["coverage_record_id"]
+    document["target"]["identity"] = "acme:demo:other:1.0#sim_other"
+
+    assert _codes(document) == [
+        ("COV_FIELD_REQUIRED", "/coverage_record_id"),
+        ("COV_TARGET_MISMATCH", "/target/identity"),
+    ]
+
+
+def test_decoder_rejects_unparseable_invocation_timestamp() -> None:
+    document = _valid_document()
+    document["invocation"]["started_at"] = "yesterday"
+
+    assert _codes(document) == [("COV_TIMESTAMP_INVALID", "/invocation/started_at")]
+
+
+def test_encoder_canonicalizes_legacy_invocation_timestamp() -> None:
+    document = _valid_document()
+    document["invocation"]["started_at"] = "2026-09-01T14:30:00.987654+04:00"
+
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
+
+    encoded = encode_coverage_record(coverage_record)
+    assert encoded["invocation"]["started_at"] == "2026-09-01T10:30:00Z"
+
+
+def test_points_require_reported_capabilities_and_exact_dispositions() -> None:
+    document = _valid_document()
+    document["collector"]["capabilities"][0]["status"] = "maybe"
+    document["points"][0]["disposition"] = {"kind": "waived"}
+    document["rollups"][0].update(
+        {
+            "eligible_points": 0,
+            "covered_points": 0,
+            "waived_points": 1,
+            "percent": None,
+        }
+    )
+
+    assert _codes(document) == [
+        ("COV_CAPABILITY_STATUS_INVALID", "/collector/capabilities/0/status"),
+        ("COV_POINT_CAPABILITY_MISSING", "/points/0/identity/metric"),
+        ("COV_WAIVER_REFERENCE_INCOMPLETE", "/points/0/disposition"),
+    ]
+
+
+def test_reported_only_point_must_be_unscored() -> None:
+    document = _valid_document()
+    point = document["points"][0]
+    point["id"] = _FSM_POINT_ID
+    point["identity"] = {
+        "metric": "fsm",
+        "location": {
+            "source": "rtl/counter.sv",
+            "start": {"line": 10, "column": 3},
+            "end": {"line": 10, "column": 28},
+        },
+        "hierarchy": "TOP.counter",
+        "subject": {"machine": "counter_state", "transition": "RUN_to_WRAP"},
+        "collector": {"record_type": "v_fsm", "native_key": "10:fsm-run-wrap"},
+    }
+    point["disposition"] = {
+        "kind": "waived",
+        "waiver_id": "waiver:fsm",
+        "waiver_file": "rtl/counter.sv.json",
+        "waiver_fingerprint": _fingerprint("e"),
+    }
+    document["collector"]["capabilities"] = [{"record_class": "fsm", "status": "reported"}]
+    document["rollups"] = []
+
+    assert _codes(document) == [("COV_REPORTED_ONLY_POINT_SCORED", "/points/0/disposition")]
+
+
+def test_decoder_validates_coverage_record_state_sections_before_semantic_checks() -> None:
+    document = _valid_document()
+    document["build"]["coverage"] = "yes"
+    document["collection"].pop("status")
+    document["collection"]["merge"] = []
+    document["evaluation"]["status"] = 1
+
+    assert _codes(document) == [
+        ("COV_FIELD_TYPE", "/build/coverage"),
+        ("COV_FIELD_REQUIRED", "/collection/status"),
+        ("COV_FIELD_TYPE", "/collection/merge"),
+        ("COV_FIELD_TYPE", "/evaluation/status"),
+    ]
+
+
+def test_decoder_validates_diagnostic_shapes_at_the_coverage_record_boundary() -> None:
+    document = _valid_document()
+    document["collection"]["diagnostics"] = [False]
+    document["evaluation"]["diagnostics"] = [
+        {"code": False, "pointer": "/evaluation", "message": "invalid code"}
+    ]
+
+    assert _codes(document) == [
+        ("COV_FIELD_TYPE", "/collection/diagnostics/0"),
+        ("COV_FIELD_TYPE", "/evaluation/diagnostics/0/code"),
+    ]
+
+
+def test_a_scored_verdict_without_a_matching_suite_is_refused_before_its_required_list() -> None:
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "fail",
+        "criterion_fingerprint": _fingerprint("d"),
+        "approved_waiver_set_digest": _fingerprint("e"),
+        "suite": {"status": "complete"},
+        "thresholds": {"line": 50.0},
+        "metrics": [
+            {
+                "metric": "line",
+                "actual_percent": 100.0,
+                "minimum_percent": 50.0,
+                "verdict": "fail",
+            }
+        ],
+        "diagnostics": [],
+    }
+
+    assert _codes(document) == [("COV_EVALUATION_MISMATCH", "/evaluation")]
+
+
+def test_only_rtl_source_closure_points_can_be_scored() -> None:
+    document = _valid_document()
+    document["points"][0]["identity"]["location"]["source"] = "tb/counter_tb.sv"
+    document["points"][0]["id"] = _TESTBENCH_POINT_ID
+
+    assert _codes(document) == [("COV_SCORED_POINT_OUTSIDE_RTL", "/points/0/disposition")]
+
+
+def test_encoder_canonicalizes_nested_json_object_key_order() -> None:
+    first = _valid_document()
+    second = copy.deepcopy(first)
+    source = second["source_closure"]["rtl"][0]
+    second["source_closure"]["rtl"][0] = {
+        "sha256": source["sha256"],
+        "path": source["path"],
+    }
+
+    first_coverage_record = decode_document(
+        first,
+        _TARGET,
+    )
+    second_coverage_record = decode_document(
+        second,
+        _TARGET,
+    )
+
+    assert json.dumps(encode_coverage_record(first_coverage_record)) == json.dumps(
+        encode_coverage_record(second_coverage_record)
+    )
+
+
+def test_decoder_rejects_duplicate_run_artifact_and_capability_identities() -> None:
+    document = _valid_document()
+    document["tests"]["runs"].append(copy.deepcopy(document["tests"]["runs"][0]))
+    document["artifacts"].append(copy.deepcopy(document["artifacts"][0]))
+    document["collector"]["capabilities"].append(
+        copy.deepcopy(document["collector"]["capabilities"][0])
+    )
+
+    assert _codes(document) == [
+        ("COV_RUN_ID_DUPLICATE", "/tests/runs/1/id"),
+        ("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run"),
+        ("COV_ARTIFACT_ID_DUPLICATE", "/artifacts/2/id"),
+        ("COV_CAPABILITY_DUPLICATE", "/collector/capabilities/1/record_class"),
+    ]
+
+
+def test_decoder_rejects_unknown_run_states() -> None:
+    document = _valid_document()
+    document["tests"]["runs"][0]["simulation_verdict"] = "maybe"
+    document["tests"]["runs"][0]["collection"] = "sometimes"
+    document["collection"] = {
+        "status": "incomplete",
+        "merge": {"status": "not_attempted", "artifact": None},
+        "diagnostics": [],
+    }
+    document["rollups"] = []
+
+    assert _codes(document) == [
+        ("COV_SIMULATION_VERDICT_INVALID", "/tests/runs/0/simulation_verdict"),
+        ("COV_RUN_COLLECTION_STATE_INVALID", "/tests/runs/0/collection"),
+    ]
+
+
+def test_noncomplete_coverage_record_retains_points_without_rollups() -> None:
+    document = _valid_document()
+    document["collection"]["status"] = "collector_error"
+    document["normalization"]["status"] = "partial"
+    document["rollups"] = []
+
+    coverage_record = decode_document(document, _TARGET)
+
+    assert coverage_record.points
+    assert coverage_record.rollups == ()
+
+
+def test_coverage_record_rejects_unknown_collection_status() -> None:
+    document = _valid_document()
+    document["collection"]["status"] = "future"
+    document["rollups"] = []
+
+    assert ("COV_COLLECTION_STATUS_INVALID", "/collection/status") in _codes(document)
+
+
+def _name_run(run: dict[str, object], variant: str | None, seed: int | None) -> None:
+    """Record *run* as the Test Run of Test ``reset`` with *variant* and *seed*."""
+    name = "reset" + (f"+{variant}" if variant else "") + (f"@{seed}" if seed else "")
+    run.update(test_run=name, variant=variant, seed=seed)
+
+
+def _with_second_run(
+    document: dict[str, object], variant: str | None = None, seed: int | None = None
+) -> dict[str, object]:
+    """Add a second included run of Test ``reset`` with *variant* and *seed*."""
+    run = copy.deepcopy(document["tests"]["runs"][0])
+    run.update(id="run:reset-2", raw_artifact="artifact:raw-reset-2")
+    _name_run(run, variant, seed)
+    document["tests"]["runs"].append(run)
+    artifact = copy.deepcopy(document["artifacts"][0])
+    artifact.update(
+        id="artifact:raw-reset-2", owner_run="run:reset-2", path="native/raw/reset-2.dat"
+    )
+    document["artifacts"].insert(1, artifact)
+    return document
+
+
+def test_one_test_may_have_several_distinct_test_runs() -> None:
+    document = _valid_document()
+    _name_run(document["tests"]["runs"][0], "short", 1)
+    _with_second_run(document, "soak", 7)
+
+    coverage_record = decode_document(document, _TARGET)
+
+    assert coverage_record.selected_tests == ("reset",)
+    assert [(run.test, run.test_run) for run in coverage_record.runs] == [
+        ("reset", "reset+short@1"),
+        ("reset", "reset+soak@7"),
+    ]
+    assert encode_coverage_record(coverage_record) == document
+
+
+def test_two_runs_of_one_test_run_are_refused() -> None:
+    document = _with_second_run(_valid_document())
+
+    assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "reset@x3",
+        "reset@0",
+        "reset@01",
+        "reset+a+b",
+        "reset@",
+        "reset+default",
+        "",
+        "wrap@1",
+        "resets",
+        "reset.x",
+        7,
+        None,
+    ],
+)
+def test_a_recorded_test_run_obeys_the_test_run_grammar(name: object) -> None:
+    """Strict on decode: the name is parsed, never accepted as any string."""
+    document = _valid_document()
+    document["tests"]["runs"][0]["test_run"] = name
+
+    if isinstance(name, str):
+        assert _codes(document) == [("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")]
+    else:
+        assert ("COV_FIELD_TYPE", "/tests/runs/0/test_run") in _codes(document)
+
+
+@pytest.mark.parametrize(
+    ("variant", "seed", "name"),
+    [
+        (None, None, "reset"),
+        (None, 7, "reset@7"),
+        ("soak", None, "reset+soak"),
+        ("soak", 2147483647, "reset+soak@2147483647"),
+    ],
+)
+def test_every_test_run_form_of_the_test_is_accepted(variant, seed, name: str) -> None:
+    document = _valid_document()
+    _name_run(document["tests"]["runs"][0], variant, seed)
+
+    run = decode_document(document, _TARGET).runs[0]
+
+    assert (run.test_run, run.variant, run.seed) == (name, variant, seed)
+    assert encode_coverage_record(decode_document(document, _TARGET)) == document
+
+
+@pytest.mark.parametrize(
+    ("variant", "seed"),
+    [
+        ("soak", None),
+        (None, 7),
+        ("soak", 8),
+        ("other", 7),
+        ("default", 7),
+        ("soak", 0),
+        ("soak", True),
+        ("soak", "7"),
+        (5, 7),
+    ],
+)
+def test_the_recorded_variant_and_seed_must_be_the_ones_the_name_states(variant, seed) -> None:
+    """The name is never re-parsed by a reader, so the record must agree with itself."""
+    document = _valid_document()
+    document["tests"]["runs"][0].update(test_run="reset+soak@7", variant=variant, seed=seed)
+
+    assert ("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run") in _codes(document)
+
+
+@pytest.mark.parametrize(
+    "fingerprint", ["", "sha256:short", "9" * 64, "sha256:" + "G" * 64, "sha256:" + "A" * 64, 5]
+)
+def test_a_recorded_fingerprint_is_a_canonical_sha256_digest(fingerprint: object) -> None:
+    document = _valid_document()
+    document["tests"]["runs"][0]["fingerprint"] = fingerprint
+
+    expected = (
+        ("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")
+        if isinstance(fingerprint, str)
+        else ("COV_FIELD_TYPE", "/tests/runs/0/fingerprint")
+    )
+    assert expected in _codes(document)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"test_run": 7},
+        {"test_run": ""},
+        {"fingerprint": ""},
+        {"variant": 5},
+        {"variant": ""},
+        {"seed": "7"},
+        {"seed": True},
+    ],
+)
+def test_decoding_never_coerces_or_defaults_a_recorded_identity(bad: dict[str, object]) -> None:
+    # The public decoder refuses these records in validation first; only the model decoder
+    # itself can show it never coerces or defaults.
+    named = {
+        "id": "run:1",
+        "test": "reset",
+        "simulation_verdict": "pass",
+        "collection": "included",
+        "test_run": "reset+soak@7",
+        "variant": "soak",
+        "seed": 7,
+        "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
+    }
+    with pytest.raises(ValueError):
+        _decode_run({**named, **bad})
+
+
+@pytest.mark.parametrize("change", ["percent", "extra-row", "incomplete-collection"])
+def test_stored_rollups_are_recomputed_from_points(change: str) -> None:
+    document = _valid_document()
+    derived = decode_document(copy.deepcopy(document), _TARGET).rollups
+    if change == "percent":
+        document["rollups"][0].update(covered_points=0, percent=0.0)
+    elif change == "extra-row":
+        document["rollups"].append({**document["rollups"][0], "metric": "branch"})
+    else:
+        document["collection"]["status"] = "collector_error"
+        derived = ()
+
+    coverage_record = decode_document(document, _TARGET)
+
+    assert coverage_record.rollups == derived
+    assert (change == "incomplete-collection") == (coverage_record.rollups == ())
+
+
+_V1_EVALUATION_FIELDS: dict[str, object] = {
+    "criterion_fingerprint": None,
+    "suite": {"status": "mismatch", "required": ["reset"]},
+    "thresholds": {"line": 50},
+    "metrics": [],
+    "diagnostics": [],
+}
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        pytest.param(
+            {"status": "unknown"},
+            ("COV_EVALUATION_STATUS_INVALID", "/evaluation/status"),
+            id="status-outside-v1",
+        ),
+        pytest.param(
+            {"suite": []}, ("COV_FIELD_TYPE", "/evaluation/suite"), id="suite-not-object"
+        ),
+        pytest.param(
+            {"suite": {"status": "match", "required": [1]}},
+            ("COV_FIELD_TYPE", "/evaluation/suite/required/0"),
+            id="required-not-strings",
+        ),
+        pytest.param(
+            {"status": "pass", "suite": {"status": "match"}},
+            ("COV_FIELD_REQUIRED", "/evaluation/suite/required"),
+            id="pass-without-required",
+        ),
+        pytest.param(
+            {"thresholds": {"fsm": 50}},
+            ("COV_FIELD_TYPE", "/evaluation/thresholds/fsm"),
+            id="unknown-threshold-metric",
+        ),
+        pytest.param(
+            {"thresholds": {"line": float("nan")}},
+            ("COV_FIELD_TYPE", "/evaluation/thresholds/line"),
+            id="nonfinite-threshold",
+        ),
+        pytest.param(
+            {"thresholds": {"line": 10**400}},
+            ("COV_FIELD_TYPE", "/evaluation/thresholds/line"),
+            id="huge-threshold",
+        ),
+        pytest.param(
+            {"metrics": ["line"]}, ("COV_FIELD_TYPE", "/evaluation/metrics/0"), id="row-not-object"
+        ),
+        pytest.param(
+            {"metrics": [{"metric": "line", "verdict": "pass"}] * 2},
+            ("COV_FIELD_TYPE", "/evaluation/metrics/1/metric"),
+            id="repeated-row",
+        ),
+    ],
+)
+def test_evaluation_fields_later_code_reads_are_type_checked(
+    changes: dict[str, object], expected: tuple[str, str]
+) -> None:
+    """A tampered evaluation is a ``COV_*`` finding, never a traceback in a later reader."""
+    document = _valid_document()
+    document["evaluation"] = {"status": "blocked", **_V1_EVALUATION_FIELDS, **changes}
+
+    assert _codes(document) == [expected]
+
+
+def _scored_verdict_document(**changes: object) -> dict[str, object]:
+    """A document whose stored pass verdict is honest for the one eligible, hit line point."""
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "pass",
+        "criterion_fingerprint": _fingerprint("d"),
+        "approved_waiver_set_digest": _fingerprint("e"),
+        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "thresholds": {"line": 50},
+        "metrics": [],
+        "diagnostics": [],
+    }
+    document["evaluation"].update(changes)
+    return document
+
+
+def test_a_stored_pass_is_rescored_from_the_points() -> None:
+    coverage_record = decode_document(_scored_verdict_document(status="fail"), _TARGET)
+
+    assert coverage_record.evaluation["status"] == "pass"
+    assert [row["metric"] for row in coverage_record.evaluation["metrics"]] == ["line"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty-thresholds",
+        "out-of-range",
+        "metric-without-rollup",
+        "zero-denominator",
+        "incomplete-collection",
+    ],
+)
+def test_unscorable_stored_verdict_is_refused(case: str) -> None:
+    document = _scored_verdict_document()
+    expected = ("COV_EVALUATION_MISMATCH", "/evaluation")
+    if case == "empty-thresholds":
+        document["evaluation"]["thresholds"] = {}
+    elif case == "out-of-range":
+        document["evaluation"]["thresholds"] = {"line": 150}
+    elif case == "metric-without-rollup":
+        document["evaluation"]["thresholds"] = {"branch": 50}
+    elif case == "zero-denominator":
+        document["points"][0]["disposition"] = {"kind": "unscored"}
+    else:
+        document["collection"]["status"] = "collector_error"
+        expected = ("COV_INCOMPLETE_EVALUATED", "/evaluation/status")
+
+    assert _codes(document) == [expected]

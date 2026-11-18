@@ -9,8 +9,9 @@ from booley.core.boundary import BoundaryError, require_dict, require_str
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning.licensing import flexnet_docker
+from booley.runtime import host_docker
 from booley.runtime.filesystem_utils import unlink_file
-from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.private_store import session_store_repair
 
 
 class InvalidationError(RuntimeError):
@@ -50,7 +51,9 @@ def recover_project_locked(project_root: str) -> bool:
     if _load(project_root) is None:
         return False
     invalidate(project_root)
-    residual = flexnet_docker.cleanup_project_resources_for_identity(project_root)
+    residual = flexnet_docker.cleanup_project_resources_for_identity(
+        project_root, runner=host_docker.relay_docker
+    )
     if residual:
         raise InvalidationError(
             "EDA authority changed, but Sandbox cleanup left residual objects: "
@@ -63,6 +66,13 @@ def recover_project_locked(project_root: str) -> bool:
 def recover_all_locked() -> tuple[str, ...]:
     """Complete every pending invalidation while the host lifecycle lock is held."""
     return tuple(root for root in pending_invalidations() if recover_project_locked(root))
+
+
+def shared_recovery_blocks_command(*, read_only: bool) -> bool:
+    """Check or complete host-wide invalidations; report whether the command must stop."""
+    if read_only:
+        return bool(pending_invalidations())
+    return bool(recover_all_locked())
 
 
 def pending_invalidations() -> tuple[str, ...]:
@@ -98,4 +108,18 @@ def journal_store() -> ProjectStore:
         "issuance invalidation",
         InvalidationError,
     )
-    return ProjectStore(private, SESSION_STORE_REPAIR)
+    return ProjectStore(private, _journal_repair)
+
+
+def _journal_repair(path: Path, root: str) -> str:
+    """Repair for a misnamed journal: the file is the only record of cleanup still owed."""
+    selector = flexnet_docker.project_resource_filter(root)
+    return (
+        f"it is the only record that this Project's Sandbox and FlexNet License Relay "
+        f"containers and networks must still be removed: on the host run "
+        f"`docker container rm -f $(docker container ls -aq --filter {selector})`, then "
+        f"`docker network rm $(docker network ls -q --filter {selector})` "
+        "(when a command's only error is that it needs at least 1 argument, nothing of that "
+        "kind is left; on any other error keep the file and retry), then "
+        + session_store_repair(path, root)
+    )

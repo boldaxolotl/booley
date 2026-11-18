@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.runtime import dockerfile_syntax
 
@@ -163,16 +165,19 @@ def test_container_probe_records_absence_hard_links_and_behavior(tmp_path: Path)
         "absent_paths": [str(tmp_path / "absent")],
         "stripped_elf": [],
         "hard_link_groups": [[str(first), str(second)]],
-        "probes": [{"name": "shell", "command": "test 2 -eq 2", "timeout_seconds": 5}],
+        "probes": [
+            {"name": "shell", "command": "test 2 -eq 2", "timeout_seconds": hang_guard_s()}
+        ],
     }
 
+    # Kept on subprocess.run: feeds the contract on stdin.
     result = subprocess.run(
         [sys.executable, "-c", image_contract._CONTAINER_PROBE],
         input=json.dumps(contract),
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=2 * hang_guard_s(),
     )
     report = json.loads(result.stdout)
 
@@ -196,13 +201,14 @@ def test_container_probe_reports_missing_hard_link_without_losing_evidence(tmp_p
         "probes": [],
     }
 
+    # Kept on subprocess.run: feeds the contract on stdin.
     result = subprocess.run(
         [sys.executable, "-c", image_contract._CONTAINER_PROBE],
         input=json.dumps(contract),
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=hang_guard_s(),
     )
     report = json.loads(result.stdout)
 
@@ -289,12 +295,9 @@ def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str
     # An explicit environment excludes inherited BASH_ENV and other startup hooks.
     default_path = f"/usr/local/bin{os.pathsep}{os.defpath}"
     environment = {"PATH": default_path, "HOME": str(tmp_path), "LANG": "C", "LC_ALL": "C"}
-    identity = subprocess.run(
+    identity = run_bounded_child(
         ["stat", "--version"],
         env=environment,
-        capture_output=True,
-        text=True,
-        timeout=5,
         check=False,
     )
     if "GNU coreutils" not in identity.stdout:
@@ -310,13 +313,10 @@ def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str
             )
             replacement.chmod(0o755)
             environment["PATH"] = f"{tmp_path}{os.pathsep}{default_path}"
-        result = subprocess.run(
+        result = run_bounded_child(
             ["bash", "-euo", "pipefail", "-c", probe["command"]],
             env=environment,
-            capture_output=True,
-            text=True,
             check=False,
-            timeout=10,
         )
         if replace_command:
             assert result.returncode != 0, result.stdout
@@ -535,7 +535,7 @@ def test_layer_link_audit_returns_promptly_and_leaves_no_thread(
     fixture = tmp_path / "save.tar"
     fixture.write_bytes(_archive([([FILE_LIBEXEC, LINK_PACKAGE], "gzip")]).getvalue())
     _fake_docker(tmp_path, monkeypatch, f'cat "{fixture}"')
-    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", 30)
+    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", hang_guard_s())
     before = _non_daemon_threads()
 
     started = time.monotonic()
@@ -543,7 +543,7 @@ def test_layer_link_audit_returns_promptly_and_leaves_no_thread(
 
     assert errors == []
     assert rows
-    assert time.monotonic() - started < 10
+    assert time.monotonic() - started < scaled(10)
     assert _non_daemon_threads() == before
 
 
@@ -562,13 +562,13 @@ def test_layer_link_audit_kills_a_hung_docker_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _fake_docker(tmp_path, monkeypatch, "exec sleep 60")
-    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", 1)
+    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", scaled(1))
 
     started = time.monotonic()
     with pytest.raises(RuntimeError, match="deadline"):
         image_contract._layer_link_audit("img", GROUP)
 
-    assert time.monotonic() - started < 30
+    assert time.monotonic() - started < scaled(30)
 
 
 @posix_only
@@ -578,8 +578,8 @@ def test_layer_link_audit_names_a_docker_save_that_closes_output_but_hangs(
     fixture = tmp_path / "save.tar"
     fixture.write_bytes(_archive([([FILE_LIBEXEC, LINK_PACKAGE], "gzip")]).getvalue())
     _fake_docker(tmp_path, monkeypatch, f'cat "{fixture}"; exec 1>&-; exec sleep 60')
-    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", 60)
-    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_EXIT_GRACE_SECONDS", 1)
+    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", 2 * hang_guard_s())
+    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_EXIT_GRACE_SECONDS", scaled(1))
 
     with pytest.raises(RuntimeError, match="did not exit"):
         image_contract._layer_link_audit("img", GROUP)
@@ -595,7 +595,7 @@ def test_layer_link_audit_reaps_child_when_parser_fails(
         monkeypatch,
         f'echo $$ > "{pidfile}"; head -c 4096 /dev/zero | tr "\\0" "x"; exec sleep 60',
     )
-    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", 60)
+    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", 2 * hang_guard_s())
 
     with pytest.raises(tarfile.TarError):
         image_contract._layer_link_audit("img", GROUP)
@@ -651,12 +651,9 @@ def test_package_inventory_probe_changes_contract_status(
         .replace("python -I", f"{sys.executable} -I")
     )
 
-    result = subprocess.run(
+    result = run_bounded_child(
         ["bash", "-euo", "pipefail", "-c", command],
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=probe["timeout_seconds"],
     )
 
     assert (result.returncode == 0) is passes, result.stderr

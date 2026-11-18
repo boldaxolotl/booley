@@ -15,6 +15,7 @@ from booley.mcp import (
     catalog,
 )
 from booley.mcp import server as mcp_server
+from tests.time_budget import hang_guard_s, scaled
 
 
 def _test_server(monkeypatch: pytest.MonkeyPatch):
@@ -99,7 +100,7 @@ def test_application_dispatch_routes_bwave_and_python_tools(monkeypatch) -> None
     async def no_special(*_args, caller=None):
         return None
 
-    async def bwave(name, _arguments):
+    async def bwave(name, _arguments, _request_context=None):
         return [TextContent(type="text", text="wave")] if name == "bwave" else None
 
     async def python_tool(name, arguments, definition, counts, jobs, *, caller=None):
@@ -163,7 +164,7 @@ async def _notification_exercise(sdk, directory, *, edit_before_list=False):
                 (directory / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
                 if edit_before_list:
                     await client.list_tools()
-                event = await asyncio.wait_for(anext(subscription), 4)
+                event = await asyncio.wait_for(anext(subscription), hang_guard_s())
                 assert isinstance(event, ToolsListChanged)
                 received = True
         except (MCPError, TimeoutError):
@@ -198,7 +199,7 @@ def test_running_catalog_sends_list_changed(tmp_path, monkeypatch):
                 (directory / "mcp_tools/local_check.py").unlink,
             ):
                 action()
-                event = await asyncio.wait_for(anext(subscription), 4)
+                event = await asyncio.wait_for(anext(subscription), hang_guard_s())
                 assert isinstance(event, ToolsListChanged)
                 # Settle this generation before editing again. Each invalidation
                 # must still arrive before its first tools/list request.
@@ -251,13 +252,13 @@ async def _http_notification_case(tmp_path, monkeypatch, *, legacy, concurrent=F
             host = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="on"))
             task = asyncio.create_task(host.serve(sockets=[listener]))
             try:
-                async with asyncio.timeout(5):
+                async with asyncio.timeout(hang_guard_s()):
                     while not host.started:
                         await asyncio.sleep(0.01)
                 yield f"http://127.0.0.1:{listener.getsockname()[1]}/mcp"
             finally:
                 host.should_exit = True
-                await asyncio.wait_for(task, 5)
+                await asyncio.wait_for(task, hang_guard_s())
 
     try:
         async with serving() as url:
@@ -295,13 +296,13 @@ async def _concurrent_http_notifications(url, directory, sdk):
         ):
             (directory / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
             events = await asyncio.wait_for(
-                asyncio.gather(anext(first_events), anext(second_events)), 4
+                asyncio.gather(anext(first_events), anext(second_events)), hang_guard_s()
             )
             assert all(isinstance(event, ToolsListChanged) for event in events)
             assert "sim" not in {tool.name for tool in (await second.list_tools()).tools}
         assert sdk.lifespan.__self__._running
         (directory / "booley.toml").write_text("[flows.sim]\nenabled = true\n")
-        event = await asyncio.wait_for(anext(first_events), 4)
+        event = await asyncio.wait_for(anext(first_events), hang_guard_s())
         assert isinstance(event, ToolsListChanged)
         assert "sim" in {tool.name for tool in (await first.list_tools()).tools}
 
@@ -309,7 +310,7 @@ async def _concurrent_http_notifications(url, directory, sdk):
 async def _legacy_http_notification(url, directory):
     import httpx
 
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(timeout=hang_guard_s()) as client:
         headers = {"accept": "application/json, text/event-stream"}
         initialized = await client.post(
             url,
@@ -341,7 +342,7 @@ async def _legacy_http_notification(url, directory):
         async with client.stream("GET", url, headers=headers) as stream:
             (directory / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
             try:
-                async with asyncio.timeout(4):
+                async with asyncio.timeout(hang_guard_s()):
                     async for line in stream.aiter_lines():
                         if "notifications/tools/list_changed" in line:
                             received = True
@@ -409,7 +410,7 @@ def test_change_fanout_bounds_failed_peers_and_isolates_servers(monkeypatch):
                     session=SimpleNamespace(_connection=peer),
                 )
                 await first.remember_legacy_peer(context, next_handler)
-            monkeypatch.setattr("booley.mcp.tool_changes._SEND_TIMEOUT_SECONDS", 0.05)
+            monkeypatch.setattr("booley.mcp.tool_changes._SEND_TIMEOUT_SECONDS", scaled(0.05))
             await first.publish()
             assert sent == ["good"]
             assert len(first._peers) == 1
@@ -430,7 +431,7 @@ def test_legacy_http_idle_expiry_removes_notification_peer(tmp_path, monkeypatch
     sdk = _test_server(monkeypatch)
     changes = sdk.lifespan.__self__
     app = mcp_server._streamable_http_app(sdk)
-    sdk._session_manager.session_idle_timeout = 0.05
+    sdk._session_manager.session_idle_timeout = scaled(0.05)
 
     async def exercise():
         async with (
@@ -455,7 +456,7 @@ def test_legacy_http_idle_expiry_removes_notification_peer(tmp_path, monkeypatch
             )
             assert response.status_code == 200
             assert len(changes._peers) == 1
-            async with asyncio.timeout(2):
+            async with asyncio.timeout(hang_guard_s()):
                 while changes._peers:
                     await asyncio.sleep(0.01)
             assert sdk._session_manager._server_instances == {}
@@ -483,11 +484,11 @@ def test_stdio_run_cancellation_stops_catalog_poller(tmp_path, monkeypatch):
         writes, outgoing = anyio.create_memory_object_stream(1)
         async with incoming, reads, writes, outgoing:
             task = asyncio.create_task(sdk.run(reads, writes, sdk.create_initialization_options()))
-            async with asyncio.timeout(2):
+            async with asyncio.timeout(hang_guard_s()):
                 while not changes._running:
                     await asyncio.sleep(0)
             task.cancel()
-            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), hang_guard_s())
             assert changes._running is False
             assert changes._peers == {}
             assert not [

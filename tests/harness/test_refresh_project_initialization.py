@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,7 +14,7 @@ from booley.runtime import session_refresh as runtime_refresh
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.session_runtime import SessionError
 from tests.harness import test_init_rerun as init_fixtures
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 # Reuse the init suite's isolated scratch repo (no Docker, isolated HOME) and its guard.
 repo = init_fixtures.repo
@@ -25,18 +24,12 @@ CORE_TEXT = "CAPI=2:\nname: example:lib:cpu:1.0\n"
 
 
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        check=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    ).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 def _refresh(root: Path) -> runtime_refresh.RefreshResult:
     """Run Session refresh with the runtime (Docker) half replaced by a fixed outcome."""
-    image = runtime_refresh.RefreshImage("booley-sandbox", "sha256:fresh", "payload")
+    image = runtime_refresh.RefreshImage("sha256:fresh", "payload", None, False)
     outcome = runtime_refresh.RefreshResult(image, "kept", None, "container-1")
     with patch.object(harness_refresh.runtime_refresh, "refresh", return_value=outcome):
         return harness_refresh.refresh(root)
@@ -106,21 +99,16 @@ def test_refresh_reports_crlf_without_rewriting_tracked_file(
     crlf_bytes = b"line one\r\nline two\r\n"
     _commit_crlf_checkout(root, "notes.txt", crlf_bytes)
     _git(root, "config", "--unset", "core.autocrlf")
-    inner_attributes = (root / ".booley" / ".gitattributes").read_bytes()
     capsys.readouterr()
 
     _refresh(root)
 
     assert (root / "notes.txt").read_bytes() == crlf_bytes
     assert not (root / ".gitattributes").exists()
-    assert (root / ".booley" / ".gitattributes").read_bytes() == inner_attributes
     assert "1 tracked file(s) are checked out with CRLF" in capsys.readouterr().out
     # Pinning autocrlf=false over a CRLF checkout would only add phantom diffs.
-    unpinned = subprocess.run(
-        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"],
-        capture_output=True,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    unpinned = run_bounded_child(
+        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"]
     )
     assert unpinned.returncode == 1
 
@@ -137,27 +125,26 @@ def test_refresh_fails_with_container_outcome_when_a_step_errs(initialized: Path
     assert "run `booley init` on the host" in message
 
 
-def test_refresh_converts_an_escaped_filesystem_error(
-    initialized: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (OSError("disk full"), r"kept: already current\), .* failed: disk full"),
+        (
+            LifecycleLockError("host Docker lifecycle is busy"),
+            r"kept: already current\), .* failed: host Docker",
+        ),
+    ],
+    ids=["filesystem", "lifecycle-lock"],
+)
+def test_refresh_converts_a_project_initialization_failure(
+    initialized: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception, message: str
 ) -> None:
-    def disk_full(_root: Path, _facts: init_cmd.ProjectFacts) -> None:
-        raise OSError("disk full")
+    def fail(_root: Path, _facts: init_cmd.ProjectFacts) -> None:
+        raise failure
 
-    monkeypatch.setattr(init_cmd, "reinitialize_project", disk_full)
+    monkeypatch.setattr(init_cmd, "reinitialize_project", fail)
 
-    with pytest.raises(SessionError, match=r"kept: already current\), .* failed: disk full"):
-        _refresh(initialized)
-
-
-def test_refresh_converts_a_lifecycle_lock_timeout(
-    initialized: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def lock_timeout(_root: Path, _facts: init_cmd.ProjectFacts) -> None:
-        raise LifecycleLockError("host Docker lifecycle is busy")
-
-    monkeypatch.setattr(init_cmd, "reinitialize_project", lock_timeout)
-
-    with pytest.raises(SessionError, match=r"kept: already current\), .* failed: host Docker"):
+    with pytest.raises(SessionError, match=message):
         _refresh(initialized)
 
 

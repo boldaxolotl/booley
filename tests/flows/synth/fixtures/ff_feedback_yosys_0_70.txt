@@ -1,0 +1,17 @@
+--- yosys.log ---
+4.4. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.
+4.24. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.
+--- premap_check_dut.txt ---
+
+5. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.
+--- check_dut.txt ---
+
+10. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.

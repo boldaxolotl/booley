@@ -3,8 +3,9 @@
 The history lives at ``<Booley Directory>/runtime/resources/history.json``
 (``runtime/`` is Git-ignored). Writers serialize on a sibling lock file and
 publish the whole document with one atomic replacement, so concurrent Jobs
-never lose or corrupt a record. Each history key keeps its newest samples;
-older ones roll off.
+never lose or corrupt a record. Each history key keeps its newest
+``MAX_SAMPLES_PER_KEY`` samples, with no overall cap. A key whose newest
+record is older than ``MAX_KEY_AGE`` is deleted on the next write.
 """
 
 from __future__ import annotations
@@ -13,29 +14,57 @@ import json
 import logging
 import statistics
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from booley.core.boundary import as_dict
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.timefmt import format_duration
+from booley.runtime.atomic_files import atomic_replace_bytes, keep_unreadable
+from booley.runtime.timefmt import format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
 
 SCHEMA = "booley.job-resource-history/v1"
 MAX_SAMPLES_PER_KEY = 20
-MAX_RECORDS = 2000
+MAX_KEY_AGE = timedelta(days=90)
 _LOCK_TIMEOUT_S = 10.0
+# Set by Doctor on every Flow run it starts; such runs write no records.
+DOCTOR_RUN_ENV = "BOOLEY_INTERNAL_DOCTOR_RUN"
 
 
 def history_path(booley_dir: Path) -> Path:
     return booley_dir / "runtime" / "resources" / "history.json"
 
 
-def _key(record: dict[str, Any]) -> tuple[str, str, tuple[str, ...], str]:
+class HistoryKey(NamedTuple):
+    """What one history record is about: a Target's phase, with its flags and Test Run."""
+
+    target: str
+    phase: str
+    flags: tuple[str, ...]
+    test_run: str
+
+
+def history_key(record: dict[str, Any]) -> HistoryKey:
+    """The :class:`HistoryKey` of a stored record."""
     key = record["key"]
-    return key["target"], key["phase"], tuple(key["flags"]), key["test_run"]
+    return HistoryKey(key["target"], key["phase"], tuple(key["flags"]), key["test_run"])
+
+
+def specialist_name(record: dict[str, Any]) -> str | None:
+    """The Specialist a record measures; ``None`` for a Target record.
+
+    A Specialist record keeps the four Target key fields (an empty Target and the
+    phase ``specialist:<name>``) so releases that read every key as a Target key
+    still load it; this field is what tells the two kinds apart.
+    """
+    return record["key"].get("specialist")
+
+
+def _group(record: dict[str, Any]) -> tuple[str | None, HistoryKey]:
+    """What a record is retained and summarized under: never shared across kinds."""
+    return specialist_name(record), history_key(record)
 
 
 def load_records(booley_dir: Path) -> list[dict[str, Any]]:
@@ -50,21 +79,26 @@ def load_records(booley_dir: Path) -> list[dict[str, Any]]:
     return list(document["records"])
 
 
-def _bounded(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep the newest samples of each key, then the newest records overall."""
-    per_key: Counter[tuple[str, str, tuple[str, ...], str]] = Counter()
+def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep each key's newest samples, minus keys idle for longer than ``MAX_KEY_AGE``."""
+    per_key: Counter[tuple[str | None, HistoryKey]] = Counter()
+    newest_run: dict[tuple[str | None, HistoryKey], datetime] = {}
     kept: list[dict[str, Any]] = []
     for record in reversed(records):
-        key = _key(record)
+        key = _group(record)
         if per_key[key] < MAX_SAMPLES_PER_KEY:
             per_key[key] += 1
             kept.append(record)
+            # The max, not the position: concurrent appends can land slightly out of order.
+            finished = parse_timestamp(record["finished_at"])
+            newest_run[key] = max(finished, newest_run.get(key, finished))
+    cutoff = datetime.now(UTC) - MAX_KEY_AGE
     kept.reverse()
-    return kept[-MAX_RECORDS:]
+    return [record for record in kept if newest_run[_group(record)] >= cutoff]
 
 
 def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
-    """Add *records* under the history lock and publish the bounded result."""
+    """Add *records* under the history lock and publish the retained result."""
     path = history_path(booley_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(".lock").open("a+", encoding="utf-8") as handle:
@@ -73,9 +107,14 @@ def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
             try:
                 existing = load_records(booley_dir)
             except ValueError as exc:
-                logger.warning("Starting a new Job resource history: %s", exc)
+                kept = keep_unreadable(path)
+                logger.warning(
+                    "Kept the unreadable Job resource history as %s and started a new one: %s",
+                    kept,
+                    exc,
+                )
                 existing = []
-            document = {"$schema": SCHEMA, "records": _bounded([*existing, *records])}
+            document = {"$schema": SCHEMA, "records": _retained([*existing, *records])}
             atomic_replace_bytes(path, json.dumps(document, separators=(",", ":")).encode("utf-8"))
         finally:
             release_file_lock(handle)
@@ -96,13 +135,20 @@ def _spread(values: list[float | None]) -> dict[str, float | None] | None:
     }
 
 
+def _summary_order(
+    item: tuple[tuple[str | None, HistoryKey], Any],
+) -> tuple[bool, str, HistoryKey]:
+    (specialist, key), _ = item
+    return specialist is not None, specialist or "", key
+
+
 def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Statistics per history key, in key order."""
-    groups: dict[tuple[str, str, tuple[str, ...], str], list[dict[str, Any]]] = {}
+    """Statistics per history key: Target keys in key order, then Specialists by name."""
+    groups: dict[tuple[str | None, HistoryKey], list[dict[str, Any]]] = {}
     for record in records:
-        groups.setdefault(_key(record), []).append(record)
+        groups.setdefault(_group(record), []).append(record)
     summaries = []
-    for _, group in sorted(groups.items()):
+    for _, group in sorted(groups.items(), key=_summary_order):
         solo = [
             r
             for r in group
@@ -130,11 +176,14 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _line(summary: dict[str, Any]) -> str:
     key = summary["key"]
-    flags = f" [{','.join(key['flags'])}]" if key["flags"] else ""
-    tests = f" tests={key['test_run']}" if key["test_run"] else ""
-    parts = [
-        f"{key['target'] or '(no Target)'} {key['phase']}{flags}{tests}: {summary['runs']} run{'' if summary['runs'] == 1 else 's'}"
-    ]
+    runs = f"{summary['runs']} run{'' if summary['runs'] == 1 else 's'}"
+    if key.get("specialist") is not None:
+        head = f"Specialist {key['specialist']}: {runs}"
+    else:
+        flags = f" [{','.join(key['flags'])}]" if key["flags"] else ""
+        tests = f" tests={key['test_run']}" if key["test_run"] else ""
+        head = f"{key['target'] or '(no Target)'} {key['phase']}{flags}{tests}: {runs}"
+    parts = [head]
     for label, field, unit in (("peak memory", "peak_memory_mb", "MiB"), ("wall", "wall_s", "")):
         spread = summary[field]
         if spread is None:
@@ -153,7 +202,7 @@ def _line(summary: dict[str, Any]) -> str:
             if ratio is None
             else " / ".join(f"{ratio[n]:.2f}" for n in ("min", "median", "max"))
         )
-        parts.append(f"solo runs {summary['solo_runs']}: container peak / (RSS+TMPDIR) {shown}")
+        parts.append(f"solo runs {summary['solo_runs']}: container peak / peak memory {shown}")
     return "; ".join(parts)
 
 
@@ -164,7 +213,7 @@ def render_report(summaries: list[dict[str, Any]]) -> str:
     return "\n".join(
         [
             *(_line(summary) for summary in summaries),
-            "Peak memory = process-tree RSS + the Job's own TMPDIR files; "
-            "files a tool writes outside TMPDIR are not counted.",
+            "Peak memory = process-tree RSS, plus the Job's own TMPDIR files when "
+            "TMPDIR is on tmpfs; files a tool writes outside TMPDIR are not counted.",
         ]
     )

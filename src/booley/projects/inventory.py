@@ -11,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list
+from booley.core.host_shell import quote_arg
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
@@ -86,19 +87,31 @@ def forget_project(
     can be cleaned; the live-Grant guard still applies.
     """
     with _locked_roots() as roots:
+        grants = _authority_grants()
         if allow_forgotten and project_root.is_absolute():
             # Never follow symlinks: the path may now point at another Project.
-            identity = os.path.normpath(str(project_root))
+            known = roots | {grant.project_root for grant in grants}
+            identity = _stored_spelling(os.path.normpath(str(project_root)), known)
         else:
             identity = _remembered_identity(project_root, roots)
-        if any(grant.project_root == identity for grant in _authority_grants()):
+        live = [grant for grant in grants if grant.project_root == identity]
+        if live:
+            commands = " and ".join(
+                f"`booley eda grant revoke --kind {grant.kind} {quote_arg(identity)}`"
+                for grant in live
+            )
             raise ProjectInventoryError(
-                f"cannot forget {identity}: revoke its live Project Grant first"
+                f"cannot forget {identity}: revoke its live Project Grant first with {commands}"
             )
         if before_forget is not None:
             before_forget(Path(identity))
         roots.discard(identity)
     return Path(identity)
+
+
+def known_roots() -> frozenset[str]:
+    """Return remembered and Grant roots without probing any Project's status."""
+    return frozenset(_load_roots() | _grant_roots())
 
 
 def project_inventory() -> tuple[ProjectInventoryEntry, ...]:
@@ -242,7 +255,11 @@ def _remembered_identity(project_root: Path, roots: set[str]) -> str:
         canonical = str(project_root.resolve(strict=True))
         if canonical in roots:
             return canonical
-    raise ProjectInventoryError(f"Project Root is not remembered: {project_root}")
+    raise ProjectInventoryError(
+        f"Project Root is not remembered: {project_root}; copy the exact path "
+        "from `booley projects`, or for a deleted folder pass the exact absolute "
+        "root to `booley projects forget --purge`"
+    )
 
 
 def _load_roots() -> set[str]:
@@ -276,6 +293,18 @@ def _decode_roots(raw: object) -> set[str]:
     if len(roots) != len(set(roots)):
         raise BoundaryError("Project Inventory contains a duplicate root")
     return set(roots)
+
+
+def _grant_roots() -> set[str]:
+    return {grant.project_root for grant in _authority_grants()}
+
+
+def _stored_spelling(identity: str, known: set[str]) -> str:
+    """Map a case variant to the stored root where the OS folds case (a no-op on POSIX)."""
+    if identity in known:
+        return identity
+    folded = os.path.normcase(identity)
+    return next((root for root in sorted(known) if os.path.normcase(root) == folded), identity)
 
 
 def _authority_grants() -> tuple[authority.ProjectGrant, ...]:

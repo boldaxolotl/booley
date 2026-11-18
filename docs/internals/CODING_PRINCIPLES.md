@@ -1,10 +1,10 @@
 # Booley Coding Principles
 
-Concise engineering discipline rules for all Python code in Booley
-(Booley's own Python codebase, not the user's RTL; see the
-[README](../../README.md) for what Booley is). These are language-agnostic
-principles applied to Python: they govern design and correctness, not
-formatting (Ruff, the Python linter/formatter, handles that).
+Design and correctness rules for Booley's own Python code, not the user's RTL
+(see the [README](../../README.md) for what Booley is). Formatting is left to
+Ruff, the Python linter and formatter. Docs follow
+[DOCS_PRINCIPLES.md](DOCS_PRINCIPLES.md); environment setup and the
+contribution workflow are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Audience:** this document is written mainly for agents. Agents should apply
 these principles to improve the codebase, both when writing new code and when
@@ -110,36 +110,14 @@ comment explaining why. See `[tool.ruff]` in `pyproject.toml` for the active rul
 ### 13. One date/time language
 
 Machine timestamps are second-resolution UTC RFC 3339 with a `Z` suffix:
-`2026-08-10T09:11:49Z`. Parsers remain liberal enough to read legacy offsets
-and fractional seconds, but new persisted values use the canonical form.
+`2026-08-10T09:11:49Z`. Parsers also accept other UTC offsets and fractional
+seconds, but new persisted values use the canonical form.
 
 Human-visible dates use uppercase English three-letter months regardless of
 process locale: `10 AUG 2026`. Use `booley.runtime.timefmt`; do not hand-roll
-another format string. Persisted diagnostic log prefixes and their mirrored Console
-prefixes instead use canonical UTC RFC 3339 `Z` timestamps so events can be
+another format string. Persisted diagnostic log prefixes, and the same
+prefixes echoed to the terminal, use the machine form instead, so events can be
 correlated across files.
-
-### Time and duration display
-
-Dashboard and CLI presentation uses `format_clock`, `format_duration`, and
-`format_age` from `booley.runtime.timefmt`. Absolute clocks use the user's local
-timezone: same day `HH:MM:SS`, another day in the same year `Oct 03 14:44`,
-another year `YYYY-MM-DD HH:MM`. Compare local calendar dates; clock months
-are fixed English title case, while date-only months stay uppercase.
-
-Choose duration buckets from the original input. Nonpositive values display
-`0s`; every positive subsecond value uses one decimal, including `0.0s`,
-`0.4s`, and rounded `1.0s` (`0.999` seconds). Exactly one second displays `1s`.
-Floor whole seconds thereafter: `59s`, `1m 00s`, `59m 59s`, `1h 00m`,
-`23h 59m`, `1d 00h`. Relative ages are `just now` below five seconds, then
-`5s ago`, `1m ago`, `1h ago`, `1d ago` with the leading unit floored.
-Future ages clamp to `just now`; invalid or naive instants and invalid
-durations display `unknown`. Keep meaningful absent-field markers.
-
-This policy owns Dashboard/CLI presentation. Existing document/report text,
-JSON, MCP diagnostic representations, redirected progress records (including
-elapsed tokens), and UTC diagnostic prefixes retain their representations.
-Printed report excerpts remain exact copies of the stored report.
 
 ## Verification
 
@@ -179,6 +157,63 @@ write them:
   including wrappers that re-call a parametrized test with its own parameters.
 - **Tests that keep dead code alive.** If only a test calls a function,
   delete both.
+- **Repository pins.** Reading a repository file (a workflow, a Dockerfile,
+  `.github/renovate.json`, `.mergify.yml`, a skill, a doc) and asserting its
+  literal text, keys, step order, or layout. Such a test fails when someone
+  edits the file on purpose, not when Booley breaks. Instead, rely on the
+  owning tool's own validation (Renovate's config validator, Mergify's
+  check on its own config, actionlint), run the workflow or script, or
+  leave the text to review. Five kinds of check stay, because each catches
+  a break that neither the tool nor a run reports:
+  - **Supply chain.** What a build or release pulls in, and what untrusted
+    code can reach: every download verified by digest or checksum, no
+    mutable tag (`latest`, a branch name), attestation and provenance on
+    what is published, nothing promoted to a shared tag before it passes
+    verification, and no secret or write token reachable by code from a
+    pull request or a Renovate or Mergify branch. Assert that property
+    alone, not other step positions or step names.
+  - **Generator or source sync.** Text derived from a source, such as a
+    generated file or a reference doc that lists the CLI's options: the
+    test regenerates it or reads the source (the generator, the parser, the
+    other file) and asserts they agree. An expected value typed into the
+    test is a constant mirror, not a sync check.
+  - **Ratchets.** A count that may only shrink, such as the Pyright
+    exclusion list: the test fails when the count exceeds a ceiling that
+    each fix lowers. A limit the next change may raise is a pin.
+  - **Link and command resolution.** The test follows each link, or runs
+    each documented command, and asserts that it resolves. Asserting that a
+    doc names a given link or command is a pin.
+  - **Required-check integrity.** What keeps a required check from going
+    green without doing its work, in the spirit of principle 15: a skipped
+    job never counts as a pass, and every evidence file a job declares
+    reaches an upload that runs even when the job fails. Assert that
+    property, such as the merge rule demanding an explicit success.
+
+  A test that mixes pins with these checks keeps only the checks.
+
+A test replaces only what lies outside Booley: a command, Docker, the network,
+the clock, the host environment. Booley's code between the entry point the
+test calls and that boundary runs for real, because replaced code is untested
+code. When a test needs something replaced:
+
+- **Do not patch Booley's own logic, public or private.** The test keeps
+  passing after production stops calling the patched function. Moving a patch
+  from `_helper` to a public function keeps the mock. Call the public entry
+  point (a module's public function, the CLI, an MCP tool) and assert its
+  result.
+- **Prefer the real collaborator**: a temporary Git repository, a real store,
+  a file under `tmp_path`.
+- **Patch a Booley name only where it is the boundary**: the one function that
+  runs the command, reads the clock (principle 16), or tells the host from the
+  Sandbox. Any other patch carries a comment that says why no public entry
+  point reaches the behavior.
+- **One shared fake per boundary.** The fake lives in a support module under
+  `tests/`, not in a `test_*.py` file, and every test of that boundary uses
+  it. A test does not patch `subprocess` or a command runner itself: copies
+  of a stand-in drift apart, and away from the tool they imitate.
+- **Cross a boundary in one place.** New code that runs a command or reads
+  the clock does it through one function (principle 9), so a test has one
+  name to replace.
 
 To check a new test, break the code it covers: flip a condition, swap `min`
 for `max`, drop a call. If the test still passes, it catches nothing.
@@ -203,9 +238,13 @@ Tests that touch time, processes, sockets, or the filesystem also:
 - Order concurrent steps with events, handshakes, or polling a condition
   against a deadline. A fixed `sleep` before an assertion, or a stand-in that
   waits a fixed time before answering, is a race.
-- Size inner deadlines (`subprocess.run(timeout=...)`, poll loops) from the
-  suite's timeout budget rather than a tight literal; Windows CI fails any test
-  that uses more than 80% of its timeout.
+- Size inner deadlines (`subprocess.run(timeout=...)`, poll loops) with the
+  shared helper in [`tests/time_budget.py`](../../tests/time_budget.py): a
+  named base budget passed to `scaled`, or `hang_guard_s()` for a wait that only
+  stops a hang (see
+  [Test time budgets](../../.github/ci/README.md#test-time-budgets)).
+  Windows CI fails any test that uses more than 80% of its timeout (see
+  [`tests/timeout_headroom.py`](../../tests/timeout_headroom.py)).
 - Bind port 0 and read back the assigned port.
 - Pass on Windows or skip there with the reason: guard POSIX-only signals
   (`SIGKILL`, `SIGHUP`), file modes, and symlinks, and close handles before
@@ -288,6 +327,14 @@ plus deletions:
 Tests count toward the total. More than two test lines per changed source line
 means duplicated cases (principle 17).
 
+The `test-ratio` job in the `Tests` workflow, part of `ci-required`, fails a
+pull request whose added test lines exceed twice its changed source lines,
+unless it removes more test lines than it adds. Test lines are `.py` and `.rs`
+files under test directories and inline `#[cfg(test)]` items in Rust; data
+files under test directories (`.vcd`, `.json`) do not count. A maintainer
+exempts a pull request with the `test-ratio-exempt` label; the job reads the
+label each time it is re-run.
+
 A PR that removes more lines than it adds counts only its additions. The caps
 exist to keep new code reviewable; deleting duplicated or obsolete code shrinks
 what reviewers must hold in their heads, so it should not force a split. Check
@@ -301,8 +348,34 @@ lockfiles, and vendored upstream sources. Say in the PR body what was
 excluded and why. A net-reduction PR states its added and deleted line counts
 in its body.
 
+A rename of a term or identifier with no behavior change stays in one PR,
+with its docs, however many lines the mechanical replacement touches. Split
+by layer (code, messages, docs), the names disagree between merges and each
+part rebases over the others. Only its hand-written edits count toward the
+caps; a rename whose hand-written edits exceed them still splits.
+
 Work over a cap is split before implementation into sub-issues that each merge
 on their own. When a change truly cannot be split, the PR body explains why,
 and the maintainer approves the size before review starts. A PR that is over
 the cap because of review rounds is a sign of bloat: remove code, do not add
 more.
+
+## Comments
+
+### 19. Comments say why
+
+A comment states what the code cannot: an external tool's behavior, a rejected
+alternative, an invariant, a unit, or the bug a test catches. Keep those.
+
+Change the code instead when a comment:
+
+- explains what the code does (rename or extract);
+- justifies a `cast`, or relies on a rule in another module (put the fact in
+  an existing type or interface; do not add a Protocol or wrapper for it,
+  principle 17);
+- labels a section of a file (check principle 8: split only if the parts
+  change independently; section comments inside a function are principle 1).
+
+Delete a comment that restates the code.
+
+The principle applies to code you write or touch. Do not sweep untouched files.

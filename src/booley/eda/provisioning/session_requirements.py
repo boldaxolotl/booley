@@ -13,6 +13,7 @@ from booley.eda.provisioning import authority
 from booley.eda.provisioning.configuration import load_eda_config
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
+    Runner,
     ensure_relay_image,
     resolve_relay_image_id,
     resources_for_session,
@@ -101,25 +102,28 @@ def _load_vivado_config(project: Path) -> EdaConfig | None:
         raise SessionRequirementsError(str(exc)) from exc
 
 
-def with_relay_identity(requirements: SessionEdaRequirements) -> SessionEdaRequirements:
+def with_relay_identity(
+    requirements: SessionEdaRequirements, *, runner: Runner
+) -> SessionEdaRequirements:
     """Add the immutable relay image ID to licensed requirements; never builds or pulls."""
     if requirements.license_profile is None:
         return requirements
-    return replace(requirements, relay_image_id=_relay_image_id())
+    return replace(requirements, relay_image_id=_relay_image_id(runner))
 
 
 def prepare_runtime_dependencies(
     requirements: SessionEdaRequirements,
     *,
+    runner: Runner,
     force_relay: bool = False,
 ) -> SessionEdaRequirements:
     """Prepare mutable dependencies after a caller validates one leased value."""
     try:
         if requirements.license_profile is not None:
-            ensure_relay_image(force=force_relay)
+            ensure_relay_image(force=force_relay, runner=runner)
     except RelayDockerError as exc:
         raise SessionRequirementsError(str(exc)) from exc
-    return with_relay_identity(requirements)
+    return with_relay_identity(requirements, runner=runner)
 
 
 def requested_license(
@@ -201,9 +205,9 @@ def _optional_license(project: Path) -> authority.LicenseProfile | None:
         raise SessionRequirementsError(str(exc)) from exc
 
 
-def _relay_image_id() -> str:
+def _relay_image_id(runner: Runner) -> str:
     try:
-        return resolve_relay_image_id()
+        return resolve_relay_image_id(runner=runner)
     except RelayDockerError as exc:
         raise SessionRequirementsError(
             f"cannot resolve immutable FlexNet relay image: {exc}"

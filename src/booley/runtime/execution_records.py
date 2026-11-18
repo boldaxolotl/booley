@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.file_lock import release_file_lock, wait_for_file_lock
+from booley.runtime.atomic_files import STAGED_SUFFIX
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
@@ -33,7 +35,9 @@ _PROTOCOL_FILENAMES = {
     "force-cancel",
     "attachment-heartbeat",
     "context.json",
+    "record.lock",
 }
+_RECORD_LOCK_TIMEOUT_SECONDS = 30.0
 _TERMINAL_FIELDS = {
     "schema_version",
     "state",
@@ -62,6 +66,7 @@ class ExecutionPaths:
 
     root: Path
     record: Path
+    lock: Path
     cancel: Path
     force: Path
     heartbeat: Path
@@ -78,6 +83,7 @@ def execution_paths(
     return ExecutionPaths(
         root=root,
         record=root / "record.json",
+        lock=root / "record.lock",
         cancel=root / "cancel.json",
         force=root / "force-cancel",
         heartbeat=root / "attachment-heartbeat",
@@ -89,7 +95,9 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Durably replace one protocol JSON file with canonical content."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temporary = Path(name)
+    # *name* as *path*'s own path class: a replace and its cleanup are then calls on that
+    # type, which a test can schedule step by step.
+    temporary = type(path)(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, sort_keys=True)
@@ -100,6 +108,31 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def update_execution_record(
+    paths: ExecutionPaths,
+    change: Callable[[dict[str, Any] | None], dict[str, Any] | None],
+) -> None:
+    """Read, change and replace one execution record under its cross-process lock.
+
+    *change* receives the current record (``None`` when absent or unreadable)
+    and returns the record to write, or ``None`` to write nothing. An execution
+    directory that no longer exists is never recreated: *change* sees ``None``
+    and its result is dropped. *change* runs under the lock, so it must not
+    block.
+    """
+    if not paths.root.is_dir():
+        change(None)
+        return
+    with paths.lock.open("a+", encoding="utf-8") as handle:
+        wait_for_file_lock(handle, timeout_s=_RECORD_LOCK_TIMEOUT_SECONDS)
+        try:
+            updated = change(read_json(paths.record))
+            if updated is not None:
+                atomic_write_json(paths.record, updated)
+        finally:
+            release_file_lock(handle)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -147,7 +180,7 @@ def read_slot_entry(
     *,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any] | None:
-    """Read one Job Slot entry, keeping "missing" apart from "unreadable".
+    """Read one Memory Reservation entry, keeping "missing" apart from "unreadable".
 
     Returns the payload, or ``None`` when the file is missing or its content is
     corrupt (not UTF-8, not JSON, not an object). Any other ``OSError``,
@@ -201,30 +234,53 @@ def verify_inherited_execution_id(
     return execution_id
 
 
-def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
-    """Authenticate an optional immutable campaign-child context sidecar.
-
-    A missing sidecar is an ordinary execution; a present one must carry exactly the
-    campaign-child fields and name this execution. A leftover Project-local child
-    registry from Booley 0.3.0 is ignored.
-    """
-    if not paths.context.exists():
-        return True
-    payload = read_json(paths.context)
-    expected = {
+_CONTEXT_SCHEMA = "booley.supervised-child-context/v2"
+_CONTEXT_FIELDS = frozenset(
+    {
         "$schema",
         "child_execution_id",
         "parent_execution_id",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "work_item_id",
         "attempt_id",
         "attempt_ordinal",
     }
+)
+# What Booley 0.4.0 wrote (checked against the v0.4.0 tag): the same fields, with ``campaign_id`` for the identity.
+_OLDER_CONTEXT_SCHEMA = "booley.supervised-child-context/v1"
+_OLDER_CONTEXT_FIELDS = (_CONTEXT_FIELDS - {"simulation_record_id"}) | {"campaign_id"}
+
+
+def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
+    """Authenticate an optional immutable Simulation Record child context sidecar.
+
+    A missing sidecar is an ordinary execution; a present one must carry exactly the
+    record child fields and name this execution. A leftover Project-local child
+    registry from Booley 0.3.0 is ignored.
+    """
+    if not paths.context.exists():
+        return True
+    payload = read_json(paths.context)
     return bool(
         payload is not None
-        and set(payload) == expected
-        and payload.get("$schema") == "booley.supervised-child-context/v1"
+        and set(payload) == _CONTEXT_FIELDS
+        and payload.get("$schema") == _CONTEXT_SCHEMA
+        and payload.get("child_execution_id") == execution_id
+    )
+
+
+def is_older_child_context(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
+    """Whether the sidecar is exactly the one Booley 0.4.0 wrote for this execution.
+
+    Only recovery uses it, to release what a killed Booley 0.4.0 left behind; starting
+    or supervising a child never accepts it.
+    """
+    payload = read_json(paths.context) if paths.context.exists() else None
+    return bool(
+        payload is not None
+        and set(payload) == _OLDER_CONTEXT_FIELDS
+        and payload.get("$schema") == _OLDER_CONTEXT_SCHEMA
         and payload.get("child_execution_id") == execution_id
     )
 
@@ -332,7 +388,11 @@ def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:
             return False
     except OSError:
         return False
-    if any(entry.name not in _PROTOCOL_FILENAMES or not entry.is_file() for entry in entries):
+    if any(
+        (entry.name not in _PROTOCOL_FILENAMES and not entry.name.endswith(STAGED_SUFFIX))
+        or not entry.is_file()
+        for entry in entries
+    ):
         return False
     try:
         for entry in entries:

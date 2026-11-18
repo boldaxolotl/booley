@@ -1,0 +1,189 @@
+"""Immutable in-memory values for a Simulation Record.
+
+The model has no filesystem, process, CLI, persistence, or validation imports.
+Untrusted JSON becomes one of these values only through :mod:`.codec`.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from types import MappingProxyType
+from typing import TypeAlias, cast
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
+
+
+def simulation_status_from_observations(
+    observations: tuple[Mapping[str, object], ...],
+) -> str:
+    """Reduce Simulation Record observations to the endpoint simulation vocabulary."""
+    executions = {item["execution"] for item in observations}
+    functional = {item["functional"] for item in observations}
+    for status in ("aborted", "crash", "timeout"):
+        if status in executions:
+            return status
+    for status in ("fail", "inconclusive", "pass"):
+        if status in functional:
+            return status
+    return "not_run"
+
+
+def _freeze_json(value: object) -> FrozenJson:
+    """Copy JSON-shaped input into recursively immutable storage."""
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("document object keys must be strings")
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_json(item) for item in value)
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    raise TypeError(f"document contains non-JSON value {type(value).__name__}")
+
+
+class ExecutionObservation(StrEnum):
+    COMPLETED = "completed"
+    TIMEOUT = "timeout"
+    CRASH = "crash"
+    ABORTED = "aborted"
+    SETUP_ERROR = "setup_error"
+    BLOCKED_BY_BUILD = "blocked_by_build"
+    NOT_RUN = "not_run"
+
+
+class FailureClass(StrEnum):
+    DESIGN = "design"
+    INFRASTRUCTURE = "infrastructure"
+
+
+class FunctionalObservation(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    INCONCLUSIVE = "inconclusive"
+    NOT_OBSERVED = "not_observed"
+
+
+class AssertionObservation(StrEnum):
+    CLEAN = "clean"
+    DIRTY = "dirty"
+    NOT_OBSERVED = "not_observed"
+
+
+class StrictGrade(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    INCONCLUSIVE = "inconclusive"
+    ERROR = "error"
+
+
+def grade_observations(
+    execution: ExecutionObservation,
+    failure_class: FailureClass | None,
+    functional: FunctionalObservation,
+    assertions: AssertionObservation,
+) -> StrictGrade:
+    """Apply the exhaustive Simulation Record grade table."""
+    grade = StrictGrade.INCONCLUSIVE
+    if failure_class is FailureClass.INFRASTRUCTURE:
+        grade = StrictGrade.ERROR
+    elif execution in {
+        ExecutionObservation.TIMEOUT,
+        ExecutionObservation.CRASH,
+        ExecutionObservation.ABORTED,
+        ExecutionObservation.SETUP_ERROR,
+        ExecutionObservation.BLOCKED_BY_BUILD,
+    }:
+        grade = StrictGrade.FAIL
+    elif execution is ExecutionObservation.COMPLETED:
+        if functional is FunctionalObservation.FAIL or assertions is AssertionObservation.DIRTY:
+            grade = StrictGrade.FAIL
+        elif functional is FunctionalObservation.PASS:
+            grade = StrictGrade.PASS
+    return grade
+
+
+@dataclass(frozen=True)
+class SimulationRecordDocument:
+    document: Mapping[str, FrozenJson]
+
+    def __post_init__(self) -> None:
+        frozen = _freeze_json(self.document)
+        if not isinstance(frozen, Mapping):
+            raise TypeError("record document must be an object")
+        object.__setattr__(self, "document", frozen)
+
+    def canonical_bytes(self) -> bytes:
+        from .codec import encode_simulation_record_document
+
+        return encode_simulation_record_document(self)
+
+
+@dataclass(frozen=True)
+class SimulationRecordManifest(SimulationRecordDocument):
+    pass
+
+
+def frozen_pre_sim_commands(manifest: SimulationRecordManifest) -> tuple[str, ...]:
+    """The Pre-Sim Commands the manifest froze, in execution order."""
+    workload = cast(Mapping[str, object], manifest.document["workload"])
+    recipe = cast(Mapping[str, object], workload["source_recipe"])
+    # Planning writes pre_sim_commands as a list of strings; _freeze_json makes it a tuple.
+    return tuple(cast(tuple[str, ...], recipe["pre_sim_commands"]))
+
+
+@dataclass(frozen=True)
+class SimulationAttempt(SimulationRecordDocument):
+    pass
+
+
+@dataclass(frozen=True)
+class BundleBuildAttempt(SimulationRecordDocument):
+    pass
+
+
+@dataclass(frozen=True)
+class BundleBuildResult(SimulationRecordDocument):
+    pass
+
+
+@dataclass(frozen=True)
+class SimulationResult(SimulationRecordDocument):
+    pass
+
+
+@dataclass(frozen=True)
+class SimulatorBundle(SimulationRecordDocument):
+    pass
+
+
+@dataclass(frozen=True, init=False)
+class SimulationRecordPlan:
+    """A validated manifest paired with its immutable scheduled work-item order."""
+
+    manifest: SimulationRecordManifest
+    work_item_ids: tuple[str, ...]
+
+    def __new__(cls) -> SimulationRecordPlan:
+        raise TypeError("use create_simulation_record_plan()")
+
+    @classmethod
+    def _from_validated_manifest(cls, manifest: SimulationRecordManifest) -> SimulationRecordPlan:
+        items = cast(tuple[Mapping[str, FrozenJson], ...], manifest.document["work_items"])
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "manifest", manifest)
+        object.__setattr__(
+            instance,
+            "work_item_ids",
+            tuple(cast(str, item["work_item_id"]) for item in items),
+        )
+        return instance
+
+
+def create_simulation_record_plan(
+    manifest: SimulationRecordManifest,
+) -> SimulationRecordPlan:
+    """Derive the immutable scheduled work-item order of a decoded manifest."""
+    return SimulationRecordPlan._from_validated_manifest(manifest)

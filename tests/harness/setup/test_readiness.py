@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,12 +9,14 @@ import pytest
 from booley.harness.setup import readiness
 from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
+from booley.runtime import platform_paths
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from tests.diagnostic_helpers import (
     _Rec,
     _record_report,
 )
 from tests.harness.test_doctor import _write_project
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -191,12 +192,10 @@ _SCAFFOLD_CHECK = "stealth.scaffold-core-tracked"
 
 def _commit_all(root: Path) -> None:
     for args in (["init", "-q"], ["add", "-f", "."], ["commit", "-qm", "scaffold"]):
-        subprocess.run(
+        run_bounded_child(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
             cwd=root,
             check=True,
-            capture_output=True,
-            timeout=10,
         )
 
 
@@ -275,6 +274,8 @@ class TestScaffoldRootCoresTracked:
             raise FileNotFoundError("git")
 
         monkeypatch.setattr(readiness.subprocess, "run", _missing_git)
+        # The Git common-dir lookup goes through the bounded helper instead.
+        monkeypatch.setattr(platform_paths, "run_captured_bounded", _missing_git)
 
         assert _scaffold_core_findings(tmp_path) == []
 

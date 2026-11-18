@@ -1,8 +1,14 @@
-"""Normalize EDA warnings and final structural evidence for synthesis.
+"""Normalize EDA warnings and structural evidence for synthesis.
 
 The public interface deliberately accepts stage-labelled text rather than
 paths.  Freshness and filesystem ownership stay with the synthesis pipeline;
 warning dialect, grouping, disposition, and representative bounds stay here.
+
+Structural counts come from two Yosys ``check`` passes: the pre-mapping check
+(after ``synth``, before mapping) is the main source of combinational loops
+because mapped library cells are black boxes to ``check``; the reported loop
+count is the larger of the two. The final check owns multi-driven nets after
+mapping.
 """
 
 from __future__ import annotations
@@ -14,12 +20,23 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-WarningDisposition = Literal["benign", "advisory", "structural"]
+WarningDisposition = Literal["benign", "advisory", "structural", "informational"]
+# Identity of one warning group: the `_WarningRecord` fields `_warning_summary` counts by
+# (tool, code, category, disposition, message_sha256, message, original_bytes, truncated, rationale).
+_GroupKey = tuple[str, str | None, str, WarningDisposition, str, str, int, bool, str | None]
 
 _SOURCE_ORDER = ("sv2v", "yosys", "openroad", "final_check")
 _REPRESENTATIVE_LIMIT = 8
 _REPRESENTATIVE_MESSAGE_BYTES = 2 * 1024
 _YOSYS_WARNING_RE = re.compile(r"^(?:Warning:|ABC:\s+Warning:)", re.IGNORECASE)
+# A located diagnostic from a Yosys frontend: `path:line[:col]: Warning: body`
+# (read_verilog, slang on Yosys 0.70) or `path:line:col: warning: body`
+# (slang on Yosys 0.69).
+_LOCATED_WARNING_RE = re.compile(
+    r"^([^\s:][^:]*):(\d+)(?::\d+)?:\s+warning:\s*(.*)$",
+    re.IGNORECASE,
+)
+_SLANG_CODE_RE = re.compile(r"\[(-W[\w-]+)\]$")
 _OPENROAD_WARNING_RE = re.compile(
     r"^\[WARNING(?:\s+([A-Z][A-Z0-9_]*-\d+))?\]\s*(.*)$",
     re.IGNORECASE,
@@ -38,7 +55,7 @@ _BENIGN_STA_0503_RE = re.compile(
 
 @dataclass(frozen=True)
 class StructuralConditions:
-    """Structural counts and final-check evidence completeness."""
+    """Structural counts and completeness of the pre-mapping and final checks."""
 
     complete: bool = False
     comb_loops: int = 0
@@ -87,6 +104,9 @@ class WarningSummary:
     by_category: Mapping[str, int] = field(default_factory=dict)
     by_disposition: Mapping[str, int] = field(default_factory=dict)
     representatives: tuple[WarningGroup, ...] = ()
+    # In-memory only (not in to_detail): groups with an actionable disposition,
+    # counted over every group rather than the capped representatives.
+    actionable_unique_warnings: int = 0
 
     @property
     def advisory_warnings(self) -> int:
@@ -98,6 +118,7 @@ class WarningSummary:
 
     @property
     def actionable_warnings(self) -> int:
+        """Advisory plus structural occurrences; benign and informational are excluded."""
         return self.advisory_warnings + self.structural_warnings
 
     def to_detail(self, *, include_representatives: bool = True) -> dict[str, Any]:
@@ -115,7 +136,7 @@ class WarningSummary:
 
 @dataclass(frozen=True)
 class SynthDiagnostics:
-    """Warning inventory plus authoritative final structural evidence."""
+    """Warning inventory plus authoritative pre-mapping and final structural evidence."""
 
     warnings: WarningSummary
     structural: StructuralConditions
@@ -205,6 +226,8 @@ def _category(message: str, code: str | None) -> str:
 
 
 def _disposition(message: str, category: str) -> tuple[WarningDisposition, str | None]:
+    # Unknown warning forms default to "advisory" (actionable), so a new message
+    # is never silently ignored; only a known-benign form earns "benign".
     if category in {"combinational_loop", "multi_driver"}:
         return "structural", None
     if _BENIGN_STA_0503_RE.match(message):
@@ -222,6 +245,29 @@ def _yosys_records(text: str) -> list[_WarningRecord]:
         category = _category(message, None)
         disposition, rationale = _disposition(message, category)
         result.append(_warning_record(tool, None, category, disposition, message, rationale))
+    return [*result, *_located_records(text)]
+
+
+def _located_records(text: str) -> list[_WarningRecord]:
+    """Parse single-line located frontend warnings.
+
+    The echoed source line and caret line that follow are never attached, and
+    the location prefix is dropped so one warning groups across lines and files.
+    """
+    result: list[_WarningRecord] = []
+    for line in text.splitlines():
+        match = _LOCATED_WARNING_RE.match(line)
+        if match is None:
+            continue
+        message = _normalize_message(["Warning: " + match.group(3)])
+        code_match = _SLANG_CODE_RE.search(message)
+        code = code_match.group(1) if code_match else None
+        category = _category(message, code)
+        if category == "other":
+            result.append(_warning_record("yosys", code, "frontend", "informational", message))
+            continue
+        disposition, rationale = _disposition(message, category)
+        result.append(_warning_record("yosys", code, category, disposition, message, rationale))
     return result
 
 
@@ -256,8 +302,8 @@ def _records(sources: Mapping[str, str], structural: StructuralConditions) -> li
                     replace(
                         item,
                         disposition="advisory",
-                        rationale="Earlier synthesis pass reported this loop; the completed final "
-                        "netlist check reports no combinational loops.",
+                        rationale="Earlier synthesis pass reported this loop; the completed "
+                        "post-optimisation check reports no combinational loops.",
                     )
                     if item.category == "combinational_loop"
                     else item
@@ -275,7 +321,7 @@ def _sv2v_records(text: str) -> list[_WarningRecord]:
 
 
 def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
-    grouped = Counter(
+    grouped: Counter[_GroupKey] = Counter(
         (
             item.tool,
             item.code,
@@ -307,6 +353,7 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
     groups.sort(
         key=lambda item: (
             not (item.category == "combinational_loop" and item.disposition == "advisory"),
+            item.disposition == "informational",
             item.tool,
             item.code or "",
             item.category,
@@ -320,21 +367,35 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
         by_category=dict(sorted(Counter(item.category for item in records).items())),
         by_disposition=dict(sorted(Counter(item.disposition for item in records).items())),
         representatives=tuple(groups[:_REPRESENTATIVE_LIMIT]),
+        actionable_unique_warnings=sum(
+            item.disposition in {"advisory", "structural"} for item in groups
+        ),
     )
 
 
 def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
-    if "final_check" not in sources:
-        return StructuralConditions()
+    """Count loops (pre-mapping, final) and multi-driven nets (final).
+
+    Both checks must carry the completion marker, otherwise the counts are
+    not trusted. The loop count is the larger of the two so a loop that the
+    final check ever reports counts toward ``expected_comb_loops``.
+    """
+    premap_check = sources.get("premap_check", "")
     final_check = sources.get("final_check", "")
-    if _YOSYS_CHECK_COMPLETE_RE.search(final_check) is None:
+    if (
+        _YOSYS_CHECK_COMPLETE_RE.search(premap_check) is None
+        or _YOSYS_CHECK_COMPLETE_RE.search(final_check) is None
+    ):
         return StructuralConditions()
-    records = _yosys_records(final_check)
-    final_comb_loops = sum(item.category == "combinational_loop" for item in records)
+    premap_records = _yosys_records(premap_check)
+    final_records = _yosys_records(final_check)
     return StructuralConditions(
         complete=True,
-        comb_loops=final_comb_loops,
-        multi_driven=sum(item.category == "multi_driver" for item in records),
+        comb_loops=max(
+            sum(item.category == "combinational_loop" for item in premap_records),
+            sum(item.category == "combinational_loop" for item in final_records),
+        ),
+        multi_driven=sum(item.category == "multi_driver" for item in final_records),
     )
 
 

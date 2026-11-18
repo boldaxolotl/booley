@@ -5,15 +5,21 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows import endpoint_admission
+
+# Private seam: admission claims and the cancellation cause need a live slot store and supervisor.
 from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
     _admission_cancellation_cause,
+    _Claim,
     admission,
 )
-from booley.flows.sim.campaign.model import _freeze_json
 from booley.flows.sim.config import parse_run_cwd_template
 from booley.flows.sim.mode import SimulationMode
+
+# Private seam: the freeze rule has no public caller that feeds it a non-JSON-shaped value.
+from booley.flows.sim.record.model import _freeze_json
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import ExecutionResult, execute_endpoint
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
@@ -24,7 +30,6 @@ def _context(**overrides):
         "mode": "unmanaged",
         "slot_store": None,
         "outer_token": None,
-        "max_heavy": 1,
         "role": "interactive",
         "execution_id": "e" * 32,
         "timeout_seconds": None,
@@ -38,9 +43,7 @@ def _context(**overrides):
     "overrides",
     [
         {"mode": "invalid"},
-        {"max_heavy": 0},
         {"mode": "managed"},
-        {"max_heavy": 2},
     ],
 )
 def test_admission_context_rejects_incoherent_claims(overrides) -> None:
@@ -53,8 +56,8 @@ def test_admission_gate_can_only_be_entered_once() -> None:
         _invocation_id = "e" * 32
 
         @staticmethod
-        def _acquire_job_slot():
-            return None, None
+        def _memory_admitted() -> bool:
+            return False
 
     gate = AdmissionGate(Endpoint())  # type: ignore[arg-type]
     with gate.enter():
@@ -76,8 +79,8 @@ def test_admission_gate_separates_runtime_and_parent_identity(
         _invocation_id = "sim-20260925T153819Z-1"
 
         @staticmethod
-        def _acquire_job_slot():
-            return None, None
+        def _memory_admitted() -> bool:
+            return False
 
     with AdmissionGate(Endpoint()).enter() as admission:  # type: ignore[arg-type]
         expected = ExecutionId(runtime_execution_id) if runtime_execution_id else None
@@ -103,17 +106,23 @@ def test_admission_context_rejects_malformed_runtime_identity() -> None:
 def test_malformed_runtime_identity_rejects_before_slot_acquisition(
     monkeypatch: pytest.MonkeyPatch, managed: bool
 ) -> None:
+    # Private seam: admission claims and the cancellation cause need a live slot store and supervisor.
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
     acquisitions = 0
+
+    def acquire(_endpoint, _prepared, requeued=False):
+        nonlocal acquisitions
+        acquisitions += 1
+        return _Claim(object(), object()) if managed else _Claim(None, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", acquire)
 
     class Endpoint:
         _invocation_id = "sim-20260925T153819Z-1"
 
         @staticmethod
-        def _acquire_job_slot():
-            nonlocal acquisitions
-            acquisitions += 1
-            return (object(), object()) if managed else (None, None)
+        def _memory_admitted() -> bool:
+            return True
 
     with (
         pytest.raises(ValueError, match=RUNTIME_EXECUTION_ENV),
@@ -128,7 +137,13 @@ def test_malformed_runtime_identity_rejects_before_slot_acquisition(
 def test_simulation_admission_reports_malformed_runtime_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Private seam: admission claims and the cancellation cause need a live slot store and supervisor.
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
+
+    def acquire(*_args, **_kwargs):
+        raise AssertionError("slot acquisition must not run")
+
+    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", acquire)
 
     class Endpoint:
         name = "sim"
@@ -136,24 +151,30 @@ def test_simulation_admission_reports_malformed_runtime_identity(
         _invocation_id = "sim-20260925T153819Z-1"
 
         @staticmethod
-        def _acquire_job_slot():
-            raise AssertionError("slot acquisition must not run")
+        def _memory_admitted() -> bool:
+            return True
 
         @staticmethod
         def _get_head_sha() -> str:
             return "head"
 
-        def admission(self, prepared):
-            return admission(self, prepared)
+        def admission(self, prepared, *, requeued: bool = False):
+            return admission(self, prepared, requeued=requeued)
+
+        @staticmethod
+        def may_requeue_after_oom(_prepared, _admission) -> bool:
+            return False
+
+        @staticmethod
+        def begin_requeued_attempt() -> None:
+            pass
 
         @staticmethod
         def record_acceptance(_prepared, _outcome) -> None:
             pass
 
         @staticmethod
-        def finish_execution(
-            _prepared, outcome, *, started, acceptance_recorded
-        ) -> ExecutionResult:
+        def finish_execution(_prepared, outcome, *, started, records_published) -> ExecutionResult:
             return ExecutionResult(outcome.exit_code, outcome)
 
     prepared = SimpleNamespace(non_persisting_dry_run=False)
@@ -203,7 +224,7 @@ def test_run_cwd_template_deduplicates_placeholders_in_first_seen_order() -> Non
     assert parse_run_cwd_template("runs/{test}/{attempt}/{test}") == ("test", "attempt")
 
 
-def test_campaign_model_only_freezes_json_shaped_values() -> None:
+def test_simulation_record_model_only_freezes_json_shaped_values() -> None:
     with pytest.raises(TypeError, match="keys"):
         _freeze_json({1: "value"})
     with pytest.raises(TypeError, match="non-JSON"):

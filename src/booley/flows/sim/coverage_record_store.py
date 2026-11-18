@@ -1,0 +1,469 @@
+"""Durable Coverage Record persistence behind one filesystem seam."""
+
+from __future__ import annotations
+
+import gzip
+import io
+import json
+import os
+import zlib
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_int,
+    require_str,
+)
+from booley.runtime.atomic_files import atomic_write_once
+from booley.runtime.booley_dir import crossed_booley_dir_entry
+from booley.runtime.regular_file import open_regular_nofollow
+from booley.runtime.sandbox_layout import canonical_project_alias_path
+
+from .coverage_json import (
+    MANIFEST_JSON,
+    POINT_STORE_LINE_JSON,
+    FrozenJson,
+    content_digest,
+    freeze_coverage_mapping,
+)
+from .coverage_policy import score_thresholds
+from .coverage_provisional import ProvisionalCoverageError, criterion_from_evaluation
+from .coverage_record import (
+    EVALUATION_MISMATCH,
+    CoverageRecord,
+    CoverageRecordValidationError,
+    CoverageRollup,
+    DurableTargetIdentity,
+    _decode_manifest,
+    derive_coverage_source_rollups,
+    encode_coverage_point,
+    encode_coverage_record,
+)
+from .record_reports import report_link_ancestor
+
+#: The stored Coverage Record: every run names its Test Run and declared-inputs
+#: fingerprint (ADR 0072), and one selected Test may have several runs. Booley reads
+#: and writes only this schema; Booley 0.4.0's ``booley.coverage-campaign/v5`` is refused.
+COVERAGE_RECORD_SCHEMA = "booley.coverage-record/v1"
+#: The point store header and the manifest's ``point_store`` document; v2 names the
+#: Coverage Record identity ``coverage_record_id``.
+POINT_STORE_SCHEMA = "booley.coverage-points/v2"
+POINT_STORE_NAME = "coverage-points.jsonl.gz"
+#: The one resource ceiling on a point store: its decompressed size, on write and read.
+MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+_MANIFEST_FIELDS = frozenset(
+    {
+        "$schema",
+        "coverage_record_id",
+        "invocation",
+        "target",
+        "collector",
+        "build",
+        "coverage_window",
+        "fingerprints",
+        "source_closure",
+        "tests",
+        "artifacts",
+        "normalization",
+        "point_store",
+        "rollups",
+        "source_rollups",
+        "scoring",
+        "collection",
+        "findings",
+        "evaluation",
+    }
+)
+
+
+@dataclass(frozen=True)
+class CoveragePointStoreReference:
+    """The point-store identity the writer recorded; readers do not re-check it."""
+
+    path: str
+    sha256: str
+    bytes: int
+    uncompressed_bytes: int
+    point_count: int
+
+
+@dataclass(frozen=True)
+class CoverageRecordSummary:
+    """The persisted envelope callers bind to; Coverage Record facts come from the codec."""
+
+    source_schema: str
+    document: Mapping[str, FrozenJson]
+    manifest_sha256: str
+    point_store: CoveragePointStoreReference | None
+
+
+@dataclass(frozen=True)
+class LoadedCoverageRecord:
+    """A complete Coverage Record together with its validated persisted envelope."""
+
+    summary: CoverageRecordSummary
+    coverage_record: CoverageRecord
+
+
+@dataclass(frozen=True)
+class CoverageRecordPaths:
+    """Canonical files published for one current Coverage Record."""
+
+    coverage_record: Path
+    points: Path
+
+
+class CoverageRecordStoreError(ValueError):
+    """Coverage Record persistence cannot produce or recover exact evidence."""
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        if message is None:
+            message, code = code, "COV_STORE_OPERATION"
+        self.code = code
+        super().__init__(f"{code}: {message}")
+
+
+def _write_line(stream: gzip.GzipFile, value: object, total: int) -> int:
+    line = POINT_STORE_LINE_JSON.encode(value)
+    total += len(line)
+    if total > MAX_UNCOMPRESSED_BYTES:
+        raise CoverageRecordStoreError(
+            "COV_POINT_LIMIT", "Coverage Point storage exceeds its ceiling"
+        )
+    stream.write(line)
+    return total
+
+
+def _point_store_bytes(
+    coverage_record: CoverageRecord,
+) -> tuple[bytes, CoveragePointStoreReference]:
+    """Compress the point store in memory and describe it for the manifest."""
+    buffer = io.BytesIO()
+    uncompressed_bytes = 0
+    with gzip.GzipFile(fileobj=buffer, mode="wb", filename="", mtime=0) as compressed:
+        header = {
+            "$schema": POINT_STORE_SCHEMA,
+            "coverage_record_id": coverage_record.coverage_record_id,
+            "target_identity": coverage_record.target.identity,
+        }
+        uncompressed_bytes = _write_line(compressed, header, uncompressed_bytes)
+        for point in coverage_record.points:
+            uncompressed_bytes = _write_line(
+                compressed, encode_coverage_point(point), uncompressed_bytes
+            )
+    data = buffer.getvalue()
+    return data, CoveragePointStoreReference(
+        path=POINT_STORE_NAME,
+        sha256=content_digest(data),
+        bytes=len(data),
+        uncompressed_bytes=uncompressed_bytes,
+        point_count=len(coverage_record.points),
+    )
+
+
+def _point_store_document(reference: CoveragePointStoreReference) -> dict[str, object]:
+    return {
+        "$schema": POINT_STORE_SCHEMA,
+        "path": reference.path,
+        "encoding": "jsonl+gzip",
+        "sha256": reference.sha256,
+        "bytes": reference.bytes,
+        "uncompressed_bytes": reference.uncompressed_bytes,
+        "point_count": reference.point_count,
+    }
+
+
+def _manifest(
+    coverage_record: CoverageRecord, reference: CoveragePointStoreReference
+) -> dict[str, object]:
+    document = encode_coverage_record(coverage_record)
+    document["$schema"] = COVERAGE_RECORD_SCHEMA
+    del document["points"]
+    document["point_store"] = _point_store_document(reference)
+    scoring = _expected_scoring(coverage_record.collection)
+    document["scoring"] = scoring
+    document["source_rollups"] = [
+        {
+            "source": item.source,
+            "rollups": [_rollup_document(rollup) for rollup in item.rollups],
+        }
+        for item in (
+            derive_coverage_source_rollups(coverage_record.points)
+            if scoring["status"] == "valid"
+            else ()
+        )
+    ]
+    return document
+
+
+def _rollup_document(rollup: CoverageRollup) -> dict[str, object]:
+    return {
+        "metric": rollup.metric,
+        "semantics": rollup.semantics,
+        "total_points": rollup.total_points,
+        "eligible_points": rollup.eligible_points,
+        "covered_points": rollup.covered_points,
+        "waived_points": rollup.waived_points,
+        "percent": rollup.percent,
+    }
+
+
+def publish_coverage_record(
+    target_dir: Path, coverage_record: CoverageRecord
+) -> CoverageRecordPaths:
+    """Publish a complete Coverage Record without replacing existing final files."""
+    if _contains_link(target_dir):
+        raise CoverageRecordStoreError("Coverage Record path contains a link")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    coverage_record_path = target_dir / "coverage.json"
+    points_path = target_dir / POINT_STORE_NAME
+    if coverage_record_path.exists() or points_path.exists():
+        raise CoverageRecordStoreError("Coverage Record publication cannot replace evidence")
+    points_bytes, reference = _point_store_bytes(coverage_record)
+    manifest_bytes = MANIFEST_JSON.encode(_manifest(coverage_record, reference))
+    if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+        raise CoverageRecordStoreError(
+            "COV_MANIFEST_LIMIT", "Coverage Record manifest exceeds its size limit"
+        )
+    atomic_write_once(points_path, points_bytes)
+    # The manifest is the commit marker: link it last, and drop the point store
+    # this call wrote when the manifest never appears.
+    try:
+        atomic_write_once(coverage_record_path, manifest_bytes)
+    finally:
+        if not coverage_record_path.exists():
+            points_path.unlink(missing_ok=True)
+    return CoverageRecordPaths(coverage_record_path, points_path)
+
+
+def _decode_reference(value: object) -> CoveragePointStoreReference:
+    """Decode the recorded identity; readers trust the published pair (ADR 0062)."""
+    record = require_dict(value, field="point_store")
+    # No alias: a point store document of an earlier schema is not this Record's.
+    if record.get("$schema") != POINT_STORE_SCHEMA:
+        raise CoverageRecordStoreError(
+            "COV_MANIFEST_FORMAT", f"Coverage Record point store is not {POINT_STORE_SCHEMA}"
+        )
+    return CoveragePointStoreReference(
+        POINT_STORE_NAME,
+        require_str(record, "sha256"),
+        require_int(record.get("bytes"), field="bytes"),
+        require_int(record.get("uncompressed_bytes"), field="uncompressed_bytes"),
+        require_int(record.get("point_count"), field="point_count"),
+    )
+
+
+def _expected_scoring(collection: Mapping[str, object]) -> dict[str, object]:
+    status = collection.get("status")
+    if status == "complete":
+        return {"status": "valid", "reason": None}
+    return {"status": "invalid", "reason": status}
+
+
+def _contains_link(path: Path) -> bool:
+    # A symlinked .booley entry is followed; every other link is refused.
+    return report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
+
+
+def _open_regular(path: Path) -> int:
+    try:
+        return open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
+    except OSError as exc:
+        raise CoverageRecordStoreError(
+            "COV_PATH_UNSAFE", f"Cannot open retained regular file: {path}"
+        ) from exc
+
+
+def _read_manifest_bytes(path: Path) -> bytes:
+    """Read at most one byte past the manifest ceiling through a no-follow regular open."""
+    with os.fdopen(_open_regular(path), "rb") as stream:
+        return stream.read(MAX_MANIFEST_BYTES + 1)
+
+
+def _canonical_coverage_record_path(path: Path) -> Path:
+    try:
+        return canonical_project_alias_path(path.absolute())
+    except ValueError as exc:
+        raise CoverageRecordStoreError("COV_PATH_UNSAFE", str(exc)) from exc
+
+
+def _point_documents(path: Path, coverage_record_id: object) -> list[dict[str, object]]:
+    """Gunzip the point store once under the ceiling; return its rows after the header.
+
+    The header must be exactly this Record's: its schema, identity and Target identity.
+    """
+    try:
+        with (
+            os.fdopen(_open_regular(path), "rb") as source,
+            gzip.GzipFile(fileobj=source, mode="rb") as stream,
+        ):
+            # Chunked: one read(ceiling + 1) would reserve the whole ceiling up front.
+            raw = bytearray()
+            while chunk := stream.read(1 << 20):
+                raw += chunk
+                if len(raw) > MAX_UNCOMPRESSED_BYTES:
+                    raise CoverageRecordStoreError(
+                        "COV_POINT_LIMIT", "Coverage Point storage exceeds its ceiling"
+                    )
+    except (EOFError, OSError, zlib.error) as exc:
+        raise CoverageRecordStoreError(
+            "COV_POINT_FORMAT", "Malformed gzip Coverage Point storage"
+        ) from exc
+    try:
+        header, *rows = (dict(require_dict(json.loads(line))) for line in raw.splitlines())
+    except (ValueError, BoundaryError) as exc:
+        raise CoverageRecordStoreError(
+            "COV_POINT_FORMAT", "Malformed Coverage Point JSON line"
+        ) from exc
+    if (
+        set(header) != {"$schema", "coverage_record_id", "target_identity"}
+        or header["$schema"] != POINT_STORE_SCHEMA
+        or header["coverage_record_id"] != coverage_record_id
+    ):
+        raise CoverageRecordStoreError(
+            "COV_POINT_FORMAT", f"Coverage Point storage header is not {POINT_STORE_SCHEMA}"
+        )
+    return rows
+
+
+def decode_coverage_record(
+    manifest: Mapping[str, object],
+    points: list[dict[str, object]],
+    expected_target: DurableTargetIdentity,
+) -> CoverageRecord:
+    """Decode a manifest and its point rows into a Coverage Record: the one decode.
+
+    *manifest* has already passed the store's schema gate, exact field set
+    and size ceilings; ``load_coverage_record*`` are the entry points for
+    persisted bytes. Consumes *points*. Stored rollups are discarded and
+    derived from the points; a stored pass/fail evaluation is re-scored from
+    them with the stored thresholds, so no stored derived value is trusted.
+    """
+    coverage_record = _decode_manifest(manifest, points, expected_target)
+    if coverage_record.evaluation["status"] not in {"pass", "fail"}:
+        return coverage_record
+    try:
+        criterion = criterion_from_evaluation(coverage_record)
+    except ProvisionalCoverageError as exc:
+        raise CoverageRecordValidationError((EVALUATION_MISMATCH,)) from exc
+    score = score_thresholds(coverage_record.rollups, criterion.thresholds)
+    if score.empty:
+        raise CoverageRecordValidationError((EVALUATION_MISMATCH,))
+    evaluation = {
+        **coverage_record.evaluation,
+        "status": score.status,
+        "metrics": list(score.metrics),
+    }
+    return replace(coverage_record, evaluation=freeze_coverage_mapping(evaluation))
+
+
+def _invocation_of(path: Path) -> Path | None:
+    """The Simulation invocation directory holding a Coverage Record file, or ``None``.
+
+    Two layouts: the Target-level ``<invocation>/targets/<Target>/coverage.json`` and the
+    nested ``<invocation>/targets/<Target>/<record>/work-items/<item>/attempts/<attempt>/
+    <Coverage Record directory>/coverage.json``, whose directory names differ between Booley 0.4.0
+    and now, so only the depth is matched.
+    """
+    parents = path.parents
+    for depth in (1, 7):
+        if len(parents) > depth + 1 and parents[depth].name == "targets":
+            return parents[depth + 1]
+    return None
+
+
+def _load_manifest(
+    path: Path, raw: bytes, expected_target: DurableTargetIdentity | None
+) -> LoadedCoverageRecord:
+    """Deep-load one Coverage Record; the codec validates manifest and points once."""
+    # Imported here: ``booley.flows.sim.record`` imports the store through its coordinator.
+    from booley.flows.sim.record.codec import (
+        UnsupportedSimulationRecordFormatError,
+        raise_if_retired_schema,
+    )
+
+    try:
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise CoverageRecordStoreError(
+                "COV_MANIFEST_LIMIT", "Coverage Record manifest exceeds its size limit"
+            )
+        try:
+            parsed = json.loads(raw)
+        except ValueError as exc:  # a JSONDecodeError, or an integer over the digit limit
+            raise CoverageRecordStoreError(
+                "COV_MANIFEST_FORMAT", f"Cannot load Coverage Record: {exc}"
+            ) from exc
+        document = dict(require_dict(parsed))
+        schema = document.get("$schema")
+        # An older Booley's schema is refused as old, naming the invocation to delete.
+        try:
+            raise_if_retired_schema(schema)
+        except UnsupportedSimulationRecordFormatError as exc:
+            invocation = _invocation_of(path)
+            raise (exc if invocation is None else exc.located(invocation)) from None
+        if schema != COVERAGE_RECORD_SCHEMA:
+            raise CoverageRecordStoreError(
+                "COV_SCHEMA_VERSION_UNSUPPORTED",
+                "Unsupported Coverage Record schema; delete the Coverage Record "
+                f"directory {path.parent} or recollect coverage with this Booley version",
+            )
+        if set(document) != _MANIFEST_FIELDS:
+            raise CoverageRecordStoreError(
+                "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Record manifest"
+            )
+        point_store = _decode_reference(document["point_store"])
+        if expected_target is None:
+            target = require_dict(document.get("target"), field="target")
+            expected_target = DurableTargetIdentity(require_str(target, "identity"))
+        coverage_record = decode_coverage_record(
+            document,
+            _point_documents(path.parent / POINT_STORE_NAME, document["coverage_record_id"]),
+            expected_target,
+        )
+    except (CoverageRecordValidationError, CoverageRecordStoreError):
+        raise
+    except (UnicodeError, BoundaryError) as exc:
+        raise CoverageRecordStoreError(
+            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Record: {exc}"
+        ) from exc
+    summary = CoverageRecordSummary(
+        source_schema=schema,
+        # Source rollups and scoring are writer-derived content passed through (ADR 0062);
+        # the overall rollups and evaluation are the recomputed ones.
+        document=freeze_coverage_mapping(
+            {
+                **document,
+                "rollups": [_rollup_document(rollup) for rollup in coverage_record.rollups],
+                "evaluation": coverage_record.evaluation,
+            }
+        ),
+        manifest_sha256=content_digest(raw),
+        point_store=point_store,
+    )
+    return LoadedCoverageRecord(summary, coverage_record)
+
+
+def load_coverage_record(
+    path: Path, expected_target: DurableTargetIdentity | None = None
+) -> LoadedCoverageRecord:
+    """Deep-load one Coverage Record; the codec validates it once, after the points are read."""
+    path = _canonical_coverage_record_path(path)
+    try:
+        return _load_manifest(path, _read_manifest_bytes(path), expected_target)
+    except OSError as exc:
+        raise CoverageRecordStoreError(
+            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Record: {exc}"
+        ) from exc
+
+
+def load_coverage_record_bytes(
+    path: Path,
+    raw: bytes,
+    expected_target: DurableTargetIdentity | None = None,
+) -> LoadedCoverageRecord:
+    """Deep-load a Coverage Record from exact manifest bytes already authenticated."""
+    return _load_manifest(_canonical_coverage_record_path(path), raw, expected_target)

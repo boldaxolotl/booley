@@ -59,6 +59,7 @@ from booley.bwave.waveform_store import (
     waveform_cache_dir,
 )
 from booley.core.boundary import BoundaryError, require_int
+from booley.core.host_shell import quote_arg
 from booley.runtime import runtime_context, vaporview
 
 # ---------------------------------------------------------------------------
@@ -151,6 +152,37 @@ def _trace_diagnostics(target: Path) -> str:
     return ""
 
 
+_STRAY_VCDS_SHOWN = 5
+
+
+def _stray_vcd_hint(directory: Path) -> str:
+    """Name top-level VCD dumps discovery skipped (it reads only trace.vcd), or ""."""
+    stray = sorted(p.name for p in directory.glob("*.vcd") if p.is_file())
+    if not stray:
+        return ""
+    more = len(stray) - _STRAY_VCDS_SHOWN
+    names = ", ".join(stray[:_STRAY_VCDS_SHOWN]) + (f" and {more} more" if more > 0 else "")
+    example = quote_arg(str(directory / stray[0]))
+    return (
+        f"\nVCD dumps here that are not named trace.vcd: {names}\n"
+        "Declare the dump in [flows.sim].trace_files and re-run the sim, "
+        "or pass the file directly (a raw VCD needs --build to register):\n"
+        f"  bwave register {example} --as ALIAS --build\n"
+        f"  bwave gui {example}"
+    )
+
+
+def _no_trace_found_message(directory: str | Path, note: str = "") -> str:
+    """The `register DIR` / `gui DIR` error when trace discovery finds nothing."""
+    path = Path(directory)
+    return (
+        f"ERROR: No trace file found in {directory}"
+        + _stray_vcd_hint(path)
+        + note
+        + _trace_diagnostics(path)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Trace-session + marker persistence (kept separate from the CLI, principle 8)
 # ---------------------------------------------------------------------------
@@ -162,14 +194,14 @@ def _trace_diagnostics(target: Path) -> str:
 # import would raise "attempted relative import with no known parent package".
 from booley.bwave.sessions import (
     _DEFAULT_ALIAS,
-    SESSION_FILE,  # noqa: F401  # re-exported for backward compatibility
     _get_markers,
     _load_sessions,
-    _register_trace,  # noqa: F401  # re-exported for backward compatibility
     _save_sessions,  # noqa: F401  # re-exported for backward compatibility
     _validate_marker_name,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
+    current_session_store,
+    register_trace,  # noqa: F401  # re-exported for the tests and the facade
 )
 
 
@@ -266,7 +298,8 @@ def _inject_marker_flags(extra: list[str], alias: str) -> None:
 # ---------------------------------------------------------------------------
 def _resolve_trace_from_session(alias: str | None = None) -> str:
     """Resolve trace path from session alias, or exit with helpful error."""
-    sessions = _load_sessions()
+    store = current_session_store()
+    sessions = _load_sessions(store)
     key = alias or _DEFAULT_ALIAS
     session = sessions.get(key)
     if not session:
@@ -278,7 +311,9 @@ def _resolve_trace_from_session(alias: str | None = None) -> str:
         sys.exit(
             "ERROR: No trace path given and no registered session.\n"
             "Either pass a trace path or register one:\n"
-            "  bwave register SIM_DIR --as ALIAS"
+            "  bwave register SIM_DIR --as ALIAS\n"
+            "Or rerun the simulation with tracing; it registers each Target's waveform:\n"
+            "  booley flow sim --target TARGET --trace   (MCP: sim with trace: true)"
         )
     # session comes from the on-disk JSON session file (external input): it may
     # be a non-object or lack the "trace" key if hand-edited or corrupted.
@@ -288,6 +323,8 @@ def _resolve_trace_from_session(alias: str | None = None) -> str:
             f"ERROR: Session for @{key} is malformed (no trace path).\n"
             f"Re-register with: bwave register SIM_DIR --as {key}"
         )
+    # A trace inside the checkout is stored relative to it, so a moved checkout still resolves.
+    trace = str(store.trace_path(trace))
     if not Path(trace).exists():
         sys.exit(
             f"ERROR: Trace for @{key} no longer exists: {trace}\n"
@@ -757,10 +794,7 @@ def _resolve_gui_target(target: str | None) -> tuple[str, str]:
     if Path(trace_path).is_dir():
         found = find_trace(Path(trace_path))
         if found is None:
-            sys.exit(
-                f"ERROR: No trace file found in {trace_path}"
-                + _trace_diagnostics(Path(trace_path))
-            )
+            sys.exit(_no_trace_found_message(trace_path))
         trace_path = str(found)
     # .lower(): the host FS may be case-insensitive (TRACE.BWAVE resolves).
     # Exit 2 to match the Rust binary's own legacy-.bwave rejection.
@@ -1375,7 +1409,8 @@ def _groups_from_layout(layout: list[dict], expected: list[_OpenGroup]) -> list[
     by_name = {group.name: group for group in expected}
     actual: list[_OpenGroup] = []
     for item in layout:
-        group = by_name.get(item.get("groupName"))
+        group_name = item.get("groupName")
+        group = by_name.get(group_name) if isinstance(group_name, str) else None
         children = item.get("children")
         if (
             group is None
@@ -1469,7 +1504,10 @@ def _row_matches(expected: dict, actual: object, target: _ViewTarget, strict: bo
     if kind != "netlist-variable":
         return True  # custom rows round-trip through VaporView's own format
     name = expected.get("name")
-    if actual.get("name") not in target.aliases.get(name, frozenset({name})):
+    known_aliases = target.aliases.get(name) if isinstance(name, str) else None
+    if actual.get("name") not in (
+        known_aliases if known_aliases is not None else frozenset({name})
+    ):
         return False
     if not strict:
         return True
@@ -2013,7 +2051,7 @@ Common filters and options (consumer subcommands accept these):
   --with-reset       Include reset phase (default: skip until deassert).
   --clock SIG        Clock for cycle grid (default: auto *clk*).
   --sample-mode MODE Sync observation: post-edge (default) or pre-edge.
-  --reset SIG        Reset for skip detection (default: auto *rst*).
+  --reset SIG        Reset for skip detection (default: auto *rst* or *reset*).
   --limit N          Record/column cap (query default 2000; list 400).
   --format text|json JSON: list/value/find/stats/signal/wave/distance/overview.
 
@@ -2212,7 +2250,7 @@ Wrapper commands:
 
 Query subcommands (forwarded to the bwave binary — see `bwave query --help`):
   Trace-consuming:  list  signal  wave  value  find  sample  diff
-                    distance  stats  stuck  build
+                    distance  overview  stats  stuck  build
   Meta (no trace):  schema  docs  skill
 
 Run 'bwave query --help' for the full query reference, or
@@ -2500,7 +2538,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "open":
         sys.exit(
             "ERROR: `bwave open` is now `bwave gui` (it shows a waveform to the human).\n"
-            f"  Retry as: bwave gui {' '.join(sys.argv[2:])}".rstrip()
+            f"  Retry as: bwave gui {' '.join(quote_arg(arg) for arg in sys.argv[2:])}".rstrip()
         )
 
     # Default to query if first arg isn't a known subcommand

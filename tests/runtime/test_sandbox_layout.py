@@ -44,7 +44,7 @@ def project_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path
     require_symlinks(tmp_path)
     target = tmp_path / "real-project-data"
     target.mkdir()
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, target, target_is_directory=True)
     configure_project_alias(monkeypatch, alias, target)
     return alias, target
@@ -88,14 +88,14 @@ def test_alias_traversal_is_refused(project_alias):
 def test_other_prefixes_and_relative_paths_are_unchanged(project_alias):
     alias, _target = project_alias
     for path in (
-        Path("booley-project/reports"),
+        Path("booley/reports"),
         alias.with_name(alias.name + "-other") / "reports",
     ):
         assert sandbox_layout.canonical_project_alias_path(path) == path
 
 
 def test_non_posix_paths_receive_no_exemption(monkeypatch):
-    path = Path("/booley-project/reports")
+    path = Path("/booley/reports")
     monkeypatch.setattr(sandbox_layout, "os", SimpleNamespace(name="nt"))
     assert sandbox_layout.canonical_project_alias_path(path) == path
 
@@ -109,45 +109,43 @@ def test_directory_alias_preserves_traversal(project_alias):
 
 
 def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
-    from booley.flows.sim.campaign import SimulationCampaignIntegrityError
-    from booley.flows.sim.campaign.resume import validate_resume_manifest
-    from booley.flows.sim.campaign_retention import CampaignRetentionError, _invocation
     from booley.flows.sim.coverage_analysis_input import (
         CoverageAnalysisError,
-        read_coverage_campaign,
+        read_coverage_record,
     )
-    from booley.flows.sim.coverage_campaign_store import (
-        CoverageCampaignStoreError,
-        load_coverage_campaign,
-        load_coverage_campaign_bytes,
+    from booley.flows.sim.coverage_record_store import (
+        CoverageRecordStoreError,
+        load_coverage_record,
+        load_coverage_record_bytes,
     )
     from booley.flows.sim.coverage_reference import (
-        CoverageCampaignReferenceError,
-        resolve_coverage_campaign_reference,
-        resolve_persisted_coverage_campaign_reference,
+        CoverageRecordReferenceError,
+        resolve_coverage_record_reference,
+        resolve_persisted_coverage_record_reference,
     )
+    from booley.flows.sim.record import SimulationRecordIntegrityError
+    from booley.flows.sim.record.resume import validate_resume_manifest
 
     alias, target = project_alias
     path = alias / "child/../coverage.json"
     for reader, error in (
-        (load_coverage_campaign, CoverageCampaignStoreError),
+        (load_coverage_record, CoverageRecordStoreError),
         (
-            lambda selected: load_coverage_campaign_bytes(selected, b"{}"),
-            CoverageCampaignStoreError,
+            lambda selected: load_coverage_record_bytes(selected, b"{}"),
+            CoverageRecordStoreError,
         ),
         (
-            lambda selected: resolve_persisted_coverage_campaign_reference(selected, {}),
-            CoverageCampaignReferenceError,
+            lambda selected: resolve_persisted_coverage_record_reference(selected, {}),
+            CoverageRecordReferenceError,
         ),
-        (read_coverage_campaign, CoverageAnalysisError),
-        (resolve_coverage_campaign_reference, CoverageCampaignReferenceError),
+        (read_coverage_record, CoverageAnalysisError),
+        (resolve_coverage_record_reference, CoverageRecordReferenceError),
         (
             lambda selected: validate_resume_manifest(selected, project_root=target),
-            SimulationCampaignIntegrityError,
+            SimulationRecordIntegrityError,
         ),
-        (lambda selected: _invocation(selected, 1), CampaignRetentionError),
     ):
         with pytest.raises(error, match="traversal") as caught:
             reader(path)
-        if error is CoverageCampaignStoreError:
+        if error is CoverageRecordStoreError:
             assert caught.value.code == "COV_PATH_UNSAFE"

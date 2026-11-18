@@ -15,10 +15,10 @@ from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
     McpInputRequired,
-    McpRequestContext,
 )
 from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records
+from tests.time_budget import hang_guard_s, scaled
 
 
 class Observer:
@@ -41,9 +41,6 @@ class Observer:
     async def resolved(self, facts):
         return facts
 
-    async def shared(self, _facts):
-        return ("codex:one", "codex:two"), "WARNING: another session shares this Goal worktree"
-
 
 def context():
     return SimpleNamespace(
@@ -57,9 +54,7 @@ def context():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "name", ["ordinary", "custom", "booley_poll", "goal_status", "goal_finish", "tools/list"]
-)
+@pytest.mark.parametrize("name", ["ordinary", "custom", "booley_poll", "tools/list"])
 async def test_all_application_dispatch_paths_get_same_explicit_identity(monkeypatch, name):
     observed = []
 
@@ -93,19 +88,16 @@ async def test_all_application_dispatch_paths_get_same_explicit_identity(monkeyp
         "codex:two",
     ]
     assert all(arguments == {"work_dir": "/fixture"} for arguments, _request in observed)
-    assert all(request.other_session_keys == ("codex:one", "codex:two") for _, request in observed)
 
 
 @pytest.mark.asyncio
 async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch):
 
     async def dispatch(*_args):
-        return McpInputRequired(
-            "opaque-state", "answer", "human form", {"type": "object"}, goal_aware=True
-        )
+        return McpInputRequired("opaque-state", "answer", "human form", {"type": "object"})
 
     app = McpApplication(
-        [{"name": "goal_propose_change", "schema": {"type": "object", "required": ["work_dir"]}}],
+        [{"name": "probe", "schema": {"type": "object", "required": ["work_dir"]}}],
         dispatch=dispatch,
         request_dispatch=dispatch,
         canonicalize=lambda value: value,
@@ -113,7 +105,7 @@ async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch)
     )
     observer = Observer()
     invalid = await server._call_application_tool(
-        app, CallToolRequestParams(name="goal_propose_change"), None, observer
+        app, CallToolRequestParams(name="probe"), None, observer
     )
     assert invalid.is_error
     assert observer.calls[-1][-1] == "error"
@@ -124,12 +116,12 @@ async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch)
     assert observer.calls[-1][-1] == "unknown-tool"
     form = await server._call_application_tool(
         app,
-        CallToolRequestParams(name="goal_propose_change", arguments={"work_dir": "/fixture"}),
+        CallToolRequestParams(name="probe", arguments={"work_dir": "/fixture"}),
         None,
         observer,
     )
     assert form.request_state == "opaque-state"
-    assert "WARNING:" in form.input_requests["answer"].params.message
+    assert form.input_requests["answer"].params.message == "human form"
     assert observer.calls[-1][-1] == "input-required"
 
 
@@ -137,245 +129,10 @@ def test_job_record_is_stamped_with_the_submitting_call():
     from booley.mcp.call_context import CallContext
 
     rec = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
-    context = CallContext(
-        Path("/fixture"), None, None, None, None, {}, None, session_key="codex:submitter"
-    )
+    context = CallContext(Path("/fixture"), None, None, None, {}, session_key="codex:submitter")
     server._JobManager._stamp_context(rec, context)
     assert rec.session_key == "codex:submitter"
     assert rec.work_dir == str(context.work_dir)
-
-
-def test_observed_process_audit_roundtrip_is_advisory_and_validated():
-    from booley.goals.changes import Approval
-    from booley.goals.proposals import Decision, ProposalError
-    from booley.runtime.pid import ProcessIdentity
-
-    peer = ProcessIdentity(99, "fixture", 101)
-    decision = Decision(
-        decision="approve",
-        reason="human approved",
-        source=Approval.ELICITED,
-        quote=None,
-        at="2026-10-08T10:00:00Z",
-        payload_digest="sha256:" + "a" * 64,
-        session_key="codex:one",
-        peer_process=peer,
-    )
-    assert Decision.from_json(decision.to_json()) == decision
-    malformed = {**decision.to_json(), "peer_process": "pid:99"}
-    with pytest.raises(ProposalError, match="advisory"):
-        Decision.from_json(malformed)
-
-
-def test_invalid_advisory_unicode_cannot_gate_lifecycle(tmp_path):
-    from booley.goals.lifecycle import _audit_attribution
-
-    operation = SimpleNamespace(
-        request=SimpleNamespace(session_key="bad\ud800"), directory=tmp_path
-    )
-    _audit_attribution(operation)
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_entry_warning_excludes_its_own_observation(tmp_path):
-    from booley.goals.model import WorktreeIdentity
-    from booley.mcp.goal_tools import _entry_environment
-
-    context = McpRequestContext(
-        attribution=Attribution("codex:one", "thread", "/fixture", "wt"),
-        other_session_keys=("codex:one", "codex:two"),
-    )
-    identity = WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main")
-    assert _entry_environment(tmp_path, context).other_sessions(identity) == ("codex:two",)
-    alone = McpRequestContext(attribution=context.attribution, other_session_keys=("codex:one",))
-    assert _entry_environment(tmp_path, alone).other_sessions(identity) == ()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "name,text", [("sim", "Interactive result"), ("goal_status", "No active Goal Mode.")]
-)
-async def test_interactive_and_inactive_goal_replies_do_not_append_shared_warnings(
-    monkeypatch, name, text
-):
-    from mcp.types import TextContent
-
-    async def dispatch(*_):
-        return McpDispatchResult([TextContent(type="text", text=text)], False)
-
-    app = McpApplication(
-        [{"name": name, "schema": {"type": "object"}}],
-        dispatch=dispatch,
-        request_dispatch=dispatch,
-        canonicalize=lambda n: n,
-        on_discovery_error=lambda _: None,
-    )
-    result = await server._call_application_tool(
-        app, CallToolRequestParams(name=name), None, Observer()
-    )
-    assert [block.text for block in result.content] == [text]
-
-
-@pytest.mark.asyncio
-async def test_goal_aware_shared_warning_keeps_structured_content(monkeypatch):
-    from mcp.types import TextContent
-
-    async def dispatch(*_):
-        return McpDispatchResult(
-            ([TextContent(type="text", text="Goal result")], {"facts": "retained"}),
-            False,
-            goal_aware=True,
-        )
-
-    app = McpApplication(
-        [{"name": "probe", "schema": {"type": "object"}}],
-        dispatch=dispatch,
-        request_dispatch=dispatch,
-        canonicalize=lambda n: n,
-        on_discovery_error=lambda _: None,
-    )
-    result = await server._call_application_tool(
-        app, CallToolRequestParams(name="probe"), None, Observer()
-    )
-    assert result.content[0].text == "Goal result"
-    assert result.content[1].text.startswith("WARNING:")
-    assert result.structured_content == {"facts": "retained"}
-
-
-@pytest.mark.asyncio
-async def test_async_goal_reply_refreshes_shared_warning_after_deferred_peer(
-    tmp_path, monkeypatch
-):
-    import threading
-
-    from mcp.types import TextContent
-    from starlette.requests import Request
-
-    from booley.mcp import session_observer, session_registry
-    from booley.mcp.session_observer import SessionObserver
-    from booley.mcp.session_registry import SessionRegistry, resolve_attribution
-    from booley.runtime.pid import ProcessIdentity
-
-    monkeypatch.setattr(session_registry, "namespace", lambda *_: "fixture")
-    monkeypatch.setattr(session_observer, "namespace", lambda *_: "fixture")
-    registry = SessionRegistry(tmp_path / "data")
-    other = resolve_attribution(tmp_path, metadata={"threadId": "other"}, client_name="codex")
-    registry.upsert(other, "lint", "completed", now=100)
-    release = threading.Event()
-    # Liveness bound only: no assertion depends on work finishing inside a
-    # wall-clock window, so a loaded runner cannot change the outcome.
-    liveness_bound = 30
-    warnings_at_dispatch = []
-
-    def peer(_request):
-        assert release.wait(liveness_bound)
-        return ProcessIdentity(98765, "fixture", 101)
-
-    monkeypatch.setattr(session_observer, "observed_peer", peer)
-    # Zero budget: every advisory wait before dispatch expires while the peer
-    # is still gated, whatever the scheduler does.
-    observer = SessionObserver(now=lambda: 100, budget=0)
-    monkeypatch.setattr(observer, "_registry", lambda: registry)
-
-    async def dispatch(_name, _arguments, _source, request):
-        warnings_at_dispatch.append(request.presentation_warning)
-        release.set()
-        await asyncio.wait_for(observer._pending, liveness_bound)
-        # The peer is resolved. Completion-time registry I/O must now finish
-        # rather than race the advisory budget, which would report "unavailable".
-        observer.budget = liveness_bound
-        return McpDispatchResult(
-            [TextContent(type="text", text="RUNNING: sim")], False, goal_aware=True
-        )
-
-    app = McpApplication(
-        [{"name": "sim", "schema": {"type": "object"}}],
-        dispatch=dispatch,
-        request_dispatch=dispatch,
-        canonicalize=lambda n: n,
-        on_discovery_error=lambda _: None,
-    )
-    request_context = context()
-    request_context.session.client_params.client_info.name = "claude-code"
-    request_context.request = Request(
-        {
-            "type": "http",
-            "server": ("127.0.0.1", 8080),
-            "headers": [(b"x-booley-peer-host", b"127.0.0.1"), (b"x-booley-peer-port", b"50000")],
-        }
-    )
-    try:
-        result = await server._call_application_tool(
-            app,
-            CallToolRequestParams(name="sim", arguments={"work_dir": str(tmp_path)}),
-            request_context,
-            observer,
-        )
-    finally:
-        release.set()
-    # The request really was presented before its peer resolved ...
-    assert warnings_at_dispatch == ["WARNING: shared-worktree session attribution is unavailable"]
-    # ... and the reply reflects the identity resolved during dispatch.
-    assert any(
-        "another session shares this Goal worktree" in block.text for block in result.content
-    )
-    assert not any("unavailable" in block.text for block in result.content)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("adopted", [False, True])
-async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
-    tmp_path, monkeypatch, adopted
-):
-    from booley.goals.binding import GoalRunBinding
-    from booley.goals.model import WorktreeIdentity
-
-    binding = GoalRunBinding(
-        tmp_path,
-        "fixture-20261008T100000Z",
-        1,
-        WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main"),
-        tmp_path,
-        "goal/fixture",
-        "run",
-        (),
-        (),
-        "sha256:" + "a" * 64,
-        "sha256:" + "a" * 64,
-        True,
-    )
-    record = job_records.JobRecord(
-        "run", "sim", "2026-10-08T10:00:00Z", 60, binding=binding.to_json(), pid=99
-    )
-    monkeypatch.setattr(server, "_job_record", lambda _: record)
-    monkeypatch.setattr(server, "is_pid_alive", lambda _: True)
-    monkeypatch.setattr(server.jobrec, "wall_clock", lambda: 1791453601)
-    monkeypatch.setattr(server, "_format_job_running_poll", lambda *_: "RUNNING: sim")
-    monkeypatch.setattr(server, "_running_progress", lambda _: {"run_id": "run"})
-
-    async def wait(*_):
-        return None if adopted else False
-
-    async def dispatch(_name, args, *_):
-        return await server._dispatch_poll(args, SimpleNamespace(wait=wait))
-
-    app = McpApplication(
-        [{"name": "booley_poll", "schema": {"type": "object"}}],
-        dispatch=dispatch,
-        request_dispatch=dispatch,
-        canonicalize=lambda n: n,
-        on_discovery_error=lambda _: None,
-    )
-    result = await server._call_application_tool(
-        app,
-        CallToolRequestParams(name="booley_poll", arguments={"run_id": "run", "wait_seconds": 0}),
-        None,
-        Observer(),
-    )
-    assert any(
-        "another session shares this Goal worktree" in block.text for block in result.content
-    )
-    assert result.structured_content == {"reports": [{"run_id": "run"}]}
 
 
 @pytest.mark.asyncio
@@ -395,7 +152,7 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
     peer = ProcessIdentity(98765, "fixture", 101)
 
     def resolve(_):
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return peer
 
     monkeypatch.setattr(session_observer, "observed_peer", resolve)
@@ -404,10 +161,10 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
         async def attribution(self, *args, **kwargs):
             fallback = await super().attribution(*args, **kwargs)
             release.set()
-            await asyncio.wait_for(self._pending, 2)
+            await asyncio.wait_for(self._pending, hang_guard_s())
             return fallback
 
-    observer = Deferred(budget=0.001)
+    observer = Deferred(budget=scaled(0.001))
     monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
     admitted = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
 
@@ -424,7 +181,7 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
         return await server._dispatch_booley_mcp_tool(name, args, source, {}, None, request)
 
     app = McpApplication(
-        [{"name": "sim", "schema": {"type": "object"}}],
+        [{"name": "sim", "schema": {"type": "object"}, "memory_admitted": True}],
         dispatch=dispatch,
         request_dispatch=dispatch,
         canonicalize=lambda n: n,
@@ -460,13 +217,13 @@ async def test_resolved_identity_survives_registry_publication_failure(
         release.set()
 
     def resolve(_observation):
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return peer
 
     def publish(*_):
         raise OSError("registry unavailable")
 
-    observer = SessionObserver(budget=0.001 if delayed else 1)
+    observer = SessionObserver(budget=scaled(0.001) if delayed else hang_guard_s())
     monkeypatch.setattr(observer, "_resolve", resolve)
     monkeypatch.setattr(observer, "_publish", publish)
     try:
@@ -480,50 +237,7 @@ async def test_resolved_identity_survives_registry_publication_failure(
         assert facts is peer
     finally:
         release.set()
-        await asyncio.wait_for(observer._pending, 2)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["record", "shared", "duplicate"])
-async def test_advisory_completion_preserves_success_and_deduplicates_warning(
-    monkeypatch, failure
-):
-    from mcp.types import TextContent
-
-    dispatched = False
-    warning = "WARNING: another session shares this Goal worktree"
-
-    class Unreliable(Observer):
-        async def record(self, *_):
-            if failure == "record":
-                raise KeyError("presence failure")
-
-        async def shared(self, facts):
-            if failure == "shared" and dispatched:
-                raise TypeError("presence failure")
-            return await super().shared(facts)
-
-    async def dispatch(*_):
-        nonlocal dispatched
-        dispatched = True
-        text = "retained result" + ("\n" + warning if failure == "duplicate" else "")
-        return McpDispatchResult(
-            ([TextContent(type="text", text=text)], {"retained": True}), False, goal_aware=True
-        )
-
-    app = McpApplication(
-        [{"name": "probe", "schema": {"type": "object"}}],
-        dispatch=dispatch,
-        request_dispatch=dispatch,
-        canonicalize=lambda n: n,
-        on_discovery_error=lambda _: None,
-    )
-    result = await server._call_application_tool(
-        app, CallToolRequestParams(name="probe"), None, Unreliable()
-    )
-    assert result.structured_content == {"retained": True}
-    assert not result.is_error
-    assert sum(block.text.count(warning) for block in result.content) <= 1
+        await asyncio.wait_for(observer._pending, hang_guard_s())
 
 
 def test_non_linux_pid_stamping_does_not_run_blocking_ps(tmp_path, monkeypatch):

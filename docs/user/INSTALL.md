@@ -2,8 +2,7 @@
 
 This guide installs the Booley CLI on your machine and prepares the host with
 Host Bootstrap. Do it once per machine. To connect Booley to an RTL project
-afterwards, follow [Setup](SETUP.md). If a step fails, see
-[Troubleshooting](TROUBLESHOOTING.md#installation-and-editor-integration).
+afterwards, follow [Setup](SETUP.md).
 
 ## Requirements
 
@@ -20,7 +19,16 @@ supported. You need:
   [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
   or [Codex](https://developers.openai.com/codex/cli) (`codex`)
 
-On Windows, also read [Windows](WINDOWS.md) for first-run traps.
+<details markdown>
+<summary>On Windows</summary>
+
+A fresh Windows has no Python, only Microsoft Store shortcuts named `python`
+and `py`. Install Python first, for example with
+`winget install Python.Python.3.13`, then open a new terminal. You need no
+Ubuntu and no EDA tools on Windows; see
+[Windows support](FEATURES.md#windows-support).
+
+</details>
 
 ## Install Booley
 
@@ -34,9 +42,7 @@ booley bootstrap
 ```
 <!-- /booley-smoke:install -->
 
-Check that `booley --version` works. Seeing `externally-managed-environment`,
-PATH, or other install errors? See
-[Troubleshooting](TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).
+Check that `booley --version` works.
 
 ## Upgrade
 
@@ -48,6 +54,9 @@ pipx upgrade booley-rtl
 booley bootstrap --update
 ```
 <!-- /booley-smoke:upgrade -->
+
+Then recreate each Project's Sandbox and run the upgrade review; see
+[After upgrading Booley](SANDBOX.md#after-upgrading-booley).
 
 ## Host Bootstrap
 
@@ -71,9 +80,17 @@ during the build (47 GiB with RISC-V). The finished image takes about 4 GB
 too full; it never deletes images, caches, or your data. Set
 `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1` on one command to skip the check.
 
-**Build time.** A local image build can take over an hour, longer on Windows.
+**Build time.** A local image build can take over an hour.
 Booley stops a build after 7200 seconds (2 hours); set
 `BOOLEY_IMAGE_BUILD_TIMEOUT` to a larger number of seconds to allow more.
+
+<details markdown>
+<summary>On Windows</summary>
+
+A local image build can take longer on Windows. See
+[Windows support](FEATURES.md#windows-support).
+
+</details>
 
 **Host settings.** Machine-wide Sandbox settings, such as
 `egress = "unproxied"` (no egress proxy), live in

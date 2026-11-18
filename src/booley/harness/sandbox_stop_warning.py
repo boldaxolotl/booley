@@ -21,6 +21,7 @@ from booley.core.boundary import BoundaryError, as_str_list, require_dict
 from booley.harness.standalone_job import standalone_jobs_dir
 from booley.runtime import job_records
 from booley.runtime.job_records import JobRecord, JobRecordError, target_arg
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.session_admission import Sandbox
 from booley.runtime.session_runtime import exec_argv
 from booley.runtime.timefmt import format_duration
@@ -90,14 +91,7 @@ def _run_probe(sandbox: Sandbox) -> subprocess.CompletedProcess[str]:
     argv = exec_argv(
         sandbox.container_id, ["python3", "-I", "-c", _PROBE, _RECORDS_RELPATH], tty=False
     )
-    return subprocess.run(
-        argv,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=_PROBE_TIMEOUT_S,
-    )
+    return run_captured_bounded(argv, timeout=_PROBE_TIMEOUT_S, stdin=subprocess.DEVNULL)
 
 
 def _parse_probe(stdout: str) -> tuple[list[JobRecord], list[str]]:

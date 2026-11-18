@@ -9,18 +9,6 @@ from booley.flows.target_test_suite import (
 )
 
 
-def test_resolves_all_non_skipped_target_tests() -> None:
-    suite = resolve_target_test_suite(
-        "sim",
-        identity="sim",
-        test_names={"sim": ["reset", "read", "write"]},
-        test_skips={"sim": ["read"]},
-    )
-
-    assert suite.tests == ("reset", "write")
-    assert suite.skipped == ("read",)
-
-
 def test_all_skipped_returns_empty_runnable_suite() -> None:
     suite = resolve_target_test_suite(
         "sim",

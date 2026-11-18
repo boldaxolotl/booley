@@ -18,7 +18,7 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
-from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.record_reports import is_report_link
 from booley.targets.flow_names import config_section
 
 DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3
@@ -27,14 +27,14 @@ DEFAULT_SIM_BUILD_TIMEOUT_MS: Final[int] = 3_600_000
 # One attempt's budget for every post-run VCD-to-FST conversion (30 minutes).
 DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_MS: Final[int] = 1_800_000
 DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S: Final[int] = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_MS // 1000
-_RUN_CWD_FIELDS = frozenset({"campaign", "target", "test", "attempt"})
+_RUN_CWD_FIELDS = frozenset({"record", "target", "test", "attempt"})
 
 
 def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
     """Return the configured Simulation Flow section, or an empty mapping."""
     from booley.runtime.shared_infra import _load_rtl_config
 
-    config = _load_rtl_config(work_dir)
+    config = _load_rtl_config(None if work_dir is None else Path(work_dir))
     if not config:
         return {}
     flows = config.get("flows", {})
@@ -52,7 +52,7 @@ def resolve_run_cwd(work_dir: Path | str | None = None) -> str:
 
 
 def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
-    """Validate and return first-occurrence ordered campaign placeholders."""
+    """Validate and return first-occurrence ordered ``run_cwd`` placeholders."""
     if not configured or "\0" in configured:
         raise ValueError("[flows.sim].run_cwd must be a nonempty path template")
     # Either separator: a backslash path must not pass on POSIX and fail on Windows.
@@ -64,6 +64,8 @@ def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
         for _literal, field, format_spec, conversion in parsed:
             if field is None:
                 continue
+            if field == "campaign":
+                raise ValueError("run_cwd placeholder {campaign} was renamed to {record}")
             if field not in _RUN_CWD_FIELDS:
                 raise ValueError(f"unsupported run_cwd placeholder {field!r}")
             if format_spec or conversion:
@@ -151,7 +153,17 @@ def resolve_pre_sim_commands(work_dir: Path | str | None = None) -> list[str]:
 
 
 def resolve_pre_sim_build_access(work_dir: Path | str | None = None) -> str:
-    """Return the workload-identifying Pre-Sim build-access contract."""
+    """Return the workload-identifying Pre-Sim build-access contract.
+
+    ``immutable`` (default) runs Pre-Sim Commands after the build and checks they
+    did not change build inputs; a hook that cannot start or does change them is
+    an integrity error (exit 2). ``legacy-per-test`` runs them before a private
+    per-test build; native coverage refuses it. A hook that fails or times out
+    becomes that test's ``elab_error`` and can never produce a pass.
+    ``TargetHandle.project_root`` stays authoritative: registry fields and
+    ``[flows.sim]`` load from each run's own checkout, so a baseline checkout is
+    judged by its own configuration.
+    """
     value = _sim_config(work_dir).get("pre_sim_build_access", "immutable")
     if value not in {"immutable", "legacy-per-test"}:
         raise ValueError(

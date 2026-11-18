@@ -20,7 +20,7 @@ WORKFLOWS = Path(__file__).parents[2] / ".github" / "workflows"
 # Workflow file -> the job whose `if:` carries the draft gate.
 GATED_JOBS = {
     "test.yml": "changes",
-    "picorv32-demo.yml": "demo-contract",
+    "picorv32-demo.yml": "base-plan",
     "pages.yml": "build",
 }
 DRAFT_GATE = (
@@ -45,6 +45,14 @@ def test_draft_gate_exempts_mergify_queue_drafts(name: str, job: str) -> None:
     workflow = _load(name)
 
     assert workflow["jobs"][job]["if"] == DRAFT_GATE
+
+
+def test_demo_contract_runs_on_the_gate_even_when_base_selection_fails() -> None:
+    """``demo-contract`` needs ``base-plan``; a failed plan must fail the check, not skip it."""
+    job = _load("picorv32-demo.yml")["jobs"]["demo-contract"]
+
+    assert job["needs"] == "base-plan"
+    assert job["if"] == f"${{{{ !cancelled() && ({DRAFT_GATE}) }}}}"
 
 
 @pytest.mark.parametrize("name", sorted(GATED_JOBS))

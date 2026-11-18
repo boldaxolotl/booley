@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.runtime import pid as runtime_pid
 
@@ -50,6 +51,7 @@ def test_windows_live_and_recently_exited_processes(
     monkeypatch: pytest.MonkeyPatch, exit_code: int, expected: bool
 ) -> None:
     kernel32 = _FakeKernel32(handle=12, exit_code=exit_code)
+    monkeypatch.setattr(runtime_pid.sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
 
     assert runtime_pid._windows_pid_alive(1234) is expected
@@ -57,10 +59,20 @@ def test_windows_live_and_recently_exited_processes(
 
 def test_windows_access_denied_is_conservatively_alive(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel32 = _FakeKernel32(handle=0)
+    monkeypatch.setattr(runtime_pid.sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
 
     assert runtime_pid._windows_pid_alive(1234) is True
+
+
+def test_windows_helpers_refuse_other_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runtime_pid.sys, "platform", "linux")
+
+    with pytest.raises(OSError, match="Windows-only"):
+        runtime_pid._windows_pid_alive(1234)
+    with pytest.raises(OSError, match="Windows-only"):
+        runtime_pid._windows_process_identity(1234)
 
 
 def test_posix_permission_denied_is_conservatively_alive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,7 +91,7 @@ def test_posix_zombie_is_not_alive() -> None:
     # Kept on Popen: needs the exited-but-unreaped child to observe its zombie state.
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + hang_guard_s()
         while time.monotonic() < deadline:
             stat = Path(f"/proc/{child.pid}/stat").read_text(encoding="utf-8")
             if stat.rsplit(")", 1)[1].split()[0] == "Z":
@@ -90,7 +102,7 @@ def test_posix_zombie_is_not_alive() -> None:
 
         assert runtime_pid.is_pid_alive(child.pid) is False
     finally:
-        child.wait(timeout=5)
+        child.wait(timeout=hang_guard_s())
 
 
 def test_observation_distinguishes_zombie_and_reused_pid(tmp_path: Path) -> None:

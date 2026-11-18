@@ -9,11 +9,10 @@ import pytest
 from booley.config import agent as agent_config
 from booley.config.agent import load_agent_settings, set_agent_settings
 from booley.config.gateway import GatewayConfigError
-from booley.core.models import AgentResult
 from booley.harness import developer_probe, doctor
 from booley.runtime import agent as agent_mod
 from booley.runtime.agent_config import set_backend_config
-from booley.specialists.mutation_tester import MutationTesterSpecialist
+from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from booley.specialists.reviewer import ReviewerSpecialist
 
 _PIN = "gw-model"
@@ -25,9 +24,8 @@ default = "codex"
 
 [models]
 reviewer = "claude-opus-5-5"
-mutation_tester = "gpt-6-astra"
+coverage_analyst = "gpt-6-astra"
 """
-_CODEX_DEFAULT = "gpt-6.1-sol"  # coverage_analyst's built-in model on the default CLI
 
 
 @pytest.fixture
@@ -80,20 +78,6 @@ def _doctor_findings(root, auth="subscription", provider="codex"):
     return reporter.findings or []
 
 
-def _mutation_creator_params(root, monkeypatch):
-    endpoint = MutationTesterSpecialist()
-    endpoint.parse_args(["--target", "sim_demo", "--scope", "rtl", "--work-dir", str(root)])
-    captured = []
-    monkeypatch.setattr(
-        endpoint,
-        "_invoke_agent_with_resume",
-        lambda p: captured.append(p) or AgentResult(output=""),
-    )
-    monkeypatch.setattr(endpoint, "_persist_session_id", lambda _key: None)
-    endpoint._invoke_creator("fixture", resume=False, attempt=1)
-    return captured[0]
-
-
 def test_gateway_model_pins_codex_specialists_only(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", _PIN)
 
@@ -101,7 +85,6 @@ def test_gateway_model_pins_codex_specialists_only(project, monkeypatch):
 
     assert {name: settings.model_for_specialist(name) for name in agent_config.SPECIALISTS} == {
         "reviewer": "claude-opus-5-5",
-        "mutation_tester": _PIN,
         "coverage_analyst": _PIN,
     }
     assert settings.internal_model() == _PIN
@@ -115,7 +98,7 @@ def test_gateway_model_pin_reaches_codex_specialist(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", _PIN)
     _lazy()
 
-    assert MutationTesterSpecialist()._resolve_model() == _PIN
+    assert CoverageAnalystSpecialist()._resolve_model() == _PIN
     assert ReviewerSpecialist()._resolve_model() == "claude-opus-5-5"
 
 
@@ -144,18 +127,11 @@ def test_gateway_effort_overrides_codex_effort(project, monkeypatch):
     settings = _lazy()
 
     assert (settings.effort_for("codex"), settings.effort_for("claude")) == ("low", None)
-    assert MutationTesterSpecialist()._resolve_effort() == "low"
+    assert CoverageAnalystSpecialist()._resolve_effort() == "low"
     assert ReviewerSpecialist()._resolve_effort() is None  # runs on Claude
     for level in ("none", "persistent"):  # Codex variants beyond the old tier names
         monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", level)
         assert _lazy().effort_for("codex") == level
-
-
-def test_gateway_effort_reaches_mutation_creator_call(project, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "low")
-    _lazy()
-
-    assert _mutation_creator_params(project, monkeypatch).reasoning_effort == "low"
 
 
 def test_gateway_invalid_effort_fails_loudly(project, monkeypatch):
@@ -190,7 +166,6 @@ def test_gateway_model_without_effort_keeps_default_effort(project, monkeypatch)
 
     assert settings.model_for_specialist("coverage_analyst") == _PIN
     assert settings.effort_for("codex") == "high"
-    assert _mutation_creator_params(project, monkeypatch).reasoning_effort is None
 
 
 def test_doctor_notes_gateway_model_vars_ignored_outside_gateway(project, monkeypatch):
@@ -229,8 +204,7 @@ def test_gateway_model_vars_ignored_under_other_policies(project, monkeypatch):
     monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
     host = _loaded(project)
     for settings in (subscription, host):
-        assert settings.model_for_specialist("mutation_tester") == "gpt-6-astra"
-        assert settings.model_for_specialist("coverage_analyst") == _CODEX_DEFAULT
+        assert settings.model_for_specialist("coverage_analyst") == "gpt-6-astra"
         assert settings.internal_model() == "gpt-6-luna"
         assert settings.effort_for("codex") == "high"
 

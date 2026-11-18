@@ -35,18 +35,18 @@ def select(points: list[dict], spec: dict) -> list[dict]:
     return sorted(selected, key=lambda p: p["id"])
 
 
-def bind(campaign: Path, project: Path, directory: Path, inputs: dict, reason: str) -> Path:
-    """Write approval TOML without changing source, Campaign or approval semantics."""
-    document = json.loads(campaign.read_text())
+def bind(record: Path, project: Path, directory: Path, inputs: dict, reason: str) -> Path:
+    """Write approval TOML without changing source, Coverage Record or approval semantics."""
+    document = json.loads(record.read_text())
     spec = inputs[reason]
     if document["target"]["identity"] != spec["target"]:
         raise ValueError("approval Target identity mismatch")
     ref = document["point_store"]
-    points_path = campaign.parent / ref["path"]
+    points_path = record.parent / ref["path"]
     if ref["path"] != "coverage-points.jsonl.gz" or points_path.is_symlink():
         raise ValueError("unsafe point store")
     if digest(points_path) != ref["sha256"]:
-        raise ValueError("Campaign point store digest mismatch")
+        raise ValueError("Coverage Record point store digest mismatch")
     points = [json.loads(line) for line in gzip.decompress(points_path.read_bytes()).splitlines()][
         1:
     ]
@@ -92,14 +92,14 @@ def bind(campaign: Path, project: Path, directory: Path, inputs: dict, reason: s
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reason", choices=["excluded", "unreachable"])
-    parser.add_argument("campaign", type=Path)
+    parser.add_argument("record", type=Path)
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True)
     args = parser.parse_args()
     print(
         bind(
-            args.campaign,
+            args.record,
             args.project,
             args.directory,
             json.loads(args.inputs.read_text()),

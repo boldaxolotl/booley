@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
+from booley.runtime import platform_paths
 from booley.runtime.booley_dir import checkout_booley_dir_relative_to, own_booley_dir
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_repositories import (
@@ -101,7 +102,7 @@ def materialize_worktree_submodules(worktree: Path, *, missing_only: bool = Fals
 
     Sources are the same paths in the repository's main checkout (and its
     Versioned Booley Directory). ``missing_only`` fills absent or empty gitlink
-    directories and accepts a populated one unchanged: Goal entry's clean check
+    directories and accepts a populated one unchanged: the caller's clean check
     judges its HEAD and dirt. Either selection failing removes everything this call created.
     """
     worktree = worktree.resolve()
@@ -413,14 +414,13 @@ def _transfer_objects(source: Path, destination: Path, commit: str, relative: Pa
             prefix="booley-submodule-", suffix=".pack", delete=False
         ) as pack:
             pack_path = Path(pack.name)
-            packed = subprocess.run(
+            packed = platform_paths.run_captured_bounded(
                 _git_command(source, "pack-objects", "--stdout", "--revs"),
                 input=f"{commit}\n".encode(),
                 stdout=pack,
-                stderr=subprocess.PIPE,
                 env=_offline_env(),
                 timeout=_TIMEOUT_S,
-                check=False,
+                text=False,
             )
         if packed.returncode != 0:
             detail = packed.stderr.decode(errors="replace").strip()
@@ -428,14 +428,12 @@ def _transfer_objects(source: Path, destination: Path, commit: str, relative: Pa
                 f"local objects for submodule {relative.as_posix()} are incomplete: {detail}"
             )
         with pack_path.open("rb") as pack_input:
-            indexed = subprocess.run(
+            indexed = platform_paths.run_captured_bounded(
                 _git_command(destination, "index-pack", "--stdin", "--fix-thin"),
                 stdin=pack_input,
-                capture_output=True,
-                text=True,
                 env=_offline_env(),
                 timeout=_TIMEOUT_S,
-                check=False,
+                errors="strict",
             )
         if indexed.returncode != 0:
             _raise_git(f"installing local objects for {relative.as_posix()}", indexed)
@@ -482,13 +480,8 @@ def _run_git(
     *args: str,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        _git_command(cwd, *args),
-        capture_output=True,
-        text=True,
-        env=_offline_env(),
-        timeout=_TIMEOUT_S,
-        check=False,
+    result = platform_paths.run_captured_bounded(
+        _git_command(cwd, *args), timeout=_TIMEOUT_S, env=_offline_env(), errors="strict"
     )
     if check and result.returncode != 0:
         _raise_git("running local Git command", result)

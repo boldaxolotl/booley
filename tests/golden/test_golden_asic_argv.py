@@ -28,7 +28,6 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import fusesoc_registry
 from tests.golden.conftest import assert_matches_golden
@@ -41,14 +40,9 @@ from tests.golden.conftest import assert_matches_golden
 
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create and return a fresh state file, set env vars."""
-    sf = tmp_path / "state.json"
-    st = DevelopmentState.load(sf)
-    st.slug = "test-ticket"
-    st.save()
+    """Return a path for the run, set env vars."""
     monkeypatch.setenv("BOOLEY_SLUG", "test-ticket")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
-    return sf
+    return tmp_path / "state.json"
 
 
 def _fake_synth_resolved(
@@ -159,7 +153,6 @@ def _make_tool(tmp_path: Path, recipe_body: str | None = None) -> AsicSynthesize
         )
     tool = AsicSynthesizeFlow()
     tool.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-    tool.read_state()
     return tool
 
 

@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
-from functools import lru_cache
 from types import ModuleType
 
 from booley.config.gateway import GATEWAY_TOKEN_ENV
@@ -86,31 +86,30 @@ def _codex_server_env(
     return merged_env
 
 
-@lru_cache(maxsize=1)
-def _codex_toml_parser() -> ModuleType:
-    """Resolve the compatible parser only when Codex config parsing is needed."""
+def _codex_editor() -> ModuleType:
+    """Lazily import tomlkit; a missing, broken or too-old install is not a user-config fault."""
     try:
-        import tomli
+        import tomlkit
 
-        probe = "probe = {\n enabled=true,\n}\n"
-        if tomli.loads(probe) != {"probe": {"enabled": True}}:
-            raise ValueError("Codex TOML capability probe returned an unexpected value")
-    except Exception as exc:  # Translate installation/probe failures, not user config.
+        # The first three numbers against the pin in pyproject.toml; none is too old.
+        if tuple(map(int, re.findall(r"\d+", tomlkit.__version__)[:3])) < (0, 15, 2):
+            raise ValueError(f"tomlkit {tomlkit.__version__} is older than the pinned minimum")
+    except Exception as exc:  # Installation failures only; user input is parsed elsewhere.
         raise RuntimeError(
-            "Incompatible Booley installation: Codex config requires tomli>=2.4.0 with "
+            "Incompatible Booley installation: Codex config requires tomlkit>=0.15.2 with "
             "TOML1.1; reinstall dependencies or rebuild the compatible base"
         ) from exc
-    return tomli
+    return tomlkit
 
 
 def _warning_preference(existing_config: str | None) -> bool:
     """Recover only the destination's root preference; interrupted scratch heals."""
     if existing_config is None or existing_config == "":
         return True
-    parser = _codex_toml_parser()
+    editor = _codex_editor()
     try:
-        parsed = parser.loads(existing_config)
-    except parser.TOMLDecodeError:
+        parsed = editor.parse(existing_config).unwrap()
+    except (ValueError, editor.exceptions.TOMLKitError):
         logger.warning(
             "Cannot recover warning preference from malformed scratch Codex config; regenerating"
         )
@@ -156,7 +155,7 @@ def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
         "",
         *provider.splitlines(),
         "",
-        # Codex 0.160 ignores its default *TOKEN* filter, so exclude explicitly.
+        # Do not rely on Codex's default *TOKEN* filter (it was ignored in 0.160): exclude explicitly.
         "[shell_environment_policy]",
         f"exclude = [{json.dumps(GATEWAY_TOKEN_ENV)}]",
     ]
@@ -172,7 +171,7 @@ def _booley_server_lines(
         'command = "python"',
         'args = ["-m", "booley.mcp.server"]',
         # Codex CLI defaults to 120s MCP tool timeout — far too short for
-        # long-running Flows or Specialists such as asic_synthesize / mutation_tester
+        # long-running Flows or Specialists such as asic_synthesize / mutation
         # (up to 7200s subprocess timeout).
         "tool_timeout_sec = 3600",
         "",

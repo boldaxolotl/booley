@@ -1,7 +1,7 @@
 """Dependency-free shape policy for Flow progress documents.
 
-Shared by Flow publication, Runtime Job observation and Campaign retention so
-none of them imports another layer to agree on what a valid document is.
+Shared by Flow publication and Runtime Job observation so
+neither imports another layer to agree on what a valid document is.
 """
 
 from __future__ import annotations

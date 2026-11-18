@@ -1,89 +1,36 @@
-"""Criteria reconciliation for authenticated Simulation Campaign outcomes."""
+"""Publish each Simulation Record outcome's ``simulation.json`` projection."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
 
-from booley.criteria.simulation import (
-    SimulationCriterionContract,
-    resolve_simulation_criterion_contract,
+from booley.flows.sim.coverage_json import content_digest
+from booley.flows.sim.coverage_reference import (
+    MAX_REFERENCE_BYTES,
+    ResolvedCoverageRecord,
+    authenticate_coverage_record_owner,
+    encode_coverage_record_reference,
+    resolve_coverage_record_reference,
 )
-from booley.criteria.state import CriterionChange, DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
-from booley.criteria.thresholds import (
-    CYCLE_COUNT_PARAMS,
-    evaluate_cycle_threshold,
-    has_relative_threshold,
-)
-from booley.evidence.fields import BASELINE_REF_PARAM
-from booley.flows.execution_persistence import (
-    AcceptanceRecorder,
-    AcceptanceRecordingError,
-    NoAcceptanceRecorder,
-    frozen_test_runs_for,
-)
-from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns
-from booley.flows.sim.campaign import (
+from booley.flows.sim.record import (
     SIMULATION_PROJECTION_SCHEMA,
-    CampaignOutcome,
+    SimulationRecordOutcome,
     build_artifact_reference,
     encode_artifact_reference,
 )
-from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
-from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
-from booley.flows.sim.campaign_reports import (
+from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES, SimulationRecordIntegrityError
+from booley.flows.sim.record.test_run_files import simulation_record_test_run_files
+from booley.flows.sim.record.test_run_report import evidence_test_run_rows
+from booley.flows.sim.record_reports import (
     simulation_booley_dir,
     write_compatibility_projection,
 )
-from booley.flows.sim.coverage_json import content_digest, coverage_mapping_document
-from booley.flows.sim.coverage_projection import project_coverage_criterion
-from booley.flows.sim.coverage_reference import (
-    MAX_REFERENCE_BYTES,
-    ResolvedCoverageCampaign,
-    authenticate_coverage_campaign_owner,
-    encode_coverage_campaign_reference,
-    resolve_coverage_campaign_reference,
-)
-from booley.flows.sim.test_run_invocation import baseline_refusal_key
-from booley.targets.domain import criterion_matches_target
-
-if TYPE_CHECKING:
-    from booley.flows.endpoint_state import EndpointState
-    from booley.runtime.endpoint_execution import EndpointOutcome
 
 
-@dataclass(frozen=True, slots=True)
-class AcceptanceContext:
-    """Execution-owned inputs kept outside the Campaign module."""
-
-    ticket_slug: str
-    identity: dict[str, Any]
-    ticket_generation: str
-    state: DevelopmentState
-    recorder: AcceptanceRecorder
-    invocation_id: str
-    diagnostic: bool = False
-    #: Why a Cycle Count baseline Test Run was not run, by (baseline Target
-    #: selector, Test). The verdict comes from the facts; this names its reason.
-    baseline_refusals: Mapping[tuple[str, str], str] = field(default_factory=dict)
-    observer: Callable[[list[CriterionChange]], None] | None = None
-    detail_stamper: Callable[[CriterionChange, str], dict[str, Any]] | None = None
-    #: The Test Runs the run's Goals are frozen to; ``None`` outside Goal Mode.
-    frozen: FrozenTestRuns | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class AcceptanceOutcome:
-    """Reconciliation disposition retained through endpoint completion."""
-
-    committed: bool
-    transaction_id: str | None
-    changes: tuple[CriterionChange, ...]
-    reason: str
+class AcceptanceRecordingError(RuntimeError):
+    """A Simulation Record projection could not be published."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,255 +38,23 @@ class _PublicCoverage:
     """One outcome's public ``coverage.json``: authenticated, with its canonical bytes' digest."""
 
     path: Path
-    resolved: ResolvedCoverageCampaign
+    resolved: ResolvedCoverageRecord
     size: int
     sha256: str
 
 
-class _OutcomeEvidence:
-    """The authenticated evidence of one outcome, read on first use.
-
-    Test Run rows and the public Coverage Campaign reference are each
-    resolved at most once, however many Criteria or Goals read them.
-    """
-
-    def __init__(self, outcome: CampaignOutcome) -> None:
-        self.outcome = outcome
-        self._rows: dict[object, dict[str, object]] | None = None
-        self._coverage: _PublicCoverage | None = None
-
-    def coverage(self) -> _PublicCoverage:
-        """The outcome's public Coverage Campaign reference, resolved on first call."""
-        if self._coverage is None:
-            self._coverage = _resolve_facts_coverage(self.outcome)
-        return self._coverage
-
-    def of(self, observations: Iterable[Mapping[str, object] | None]) -> list[dict[str, object]]:
-        """The Test Run row of each present observation in *observations*, in order."""
-        if self._rows is None:
-            rows = evidence_test_run_rows(self.outcome)
-            self._rows = {row["name"]: row for row in rows}
-        return [dict(self._rows[item["test_run"]]) for item in observations if item is not None]
-
-    def all(self) -> list[dict[str, object]]:
-        """Every Test Run row of the outcome."""
-        self.of(())
-        assert self._rows is not None
-        return [dict(row) for row in self._rows.values()]
-
-
-class SimulationAcceptanceCoordinator:
-    """Derive and transactionally commit Criteria from campaign facts only."""
-
-    def reconcile(
-        self,
-        evidence: _OutcomeEvidence,
-        context: AcceptanceContext,
-    ) -> AcceptanceOutcome:
-        outcome = evidence.outcome
-        if context.diagnostic or context.state._file_path is None:
-            return AcceptanceOutcome(False, None, (), "no_criteria")
-        changes = self._derive_changes(
-            evidence, context.state, context.baseline_refusals, context.frozen
-        )
-        if context.detail_stamper is not None:
-            selector = str(outcome.target["selector"])
-            changes = [
-                replace(change, detail=context.detail_stamper(change, selector))
-                for change in changes
-            ]
-        if not changes:
-            return AcceptanceOutcome(False, None, (), "no_applicable_criteria")
-        if context.observer is not None:
-            context.observer(changes)
-        transaction = context.recorder.record_or_verify_transaction(
-            context.state,
-            changes,
-            acceptance_facts=outcome.acceptance_facts.document,
-            identity=context.identity,
-        )
-        transaction_id = getattr(transaction, "transaction_id", None)
-        if transaction is None and isinstance(context.recorder, NoAcceptanceRecorder):
-            return AcceptanceOutcome(False, None, tuple(changes), "no_recorder")
-        if transaction is None:
-            raise AcceptanceRecordingError(
-                "campaign Criteria require a durable acceptance transaction store"
-            )
-        return AcceptanceOutcome(True, transaction_id, tuple(changes), "committed")
-
-    @staticmethod
-    def _derive_changes(
-        evidence: _OutcomeEvidence,
-        state: DevelopmentState,
-        baseline_refusals: Mapping[tuple[str, str], str] | None = None,
-        frozen: FrozenTestRuns | None = None,
-    ) -> list[CriterionChange]:
-        outcome = evidence.outcome
-        facts = outcome.acceptance_facts.document
-        target = facts["target"]
-        if not isinstance(target, Mapping):
-            raise TypeError("campaign acceptance Target is not a mapping")
-        target_name = str(target["name"])
-        shadow = deepcopy(state)
-        if frozen is not None:
-            return _goal_changes(
-                outcome, shadow, target, evidence, baseline_refusals or {}, frozen
-            )
-        changes = _cycle_changes(outcome, shadow, target, evidence, baseline_refusals or {})
-        changes.extend(_coverage_changes(shadow, target, evidence))
-        changes.extend(_simulation_changes(outcome, shadow, target, target_name, evidence))
-        return changes
-
-
-def _simulation_changes(
-    outcome: CampaignOutcome,
-    shadow: DevelopmentState,
-    target: Mapping[str, object],
-    target_name: str,
-    evidence: _OutcomeEvidence,
-) -> list[CriterionChange]:
-    if not outcome.complete or target["role"] != "candidate":
-        return []
-    keys = _matching_simulation_keys(shadow, target, target_name)
-    if not keys:
-        return []
-    facts = outcome.acceptance_facts.document
-    suite = facts["required_suite"]
-    if not isinstance(suite, Mapping):
-        raise TypeError("campaign acceptance suite is malformed")
-    observations = _candidate_simulation_observations(facts, target)
-    selected = {_test_name(name): item for name, item in observations.items()}
-    registered = set(cast(tuple[str, ...], suite["names"]))
-    changes: list[CriterionChange] = []
-    for key in keys:
-        entry = shadow.criteria[key]
-        contract = resolve_simulation_criterion_contract(entry.params or {}, registered, selected)
-        if contract.selector == "all":
-            required = {"default"} if suite["default_invocation"] is True else registered
-            contract = SimulationCriterionContract(
-                contract.selector,
-                frozenset(required),
-                contract.minimum_total,
-            )
-        relevant = _criterion_observations(contract, suite, observations, selected)
-        if relevant is None or any(_unobserved_infrastructure(item) for item in relevant):
-            continue
-        met = _simulation_criterion_met(outcome, contract, relevant)
-        detail = _simulation_detail(outcome, contract, registered, relevant)
-        detail["test_runs"] = evidence.of(relevant)
-        changes.extend(shadow.set_criterion(key, met, detail=detail))
-    return changes
-
-
-def _matching_simulation_keys(
-    state: DevelopmentState,
-    target: Mapping[str, object],
-    target_name: str,
-) -> list[str]:
-    identity = f"{target['vlnv']}#{target_name}"
-    selector = str(target["selector"])
-    return [
-        key
-        for key, entry in state.criteria.items()
-        if key in {"sim_pass", f"sim_pass_{target_name}"}
-        or (
-            key.startswith("sim_pass_")
-            and criterion_matches_target(entry.params or {}, identity=identity, selector=selector)
-        )
-    ]
-
-
-def eligible_simulation_keys(
-    state: DevelopmentState,
-    identity: str,
-    selector: str,
-    name: str,
-    registered: set[str],
-    selected: set[str],
-) -> set[str]:
-    """Return declared sim Criteria whose required tests fit the candidate workload."""
-    target = {"vlnv": identity.rsplit("#", 1)[0], "selector": selector}
-    keys = _matching_simulation_keys(state, target, name)
-    eligible: set[str] = set()
-    for key in keys:
-        contract = resolve_simulation_criterion_contract(
-            state.criteria[key].params or {}, registered, selected
-        )
-        required = registered if contract.selector == "all" else contract.required_tests
-        if required.issubset(selected):
-            eligible.add(key)
-    return eligible
-
-
-def _candidate_observations(
-    facts: Mapping[str, object], target: Mapping[str, object]
-) -> dict[str, Mapping[str, object]]:
-    """The candidate revision's observations of *target*, by Test Run name."""
-    indexed: dict[str, Mapping[str, object]] = {}
-    for item in facts["observations"]:  # type: ignore[union-attr]
-        if not isinstance(item, Mapping):
-            continue
-        if (
-            item["role"] != "candidate"
-            or item["revision"] != target["revision"]
-            or item["target"] != target
-        ):
-            continue
-        name = str(item["test_run"])
-        if name in indexed:
-            raise SimulationCampaignIntegrityError(
-                f"validated acceptance facts repeat Test Run {name!r}"
-            )
-        indexed[name] = item
-    return indexed
-
-
-def _candidate_simulation_observations(
-    facts: Mapping[str, object], target: Mapping[str, object]
-) -> dict[object, Mapping[str, object]]:
-    """Candidate observations by Test, for Criteria that name Tests.
-
-    Outside Goal Mode a Criterion names a Test, so it has one observation to
-    judge only when the campaign ran one Test Run of that Test. A Test the
-    campaign ran as several Test Runs is left out: no Criterion that needs
-    it is judged from this campaign, rather than letting one Test Run stand
-    in for the others. Goals name Test Runs and are judged by
-    :func:`_goal_changes` instead.
-    """
-    indexed: dict[object, Mapping[str, object]] = {}
-    several: set[object] = set()
-    for item in _candidate_observations(facts, target).values():
-        test = item["test"]
-        if test in indexed:
-            several.add(test)
-        indexed[test] = item
-    return {test: item for test, item in indexed.items() if test not in several}
-
-
-def _criterion_observations(
-    contract: SimulationCriterionContract,
-    suite: Mapping[str, object],
-    observations: Mapping[object, Mapping[str, object]],
-    selected: Mapping[str, Mapping[str, object]],
-) -> tuple[Mapping[str, object], ...] | None:
-    if (
-        contract.selector == "all"
-        and suite["default_invocation"] is True
-        and (len(observations) != 1 or None not in observations)
-    ):
-        return None
-    if not contract.required_tests.issubset(selected):
-        return None
-    if contract.selector == "all":
-        return tuple(selected[name] for name in sorted(selected))
-    return tuple(selected[name] for name in sorted(contract.required_tests))
-
-
-def _unobserved_infrastructure(observation: Mapping[str, object] | None) -> bool:
-    return observation is not None and (
-        observation.get("failure_class") == "infrastructure"
-        and observation.get("functional") == "not_observed"
-    )
+def publish_simulation_record_projections(
+    work_dir: Path | None, outcomes: tuple[object, ...]
+) -> None:
+    """Write each outcome's ``simulation.json`` projection next to its Target's record."""
+    # A symlinked Booley Directory entry is followed when reading published artifacts back.
+    booley_dir = None if work_dir is None else simulation_booley_dir(Path(work_dir))
+    for item in outcomes:
+        if not isinstance(item, SimulationRecordOutcome):
+            raise TypeError("invalid Simulation Record outcome")
+        projection = _simulation_record_projection(item, booley_dir=booley_dir)
+        origin = item.manifest_path.parents[1] / "simulation.json"
+        write_compatibility_projection(origin, projection, acceptance_committed=True)
 
 
 def _observation_passed(observation: Mapping[str, object]) -> bool:
@@ -350,141 +65,11 @@ def _observation_passed(observation: Mapping[str, object]) -> bool:
     )
 
 
-def _simulation_criterion_met(
-    outcome: CampaignOutcome,
-    contract: SimulationCriterionContract,
-    observations: tuple[Mapping[str, object], ...],
-) -> bool:
-    minimum_met = (
-        contract.minimum_total is not None and len(observations) >= contract.minimum_total
-    )
-    if contract.selector == "all":
-        return minimum_met and outcome.acceptance_ready and outcome.aggregate_grade == "pass"
-    return minimum_met and all(_observation_passed(item) for item in observations)
-
-
-def _test_name(value: object) -> str:
-    return "default" if value is None else str(value)
-
-
-def _simulation_detail(
-    outcome: CampaignOutcome,
-    contract: SimulationCriterionContract,
-    registered: set[str],
-    observations: tuple[Mapping[str, object], ...],
+def _simulation_record_projection(
+    outcome: SimulationRecordOutcome, *, booley_dir: Path | None = None
 ) -> dict[str, object]:
     facts = outcome.acceptance_facts.document
-    selected = [_test_name(item["test"]) for item in observations]
-    passed = [_test_name(item["test"]) for item in observations if _observation_passed(item)]
-    return {
-        "campaign_id": facts["campaign_id"],
-        "manifest_sha256": facts["manifest_sha256"],
-        "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
-        "aggregate_grade": outcome.aggregate_grade,
-        "tests_passed": len(passed),
-        "tests_total": len(selected),
-        "test_selector": contract.selector,
-        "required_tests": sorted(contract.required_tests),
-        "registry_tests": sorted(registered),
-        "selected_tests": selected,
-        "passed_tests": passed,
-        "failed_tests": [name for name in selected if name not in passed],
-        "skipped_tests": [],
-    }
-
-
-def _detail_stamper(
-    endpoint: EndpointState,
-) -> Callable[[CriterionChange, str], dict[str, Any]] | None:
-    """Stamp a Criterion change's detail with the endpoint's source fingerprint, if it has one."""
-    stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
-    if not callable(stamp):
-        return None
-    return lambda change, selector: (
-        stamp(change.key, change.met, change.detail, source_target=selector) or change.detail
-    )
-
-
-def record_campaign_acceptance(
-    endpoint: EndpointState,
-    outcomes: tuple[object, ...],
-    *,
-    baseline_refusals: Mapping[tuple[str, str], str] | None = None,
-) -> None:
-    """Reconcile campaign facts before publishing compatibility projections."""
-    work_dir = getattr(endpoint.args, "work_dir", None)
-    if endpoint.state._file_path is not None and work_dir is not None:
-        endpoint.state.work_dir = str(Path(work_dir).resolve())
-    # A symlinked Booley Directory entry is followed when reading published artifacts back.
-    booley_dir = None if work_dir is None else simulation_booley_dir(Path(work_dir))
-    recorder = endpoint._acceptance_recorder
-    recorded_identity = recorder.acceptance_identity()
-    identity: Mapping[str, Any] = recorded_identity if recorded_identity is not None else {}
-    context = AcceptanceContext(
-        endpoint.state.slug,
-        dict(identity),
-        str(identity.get("generation", "")),
-        endpoint.state,
-        recorder,
-        endpoint._invocation_id,
-        diagnostic=bool(getattr(endpoint.args, "diagnostic", False)),
-        baseline_refusals=dict(baseline_refusals or {}),
-        observer=endpoint.record_report_criteria,
-        detail_stamper=_detail_stamper(endpoint),
-        frozen=None if endpoint.state._file_path is None else frozen_test_runs_for(recorder),
-    )
-    reconciler = SimulationAcceptanceCoordinator()
-    keys: list[str] = []
-    acceptances = []
-    for item in outcomes:
-        if not isinstance(item, CampaignOutcome):
-            raise TypeError("invalid Simulation Campaign outcome")
-        evidence = _OutcomeEvidence(item)
-        if endpoint.state._file_path is None and not context.diagnostic:
-            _record_standalone_campaign(endpoint, evidence)
-        accepted = reconciler.reconcile(evidence, context)
-        acceptances.append(accepted)
-        keys.extend(change.key for change in accepted.changes)
-        endpoint._simulation_acceptance_outcomes = tuple(acceptances)
-        endpoint._pending_criteria_set = tuple(keys)
-        complete = accepted.committed or accepted.reason in {
-            "no_criteria",
-            "no_applicable_criteria",
-        }
-        projection = _campaign_projection(evidence, booley_dir=booley_dir)
-        origin = item.manifest_path.parents[1] / "simulation.json"
-        write_compatibility_projection(origin, projection, acceptance_committed=complete)
-
-
-def _record_standalone_campaign(endpoint: EndpointState, evidence: _OutcomeEvidence) -> None:
-    """Record a conclusive candidate workload without creating Ticket state."""
-    outcome = evidence.outcome
-    if not outcome.complete or outcome.target["role"] != "candidate":
-        return
-    if outcome.aggregate_grade not in {"pass", "fail"}:
-        return
-    facts = outcome.acceptance_facts.document
-    observations = _candidate_simulation_observations(facts, outcome.target)
-    if not observations or any(_unobserved_infrastructure(item) for item in observations.values()):
-        return
-    endpoint.set_criterion(
-        f"sim_pass_{outcome.target['name']}",
-        outcome.aggregate_grade == "pass",
-        source_target=str(outcome.target["selector"]),
-        detail={
-            "mode": "simulate",
-            "selected_tests": [_test_name(name) for name in observations],
-            "test_runs": evidence.of(observations.values()),
-        },
-    )
-
-
-def _campaign_projection(
-    evidence: _OutcomeEvidence, *, booley_dir: Path | None = None
-) -> dict[str, object]:
-    outcome = evidence.outcome
-    facts = outcome.acceptance_facts.document
-    campaign_id = str(facts["campaign_id"])
+    simulation_record_id = str(facts["campaign_id"])
     target_directory = outcome.manifest_path.parents[1]
     test_runs = [
         {
@@ -502,14 +87,14 @@ def _campaign_projection(
         "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
         "passed": outcome.aggregate_grade == "pass",
         "inconclusive": outcome.aggregate_grade == "inconclusive",
-        "tests": _campaign_test_projections(outcome, test_runs),
+        "tests": _simulation_record_test_projections(outcome, test_runs, target_directory),
         "test_runs": test_runs,
-        "campaign_id": campaign_id,
-        "campaign_manifest": _artifact_document(
+        "simulation_record_id": simulation_record_id,
+        "simulation_record_manifest": _artifact_document(
             outcome.manifest_path,
             base=target_directory,
-            kind="simulation_campaign_manifest",
-            owner=campaign_id,
+            kind="simulation_record_manifest",
+            owner=simulation_record_id,
             maximum=MANIFEST_MAX_BYTES,
             booley_dir=booley_dir,
         ),
@@ -517,19 +102,23 @@ def _campaign_projection(
     if outcome.coverage_reference is not None:
         projection.update(
             _coverage_projection_fields(
-                evidence, target_directory, campaign_id, booley_dir=booley_dir
+                outcome, target_directory, simulation_record_id, booley_dir=booley_dir
             )
         )
     return projection
 
 
-def _campaign_test_projections(
-    outcome: CampaignOutcome, test_runs: list[dict[str, object]]
+def _simulation_record_test_projections(
+    outcome: SimulationRecordOutcome, test_runs: list[dict[str, object]], target_directory: Path
 ) -> list[dict[str, object]]:
     """One row per observation, with the Test Run it observed.
 
-    *test_runs* is aligned with the observations.
+    *test_runs* is aligned with the observations. Each row names the Test
+    Run's ``log`` and ``trace`` files relative to *target_directory* (the
+    directory of ``simulation.json``), ``None`` where a file does not exist.
+    They stay out of the ``test_runs`` rows, which rerun matching reads.
     """
+    files = simulation_record_test_run_files(outcome)
     return [
         {
             "name": observation["test"] or "default",
@@ -541,8 +130,9 @@ def _campaign_test_projections(
             "execution": observation["execution"],
             "failure_kind": observation["failure_class"] or "",
             "error_tail": _observation_error_tail(observation),
+            **found.relative_to(target_directory),
         }
-        for observation, run in zip(outcome.observations, test_runs, strict=True)
+        for observation, run, found in zip(outcome.observations, test_runs, files, strict=True)
     ]
 
 
@@ -559,8 +149,8 @@ def _test_run_fields(run: Mapping[str, object]) -> dict[str, object]:
 def _observation_error_tail(observation: Mapping[str, object]) -> str:
     detail = observation["detail"]
     if not isinstance(detail, Mapping) or not isinstance(detail.get("reason"), str):
-        raise SimulationCampaignIntegrityError(
-            "Simulation Campaign observation detail must contain a string reason"
+        raise SimulationRecordIntegrityError(
+            "Simulation Record observation detail must contain a string reason"
         )
     if _observation_passed(observation):
         return ""
@@ -568,20 +158,20 @@ def _observation_error_tail(observation: Mapping[str, object]) -> str:
 
 
 def _coverage_projection_fields(
-    evidence: _OutcomeEvidence,
+    outcome: SimulationRecordOutcome,
     target_directory: Path,
-    campaign_id: str,
+    simulation_record_id: str,
     *,
     booley_dir: Path | None = None,
 ) -> dict[str, object]:
-    public = evidence.coverage()
-    coverage = public.resolved.loaded.campaign
+    public = _resolve_facts_coverage(outcome)
+    coverage = public.resolved.loaded.coverage_record
     return {
-        "coverage_campaign": _artifact_document(
+        "coverage_record": _artifact_document(
             public.path,
             base=target_directory,
-            kind="coverage_campaign_reference",
-            owner=campaign_id,
+            kind="coverage_record_reference",
+            owner=simulation_record_id,
             maximum=MAX_REFERENCE_BYTES,
             booley_dir=booley_dir,
         ),
@@ -611,52 +201,8 @@ def _artifact_document(
     return encode_artifact_reference(reference)
 
 
-def _coverage_changes(
-    shadow: DevelopmentState,
-    target: Mapping[str, object],
-    evidence: _OutcomeEvidence,
-) -> list[CriterionChange]:
-    """Bind nested Coverage Campaign evaluation into the joint transaction."""
-    if evidence.outcome.coverage_reference is None:
-        return []
-    coverage = evidence.coverage()
-    name = str(target["name"])
-    identity = f"{target['vlnv']}#{name}"
-    selector = str(target["selector"])
-    direct = f"coverage_{name}"
-    keys = [
-        key
-        for key, entry in shadow.criteria.items()
-        if key == direct
-        or (
-            key.startswith("coverage_")
-            and criterion_matches_target(entry.params or {}, identity=identity, selector=selector)
-        )
-    ]
-    if not keys:
-        return []
-    detail = _coverage_detail(evidence)
-    evaluation = coverage.resolved.loaded.campaign.evaluation
-    changes: list[CriterionChange] = []
-    for key in keys:
-        met, projected_detail = project_coverage_criterion(
-            shadow.criteria[key],
-            evaluation,
-            detail,
-            atomic=key != direct,
-        )
-        changes.extend(
-            shadow.set_criterion(
-                key,
-                met,
-                detail=projected_detail,
-            )
-        )
-    return changes
-
-
-def _resolve_facts_coverage(outcome: CampaignOutcome) -> _PublicCoverage:
-    """Resolve the campaign's public ``coverage.json`` against its Acceptance Facts."""
+def _resolve_facts_coverage(outcome: SimulationRecordOutcome) -> _PublicCoverage:
+    """Resolve the record's public ``coverage.json`` against its Acceptance Facts."""
     public_path = outcome.manifest_path.parents[1] / "coverage.json"
     facts = outcome.acceptance_facts.document
     bound = facts["coverage_reference"]
@@ -666,8 +212,8 @@ def _resolve_facts_coverage(outcome: CampaignOutcome) -> _PublicCoverage:
     evidence = bound["reference"]
     if not isinstance(document, Mapping) or not isinstance(evidence, Mapping):
         raise AcceptanceRecordingError("coverage acceptance reference is malformed")
-    resolved = resolve_coverage_campaign_reference(public_path)
-    raw = encode_coverage_campaign_reference(resolved.reference)
+    resolved = resolve_coverage_record_reference(public_path)
+    raw = encode_coverage_record_reference(resolved.reference)
     digest = content_digest(raw)
     invocation = outcome.manifest_path.parents[3]
     expected_path = public_path.relative_to(invocation).as_posix()
@@ -680,407 +226,10 @@ def _resolve_facts_coverage(outcome: CampaignOutcome) -> _PublicCoverage:
         or evidence["owner"] != facts["campaign_id"]
     ):
         raise AcceptanceRecordingError(
-            "public Coverage Campaign reference disagrees with Acceptance Facts"
+            "public Coverage Record reference disagrees with Acceptance Facts"
         )
-    authenticate_coverage_campaign_owner(resolved)
+    authenticate_coverage_record_owner(resolved)
     return _PublicCoverage(public_path, resolved, len(raw), digest)
 
 
-def _coverage_detail(evidence: _OutcomeEvidence) -> dict[str, object]:
-    outcome = evidence.outcome
-    coverage = evidence.coverage()
-    campaign = coverage.resolved.loaded.campaign
-    nested = outcome.coverage_reference["coverage_campaign"]
-    assert isinstance(nested, Mapping)
-    report_root = outcome.manifest_path.parents[5]
-    relative_public_path = coverage.path.relative_to(report_root).as_posix()
-    return {
-        "coverage_campaign_reference": {
-            "path_base": "reports_root",
-            "path": relative_public_path,
-            "bytes": coverage.size,
-            "sha256": coverage.sha256,
-            "nested_campaign_sha256": nested["sha256"],
-        },
-        "evaluation": coverage_mapping_document(campaign.evaluation),
-        "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
-        "test_runs": evidence.of(outcome.observations),
-    }
-
-
-@dataclass(frozen=True, slots=True)
-class _CycleFacts:
-    """What a Cycle Count Criterion of one candidate Target is judged from."""
-
-    selector: str
-    identity: str
-    prerequisites: tuple[Mapping[str, object], ...]
-    refusals: Mapping[tuple[str, str], str]
-
-    @classmethod
-    def of(
-        cls,
-        outcome: CampaignOutcome,
-        target: Mapping[str, object],
-        refusals: Mapping[tuple[str, str], str],
-    ) -> _CycleFacts:
-        prerequisites = tuple(
-            item
-            for item in outcome.acceptance_facts.document["prerequisites"]  # type: ignore[union-attr]
-            if isinstance(item, Mapping)
-        )
-        identity = f"{target['vlnv']}#{target['name']}"
-        return cls(str(target["selector"]), identity, prerequisites, refusals)
-
-
-def _cycle_changes(
-    outcome: CampaignOutcome,
-    shadow: DevelopmentState,
-    target: Mapping[str, object],
-    evidence: _OutcomeEvidence,
-    refusals: Mapping[tuple[str, str], str],
-) -> list[CriterionChange]:
-    facts = _CycleFacts.of(outcome, target, refusals)
-    observations = _candidate_cycle_observations(outcome.acceptance_facts.document, target)
-    changes: list[CriterionChange] = []
-    for key, entry in shadow.criteria.items():
-        params = entry.params or {}
-        if not key.startswith("cycle_count_") or not criterion_matches_target(
-            params, identity=facts.identity, selector=facts.selector
-        ):
-            continue
-        current = observations.get(params.get("test"))
-        changes.extend(_cycle_change(shadow, key, current, facts, evidence))
-    return changes
-
-
-def _cycle_change(
-    shadow: DevelopmentState,
-    key: str,
-    current: Mapping[str, object] | None,
-    facts: _CycleFacts,
-    evidence: _OutcomeEvidence,
-) -> list[CriterionChange]:
-    """Judge Cycle Count Criterion *key* from the candidate observation *current*.
-
-    No change when the observation, or the baseline one it compares with,
-    was lost to infrastructure: that says nothing about the Cycle Count.
-    """
-    params = shadow.criteria[key].params or {}
-    test = params.get("test")
-    if _unobserved_infrastructure(current):
-        return []
-    baseline, baseline_state = _bound_baseline(facts.prerequisites, params, test, current)
-    if _unobserved_infrastructure(baseline):
-        return []
-    current_cycles = _healthy_cycles(current)
-    baseline_cycles = baseline["cycle_count"] if baseline is not None else None
-    checks = _cycle_threshold_checks(params, current_cycles, baseline_cycles)
-    met = current_cycles is not None and all(check["pass"] for check in checks)
-    detail = _cycle_detail(
-        facts.selector,
-        facts.identity,
-        test,
-        current_cycles,
-        baseline_cycles,
-        baseline_state,
-        checks,
-    )
-    detail["test_runs"] = evidence.of((current,))
-    if baseline_state == "mismatched":
-        run_name = current["test_run"] if current is not None else None
-        refused_as = baseline_refusal_key(str(test), cast("str | None", run_name))
-        _name_baseline_refusal(detail, facts.refusals.get((facts.selector, refused_as)))
-    return shadow.set_criterion(key, met, detail=detail)
-
-
-def _candidate_cycle_observations(
-    facts: Mapping[str, object], target: Mapping[str, object]
-) -> dict[object, Mapping[str, object]]:
-    """Candidate observations of named Tests, by Test (one Test Run each)."""
-    return {
-        test: item
-        for test, item in _candidate_simulation_observations(facts, target).items()
-        if test is not None
-    }
-
-
-def _healthy_cycles(observation: Mapping[str, object] | None) -> int | None:
-    if not observation:
-        return None
-    cycles = observation["cycle_count"]
-    healthy = (
-        observation["execution"] == "completed"
-        and observation["functional"] == "pass"
-        and observation["assertions"] == "clean"
-        and type(cycles) is int
-    )
-    return cast(int, cycles) if healthy else None
-
-
-def _bound_baseline(
-    prerequisites: tuple[Mapping[str, object], ...],
-    params: Mapping[str, object],
-    test: object,
-    current: Mapping[str, object] | None,
-) -> tuple[Mapping[str, object] | None, str]:
-    """The baseline observation a relative Cycle Count Criterion compares with.
-
-    It must be the baseline's observation of the Test Run *current* observed:
-    the same name and the same declared-inputs fingerprint on both revisions.
-    """
-    if not has_relative_threshold(dict(params)):
-        return None, "not_required"
-    revision = params.get(BASELINE_REF_PARAM)
-    for item in prerequisites:
-        target = item.get("target")
-        cycle = item.get("cycle_observation")
-        if not isinstance(target, Mapping) or not isinstance(cycle, Mapping):
-            continue
-        manifest = item.get("manifest")
-        result = item.get("result")
-        bound = (
-            item.get("role") == "cycle_count_baseline"
-            and target.get("role") == "cycle_count_baseline"
-            and _names_baseline_target(params, target)
-            and (revision is None or target.get("revision") == revision)
-            and cycle.get("test") == test
-            and _same_test_run(cycle, current)
-            and isinstance(manifest, Mapping)
-            and manifest.get("owner") == item.get("campaign_id")
-            and isinstance(result, Mapping)
-            and isinstance(item.get("work_item_id"), str)
-        )
-        if bound:
-            return cycle, "observed"
-    return None, "mismatched"
-
-
-def _same_test_run(cycle: Mapping[str, object], current: Mapping[str, object] | None) -> bool:
-    """Whether a baseline observation is of the Test Run the candidate observed."""
-    return (
-        current is not None
-        and cycle["test_run"] == current["test_run"]
-        and cycle["test_run_fingerprint"] == current["test_run_fingerprint"]
-    )
-
-
-def _name_baseline_refusal(detail: dict[str, object], refusal: str | None) -> None:
-    """Say why no baseline ran when its revision could not run the Test Run.
-
-    The comparison is then inconclusive rather than merely unbound.
-    """
-    if refusal is not None:
-        detail["baseline_observation"] = "inapplicable"
-        detail["reason"] = refusal
-
-
-def _names_baseline_target(params: Mapping[str, object], target: Mapping[str, object]) -> bool:
-    """Whether *target* is the baseline Target a Cycle Count Criterion compares against.
-
-    An explicit baseline Target names its selector. Otherwise the baseline is
-    the Criterion's own Target, which a Goal names only in ``target`` (as a
-    selector or an identity) and a Criterion may also pin by selector.
-    """
-    if BASELINE_TARGET_PARAM in params:
-        return target.get("selector") == params[BASELINE_TARGET_PARAM]
-    return criterion_matches_target(
-        params,
-        identity=f"{target.get('vlnv')}#{target.get('name')}",
-        selector=str(target.get("selector")),
-    )
-
-
-def _cycle_threshold_checks(
-    params: Mapping[str, object], current: int | None, baseline: object
-) -> list[dict[str, Any]]:
-    return [
-        evaluate_cycle_threshold(
-            name,
-            cast(int | float, params[name]),
-            current=current,
-            baseline=cast(int | None, baseline),
-        )
-        for name in sorted(CYCLE_COUNT_PARAMS)
-        if name in params
-    ]
-
-
-def _cycle_detail(
-    selector: str,
-    identity: str,
-    test: object,
-    current: int | None,
-    baseline: object,
-    baseline_state: str,
-    checks: list[dict[str, Any]],
-) -> dict[str, object]:
-    return {
-        "mode": "simulate",
-        "target": selector,
-        "target_identity": identity,
-        "test": test,
-        "cycles": current,
-        "baseline_cycles": baseline,
-        "cycle_observation": "observed" if current is not None else "missing",
-        "baseline_observation": baseline_state,
-        "evaluation": {"cycles": current, "checks": checks},
-    }
-
-
-# ---------------------------------------------------------------------------
-# Goals: Criteria judged by frozen Test Runs (ADR 0072)
-# ---------------------------------------------------------------------------
-
-
-def _goal_changes(
-    outcome: CampaignOutcome,
-    shadow: DevelopmentState,
-    target: Mapping[str, object],
-    evidence: _OutcomeEvidence,
-    refusals: Mapping[tuple[str, str], str],
-    frozen: FrozenTestRuns,
-) -> list[CriterionChange]:
-    """The Criterion changes of every Goal this campaign's Test Runs are evidence for.
-
-    A Test Run is evidence for a Goal only when its resolved name and its
-    declared-inputs fingerprint equal one of the Goal's frozen Test Runs.
-    A Goal none of whose frozen runs this campaign graded gets no change: for
-    that Goal the campaign is diagnostic. Every other Goal gets one change
-    that carries its matching runs, whatever else the campaign ran and
-    whether or not it ran to its end: a matching failure is never left out.
-    A Cycle Count or coverage Goal's change also carries the metric when
-    this campaign measured it (:meth:`GoalTestRuns.measured_by`).
-
-    Whether the Goal is met is decided by its recorder: from every matching
-    run recorded so far, or for a coverage Goal from the coverage floors
-    alone. ``met`` here is this campaign's own verdict.
-    """
-    if target["role"] != "candidate":
-        return []
-    names = {f"{target['vlnv']}#{target['name']}", str(target["selector"])}
-    cycle = _CycleFacts.of(outcome, target, refusals)
-    ran = evidence.all()
-    changes: list[CriterionChange] = []
-    for goal in frozen.of_target(names):
-        matched = goal.matching(ran)
-        if goal.key not in shadow.criteria or not _graded(matched):
-            continue
-        measured: list[CriterionChange] = []
-        if goal.kind == "cycle_count" and goal.measured_by(ran):
-            measured = _goal_cycle_change(outcome, shadow, goal, matched, cycle, evidence)
-        elif goal.kind == "coverage" and goal.measured_by(ran) and outcome.complete:
-            measured = _goal_coverage_change(outcome, shadow, goal, evidence)
-        if not measured:
-            detail = {**_goal_simulation_detail(outcome, matched), **goal.outcomes_detail(matched)}
-            measured = shadow.set_criterion(goal.key, goal.own_verdict(matched), detail=detail)
-        changes.extend(measured)
-    return changes
-
-
-def _graded(rows: Sequence[Mapping[str, object]]) -> bool:
-    """Whether any of *rows* observed its Test Run pass or fail."""
-    return any(row["grade"] in {"pass", "fail"} for row in rows)
-
-
-def _goal_simulation_detail(
-    outcome: CampaignOutcome, matched: list[dict[str, object]]
-) -> dict[str, object]:
-    """What one campaign observed of a simulation Goal's frozen Test Runs."""
-    facts = outcome.acceptance_facts.document
-    names = [str(row["name"]) for row in matched]
-    passed = [str(row["name"]) for row in matched if row["grade"] == "pass"]
-    return {
-        "campaign_id": facts["campaign_id"],
-        "manifest_sha256": facts["manifest_sha256"],
-        "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
-        "aggregate_grade": outcome.aggregate_grade,
-        "tests_passed": len(passed),
-        "tests_total": len(names),
-        "selected_tests": names,
-        "passed_tests": passed,
-        "failed_tests": [name for name in names if name not in passed],
-        "skipped_tests": [],
-        "test_runs": matched,
-    }
-
-
-def _goal_cycle_change(
-    outcome: CampaignOutcome,
-    shadow: DevelopmentState,
-    goal: GoalTestRuns,
-    matched: list[dict[str, object]],
-    cycle: _CycleFacts,
-    evidence: _OutcomeEvidence,
-) -> list[CriterionChange]:
-    """Judge a Cycle Count Goal from the observation of its one frozen Test Run.
-
-    Nothing when that observation, or its baseline one, cannot be judged.
-    """
-    observations = _candidate_observations(outcome.acceptance_facts.document, outcome.target)
-    current = observations.get(str(matched[0]["name"]))
-    if current is None:
-        return []
-    return _cycle_change(shadow, goal.key, current, cycle, evidence)
-
-
-def _goal_coverage_change(
-    outcome: CampaignOutcome,
-    shadow: DevelopmentState,
-    goal: GoalTestRuns,
-    evidence: _OutcomeEvidence,
-) -> list[CriterionChange]:
-    """The one projection of a coverage evaluation onto a Goal's Criterion.
-
-    Judge a coverage Goal from a coverage campaign that ran exactly its frozen
-    Test Runs. Coverage is merged over the campaign's Test Runs, so only such a
-    campaign measured the Goal's coverage; it is never merged across campaigns.
-    Nothing when the campaign collected no coverage.
-
-    The judged key is the Goal's own, however its Target was written: the Goal
-    is already bound to this Target. It is never projected atomically: in Goal
-    Mode it is its Target's only Coverage Criterion, so the evaluation's status
-    is its verdict for one metric or several. Only this Goal's Criterion changes.
-    """
-    if outcome.coverage_reference is None:
-        return []
-    detail = _coverage_detail(evidence)
-    met, projected_detail = project_coverage_criterion(
-        shadow.criteria[goal.key],
-        evidence.coverage().resolved.loaded.campaign.evaluation,
-        detail,
-        atomic=False,
-    )
-    return shadow.set_criterion(goal.key, met, detail=projected_detail)
-
-
-def retain_partial_campaign_acceptance(
-    outcome: EndpointOutcome,
-    campaign_outcomes: tuple[object, ...],
-    accepted: tuple[object, ...],
-) -> None:
-    """Expose durable per-Target acceptance completed before projection failed."""
-    entries: list[dict[str, object]] = []
-    for campaign, disposition in zip(campaign_outcomes, accepted, strict=False):
-        target = getattr(campaign, "target", {})
-        selector = target.get("selector", "") if isinstance(target, Mapping) else ""
-        entries.append(
-            {
-                "target": str(selector),
-                "committed": bool(getattr(disposition, "committed", False)),
-                "transaction_id": getattr(disposition, "transaction_id", None),
-                "reason": str(getattr(disposition, "reason", "unknown")),
-            }
-        )
-    if entries:
-        outcome.detail = dict(outcome.detail)
-        outcome.detail["acceptance"] = {"status": "partial", "targets": entries}
-
-
-__all__ = [
-    "AcceptanceContext",
-    "AcceptanceOutcome",
-    "SimulationAcceptanceCoordinator",
-    "record_campaign_acceptance",
-    "retain_partial_campaign_acceptance",
-]
+__all__ = ["publish_simulation_record_projections"]

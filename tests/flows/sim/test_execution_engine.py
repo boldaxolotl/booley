@@ -10,9 +10,9 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
-from contextlib import AbstractContextManager, ExitStack, nullcontext
-from dataclasses import replace
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -21,7 +21,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.core.build_paths import work_root_for
+from booley.flows import run_log
 from booley.flows.base import SubprocessResult
+from booley.flows.memory_admission import JOB_THREADS_ENV
 from booley.flows.sim import build_parallelism
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -51,8 +53,6 @@ from booley.flows.sim.execution import (
 )
 from booley.flows.sim.execution.engine import (
     PreparedOrdinaryGroup,
-    _cycle_observation,
-    _preview_work,
 )
 from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
@@ -72,6 +72,8 @@ from tests.flows.sim.test_verilator_build_reuse_engine import (
     _edit_keeping_mtime,
     _isolate_native_cores,
 )
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 
 def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
@@ -160,33 +162,31 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
     return inspection
 
 
+def _write_vvp(fake_bin: Path, needs: str) -> None:
+    """A ``vvp`` that passes only when its run directory holds the file *needs*."""
+    message = f"$readmemh: Unable to open {needs} for reading."
+    if os.name == "nt":
+        script = (
+            f"@echo off\nif not exist {needs} (\n  echo {message}\n  exit /b 1\n)\n"
+            "echo [SIM_RESULT] PASSED\n"
+        )
+    else:
+        script = (
+            f"#!/bin/sh\nif [ ! -f {needs} ]; then\n  echo '{message}'\n  exit 1\nfi\n"
+            "echo '[SIM_RESULT] PASSED'\n"
+        )
+    vvp = fake_bin / ("vvp.bat" if os.name == "nt" else "vvp")
+    vvp.write_text(script, encoding="utf-8")
+    vvp.chmod(0o755)
+
+
 def _runtime_input_vvp(root: Path, build_root: Path) -> Path:
     (build_root / "demo.scr").write_text("", encoding="utf-8")
     (build_root / "demo").write_text("", encoding="utf-8")
     (build_root / "dhry.hex").write_text("00000013\n", encoding="utf-8")
     fake_bin = root / "bin"
     fake_bin.mkdir()
-    vvp = fake_bin / ("vvp.bat" if os.name == "nt" else "vvp")
-    if os.name == "nt":
-        script = (
-            "@echo off\n"
-            "if not exist dhry.hex (\n"
-            "  echo $readmemh: Unable to open dhry.hex for reading.\n"
-            "  exit /b 1\n"
-            ")\n"
-            "echo [SIM_RESULT] PASSED\n"
-        )
-    else:
-        script = (
-            "#!/bin/sh\n"
-            "if [ ! -f dhry.hex ]; then\n"
-            "  echo '$readmemh: Unable to open dhry.hex for reading.'\n"
-            "  exit 1\n"
-            "fi\n"
-            "echo '[SIM_RESULT] PASSED'\n"
-        )
-    vvp.write_text(script, encoding="utf-8")
-    vvp.chmod(0o755)
+    _write_vvp(fake_bin, "dhry.hex")
     return fake_bin
 
 
@@ -249,27 +249,7 @@ def _write_fake_icarus_tools(root: Path) -> Path:
         )
     iverilog.write_text(iverilog_script, encoding="utf-8")
     iverilog.chmod(0o755)
-    vvp = fake_bin / f"vvp{suffix}"
-    if os.name == "nt":
-        vvp_script = (
-            "@echo off\n"
-            "if not exist firmware.hex (\n"
-            "  echo $readmemh: Unable to open firmware.hex for reading.\n"
-            "  exit /b 1\n"
-            ")\n"
-            "echo [SIM_RESULT] PASSED\n"
-        )
-    else:
-        vvp_script = (
-            "#!/bin/sh\n"
-            "if [ ! -f firmware.hex ]; then\n"
-            "  echo '$readmemh: Unable to open firmware.hex for reading.'\n"
-            "  exit 1\n"
-            "fi\n"
-            "echo '[SIM_RESULT] PASSED'\n"
-        )
-    vvp.write_text(vvp_script, encoding="utf-8")
-    vvp.chmod(0o755)
+    _write_vvp(fake_bin, "firmware.hex")
     return fake_bin
 
 
@@ -345,11 +325,11 @@ def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
         part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
     )
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
         started = time.monotonic()
         result = subprocess.run(
             command,
-            cwd=root,
+            cwd=cwd or root,
             env={**os.environ, "PYTHONPATH": python_path},
             capture_output=True,
             text=True,
@@ -384,7 +364,7 @@ def _run_execution(
     trace_mode: TraceMode | None = None,
     canned_at: str = "launch",
 ) -> SimulationTargetOutcome:
-    """Run one group on the prepared path, as a campaign does."""
+    """Run one group on the prepared path, as a record does."""
     execution = SimulationExecution(
         invoke=split_invoker(invoke, canned_at=canned_at),
         options=options or SimulationOptions(),
@@ -398,16 +378,18 @@ def _run_execution(
             )
         )
         stack.enter_context(_compile_surface_patch(handle))
-        if trace_mode is None:
+        stack.enter_context(
+            patch(
+                "booley.flows.sim.execution.engine.prepare_simulation_build",
+                return_value=prepared,
+            )
+        )
+        if trace_mode is not None:
             stack.enter_context(
                 patch(
-                    "booley.flows.sim.execution.engine.prepare_simulation_build",
-                    return_value=prepared,
+                    "booley.flows.sim.execution.engine.trace_overlay.write_trace_overlay",
+                    return_value=SimpleNamespace(vlnv=None, mode=trace_mode, cleanup=lambda: None),
                 )
-            )
-        else:
-            stack.enter_context(
-                patch.object(execution, "_prepare_build", return_value=(prepared, trace_mode))
             )
         stack.enter_context(
             patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123")
@@ -449,6 +431,7 @@ def _write_partial_timeout_transport(
     prepared,
     *,
     modified_ns: int | None = None,
+    partial: bool = True,
 ) -> None:
     identity = AdapterTransportIdentity(
         "cocotb",
@@ -484,10 +467,16 @@ def _write_partial_timeout_transport(
             ),
         ),
     )
-    partial_identity = partial_result_identity(identity)
-    write_adapter_result(partial_identity, result)
+    written = partial_result_identity(identity) if partial else identity
+    write_adapter_result(written, result)
     if modified_ns is not None:
-        os.utime(partial_identity.result_path, ns=(modified_ns, modified_ns))
+        os.utime(written.result_path, ns=(modified_ns, modified_ns))
+
+
+def _passing_result() -> AdapterResult:
+    return AdapterResult(
+        True, False, 0, ("smoke",), test_results=(AdapterTestResult("smoke", "pass"),)
+    )
 
 
 def _passing_trace_invoker(
@@ -498,6 +487,7 @@ def _passing_trace_invoker(
     fresh: bool,
     modified_ns: int | None = None,
     transport_modified_ns: int | None = None,
+    report_trace: bool = True,
 ):
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
@@ -515,7 +505,7 @@ def _passing_trace_invoker(
                 0,
                 ("smoke",),
                 test_results=(AdapterTestResult("smoke", "pass"),),
-                trace=AdapterTraceResult("ok", path=str(trace)),
+                trace=AdapterTraceResult("ok", path=str(trace)) if report_trace else None,
             ),
         )
         if transport_modified_ns is not None:
@@ -536,7 +526,6 @@ def _assert_authoritative_cocotb_outcome(outcome: SimulationTargetOutcome) -> No
         ("count", "fail"),
     ]
     assert outcome.tests[1].cycles == 17
-    assert outcome.tests[1].workload_snapshot is not None
     assert outcome.builds[0].passed is True
     assert sum(a.kind == "live_run_log" for a in outcome.artifacts) == 1
     assert outcome.tests[0].run_log_path == outcome.tests[1].run_log_path
@@ -546,7 +535,7 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         assert command[:2] == ["sh", "-c"]
         assert timeout == 5
         _write_transport(
@@ -588,7 +577,7 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     _assert_authoritative_cocotb_outcome(outcome)
 
 
-def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path) -> None:
+def test_default_cocotb_selection_runs_discovered_test_names(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)
 
@@ -619,8 +608,6 @@ def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path
 
     capture_trace_policy.assert_not_called()
     assert [test.name for test in outcome.tests] == ["discovered"]
-    snapshot = outcome.tests[0].workload_snapshot
-    assert snapshot is not None and snapshot["test"] == "discovered"
 
 
 def test_timeout_transport_preserves_completed_active_and_not_run_tests(
@@ -628,50 +615,13 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)
-    token = "abc123"
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
-        identity = AdapterTransportIdentity(
-            "cocotb",
-            token,
-            handle.identity,
-            ("done", "active", "later"),
-            _evidence_path(handle),
-        )
-        write_adapter_result(
-            identity,
-            AdapterResult(
-                passed=False,
-                inconclusive=False,
-                sva_errors=0,
-                tests=identity.selected_tests,
-                simulator_returncode=-9,
-                termination="timeout",
-                failure_kind="timeout",
-                detail="cocotb simulation timed out",
-                test_results=(
-                    AdapterTestResult("done", "pass", elapsed_s=0.1),
-                    AdapterTestResult(
-                        "active",
-                        "timeout",
-                        detail="timed out while running",
-                        termination="timeout",
-                        failure_kind="timeout",
-                    ),
-                    AdapterTestResult(
-                        "later",
-                        "timeout",
-                        detail="did not run before timeout",
-                        termination="timeout",
-                        failure_kind="timeout",
-                    ),
-                ),
-            ),
-        )
+        _write_partial_timeout_transport(handle, prepared, partial=False)
         return SubprocessResult(
             returncode=-9,
-            stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0\n",
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
             timed_out=True,
             duration_s=10.0,
         )
@@ -885,29 +835,56 @@ def test_adapter_exit_one_with_design_result_is_failure_not_infrastructure(
 
 
 @pytest.mark.parametrize(
-    ("process", "expected_verdict", "expected_kind"),
+    ("process", "canned_at", "expected_verdict", "expected_kind", "expected_test"),
     [
-        (
-            SubprocessResult(returncode=2, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"),
+        pytest.param(
+            SubprocessResult(returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"),
+            "launch",
             "error",
             "adapter_protocol",
+            None,
+            id="test_normal_completion_requires_terminal_transport",
         ),
-        (
+        pytest.param(
+            SubprocessResult(returncode=2, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"),
+            "launch",
+            "error",
+            "adapter_protocol",
+            None,
+            id="adapter-error",
+        ),
+        pytest.param(
             SubprocessResult(
                 returncode=-9,
                 stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
                 timed_out=True,
             ),
+            "launch",
             "fail",
             None,
+            "timeout",
+            id="test_timeout_precedes_missing_terminal_transport",
+        ),
+        pytest.param(
+            SubprocessResult(
+                returncode=1,
+                stdout="error: syntax error\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n",
+            ),
+            "build",
+            "fail",
+            None,
+            "elab_error",
+            id="test_design_rejection_does_not_require_adapter_transport",
         ),
     ],
 )
 def test_missing_transport_distinguishes_adapter_error_from_outer_timeout(
     tmp_path: Path,
     process: SubprocessResult,
+    canned_at: str,
     expected_verdict: str,
     expected_kind: str | None,
+    expected_test: str | None,
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
@@ -917,6 +894,7 @@ def test_missing_transport_distinguishes_adapter_error_from_outer_timeout(
         lambda _command, timeout: process,
         ("smoke",),
         cocotb=False,
+        canned_at=canned_at,
     )
 
     assert outcome.verdict == expected_verdict
@@ -925,8 +903,73 @@ def test_missing_transport_distinguishes_adapter_error_from_outer_timeout(
         assert outcome.infrastructure_failure.kind == expected_kind
     else:
         assert outcome.infrastructure_failure is None
+    if expected_test is not None:
+        assert outcome.tests[0].verdict == expected_test
+    if expected_verdict == "fail" and expected_test == "timeout":
         assert outcome.tests[0].timed_out is True
         assert outcome.tests[0].termination == "completed"
+
+
+def test_adapter_pass_cannot_override_nonzero_process_exit(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(handle, prepared, ("smoke",), _passing_result())
+        return SubprocessResult(returncode=1, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
+
+    with pytest.raises(ArtifactValidationError, match="contradicts"):
+        _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+
+@pytest.mark.parametrize("launch_rc", [1, 137])
+def test_nonzero_launch_cannot_hide_adapter_authentication_error(tmp_path, launch_rc) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        foreign = AdapterTransportIdentity(
+            "icarus", "abc123", "foreign#sim", ("smoke",), _evidence_path(handle)
+        )
+        write_adapter_result(foreign, _passing_result())
+        return SubprocessResult(
+            returncode=launch_rc, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+        )
+
+    with pytest.raises(ArtifactValidationError, match="Target"):
+        _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+
+@pytest.mark.parametrize("passed", [True, False])
+def test_cleanup_failure_keeps_authenticated_design_verdict(tmp_path, passed) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    result = AdapterResult(
+        passed,
+        False,
+        0,
+        ("smoke",),
+        test_results=(AdapterTestResult("smoke", "pass" if passed else "fail"),),
+    )
+    unlink = Path.unlink
+
+    def denied_partial(path, *args, **kwargs):
+        if path.name.endswith(".partial"):
+            raise OSError("partial cleanup denied")
+        return unlink(path, *args, **kwargs)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(handle, prepared, ("smoke",), result)
+        return SubprocessResult(returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
+
+    with patch.object(Path, "unlink", denied_partial):
+        outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+    assert outcome.tests[0].verdict == ("pass" if passed else "fail")
+    assert outcome.infrastructure_failure is None
+    assert any("artifact_persistence:" in item for item in outcome.diagnostics)
 
 
 def test_unchanged_timeout_partial_result_is_stale(tmp_path: Path) -> None:
@@ -989,18 +1032,26 @@ def test_prepared_source_entries_reject_absolute_source_outside_project(tmp_path
         group.prepared_source_entries()
 
 
-def test_prepared_source_entries_accept_exact_packaged_trace_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def packaged_dump(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A project and a packaged trace dump source the engine accepts as its own."""
     project = tmp_path / "project"
     project.mkdir()
     packaged = tmp_path / "package" / "refs" / "booley_vcd_dump.sv"
     packaged.parent.mkdir(parents=True)
-    packaged.write_bytes(b"module booley_vcd_dump; endmodule\n")
+    packaged.write_bytes(b"trusted")
     monkeypatch.setattr(
         "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
         MagicMock(return_value=packaged.resolve()),
     )
+    return project, packaged
+
+
+def test_prepared_source_entries_accept_exact_packaged_trace_source(
+    packaged_dump: tuple[Path, Path],
+) -> None:
+    project, packaged = packaged_dump
+    packaged.write_bytes(b"module booley_vcd_dump; endmodule\n")
     group = _prepared_group_with_sources(_handle(project), packaged, trace_requested=True)
 
     assert group.prepared_source_entries() == (
@@ -1058,24 +1109,15 @@ def test_prepared_source_entries_fail_closed_when_packaged_authority_is_invalid(
 
 
 def test_prepared_source_entries_reject_packaged_sibling_and_external_symlink(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, packaged_dump: tuple[Path, Path]
 ) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    package = tmp_path / "package" / "refs"
-    package.mkdir(parents=True)
-    packaged = package / "booley_vcd_dump.sv"
-    packaged.write_bytes(b"trusted")
-    sibling = package / "other.sv"
+    project, packaged = packaged_dump
+    sibling = packaged.parent / "other.sv"
     sibling.write_bytes(b"untrusted")
     external = tmp_path / "external.sv"
     external.write_bytes(b"external")
     alias = tmp_path / "external-alias.sv"
     alias.symlink_to(external)
-    monkeypatch.setattr(
-        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
-        MagicMock(return_value=packaged.resolve()),
-    )
 
     for source in (sibling, alias):
         group = _prepared_group_with_sources(_handle(project), source, trace_requested=True)
@@ -1084,38 +1126,22 @@ def test_prepared_source_entries_reject_packaged_sibling_and_external_symlink(
 
 
 def test_prepared_source_entries_treat_packaged_alias_as_same_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, packaged_dump: tuple[Path, Path]
 ) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    packaged = tmp_path / "package" / "refs" / "booley_vcd_dump.sv"
-    packaged.parent.mkdir(parents=True)
-    packaged.write_bytes(b"trusted")
+    project, packaged = packaged_dump
     alias = tmp_path / "dump-alias.sv"
     alias.symlink_to(packaged)
-    monkeypatch.setattr(
-        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
-        MagicMock(return_value=packaged.resolve()),
-    )
 
     group = _prepared_group_with_sources(_handle(project), alias, trace_requested=True)
     assert group.prepared_source_entries()[0]["path"] == ("booley-package/refs/booley_vcd_dump.sv")
 
 
 def test_prepared_source_entries_reject_duplicate_mapped_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, packaged_dump: tuple[Path, Path]
 ) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    packaged = tmp_path / "package" / "refs" / "booley_vcd_dump.sv"
-    packaged.parent.mkdir(parents=True)
-    packaged.write_bytes(b"trusted")
+    project, packaged = packaged_dump
     alias = tmp_path / "dump-alias.sv"
     alias.symlink_to(packaged)
-    monkeypatch.setattr(
-        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
-        MagicMock(return_value=packaged.resolve()),
-    )
     group = _prepared_group_with_sources(_handle(project), packaged, alias, trace_requested=True)
 
     with pytest.raises(SimulationBuildSlotError, match="duplicate prepared Simulation source"):
@@ -1147,48 +1173,21 @@ def test_declared_staged_runtime_input_is_available_at_run_cwd(
         # Hosted Windows runners can spend more than five seconds starting the
         # real shell and Python adapter under load. This test exercises staged
         # input visibility, not timeout classification.
-        options=SimulationOptions(timeout_ms=30_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
 
     assert outcome.passed is True
     assert not (handle.project_root / "dhry.hex").exists()
 
 
-def _run_real_icarus(project: Path, handle: TargetHandle) -> SimulationTargetOutcome:
+@contextmanager
+def _real_fusesoc() -> Iterator[None]:
+    """Resolve targets through the real FuseSoC command, not the PATH shim."""
     real_resolve = fusesoc_registry.resolve_target_handle
     fusesoc_cmd = (
         list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
         if shutil.which("fusesoc")
         else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-    )
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project),
-        # Real FuseSoC setup and Icarus startup are substantially slower on
-        # Windows runners than the lightweight adapter tests around this one.
-        options=SimulationOptions(timeout_ms=30_000),
-    )
-    with patch.object(
-        fusesoc_registry,
-        "resolve_target_handle",
-        side_effect=lambda *args, **kwargs: real_resolve(
-            *args,
-            **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
-        ),
-    ):
-        return run_prepared_group(execution, handle, ("dhry",))
-
-
-def _run_real_icarus_twice(
-    project: Path, handle: TargetHandle
-) -> tuple[SimulationTargetOutcome, ...]:
-    real_resolve = fusesoc_registry.resolve_target_handle
-    fusesoc_cmd = (
-        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        if shutil.which("fusesoc")
-        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-    )
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
     )
     with patch.object(
         fusesoc_registry,
@@ -1197,7 +1196,20 @@ def _run_real_icarus_twice(
             *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
         ),
     ):
-        return tuple(run_prepared_group(execution, handle, ("dhry",)) for _ in range(2))
+        yield
+
+
+def _run_real_icarus(
+    project: Path, handle: TargetHandle, runs: int = 1
+) -> tuple[SimulationTargetOutcome, ...]:
+    # Real FuseSoC setup and Icarus startup are substantially slower on
+    # Windows runners than the lightweight adapter tests around this one.
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
+    )
+    with _real_fusesoc():
+        return tuple(run_prepared_group(execution, handle, ("dhry",)) for _ in range(runs))
 
 
 def _doctor_view_paths(state: Path) -> tuple[Path, ...]:
@@ -1222,7 +1234,7 @@ def _configure_non_root_doctor_runtime(project: Path, state: Path) -> tuple[Path
 
 def _run_sim_cli(project: Path) -> subprocess.CompletedProcess[str]:
     source = Path(__file__).resolve().parents[3] / "src"
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-c",
@@ -1236,10 +1248,6 @@ def _run_sim_cli(project: Path) -> subprocess.CompletedProcess[str]:
         ],
         cwd=project,
         env={**os.environ, "PYTHONPATH": str(source), "BOOLEY_CONTAINER": "1"},
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
     )
 
 
@@ -1255,7 +1263,7 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    outcome = _run_real_icarus(project, handle)
+    (outcome,) = _run_real_icarus(project, handle)
 
     edam = next((state / ".runtime").rglob("*.eda.yml"))
     resolved = fusesoc_registry.parse_edam(
@@ -1292,7 +1300,7 @@ def test_real_icarus_declarations_build_authorize_and_launch_as_icarus(
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    outcome = _run_real_icarus(project, handle)
+    (outcome,) = _run_real_icarus(project, handle)
 
     build_root = next((state / ".runtime").rglob("*.eda.yml")).parent
     makefile = (build_root / "Makefile").read_text(encoding="utf-8")
@@ -1342,19 +1350,7 @@ def test_real_legacy_verilator_target_prepares_as_verilator(tmp_path: Path) -> N
         tool_declaration=("    default_tool: verilator\n    tools:\n      verilator: {}\n"),
     )
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    real_resolve = fusesoc_registry.resolve_target_handle
-    fusesoc_cmd = (
-        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        if shutil.which("fusesoc")
-        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-    )
-    with patch.object(
-        fusesoc_registry,
-        "resolve_target_handle",
-        side_effect=lambda *args, **kwargs: real_resolve(
-            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
-        ),
-    ):
+    with _real_fusesoc():
         prepared = prepare_simulation_build(handle)
 
     assert prepared.resolved.eda_tool is None
@@ -1381,38 +1377,15 @@ def test_default_verilator_make_recipe_is_resource_bounded(
     importlib.import_module("edalize")
     project = tmp_path / "project"
     _write_runtime_input_project(project, tool_declaration=tool_declaration)
-    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
-    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
-    monkeypatch.setattr(
-        build_parallelism,
-        "load_job_budget_config",
-        lambda _project_root=None: {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
-    )
+    # The Job's share of the cores, fixed at its admission.
+    monkeypatch.setenv(JOB_THREADS_ENV, "4")
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    real_resolve = fusesoc_registry.resolve_target_handle
-    fusesoc_cmd = (
-        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        if shutil.which("fusesoc")
-        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-    )
 
-    with patch.object(
-        fusesoc_registry,
-        "resolve_target_handle",
-        side_effect=lambda *args, **kwargs: real_resolve(
-            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
-        ),
-    ):
+    with _real_fusesoc():
         prepared = prepare_simulation_build(handle)
 
     makefile = (prepared.build_root / "Makefile").read_text(encoding="utf-8")
-    with patch.object(
-        fusesoc_registry,
-        "resolve_target_handle",
-        side_effect=lambda *args, **kwargs: real_resolve(
-            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
-        ),
-    ):
+    with _real_fusesoc():
         repeated = prepare_simulation_build(handle)
     assert (repeated.build_root / "Makefile").read_text(encoding="utf-8") == makefile
     if "$(MAKE_OPTIONS)" in makefile:
@@ -1433,6 +1406,8 @@ def test_cgroup_probe_failure_is_a_typed_setup_error(
         tool_declaration="    flow: sim\n    flow_options: {tool: verilator}\n",
     )
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    # Private seam: the cgroup quota is host state read through `build_parallelism._read_text`
+    # (imported from `cpu_budget`); no public input makes that read fail.
     monkeypatch.setattr(
         build_parallelism,
         "_read_text",
@@ -1470,28 +1445,11 @@ def test_real_verilator_setup_merges_authored_make_options_once(
         )
     project = tmp_path / "project"
     _write_runtime_input_project(project, tool_declaration=declaration)
-    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
-    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
-    monkeypatch.setattr(
-        build_parallelism,
-        "load_job_budget_config",
-        lambda _project_root=None: {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
-    )
+    # The Job's share of the cores, fixed at its admission.
+    monkeypatch.setenv(JOB_THREADS_ENV, "4")
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    real_resolve = fusesoc_registry.resolve_target_handle
-    fusesoc_cmd = (
-        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        if shutil.which("fusesoc")
-        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-    )
 
-    with patch.object(
-        fusesoc_registry,
-        "resolve_target_handle",
-        side_effect=lambda *args, **kwargs: real_resolve(
-            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
-        ),
-    ):
+    with _real_fusesoc():
         prepared = prepare_simulation_build(handle)
 
     makefile = (prepared.build_root / "Makefile").read_text(encoding="utf-8")
@@ -1568,7 +1526,7 @@ def test_projected_core_bad_overlay_reaches_design_failure(
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     previous_booley_dir = os.environ.get("BOOLEY_DIR")
     try:
-        for outcome in _run_real_icarus_twice(project, handle):
+        for outcome in _run_real_icarus(project, handle, runs=2):
             assert outcome.verdict == "fail"
             assert outcome.infrastructure_failure is None
             assert any(test.verdict == "fail" for test in outcome.tests), outcome.tests
@@ -1586,32 +1544,65 @@ def test_projected_core_bad_overlay_reaches_design_failure(
         reset_cache()
 
 
-def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@dataclass
+class _StaleIcarus:
+    """The stale-compiler Project with every command and Icarus launch recorded."""
+
+    project: Path
+    source: Path
+    commands: list[list[str]] = field(default_factory=lambda: [])
+    launched: list[str] = field(default_factory=lambda: [])
+
+    def select(self, name: str = "sim_a") -> TargetHandle:
+        return TargetCatalog.build(self.project).select(name, for_flow="sim")
+
+    def execution(self, **options: Any) -> SimulationExecution:
+        options.setdefault("timeout_ms", hang_guard_s() * 1000)
+        base_invoke = _subprocess_invoker(self.project)
+
+        def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
+            self.commands.append(command)
+            result = base_invoke(command, timeout=timeout, **kwargs)
+            if "booley.flows.sim.backends.icarus" in command[-1]:
+                self.launched.append(result.stdout)
+            return result
+
+        return SimulationExecution(invoke=invoke, options=SimulationOptions(**options))
+
+    def builds(self) -> int:
+        return sum("BOOLEY_BUILD_STAGE" in command[-1] for command in self.commands)
+
+
+@pytest.fixture
+def stale_icarus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _StaleIcarus:
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project, source = _write_stale_compiler_fixture(tmp_path)
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    catalog = TargetCatalog.build(project)
-    handles = tuple(catalog.select(name, for_flow="sim") for name in ("sim_a", "sim_b"))
-    observed: list[str] = []
-    base_invoke = _subprocess_invoker(project)
+    return _StaleIcarus(project, source)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        result = base_invoke(command, timeout=timeout)
-        if "booley.flows.sim.backends.icarus" in command[-1]:
-            observed.append(result.stdout)
-        return result
 
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+@pytest.fixture
+def reusable_icarus(stale_icarus: _StaleIcarus, monkeypatch: pytest.MonkeyPatch) -> _StaleIcarus:
+    # Private seam: the reuse closure hashes the installed Icarus tree (`<bin>/../lib/ivl`
+    # and ELF dependencies); the fake tools have none and no public input supplies one.
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    return stale_icarus
+
+
+def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
+    stale_icarus: _StaleIcarus,
+) -> None:
+    handles = tuple(stale_icarus.select(name) for name in ("sim_a", "sim_b"))
+    execution = stale_icarus.execution()
     for handle in handles:
         assert run_prepared_group(execution, handle, ("smoke",)).passed
+    observed = stale_icarus.launched
     assert len(observed) == 2 and all("OLD" in item for item in observed)
 
-    old_stat = source.stat()
-    source.write_text("module tb; // NEW\nendmodule\n", encoding="utf-8")
-    os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+    _edit_keeping_mtime(stale_icarus.source, "module tb; // NEW\nendmodule\n")
     observed.clear()
     for handle in handles:
         assert run_prepared_group(execution, handle, ("smoke",)).passed
@@ -1620,62 +1611,27 @@ def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
 
 @pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
 def test_matching_closed_icarus_inputs_reuse_verified_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    reusable_icarus: _StaleIcarus,
 ) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(
-        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
-    )
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    commands: list[list[str]] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        commands.append(command)
-        return base_invoke(command, timeout=timeout)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    handle = reusable_icarus.select()
+    execution = reusable_icarus.execution()
     first = run_prepared_group(execution, handle, ("first",))
     second = run_prepared_group(execution, handle, ("second",))
     assert first.passed, first.infrastructure_failure
     assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
-    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 1
+    assert reusable_icarus.builds() == 1
     assert second.builds[0].ran is False
     assert second.builds[0].cache_decision.startswith("hit;")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
 def test_isolated_icarus_identical_build_reuses_and_source_edit_rebuilds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    reusable_icarus: _StaleIcarus,
 ) -> None:
     """In an ``ignore_native_cores`` Project an identical build reuses; an edited source rebuilds."""
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, source = _write_stale_compiler_fixture(tmp_path)
-    _isolate_native_cores(project, core="multi.core")
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(
-        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
-    )
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    commands: list[list[str]] = []
-    launched: list[str] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        commands.append(command)
-        result = base_invoke(command, timeout=timeout)
-        if "booley.flows.sim.backends.icarus" in command[-1]:
-            launched.append(result.stdout)
-        return result
-
-    def build_stages() -> int:
-        return sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    _isolate_native_cores(reusable_icarus.project, core="multi.core")
+    handle = reusable_icarus.select()
+    execution = reusable_icarus.execution()
     first = run_prepared_group(execution, handle, ("first",))
     second = run_prepared_group(execution, handle, ("second",))
     assert first.passed, first.infrastructure_failure
@@ -1683,70 +1639,36 @@ def test_isolated_icarus_identical_build_reuses_and_source_edit_rebuilds(
     assert first.builds[0].ran is True
     assert second.builds[0].ran is False
     assert second.builds[0].cache_decision.startswith("hit;")
-    assert build_stages() == 1
+    assert reusable_icarus.builds() == 1
 
     # The fake compiler writes the source's marker into the image, so NEW in the
     # launched output proves the stale image never ran.
-    _edit_keeping_mtime(source, "module tb; // NEW\nendmodule\n")
+    _edit_keeping_mtime(reusable_icarus.source, "module tb; // NEW\nendmodule\n")
     third = run_prepared_group(execution, handle, ("third",))
     assert third.passed, (third.builds, third.tests, third.infrastructure_failure)
     assert third.builds[0].ran is True
     assert third.builds[0].cache_decision.startswith("changed source, recipe, or tool;")
-    assert build_stages() == 2
-    assert "NEW" in launched[-1] and "OLD" not in launched[-1]
+    assert reusable_icarus.builds() == 2
+    assert "NEW" in reusable_icarus.launched[-1] and "OLD" not in reusable_icarus.launched[-1]
 
 
 def test_changed_input_with_failed_rebuild_never_launches_prior_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    reusable_icarus: _StaleIcarus,
 ) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, source = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(
-        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
-    )
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    observed: list[str] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        result = base_invoke(command, timeout=timeout)
-        if "booley.flows.sim.backends.icarus" in command[-1]:
-            observed.append(result.stdout)
-        return result
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    handle = reusable_icarus.select()
+    execution = reusable_icarus.execution()
     assert run_prepared_group(execution, handle, ("smoke",)).passed
-    old_stat = source.stat()
-    source.write_text("module tb; // BAD\nendmodule\n", encoding="utf-8")
-    os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+    _edit_keeping_mtime(reusable_icarus.source, "module tb; // BAD\nendmodule\n")
     outcome = run_prepared_group(execution, handle, ("smoke",))
     assert not outcome.passed
-    assert len(observed) == 1
+    assert len(reusable_icarus.launched) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
 @pytest.mark.parametrize("tamper", ["image", "pointer"])
-def test_corrupt_cache_forces_fresh_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
-) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(
-        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
-    )
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    commands: list[list[str]] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        commands.append(command)
-        return base_invoke(command, timeout=timeout)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+def test_corrupt_cache_forces_fresh_build(reusable_icarus: _StaleIcarus, tamper: str) -> None:
+    handle = reusable_icarus.select()
+    execution = reusable_icarus.execution()
     assert run_prepared_group(execution, handle, ("smoke",)).passed
     slot = simulation_build_slot(handle)
     pointer = json.loads((slot / "current.json").read_text(encoding="utf-8"))
@@ -1758,30 +1680,16 @@ def test_corrupt_cache_forces_fresh_build(
         pointer["build_root"] = "../outside"
         (slot / "current.json").write_text(json.dumps(pointer), encoding="utf-8")
     assert run_prepared_group(execution, handle, ("smoke",)).passed
-    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
+    assert reusable_icarus.builds() == 2
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
 @pytest.mark.parametrize("record", ["pointer", "manifest"])
 def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+    reusable_icarus: _StaleIcarus, record: str
 ) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(
-        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
-    )
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    commands: list[list[str]] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        commands.append(command)
-        return base_invoke(command, timeout=timeout)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    handle = reusable_icarus.select()
+    execution = reusable_icarus.execution()
     assert run_prepared_group(execution, handle, ("smoke",)).passed
     slot = simulation_build_slot(handle)
     pointer_path = slot / "current.json"
@@ -1801,31 +1709,29 @@ def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
     assert second.passed
     assert second.builds[0].ran is True
     assert second.builds[0].cache_decision.startswith("missing provenance;")
-    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
+    assert reusable_icarus.builds() == 2
 
 
 def test_missing_new_image_refuses_the_build_and_never_launches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    stale_icarus: _StaleIcarus,
 ) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    handle = stale_icarus.select()
     launched = False
-    base_invoke = _subprocess_invoker(project)
+    base_invoke = _subprocess_invoker(stale_icarus.project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         nonlocal launched
-        result = base_invoke(command, timeout=timeout)
+        result = base_invoke(command, timeout=timeout, **kwargs)
         if "BOOLEY_BUILD_STAGE" in command[-1]:
-            for script in (project / ".booley" / ".runtime").rglob("*.scr"):
+            for script in (stale_icarus.project / ".booley" / ".runtime").rglob("*.scr"):
                 script.with_suffix("").unlink(missing_ok=True)
         if "booley.flows.sim.backends.icarus" in command[-1]:
             launched = True
         return result
 
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    execution = SimulationExecution(
+        invoke=invoke, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
+    )
     with pytest.raises(SimulationBuildSlotError, match="cannot record Simulation image"):
         run_prepared_group(execution, handle, ("smoke",))
     assert launched is False
@@ -1931,58 +1837,44 @@ def _assert_execution_trace(
     ids=["execution", "queryable"],
 )
 def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, queryable: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stale_icarus: _StaleIcarus,
+    queryable: bool,
 ) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
     native_bwave = runtime_paths.native_bwave_binary()
     if queryable and native_bwave is None:
         pytest.skip("native B-Wave binary is required to verify a queryable Trace Artifact")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    _isolate_native_cores(project, core="multi.core")
+    _isolate_native_cores(stale_icarus.project, core="multi.core")
     _write_fake_trace_tools(tmp_path)
     if not queryable:
         monkeypatch.setenv("BOOLEY_BWAVE_BIN", str(_write_failing_trace_converter(tmp_path)))
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    commands: list[list[str]] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        commands.append(command)
-        return base_invoke(command, timeout=timeout)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
+    handle = stale_icarus.select()
+    execution = stale_icarus.execution(trace=True, timeout_ms=None)
     for _ in range(2):
         outcome = run_prepared_group(execution, handle, ("smoke",))
         # An unconvertible VCD leaves the Test Run inconclusive, not passed.
         assert outcome.passed is queryable
         assert outcome.verdict == ("pass" if queryable else "inconclusive")
         _assert_execution_trace(outcome, tmp_path / "bwave-cache", queryable=queryable)
-        assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
-        assert any("booley.flows.sim.backends.icarus" in command[-1] for command in commands)
-        commands.clear()
+        assert stale_icarus.builds() >= 1
+        assert stale_icarus.launched
+        stale_icarus.commands.clear()
+        stale_icarus.launched.clear()
+
+
+def _non_setup_commands(stale_icarus: _StaleIcarus) -> list[list[str]]:
+    # Only FuseSoC setup ran: no build or launch.
+    return [command for command in stale_icarus.commands if command[0] != "fusesoc"]
 
 
 def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    stale_icarus: _StaleIcarus,
 ) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    commands: list[list[str]] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        commands.append(command)
-        return base_invoke(command, timeout=timeout)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    with execution.ordinary_group(handle, ("smoke",)) as group:
+    handle = stale_icarus.select()
+    with stale_icarus.execution().ordinary_group(handle, ("smoke",)) as group:
         # What a Pre-Sim Command editing the Project source would do after setup.
-        source = project / "tb.sv"
+        source = stale_icarus.source
         source.write_text(
             source.read_text(encoding="utf-8").replace("OLD", "NEW"), encoding="utf-8"
         )
@@ -1990,20 +1882,12 @@ def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
             SimulationBuildSlotError, match="changed during setup or Pre-Sim Commands"
         ):
             group.compile()
-    assert not commands
+    assert _non_setup_commands(stale_icarus) == []
 
 
-def test_hook_editing_staged_source_cannot_launch_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    invoke = _subprocess_invoker(project)
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    with execution.ordinary_group(handle, ("smoke",)) as group:
+def test_hook_editing_staged_source_cannot_launch_image(stale_icarus: _StaleIcarus) -> None:
+    handle = stale_icarus.select()
+    with stale_icarus.execution().ordinary_group(handle, ("smoke",)) as group:
         # What a Pre-Sim Command editing the staged copy would do.
         staged = group.build_root / "src" / "acme_lib_multi_1" / "tb.sv"
         with staged.open("a", encoding="utf-8") as stream:
@@ -2014,67 +1898,33 @@ def test_hook_editing_staged_source_cannot_launch_image(
             group.compile()
 
 
-def test_hook_editing_authored_core_cannot_launch_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    calls: list[list[str]] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        calls.append(command)
-        return base_invoke(command, timeout=timeout)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    with execution.ordinary_group(handle, ("smoke",)) as group:
+def test_hook_editing_authored_core_cannot_launch_image(stale_icarus: _StaleIcarus) -> None:
+    handle = stale_icarus.select()
+    with stale_icarus.execution().ordinary_group(handle, ("smoke",)) as group:
         # What a Pre-Sim Command editing the authored core would do.
-        with (project / "multi.core").open("a", encoding="utf-8") as stream:
+        with (stale_icarus.project / "multi.core").open("a", encoding="utf-8") as stream:
             stream.write("\n# mutation\n")
         with pytest.raises(
             SimulationBuildSlotError,
             match="compile inputs changed during setup or Pre-Sim Commands",
         ):
             group.compile()
-    assert not calls
+    assert _non_setup_commands(stale_icarus) == []
 
 
 def test_hook_editing_generated_isolated_core_cannot_launch_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    stale_icarus: _StaleIcarus,
 ) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    state = project / ".booley"
-    cores = state / "cores"
-    cores.mkdir()
-    (project / "multi.core").rename(cores / "multi.core")
-    (state / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    (state / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
-    calls: list[list[str]] = []
-    base_invoke = _subprocess_invoker(project)
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        calls.append(command)
-        return base_invoke(command, timeout=timeout)
-
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    with execution.ordinary_group(handle, ("smoke",)) as group:
-        # A real Pre-Sim Command, run as a campaign's legacy hook runs, edits the generated core.
+    _isolate_native_cores(stale_icarus.project, core="multi.core")
+    handle = stale_icarus.select()
+    with stale_icarus.execution().ordinary_group(handle, ("smoke",)) as group:
+        # A real Pre-Sim Command, run as a record's legacy hook runs, edits the generated core.
         evidence = run_pre_sim_commands(
             handle,
             test_names=("smoke",),
             build_root=group.build_root,
             eda_tool="icarus",
-            timeout_s=30,
+            timeout_s=hang_guard_s(),
             commands=(
                 "printf '\\n# mutation\\n' >> "
                 ".booley/tmp/fusesoc-isolated-cores/booley-isolated-multi.core",
@@ -2086,7 +1936,7 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
             SimulationBuildSlotError, match="compile inputs changed during Pre-Sim Commands"
         ):
             group.compile()
-    assert not calls
+    assert _non_setup_commands(stale_icarus) == []
 
 
 class _StopBeforeBuildError(Exception):
@@ -2108,7 +1958,9 @@ def _assert_live_and_preview_build_variant(
         mode=TraceMode.NATIVE_FST,
         cleanup=MagicMock(),
     )
-    execution._build_session = MagicMock(**{"new_generation.return_value": work_root})
+    session_class = MagicMock()
+    session_class.return_value.__exit__.return_value = False
+    session_class.return_value.__enter__.return_value.new_generation.return_value = work_root
     with (
         patch(
             "booley.flows.sim.execution.engine.preview_generation_root",
@@ -2129,29 +1981,25 @@ def _assert_live_and_preview_build_variant(
         patch(
             "booley.flows.sim.execution.engine.trace_overlay.validate_cocotb_trace_mode"
         ) as validate_trace,
-    ):
-        execution._prepare_build(handle)
-        execution._preview_group(handle, _inspection(cocotb=False), ("smoke",), False)
-
-    preview_root.assert_called_once_with(handle, expected)
-    assert prepare.call_args.kwargs["build_root"] == work_root
-    execution._build_session = None
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.SimulationBuildSession",
-            side_effect=_StopBeforeBuildError,
-        ) as session,
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
+        patch("booley.flows.sim.execution.engine.SimulationBuildSession", session_class),
+        patch(
+            "booley.flows.sim.execution.engine.prepare_simulation_work",
+            side_effect=_StopBeforeBuildError,
+        ),
         _compile_surface_patch(handle),
-        pytest.raises(_StopBeforeBuildError),
-        execution.ordinary_group(handle, ("smoke",)),
     ):
-        pass
-    session.assert_called_once_with(handle, expected)
+        execution.preview(handle, NamedTests(("smoke",)))
+        with pytest.raises(_StopBeforeBuildError), execution.ordinary_group(handle, ("smoke",)):
+            pass
+
+    preview_root.assert_called_once_with(handle, expected)
+    session_class.assert_called_once_with(handle, expected)
     assert prepare.call_args.kwargs["variant"] == expected
+    assert prepare.call_args.kwargs["build_root"] == work_root
     setup.assert_called_once_with(handle, build_root=work_root)
     assert write_overlay.call_count == int(trace)
     if trace:
@@ -2184,43 +2032,42 @@ def test_live_and_preview_use_the_same_build_variant(
     _assert_live_and_preview_build_variant(tmp_path, trace=trace, expected=expected)
 
 
-def test_legacy_selector_root_is_preserved_but_not_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project, _ = _write_stale_compiler_fixture(tmp_path)
-    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+def test_legacy_selector_root_is_preserved_but_not_used(stale_icarus: _StaleIcarus) -> None:
+    project = stale_icarus.project
+    handle = stale_icarus.select()
     legacy = work_root_for(project, "sim", handle.selector)
     legacy.mkdir(parents=True)
     sentinel = legacy / "old-image"
     sentinel.write_text("stale\n", encoding="utf-8")
 
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=5000)
-    )
-    assert run_prepared_group(execution, handle, ("smoke",)).passed
+    assert run_prepared_group(stale_icarus.execution(), handle, ("smoke",)).passed
     assert sentinel.read_text(encoding="utf-8") == "stale\n"
     assert tuple((simulation_build_slot(handle) / "g").iterdir())
+
+
+def _preview(handle: TargetHandle, selection: Any, inspection: Any = None) -> Any:
+    """Preview *selection* of *handle* through the public boundary."""
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=inspection or _inspection(cocotb=False),
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
+            return_value=["setup"],
+        ),
+    ):
+        return execution.preview(handle, selection)
 
 
 def test_doctor_bad_preview_uses_placeholder_without_filesystem_side_effects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-    handle = _handle(tmp_path)
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    work = _preview_work(
-        execution,
-        handle,
-        _inspection(cocotb=False),
-        (),
-        False,
-        ".booley/.runtime/edalize/sim/slot/g/<generation>/build",
-    )
+    preview = _preview(_handle(tmp_path), NamedTests(("smoke",)))
 
-    assert work.run_cwd == "<attempt>"
+    assert launched_work(preview.commands[0]).run_cwd == "<attempt>"
     assert not tuple(tmp_path.rglob(".booley-doctor-run-cwd-*"))
 
 
@@ -2238,19 +2085,8 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
             encoding="utf-8",
         )
 
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.TargetCatalog.build",
-            return_value=_inspection(cocotb=False),
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
-            return_value=["setup"],
-        ),
-    ):
-        current_preview = execution.preview(_handle(current), NamedTests(("now",)))
-        baseline_preview = execution.preview(_handle(baseline), NamedTests(("then",)))
+    current_preview = _preview(_handle(current), NamedTests(("now",)))
+    baseline_preview = _preview(_handle(baseline), NamedTests(("then",)))
 
     assert "test=now" in launched_work(current_preview.commands[0]).plusargs
     assert "case=0" in launched_work(baseline_preview.commands[0]).plusargs
@@ -2267,17 +2103,7 @@ def test_preview_is_a_runnable_chain(tmp_path: Path) -> None:
         (root / ".booley/tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
         inspection = _inspection(cocotb=False)
         inspection.eda_tool = adapter
-        execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-        with (
-            patch(
-                "booley.flows.sim.execution.engine.TargetCatalog.build", return_value=inspection
-            ),
-            patch(
-                "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
-                return_value=["setup"],
-            ),
-        ):
-            preview = execution.preview(_handle(root), NamedTests(("smoke",)))
+        preview = _preview(_handle(root), NamedTests(("smoke",)), inspection)
 
         shell, flag, script = preview.commands[0]
         assert (shell, flag) == ("sh", "-c")
@@ -2288,34 +2114,108 @@ def test_preview_is_a_runnable_chain(tmp_path: Path) -> None:
         assert [run.name for run in work.test_runs] == [run_name]
 
 
-@pytest.mark.parametrize("fresh, expected", [(True, "pass"), (False, "inconclusive")])
-def test_trace_evidence_must_be_fresh_for_this_attempt(
+@pytest.mark.parametrize(
+    ("config", "trace_rel", "preexisting", "invoker", "verdict", "captured", "reason"),
+    [
+        pytest.param("", "run/wave.fst", b"old", {}, "pass", True, None, id="fresh-replaces-old"),
+        pytest.param(
+            "", "run/wave.fst", b"old", {"fresh": False}, "inconclusive", False, None, id="stale"
+        ),
+        pytest.param(
+            "", "undeclared/wave.fst", None, {}, "inconclusive", None, None, id="undeclared-path"
+        ),
+        pytest.param(
+            'trace_files = ["../declared/*.fst"]\n',
+            "declared/wave.fst",
+            None,
+            {},
+            "pass",
+            None,
+            None,
+            id="declared-glob",
+        ),
+        pytest.param(
+            'trace_files = ["../declared/*.fst"]\n',
+            "declared/wave.fst",
+            None,
+            {"modified_ns": 1},
+            "pass",
+            True,
+            None,
+            id="declared-freshness-uses-pre-dispatch-identity",
+        ),
+        pytest.param(
+            "", "run/wave.fst", None, {"modified_ns": 1}, "pass", None, None, id="clock-skew"
+        ),
+        pytest.param(
+            'trace_files = ["../declared/*.fst"]\n',
+            "declared/wave.fst",
+            b"stale waveform",
+            {"fresh": False, "transport_modified_ns": 1},
+            "inconclusive",
+            False,
+            None,
+            id="unchanged-declared-is-stale",
+        ),
+        pytest.param(
+            "",
+            "run/forged.fst",
+            None,
+            {"report_trace": False},
+            "inconclusive",
+            False,
+            None,
+            id="stdout-cannot-forge-trace",
+        ),
+        pytest.param(
+            None,
+            "run/wave.fst",
+            None,
+            {"fresh": False},
+            "inconclusive",
+            None,
+            "[flows.sim].trace_files",
+            id="refused-route-names-trace-files",  # #884
+        ),
+    ],
+)
+def test_trace_evidence_is_authenticated_fresh_and_in_authority(
     tmp_path: Path,
-    fresh: bool,
-    expected: str,
+    config: str | None,
+    trace_rel: str,
+    preexisting: bytes | None,
+    invoker: dict[str, Any],
+    verdict: str,
+    captured: bool | None,
+    reason: str | None,
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
-    run_cwd = tmp_path / "run"
-    run_cwd.mkdir()
-    trace = run_cwd / "wave.fst"
-    trace.write_bytes(b"old")
+    if config is not None:
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley" / "booley.toml").write_text(
+            f'[flows.sim]\nrun_cwd = "run"\n{config}', encoding="utf-8"
+        )
+    (tmp_path / "run").mkdir()
+    trace = tmp_path / trace_rel
+    trace.parent.mkdir(exist_ok=True)
+    if preexisting is not None:
+        trace.write_bytes(preexisting)
     outcome = _run_execution(
         handle,
         prepared,
-        _passing_trace_invoker(handle, prepared, trace, fresh=fresh),
+        _passing_trace_invoker(handle, prepared, trace, **{"fresh": True, **invoker}),
         ("smoke",),
         cocotb=False,
         options=SimulationOptions(trace=True),
         trace_mode=TraceMode.NATIVE_FST,
     )
 
-    assert outcome.verdict == expected
-    traces = [artifact for artifact in outcome.artifacts if artifact.kind == "trace"]
-    assert bool(traces) is fresh
+    assert outcome.verdict == verdict
+    if captured is not None:
+        assert any(artifact.kind == "trace" for artifact in outcome.artifacts) is captured
+    if reason is not None:
+        assert reason in outcome.tests[0].reason
 
 
 _BACKEND_TRACE_HINT = (
@@ -2394,222 +2294,110 @@ def _run_owned_main(
     )
 
 
-def test_owned_main_dump_without_trace_files_is_inconclusive_with_candidates(
-    tmp_path: Path,
-) -> None:
-    """#884: an undeclared owned-main dump is inconclusive and names the remedy."""
-    outcome = _run_owned_main(tmp_path, ("run/sim.vcd",))
-
-    assert outcome.verdict == "inconclusive"
-    reason = outcome.tests[0].reason
-    assert "[flows.sim].trace_files" in reason
-    assert "listed, not adopted): sim.vcd" in reason
-
-
-def test_trace_candidates_list_undeclared_fst(tmp_path: Path) -> None:
-    """#2543: an undeclared fresh store is never adopted but is named for the user."""
-    outcome = _run_owned_main(tmp_path, ("run/extra.fst",))
-
-    assert outcome.verdict == "inconclusive"
-    assert "listed, not adopted): extra.fst" in outcome.tests[0].reason
-
-
-def test_unqueryable_trace_detail_survives_verbatim(tmp_path: Path) -> None:
-    detail = "trace requested but the retained waveform is not queryable: bad header"
-    outcome = _run_owned_main(tmp_path, ("run/sim.vcd",), detail=detail)
-
-    assert outcome.tests[0].reason.startswith(detail)
-
-
-def test_trace_candidates_exclude_stale_owned_and_other_attempt_files(tmp_path: Path) -> None:
-    outcome = _run_owned_main(
-        tmp_path,
-        (
-            "run/new.vcd",
-            "run/dump.vcd",
-            ".booley/.runtime/other/attempt.vcd",
-        ),
-        config='run_cwd = "."\n',
-        preexisting=("run/old.vcd",),
-    )
-
-    reason = outcome.tests[0].reason
-    assert reason.endswith("listed, not adopted): run/dump.vcd, run/new.vcd")
-    assert "old.vcd" not in reason
-    assert "attempt.vcd" not in reason
-
-
-def test_trace_candidates_ignore_relocated_runtime(tmp_path: Path) -> None:
-    outcome = _run_owned_main(
-        tmp_path,
-        ("run/new.vcd", "state/.runtime/other/attempt.vcd"),
-        booley_dir="state",
-    )
-
-    reason = outcome.tests[0].reason
-    # run_cwd = "run" is read from the relocated state/booley.toml, so the
-    # candidate is named relative to it.
-    assert reason.endswith("listed, not adopted): new.vcd")
-    assert "attempt.vcd" not in reason
-
-
-def test_trace_candidates_exclude_icarus_owned_dump(tmp_path: Path) -> None:
-    outcome = _run_owned_main(tmp_path, ("run/dump.vcd",))
-
-    assert "listed, not adopted" not in outcome.tests[0].reason
-
-
-def test_trace_candidates_are_capped(tmp_path: Path) -> None:
-    outcome = _run_owned_main(tmp_path, tuple(f"run/w{i}.vcd" for i in range(7)))
-
-    reason = outcome.tests[0].reason
-    assert "w0.vcd, w1.vcd, w2.vcd, w3.vcd, w4.vcd, +2 more" in reason
-    assert "w5.vcd" not in reason
-
-
-def test_no_fresh_waveform_makes_no_candidate_claim(tmp_path: Path) -> None:
-    outcome = _run_owned_main(tmp_path, ())
-
-    assert outcome.verdict == "inconclusive"
-    assert "listed, not adopted" not in outcome.tests[0].reason
-
-
-def test_refused_trace_route_names_trace_files(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    (tmp_path / "run").mkdir()
-    outcome = _run_execution(
-        handle,
-        prepared,
-        _passing_trace_invoker(handle, prepared, tmp_path / "run" / "wave.fst", fresh=False),
-        ("smoke",),
-        cocotb=False,
-        options=SimulationOptions(trace=True),
-        trace_mode=TraceMode.NATIVE_FST,
-    )
-
-    assert outcome.verdict == "inconclusive"
-    assert "[flows.sim].trace_files" in outcome.tests[0].reason
+_UNQUERYABLE = "trace requested but the retained waveform is not queryable: bad header"
 
 
 @pytest.mark.parametrize(
-    "trace_config, relative_path, expected",
+    ("writes", "options", "verdict", "prefix", "suffix", "present", "absent"),
     [
-        ("", "undeclared/wave.fst", "inconclusive"),
-        ('trace_files = ["../declared/*.fst"]\n', "declared/wave.fst", "pass"),
+        pytest.param(
+            ("run/sim.vcd",),
+            {},
+            "inconclusive",
+            None,
+            None,
+            ("[flows.sim].trace_files", "listed, not adopted): sim.vcd"),
+            (),
+            id="undeclared-dump-is-inconclusive-with-candidates",  # #884
+        ),
+        pytest.param(
+            ("run/extra.fst",),
+            {},
+            "inconclusive",
+            None,
+            None,
+            ("listed, not adopted): extra.fst",),
+            (),
+            id="undeclared-fst-is-named",  # #2543
+        ),
+        pytest.param(
+            ("run/sim.vcd",),
+            {"detail": _UNQUERYABLE},
+            None,
+            _UNQUERYABLE,
+            None,
+            (),
+            (),
+            id="unqueryable-detail-survives-verbatim",
+        ),
+        pytest.param(
+            ("run/new.vcd", "run/dump.vcd", ".booley/.runtime/other/attempt.vcd"),
+            {"config": 'run_cwd = "."\n', "preexisting": ("run/old.vcd",)},
+            None,
+            None,
+            "listed, not adopted): run/dump.vcd, run/new.vcd",
+            (),
+            ("old.vcd", "attempt.vcd"),
+            id="stale-owned-and-other-attempt-files-excluded",
+        ),
+        pytest.param(
+            ("run/new.vcd", "state/.runtime/other/attempt.vcd"),
+            {"booley_dir": "state"},
+            None,
+            None,
+            # run_cwd = "run" is read from the relocated state/booley.toml, so the
+            # candidate is named relative to it.
+            "listed, not adopted): new.vcd",
+            (),
+            ("attempt.vcd",),
+            id="relocated-runtime-ignored",
+        ),
+        pytest.param(
+            ("run/dump.vcd",), {}, None, None, None, (), ("listed, not adopted",), id="icarus-dump"
+        ),
+        pytest.param(
+            tuple(f"run/w{i}.vcd" for i in range(7)),
+            {},
+            None,
+            None,
+            None,
+            ("w0.vcd, w1.vcd, w2.vcd, w3.vcd, w4.vcd, +2 more",),
+            ("w5.vcd",),
+            id="candidates-capped",
+        ),
+        pytest.param(
+            (),
+            {},
+            "inconclusive",
+            None,
+            None,
+            (),
+            ("listed, not adopted",),
+            id="no-fresh-waveform",
+        ),
     ],
 )
-def test_trace_authority_is_limited_to_runtime_roots_and_declared_globs(
+def test_trace_candidates_of_an_owned_main_dump(
     tmp_path: Path,
-    trace_config: str,
-    relative_path: str,
-    expected: str,
+    writes: tuple[str, ...],
+    options: dict[str, Any],
+    verdict: str | None,
+    prefix: str | None,
+    suffix: str | None,
+    present: tuple[str, ...],
+    absent: tuple[str, ...],
 ) -> None:
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text(
-        f'[flows.sim]\nrun_cwd = "run"\n{trace_config}', encoding="utf-8"
-    )
-    (tmp_path / "run").mkdir()
-    trace = tmp_path / relative_path
-    trace.parent.mkdir()
-    outcome = _run_execution(
-        handle,
-        prepared,
-        _passing_trace_invoker(handle, prepared, trace, fresh=True),
-        ("smoke",),
-        cocotb=False,
-        options=SimulationOptions(trace=True),
-        trace_mode=TraceMode.NATIVE_FST,
-    )
+    outcome = _run_owned_main(tmp_path, writes, **options)
 
-    assert outcome.verdict == expected
-
-
-def test_declared_trace_freshness_uses_pre_dispatch_identity(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text(
-        '[flows.sim]\nrun_cwd = "run"\ntrace_files = ["../declared/*.fst"]\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "run").mkdir()
-    trace = tmp_path / "declared" / "wave.fst"
-    trace.parent.mkdir()
-
-    outcome = _run_execution(
-        handle,
-        prepared,
-        _passing_trace_invoker(handle, prepared, trace, fresh=True, modified_ns=1),
-        ("smoke",),
-        cocotb=False,
-        options=SimulationOptions(trace=True),
-        trace_mode=TraceMode.NATIVE_FST,
-    )
-
-    assert outcome.verdict == "pass"
-    assert any(artifact.kind == "trace" for artifact in outcome.artifacts)
-
-
-def test_new_runtime_trace_accepts_filesystem_clock_skew(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
-    run_cwd = tmp_path / "run"
-    run_cwd.mkdir()
-    trace = run_cwd / "wave.fst"
-
-    outcome = _run_execution(
-        handle,
-        prepared,
-        _passing_trace_invoker(handle, prepared, trace, fresh=True, modified_ns=1),
-        ("smoke",),
-        cocotb=False,
-        options=SimulationOptions(trace=True),
-        trace_mode=TraceMode.NATIVE_FST,
-    )
-
-    assert outcome.verdict == "pass"
-
-
-def test_unchanged_declared_trace_is_stale(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text(
-        '[flows.sim]\nrun_cwd = "run"\ntrace_files = ["../declared/*.fst"]\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "run").mkdir()
-    trace = tmp_path / "declared" / "wave.fst"
-    trace.parent.mkdir()
-    trace.write_bytes(b"stale waveform")
-
-    outcome = _run_execution(
-        handle,
-        prepared,
-        _passing_trace_invoker(
-            handle,
-            prepared,
-            trace,
-            fresh=False,
-            transport_modified_ns=1,
-        ),
-        ("smoke",),
-        cocotb=False,
-        options=SimulationOptions(trace=True),
-        trace_mode=TraceMode.NATIVE_FST,
-    )
-
-    assert outcome.verdict == "inconclusive"
-    assert all(artifact.kind != "trace" for artifact in outcome.artifacts)
+    reason = outcome.tests[0].reason
+    if verdict is not None:
+        assert outcome.verdict == verdict
+    if prefix is not None:
+        assert reason.startswith(prefix)
+    if suffix is not None:
+        assert reason.endswith(suffix)
+    assert all(fragment in reason for fragment in present)
+    assert not any(fragment in reason for fragment in absent)
 
 
 def test_stale_compatibility_siblings_do_not_cross_execution_boundary(
@@ -2626,8 +2414,8 @@ def test_stale_compatibility_siblings_do_not_cross_execution_boundary(
     for path in stale.values():
         path.write_text("stale", encoding="utf-8")
     (prepared.build_root / "result.json").write_text("stale", encoding="utf-8")
-    # The launched snapshot carries the stale copies; only a rewrite is current.
-    result = handle.project_root / "attempt" / "snapshot" / "result.json"
+    # The launched bundle carries the stale copies; only a rewrite is current.
+    result = handle.project_root / "attempt" / "bundle" / "result.json"
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
@@ -2654,6 +2442,50 @@ def test_stale_compatibility_siblings_do_not_cross_execution_boundary(
     kinds = {item.kind for item in outcome.artifacts}
     assert "result" in kinds
     assert kinds.isdisjoint(stale)
+
+
+@pytest.mark.parametrize(
+    ("cocotb", "name", "kind", "captured"),
+    [
+        pytest.param(True, "results.xml", "results_xml", True, id="cocotb-evidence-root"),
+        pytest.param(False, "result.json", "result", False, id="native-captures-none"),
+    ],
+)
+def test_bundle_launch_keeps_each_adapters_compatibility_evidence(
+    tmp_path: Path, cocotb: bool, name: str, kind: str, captured: bool
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=cocotb)
+    # A bundle launch never writes into the bundle: Cocotb writes its
+    # compatibility files to the attempt's evidence root, so that is where they
+    # are captured; a native adapter's files there are not compatibility evidence.
+    written = handle.project_root / "attempt" / "execution-evidence" / name
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        written.write_text("current", encoding="utf-8")
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+            adapter="cocotb" if cocotb else "icarus",
+        )
+        return SubprocessResult(
+            returncode=0,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=cocotb)
+
+    assert (kind in {item.kind for item in outcome.artifacts}) is captured
+    assert not (handle.project_root / "attempt" / "bundle" / name).exists()
 
 
 def test_unchanged_adapter_result_is_stale(tmp_path: Path) -> None:
@@ -2683,50 +2515,6 @@ def test_unchanged_adapter_result_is_stale(tmp_path: Path) -> None:
             ("smoke",),
             cocotb=False,
         )
-
-
-def test_stdout_cannot_forge_trace_without_authenticated_evidence(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
-    run_cwd = tmp_path / "run"
-    run_cwd.mkdir()
-    trace = run_cwd / "forged.fst"
-
-    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
-        del timeout
-        trace.write_bytes(b"fresh waveform")
-        _write_transport(
-            handle,
-            prepared,
-            ("smoke",),
-            AdapterResult(
-                True,
-                False,
-                0,
-                ("smoke",),
-                test_results=(AdapterTestResult("smoke", "pass"),),
-            ),
-        )
-        return SubprocessResult(
-            returncode=0,
-            stdout=f"BOOLEY_BUILD_STAGE token=abc123 rc=0\nTRACE_OK: {trace}\n",
-        )
-
-    outcome = _run_execution(
-        handle,
-        prepared,
-        invoke,
-        ("smoke",),
-        cocotb=False,
-        options=SimulationOptions(trace=True),
-        trace_mode=TraceMode.NATIVE_FST,
-    )
-
-    assert outcome.verdict == "inconclusive"
-    assert all(artifact.kind != "trace" for artifact in outcome.artifacts)
 
 
 def _traced_smoke_launch(handle: TargetHandle, trace: Path, stdout: str = "") -> SubprocessResult:
@@ -2764,7 +2552,7 @@ def test_traced_attempt_deadline_adds_conversion_budget(tmp_path: Path) -> None:
     commands: list[str] = []
     timeouts: list[int] = []
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         timeouts.append(timeout)
         commands.append(command[-1])
         return _traced_smoke_launch(handle, tmp_path / "first" / "wave.fst")
@@ -2814,7 +2602,7 @@ def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
     launches: list[str] = []
     launch_timeouts: list[int] = []
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         if "BOOLEY_BUILD_STAGE" in command[-1]:
             config.write_text(
                 "[flows.sim]\n"
@@ -2842,18 +2630,12 @@ def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
         canned_at="raw",
     )
 
-    snapshot = outcome.tests[0].workload_snapshot
-    assert snapshot is not None
     assert outcome.verdict == "pass"
     (work,) = (launched_work(command) for command in launches)
     assert work.trace_files == ("../first/*.fst",)
     assert (work.timeout_s, work.trace_convert_timeout_s) == (1, 7)
     # simulation timeout + conversion budget + the fixed 90 s margin
     assert launch_timeouts == [1 + 7 + 90]
-    assert snapshot["controls"]["pre_run_commands"] == ["old"]
-    assert snapshot["controls"]["cycle_sentinels"] == ["[OLD]"]
-    assert snapshot["inputs"][0]["present"] is True
-    assert snapshot["inputs"][0]["bytes"] == len(f"generated{os.linesep}".encode())
     assert outcome.tests[0].cycles == 17
 
 
@@ -2866,7 +2648,7 @@ def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
 )
 @pytest.mark.parametrize("observed", [False, True])
 @pytest.mark.parametrize("log_failure", [False, True])
-def test_ordinary_group_builds_before_launching_supplied_snapshot(
+def test_ordinary_group_builds_before_launching_supplied_bundle(
     tmp_path: Path,
     eda_tool: str,
     artifact_names: tuple[str, ...],
@@ -2883,19 +2665,20 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     artifacts = tuple(prepared.build_root / name for name in artifact_names)
     for artifact in artifacts:
         artifact.write_bytes(b"simulator image")
-    snapshot = tmp_path / "attempt" / "snapshot"
-    snapshot.mkdir(parents=True)
+    bundle = tmp_path / "attempt" / "bundle"
+    bundle.mkdir(parents=True)
+    evidence = tmp_path / "attempt" / "execution-evidence"
     for artifact in artifacts:
-        (snapshot / artifact.name).write_bytes(artifact.read_bytes())
+        (bundle / artifact.name).write_bytes(artifact.read_bytes())
     run_cwd = tmp_path / "run"
     run_cwd.mkdir()
     commands: list[list[str]] = []
     timeouts: list[int] = []
-    snapshot_invoke = _snapshot_invoke(commands, eda_tool, handle, snapshot)
+    bundle_invoke = _bundle_invoke(commands, eda_tool, handle, evidence)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         timeouts.append(timeout)
-        return snapshot_invoke(command, timeout=timeout)
+        return bundle_invoke(command, timeout=timeout)
 
     execution = SimulationExecution(
         invoke=invoke,
@@ -2906,7 +2689,7 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
-        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
+        patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
         patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
         patch.object(SimulationBuildSession, "authorize_fresh_image", return_value=artifacts),
@@ -2916,14 +2699,14 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
             assert build.passed
             assert group.artifact_paths == artifacts
             assert len(commands) == 1
-        sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "snapshot")
+        sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "bundle")
         with (
             install_progress(sink) if observed else nullcontext(),
             patch("booley.flows.run_log.begin_run_log", side_effect=OSError("full"))
             if log_failure
             else nullcontext(),
         ):
-            outcome = group.launch_snapshot(snapshot, run_cwd)
+            outcome = group.launch_bundle(bundle, evidence, run_cwd)
 
     assert outcome.passed
     if observed and log_failure:
@@ -2933,14 +2716,14 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     launch = commands[1][-1]
     work = launched_work(launch)
     assert work.adapter == eda_tool
-    assert Path(work.build_dir) == snapshot
+    assert Path(work.build_dir) == bundle
     assert Path(work.run_cwd) == run_cwd
-    assert Path(work.work_dir) == snapshot.parent / "execution-evidence"
+    assert Path(work.work_dir) == evidence
     assert str(prepared.build_root) not in repr(work)
 
 
-def _snapshot_invoke(commands, eda_tool, handle, snapshot):
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+def _bundle_invoke(commands, eda_tool, handle, evidence):
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         del timeout
         commands.append(command)
         if "BOOLEY_BUILD_STAGE" in command[-1]:
@@ -2950,7 +2733,7 @@ def _snapshot_invoke(commands, eda_tool, handle, snapshot):
             "abc123",
             handle.identity,
             ("smoke",),
-            snapshot.parent / "execution-evidence" / "adapter-abc123.json",
+            evidence / "adapter-abc123.json",
         )
         write_adapter_result(
             identity,
@@ -2967,7 +2750,7 @@ def _snapshot_invoke(commands, eda_tool, handle, snapshot):
     return invoke
 
 
-def test_ordinary_group_refuses_snapshot_launch_until_lease_released(
+def test_ordinary_group_refuses_bundle_launch_until_lease_released(
     tmp_path: Path,
 ) -> None:
     handle = _handle(tmp_path)
@@ -2978,36 +2761,30 @@ def test_ordinary_group_refuses_snapshot_launch_until_lease_released(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
-        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
+        patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
         execution.ordinary_group(handle, ("smoke",)) as group,
         pytest.raises(SimulationBuildSlotError, match="leave ordinary_group"),
     ):
-        group.launch_snapshot(tmp_path / "snapshot", tmp_path / "run")
-
-
-@pytest.mark.parametrize(
-    "output",
-    [
-        pytest.param("[SIM_CYCLES]", id="empty-payload"),
-        pytest.param("[SIM_CYCLES] smoke nope", id="non-digit-count"),
-        pytest.param("[SIM_CYCLES] nope", id="non-digit-unnamed"),
-        pytest.param("[SIM_CYCLES] smoke \u0661\u0662", id="non-ascii-digits"),
-        pytest.param("[SIM_CYCLES] smoke \u00b2", id="superscript-digit"),
-    ],
-)
-def test_cycle_count_malformed_records(output: str) -> None:
-    assert _cycle_observation(output, "smoke", ()) == ("malformed", None)
-
-
-def test_cycle_count_tries_sentinels_longest_first() -> None:
-    sentinels = ("CYCLES", "CYCLES TOTAL")
-    assert _cycle_observation("CYCLES TOTAL smoke 20", "smoke", sentinels) == ("observed", 20)
+        group.launch_bundle(tmp_path / "bundle", tmp_path / "evidence", tmp_path / "run")
 
 
 @pytest.mark.parametrize(
     ("output", "sentinels", "expected"),
     [
+        pytest.param("[SIM_CYCLES]", (), ("malformed", None), id="empty-payload"),
+        pytest.param("[SIM_CYCLES] smoke nope", (), ("malformed", None), id="non-digit-count"),
+        pytest.param("[SIM_CYCLES] nope", (), ("malformed", None), id="non-digit-unnamed"),
+        pytest.param(
+            "[SIM_CYCLES] smoke \u0661\u0662", (), ("malformed", None), id="non-ascii-digits"
+        ),
+        pytest.param("[SIM_CYCLES] smoke \u00b2", (), ("malformed", None), id="superscript-digit"),
+        pytest.param(
+            "CYCLES TOTAL smoke 20",
+            ("CYCLES", "CYCLES TOTAL"),
+            ("observed", 20),
+            id="longest-sentinel-first",
+        ),
         pytest.param(
             "log\n[SIM_CYCLES] stress 200\n[SIM_CYCLES]   smoke   42\nmore",
             (),
@@ -3053,29 +2830,65 @@ def test_cycle_count_tries_sentinels_longest_first() -> None:
             ("observed", 12),
             id="configured-multi-word-sentinel",
         ),
+        pytest.param(
+            "[SIM_CYCLES] smoke nope\n[SIM_CYCLES] 5",
+            (),
+            ("malformed", None),
+            id="bad-named-not-rescued",
+        ),
+        pytest.param(
+            "[SIM_CYCLES] stress 5\n[SIM_CYCLES] nope",
+            (),
+            ("malformed", None),
+            id="bad-unnamed-beats-other",
+        ),
+        pytest.param(
+            "[SIM_CYCLES]\n[SIM_CYCLES] stress 5",
+            (),
+            ("malformed", None),
+            id="empty-without-own-record",
+        ),
     ],
 )
-def test_cycle_count_well_formed_statuses(
-    output: str, sentinels: tuple[str, ...], expected: tuple[str, int | None]
+def test_cycle_count_records_are_classified_per_test(
+    tmp_path: Path,
+    output: str,
+    sentinels: tuple[str, ...],
+    expected: tuple[str, int | None],
 ) -> None:
-    assert _cycle_observation(output, "smoke", sentinels) == expected
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    if sentinels:
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley" / "booley.toml").write_text(
+            f"[flows.sim]\ncycle_sentinels = {json.dumps(list(sentinels))}\n",
+            encoding="utf-8",
+        )
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(handle, prepared, ("smoke",), _passing_result())
+        return SubprocessResult(
+            returncode=0, stdout=f"BOOLEY_BUILD_STAGE token=abc123 rc=0\n{output}"
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert (outcome.tests[0].cycle_status, outcome.tests[0].cycles) == expected
 
 
-def test_cycle_count_multi_word_test_name() -> None:
-    output = "[SIM_CYCLES]   pipeline smoke   42"
-    assert _cycle_observation(output, "pipeline smoke", ()) == ("observed", 42)
-
-
-@pytest.mark.parametrize(
-    "output",
-    [
-        pytest.param("[SIM_CYCLES] smoke nope\n[SIM_CYCLES] 5", id="bad-named-not-rescued"),
-        pytest.param("[SIM_CYCLES] stress 5\n[SIM_CYCLES] nope", id="bad-unnamed-beats-other"),
-        pytest.param("[SIM_CYCLES]\n[SIM_CYCLES] stress 5", id="empty-without-own-record"),
-    ],
-)
-def test_cycle_count_malformed_record_outranks_other_records(output: str) -> None:
-    assert _cycle_observation(output, "smoke", ()) == ("malformed", None)
+@contextmanager
+def _real_group(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """An ordinary group of the ``sim`` target of *project* built with the fake Icarus tools."""
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
+    )
+    with execution.ordinary_group(handle, ()) as group:
+        yield group
 
 
 @pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])
@@ -3100,13 +2913,7 @@ def test_real_copyto_prepared_source_entries(
             ", copyto: firmware.hex", "" if copyto is None else ", copyto: " + copyto
         )
     )
-    fake_bin = _write_fake_icarus_tools(tmp_path)
-    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
-    )
-    with execution.ordinary_group(handle, ()) as group:
+    with _real_group(project, tmp_path, monkeypatch) as group:
         entries = group.prepared_source_entries()
         data = next(entry for entry in entries if str(entry["path"]).endswith("firmware.hex"))
         assert data["source_path"] == "data/firmware.hex"
@@ -3136,6 +2943,8 @@ def test_real_copyto_prepared_source_entries(
 def test_copyto_source_association_requires_unique_full_destination_and_core(
     tmp_path, core, declarations, expected
 ):
+    # Private seam: the declaration map comes from FuseSoC's resolved core graph; only a
+    # stubbed map reaches the ambiguous and foreign-core cases without four real cores.
     from booley.flows.sim.execution.engine import _SourceDeclaration
 
     group = _prepared_group_with_sources(_handle(tmp_path))
@@ -3160,13 +2969,7 @@ def test_copyto_source_association_requires_unique_full_destination_and_core(
 def test_copyto_declaration_drift_refuses_publication(tmp_path, monkeypatch):
     project = tmp_path / "project"
     _write_runtime_input_project(project)
-    fake_bin = _write_fake_icarus_tools(tmp_path)
-    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
-    )
-    with execution.ordinary_group(handle, ()) as group:
+    with _real_group(project, tmp_path, monkeypatch) as group:
         core = project / "runtime_input.core"
         core.write_text(core.read_text().replace("copyto: firmware.hex", "copyto: changed.hex"))
         with pytest.raises(SimulationBuildSlotError, match="compile inputs changed"):
@@ -3177,6 +2980,8 @@ def test_copyto_declaration_drift_refuses_publication(tmp_path, monkeypatch):
     "source, expected", [("nested/../data.hex", "data.hex"), ("../outside.hex", None)]
 )
 def test_copyto_declared_path_lexical_confinement(tmp_path, source, expected):
+    # Private seam: FuseSoC refuses a `..` source path before staging, so no public
+    # request reaches this confinement check.
     from booley.flows.sim.execution.engine import _safe_declared_path
 
     if expected is None:
@@ -3205,13 +3010,7 @@ def test_prepared_source_entries_real_dependency_core_export_root(tmp_path, monk
     (dependency / "data.core").write_text(
         "CAPI=2:\nname: acme:lib:data:1\nfilesets:\n  data:\n    files: [inputs/firmware.hex]\n    file_type: user\ntargets:\n  default:\n    filesets: [data]\n"
     )
-    fake_bin = _write_fake_icarus_tools(tmp_path)
-    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
-    )
-    with execution.ordinary_group(handle, ()) as group:
+    with _real_group(project, tmp_path, monkeypatch) as group:
         data = next(
             entry
             for entry in group.prepared_source_entries()
@@ -3238,13 +3037,7 @@ def test_real_copyto_same_basename_uses_full_declared_paths(tmp_path, monkeypatc
             "      - other/firmware.hex: {file_type: user, copyto: second.hex}\ntargets:\n",
         )
     )
-    fake_bin = _write_fake_icarus_tools(tmp_path)
-    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
-    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
-    )
-    with execution.ordinary_group(handle, ()) as group:
+    with _real_group(project, tmp_path, monkeypatch) as group:
         entries = {entry["path"]: entry for entry in group.prepared_source_entries()}
         assert entries["first.hex"]["source_path"] == "data/firmware.hex"
         assert entries["second.hex"]["source_path"] == "other/firmware.hex"
@@ -3253,26 +3046,37 @@ def test_real_copyto_same_basename_uses_full_declared_paths(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("observed", [False, True])
 def test_retained_log_failure_keeps_build_slot_failure_boundary(tmp_path, observed):
-    from booley.flows.sim.build_session import SimulationBuildSlotError
-
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    session = MagicMock()
-    session.try_reuse.return_value = prepared
-    execution._build_session = session
+    retained_root = tmp_path / "retained"
+    retained_root.mkdir()
+    retained = replace(prepared, build_root=retained_root, work_root=retained_root)
+    invoke = MagicMock()
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
     sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "reuse")
+    real_begin = run_log.begin_run_log
+
+    def begin(root: Path, *args: Any, **kwargs: Any) -> Any:
+        if root == retained_root:
+            raise OSError("full")
+        return real_begin(root, *args, **kwargs)
+
     with (
         install_progress(sink) if observed else nullcontext(),
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
-        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
-        patch("booley.flows.run_log.begin_run_log", side_effect=OSError("full")),
+        patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
+        _compile_surface_patch(handle),
+        patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
+        patch.object(SimulationBuildSession, "reusable_key", return_value="key"),
+        patch.object(SimulationBuildSession, "try_reuse", return_value=retained),
+        patch.object(SimulationBuildSession, "discard_candidate") as discard,
+        patch("booley.flows.run_log.begin_run_log", side_effect=begin),
+        pytest.raises(SimulationBuildSlotError, match="cannot open retained generation log"),
+        execution.ordinary_group(handle, ()) as group,
     ):
-        attempt = execution._prepare_attempt(handle, ())
-        with pytest.raises(SimulationBuildSlotError, match="cannot open retained generation log"):
-            execution._select_generation_for_group(handle, attempt, {})
-    session.discard_candidate.assert_called_once_with(prepared.work_root)
-    execution._invoke.assert_not_called()
+        group.compile()
+    discard.assert_called_once_with(prepared.work_root)
+    invoke.assert_not_called()

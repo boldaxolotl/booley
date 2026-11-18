@@ -98,8 +98,7 @@ EXPERT_GUIDANCE = (
 )
 BASELINE_HELP = HelpOption(
     "baseline",
-    "When omitted, use the baseline pinned at Goal entry for relative criteria; "
-    "otherwise run without baseline comparison.",
+    "Git ref to compare against. When omitted, run without baseline comparison.",
 )
 PPA_HELP = HelpOption(
     "ppa_profile",
@@ -149,7 +148,6 @@ def shared_help(flow_name: str, *, target_required: bool) -> tuple[HelpGroup, ..
                     "work_dir", "When omitted, discover the Project from the current directory."
                 ),
                 HelpOption("target", target),
-                HelpOption("diagnostic", "Default: off."),
                 HelpOption("dry_run", "Default: off."),
                 HelpOption(
                     "timeout_ms",
@@ -199,6 +197,19 @@ def project_help(
             assert description, f"Missing human description for {action.dest}"
             action.help = f"{description.rstrip('.')}. {option.omission}"
     return parser
+
+
+def option_groups(
+    parser: argparse.ArgumentParser,
+) -> tuple[tuple[str, tuple[argparse.Action, ...]], ...]:
+    """Each help group's title and actions in display order, as ``--help`` lists them.
+
+    The read-only counterpart of :func:`project_help`: callers that need the
+    groups (a generated form) use this, not argparse's private group lists.
+    """
+    return tuple(
+        (group.title or "", tuple(group._group_actions)) for group in parser._action_groups
+    )
 
 
 def add_quiet(parser: argparse.ArgumentParser, *, human: bool) -> None:

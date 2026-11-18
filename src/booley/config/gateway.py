@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 GATEWAY_AUTH = "gateway"
+# The visitor's own credential under the CLI's own precedence, else the sponsored gateway.
+# Environment-only: never an ``[agent] auth`` value, and never read from ``booley.toml``.
+VISITOR_AUTH = "visitor"
 GATEWAY_URL_ENV = "BOOLEY_GATEWAY_URL"
 GATEWAY_TOKEN_ENV = "BOOLEY_GATEWAY_TOKEN"
 GATEWAY_TOKEN_COMMAND_ENV = "BOOLEY_GATEWAY_TOKEN_COMMAND"
@@ -126,7 +129,7 @@ GATEWAY_EFFORT_ENV = "BOOLEY_GATEWAY_EFFORT"
 # Every gateway setting: the set hidden from Claude sessions.
 GATEWAY_ENV_KEYS = (*GATEWAY_FORWARDED_ENV, GATEWAY_MODEL_ENV, GATEWAY_EFFORT_ENV)
 # Named variants of Codex's ``ReasoningEffort`` (``model_reasoning_effort``).
-# Source: codex-rs/protocol/src/openai_models.rs at tag rust-v0.160.0, the
+# Source: codex-rs/protocol/src/openai_models.rs at tag rust-v0.167.1, the
 # Codex release the Sandbox pins in ``data/docker/agent-clis-package.json``.
 # Codex also parses any other non-empty string as a model-defined custom
 # effort; Booley accepts only the named variants, because the value reaches a

@@ -27,6 +27,10 @@ from pathlib import Path
 
 import pytest
 from tests.docker.isolation.container_names import next_ci_container_name
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
+
+from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 
 _IMAGE = "booley-sandbox"
 
@@ -65,7 +69,9 @@ def _docker() -> str | None:
     return shutil.which("docker")
 
 
-def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: int = 300):
+def _run_in_sandbox(
+    args: list[str], mounts: list[str] | None = None, timeout: int = SUBPROCESS_TIMEOUT_S
+):
     docker = _docker()
     cmd = [docker, "run", "--rm"]
     container_name = next_ci_container_name()
@@ -74,18 +80,24 @@ def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: i
     for m in mounts or []:
         cmd += ["-v", m]
     cmd += [_IMAGE, *args]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    return run_bounded_child(cmd, timeout=timeout)
+
+
+# Image-probe bound per platform: Windows uses a short probe that skips when slow
+# (a deadline); POSIX only stops a hang around a legitimately slow docker call.
+_IMAGE_PROBE_TIMEOUT_S = {"nt": scaled(10), "posix": 2 * hang_guard_s()}
 
 
 def _require_verible_sandbox() -> None:
     if _docker() is None:
         pytest.skip("docker not available")
     try:
+        # Unbounded child: the test handles TimeoutExpired itself to skip on Windows
         probe = subprocess.run(
             [_docker(), "image", "inspect", _IMAGE],
             capture_output=True,
             text=True,
-            timeout=10 if os.name == "nt" else 60,
+            timeout=_IMAGE_PROBE_TIMEOUT_S["nt" if os.name == "nt" else "posix"],
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
@@ -94,7 +106,9 @@ def _require_verible_sandbox() -> None:
         pytest.skip(f"Sandbox Image probe unavailable: {error}")
     if probe.returncode != 0:
         pytest.skip(f"{_IMAGE} image not built")
-    have_bin = _run_in_sandbox(["sh", "-c", "command -v verible-verilog-lint"], timeout=120)
+    have_bin = _run_in_sandbox(
+        ["sh", "-c", "command -v verible-verilog-lint"], timeout=SUBPROCESS_TIMEOUT_S
+    )
     if have_bin.returncode != 0:
         pytest.skip(
             f"{_IMAGE} image predates Verible support (ADR 0033) — rebuild it "
@@ -102,7 +116,7 @@ def _require_verible_sandbox() -> None:
         )
     have_node = _run_in_sandbox(
         ["python3", "-c", "import edalize.tools.verible"],
-        timeout=120,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     if have_node.returncode != 0:
         pytest.skip(
@@ -125,19 +139,27 @@ def _write_fixture(root: Path, *, waived: bool) -> None:
     )
 
 
-def _lint_in_sandbox(project: Path):
+def _lint_in_sandbox(project: Path, target: str = "lint_style"):
     # The production image intentionally runs as UID 1000, while hosted CI
     # runners may own pytest's temporary directory with another UID. Grant the
     # image user access only to this disposable mount root so it can create its
     # FuseSoC work and report directories without changing the image identity.
-    project.chmod(project.stat().st_mode | stat.S_IRWXO)
+    # Scaffolded projects ship nested directories (`.booley/`) the flow writes
+    # runtime state into, so open every directory, not just the root.
+    # Directories an earlier sandbox run created belong to the image user, are
+    # already open to it, and the host user may not chmod them.
+    for directory in [project, *(d for d in project.rglob("*") if d.is_dir())]:
+        try:
+            directory.chmod(directory.stat().st_mode | stat.S_IRWXO)
+        except PermissionError:
+            continue
     return _run_in_sandbox(
         [
             "python3",
             "-m",
             "booley.flows.lint",
             "--target",
-            "lint_style",
+            target,
             "--work-dir",
             "/work",
             "--report-dir",
@@ -173,6 +195,42 @@ def test_verible_violation_warns_then_waiver_passes(tmp_path: Path) -> None:
     assert report["total_warnings"] == 0
 
 
+@pytest.mark.slow()
+def test_default_scaffold_lint_targets_pass_and_wall_reports_unused(tmp_path: Path) -> None:
+    choices = ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None, style_lint=True)
+    files = scaffold_files(choices)
+    _require_verible_sandbox()
+    project = tmp_path / "proj"
+    for rel, content in files.items():
+        path = project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.encode())
+
+    run = _lint_in_sandbox(project, "lint_my_ip,lint_my_ip_style")
+    combined = run.stdout + run.stderr
+    assert run.returncode == 0, f"expected PASS (exit 0), got {run.returncode}:\n{combined}"
+    report = json.loads((project / "rep" / "lint_report.json").read_text(encoding="utf-8"))
+    assert report["passed"] is True
+    assert report["eda_tools"] == {"lint_my_ip": "verilator", "lint_my_ip_style": "verible"}
+
+    # -Wall (only on the Verilator Target) reports a signal nothing uses.
+    rtl = project / "rtl" / "my_ip.sv"
+    source = rtl.read_bytes().decode()
+    assert "localparam logic [WIDTH-1:0] STEP = 1;\n" in source
+    rtl.write_bytes(
+        source.replace(
+            "localparam logic [WIDTH-1:0] STEP = 1;\n",
+            "localparam logic [WIDTH-1:0] STEP = 1;\n  logic spare_q;\n",
+        ).encode()
+    )
+    run = _lint_in_sandbox(project, "lint_my_ip,lint_my_ip_style")
+    combined = run.stdout + run.stderr
+    assert run.returncode == 1, f"expected WARN (exit 1), got {run.returncode}:\n{combined}"
+    report = json.loads((project / "rep" / "lint_report.json").read_text(encoding="utf-8"))
+    unused = [w for w in report["warnings"] if w["rule"] == "UNUSEDSIGNAL"]
+    assert [w["targets"] for w in unused] == [["lint_my_ip"]]
+
+
 def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPatch) -> None:
     """Parallel CI can identify and clean every nested Verible container."""
     commands: list[list[str]] = []
@@ -183,7 +241,7 @@ def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setenv("BOOLEY_DOCKER_NAME_PREFIX", "booley-ci-123-1-verible")
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(f"{__name__}.run_bounded_child", fake_run)
 
     _run_in_sandbox(["true"])
     _run_in_sandbox(["true"])
@@ -200,7 +258,7 @@ def test_unavailable_image_probe_respects_platform_requirement(monkeypatch, fail
 
     def fail_probe(command, **kwargs):
         assert command == ["docker", "image", "inspect", _IMAGE]
-        assert kwargs["timeout"] == (10 if platform == "nt" else 60)
+        assert kwargs["timeout"] == _IMAGE_PROBE_TIMEOUT_S[platform]
         if failure == "timeout":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         raise OSError("docker unavailable")

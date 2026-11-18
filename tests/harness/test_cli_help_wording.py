@@ -7,7 +7,6 @@ import copy
 import inspect
 import re
 import shlex
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.harness import booley as cli
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
+from tests.subprocess_budget import run_bounded_child
 
 # Internal vocabulary that must not leak into human help.
 BANNED = re.compile(r"\bADR \d+|\bMCP\b|\bendpoint|mode=elab_only", re.IGNORECASE)
@@ -41,28 +41,10 @@ EXPECTED_ENDPOINTS = {
     ("flow", "lint"),
     ("flow", "synth"),
     ("flow", "fpga"),
+    ("flow", "mutation"),
     ("specialist", "coverage_analyst"),
-    ("specialist", "mutation_tester"),
     ("specialist", "reviewer"),
 }
-
-
-# These exact recovery contracts intentionally name the protocol required by #1549.
-ALLOWED.update(
-    {
-        (
-            f"booley {kind} {name}",
-            "CLI runs never record Goal evidence; use Goal-bound MCP calls with work_dir.",
-        ): "Goal recording recovery must name the supported MCP call and work_dir"
-        for kind, name in EXPECTED_ENDPOINTS
-    }
-)
-ALLOWED[
-    (
-        "booley specialist coverage_analyst",
-        "Only Goal-bound MCP calls record proposed coverage waivers for your review.",
-    )
-] = "CLI coverage advice must not promise recording Goal waiver candidates"
 
 
 def _endpoints() -> dict[str, object]:
@@ -216,7 +198,7 @@ def _schema_text(command: str, parameter: str) -> str:
         ("booley flow sim", "test", "MCP: array", "repeat the flag for more"),
         ("booley specialist reviewer", "steer", "over MCP pass an array", "Repeat the flag"),
         (
-            "booley specialist mutation_tester",
+            "booley flow mutation",
             "target",
             "MCP accepts one Target selector string",
             "whose tests judge each mutation",
@@ -266,7 +248,7 @@ def test_extension_without_cli_wording_keeps_its_description() -> None:
 @pytest.mark.parametrize("command", sorted(ENDPOINTS))
 @pytest.mark.parametrize("inside", [False, True])
 @pytest.mark.parametrize("flag", ["-h", "--help"])
-@pytest.mark.parametrize("prefix", [[], ["--diagnostic"], ["--"]])
+@pytest.mark.parametrize("prefix", [[], ["--report-dir", "reports"], ["--"]])
 def test_help_from_the_booley_entry_point(
     command: str,
     inside: bool,
@@ -279,7 +261,7 @@ def test_help_from_the_booley_entry_point(
     """The wording reaches a person who types the command inside a Project."""
     for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", INVOCATION_ORIGIN_ENV):
         monkeypatch.delenv(name, raising=False)
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)

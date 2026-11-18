@@ -35,7 +35,9 @@ def _failure_reasons(metrics: FpgaMetrics) -> tuple[str, ...]:
     if not metrics.timing_met:
         reasons.append("timing constraints are not met")
     if metrics.has_critical:
-        reasons.append("critical structural conditions were detected")
+        reasons.append(
+            f"critical structural conditions were detected: {metrics.critical_summary()}"
+        )
     return tuple(reasons)
 
 
@@ -60,7 +62,11 @@ def _run(metrics: FpgaMetrics) -> ImplementationRun:
         conditions={
             "has_critical": metrics.has_critical,
             "latches": metrics.latches,
+            "expected_latches": metrics.expected_latches,
+            "unexpected_latches": metrics.unexpected_latches,
             "comb_loops": metrics.comb_loops,
+            "expected_comb_loops": metrics.expected_comb_loops,
+            "unexpected_comb_loops": metrics.unexpected_comb_loops,
             "multi_driven": metrics.multi_driven,
         },
         completion={

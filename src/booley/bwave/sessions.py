@@ -6,15 +6,17 @@ Owns the "persist/lookup registered traces and named markers on disk"
 responsibility, split out of ``cli.py`` (which keeps trace *discovery* and
 the CLI/flag-translation layer). Concretely this module holds:
 
-  - The on-disk session store (``SESSION_FILE``) and its load/save primitives.
+  - The on-disk session store (``SessionStore``) and its load/save primitives.
   - Trace registration under named aliases (``register`` subcommand).
   - Named markers CRUD for an alias (``markers`` subcommand).
 
 Consumers:
   - ``booley.bwave.cli`` re-exports these symbols for backward compatibility
     and calls a few of them from its CLI dispatch / marker-resolution code.
-  - ``tests/bwave/test_sessions.py`` imports SESSION_FILE, _load_sessions,
-    _save_sessions, _register_trace via the ``bwave`` facade.
+  - ``booley.flows.sim.bwave_registration`` calls ``register_trace`` to register
+    a traced simulation run's waveforms into the run's own checkout store.
+  - ``tests/bwave/test_sessions.py`` imports _load_sessions, _save_sessions,
+    register_trace via the ``bwave`` facade.
 
 Cross-module coupling is one-directional at import time: ``bwave`` imports this
 module eagerly; this module imports ``bwave`` only *lazily* (inside functions)
@@ -22,57 +24,109 @@ to reach names that stay in ``bwave`` — the CLI subcommand tables
 (``_V02_SUBCOMMANDS`` / ``_KNOWN_COMMANDS``) and the trace-discovery helpers
 (``find_trace`` / ``_trace_diagnostics``). That keeps both import orders clean.
 
-Session-file resolution note: tests exercise this store by patching
-``bwave.SESSION_FILE`` (the historical, public seam). To honor that seam after
-the move, every on-disk access resolves the live path via ``_session_file()``,
-which reads ``bwave.SESSION_FILE`` at call time rather than closing over this
-module's own global. In production the two are the same object (re-export).
+Store location (issue #3483): every checkout keeps its own sessions, so
+``@<target>`` and the default session are that checkout's latest traced run.
+The store is ``<Booley Directory>/.runtime/bwave/bwave_sessions.json`` of the
+checkout that registers or reads. Outside any Project (no Git checkout or
+initialized directory above the working directory, or a checkout with no
+Booley Directory of its own) it is ``<temporary directory>/bwave/``, resolved
+at call time and never creating a Booley Directory. A trace inside the checkout
+is recorded relative to it, so the checkout can move; any other trace is
+recorded as an absolute path.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.bwave.contract import decode_list_metadata
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.bwave.waveform_store import ExistingStorePolicy, convert_vcd, inspect_store
+from booley.core.booley_dir import resolve_authoritative_booley_dir
+from booley.core.booley_dir_pin import BooleyDirPinError
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.boundary import BoundaryError
+from booley.core.checkout_role import SourceCheckoutProjectError
+from booley.core.file_lock import release_file_lock, wait_for_file_lock
+from booley.core.host_shell import quote_arg
+from booley.runtime.atomic_files import keep_unreadable
+from booley.runtime.project_discovery import session_store_checkout
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
-
-
-def _bwave_cache_root() -> Path:
-    """Platform-safe temp directory for bwave cache files."""
-    import tempfile
-
-    return Path(tempfile.gettempdir()) / "bwave"
-
 
 # ---------------------------------------------------------------------------
 # Session file (named aliases)
 # ---------------------------------------------------------------------------
-SESSION_FILE = _bwave_cache_root() / "bwave_sessions.json"
 _DEFAULT_ALIAS = "_last"
+# Bounded wait for the registration lock: a held lock is another registration.
+_LOCK_TIMEOUT_S = 5
+# Failures that mean "this directory has no Booley Directory to keep sessions in".
+_NO_STORE_ERRORS = (SourceCheckoutProjectError, BooleyLayoutError, BooleyDirPinError, OSError)
 
 
-def _session_file() -> Path:
-    """Resolve the live session-file path, honoring a test monkeypatch.
+@dataclass(frozen=True)
+class SessionStore:
+    """One bwave session file and the checkout its in-checkout traces are relative to."""
 
-    Tests patch ``bwave.SESSION_FILE`` (the public seam), so read it back
-    through the ``bwave`` facade at call time. In production this is the same
-    object as this module's ``SESSION_FILE`` (re-exported), so behavior is
-    identical; the indirection exists purely to keep the patch seam working.
+    path: Path  # The session JSON; its lock is the sibling ``<name>.lock``.
+    checkout: Path | None  # Resolved checkout root; ``None`` for the temporary-directory store.
+
+    def record(self, trace: Path) -> str:
+        """The text to store for *trace*: relative to the checkout when inside it."""
+        resolved = trace.resolve()
+        if self.checkout is not None and resolved.is_relative_to(self.checkout):
+            return resolved.relative_to(self.checkout).as_posix()
+        return str(resolved)
+
+    def trace_path(self, recorded: str) -> Path:
+        """The absolute trace path for a stored entry (inverse of ``record``)."""
+        path = Path(recorded)
+        if path.is_absolute() or self.checkout is None:
+            return path
+        return self.checkout / path
+
+
+def _temporary_store() -> SessionStore:
+    """The store outside any Project, in the temporary directory current at call time."""
+    return SessionStore(Path(tempfile.gettempdir()) / "bwave" / "bwave_sessions.json", None)
+
+
+def session_store(checkout: Path | None) -> SessionStore:
+    """The store in *checkout*'s own Booley Directory, else the temporary-directory store.
+
+    Never creates a Booley Directory: a checkout without one of its own (a
+    hand-made worktree, or a Project reached only through ``BOOLEY_DIR``) shares
+    nothing with the Main Booley Directory and uses the temporary store.
     """
-    from booley.bwave import cli as bwave  # lazy: avoid an import cycle at load time
+    if checkout is None:
+        return _temporary_store()
+    try:
+        data = resolve_authoritative_booley_dir(checkout)
+        if not data.is_dir():
+            return _temporary_store()
+        root = checkout.resolve()
+    except _NO_STORE_ERRORS:
+        return _temporary_store()
+    return SessionStore(data / ".runtime" / "bwave" / "bwave_sessions.json", root)
 
-    return bwave.SESSION_FILE
+
+def current_session_store() -> SessionStore:
+    """The store of the Project checkout containing the working directory."""
+    try:
+        checkout = session_store_checkout(Path.cwd())
+    except _NO_STORE_ERRORS:
+        checkout = None
+    return session_store(checkout)
 
 
-def _load_sessions() -> dict:
-    """Load all sessions, return dict of alias -> entry."""
-    session_file = _session_file()
+def _load_sessions(store: SessionStore | None = None) -> dict:
+    """Load all sessions of *store* (default: the current checkout's), alias -> entry."""
+    session_file = (store or current_session_store()).path
     if not session_file.exists():
         return {}
     try:
@@ -81,36 +135,94 @@ def _load_sessions() -> dict:
         return {}
 
 
-def _save_sessions(data: dict) -> None:
-    """Write sessions file (creates tmp/ dir if needed).
+def _sessions_for_update(store: SessionStore) -> dict:
+    """Load the sessions a registration extends; an unreadable store is kept aside.
+
+    The caller holds the store lock. ``OSError`` other than a missing file
+    propagates, so nothing is written over a store that could not be read.
+    """
+    try:
+        data = json.loads(store.path.read_text())
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    kept = keep_unreadable(store.path)
+    print(
+        f"[bwave] WARNING: session file {store.path} was unreadable; kept it as {kept}",
+        file=sys.stderr,
+    )
+    return {}
+
+
+def _save_sessions(data: dict, store: SessionStore | None = None) -> bool:
+    """Publish the sessions file atomically (creates the directory if needed).
+
+    The document is written to a sibling temp file and renamed over the store,
+    so a concurrent reader sees the old or the new sessions, never a torn file
+    that ``_load_sessions`` would read as empty.
 
     Retries on PermissionError — Windows can transiently lock files when
-    another process or sandbox holds a handle.
+    another process or sandbox holds a handle. Returns False (after a warning
+    on stderr) when every attempt was refused; other OSErrors propagate.
     """
     import time as _time
 
-    session_file = _session_file()
+    session_file = (store or current_session_store()).path
     session_file.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(3):
-        try:
-            session_file.write_text(json.dumps(data, indent=2) + "\n")
-            return
-        except PermissionError:
-            if attempt < 2:
-                _time.sleep(0.1 * (attempt + 1))
-    # Non-critical — log and continue
+    pending = session_file.with_name(f"{session_file.name}.{os.getpid()}.tmp")
+    try:
+        for attempt in range(3):
+            try:
+                pending.write_text(json.dumps(data, indent=2) + "\n")
+                pending.replace(session_file)
+                return True
+            except PermissionError:
+                if attempt < 2:
+                    _time.sleep(0.1 * (attempt + 1))
+    finally:
+        pending.unlink(missing_ok=True)
+    # Non-critical for markers — warn and continue
     print(
         f"[bwave] WARNING: could not write session file {session_file} (PermissionError)",
         file=sys.stderr,
     )
+    return False
 
 
-def _register_trace(trace: Path, alias: str | None = None) -> str:
-    """Register a trace under an alias. Returns the alias used."""
-    sessions = _load_sessions()
+def register_trace(
+    trace: Path, alias: str | None = None, *, store: SessionStore | None = None
+) -> str:
+    """Register a trace under an alias and make it the default session.
+
+    Used by ``bwave register`` and by a traced ``booley flow sim`` run. The
+    load-modify-save runs under an exclusive lock on a sidecar file, so two
+    registrations finishing together cannot drop each other's aliases.
+
+    Returns the alias used. Raises ``OSError`` when the store cannot be locked
+    or written; the caller decides whether that matters. *store* defaults to the
+    current checkout's.
+    """
+    store = store or current_session_store()
+    session_file = store.path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = session_file.with_name(f"{session_file.name}.lock")
+    with lock_path.open("a+") as lock:
+        wait_for_file_lock(lock, timeout_s=_LOCK_TIMEOUT_S)
+        try:
+            return _register_trace_locked(trace, alias, store)
+        finally:
+            release_file_lock(lock)
+
+
+def _register_trace_locked(trace: Path, alias: str | None, store: SessionStore) -> str:
+    """Load-modify-save one registration; the caller holds the store lock."""
+    sessions = _sessions_for_update(store)
     alias = alias or _DEFAULT_ALIAS
     entry = {
-        "trace": str(trace.resolve()),
+        "trace": store.record(trace),
         "registered_at": utc_now_rfc3339(),
     }
     # Preserve existing markers
@@ -124,7 +236,8 @@ def _register_trace(trace: Path, alias: str | None = None) -> str:
             # Update _last trace but keep its own markers
             sessions[_DEFAULT_ALIAS]["trace"] = entry["trace"]
             sessions[_DEFAULT_ALIAS]["registered_at"] = entry["registered_at"]
-    _save_sessions(sessions)
+    if not _save_sessions(sessions, store):
+        raise OSError(f"could not write session file {store.path} (PermissionError)")
     return alias
 
 
@@ -162,6 +275,11 @@ def _trace_identity(trace: Path) -> str:
     except (OSError, subprocess.TimeoutExpired, SystemExit):
         return ""
     if result.returncode != 0:
+        # Surface why the probe failed (e.g. a truncated store's cause plus
+        # rebuild hint) instead of leaving only the generic warning below.
+        cause = result.stderr.strip().splitlines()[-1:] if result.stderr else []
+        if cause:
+            print(f"[bwave] WARNING: {cause[0]}", file=sys.stderr)
         return ""
     try:
         metadata = decode_list_metadata(result.stdout)
@@ -220,14 +338,15 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
     went wrong sends them at a command that just failed.
     """
     out = trace.with_suffix(".fst")
+    trace_arg, out_arg = quote_arg(str(trace)), quote_arg(str(out))
     if not build:
         _exit_usage(
             f"ERROR: {trace.name} is a raw VCD; the query engine needs a built "
             f".fst store, so registering it would bind an unqueryable alias.\n"
             f"Build one first, then register it:\n"
-            f"  bwave build {trace} -o {out}\n"
-            f"  bwave register {out} --as ALIAS\n"
-            f"Or let register do both: bwave register {trace} --as ALIAS --build" + diagnostics
+            f"  bwave build {trace_arg} -o {out_arg}\n"
+            f"  bwave register {out_arg} --as ALIAS\n"
+            f"Or let register do both: bwave register {trace_arg} --as ALIAS --build" + diagnostics
         )
     if out.exists():
         # --build writes unscoped (scope=None), so silently overwriting would
@@ -238,9 +357,9 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             f"ERROR: refusing to overwrite the existing {out} with --build "
             f"(it may have been built with a different --scope).\n"
             f"Register the store that is already there:\n"
-            f"  bwave register {out} --as ALIAS\n"
+            f"  bwave register {out_arg} --as ALIAS\n"
             f"Or rebuild it deliberately, then register:\n"
-            f"  bwave build {trace} -o {out}"
+            f"  bwave build {trace_arg} -o {out_arg}"
         )
     print(f"[bwave] building {out.name} from {trace.name} (--build) ...", file=sys.stderr)
     result = convert_vcd(trace, out, existing_store=ExistingStorePolicy.REFUSE)
@@ -251,7 +370,8 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             (trace.parent / "trace.fst.stderr").write_text(result.detail + "\n", encoding="utf-8")
         sys.exit(
             f"ERROR: could not build a queryable store from {trace}.\n"
-            f"Run `bwave build {trace} -o {out}` directly to see the failure." + diagnostics
+            f"Run `bwave build {trace_arg} -o {out_arg}` directly to see the failure."
+            + diagnostics
         )
     return out
 
@@ -283,10 +403,7 @@ def cmd_register(args: argparse.Namespace) -> None:
     elif target.is_dir():
         trace = bwave.find_trace(target)
         if not trace:
-            msg = f"ERROR: No trace file found in {target}"
-            msg += _headeronly_store_note(target)
-            msg += bwave._trace_diagnostics(target)
-            sys.exit(msg)
+            sys.exit(bwave._no_trace_found_message(target, _headeronly_store_note(target)))
         # Only read if the search lands on a raw VCD (below) — that means the
         # directory's own VCD→FST conversion failed, and the manifest says why.
         # A header-only .fst find_trace skipped is part of that story too:
@@ -306,7 +423,13 @@ def cmd_register(args: argparse.Namespace) -> None:
         # the raw VCD). Either way the alias must not be registered as-is.
         trace = _resolve_raw_vcd(trace, getattr(args, "build", False), diagnostics)
 
-    alias = _register_trace(trace, args.alias)
+    try:
+        alias = register_trace(trace, args.alias)
+    except OSError as exc:
+        # Keep the historical contract: a store that cannot be written warns
+        # and the command still reports the trace it found.
+        print(f"[bwave] WARNING: {exc}", file=sys.stderr)
+        alias = args.alias or _DEFAULT_ALIAS
     print(f"@{alias} -> {trace}")
     # Identity + age, so binding the wrong design (or a trace from a sim you
     # already superseded) is visible in the register output instead of being
@@ -367,7 +490,7 @@ def _get_markers(sessions: dict, alias: str) -> dict:
     return sessions.get(alias, {}).get("markers", {})
 
 
-def _marker_set(sessions: dict, alias: str, extra: list[str]) -> None:
+def _marker_set(sessions: dict, alias: str, extra: list[str], store: SessionStore) -> None:
     if len(extra) < 3:
         sys.exit(
             "ERROR: markers set requires NAME and CYCLE\n  bwave markers [@alias] set NAME CYCLE"
@@ -398,7 +521,7 @@ def _marker_set(sessions: dict, alias: str, extra: list[str]) -> None:
     if "markers" not in sessions[alias]:
         sessions[alias]["markers"] = {}
     sessions[alias]["markers"][name] = cycle
-    _save_sessions(sessions)
+    _save_sessions(sessions, store)
     print(f"@{alias}: {name} = {cycle}")
 
 
@@ -413,7 +536,7 @@ def _marker_list(sessions: dict, alias: str) -> None:
         print(f"  {name:<20} {cycle}")
 
 
-def _marker_delete(sessions: dict, alias: str, extra: list[str]) -> None:
+def _marker_delete(sessions: dict, alias: str, extra: list[str], store: SessionStore) -> None:
     if len(extra) < 2:
         sys.exit("ERROR: markers delete requires NAME")
     name = extra[1]
@@ -421,13 +544,14 @@ def _marker_delete(sessions: dict, alias: str, extra: list[str]) -> None:
     if name not in markers:
         sys.exit(f"ERROR: marker '{name}' not found in @{alias}")
     del markers[name]
-    _save_sessions(sessions)
+    _save_sessions(sessions, store)
     print(f"@{alias}: deleted marker '{name}'")
 
 
 def cmd_markers(args: argparse.Namespace) -> None:
     """Manage named markers for a trace alias."""
-    sessions = _load_sessions()
+    store = current_session_store()
+    sessions = _load_sessions(store)
 
     alias = _DEFAULT_ALIAS
     extra = list(args.extra)
@@ -438,7 +562,7 @@ def cmd_markers(args: argparse.Namespace) -> None:
         sys.exit(
             f"ERROR: No registered alias '@{alias}'.\n"
             f"Register a trace first: bwave register SIM_DIR --as {alias}\n"
-            f"Or list known aliases by reading: {_session_file()}"
+            f"Or list known aliases by reading: {store.path}"
         )
 
     if not extra:
@@ -451,9 +575,9 @@ def cmd_markers(args: argparse.Namespace) -> None:
 
     action = extra[0].lower()
     dispatch = {
-        "set": lambda: _marker_set(sessions, alias, extra),
+        "set": lambda: _marker_set(sessions, alias, extra, store),
         "list": lambda: _marker_list(sessions, alias),
-        "delete": lambda: _marker_delete(sessions, alias, extra),
+        "delete": lambda: _marker_delete(sessions, alias, extra, store),
     }
     if action not in dispatch:
         sys.exit(f"ERROR: unknown markers action '{action}'. Use: set, list, delete")

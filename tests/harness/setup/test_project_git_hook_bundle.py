@@ -17,6 +17,8 @@ from booley.harness.setup.project_git_hook_bundle import (
     BUNDLE_NAME,
     build_project_git_hook_bundle,
 )
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 
 def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
@@ -39,6 +41,7 @@ def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
             "booley_commit_validation.py",
             "checkout_role.py",
             "run_command.py",
+            "host_shell.py",
             "commit_msg_utils.py",
             "validate_commit_msg.py",
             "commit_msg_hook.py",
@@ -46,21 +49,34 @@ def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
         }
 
 
-def test_lf_and_crlf_canonical_sources_build_identical_bundles(
+@pytest.fixture
+def source_copy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    expected = build_project_git_hook_bundle().content
+) -> tuple[Path, tuple[tuple[str, Path], ...]]:
+    """Copy the canonical sources under `tmp_path` and point the build at the copy."""
+    # Private seam: the canonical sources are the installed package files; only
+    # `_source_package_root` points the build at a copy.
     root = bundle_module._source_package_root()
-    for label, newline in (("lf", b"\n"), ("crlf", b"\r\n"), ("cr", b"\r")):
-        copy = tmp_path / label
-        for _name, relative in bundle_module._SOURCE_INVENTORY:
-            source = root / relative
-            (copy / relative).parent.mkdir(parents=True, exist_ok=True)
-            lines = source.read_bytes().replace(b"\r\n", b"\n").split(b"\n")
-            (copy / relative).write_bytes(newline.join(lines))
-        monkeypatch.setattr(bundle_module, "_source_package_root", lambda copy=copy: copy)
+    inventory = bundle_module._SOURCE_INVENTORY
+    copy = tmp_path / "sources"
+    for _name, relative in inventory:
+        (copy / relative).parent.mkdir(parents=True, exist_ok=True)
+        (copy / relative).write_bytes((root / relative).read_bytes())
+    monkeypatch.setattr(bundle_module, "_source_package_root", lambda: copy)
+    return copy, inventory
 
-        assert build_project_git_hook_bundle().content == expected, label
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"], ids=["lf", "crlf", "cr"])
+def test_lf_and_crlf_canonical_sources_build_identical_bundles(
+    source_copy: tuple[Path, tuple[tuple[str, Path], ...]], newline: bytes
+) -> None:
+    copy, inventory = source_copy
+    expected = build_project_git_hook_bundle().content
+    for _name, relative in inventory:
+        lines = (copy / relative).read_bytes().replace(b"\r\n", b"\n").split(b"\n")
+        (copy / relative).write_bytes(newline.join(lines))
+
+    assert build_project_git_hook_bundle().content == expected
 
 
 def test_bundle_runs_without_ambient_booley_package(tmp_path: Path) -> None:
@@ -80,14 +96,8 @@ def test_bundle_runs_without_ambient_booley_package(tmp_path: Path) -> None:
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(fake)
-    result = subprocess.run(
-        ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)],
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    result = run_bounded_child(
+        ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)], cwd=project, env=env
     )
 
     assert result.returncode == 0, result.stderr
@@ -99,34 +109,20 @@ def test_launcher_rejects_missing_or_unknown_commands(tmp_path: Path, argv: list
     bundle = tmp_path / BUNDLE_NAME
     bundle.write_bytes(build_project_git_hook_bundle().content)
 
-    result = subprocess.run(
-        ["python3", "-I", "-S", str(bundle), *argv],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = run_bounded_child(["python3", "-I", "-S", str(bundle), *argv])
 
     assert result.returncode == 2
     assert "project-git-hooks.pyz" in result.stderr
     assert "expected commit-msg or pre-push" in result.stderr
 
 
-def test_missing_canonical_source_aborts_build(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(bundle_module, "_source_package_root", lambda: tmp_path)
-
-    with pytest.raises(FileNotFoundError, match="canonical hook source"):
-        build_project_git_hook_bundle()
-
-
 def test_unreadable_canonical_source_aborts_build(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    source_copy: tuple[Path, tuple[tuple[str, Path], ...]],
 ) -> None:
     """A source path that cannot be read as a file gets the same clear error."""
-    (tmp_path / bundle_module._SOURCE_INVENTORY[0][1]).mkdir(parents=True)
-    monkeypatch.setattr(bundle_module, "_source_package_root", lambda: tmp_path)
+    copy, inventory = source_copy
+    (copy / inventory[0][1]).unlink()
+    (copy / inventory[0][1]).mkdir()
 
     with pytest.raises(FileNotFoundError, match="canonical hook source"):
         build_project_git_hook_bundle()
@@ -182,19 +178,15 @@ def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(
 
 
 def _bundled_git(project: Path, env: dict[str, str], *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(project), *args],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
+    return run_bounded_child(
+        ["git", "-C", str(project), *args], env=env, check=True
     ).stdout.strip()
 
 
 def _bundled_push(
     project: Path, bundle: Path, destination: Path, env: dict[str, str], sha: str
 ) -> subprocess.CompletedProcess[str]:
+    # Kept on subprocess.run: needs stdin data (pre-push ref line)
     return subprocess.run(
         [sys.executable, "-I", "-S", str(bundle), "pre-push", "destination", str(destination)],
         input=f"refs/heads/main {sha} refs/heads/main {'0' * 40}\n",
@@ -203,7 +195,7 @@ def _bundled_push(
         capture_output=True,
         text=True,
         check=False,
-        timeout=30,
+        timeout=hang_guard_s(),
     )
 
 
@@ -216,9 +208,7 @@ def _bundled_hook_environment(minimum):
             if env.get("BOOLEY_TEST_REQUIRE_MIN_GIT") == "1":
                 pytest.fail("required minimum Git bundle executable absent")
             pytest.skip("optional bundled minimum Git execution needs BOOLEY_TEST_MIN_GIT")
-        version = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, check=True, timeout=10
-        )
+        version = run_bounded_child([executable, "--version"], check=True)
         assert re.fullmatch(r"git version 2\.37\.2(?:\.windows\.\d+)?", version.stdout.strip())
         env["PATH"] = str(Path(executable).resolve().parent) + os.pathsep + env["PATH"]
     return env
@@ -228,34 +218,26 @@ def test_bundle_identifier_tiers_refresh_from_current_config(tmp_path):
     project = tmp_path / "project"
     directory = project / ".booley"
     directory.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(project)], check=True, timeout=30)
+    run_bounded_child(["git", "init", "-q", str(project)], check=True)
     bundle = directory / BUNDLE_NAME
-    first = build_project_git_hook_bundle()
-    bundle.write_bytes(first.content)
-    assert first.content == build_project_git_hook_bundle().content
+    bundle.write_bytes(build_project_git_hook_bundle().content)
     config = directory / "booley.toml"
     message = project / "message.txt"
-    for setting, expected in (
-        (
-            'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]',
-            "fix: redacted_config redactedRunner myredactedfile axi_redacted reagent precursor\n",
-        ),
-        (
-            "banned_words = []\nbanned_substrings = []",
-            "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n",
-        ),
+    original = "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n"
+    for setting, rejected in (
+        ('banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]', True),
+        ("banned_words = []\nbanned_substrings = []", False),
     ):
         config.write_text("[stealth]\nenabled = true\n" + setting + "\n")
-        message.write_text(
-            "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n"
+        message.write_text(original)
+        result = run_bounded_child(
+            ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)], cwd=project
         )
-        result = subprocess.run(
-            ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)],
-            cwd=project,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert message.read_text() == expected
+        # The hook never rewrites the message, accepted or rejected.
+        assert message.read_text() == original
+        if rejected:
+            assert result.returncode == 1
+            for term in ("booley", "agent", "quokka"):
+                assert f"'{term}' in the subject" in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr

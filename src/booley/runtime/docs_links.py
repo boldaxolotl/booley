@@ -7,9 +7,9 @@ contributor docs from ``docs/internals/`` (:data:`CONTRIBUTOR_DOCS`).
 
 Agent-facing text (skills, the cheatsheet, generated config comments) cannot
 assume a repository checkout. It cites the docs the Sandbox ships at
-``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and sync live
-in ``booley.dev_support.reference_docs``) and names any other doc only with the
-``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
+``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and renderer live
+in ``booley.runtime.packaged_docs``; the build renders them, ``booley.runtime.build_stamp``)
+and names any other doc only with the ``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
 enforces this.
 
 Standard library only: ``website/hooks/user_docs.py`` loads this file by path
@@ -56,24 +56,31 @@ USER_DOCS = (
     UserDoc("INSTALL.md", "install", "Install", "Get started"),
     UserDoc("SETUP.md", "setup", "Setup", "Get started"),
     UserDoc("USAGE.md", "usage", "Usage", "Get started"),
-    UserDoc("GOAL-MODE.md", "goal-mode", "Goal Mode", "Get started"),
+    UserDoc(
+        "METRIC-DRIVEN-DEVELOPMENT.md",
+        "metric-driven-development",
+        "Metric-Driven Development",
+        "Get started",
+    ),
     UserDoc("FLOW_REFERENCE.md", "flow-reference", "Running Flows", "Flows & Specialists"),
     UserDoc("FLOW-SIM.md", "flow-sim", "Simulation", "Flows & Specialists"),
     UserDoc("COVERAGE.md", "coverage", "Coverage", "Flows & Specialists", parent="FLOW-SIM.md"),
     UserDoc("FLOW-LINT.md", "flow-lint", "Lint", "Flows & Specialists"),
     UserDoc("FLOW-SYNTH.md", "flow-synth", "ASIC synthesis", "Flows & Specialists"),
     UserDoc("FLOW-FPGA.md", "flow-fpga", "FPGA implementation", "Flows & Specialists"),
+    UserDoc("FLOW-MUTATION.md", "flow-mutation", "Mutation testing", "Flows & Specialists"),
     UserDoc("SPECIALISTS.md", "specialists", "Specialists", "Flows & Specialists"),
+    UserDoc("REVIEWER.md", "reviewer", "Reviewer", "Flows & Specialists", parent="SPECIALISTS.md"),
     UserDoc("CONFIG.md", "config", "Config", "Reference"),
-    UserDoc("TESTS.md", "tests", "tests.toml", "Reference"),
     UserDoc("TARGETS.md", "targets", "Targets", "Reference"),
+    UserDoc("TESTS.md", "tests", "tests.toml", "Reference"),
     UserDoc("SANDBOX.md", "sandbox", "Sandbox", "Reference"),
     UserDoc("STEALTH.md", "stealth", "Stealth Mode", "Reference"),
+    UserDoc("WORKTREES.md", "worktrees", "Worktrees", "Reference"),
     UserDoc("CLI-REFERENCE.md", "cli-reference", "CLI reference", "Reference"),
     UserDoc("SUPPORTED-EDA-TOOLS.md", "supported-eda-tools", "Supported EDA tools", "Reference"),
     UserDoc("DOCTOR.md", "doctor", "Doctor", "Help"),
     UserDoc("TROUBLESHOOTING.md", "troubleshooting", "Troubleshooting", "Help"),
-    UserDoc("WINDOWS.md", "windows", "Windows", "Help"),
 )
 # Contributor docs the site also publishes, after the user docs. They stay in
 # docs/internals/ for contributors and agents, and Booley never prints links

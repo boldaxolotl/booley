@@ -63,6 +63,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         # Checkout: versioned with the RTL.
         "booley.toml": _VERSIONED,
         "tests.toml": _VERSIONED,
+        "metrics.toml": _VERSIONED,
         "criteria.toml": _VERSIONED,
         "doctor-waivers.toml": _VERSIONED,
         "configs.toml": _VERSIONED,
@@ -100,11 +101,16 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         ".runtime/syn/": _SOURCE_TIED,
         ".runtime/simulation-run-locks/": _SOURCE_TIED,
         ".runtime/flow-console/": _SOURCE_TIED,
+        ".runtime/mutation/": _SOURCE_TIED,
+        # The retired Specialist's scratch tree: the next mutation run deletes it, but an
+        # upgraded checkout may still hold one, and a Snapshot must classify it.
         ".runtime/mutation_tester/": _SOURCE_TIED,
         ".runtime/flow-reports/": _SOURCE_TIED,
         ".runtime/mcp-tool-reports/": _SOURCE_TIED,
         ".runtime/display.jsonl": _SOURCE_TIED,
         ".runtime/prompts/": _SOURCE_TIED,
+        # bwave's session store: its sessions name this checkout's traces (#3483).
+        ".runtime/bwave/": _SOURCE_TIED,
         "tmp/fusesoc-isolated-cores/": _SOURCE_TIED,
         # Common: ADR rows.
         "goals/": _COMMON,
@@ -119,6 +125,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/upgrade_review.json": _COMMON,
         ".runtime/compiler-cache/": _COMMON,
         "result-cache/": _COMMON,
+        "measurements/": _COMMON,
         "worktrees/": _COMMON,
         ".baseline-wt-*/": _COMMON,
         "directory-layout.lock": _COMMON,

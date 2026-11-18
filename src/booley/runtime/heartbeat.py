@@ -100,7 +100,7 @@ class Heartbeat:
         self._render = render
         self._interval = interval
         self._status_fn = status_fn
-        self._start: float | None = None
+        self._start: float = monotonic()  # reset by start()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 

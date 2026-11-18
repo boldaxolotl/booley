@@ -26,14 +26,13 @@ def test_tb_scope_classifies_mixed_hdl_and_cocotb_files() -> None:
     assert contract.has_hdl
 
 
-def test_tb_scope_rejects_unknown_file_kinds() -> None:
-    with pytest.raises(ReviewContractError, match="Unsupported TB source kind"):
-        resolve_review_scope(["tb/vectors.json"], category="tb")
-
-
-def test_rtl_scope_rejects_python() -> None:
-    with pytest.raises(ReviewContractError, match="Unsupported RTL source kind"):
-        resolve_review_scope(["rtl/model.py"], category="rtl")
+@pytest.mark.parametrize(
+    "path, category, kind",
+    [("tb/vectors.json", "tb", "TB"), ("rtl/model.py", "rtl", "RTL")],
+)
+def test_scope_rejects_unsupported_file_kinds(path: str, category: str, kind: str) -> None:
+    with pytest.raises(ReviewContractError, match=f"Unsupported {kind} source kind"):
+        resolve_review_scope([path], category=category)
 
 
 def test_scope_is_required() -> None:
@@ -59,7 +58,7 @@ def test_rtl_cpp_refusal_lists_interactive_supported_kinds():
     with pytest.raises(ReviewContractError) as caught:
         resolve_review_scope(["rtl/source.cpp"], category="rtl")
     assert ".svh" in str(caught.value)
-    assert "CLI-REFERENCE" in str(caught.value)
+    assert "REVIEWER.md" in str(caught.value)
 
 
 def test_goal_arbitrary_support_is_not_cpp():

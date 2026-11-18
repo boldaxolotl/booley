@@ -10,11 +10,6 @@
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
-      },
       "dry_run": {
         "type": "boolean",
         "default": false,
@@ -22,8 +17,8 @@
       },
       "timeout_ms": {
         "type": "integer",
-        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
-        "minimum": 1
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
       },
       "scope": {
         "type": "string",
@@ -44,11 +39,6 @@
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets. For sim resume, the manifest owns selection."
       },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
-      },
       "dry_run": {
         "type": "boolean",
         "default": false,
@@ -62,12 +52,12 @@
       "coverage": {
         "type": "boolean",
         "default": false,
-        "description": "Collect a native Verilator Coverage Campaign for each selected Target"
+        "description": "Collect a native Verilator Coverage Record for each selected Target"
       },
       "no_waivers": {
         "type": "boolean",
         "default": false,
-        "description": "With --coverage, report raw coverage without applying approved waivers; with a Coverage Criterion also requires --diagnostic"
+        "description": "With --coverage, report raw coverage without applying approved waivers"
       },
       "mode": {
         "type": "string",
@@ -106,12 +96,12 @@
       },
       "resume_from": {
         "type": "string",
-        "description": "Resume one exact Simulation Campaign manifest.json"
+        "description": "Resume one exact Simulation Record manifest.json"
       },
       "verbose": {
         "type": "boolean",
         "default": false,
-        "description": "Include full Simulation Campaign resume mismatch pointers and values"
+        "description": "Include full Simulation Record resume mismatch pointers and values"
       },
       "trace": {
         "type": "boolean",
@@ -146,11 +136,6 @@
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
-      },
       "dry_run": {
         "type": "boolean",
         "default": false,
@@ -158,8 +143,8 @@
       },
       "timeout_ms": {
         "type": "integer",
-        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
-        "minimum": 1
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
       },
       "baseline": {
         "type": "string",
@@ -177,7 +162,7 @@
         ],
         "description": "RTL frontend: 'sv2v' (transpile + read_verilog) or 'slang' (native Yosys read_slang, requires the Yosys>=0.67 sandbox image). Overrides the selected Target's flow_options.frontend (default sv2v)."
       },
-      "fresh_openroad": {
+      "no_cache": {
         "type": "boolean",
         "default": false,
         "description": "Run OpenROAD even when its inputs match the last run of this Target, and replace the stored OpenROAD result."
@@ -254,11 +239,6 @@
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
-      },
       "dry_run": {
         "type": "boolean",
         "default": false,
@@ -266,8 +246,8 @@
       },
       "timeout_ms": {
         "type": "integer",
-        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
-        "minimum": 1
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
       },
       "baseline": {
         "type": "string",
@@ -288,6 +268,50 @@
         "description": "Override the Target's portable FPGA optimization profile for this call"
       }
     },
+    "additionalProperties": false
+  },
+  "mutation": {
+    "type": "object",
+    "properties": {
+      "work_dir": {
+        "type": "string",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace."
+      },
+      "target": {
+        "type": "string",
+        "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resolve and validate the requested work without executing EDA tools"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
+      },
+      "scope": {
+        "type": "string",
+        "description": "Comma-separated RTL files eligible for mutation (default: the Target's own RTL, without testbench, vendored and generated files)"
+      },
+      "count": {
+        "type": "string",
+        "description": "Number of Mutants: a positive integer or 'auto' (default: 10)"
+      },
+      "min_detected": {
+        "type": "integer",
+        "description": "Pass threshold: minimum Mutants that must be detected (default: ceil(0.8 x --count); some survivors may be equivalent Mutants). Raise it to demand more, lower it to accept less."
+      },
+      "seed": {
+        "type": "integer",
+        "description": "Non-negative integer that selects the Mutants (default: 0). The same RTL, --count and --seed give the same Mutants.",
+        "default": 0
+      }
+    },
+    "required": [
+      "target"
+    ],
     "additionalProperties": false
   }
 }

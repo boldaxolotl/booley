@@ -1,6 +1,13 @@
 """Explicit creation records preserve authored configuration and reject conflicts."""
 
-from booley.harness.setup import project_origin
+import argparse
+import subprocess
+
+from booley.harness import init_cmd
+from booley.harness.setup import directory_migration, project_origin, scaffold
+from booley.harness.setup.common import InitContext
+from booley.harness.setup.plan import InitPreconditionError
+from booley.runtime import issuance_invalidation
 
 
 def test_origin_never_infers_legacy_headers(tmp_path):
@@ -14,11 +21,6 @@ def test_origin_never_infers_legacy_headers(tmp_path):
 
 
 def test_scaffold_check_and_interrupted_apply_publish_no_origin(tmp_path, monkeypatch):
-    import argparse
-
-    from booley.harness.setup import scaffold
-    from booley.harness.setup.common import InitContext
-
     args = argparse.Namespace(
         scaffold="starter",
         sim_eda_tool="verilator",
@@ -30,27 +32,28 @@ def test_scaffold_check_and_interrupted_apply_publish_no_origin(tmp_path, monkey
     check = InitContext(project_root=tmp_path, check_only=True, interactive=False)
     assert scaffold.step_scaffold(check, args)
     assert list(tmp_path.iterdir()) == []
-    monkeypatch.setattr(scaffold, "_apply_scaffold_files", lambda *_a: False)
-    assert not scaffold.step_scaffold(InitContext(project_root=tmp_path, interactive=False), args)
+
+    # A filesystem change between the plan and its application raises this.
+    def changed(*_args, **_kwargs):
+        raise InitPreconditionError("changed")
+
+    monkeypatch.setattr(scaffold, "apply_init_plan", changed)
+    interrupted = InitContext(project_root=tmp_path, interactive=False)
+    assert not scaffold.step_scaffold(interrupted, args)
+    assert interrupted.results[-1].detail == "filesystem precondition changed"
     assert project_origin.read_project_origin(tmp_path / ".booley/booley.toml") is None
 
 
 def test_early_check_recovery_and_migration_verdicts(tmp_path, monkeypatch, capsys):
-    import argparse
-
-    from booley.harness import init_cmd
-    from booley.runtime import session_refresh
-
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     for recovery, migration in ((True, None), (False, object()), (True, object())):
+        monkeypatch.setattr(directory_migration, "inspect_migration", lambda _root, m=migration: m)
         monkeypatch.setattr(
-            session_refresh,
+            issuance_invalidation,
             "shared_recovery_blocks_command",
             lambda current=recovery, **_k: current,
         )
-        assert (
-            init_cmd._check_init_only(argparse.Namespace(check_only=True), tmp_path, migration)
-            == 2
-        )
+        assert init_cmd.run_init(argparse.Namespace(check_only=True), tmp_path) == 2
         final = capsys.readouterr().out.splitlines()[-1]
         assert "Checked initialization: failed" in final
         if recovery:

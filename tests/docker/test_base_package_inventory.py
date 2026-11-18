@@ -2,12 +2,12 @@
 
 import json
 import runpy
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _HELPER = Path(__file__).parents[2] / "src/booley/data/docker/base_package_inventory.py"
 inventory = SimpleNamespace(**runpy.run_path(str(_HELPER)))
@@ -51,8 +51,8 @@ def test_validate_rejects_missing_fields_or_bad_json(text: str) -> None:
 def test_validate_cli_exit_status(tmp_path: Path) -> None:
     path = tmp_path / "inventory.json"
     command = [sys.executable, "-I", str(_HELPER), "validate", str(path)]
-    missing = subprocess.run(command, capture_output=True, check=False, timeout=60)
+    missing = run_bounded_child(command, timeout=SUBPROCESS_TIMEOUT_S)
     path.write_text(_build("bash\t5.2\tamd64\tinstalled"), encoding="utf-8")
 
     assert missing.returncode == 1
-    assert subprocess.run(command, capture_output=True, check=False, timeout=60).returncode == 0
+    assert run_bounded_child(command, timeout=SUBPROCESS_TIMEOUT_S).returncode == 0

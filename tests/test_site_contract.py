@@ -1,11 +1,8 @@
-"""Project site wording contracts, and the facts it must share with the README.
+"""Project site contracts: links, colours, contrast and the generated illustration.
 
-The site (website/docs/) and the README share the feature list word for word
-and the pinned PicoRV32 demo revision; the home page's quick start repeats the
-Install guide's install commands.
-These tests fail when either copy drifts from the other, when a README link
-points at a site section or page that no longer exists, or when the generated
-home-page illustration is stale.
+These tests fail when a README link points at a site section or page that no
+longer exists, when a site colour escapes the theme tokens or fails WCAG AA
+contrast, or when the generated home-page illustration is stale.
 """
 
 import html
@@ -19,109 +16,7 @@ from tests.docs.test_links import _destination_failure, _repository_path
 ROOT = Path(__file__).resolve().parent.parent
 WEBSITE = ROOT / "website"
 SITE = (WEBSITE / "docs/index.md").read_text(encoding="utf-8")
-DEMOS = (WEBSITE / "docs/demos.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-INSTALL_GUIDE = (ROOT / "docs/user/INSTALL.md").read_text(encoding="utf-8")
-
-
-def _plain(markup: str) -> str:
-    """Return the visible text of HTML or inline Markdown, whitespace-normalized."""
-    text = html.unescape(re.sub(r"<[^>]+>", "", markup))
-    text = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", text)  # Markdown link -> its text
-    text = text.replace("**", "").replace("`", "")
-    for typographic, plain in (("\u2019", "'"), ("\u201c", '"'), ("\u201d", '"')):
-        text = text.replace(typographic, plain)
-    return " ".join(text.split())
-
-
-def _site_section(section_id: str) -> str:
-    """Return the markup of one numbered home-page section, heading excluded."""
-    start = re.search(rf'<h2 class="sec" id="{section_id}">.*?</h2>', SITE)
-    assert start, f"home page has no section #{section_id}"
-    end = SITE.find('<h2 class="sec"', start.end())
-    return SITE[start.end() : end if end != -1 else len(SITE)]
-
-
-def _readme_feature_cards() -> list[tuple[str, list[str]]]:
-    """Return each README "What it does" card as (title, paragraphs), images skipped."""
-    section = README.split("## What it does\n", 1)[1].split("\n## ", 1)[0]
-    cards = []
-    for card in section.split("\n### ")[1:]:
-        title, body = card.split("\n", 1)
-        blocks = [block.strip() for block in body.split("\n\n")]
-        cards.append((_plain(title), [_plain(b) for b in blocks if b and not b.startswith("<")]))
-    return cards
-
-
-def _site_feature_cards() -> list[tuple[str, list[str]]]:
-    """Return each home-page feature card as (title, paragraphs)."""
-    cards = re.findall(
-        r'<div class="feat__txt">\s*<h3>(.*?)</h3>(.*?)</div>', _site_section("features"), re.S
-    )
-    return [
-        (_plain(title), [_plain(p) for p in re.findall(r"<p>(.*?)</p>", body, re.S)])
-        for title, body in cards
-    ]
-
-
-def test_features_match_the_readme_word_for_word():
-    """One canonical feature list: the README's "What it does" cards are the site's Features."""
-    site_cards = _site_feature_cards()
-
-    assert len(site_cards) == 3
-    assert all(len(paragraphs) == 3 for _, paragraphs in site_cards)
-    assert _readme_feature_cards() == site_cards
-
-
-def _illustration_build():
-    """Load website/illustration/build.py, which the site toolchain runs as a script."""
-    spec = importlib.util.spec_from_file_location(
-        "site_illustration", WEBSITE / "illustration/build.py"
-    )
-    assert spec and spec.loader
-    build = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(build)
-    return build
-
-
-def test_every_feature_card_shows_its_diagram_on_the_site_and_in_the_readme():
-    """The home page inlines each diagram; the README shows its light and dark copies."""
-    features = _site_section("features")
-    readme_section = README.split("## What it does\n", 1)[1].split("\n## ", 1)[0]
-    diagrams = _illustration_build().FEATURE_DIAGRAMS
-    assert len(diagrams) == len(_site_feature_cards())
-    for name in diagrams:
-        assert f'--8<-- "{name}.svg"' in features
-        assert f'srcset="{SITE_URL}docs/assets/{name}-dark.svg"' in readme_section
-        assert f'src="{SITE_URL}docs/assets/{name}-light.svg"' in readme_section
-
-
-def test_quick_start_commands_match_the_install_guide_block():
-    guide_block = INSTALL_GUIDE.split("<!-- booley-smoke:install -->", 1)[1].split(
-        "<!-- /booley-smoke:install -->", 1
-    )[0]
-    guide_commands = re.findall(r"^(?!```)(\S.*)$", guide_block, flags=re.MULTILINE)
-    site_commands = re.findall(
-        r'<span class="p">\$ </span>([^<\n]+)', _site_section("description")
-    )
-
-    assert site_commands == guide_commands == ["pipx install booley-rtl", "booley bootstrap"]
-
-
-def test_description_is_the_readme_intro_paragraph():
-    # The intro paragraph opens with the product's ADE positioning sentence.
-    intro_opener = "Booley is an agentic development environment"
-    readme_intro = intro_opener + README.split(intro_opener, 1)[1].split("\n\n", 1)[0]
-    site_description = _plain(_site_section("description"))
-
-    assert site_description.startswith(_plain(readme_intro))
-
-
-def test_demo_clone_link_follows_the_demo_default_branch():
-    # Visitors clone the demo's latest default branch, like the Codespaces button;
-    # a commit-pinned link goes stale as the demo moves on.
-    assert "https://github.com/boldaxolotl/booley-prj-picorv32#readme" in DEMOS
-    assert "booley-prj-picorv32/blob/" not in DEMOS
 
 
 def test_readme_links_resolve_to_site_sections_and_pages():
@@ -150,11 +45,19 @@ def test_readme_links_resolve_to_site_sections_and_pages():
 
 def test_generated_illustration_is_up_to_date():
     """ide.css, ide-figure.html, and the architecture and Features diagrams match their sources."""
-    build = _illustration_build()
+    spec = importlib.util.spec_from_file_location(
+        "site_illustration", WEBSITE / "illustration/build.py"
+    )
+    assert spec and spec.loader
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
 
     assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
     assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
     assert build.ARCHITECTURE_OUT.read_text(encoding="utf-8") == build.architecture_svg()
+    assert build.ARCHITECTURE_DARK_OUT.read_text(encoding="utf-8") == build.architecture_svg(
+        dark=True
+    )
     for name in build.FEATURE_DIAGRAMS:
         for theme in build.THEME_RULES:
             generated = build.feature_out(name, theme).read_text(encoding="utf-8")
@@ -221,14 +124,6 @@ def test_dark_theme_overrides_every_light_colour():
     assert {name for name in dark if name.startswith("--")} == light_colours
 
 
-def test_light_is_the_default_theme():
-    """Dark applies only when the reader picks it, never from the OS preference."""
-    shell = (WEBSITE / "overrides/base.html").read_text(encoding="utf-8")
-    styles = "".join(path.read_text(encoding="utf-8") for path in STYLESHEETS.glob("*.css"))
-
-    assert "prefers-color-scheme" not in shell + styles
-
-
 def _luminance(hex_colour: str) -> float:
     channels = [int(hex_colour.lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
     linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
@@ -292,7 +187,7 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
 
     landing = (WEBSITE / "docs/docs/index.md").read_text(encoding="utf-8")
     body = landing.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
-    rows = re.findall(r"<tr>(.*?)</tr>", body)
+    rows = re.findall(r"<tr>(.*?)</tr>", body, re.DOTALL)
     sections: list[tuple[str, int]] = []
     pages = []
     for row in rows:
@@ -357,3 +252,15 @@ def test_demo_page_keeps_the_gateway_bring_your_own_key_anchor():
     """The demo gateway's notice and errors link to booley.dev/demo#bring-your-own-key."""
     page = (WEBSITE / "docs/demo.md").read_text(encoding="utf-8")
     assert 'id="bring-your-own-key"' in page
+
+
+def test_goal_mode_url_redirects_to_the_metric_driven_development_guide():
+    """The retired /docs/goal-mode/ URL still resolves: a static page sends readers to the guide."""
+    from booley.runtime.docs_links import SITE_DOCS, docs_url
+
+    redirect = (WEBSITE / "docs/docs/goal-mode/index.html").read_text(encoding="utf-8")
+    assert '<meta http-equiv="refresh" content="0; url=../metric-driven-development/">' in redirect
+    canonical = docs_url("METRIC-DRIVEN-DEVELOPMENT.md")
+    assert f'<link rel="canonical" href="{canonical}">' in redirect
+    assert "metric-driven-development" in {doc.slug for doc in SITE_DOCS}
+    assert "goal-mode" not in {doc.slug for doc in SITE_DOCS}

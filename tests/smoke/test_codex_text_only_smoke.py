@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.core.models import AgentCallParams
 from booley.runtime.text_only_agent import _GATEWAY_BASE_INSTRUCTIONS, prepare_codex_text_only
@@ -108,7 +109,7 @@ def test_pinned_codex_request_contains_no_tools(tmp_path, container_bypass):
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout=hang_guard_s())
 
 
 def test_pinned_codex_accepts_gateway_seeded_catalog(tmp_path):
@@ -129,13 +130,21 @@ def test_pinned_codex_accepts_gateway_seeded_catalog(tmp_path):
         assert len(requests) == 1
         assert not requests[0].get("tools")
         # The seeded entry's instructions and the configured effort reach the request.
-        assert requests[0]["instructions"] == _GATEWAY_BASE_INSTRUCTIONS
+        # Codex 0.167 sends the catalog base instructions as the first input item, a
+        # developer message, not in the Responses `instructions` field.
+        assert "instructions" not in requests[0]
+        first_item = requests[0]["input"][0]
+        assert first_item["type"] == "message"
+        assert first_item["role"] == "developer"
+        assert first_item["content"] == [
+            {"type": "input_text", "text": _GATEWAY_BASE_INSTRUCTIONS}
+        ]
         assert requests[0]["reasoning"]["effort"] == "low"
         assert '"type":"turn.completed"' in result.stdout
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout=hang_guard_s())
 
 
 def _run_probe(
@@ -181,15 +190,16 @@ def _run_probe(
             "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
         }
     command, environment = prepare_codex_text_only(
-        [*command, "-"], params, environment, auth_mode="gateway" if gateway else "auto"
+        [*command, "-"], params, environment, auth_mode="gateway" if gateway else "subscription"
     )
+    # Unbounded child: the child needs stdin data (input=)
     return subprocess.run(
         command,
         input=params.prompt,
         text=True,
         capture_output=True,
         env=environment,
-        timeout=45,
+        timeout=2 * hang_guard_s(),
         cwd=work,
         check=False,
     )

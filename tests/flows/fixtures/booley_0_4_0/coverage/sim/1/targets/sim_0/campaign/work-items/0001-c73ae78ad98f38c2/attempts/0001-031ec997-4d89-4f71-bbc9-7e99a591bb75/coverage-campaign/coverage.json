@@ -1,0 +1,262 @@
+{
+  "$schema": "booley.coverage-campaign/v5",
+  "artifacts": [
+    {
+      "bytes": 83,
+      "id": "artifact:raw:001",
+      "kind": "raw_native",
+      "owner_run": "run:001:reset@1",
+      "path": "native/raw/001-reset@1.dat",
+      "sha256": "sha256:b1b31feca273d7466435d82df857c25e9f6588c0c2eae8ebd280160577a4874c",
+      "state": "fresh_queryable"
+    },
+    {
+      "bytes": 83,
+      "id": "artifact:raw:002",
+      "kind": "raw_native",
+      "owner_run": "run:002:wrap@1",
+      "path": "native/raw/002-wrap@1.dat",
+      "sha256": "sha256:b1b31feca273d7466435d82df857c25e9f6588c0c2eae8ebd280160577a4874c",
+      "state": "fresh_queryable"
+    },
+    {
+      "bytes": 83,
+      "id": "artifact:merged",
+      "kind": "merged_native",
+      "path": "native/merged/coverage.dat",
+      "sha256": "sha256:2562acbe1df3b3f8bde94af76eb1747159462ed06a5976327b97479d94591133",
+      "state": "fresh_queryable"
+    }
+  ],
+  "build": {
+    "coverage": true,
+    "instrumentation": [
+      "--coverage-line",
+      "--coverage-toggle",
+      "--coverage-expr",
+      "--coverage-user",
+      "--coverage-per-instance"
+    ],
+    "recipe_fingerprint": "sha256:32e58f2c17bc017e98c96a5dfde30059349c4aa6c7f048bf1ec7fe032fbc233d",
+    "trace": false,
+    "verilator": {
+      "commit": "ea338be98e1e838d3518809ce8899f85a009963c",
+      "tag": "v5.052"
+    }
+  },
+  "campaign_id": "campaign:2026-11-12T22:28:27Z:1:acme:demo:counter:1#sim_0",
+  "collection": {
+    "diagnostics": [],
+    "merge": {
+      "artifact": "artifact:merged",
+      "status": "equivalent"
+    },
+    "status": "complete"
+  },
+  "collector": {
+    "capabilities": [
+      {
+        "collection": "supported",
+        "native_record_type": "branch",
+        "record_class": "branch",
+        "scoring": "scored_v1",
+        "status": "absent"
+      },
+      {
+        "collection": "supported",
+        "native_record_type": "covergroup",
+        "record_class": "covergroup",
+        "scoring": "unscored",
+        "status": "absent"
+      },
+      {
+        "collection": "supported",
+        "native_record_type": "expr",
+        "record_class": "expression",
+        "scoring": "scored_v1",
+        "status": "absent"
+      },
+      {
+        "collection": "supported",
+        "native_record_type": "fsm",
+        "record_class": "fsm",
+        "scoring": "unscored",
+        "status": "absent"
+      },
+      {
+        "collection": "supported",
+        "native_record_type": "line",
+        "record_class": "line",
+        "scoring": "scored_v1",
+        "status": "reported"
+      },
+      {
+        "collection": "supported",
+        "native_record_type": "toggle",
+        "record_class": "toggle",
+        "scoring": "scored_v1",
+        "status": "absent"
+      },
+      {
+        "collection": "supported",
+        "native_record_type": "user",
+        "record_class": "cover_property",
+        "scoring": "scored_v1",
+        "status": "absent"
+      }
+    ],
+    "kind": "verilator",
+    "native_format": {
+      "compatibility": "compatible",
+      "name": "verilator-coverage"
+    },
+    "version": {
+      "commit": "ea338be98e1e838d3518809ce8899f85a009963c",
+      "tag": "v5.052"
+    }
+  },
+  "coverage_window": {
+    "hook_evidence_artifacts": [],
+    "mode": "whole_run"
+  },
+  "evaluation": {
+    "criterion_fingerprint": null,
+    "diagnostics": [],
+    "metrics": [],
+    "status": "not_requested",
+    "suite": {
+      "status": "not_evaluated"
+    },
+    "thresholds": {}
+  },
+  "findings": [],
+  "fingerprints": {
+    "instrumented_build": "sha256:550918311042f899e04314c6b7c71a10758312c5410e34db9377863831aff30d",
+    "rtl_sources": "sha256:99c03d81e393ec1385394532e0f31f91f3ca889a6653de37717d60b255b044a9",
+    "target_definition": "sha256:4517cd4054226f56be2d41ad60c8d756c7fc25a1bfbf29b8459475d3d6dd0299",
+    "test_declarations": "sha256:1b79482655cffa3f7869b0520f5c03e73f139d0593d11e005e2a480551175767",
+    "testbench_sources": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  },
+  "invocation": {
+    "id": 1,
+    "started_at": "2026-11-12T22:28:27Z"
+  },
+  "normalization": {
+    "status": "complete",
+    "unrecognized_records": []
+  },
+  "point_store": {
+    "$schema": "booley.coverage-points/v1",
+    "bytes": 641,
+    "encoding": "jsonl+gzip",
+    "path": "coverage-points.jsonl.gz",
+    "point_count": 1,
+    "sha256": "sha256:32a519c8df4ed3e87ae2f8e26e1d7291dd393eb75c0d7bcefb718902229abf92",
+    "uncompressed_bytes": 1066
+  },
+  "rollups": [
+    {
+      "covered_points": 1,
+      "eligible_points": 1,
+      "metric": "line",
+      "percent": 100.0,
+      "semantics": "One Verilator basic-block point; covered when its count is greater than zero.",
+      "total_points": 1,
+      "waived_points": 0
+    }
+  ],
+  "scoring": {
+    "reason": null,
+    "status": "valid"
+  },
+  "source_closure": {
+    "rtl": [
+      {
+        "path": "rtl/counter.sv",
+        "sha256": "sha256:bc3ff1435b5f77923d2dc27891f85bce29bacdfd0fd9107dea0066141ecb736e"
+      }
+    ],
+    "testbench": []
+  },
+  "source_rollups": [
+    {
+      "rollups": [
+        {
+          "covered_points": 1,
+          "eligible_points": 1,
+          "metric": "line",
+          "percent": 100.0,
+          "semantics": "One Verilator basic-block point; covered when its count is greater than zero.",
+          "total_points": 1,
+          "waived_points": 0
+        },
+        {
+          "covered_points": 0,
+          "eligible_points": 0,
+          "metric": "branch",
+          "percent": null,
+          "semantics": "One branch outcome; each outcome is a separate point covered when count is greater than zero.",
+          "total_points": 0,
+          "waived_points": 0
+        },
+        {
+          "covered_points": 0,
+          "eligible_points": 0,
+          "metric": "expression",
+          "percent": null,
+          "semantics": "One collector-reported expression outcome; each outcome is a separate point covered when count is greater than zero.",
+          "total_points": 0,
+          "waived_points": 0
+        },
+        {
+          "covered_points": 0,
+          "eligible_points": 0,
+          "metric": "toggle",
+          "percent": null,
+          "semantics": "One direction for one signal bit; 0_to_1 and 1_to_0 are separate points.",
+          "total_points": 0,
+          "waived_points": 0
+        }
+      ],
+      "source": "rtl/counter.sv"
+    }
+  ],
+  "target": {
+    "identity": "acme:demo:counter:1#sim_0",
+    "selector": "sim_0"
+  },
+  "tests": {
+    "declared": [
+      "reset",
+      "wrap"
+    ],
+    "runs": [
+      {
+        "collection": "included",
+        "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+        "id": "run:001:reset@1",
+        "raw_artifact": "artifact:raw:001",
+        "seed": 1,
+        "simulation_verdict": "pass",
+        "test": "reset",
+        "test_run": "reset@1",
+        "variant": null
+      },
+      {
+        "collection": "included",
+        "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+        "id": "run:002:wrap@1",
+        "raw_artifact": "artifact:raw:002",
+        "seed": 1,
+        "simulation_verdict": "pass",
+        "test": "wrap",
+        "test_run": "wrap@1",
+        "variant": null
+      }
+    ],
+    "selected": [
+      "reset",
+      "wrap"
+    ]
+  }
+}

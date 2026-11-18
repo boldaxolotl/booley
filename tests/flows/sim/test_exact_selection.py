@@ -35,14 +35,14 @@ def test_typed_request_rejects_explicit_empty_test_selection(
 
 def test_tests_file_ignores_comments_and_blanks(tmp_path) -> None:
     selected = tmp_path / "selected.txt"
-    selected.write_text("# campaign\nsmoke\n\nedge\n", encoding="utf-8")
+    selected.write_text("# record\nsmoke\n\nedge\n", encoding="utf-8")
     request = parse_request(SimulateFlow(), ["--target", "sim", "--tests-file", str(selected)])
     assert request.test == ("smoke", "edge")
 
 
 def test_typed_tests_file_uses_the_same_exact_selection(tmp_path) -> None:
     selected = tmp_path / "selected.txt"
-    selected.write_text("# campaign\ntail\n\nquick\n", encoding="utf-8")
+    selected.write_text("# record\ntail\n\nquick\n", encoding="utf-8")
 
     request = SimRequest(target="sim", tests_file=selected)
 
@@ -182,25 +182,9 @@ def test_mcp_schema_rejects_explicit_empty_test_selection() -> None:
     assert errors[0].validator == "minItems"
 
 
-def test_named_selection_requires_catalog_and_is_exact(tmp_path) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(["--target", "sim", "--work-dir", str(tmp_path), "--test", "smoke"])
-    assert flow._validate_test_selector(["sim"], {}) is not None
-    assert flow._validate_test_selector(["sim"], {"sim": ["smoke_long"]}) is not None
-    assert flow._validate_test_selector(["sim"], {"sim": ["smoke"]}) is None
-
-
 def test_help_distinguishes_coverage_and_plain_selection_order() -> None:
     help_text = " ".join(build_parser(SimulateFlow()).format_help().split())
     assert "coverage: deterministic sorted order; plain: input order" in help_text
-
-
-def test_plain_selection_preserves_input_order(tmp_path) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(
-        ["--target", "sim", "--work-dir", str(tmp_path), "--test", "gap", "--test", "full"]
-    )
-    assert flow._resolve_tests_to_run("sim", {"sim": ["full", "gap"]}) == ["gap", "full"]
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

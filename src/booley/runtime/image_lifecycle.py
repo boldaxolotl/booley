@@ -24,7 +24,7 @@ from booley.core.boundary import (
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
-from booley.runtime import interactive_docker, project_image
+from booley.runtime import host_docker, project_image
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
@@ -63,6 +63,7 @@ from booley.runtime.image_provenance import (
     resolve_recipe_fingerprint,
 )
 from booley.runtime.paths import docker_data_dir
+from booley.runtime.platform_paths import run_captured_bounded
 
 BASE_IMAGE = "booley-sandbox"
 STABLE_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
@@ -597,7 +598,7 @@ def baked_project_requirements(
     consolidated = _configured_requirements(project_root)
     if consolidated is None:
         return None
-    if _logical_reference(project_root) not in {BASE_IMAGE, *FLAVOR_RECIPES}:
+    if is_externally_managed(project_root):
         return None
     try:
         dockerfile = _direct_booley_dir(project_root) / "docker" / "Dockerfile"
@@ -638,6 +639,11 @@ def _logical_reference(project_root: Path) -> str:
         if not configured or configured == project_image.project_image_name(project_root)
         else configured
     )
+
+
+def is_externally_managed(project_root: Path) -> bool:
+    """Whether ``[sandbox].image`` names an image Booley neither builds nor refreshes."""
+    return _logical_reference(project_root) not in {BASE_IMAGE, *FLAVOR_RECIPES}
 
 
 def _manual_parent(project_root: Path) -> str | None:
@@ -741,7 +747,7 @@ def _expected_image_build_contracts() -> ImageBuildContracts:
         raise InstalledImageContractError(
             "installed Booley distribution lacks valid Sandbox Image compatibility "
             "metadata; install a current published booley-rtl wheel (or rebuild it "
-            "through Booley's stamped wheel path), then retry `booley session refresh`"
+            "through Booley's stamped wheel path), then run the command again"
         ) from exc
 
 
@@ -1188,7 +1194,7 @@ def _input_snapshot(nodes: tuple[ImageNode, ...], docker: DockerPort) -> InputSn
 
 def _planned_nodes(root, selected, resolved_docker, artifact_policy):
     logical = _logical_reference(root)
-    if logical not in {BASE_IMAGE, *FLAVOR_RECIPES}:
+    if is_externally_managed(root):
         external = resolved_docker.inspect(selected)
         if external is None:
             raise ImageLifecycleError(
@@ -2109,25 +2115,21 @@ def _verified_result(
 class _DockerCli:
     def image_id(self, image: str) -> str | None:
         try:
-            return interactive_docker.image_id(image)
-        except interactive_docker.ImageInspectError as exc:
+            return host_docker.image_id(image)
+        except host_docker.ImageInspectError as exc:
             raise ImageLifecycleError(str(exc)) from exc
 
     def inspect(self, image: str) -> ImageMetadata | None:
         try:
-            return interactive_docker.inspect_image_metadata(image)
-        except interactive_docker.ImageInspectError as exc:
+            return host_docker.inspect_image_metadata(image)
+        except host_docker.ImageInspectError as exc:
             raise ImageLifecycleError(str(exc)) from exc
 
     def repo_digests(self, image: str) -> tuple[str, ...]:
         """Return normalized registry identities attached to a local image."""
         try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", "-f", "{{json .RepoDigests}}", image],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "image", "inspect", "-f", "{{json .RepoDigests}}", image], timeout=15
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inspect Docker RepoDigests: {exc}") from exc
@@ -2156,12 +2158,8 @@ class _DockerCli:
 
     def image_ids(self) -> frozenset[str]:
         try:
-            result = subprocess.run(
-                ["docker", "image", "ls", "--all", "--quiet", "--no-trunc"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "image", "ls", "--all", "--quiet", "--no-trunc"], timeout=30
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"cannot inventory immutable image IDs: {exc}") from exc
@@ -2172,12 +2170,8 @@ class _DockerCli:
 
     def image_references(self) -> tuple[ImageReference, ...]:
         try:
-            result = subprocess.run(
-                ["docker", "image", "ls", "--no-trunc", "--format", "{{json .}}"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "image", "ls", "--no-trunc", "--format", "{{json .}}"], timeout=30
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(
@@ -2193,12 +2187,8 @@ class _DockerCli:
 
     def container_image_ids(self) -> frozenset[str]:
         try:
-            result = subprocess.run(
-                ["docker", "container", "ls", "--all", "--quiet", "--no-trunc"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "container", "ls", "--all", "--quiet", "--no-trunc"], timeout=30
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inventory Docker containers: {exc}") from exc
@@ -2273,12 +2263,9 @@ def _inspect_container_image_ids(container_ids: list[str]) -> frozenset[str]:
     image_ids = set()
     for container_id in container_ids:
         try:
-            result = subprocess.run(
+            result = run_captured_bounded(
                 ["docker", "container", "inspect", "--format", "{{.Image}}", container_id],
-                capture_output=True,
-                text=True,
                 timeout=15,
-                check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(
@@ -2306,6 +2293,10 @@ def _layout_alias_capable(image_id: str) -> bool:
         )
     try:
         return project_image.project_data_alias_capable(image_id)
+    except project_image.ImageLayoutMissingError:
+        # Only a prediction of whether a layout derivative applies. A stale managed
+        # image is rebuilt, an external one is refused at issuance with the fix.
+        return False
     except project_image.DockerImageError as exc:
         raise ImageLifecycleError(str(exc)) from exc
 

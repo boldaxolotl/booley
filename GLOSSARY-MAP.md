@@ -1,30 +1,27 @@
 # Booley glossary map
 
-Booley has six bounded vocabularies. Read the shared glossary first, then only
-the context that owns the work at hand.
+This map lists Booley's six canonical glossaries and the rules that keep them
+apart. It is for contributors and agents who need a term's meaning or are
+adding one. Read the shared glossary first, then only the context that owns
+the work at hand.
 
 ## Contexts
 
 | Context | Canonical glossary | Owns |
 |---|---|---|
-| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Projects, Booley Directory and Project Root, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
-| Goal Mode | [src/booley/goals/GLOSSARY.md](src/booley/goals/GLOSSARY.md) | Goal States, Worktree Identity, Goal Origins, Goal Changes, and Interrupted Applies inside one Goal Record |
+| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Jobs, Projects, Booley Directory and Project Root, Stealth, Targets, Booley Flows and Specialists, EDA provisioning, simulation evidence, Metric-Driven Development, and presentation |
 | B-Wave | [crates/bwave/GLOSSARY.md](crates/bwave/GLOSSARY.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage Records, measurement points, evaluation policy, waivers, and analysis |
-| Feedback | [src/booley/feedback/GLOSSARY.md](src/booley/feedback/GLOSSARY.md) | Findings, friction, impressions, and their durable log |
-| Public QA | [qa/GLOSSARY.md](qa/GLOSSARY.md) | QA Missions, Mission Areas, QA Runs, Release Smoke List, and Capability Map |
+| Feedback | [src/booley/feedback/GLOSSARY.md](src/booley/feedback/GLOSSARY.md) | Findings, their kinds, and their durable log |
+| Public QA | [qa/GLOSSARY.md](qa/GLOSSARY.md) | Missions, Mission Areas, QA Runs, Operator, Release Smoke List, and Capability Map |
 
 ## Relationships
 
-- **Goal Mode → Shared Booley**: a Goal is judged by Booley Flow and Specialist
-  evidence on shared Targets; the Goal Record holds that evidence.
 - **Shared Booley → B-Wave**: a traced Simulation Flow produces a shared
   Trace Artifact, which B-Wave queries or opens in a Waveform Viewer.
 - **Simulation Coverage → Shared Booley**: a Coverage Record measures one
   shared Target through one Simulation Flow invocation; a Simulation Record may
   contain a Coverage Record.
-- **Simulation Coverage → Goal Mode**: a Coverage Criterion supplies the
-  evaluation policy for a coverage Goal; its evidence is stored in the Goal Record.
 - **Shared Booley and Public QA → Feedback**: product use records observations; Public
   QA triage files confirmed product and documentation problems as issues.
 - **Public QA → all product contexts**: QA missions hunt for bugs across the
@@ -42,6 +39,10 @@ the context that owns the work at hand.
   QA's **Capability Map** is not a Simulation Coverage **Coverage Record**.
 - Detailed behavior, schemas, commands, and implementation decisions belong in
   the relevant reference documentation rather than these glossaries.
+- The `booley-setup` skill ships a plain-language companion,
+  [its GLOSSARY.md](src/booley/data/skills/booley-setup/GLOSSARY.md), that
+  restates shared terms for users during Project Setup. It is not canonical:
+  when a shared definition changes, update the companion to match.
 
 System-wide decisions remain under [docs/adr/](docs/adr/). Context-specific ADR
 directories should be created only when that context has a qualifying decision

@@ -11,12 +11,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.goals.model import WorktreeIdentity
 from booley.mcp import session_peer, session_registry
 from booley.mcp.session_observer import SessionObserver
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime.pid import ProcessIdentity, ProcessObservation, ProcessState
+from booley.runtime.worktree_identity import WorktreeIdentity
 from tests.conftest import symlink_or_skip
+from tests.time_budget import hang_guard_s, scaled
+
+# Observer budget that must expire while the lookup is blocked on its release.
+_EXPIRED_BUDGET_S = scaled(0.001)
 
 SCOPE = "pid:[17]"
 IDENTITY = ProcessIdentity(98765, SCOPE, 101)
@@ -104,10 +108,10 @@ def test_quiet_expiry_and_foreign_namespace(registry, kind):
 def test_pruning_touches_registry_only(registry, tmp_path):
     sentinel = tmp_path / "goals" / "still-running"
     sentinel.parent.mkdir()
-    sentinel.write_bytes(b"Goal/Job/slot bytes")
+    sentinel.write_bytes(b"Job/slot bytes")
     registry.upsert(facts(), "tool", "completed", now=100)
     assert registry.prune(now=100, namespace=SCOPE, worktree_exists=lambda _: False) == 1
-    assert sentinel.read_bytes() == b"Goal/Job/slot bytes"
+    assert sentinel.read_bytes() == b"Job/slot bytes"
 
 
 def test_corrupt_future_schema_and_symlink_are_diagnosed_not_pruned(registry, tmp_path):
@@ -230,7 +234,7 @@ def test_peer_endpoint_and_inode_unique_revalidation(tmp_path):
 async def test_observer_broken_registry_cannot_change_attribution_or_dispatch(
     monkeypatch, tmp_path
 ):
-    observer = SessionObserver(budget=1)
+    observer = SessionObserver(budget=hang_guard_s())
     monkeypatch.setattr(
         observer,
         "_registry",
@@ -239,12 +243,12 @@ async def test_observer_broken_registry_cannot_change_attribution_or_dispatch(
         ),
     )
     # Recording is advisory: an unwritable registry must not fail the tool call.
-    await observer.record(facts(), "goal_finish", "completed")
+    await observer.record(facts(), "sim_finish", "completed")
 
 
 @pytest.mark.asyncio
 async def test_slow_registry_leaves_only_one_worker(monkeypatch):
-    observer = SessionObserver(budget=0.001)
+    observer = SessionObserver(budget=_EXPIRED_BUDGET_S)
     pending = asyncio.get_running_loop().create_future()
     observer._pending = pending
     assert await observer._bounded(lambda: pytest.fail("must not queue more work")) is None
@@ -281,7 +285,7 @@ async def test_maintenance_prunes_during_silence(monkeypatch, registry):
     from booley.mcp import session_observer
 
     registry.upsert(facts(), "sim", "completed", now=100)
-    observer = SessionObserver(now=lambda: 200, budget=1)
+    observer = SessionObserver(now=lambda: 200, budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
     monkeypatch.setattr(
@@ -310,7 +314,7 @@ async def test_maintenance_prunes_activity_of_sessions_no_longer_held(monkeypatc
         ("codex:not-yet-registered", 195),
     ):
         os.utime(store.path(key), (written, written))
-    observer = SessionObserver(now=lambda: 200, budget=1)
+    observer = SessionObserver(now=lambda: 200, budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
     monkeypatch.setattr(
@@ -433,7 +437,7 @@ async def test_calls_without_workdir_refresh_previous_association_not_server_cwd
     registry, monkeypatch
 ):
     registry.upsert(facts(), "sim", "completed", now=100)
-    observer = SessionObserver(now=lambda: 101, budget=1)
+    observer = SessionObserver(now=lambda: 101, budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     observed = await observer.attribution({}, {"threadId": "one"}, "codex")
     await observer.record(observed, "tools/list", "completed")
@@ -446,7 +450,7 @@ async def test_calls_without_workdir_refresh_previous_association_not_server_cwd
 
 @pytest.mark.asyncio
 async def test_first_call_without_workdir_never_associates_server_cwd(registry, monkeypatch):
-    observer = SessionObserver(budget=1)
+    observer = SessionObserver(budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     observed = await observer.attribution({}, {"threadId": "one"}, "codex")
     await observer.record(observed, "tools/list", "completed")
@@ -454,13 +458,13 @@ async def test_first_call_without_workdir_never_associates_server_cwd(registry, 
     assert registry.snapshot().rows[0].attribution.worktree_key == ""
 
 
-def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
-    from booley.goals.store import REPOSITORY_ID_FILE
+def test_path_rows_follow_repository_identity_after_repository_identity_is_written(tmp_path):
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     work = tmp_path / "work"
     git = work / ".git"
     git.mkdir(parents=True)
-    (git / "HEAD").write_text("ref: refs/heads/goal/fixture\n")
+    (git / "HEAD").write_text("ref: refs/heads/feature/fixture\n")
     registry = SessionRegistry(tmp_path / "data")
     before = session_registry.resolve_attribution(work, metadata={}, client_name="")
     registry.upsert(before, "sim", "completed", now=100)
@@ -472,17 +476,34 @@ def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
     assert after.worktree_key == "00000000-0000-4000-8000-000000000001/main"
     assert row.attribution.worktree_key == after.worktree_key
     assert row.attribution.key == after.key
-    assert after.branch == "goal/fixture"
+    assert after.branch == "feature/fixture"
+
+
+def test_nested_checkout_name_keeps_path_key(tmp_path, monkeypatch):
+    """A linked git dir that is not a plain checkout name falls back to the ``path:`` key."""
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
+
+    common = tmp_path / "common"
+    git = common / "worktrees" / "a" / "b"
+    git.mkdir(parents=True)
+    (common / REPOSITORY_ID_FILE).parent.mkdir()
+    (common / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
+    monkeypatch.setattr(
+        session_registry, "git_checkout_metadata", lambda root: (root, git, common)
+    )
+    _, key, branch = session_registry._worktree_facts(tmp_path)
+    assert key == "path:" + str(tmp_path.resolve())
+    assert branch == ""
 
 
 @pytest.mark.asyncio
 async def test_busy_fallback_uses_same_worktree_key_and_namespace(tmp_path, monkeypatch):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     git = tmp_path / ".git"
     (git / REPOSITORY_ID_FILE).parent.mkdir(parents=True)
     (git / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
-    (git / "HEAD").write_text("ref: refs/heads/goal/fixture\n")
+    (git / "HEAD").write_text("ref: refs/heads/feature/fixture\n")
     observer = SessionObserver()
     blocked = asyncio.get_running_loop().create_future()
     observer._pending = blocked
@@ -509,17 +530,17 @@ async def test_slow_peer_finishes_presence_after_response_budget(registry, monke
 
     def slow_peer(*_a):
         loop.call_soon_threadsafe(entered.set)
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return IDENTITY
 
     monkeypatch.setattr(session_observer, "observed_peer", slow_peer)
-    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    observer = SessionObserver(now=lambda: 100, budget=_EXPIRED_BUDGET_S)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     fallback = await observer.attribution({"work_dir": str(tmp_path)}, {}, "claude-code")
     await entered.wait()
     await observer.record(fallback, "sim", "completed")
     release.set()
-    await asyncio.wait_for(observer._pending, 2)
+    await asyncio.wait_for(observer._pending, hang_guard_s())
     rows = registry.snapshot().rows
     assert len(rows) == 1
     assert rows[0].attribution.kind == "process"
@@ -528,7 +549,7 @@ async def test_slow_peer_finishes_presence_after_response_budget(registry, monke
 
 @pytest.mark.asyncio
 async def test_pruning_does_not_block_request_attribution(registry, monkeypatch):
-    observer = SessionObserver(budget=1)
+    observer = SessionObserver(budget=hang_guard_s())
     blocked = asyncio.get_running_loop().create_future()
     observer._pending = blocked  # An existing request may continue while maintenance runs.
     monkeypatch.setattr(observer, "_registry", lambda: registry)
@@ -545,7 +566,7 @@ async def test_pruning_does_not_block_request_attribution(registry, monkeypatch)
 
 
 def test_fallback_row_migration_preserves_started_time_and_one_visible_row(tmp_path):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     work = tmp_path / "work"
     git = work / ".git"
@@ -579,11 +600,11 @@ async def test_busy_calls_on_same_process_keep_latest_call_outcome(
 
     def slow_peer(*_):
         loop.call_soon_threadsafe(entered.set)
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return IDENTITY
 
     monkeypatch.setattr(session_observer, "observed_peer", slow_peer)
-    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    observer = SessionObserver(now=lambda: 100, budget=_EXPIRED_BUDGET_S)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     arguments = {"work_dir": str(tmp_path)}
     first = await observer.attribution(arguments, {}, "claude-code")
@@ -592,7 +613,7 @@ async def test_busy_calls_on_same_process_keep_latest_call_outcome(
     second = await observer.attribution(arguments, {}, "claude-code")
     await observer.record(second, "second", "completed")
     release.set()
-    await asyncio.wait_for(observer._pending, 2)
+    await asyncio.wait_for(observer._pending, hang_guard_s())
     assert registry.snapshot().rows[0].calls[-1].tool == "second"
 
 
@@ -613,11 +634,11 @@ async def test_concurrent_first_process_calls_keep_each_presence_and_own_outcome
 
     def peer(request):
         loop.call_soon_threadsafe(entered.set)
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return ProcessIdentity(int(request.headers["x-booley-peer-port"]), SCOPE, 101)
 
     monkeypatch.setattr(session_observer, "observed_peer", peer)
-    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    observer = SessionObserver(now=lambda: 100, budget=_EXPIRED_BUDGET_S)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
 
     async def call(pid):
@@ -638,10 +659,10 @@ async def test_concurrent_first_process_calls_keep_each_presence_and_own_outcome
 
     try:
         await asyncio.gather(*(call(pid) for pid in range(98765, 98771)))
-        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(entered.wait(), hang_guard_s())
     finally:
         release.set()
-    await asyncio.wait_for(observer._pending, 2)
+    await asyncio.wait_for(observer._pending, hang_guard_s())
     rows = registry.snapshot().rows
     assert len(rows) == 6
     assert all(row.attribution.kind == "process" for row in rows)
@@ -665,15 +686,15 @@ async def test_presence_queue_keeps_each_call_and_diagnoses_overflow(
 
     def peer(_):
         loop.call_soon_threadsafe(entered.set)
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return IDENTITY
 
     monkeypatch.setattr(session_observer, "observed_peer", peer)
-    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    observer = SessionObserver(now=lambda: 100, budget=_EXPIRED_BUDGET_S)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     try:
         await observer.attribution({}, {"threadId": "active"}, "codex")
-        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(entered.wait(), hang_guard_s())
         for index in range(10):
             attribution = await observer.attribution({}, {"threadId": "latest"}, "codex")
             await observer.record(attribution, f"call{index}", "completed")
@@ -681,7 +702,7 @@ async def test_presence_queue_keeps_each_call_and_diagnoses_overflow(
         await observer.attribution({}, {"threadId": "overflow"}, "codex")
     finally:
         release.set()
-    await asyncio.wait_for(observer._pending, 2)
+    await asyncio.wait_for(observer._pending, hang_guard_s())
     rows = {row.attribution.key: row for row in registry.snapshot().rows}
     assert set(rows) == {"codex:active", "codex:latest"}
     assert [(call.tool, call.outcome) for call in rows["codex:latest"].calls] == [
@@ -689,27 +710,6 @@ async def test_presence_queue_keeps_each_call_and_diagnoses_overflow(
         ("call1", "completed"),
     ]
     assert "queue capacity exceeded" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_shared_warning_reads_presence_while_attribution_writer_is_busy(
-    registry, monkeypatch
-):
-    from booley.mcp import session_observer
-
-    monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
-    registry.upsert(facts("codex:one"), "sim", "completed", now=100)
-    registry.upsert(facts("codex:two"), "lint", "completed", now=100)
-    observer = SessionObserver(now=lambda: 100, budget=1)
-    blocked = asyncio.get_running_loop().create_future()
-    observer._pending = blocked
-    monkeypatch.setattr(observer, "_registry", lambda: registry)
-    try:
-        keys, warning = await observer.shared(facts("codex:one"))
-    finally:
-        blocked.set_result(None)
-    assert set(keys) == {"codex:one", "codex:two"}
-    assert warning == "WARNING: another session shares this Goal worktree"
 
 
 def test_live_process_without_worktree_association_survives_maintenance(registry, monkeypatch):
@@ -752,7 +752,7 @@ async def test_claude_peer_recovery_keeps_shared_worktree_presence_separate(
 
     monkeypatch.setattr(session_registry, "namespace", lambda *_args: SCOPE)
     monkeypatch.setattr(session_observer, "observed_peer", lambda _request: None)
-    observer = SessionObserver(now=lambda: 100, budget=1)
+    observer = SessionObserver(now=lambda: 100, budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     arguments = {"work_dir": str(tmp_path)}
     try:
@@ -898,7 +898,7 @@ async def test_maintenance_prunes_an_ended_row_and_its_marker_together(monkeypat
         registry.booley_dir, "codex:ended", "ended", "1970-01-01T00:03:15Z"
     )
     write_activity_signal(registry.booley_dir, "codex:open", WORKING, "1970-01-01T00:03:15Z")
-    observer = SessionObserver(now=lambda: 200, budget=1)
+    observer = SessionObserver(now=lambda: 200, budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
     monkeypatch.setattr(
@@ -949,7 +949,7 @@ def test_unusable_end_marker_leaves_the_row_to_quiet_after(registry, payload):
 
 def _thread_observer(registry, monkeypatch, clock):
     """An observer on a thread session whose clock is the one-item list ``clock``."""
-    observer = SessionObserver(now=lambda: clock[0], budget=1)
+    observer = SessionObserver(now=lambda: clock[0], budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     return observer
 
@@ -1023,17 +1023,17 @@ async def test_outcome_before_start_write_yields_one_recent_call(registry, monke
 
     def slow_peer(*_):
         loop.call_soon_threadsafe(entered.set)
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return IDENTITY
 
     monkeypatch.setattr(session_observer, "observed_peer", slow_peer)
-    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    observer = SessionObserver(now=lambda: 100, budget=_EXPIRED_BUDGET_S)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     call = await observer.attribution({}, {"threadId": "one"}, "codex", tool="sim")
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), hang_guard_s())
     await observer.record(call, "sim", "completed")
     release.set()
-    await asyncio.wait_for(observer._pending, 2)
+    await asyncio.wait_for(observer._pending, hang_guard_s())
     assert _recent(registry) == [("sim", "completed")]
 
 
@@ -1083,7 +1083,7 @@ async def test_boundary_lookup_without_a_peer_is_retried_by_the_observer(
 
     monkeypatch.setattr(session_registry, "namespace", lambda *_args: SCOPE)
     monkeypatch.setattr(session_observer, "observed_peer", lambda _request: IDENTITY)
-    observer = SessionObserver(now=lambda: 100, budget=1)
+    observer = SessionObserver(now=lambda: 100, budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     request = Request({"type": "http", "server": ("127.0.0.1", 8080), "headers": []})
     facts = await observer.attribution(

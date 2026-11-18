@@ -13,6 +13,8 @@ import time
 
 import pytest
 from tests.sidecar_image_helpers import SIDECAR_ALPINE_BASE, assert_python_version
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.docker import reaper
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -23,16 +25,14 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     remove_relay,
     validate_relay,
 )
+from booley.runtime.host_docker import relay_docker
+
+# Hang guard: nothing here asserts that a wait expires.
+_HANG_S = hang_guard_s()
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    return run_bounded_child(["docker", *args], timeout=2 * _HANG_S)
 
 
 def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
@@ -52,7 +52,7 @@ def _wait_for_tcp_listeners(
     container: str,
     ports: tuple[int, ...],
     *,
-    timeout: float = 10.0,
+    timeout: float = _HANG_S,
 ) -> None:
     checks = " && ".join(f"netstat -ltn | grep -Eq ':{port}[[:space:]]'" for port in ports)
     deadline = time.monotonic() + timeout
@@ -76,7 +76,7 @@ def test_wait_for_tcp_listeners_retries_until_both_ports_are_bound(monkeypatch) 
 
     monkeypatch.setitem(globals(), "_docker", fake_docker)
 
-    _wait_for_tcp_listeners("upstream", (32110, 32111), timeout=1)
+    _wait_for_tcp_listeners("upstream", (32110, 32111))
 
     assert len(calls) == 2
     assert all(call[:3] == ("exec", "upstream", "sh") for call in calls)
@@ -91,7 +91,7 @@ def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
     labels = ("booley.project-id=e2e-project", "booley.spec-digest=e2e-spec")
     profile = RelayProfile("10.20.30.40", "license-server-01", 32100, 32101)
     session = "booley-flexnet-session-e2e"
-    resources = provision_relay(profile, identity, issuance_labels=labels)
+    resources = provision_relay(profile, identity, issuance_labels=labels, runner=relay_docker)
     try:
         created = _docker(
             "container",
@@ -105,8 +105,8 @@ def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
             "60",
         )
         assert created.returncode == 0, created.stderr
-        connect_session(resources, session)
-        validate_relay(resources, session, profile, issuance_labels=labels)
+        connect_session(resources, session, runner=relay_docker)
+        validate_relay(resources, session, profile, issuance_labels=labels, runner=relay_docker)
 
         inspected = _docker("container", "inspect", resources.relay_container)
         assert inspected.returncode == 0, inspected.stderr
@@ -125,7 +125,7 @@ def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
         assert network["Options"] == {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
     finally:
         _docker("container", "rm", "-f", session)
-        remove_relay(resources)
+        remove_relay(resources, runner=relay_docker)
 
 
 @pytest.mark.slow()
@@ -164,7 +164,8 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
         )
         _assert_ok(upstream_run)
         ip = ""
-        for _ in range(30):
+        inspect_deadline = time.monotonic() + _HANG_S
+        while time.monotonic() < inspect_deadline:
             inspected = _docker(
                 "inspect",
                 upstream,
@@ -179,7 +180,9 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
         _wait_for_tcp_listeners(upstream, (first, second))
 
         profile = RelayProfile(ip, "license-server-01", first, second)
-        created_resources = provision_relay(profile, identity, issuance_labels=labels)
+        created_resources = provision_relay(
+            profile, identity, issuance_labels=labels, runner=relay_docker
+        )
         _assert_ok(
             _docker("network", "connect", upstream_network, created_resources.relay_container)
         )
@@ -289,7 +292,7 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
         _docker("rm", "-f", session, unrelated)
         if created_resources is not None:
             _docker("network", "disconnect", upstream_network, created_resources.relay_container)
-            remove_relay(created_resources)
+            remove_relay(created_resources, runner=relay_docker)
         _docker("rm", "-f", upstream)
         _docker("network", "rm", upstream_network)
 
@@ -307,7 +310,7 @@ def test_idle_reaper_removes_licensed_vscode_container_and_owned_topology() -> N
     )
     profile = RelayProfile("10.20.30.40", "license-server-01", 32120, 32121)
     session = "booley-vscode-licensed-reaper-e2e"
-    resources = provision_relay(profile, identity, issuance_labels=labels)
+    resources = provision_relay(profile, identity, issuance_labels=labels, runner=relay_docker)
     try:
         created = _docker(
             "container",
@@ -327,7 +330,7 @@ def test_idle_reaper_removes_licensed_vscode_container_and_owned_topology() -> N
             "60",
         )
         _assert_ok(created)
-        connect_session(resources, session)
+        connect_session(resources, session, runner=relay_docker)
         container_id = created.stdout.strip()
 
         def isolated_run(args: list[str], *, timeout: int = 30):

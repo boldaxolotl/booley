@@ -1,7 +1,9 @@
 # Disk preflight
 
-Reclaim space before a run using only resources that can be rebuilt and that no
-one else can be relying on. Run it at the start of every QA run.
+The operator runs this first in every QA Run (`booley-qa-run` step 1), so a
+full disk does not show up mid-run as a false Booley failure. It reclaims space
+only from resources that can be rebuilt and that no one else can be relying
+on: the host may also hold other runs, Projects, and the maintainer's work.
 
 1. **Baseline.** Save `df -h` for the artifact root and Docker's data root, and
    `docker system df`, to `evidence/disk/before.txt`.

@@ -106,7 +106,7 @@ class ClaudeSDKBackend:
     back to — and bill — the subscription.
     """
 
-    def __init__(self, auth_mode: str = "auto") -> None:
+    def __init__(self, auth_mode: str = "subscription") -> None:
         self._auth_mode = auth_mode
 
     @property
@@ -120,7 +120,7 @@ class ClaudeSDKBackend:
         if self._auth_mode == "api_key" and plan.selected is None:
             return (
                 "[agent] auth = 'api_key' but ANTHROPIC_API_KEY is not set — "
-                "export it, or switch auth to 'subscription' or 'auto'"
+                "export it, or switch auth to 'subscription'"
             )
         if self._auth_mode == "subscription" and (plan.selected is None):
             return (
@@ -166,6 +166,8 @@ class ClaudeSDKBackend:
             except TransientAPIError as e:
                 if attempt >= MAX_API_RETRIES:
                     logger.error("All %d retries exhausted: %s", MAX_API_RETRIES, e)
+                    if isinstance(e, _RateLimitRetryError):
+                        raise _still_limited_error(e) from e
                     raise
                 backoff = compute_backoff(attempt, e.retry_after)
                 logger.warning(
@@ -320,14 +322,14 @@ class ClaudeSDKBackend:
                         stream_state.turn_count,
                         attempt,
                         transcript_path,
-                        model=options.model,
+                        model=_options_model(options),
                     )
         finally:
             _claude_write_markdown(transcript_path, markdown_path=paths.transcript_markdown)
 
         return _finalize_result(
             counters,
-            options.model,
+            _options_model(options),
             output_format,
             label,
             session_id=stream_state.session_id,
@@ -422,7 +424,7 @@ def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
     from under long-lived containers, crashing every ticket at launch with
     "OAuth session expired and could not be refreshed". An ambient
     ``CLAUDE_CODE_OAUTH_TOKEN`` still wins (``resolve_token`` checks env
-    first); under ``auto`` an exported ``ANTHROPIC_API_KEY`` still outranks it
+    first); in the visitor mode an exported ``ANTHROPIC_API_KEY`` still outranks it
     CLI-side, so precedence holds.
     """
     from booley.runtime import auth_token
@@ -461,9 +463,16 @@ def _hidden_gateway_overrides() -> dict[str, str]:
     return hidden
 
 
+def _options_model(options: ClaudeAgentOptions) -> str:
+    """Return the model of options built by ``_build_sdk_options`` (the SDK types it optional)."""
+    if options.model is None:
+        raise RuntimeError("Claude SDK options carry no model")
+    return options.model
+
+
 def _build_sdk_options(
     params: AgentCallParams,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions from AgentCallParams."""
     cwd_path = Path(params.cwd).resolve()
@@ -487,14 +496,14 @@ def _build_sdk_options(
     if params.max_turns is not None:
         options.max_turns = params.max_turns
     if params.allowed_agent_capabilities is not None:
-        options.allowed_agent_capabilities = params.allowed_agent_capabilities
+        options.allowed_tools = list(params.allowed_agent_capabilities)
     # Provider-hosted web MCP tools bypass the container network namespace. Keep
     # every harness-launched agent offline even when it runs outside Booley's
     # managed image (the image also carries an immutable Claude policy).
-    denied_mcp_tools = list(
+    denied_mcp_tools: list[str] = list(
         dict.fromkeys([*(params.disallowed_agent_capabilities or []), *_PROVIDER_WEB_MCP_TOOLS])
     )
-    options.disallowed_agent_capabilities = denied_mcp_tools
+    options.disallowed_tools = denied_mcp_tools
     if params.system_prompt is not None:
         options.system_prompt = params.system_prompt
     if params.max_budget_usd is not None:
@@ -721,7 +730,7 @@ async def _consume_claude_stream(
             _dispatch_on_event(on_event, message)
             counters.update_from_assistant(message)
             counters.capture_mcp_tool_uses(message)
-            _dispatch_usage(on_event, counters, options.model)
+            _dispatch_usage(on_event, counters, _options_model(options))
             if transcript_file is not None:
                 _write_transcript_turn(transcript_file, message)
             _capture_pending_file_edits(message, state)
@@ -729,9 +738,10 @@ async def _consume_claude_stream(
             _dispatch_completed_file_edits(on_event, message, state)
         elif isinstance(message, ResultMessage):
             counters.apply_result(message)
-            _dispatch_usage(on_event, counters, options.model)
+            _dispatch_usage(on_event, counters, _options_model(options))
             state.session_id = getattr(message, "session_id", None)
-        elif isinstance(message, RateLimitEvent):
+        elif isinstance(message, RateLimitEvent) and not counters.got_result:
+            # After a result the answer is complete; a late limit event must not discard it.
             await _handle_rate_limit_event(message)
 
 
@@ -746,7 +756,8 @@ _EDIT_PATH_FIELDS = {
 def _capture_pending_file_edits(message: AssistantMessage, state: _StreamState) -> None:
     """Remember Claude file-operation paths until their result messages arrive."""
     for block in message.content or []:
-        field_name = _EDIT_PATH_FIELDS.get(getattr(block, "name", None))
+        tool_name = getattr(block, "name", None)
+        field_name = _EDIT_PATH_FIELDS.get(tool_name) if isinstance(tool_name, str) else None
         mcp_tool_id = getattr(block, "id", None)
         mcp_tool_input = getattr(block, "input", None)
         if (
@@ -770,6 +781,8 @@ def _dispatch_completed_file_edits(
     content = message.content if isinstance(message.content, list) else []
     for block in content:
         mcp_tool_id = getattr(block, "tool_use_id", None)
+        if not isinstance(mcp_tool_id, str):
+            continue
         path = state.pending_file_edits.pop(mcp_tool_id, None)
         if path is not None and not getattr(block, "is_error", False):
             paths.append(path)
@@ -1012,17 +1025,61 @@ def _dump_crash_context(
         logger.warning("Transcript (may contain final activity): %s", transcript_path)
 
 
+# A sleep that ends exactly at the call's deadline fires the idle timeout instead of the
+# retry, so a wait stops this long before it.
+_DEADLINE_MARGIN_S = 1.0
+
+
+class _RateLimitRetryError(TransientAPIError):
+    """A rejected limit event whose wait already ran; keeps the limit for the final error."""
+
+    def __init__(self, message: str, *, limit_type: str | None, resets_at: float | None) -> None:
+        super().__init__(message, retry_after=0)
+        self.limit_type = limit_type
+        self.resets_at = resets_at
+
+
+def _still_limited_error(e: _RateLimitRetryError) -> UsageLimitError:
+    """The terminal error when every attempt ended in a rejected limit event."""
+    reset = f"; resets at {rfc3339_from_epoch(e.resets_at)}" if e.resets_at else ""
+    return UsageLimitError(
+        f"Claude usage limit reached ({e.limit_type}){reset};"
+        f" still limited after {MAX_API_RETRIES} attempts",
+        provider="claude",
+    )
+
+
+def _rate_limit_wait_s(info: Any) -> float:
+    """Seconds to wait out a rejected limit, or raise ``UsageLimitError`` if that cannot fit.
+
+    The budget is what remains of the innermost enclosing anyio deadline (the call's idle
+    timeout, or a tighter scope a caller wraps around it); outside any scope it is unbounded.
+    """
+    budget = anyio.current_effective_deadline() - anyio.current_time() - _DEADLINE_MARGIN_S
+    if not info.resets_at:
+        return max(0.0, min(RATE_LIMIT_FALLBACK_BACKOFF_S, budget))
+    wait = max(0, info.resets_at - wall_clock()) + RATE_LIMIT_SLEEP_BUFFER_S
+    if wait > budget:
+        raise UsageLimitError(
+            f"Claude usage limit reached ({info.rate_limit_type});"
+            f" resets at {rfc3339_from_epoch(info.resets_at)},"
+            " too late to wait within this call's timeout",
+            provider="claude",
+        )
+    return wait
+
+
 async def _handle_rate_limit_event(
     event: RateLimitEvent,
 ) -> None:
-    """Handle a rate limit event from the SDK stream."""
+    """Handle a rate limit event from the SDK stream.
+
+    A rejected event waits until its reset and raises a retryable error, unless the reset
+    lies beyond the call's remaining time budget: then it raises ``UsageLimitError`` at once.
+    """
     info = event.rate_limit_info
     if info.status == "rejected":
-        if info.resets_at:
-            now = wall_clock()
-            sleep_s = max(0, info.resets_at - now) + RATE_LIMIT_SLEEP_BUFFER_S
-        else:
-            sleep_s = RATE_LIMIT_FALLBACK_BACKOFF_S
+        sleep_s = _rate_limit_wait_s(info)
 
         logger.warning(
             "Rate limited (%s). Sleeping %.0fs (resets_at=%s, +%ds buffer)",
@@ -1033,9 +1090,10 @@ async def _handle_rate_limit_event(
         )
         await anyio.sleep(sleep_s)
 
-        raise TransientAPIError(
+        raise _RateLimitRetryError(
             f"rate limited ({info.rate_limit_type}), slept {sleep_s:.0f}s",
-            retry_after=0,
+            limit_type=info.rate_limit_type,
+            resets_at=info.resets_at,
         )
     if info.status == "allowed_warning":
         logger.warning(
@@ -1064,21 +1122,19 @@ def _write_prompt_header(
     f.flush()
 
 
+_TRANSCRIPT_BLOCK_FIELDS = ("text", "name", "input", "content", "thinking")
+
+
 def _write_transcript_turn(f: io.TextIOBase, msg: AssistantMessage) -> None:
     """Append one AssistantMessage to the transcript JSONL file."""
     blocks = []
     for block in msg.content or []:
         b: dict[str, Any] = {"type": type(block).__name__}
-        if hasattr(block, "text"):
-            b["text"] = block.text
-        if hasattr(block, "name"):
-            b["name"] = block.name
-        if hasattr(block, "input"):
-            b["input"] = block.input
-        if hasattr(block, "content"):
-            b["content"] = block.content
-        if hasattr(block, "thinking"):
-            b["thinking"] = block.thinking
+        # Blocks are duck-typed (the SDK has one class per block kind): copy
+        # whichever of these fields the block actually carries.
+        for field_name in _TRANSCRIPT_BLOCK_FIELDS:
+            if hasattr(block, field_name):
+                b[field_name] = getattr(block, field_name)
         blocks.append(b)
 
     entry = {

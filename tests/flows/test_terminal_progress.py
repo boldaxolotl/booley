@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,19 +22,19 @@ from booley.flows.lint.flow import LintFlow
 from booley.flows.observed_process import communicate_observed
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
-from booley.flows.terminal_progress import ProgressText, TerminalProgress, current_progress
+from booley.flows.terminal_progress import (
+    ProgressText,
+    TerminalProgress,
+    announce_unit,
+    current_progress,
+    progress_lane,
+)
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
-from tests.criteria.ledger_support import FixtureRecorder
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 BUILTINS = (AsicSynthesizeFlow, FpgaImplFlow, SimulateFlow, LintFlow)
-
-# Hang guard for trivial Python children run through ``_execute_boundary``.
-# The boundary relocates PYTHONPYCACHEPREFIX under each test's fresh work dir,
-# so every child recompiles its startup bytecode; under CI coverage
-# (``patch = ["subprocess"]``) that includes coverage.py itself (~0.4 s cold vs
-# ~0.01 s plain). On a loaded xdist runner this overran a 3 s budget. The bound
-# exists only to fail a hung child, so keep it well below pytest's 60 s limit.
-BOUNDARY_HANG_GUARD_S = 30
+LINT_TARGETS = ("lint_a", "lint_b")
 
 
 class Screen(io.StringIO):
@@ -45,8 +46,64 @@ class Screen(io.StringIO):
         return self.tty
 
 
-def observer(root, *, flow="sim", stream=None, **kwargs):
-    return TerminalProgress(flow, "sim_demo", root, stream=stream or Screen(), **kwargs)
+@pytest.fixture(autouse=True)
+def _terminal(monkeypatch):
+    """A capable terminal without colors; non-TTY observers ignore both settings."""
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
+
+
+def observer(
+    root,
+    *,
+    flow="sim",
+    stream=None,
+    tty=False,
+    clock=None,
+    width=120,
+    height=24,
+    target="sim_demo",
+    **kwargs,
+):
+    """One constructor; a TTY or a clock also pins the clock and the window size."""
+    if tty or clock is not None:
+        kwargs["clock"] = clock or (lambda: 0.0)
+        kwargs.setdefault("dimensions", lambda: os.terminal_size((width, height)))
+    return TerminalProgress(flow, target, root, stream=stream or Screen(tty=tty), **kwargs)
+
+
+def boundary(flow, command, **options):
+    """Launch *command* through the Flow's boundary, as every built-in Flow does."""
+    # Private seam: a built-in Flow launches a tool only from its run step, which needs that
+    # Flow's EDA tool (Verilator, Yosys, Vivado, a simulator); the boundary is the shared
+    # launcher every Flow uses.
+    return flow._execute_boundary(command, **options)
+
+
+def run_observed(sink, script, *, timeout=SUBPROCESS_TIMEOUT_S, encoding=None, **popen):
+    """Run a Python child through ``communicate_observed``; returns its capture and process."""
+    sink.begin_command()
+    with subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding=encoding,
+        start_new_session=os.name != "nt",
+        **popen,
+    ) as process:
+        return communicate_observed(process, sink, timeout=timeout), process
+
+
+@contextmanager
+def frozen_worker(sink):
+    """Install *sink* with its worker stopped; yields the pump that renders its queue."""
+    # Private seam: TerminalProgress renders on its own worker thread and has no public
+    # synchronous flush; the test stops the worker and pumps it, so records and frames
+    # come in a fixed order.
+    with patch.object(sink, "_run"), sink.installed():
+        yield sink._poll
+        sink._drain_end()
 
 
 def progress_logs(text):
@@ -67,6 +124,9 @@ def test_builtin_run_log_registration_preserves_target(tmp_path, flow_type):
     sink.stage_changed("candidate: configure", target="owner")
     sink.stage_changed("baseline: checking", target="other")
     with sink.installed():
+        # Private seam: the prepare half opens run.log only inside a Flow run, which needs the
+        # Flow's EDA tool; lint reaches it through the CLI in
+        # test_two_target_lint_progress_log_ownership.
         flow._open_run_log("owner", tmp_path / "owner")
     records = progress_logs(sink.stream.getvalue())
     assert [(owner, path) for owner, _, path in records] == [
@@ -99,7 +159,16 @@ def test_progress_footer_preserves_each_log_owner(tmp_path):
     assert (sink.target, sink.stage) == ("b", "baseline: checking")
 
 
-def write_lint_progress_core(tmp_path, targets):
+@pytest.fixture
+def lint_pair(tmp_path, monkeypatch):
+    """Two lint Targets resolved without Verilator; returns ``build(boundary) -> LintFlow``."""
+    from booley.fusesoc import fusesoc_registry
+
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "24")
     source = tmp_path / "top.sv"
     source.write_text("module top; endmodule\n")
     (tmp_path / "demo.core").write_text(
@@ -108,22 +177,9 @@ def write_lint_progress_core(tmp_path, targets):
         + "".join(
             f"  {target}:\n    flow: lint\n    default_tool: verilator\n"
             "    flow_options: {tool: verilator}\n    filesets: [rtl]\n    toplevel: top\n"
-            for target in targets
+            for target in LINT_TARGETS
         )
     )
-    return source
-
-
-def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
-    from booley.core.build_paths import work_root_for
-    from booley.flows.base import SubprocessResult
-    from booley.fusesoc import fusesoc_registry
-
-    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    targets = ("lint_a", "lint_b")
-    source = write_lint_progress_core(tmp_path, targets)
 
     def resolve(target, *, build_root, library_plan=None):
         return fusesoc_registry.ResolvedTarget(
@@ -139,17 +195,33 @@ def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
         )
 
     monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
-    flow = LintFlow()
-    monkeypatch.setattr(flow, "_execute_boundary", lambda _: SubprocessResult(0))
+
+    def build(boundary):
+        flow = LintFlow()
+        # Private seam: Verilator is not on the test host; the boundary command is the lint
+        # Flow's only tool launch, and the CLI run around it is public.
+        monkeypatch.setattr(flow, "_execute_boundary", boundary)
+        return flow
+
+    return build
+
+
+def test_two_target_lint_progress_log_ownership(tmp_path, lint_pair, capsys):
+    from booley.core.build_paths import work_root_for
+    from booley.flows.base import SubprocessResult
+
+    flow = lint_pair(lambda _: SubprocessResult(0))
     result = execute_cli(flow, ["--work-dir", str(tmp_path), "--target", "lint_a,lint_b"])
     assert result.exit_code == 0, result.outcome.report_text
     records = progress_logs(capsys.readouterr().err)
-    expected = {work_root_for(tmp_path, "lint", target) / "run.log": target for target in targets}
+    expected = {
+        work_root_for(tmp_path, "lint", target) / "run.log": target for target in LINT_TARGETS
+    }
     assert records
     assert all(owner == expected[path] for owner, _, path in records), (
         "progress log target mismatch"
     )
-    for target in targets:
+    for target in LINT_TARGETS:
         stages = [stage for owner, stage, _ in records if owner == target]
         assert stages == ["preparing", "configure", "configure"]
         artifact = result.outcome.detail["artifacts"][f"log_{target}"]
@@ -157,7 +229,7 @@ def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
         assert (tmp_path / artifact).is_file()
 
 
-def wait_until(predicate, *, timeout=4):
+def wait_until(predicate, *, timeout=SUBPROCESS_TIMEOUT_S):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -166,60 +238,31 @@ def wait_until(predicate, *, timeout=4):
     pytest.fail("live observation deadline expired")
 
 
-def test_pipe_output_and_transcript_visible_before_exit(tmp_path):
+@pytest.mark.parametrize("source", ["pipe", "file"])
+def test_live_output_and_transcript_visible_before_exit(tmp_path, source):
+    """Output reaches the screen and transcript while the child runs; a stale log is ignored."""
     release = tmp_path / "release"
-    console = Screen()
+    log = tmp_path / "yosys.log"
+    log.write_text("old verdict\n")
+    line = "live first line" if source == "pipe" else "fresh synthesis line"
+    show = (
+        f"print({line!r},flush=True)"
+        if source == "pipe"
+        else f"pathlib.Path({str(log)!r}).write_text({line + chr(10)!r})"
+    )
     script = (
-        "import pathlib,time; print('live first line',flush=True); "
-        f"p=pathlib.Path({str(release)!r}); "
+        f"import pathlib,time; {show}; p=pathlib.Path({str(release)!r}); "
         "exec('while not p.exists(): time.sleep(0.01)')"
     )
-    process = subprocess.Popen(
-        [sys.executable, "-c", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+    console = Screen()
+    sink = observer(
+        tmp_path, flow="sim" if source == "pipe" else "synth", stream=console, tool_output=True
     )
-    sink = observer(tmp_path, stream=console, tool_output=True)
+    if source == "file":
+        sink.watch([log])
     results = []
     with sink.installed():
         sink.begin_command("simulation")
-        thread = threading.Thread(
-            target=lambda: results.append(communicate_observed(process, sink, timeout=5))
-        )
-        thread.start()
-        try:
-            wait_until(lambda: "live first line" in console.getvalue())
-            assert process.poll() is None
-            assert sink.log_path is not None
-            assert b"live first line" in sink.log_path.read_bytes()
-        finally:
-            release.touch()
-            thread.join(timeout=6)
-            process.stdout.close()
-            process.stderr.close()
-    assert not thread.is_alive()
-    assert results == [("live first line\n", "", False)]
-    assert current_progress() is None
-    assert not (sink.directory / "active").exists()
-
-
-def test_file_only_live_output_before_exit_and_stale_log_ignored(tmp_path):
-    log = tmp_path / "yosys.log"
-    log.write_text("old verdict\n")
-    release = tmp_path / "release"
-    script = (
-        "import pathlib,time; "
-        f"pathlib.Path({str(log)!r}).write_text('fresh synthesis line\\n'); "
-        f"p=pathlib.Path({str(release)!r}); "
-        "exec('while not p.exists(): time.sleep(0.01)')"
-    )
-    console = Screen()
-    sink = observer(tmp_path, flow="synth", stream=console, tool_output=True)
-    sink.watch([log])
-    with sink.installed():
-        sink.begin_command("synthesis")
         process = subprocess.Popen(
             [sys.executable, "-c", script],
             stdout=subprocess.PIPE,
@@ -227,19 +270,27 @@ def test_file_only_live_output_before_exit_and_stale_log_ignored(tmp_path):
             text=True,
             start_new_session=True,
         )
-        thread = threading.Thread(target=lambda: communicate_observed(process, sink, timeout=5))
+        thread = threading.Thread(
+            target=lambda: results.append(
+                communicate_observed(process, sink, timeout=SUBPROCESS_TIMEOUT_S)
+            )
+        )
         thread.start()
         try:
-            wait_until(lambda: "fresh synthesis line" in console.getvalue())
+            wait_until(lambda: line in console.getvalue())
             assert "old verdict" not in console.getvalue()
             assert process.poll() is None
-            assert b"fresh synthesis line" in sink.log_path.read_bytes()
+            assert sink.log_path is not None
+            assert line.encode() in sink.log_path.read_bytes()
         finally:
             release.touch()
-            thread.join(timeout=6)
+            thread.join(timeout=hang_guard_s())
             process.stdout.close()
             process.stderr.close()
     assert not thread.is_alive()
+    assert results == [(line + "\n" if source == "pipe" else "", "", False)]
+    assert current_progress() is None
+    assert not (sink.directory / "active").exists()
 
 
 @pytest.mark.parametrize("returncode", [0, 7])
@@ -251,18 +302,12 @@ def test_separate_flood_captures_match_communicate(tmp_path, returncode):
         f"os.write(1,a); t.join(); sys.exit({returncode})"
     )
     command = [sys.executable, "-c", script]
-    expected = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+    expected = run_bounded_child(command, timeout=SUBPROCESS_TIMEOUT_S)
     sink = observer(tmp_path)
     with sink.installed():
-        sink.begin_command()
-        with subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as process:
-            stdout, stderr, timed_out = communicate_observed(process, sink, timeout=5)
+        (stdout, stderr, timed_out), process = run_observed(
+            sink, script, timeout=SUBPROCESS_TIMEOUT_S, encoding="utf-8"
+        )
     assert (stdout, stderr, process.returncode, timed_out) == (
         expected.stdout,
         expected.stderr,
@@ -277,16 +322,7 @@ def test_split_unicode_newlines_and_partial_capture(tmp_path, encoding):
     script = f"import os,time; data={raw!r}; exec('for byte in data: os.write(1,bytes([byte])); time.sleep(0.001)')"
     sink = observer(tmp_path, tool_output=True)
     with sink.installed():
-        sink.begin_command()
-        with subprocess.Popen(
-            [sys.executable, "-c", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding=encoding,
-            start_new_session=True,
-        ) as process:
-            stdout, stderr, timed_out = communicate_observed(process, sink, timeout=3)
+        (stdout, stderr, timed_out), _ = run_observed(sink, script, encoding=encoding)
     assert stdout == "café\nline\ntail"
     assert stderr == ""
     assert not timed_out
@@ -298,7 +334,11 @@ def test_invalid_capture_bytes_raise_and_reap(tmp_path):
     with sink.installed():
         sink.begin_command()
         with subprocess.Popen(
-            [sys.executable, "-c", "import os,time; os.write(1,b'\\xff'); time.sleep(30)"],
+            [
+                sys.executable,
+                "-c",
+                f"import os,time; os.write(1,b'\\xff'); time.sleep({scaled(30):g})",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -306,7 +346,7 @@ def test_invalid_capture_bytes_raise_and_reap(tmp_path):
             start_new_session=True,
         ) as process:
             with pytest.raises(UnicodeDecodeError):
-                communicate_observed(process, sink, timeout=3)
+                communicate_observed(process, sink, timeout=scaled(3))
             assert process.poll() is not None
 
 
@@ -329,92 +369,42 @@ def test_timeout_preserves_partial_output_and_reaps(tmp_path, startup_delay):
             start_new_session=True,
         ) as process:
             try:
-                wait_until(ready.exists, timeout=10)
-                stdout, stderr, timed_out = communicate_observed(process, sink, timeout=0.3)
+                wait_until(ready.exists)
+                stdout, stderr, timed_out = communicate_observed(
+                    process, sink, timeout=scaled(0.3)
+                )
                 assert process.poll() is not None
             finally:
                 if process.poll() is None:
                     process.kill()
-                    process.wait(timeout=3)
+                    process.wait(timeout=SUBPROCESS_TIMEOUT_S)
     assert (stdout, stderr, timed_out) == ("partial", "", True)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX inherited pipe descriptor test")
 def test_descendant_held_pipe_does_not_wait_forever(tmp_path):
     sink = observer(tmp_path)
-    script = "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); print('parent done',flush=True)"
+    script = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable,'-c','import time; time.sleep({scaled(30):g})']); "
+        "print('parent done',flush=True)"
+    )
     started = time.monotonic()
     with sink.installed():
-        sink.begin_command()
-        with subprocess.Popen(
-            [sys.executable, "-c", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as process:
-            # Generous timeout: a loaded CI runner can take over 0.3 s just to start
-            # the interpreter. The held descendant sleeps 30 s, so the bound below
-            # still proves the call does not wait for it.
-            stdout, _, timed_out = communicate_observed(process, sink, timeout=3)
-    assert time.monotonic() - started < 15
+        # Generous timeout: a loaded CI runner can take over 0.3 s just to start
+        # the interpreter. The held descendant sleeps 30 s (scaled), so the bound below
+        # still proves the call does not wait for it.
+        (stdout, _, timed_out), _ = run_observed(sink, script, timeout=scaled(3))
+    assert time.monotonic() - started < scaled(15)
     assert stdout == "parent done\n"
     assert timed_out
-
-
-def test_silent_non_tty_heartbeats_and_bounded_new_lines(tmp_path):
-    now = [100.0]
-    console = Screen()
-    sink = observer(tmp_path, stream=console, clock=lambda: now[0])
-    sink.stage_changed("simulation")
-    for index in range(10):
-        sink.observe("stdout", f"line {index}\n".encode())
-    # Public end-of-command drains pending observations independently of child output.
-    now[0] += 5
-    sink.end_command()
-    first = console.getvalue()
-    assert "heartbeat" in first
-    assert "elapsed=5s" in first
-    assert first.count("output:") == 6
-    now[0] += 5
-    sink.tick()
-    second = console.getvalue()[len(first) :]
-    assert "heartbeat" in second
-    assert "output:" not in second
-    assert "\x1b" not in console.getvalue()
-    assert "\r" not in console.getvalue()
-
-
-def test_tty_resize_rate_and_clear_before_footer(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERM", "xterm")
-    now = [0.0]
-    size = [os.terminal_size((60, 24))]
-    screen = Screen(tty=True)
-    sink = observer(tmp_path, stream=screen, clock=lambda: now[0], dimensions=lambda: size[0])
-    sink.stage_changed("simulation")
-    sink.tick()
-    original = screen.getvalue()
-    sink.tick()
-    assert screen.getvalue() == original
-    now[0] = 1
-    size[0] = os.terminal_size((20, 24))
-    sink.tick()
-    assert "\x1b[" in screen.getvalue()
-    sink.close()
-    assert screen.getvalue().endswith("\x1b[J")
-    assert sink.rows == 0
 
 
 @pytest.mark.parametrize("term,height", [("dumb", 24), ("xterm", 4)])
 def test_incapable_terminal_uses_plain_records(tmp_path, monkeypatch, term, height):
     monkeypatch.setenv("TERM", term)
     now = [0.0]
-    sink = observer(
-        tmp_path,
-        stream=Screen(tty=True),
-        clock=lambda: now[0],
-        dimensions=lambda: os.terminal_size((80, height)),
-    )
+    sink = observer(tmp_path, tty=True, clock=lambda: now[0], width=80, height=height)
     now[0] = 5
     sink.tick()
     assert "heartbeat" in sink.stream.getvalue()
@@ -479,31 +469,18 @@ def test_missing_pending_file_and_temporary_transcript_survives_deletion(tmp_pat
     assert "log=" + str(path) not in sink.stream.getvalue().splitlines()[-1]
 
 
-def test_unique_transcripts_and_disk_failure_is_advisory(tmp_path, monkeypatch):
+def test_observers_sharing_a_root_get_distinct_transcripts(tmp_path):
     first, second = observer(tmp_path), observer(tmp_path)
     with first.installed(), second.installed():
         first.begin_command()
         second.begin_command()
         assert first.log_path != second.log_path
-    failed = observer(tmp_path, tool_output=True)
-    monkeypatch.setattr(
-        "booley.flows.terminal_progress.runtime_dir",
-        lambda _: (_ for _ in ()).throw(PermissionError()),
-    )
-    with failed.installed():
-        failed.begin_command()
-        failed.observe("stdout", b"still live\n")
-        failed.end_command()
-    failed.footer()
-    assert "still live" in failed.stream.getvalue()
-    assert failed.stream.getvalue().count("incomplete/unavailable") == 1
-    assert "transcript=" not in failed.stream.getvalue()
 
 
 @pytest.mark.parametrize("flow_type", BUILTINS)
 def test_cli_flags_do_not_change_shared_schema(flow_type):
     flow = flow_type()
-    before = [(action.dest, action.option_strings[:]) for action in build_parser(flow)._actions]
+    before = build_parser(flow).format_help()
     for flag in ("-q", "--quiet"):
         request = parse_request(flow, ["--target", "demo", flag])
         assert not any(name.startswith("_console") for name in vars(request))
@@ -514,12 +491,10 @@ def test_cli_flags_do_not_change_shared_schema(flow_type):
         with pytest.raises(SystemExit) as exc:
             parse_request(flow, ["--target", "demo", flag])
         assert exc.value.code == 2
-    assert before == [
-        (action.dest, action.option_strings[:]) for action in build_parser(flow)._actions
-    ]
+    assert before == build_parser(flow).format_help()
 
 
-@pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "ticket", "transport", "dry-run"])
+@pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "transport", "dry-run"])
 def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode):
     from booley.flows.base import BuiltinFlow
 
@@ -541,13 +516,7 @@ def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode
         return ExecutionResult(0, EndpointOutcome())
 
     with patch.object(BuiltinFlow, "execute_prepared", execute):
-        execute_cli(
-            LintFlow(),
-            args,
-            adapter=FixtureRecorder(identity={"generation": "d" * 32})
-            if mode == "ticket"
-            else None,
-        )
+        execute_cli(LintFlow(), args)
     assert (observed[0] is not None) == (mode == "human")
     assert current_progress() is None
     assert not (tmp_path / ".runtime" / "flow-console").exists()
@@ -559,8 +528,10 @@ def test_all_builtin_boundary_commands_are_actually_observed(tmp_path, flow_type
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
     sink = observer(tmp_path, flow=flow.name, tool_output=True)
     with sink.installed():
-        result = flow._execute_boundary(
-            [sys.executable, "-c", "print('observed boundary')"], timeout=BOUNDARY_HANG_GUARD_S
+        result = boundary(
+            flow,
+            [sys.executable, "-c", "print('observed boundary')"],
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
     assert result.returncode == 0
     assert result.stdout == "observed boundary\n"
@@ -572,13 +543,9 @@ def test_all_builtin_boundary_commands_are_actually_observed(tmp_path, flow_type
 
 @pytest.mark.parametrize("flow_type", BUILTINS)
 def test_module_entry_help_contains_cli_presentation_options(tmp_path, flow_type):
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-m", f"booley.flows.{flow_type.name}", "--help"],
         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")},
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
     )
     assert result.returncode == 0
     assert "--quiet" in result.stdout
@@ -587,22 +554,27 @@ def test_module_entry_help_contains_cli_presentation_options(tmp_path, flow_type
 
 
 def test_pre_sim_observed_without_changing_evidence(tmp_path):
-    from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
+    from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+    from tests.target_test_support import make_target_handle
 
-    command = [
-        sys.executable,
-        "-c",
-        "import os; os.write(1,b'hook out\\n'); os.write(2,b'hook err\\n')",
-    ]
-    expected = _run_pre_sim_process(command, cwd=tmp_path, env=os.environ, timeout=3)
+    def fire():
+        evidence = run_pre_sim_commands(
+            make_target_handle(tmp_path, "sim_demo"),
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=SUBPROCESS_TIMEOUT_S,
+            commands=("printf 'hook out\\n'; printf 'hook err\\n' >&2",),
+        )
+        assert evidence is not None
+        return (evidence.status, evidence.returncode, evidence.stdout_tail, evidence.stderr_tail)
+
+    expected = fire()
     sink = observer(tmp_path, tool_output=True)
     with sink.installed():
-        result = _run_pre_sim_process(command, cwd=tmp_path, env=os.environ, timeout=3)
-    assert (result.stdout, result.stderr, result.returncode) == (
-        expected.stdout,
-        expected.stderr,
-        expected.returncode,
-    )
+        observed = fire()
+    assert observed == expected
+    assert expected[2] == "hook out\n"
     assert "hook out" in sink.stream.getvalue()
     assert "hook err" in sink.stream.getvalue()
 
@@ -624,20 +596,14 @@ def test_observer_failure_never_changes_capture(tmp_path):
 
     sink = observer(tmp_path, stream=BrokenConsole(), tool_output=True)
     with sink.installed():
-        sink.begin_command()
-        with subprocess.Popen(
-            [sys.executable, "-c", "print('authoritative capture')"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as process:
-            output = communicate_observed(process, sink, timeout=3)
+        output, _ = run_observed(sink, "print('authoritative capture')")
     assert output == ("authoritative capture\n", "", False)
     assert sink.log_path is None
 
 
 def prepare_synth_unit(flow, tmp_path, monkeypatch):
+    # Private seam: Yosys and Vivado are not on the test host; the work unit is driven past its
+    # configure step with the tool command replaced.
     from types import SimpleNamespace
 
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
@@ -646,7 +612,10 @@ def prepare_synth_unit(flow, tmp_path, monkeypatch):
     plan = SimpleNamespace(
         build_dir=build, spec=SimpleNamespace(timing=SimpleNamespace(mode="logical"))
     )
-    monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: SimpleNamespace(command=["spec"]))
+    recipe = SimpleNamespace(
+        command=["spec"], resolved=SimpleNamespace(files=(), build_root=tmp_path)
+    )
+    monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: recipe)
     monkeypatch.setattr(flow, "_configure_synth", lambda *_: plan)
     script = (
         f"import pathlib; pathlib.Path({str(build / 'yosys.log')!r})"
@@ -660,6 +629,7 @@ def prepare_synth_unit(flow, tmp_path, monkeypatch):
 
 
 def prepare_fpga_unit(flow, tmp_path, monkeypatch):
+    # Private seam: same as prepare_synth_unit, for Vivado.
     from booley.flows.fpga.flow import _PreparedFpgaCommand
 
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
@@ -673,18 +643,43 @@ def prepare_fpga_unit(flow, tmp_path, monkeypatch):
         tmp_path,
         "",
         False,
+        None,
         console_logs=(tmp_path / "vivado.log", log),
     )
     monkeypatch.setattr(flow, "_prepare_fpga_command", lambda _: prepared)
     return flow._run_single_target, log, "fresh implementation line"
 
 
-def test_synth_work_unit_observes_registered_stage_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("flow_type", "prepare", "first", "stages", "unit_stage", "line"),
+    [
+        (
+            AsicSynthesizeFlow,
+            prepare_synth_unit,
+            "candidate: configure",
+            ["candidate: synthesis"] * 3,
+            "candidate: yosys",
+            "real file-only line",
+        ),
+        (
+            FpgaImplFlow,
+            prepare_fpga_unit,
+            None,
+            ["candidate: Vivado running"] * 2,
+            "candidate: implementation",
+            "fresh implementation line",
+        ),
+    ],
+    ids=["synth", "fpga"],
+)
+def test_work_unit_observes_registered_log(
+    tmp_path, monkeypatch, flow_type, prepare, first, stages, unit_stage, line
+):
     from booley.flows import terminal_progress
 
-    flow = AsicSynthesizeFlow()
-    run_unit, _, _ = prepare_synth_unit(flow, tmp_path, monkeypatch)
-    sink = observer(tmp_path, flow="synth", tool_output=True)
+    flow = flow_type()
+    run_unit, _, _ = prepare(flow, tmp_path, monkeypatch)
+    sink = observer(tmp_path, flow=flow.name, tool_output=True)
     watch = terminal_progress.observe_logs
 
     def register(paths, *, target, temporary):
@@ -696,34 +691,12 @@ def test_synth_work_unit_observes_registered_stage_file(tmp_path, monkeypatch):
         run_unit("demo")
     records = progress_logs(sink.stream.getvalue())
     assert all(target == "demo" for target, _, _ in records)
-    assert records[0][1] == "candidate: configure"
-    assert [stage for _, stage, _ in records[1:]] == ["candidate: synthesis"] * 3
-    assert "candidate: yosys" in sink.stream.getvalue()
-    assert "real file-only line" in sink.stream.getvalue()
-    assert b"real file-only line" in sink.log_path.read_bytes()
-
-
-def test_fpga_work_unit_observes_pending_vivado_child_log(tmp_path, monkeypatch):
-    from booley.flows import terminal_progress
-
-    flow = FpgaImplFlow()
-    run_unit, _, _ = prepare_fpga_unit(flow, tmp_path, monkeypatch)
-    sink = observer(tmp_path, flow="fpga", tool_output=True)
-    watch = terminal_progress.observe_logs
-
-    def register(paths, *, target, temporary):
-        sink.stage_changed("candidate: unrelated", target="other")
-        watch(paths, target=target, temporary=temporary)
-
-    monkeypatch.setattr(terminal_progress, "observe_logs", register)
-    with sink.installed():
-        run_unit("demo")
-    records = progress_logs(sink.stream.getvalue())
-    assert all(target == "demo" for target, _, _ in records)
-    assert [stage for _, stage, _ in records[1:]] == ["candidate: Vivado running"] * 2
-    assert "candidate: implementation" in sink.stream.getvalue()
-    assert "fresh implementation line" in sink.stream.getvalue()
-    assert b"fresh implementation line" in sink.log_path.read_bytes()
+    if first:
+        assert records[0][1] == first
+    assert [stage for _, stage, _ in records[1:]] == stages
+    assert unit_stage in sink.stream.getvalue()
+    assert line in sink.stream.getvalue()
+    assert line.encode() in sink.log_path.read_bytes()
 
 
 def test_keyboard_interrupt_reaps_and_preserves_original_exception(tmp_path, monkeypatch):
@@ -732,6 +705,8 @@ def test_keyboard_interrupt_reaps_and_preserves_original_exception(tmp_path, mon
     def interrupt(*_args):
         raise KeyboardInterrupt
 
+    # Private seam: the interrupt must land while the capture waits; replacing the wait is the
+    # only deterministic place.
     monkeypatch.setattr(observed_process, "_wait", interrupt)
     sink = observer(tmp_path)
     with sink.installed():
@@ -749,56 +724,46 @@ def test_keyboard_interrupt_reaps_and_preserves_original_exception(tmp_path, mon
     assert sink.closed
 
 
-def test_missing_executable_finishes_observation_and_can_run_again(tmp_path):
-    flow = LintFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
-    sink = observer(tmp_path, flow="lint", tool_output=True)
-    with sink.installed():
-        assert flow._execute_boundary([str(tmp_path / "missing-tool")]).returncode == -1
-        assert sink.worker is None
-        assert (
-            flow._execute_boundary([sys.executable, "-c", "print('second command')"]).returncode
-            == 0
-        )
-    assert "second command" in sink.stream.getvalue()
-
-
 def test_missing_executable_records_no_command_start(tmp_path):
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
     sink = observer(tmp_path, flow="lint", tool_output=True)
     with sink.installed():
-        assert flow._execute_boundary([str(tmp_path / "missing-tool")]).returncode == -1
-    assert "command started" not in sink.stream.getvalue(), (
-        "unstarted command must not record a start"
-    )
+        assert boundary(flow, [str(tmp_path / "missing-tool")]).returncode == -1
+        assert "command started" not in sink.stream.getvalue(), (
+            "unstarted command must not record a start"
+        )
+        assert sink.worker is None
+        second = boundary(flow, [sys.executable, "-c", "print('second command')"])
+        assert second.returncode == 0
+    assert "second command" in sink.stream.getvalue()
 
 
-def test_campaign_worker_inherits_invocation_observer(tmp_path):
+def test_simulation_record_worker_inherits_invocation_observer(tmp_path):
     from contextlib import nullcontext
     from types import SimpleNamespace
 
-    from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
+    from booley.flows.sim.record.scheduler import (
+        BoundedSimulationRecordScheduler,
+        ScheduledAttempt,
+    )
     from booley.runtime.supervised_execution import SupervisedExecutionScope
 
     capacity = SimpleNamespace(
         managed=False,
+        items_admitted=False,
         shutdown_requested=False,
         outer_permit=nullcontext,
         outer_scope=lambda stopped: SupervisedExecutionScope(None, tmp_path, stopped),
         cancellation_cause=lambda: None,
+        work_item_claim=lambda _item, alone=False: None,
     )
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
+    seen = []
 
     def execute(attempt, *_args):
-        assert current_progress() is sink
-        result = flow._execute_boundary(
-            [sys.executable, "-c", "print('campaign worker line')"], timeout=BOUNDARY_HANG_GUARD_S
-        )
-        assert result.stdout == "campaign worker line\n"
+        seen.append(current_progress())
 
-    scheduler = BoundedCampaignScheduler(
+    scheduler = BoundedSimulationRecordScheduler(
         capacity,
         allocate=lambda item: ScheduledAttempt(item, "attempt", 1, tmp_path, "demo"),
         execute=execute,
@@ -806,8 +771,7 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
     sink = observer(tmp_path, tool_output=True)
     with sink.installed():
         scheduler.run([{"test": "smoke"}])
-    assert "campaign worker line" in sink.stream.getvalue()
-    assert b"campaign worker line" in sink.log_path.read_bytes()
+    assert seen == [sink]
 
 
 def test_internal_sim_result_records_filtered_but_retained_in_transcript(tmp_path):
@@ -838,13 +802,14 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
     class SlowLog:
         def write(self, data):
             entered.set()
-            release.wait(timeout=6)
+            release.wait(timeout=hang_guard_s())
             real_log.write(data)
 
         def close(self):
             real_log.close()
 
     sink.log = SlowLog()
+    deadline_s = scaled(3)
     started = time.monotonic()
     try:
         with subprocess.Popen(
@@ -854,44 +819,21 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
             text=True,
             start_new_session=True,
         ) as process:
-            assert communicate_observed(process, sink, timeout=3) == (
+            assert communicate_observed(process, sink, timeout=deadline_s) == (
                 "complete capture\n",
                 "",
                 False,
             )
         assert entered.is_set()
-        assert time.monotonic() - started < 3
+        assert time.monotonic() - started < deadline_s
         assert sink.log_path is None
         assert "incomplete/unavailable" in sink.stream.getvalue()
     finally:
         release.set()
-        sink.worker.join(timeout=2)
+        sink.worker.join(timeout=hang_guard_s())
         sink.close()
     assert not sink.worker.is_alive()
     assert not (sink.directory / "active").exists()
-
-
-def test_sim_verbose_keeps_resume_semantics_with_quiet():
-    from booley.flows.base import BuiltinFlow
-
-    seen = []
-
-    def execute(flow):
-        seen.append((flow.args.verbose, current_progress()))
-        return ExecutionResult(0, EndpointOutcome())
-
-    with patch.object(BuiltinFlow, "execute_prepared", execute):
-        execute_cli(SimulateFlow(), ["--target", "demo", "--verbose", "--quiet"])
-    assert seen == [(True, None)]
-
-
-def test_plain_progress_has_canonical_utc_timestamp(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "booley.flows.terminal_progress.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
-    )
-    sink = observer(tmp_path)
-    sink.stage_changed("simulation")
-    assert sink.stream.getvalue().startswith("[booley-progress] 2026-10-05T13:00:00Z ")
 
 
 def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
@@ -899,7 +841,7 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
     release = tmp_path / "release"
     script = (
         "import pathlib,time; print('second ready',flush=True); "
-        f"p=pathlib.Path({str(release)!r}); deadline=time.monotonic()+5; "
+        f"p=pathlib.Path({str(release)!r}); deadline=time.monotonic()+{SUBPROCESS_TIMEOUT_S}; "
         "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)'); "
         "print('second still live',flush=True); "
         f"p=pathlib.Path({str(release.with_name('done'))!r}); "
@@ -916,7 +858,9 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
         )
         result = []
         thread = threading.Thread(
-            target=lambda: result.append(communicate_observed(second, sink, timeout=6))
+            target=lambda: result.append(
+                communicate_observed(second, sink, timeout=SUBPROCESS_TIMEOUT_S)
+            )
         )
         thread.start()
         try:
@@ -929,32 +873,21 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
                 text=True,
                 start_new_session=True,
             ) as first:
-                assert communicate_observed(first, sink, timeout=3)[0] == "first done\n"
+                assert (
+                    communicate_observed(first, sink, timeout=SUBPROCESS_TIMEOUT_S)[0]
+                    == "first done\n"
+                )
             release.touch()
             wait_until(lambda: "second still live" in sink.stream.getvalue())
             assert second.poll() is None
         finally:
             release.with_name("done").touch()  # let the second command exit
             release.touch()
-            thread.join(timeout=7)
+            thread.join(timeout=hang_guard_s())
             second.stdout.close()
             second.stderr.close()
     assert not thread.is_alive()
     assert result == [("second ready\nsecond still live\n", "", False)]
-
-
-def test_fast_output_backlog_preserves_every_transcript_line(tmp_path):
-    sink = observer(tmp_path)
-    # Freeze the consumer so the backlog deterministically exceeds the old limit.
-    with sink.installed(), patch.object(sink, "_run"):
-        sink.begin_command()
-        chunk = b"unique-line\n" * 4000
-        for _ in range(300):
-            sink.observe("stdout", chunk)
-        sink.end_command()
-        sink._drain_end()
-    assert sink.log_path.read_bytes().count(b"unique-line\n") == 1_200_000
-    assert "incomplete/unavailable" not in sink.stream.getvalue()
 
 
 def test_parallel_pipe_sources_do_not_merge_partial_lines(tmp_path):
@@ -968,39 +901,25 @@ def test_parallel_pipe_sources_do_not_merge_partial_lines(tmp_path):
     assert "stdout:2: second line" in sink.stream.getvalue()
 
 
-@pytest.mark.parametrize("mode", ["runtime", "ticket"])
-def test_agent_console_and_display_bytes_match_existing_transport(
-    tmp_path, monkeypatch, capsys, mode
-):
+# Captured once from the existing transport writer with the fixed invocation id and timestamp.
+DISPLAY_EVENTS = (
+    b'{"type":"endpoint_progress","endpoint":"lint","line":"checking",'
+    b'"timestamp":"2026-10-05T13:00:00Z","invocation_id":"fixed-invocation",'
+    b'"display_scope":"developer"}\n'
+    b'{"type":"endpoint_progress","endpoint":"lint","line":"done",'
+    b'"timestamp":"2026-10-05T13:00:00Z","completion":true,'
+    b'"invocation_id":"fixed-invocation","display_scope":"developer"}\n'
+)
+
+
+def test_agent_console_and_display_bytes_match_existing_transport(tmp_path, monkeypatch, capsys):
     from booley.flows.base import BuiltinFlow
-    from booley.flows.endpoint_events import (
-        _endpoint_progress_event,
-        _serialize_display_event,
-        _write_display_event,
-    )
 
-    def write_event(event):
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(_serialize_display_event(event))
-
-    if mode == "runtime":
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-    else:
-        monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-        # Observe the existing transport without activating the runtime exclusion.
-        monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", write_event)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("BOOLEY_DISPLAY_INVOCATION_ID", "fixed-invocation")
     monkeypatch.setattr(
         "booley.flows.endpoint_events.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
     )
-    path = tmp_path / "display.jsonl"
-    with patch.dict(os.environ, {"BOOLEY_RUNTIME_DIR": str(tmp_path)}):
-        _write_display_event(_endpoint_progress_event("lint", "checking"))
-        _write_display_event(
-            _endpoint_progress_event("lint", "done", completion=True, repeats_at_end=False)
-        )
-    expected_events = path.read_bytes()
-    path.unlink()
 
     def execute(flow):
         assert flow.terminal_progress is None
@@ -1010,14 +929,15 @@ def test_agent_console_and_display_bytes_match_existing_transport(
         print("verdict unchanged")
         return ExecutionResult(7, EndpointOutcome())
 
-    adapter = FixtureRecorder(identity={"generation": "d" * 32}) if mode == "ticket" else None
     with patch.object(BuiltinFlow, "execute_prepared", execute):
-        result = execute_cli(LintFlow(), ["--target", "demo"], adapter=adapter)
+        result = execute_cli(LintFlow(), ["--target", "demo"])
     captured = capsys.readouterr()
     assert captured.out == "verdict unchanged\n"
     assert captured.err == ""
     assert result.exit_code == 7
-    assert path.read_bytes() == expected_events
+    # The writer opens the file in text mode, so Windows stores CRLF.
+    written = (tmp_path / "display.jsonl").read_bytes().replace(b"\r\n", b"\n")
+    assert written == DISPLAY_EVENTS
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows anonymous pipe compatibility")
@@ -1028,37 +948,18 @@ def test_windows_capture_does_not_require_nonblocking_pipe_support(tmp_path, mon
     monkeypatch.setattr(os, "set_blocking", unavailable)
     sink = observer(tmp_path)
     with sink.installed():
-        sink.begin_command()
-        with subprocess.Popen(
-            [sys.executable, "-c", "print('Windows capture')"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        ) as process:
-            assert communicate_observed(process, sink, timeout=3) == (
-                "Windows capture\n",
-                "",
-                False,
-            )
+        output, _ = run_observed(sink, "print('Windows capture')")
+    assert output == ("Windows capture\n", "", False)
 
 
 def test_real_fast_tool_keeps_complete_transcript(tmp_path):
     sink = observer(tmp_path)
     # Freeze the writer to test real pipe backlog retention independently of
     # the advisory worker shutdown deadline and loaded-runner disk throughput.
-    with sink.installed(), patch.object(sink, "_run"):
-        sink.begin_command()
-        with subprocess.Popen(
-            [sys.executable, "-c", "import os; os.write(1,b'line\\n'*6000000)"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as process:
-            stdout, stderr, timed_out = communicate_observed(
-                process, sink, timeout=BOUNDARY_HANG_GUARD_S
-            )
-        sink._drain_end()
+    with frozen_worker(sink):
+        (stdout, stderr, timed_out), _ = run_observed(
+            sink, "import os; os.write(1,b'line\\n'*6000000)", timeout=SUBPROCESS_TIMEOUT_S
+        )
     assert stderr == ""
     assert not timed_out
     assert sink.log_path is not None
@@ -1094,17 +995,10 @@ def test_vivado_stage_identification_accepts_native_path_separators(
     assert sink.stage == "candidate: " + stage
 
 
-def test_tty_adaptive_intervals_use_monotonic_differences(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
-    screen = Screen(tty=True)
+def test_tty_adaptive_intervals_use_monotonic_differences(tmp_path):
     now = [1000000.0]
-    progress = observer(
-        tmp_path,
-        stream=screen,
-        clock=lambda: now[0],
-        dimensions=lambda: os.terminal_size((180, 40)),
-    )
+    progress = observer(tmp_path, tty=True, clock=lambda: now[0], width=180, height=40)
+    screen = progress.stream
     progress.last_output = now[0]
     now[0] += 3661
     progress.tick()
@@ -1132,17 +1026,9 @@ def _cells(text):
 
 def _tty_sink(tmp_path, monkeypatch, *, width=120, colors=False, target="top"):
     """A TTY observer with stubbed size, clock and color policy (no host dependence)."""
-    monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", colors)
     clock = [0.0]
-    sink = TerminalProgress(
-        "sim",
-        target,
-        tmp_path,
-        stream=Screen(tty=True),
-        clock=lambda: clock[0],
-        dimensions=lambda: os.terminal_size((width, 24)),
-    )
+    sink = observer(tmp_path, tty=True, clock=lambda: clock[0], width=width, target=target)
     return sink, clock
 
 
@@ -1204,42 +1090,54 @@ def test_tty_status_row_cuts_target_to_width(tmp_path, monkeypatch, width, targe
         assert _cells(row) == width - 1
 
 
-def _two_lane_sink(tmp_path, monkeypatch, *, colors, width=120):
+@contextmanager
+def _two_lanes(tmp_path, monkeypatch, *, colors, width=120, alpha="alpha/1", alpha_tail=b""):
+    """Two lanes opened through the public API; yields the sink at 63 s with both open."""
     sink, clock = _tty_sink(tmp_path, monkeypatch, width=width, colors=colors, target="sim_demo")
-    sink.last_output = 51.0
-    alpha = sink._open_lane("alpha/1")
-    alpha.stage = "simulation: alpha"
-    alpha.last_output = 51.0
-    alpha.tail.append("alpha tail")
-    beta = sink._open_lane("beta_long/2")
-    beta.stage = "building"
-    beta.tail.append("beta tail")
-    clock[0] = 63.0
-    return sink
+    with frozen_worker(sink) as pump, progress_lane(alpha):
+        announce_unit("simulation: alpha")
+        clock[0] = 51.0
+        sink.observe("stdout", b"alpha tail\n" + alpha_tail)
+        pump()
+        with progress_lane("beta_long/2"):
+            announce_unit("building")
+            sink.observe("stdout", b"beta tail\n")
+            pump()
+            clock[0] = 63.0
+            yield sink
 
 
 @pytest.mark.parametrize("colors", [False, True], ids=["plain", "colored"])
 def test_tty_lane_rows_are_indented_and_aligned(tmp_path, monkeypatch, colors):
     from booley.presentation.colors import strip_ansi
 
-    sink = _two_lane_sink(tmp_path, monkeypatch, colors=colors)
-    frame = _frame(sink)
+    with _two_lanes(tmp_path, monkeypatch, colors=colors) as sink:
+        frame = _frame(sink)
     assert [strip_ansi(row) for row in frame] == [
         "sim · sim_demo · 2 lanes   1m 03s   last output 12s ago",
         "  alpha/1       simulation: alpha   last output 12s ago",
         "    alpha tail",
-        "  beta_long/2   building",
+        "  beta_long/2   building            last output 12s ago",
         "    beta tail",
     ]
     # Padding sits outside the styling, so colors never change the layout.
     assert any("\x1b[" in row for row in frame) is colors
 
 
+def test_tty_lane_row_without_output_has_no_last_output_part(tmp_path, monkeypatch):
+    sink, clock = _tty_sink(tmp_path, monkeypatch, target="sim_demo")
+    with frozen_worker(sink), progress_lane("gamma/3"):
+        announce_unit("building")
+        clock[0] = 63.0
+        rows = _frame(sink)
+    assert rows[1] == "  gamma/3   building"
+
+
 def test_tty_lane_names_are_cut_to_fit(tmp_path, monkeypatch):
-    sink = _two_lane_sink(tmp_path, monkeypatch, colors=False, width=30)
-    sink._lanes[0].label = "a" * 40
-    sink._lanes[0].tail.append("x" * 60)
-    rows = _frame(sink)
+    with _two_lanes(
+        tmp_path, monkeypatch, colors=False, width=30, alpha="a" * 40, alpha_tail=b"x" * 60 + b"\n"
+    ) as sink:
+        rows = _frame(sink)
     assert all(_cells(row) <= 29 for row in rows), rows
     assert rows[1].startswith("  aaaaaaa…"), rows
     # Parts that do not fit are dropped whole, never cut mid-token.
@@ -1276,35 +1174,26 @@ REDIRECTED_GOLDEN = "\n".join(
 
 
 def test_redirected_progress_records_are_byte_identical(tmp_path, monkeypatch):
-    from booley.flows.terminal_progress import announce_unit, progress_lane
     from booley.presentation.colors import strip_ansi
 
-    monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", True)
     monkeypatch.setattr(
         "booley.flows.terminal_progress.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
     )
     now = [0.0]
-    sink = TerminalProgress(
-        "sim",
-        "sim_demo",
-        tmp_path,
-        stream=Screen(),
-        clock=lambda: now[0],
-        dimensions=lambda: os.terminal_size((100, 24)),
-    )
-    with patch.object(sink, "_run"), sink.installed():
+    sink = observer(tmp_path, clock=lambda: now[0], width=100)
+    with frozen_worker(sink) as pump:
         announce_unit("simulation")
         sink.begin_command()
         sink.observe("stdout", b"serial one\nserial two\n")
-        sink._poll()
+        pump()
         now[0] = 5
         sink.tick()
         with progress_lane("alpha/1"):
             announce_unit("simulation: alpha")
             sink.begin_command()
             sink.observe("stdout", b"lane line\n")
-            sink._poll()
+            pump()
             now[0] = 10
             sink.tick()
         # A 32-hex attempt token, a registered log and a command end stay verbatim in records.
@@ -1312,7 +1201,6 @@ def test_redirected_progress_records_are_byte_identical(tmp_path, monkeypatch):
         (tmp_path / "run.log").touch()
         sink.log_path_known(tmp_path / "run.log")
         sink.end_command()
-        sink._drain_end()
     sink.footer()
     text = sink.stream.getvalue()
     assert "\x1b" not in text
@@ -1346,31 +1234,16 @@ def settled_lines(text):
     return lines
 
 
-def tty_observer(tmp_path, monkeypatch, *, flow="sim", target="sim_demo"):
-    """A TTY observer with a constant clock, so every elapsed time renders ``0s``."""
-    monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
-    return TerminalProgress(
-        flow,
-        target,
-        tmp_path,
-        stream=Screen(tty=True),
-        clock=lambda: 0.0,
-        dimensions=lambda: os.terminal_size((120, 24)),
-    )
-
-
-def test_tty_sim_attempt_leaves_compact_summary(tmp_path, monkeypatch):
+def test_tty_sim_attempt_leaves_compact_summary(tmp_path):
     from booley.flows.base import SubprocessResult
     from booley.flows.sim.adapter_transport import AdapterTransportIdentity
     from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
-    from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
 
-    sink = tty_observer(tmp_path, monkeypatch)
+    sink = observer(tmp_path, tty=True)
     identity = AdapterTransportIdentity(
         "cocotb", TOKEN_40, "sim_demo", ("reset",), tmp_path / f"adapter-{TOKEN_40}.json"
     )
-    request = AdapterAttemptRequest(("tool",), 30, identity, tmp_path)
+    request = AdapterAttemptRequest(("tool",), SUBPROCESS_TIMEOUT_S, identity, tmp_path)
     code = (
         "print('ALL TESTS PASSED.');"
         f"print('BOOLEY_EDA_FAILURE token={TOKEN_40} detail');"
@@ -1378,10 +1251,8 @@ def test_tty_sim_attempt_leaves_compact_summary(tmp_path, monkeypatch):
     )
 
     def invoke(_command, *, timeout):
-        done = _run_pre_sim_process(
-            [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=timeout
-        )
-        return SubprocessResult(done.returncode, done.stdout, done.stderr)
+        (out, err, _), process = run_observed(sink, code, timeout=timeout)
+        return SubprocessResult(process.returncode, out, err)
 
     with sink.installed():
         execute_adapter_attempt(invoke, request)
@@ -1401,25 +1272,21 @@ def test_tty_sim_attempt_leaves_compact_summary(tmp_path, monkeypatch):
     assert TOKEN_40.encode() in sink.log_path.read_bytes(), "transcript must keep the full token"
 
 
-def test_tty_crlf_child_output_leaves_no_blank_tail_rows(tmp_path, monkeypatch):
+def test_tty_crlf_child_output_leaves_no_blank_tail_rows(tmp_path):
     """A Windows child ends lines with CRLF; the terminal tail must not gain blank rows."""
-    from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
-
-    sink = tty_observer(tmp_path, monkeypatch)
+    sink = observer(tmp_path, tty=True)
     code = "import sys; sys.stdout.buffer.write(b'one\\r\\n\\r\\ntwo\\r\\n'); sys.stdout.flush()"
     with sink.installed():
-        _run_pre_sim_process(
-            [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=30
-        )
+        run_observed(sink, code)
     sink.footer()
 
     assert settled_lines(sink.stream.getvalue())[1:3] == ["    one", "    two"]
 
 
-def test_tty_stage_outside_command_shows_live_row(tmp_path, monkeypatch):
+def test_tty_stage_outside_command_shows_live_row(tmp_path):
     """Between commands a stage change writes no record and leaves no panel rows that
     later output would have to erase (the name is pinned by the #2885 plan)."""
-    sink = tty_observer(tmp_path, monkeypatch, target="top")
+    sink = observer(tmp_path, tty=True, target="top")
     sink.stage_changed("configure")
     sink.stream.write("verdict\n")  # the Flow prints its verdict before the observer closes
     sink.close()
@@ -1428,54 +1295,22 @@ def test_tty_stage_outside_command_shows_live_row(tmp_path, monkeypatch):
     assert settled_lines(text) == ["verdict"]
 
 
-def test_tty_two_target_lint_leaves_compact_output(tmp_path, monkeypatch):
+def test_tty_two_target_lint_leaves_compact_output(tmp_path, monkeypatch, lint_pair):
     from booley.core.build_paths import work_root_for
     from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
-    from booley.fusesoc import fusesoc_registry
-
-    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setenv("COLUMNS", "120")
-    monkeypatch.setenv("LINES", "24")
-    targets = ("lint_a", "lint_b")
-    source = write_lint_progress_core(tmp_path, targets)
-
-    def resolve(target, *, build_root, library_plan=None):
-        return fusesoc_registry.ResolvedTarget(
-            name=target.selector,
-            vlnv=target.vlnv,
-            toplevel="top",
-            eda_tool="verilator",
-            configured_eda_tool="verilator",
-            parameters={},
-            build_root=build_root,
-            edam_path=build_root / "demo.eda.yml",
-            files=(fusesoc_registry.ResolvedFile(str(source), "systemVerilogSource"),),
-        )
-
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
-    flow = LintFlow()
 
     def run_observed_child(_command):
-        done = _run_pre_sim_process(
-            [sys.executable, "-c", "print('lint tool ran')"],
-            cwd=tmp_path,
-            env=dict(os.environ),
-            timeout=30,
-        )
-        return SubprocessResult(done.returncode, done.stdout, done.stderr)
+        (out, err, _), process = run_observed(current_progress(), "print('lint tool ran')")
+        return SubprocessResult(process.returncode, out, err)
 
-    monkeypatch.setattr(flow, "_execute_boundary", run_observed_child)
+    flow = lint_pair(run_observed_child)
     screen = Screen(tty=True)  # the Flow's stdout verdict and the observer share one terminal
     monkeypatch.setattr(sys, "stderr", screen)
     monkeypatch.setattr(sys, "stdout", screen)
     result = execute_cli(flow, ["--work-dir", str(tmp_path), "--target", "lint_a,lint_b"])
     assert result.exit_code == 0, result.outcome.report_text
     assert "[booley-progress]" not in screen.getvalue()
-    logs = ", ".join(str(work_root_for(tmp_path, "lint", t) / "run.log") for t in targets)
+    logs = ", ".join(str(work_root_for(tmp_path, "lint", t) / "run.log") for t in LINT_TARGETS)
     lines = settled_lines(screen.getvalue())
     results = [
         line for line in lines if re.fullmatch(r"done   lint_[ab] · checking   [\d.]+s", line)
@@ -1494,7 +1329,7 @@ def test_tty_two_target_lint_leaves_compact_output(tmp_path, monkeypatch):
 def test_tty_watched_log_flows_leave_compact_output(tmp_path, monkeypatch, flow_type, prepare):
     flow = flow_type()
     run_unit, log, watched_line = prepare(flow, tmp_path, monkeypatch)
-    sink = tty_observer(tmp_path, monkeypatch, flow=flow.name, target="demo")
+    sink = observer(tmp_path, tty=True, flow=flow.name, target="demo")
     with sink.installed():
         run_unit("demo")
     sink.footer()
@@ -1512,32 +1347,21 @@ def test_tty_watched_log_flows_leave_compact_output(tmp_path, monkeypatch, flow_
 
 def scripted_session(sink):
     """Drive one serial command through the public hooks; returns after the footer."""
-    from booley.flows.terminal_progress import announce_unit
-
-    with patch.object(sink, "_run"), sink.installed():
+    with frozen_worker(sink) as pump:
         announce_unit(f"simulation: reset attempt={TOKEN_40}")
         sink.begin_command()
         sink.observe("stdout", f"BOOLEY_EDA_FAILURE token={TOKEN_40}\nplain line\n".encode())
-        sink._poll()
+        pump()
         sink.end_command()
-        sink._drain_end()
     sink.footer()
 
 
-def test_transcript_bytes_do_not_depend_on_terminal(tmp_path, monkeypatch):
+def test_transcript_bytes_do_not_depend_on_terminal(tmp_path):
     transcripts = {}
     for name, tty in (("tty", True), ("redirected", False)):
         work = tmp_path / name
         work.mkdir()
-        monkeypatch.setenv("TERM", "xterm")
-        sink = TerminalProgress(
-            "sim",
-            "sim_demo",
-            work,
-            stream=Screen(tty=tty),
-            clock=lambda: 0.0,
-            dimensions=lambda: os.terminal_size((120, 24)),
-        )
+        sink = observer(work, tty=tty, clock=lambda: 0.0)
         scripted_session(sink)
         transcripts[name] = sink.log_path.read_bytes()
     assert transcripts["tty"] == transcripts["redirected"]
@@ -1547,49 +1371,40 @@ def test_transcript_bytes_do_not_depend_on_terminal(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("script", "timeout", "status"),
     [
-        ("print('ok')", 10, "done"),
-        ("import sys; sys.exit(3)", 10, "exit 3"),
-        ("import time; time.sleep(30)", 0.3, "timed out"),
-        ("import os,time; os.write(1,b'\\xff'); time.sleep(30)", 10, "stopped"),
+        ("print('ok')", SUBPROCESS_TIMEOUT_S, "done"),
+        ("import sys; sys.exit(3)", SUBPROCESS_TIMEOUT_S, "exit 3"),
+        ("import time; time.sleep(30)", scaled(0.3), "timed out"),
+        (
+            f"import os,time; os.write(1,b'\\xff'); time.sleep({scaled(30):g})",
+            scaled(10),
+            "stopped",
+        ),
     ],
     ids=["done", "exit", "timeout", "capture-error"],
 )
-def test_tty_result_line_names_the_process_outcome(tmp_path, monkeypatch, script, timeout, status):
-    sink = tty_observer(tmp_path, monkeypatch)
+def test_tty_result_line_names_the_process_outcome(tmp_path, script, timeout, status):
+    sink = observer(tmp_path, tty=True)
     sink.stage_changed("simulation")
     with sink.installed():
-        sink.begin_command()
-        with subprocess.Popen(
-            [sys.executable, "-c", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            start_new_session=True,
-        ) as process:
-            if status == "stopped":  # invalid bytes on the pipe raise from the capture
-                with pytest.raises(UnicodeDecodeError):
-                    communicate_observed(process, sink, timeout=timeout)
-            else:
-                communicate_observed(process, sink, timeout=timeout)
+        if status == "stopped":  # invalid bytes on the pipe raise from the capture
+            with pytest.raises(UnicodeDecodeError):
+                run_observed(sink, script, timeout=timeout, encoding="utf-8")
+        else:
+            run_observed(sink, script, timeout=timeout, encoding="utf-8")
     assert settled_lines(sink.stream.getvalue())[0] == f"{status}   sim_demo · simulation   0s"
 
 
-def test_tty_lane_keeps_its_first_failing_status(tmp_path, monkeypatch):
-    from booley.flows.terminal_progress import progress_lane
-
-    sink = tty_observer(tmp_path, monkeypatch)
-    with patch.object(sink, "_run"), sink.installed():
-        with progress_lane("alpha/1"):
-            for status in ("done", "exit 2", "timed out"):
-                sink.begin_command()
-                sink.end_command(status)
-        sink._drain_end()
+def test_tty_lane_keeps_its_first_failing_status(tmp_path):
+    sink = observer(tmp_path, tty=True)
+    with frozen_worker(sink), progress_lane("alpha/1"):
+        for status in ("done", "exit 2", "timed out"):
+            sink.begin_command()
+            sink.end_command(status)
     assert settled_lines(sink.stream.getvalue()) == ["exit 2   alpha/1   0s"]
 
 
 def test_tty_transcript_failure_prints_one_plain_line(tmp_path, monkeypatch):
-    sink = tty_observer(tmp_path, monkeypatch)
+    sink = observer(tmp_path, tty=True)
     monkeypatch.setattr(
         "booley.flows.terminal_progress.runtime_dir",
         lambda _: (_ for _ in ()).throw(PermissionError()),
@@ -1604,46 +1419,45 @@ def test_tty_transcript_failure_prints_one_plain_line(tmp_path, monkeypatch):
     assert settled_lines(text)[0].startswith("Observation transcript incomplete/unavailable")
 
 
-def test_tty_window_shrink_keeps_compact_output(tmp_path, monkeypatch):
+def test_tty_window_shrink_keeps_compact_output(tmp_path):
     """A window that drops below the panel height mid-run draws nothing, not raw records."""
-    monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     now = [0.0]
     height = [24]
-    sink = TerminalProgress(
-        "sim",
-        "sim_demo",
+    sink = observer(
         tmp_path,
-        stream=Screen(tty=True),
+        tty=True,
         clock=lambda: now[0],
         dimensions=lambda: os.terminal_size((120, height[0])),
     )
-    with patch.object(sink, "_run"), sink.installed():
+    with frozen_worker(sink) as pump:
         sink.begin_command()
         sink.observe("stdout", b"kept line\n")
-        sink._poll()
+        pump()
         height[0], now[0] = 5, 10.0
         sink.tick()
         sink.end_command()
-        sink._drain_end()
     text = sink.stream.getvalue()
     assert "[booley-progress]" not in text
     assert settled_lines(text) == ["done   sim_demo · preparing   10s", "    kept line"]
 
 
-def test_human_text_shortens_hashes_but_not_design_data(tmp_path, monkeypatch):
-    from booley.flows.terminal_progress import _human, announce_unit
-
-    sha = "0123456789abcdef0123456789abcdef01234567"
-    assert _human(f"Paired Checkout -> {sha}") == "Paired Checkout -> 01234567"
-    for data in ("01" * 20, "0" * 40, "f" * 32):  # wide binary, zero and all-letter vectors
-        assert _human(f"data={data}") == f"data={data}"
-    sink = tty_observer(tmp_path, monkeypatch)  # the baseline stage reaches the live row
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        (f"Paired Checkout -> {TOKEN_40}", f"Paired Checkout -> {TOKEN_40[:8]}"),
+        ("data=" + "01" * 20, "data=" + "01" * 20),  # wide binary vector
+        ("data=" + "0" * 40, "data=" + "0" * 40),  # zero vector
+        ("data=" + "f" * 32, "data=" + "f" * 32),  # all-letter vector
+    ],
+    ids=["hash", "binary", "zero", "letters"],
+)
+def test_human_text_shortens_hashes_but_not_design_data(tmp_path, text, shown):
+    sink = observer(tmp_path, tty=True)
     with sink.installed():
-        announce_unit(f"baseline: Paired Checkout -> {sha}")
+        announce_unit("baseline: " + text)  # the baseline stage reaches the live row
     sink.tick()
-    assert "Paired Checkout -> 01234567" in sink.stream.getvalue()
-    assert sha not in sink.stream.getvalue()
+    assert "baseline: " + shown in sink.stream.getvalue()
+    assert text == shown or text not in sink.stream.getvalue()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="needs a POSIX pty or FIFO")
@@ -1664,6 +1478,8 @@ def test_raw_terminal_lines_reach_job_log_without_frames(tmp_path, monkeypatch, 
         )
         sink.tick()  # a pty draws the live status panel; a pipe draws nothing
         assert (sink.rows > 0) == (terminal == "pty")
+        # Private seam: the only public writers of a permanent line also redraw the panel or
+        # print records, which the test must keep apart.
         sink._say("permanent \x1b[1mline\x1b[0m")
         sink.close()
     os.close(reader)

@@ -89,7 +89,8 @@ and an explicit `review` star; evidence-forced and pre-set rows are unstarred.
 ## Part A — Feasibility triage (evidence)
 
 Booley can drive four flows: **`sim`**, **`lint`**, **`synth`**,
-and **`fpga`**. Feasibility is per-flow: a project may be a perfect fit
+and **`fpga`**. (A fifth, **`mutation`**, reuses a `sim` Target, so it needs no
+feasibility verdict of its own.) Feasibility is per-flow: a project may be a perfect fit
 for simulate and lint while its synthesis flow needs extra wiring. Per flow the
 verdict falls into one of three buckets. The authoritative EDA-tool → bucket mapping
 lives in the supported EDA tools matrix, `/booley-docs/SUPPORTED-EDA-TOOLS.md` — treat it as the
@@ -154,14 +155,10 @@ leaves all of this on a blank slate:
 - `.booley/booley.toml` and `tests.toml` — **comment-only placeholders
   with zero keys**;
 - `.booley/.gitignore`, a `FUSESOC_IGNORE` marker, a managed
-  `.managed/project-git-hooks.pyz` bundle, Project-authored `hooks/`, and four create-only
-  `goalsets/{feature,bugfix,refactor,verification}.md` files;
+  `.managed/project-git-hooks.pyz` bundle, and Project-authored `hooks/`;
 - **no inner git repo** and no `/.booley` exclusion: the skeleton records no
   `[stealth] enabled`, and a missing key means Stealth Mode is off, so
   `.booley/` shows as untracked in the RTL repo until row 16 is executed;
-- the non-Stealth line-ending rule `* text=auto eol=lf` as the first line of
-  the root `.gitattributes` (a new untracked file when the repo had none),
-  unless the repo already sets a whole-tree line-ending policy;
 - `.git/hooks/commit-msg` + `pre-push` delegators (inactive until Stealth is
   enabled), and `.devcontainer/devcontainer.json`;
 - one generated block in `.git/info/exclude` under the header
@@ -335,6 +332,12 @@ script lines) as you go.
   post-inference mapping as a fallback. Reconcile `[flows.synth].expected_latches`
   with the evidenced intentional-latch remainder after replacement: it is an
   allowance, not evidence that replacement occurred.
+- **Structural allowances.** In the plan, record the intentional latches and
+  intentional combinational loops the RTL evidence supports for each of `synth`
+  and `fpga` (`expected_latches` and `expected_comb_loops`); record none where
+  the evidence shows none. Each Flow counts its own way, so confirm a count
+  against that Flow's reported count. Record an `fpga` allowance only when the
+  Project has an FPGA Target: a `[flows.fpga]` table makes Doctor require one.
 - **Testbench style.** Booley scores a simulation by matching a stdout
   sentinel. A self-checking SV/Verilog testbench that prints a clear pass/fail
   line is green: its wording becomes config in Step 2. UVM is fine as long as
@@ -388,8 +391,11 @@ script lines) as you go.
     cannot serve as a standalone lint/synthesis top, so both flows are dead until you add a thin
     **flat-port wrapper** (one small file, not a blocker; `booley doctor` flags
     it at setup time). `sim` is unaffected: a cocotb testbench brings its
-    own wrapper. Symptom and wrapper recipe: Booley's `/booley-docs/TROUBLESHOOTING.md` → "interface
-    parameter mismatch".
+    own wrapper. Symptom: lint or synthesis stops on the design's own check,
+    such as `Interface DATA_W parameter mismatch`, because unbound interfaces
+    take default parameters. The wrapper creates the interfaces with real
+    parameters, instantiates the design, and exposes plain ports; point the
+    lint and synthesis Targets at it.
   - **Packed-struct / user-typedef ports** (`input fp_operation_type op`, a
     `typedef struct packed` or an enum from a package) — **no wrapper needed.**
     A packed struct is just a bit vector with names on it; the frontends flatten
@@ -416,8 +422,9 @@ script lines) as you go.
   appendix), never to vendor a prebuilt blob. And don't stop at "a RISC-V
   toolchain exists in the image" — plan an execution-time check of the
   project's exact compile flags against the sandbox compiler, because vendor
-  `-march` strings are a classic trap (Booley's `/booley-docs/TROUBLESHOOTING.md` → "RISC-V
-  firmware won't assemble against the sandbox GCC").
+  `-march` strings are a classic trap: the sandbox GCC rejects a vendor ISA
+  string such as `rv64imafdcxtheadc` (OpenC910), which only the vendor's own
+  toolchain, built into a project image, accepts.
 - **Repository shape.** Three topology traps are worth ten minutes of looking
   before any config is planned. *Self-referential symlinks*: some repos ship
   links that make the tree infinitely recursive for any walker that follows
@@ -452,14 +459,14 @@ script lines) as you go.
 - **Git submodules.** Run `git submodule status` in the outer repository and,
   when `.booley` is a standalone Git repository, run
   `git -C .booley submodule status` too. If either has any, add a
-  decision row — but a short one: Goal worktrees get their submodules
+  decision row — but a short one: linked worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
-  cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/TARGETS.md` →
-  "Submodules"). What the plan owes is the precondition and, if the outer repo
+  cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/CONFIG.md` →
+  "Git submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
     the required pinned commit objects** in its owning repository before any
-    Goal work — host-side `git submodule update --init --recursive` in the
+    worktree work — host-side `git submodule update --init --recursive` in the
     outer repo and `git -C .booley submodule update --init --recursive`
     in a standalone paired repo, with no uncommitted submodule work left.
     Worktree setup hard-errors otherwise with the missing path, dirty checkout,
@@ -470,7 +477,7 @@ script lines) as you go.
     `booley.toml`; an explicit empty list selects none, and a non-empty list is
     intersected with the selected revision's gitlinks. Every top-level gitlink
     in a Paired Checkout is materialized. Nested gitlinks are recursive.
-  - Execution-time check: a Goal worktree comes up with the submodule
+  - Execution-time check: a new worktree comes up with the submodule
     populated (the main checkout looking fine proves only the precondition).
 - **Design scale.** Past ~250 files or ~150K LOC (`booley doctor` prints a
   NOTE at that scale), plan for it: an early ingest smoke (an `iverilog`
@@ -560,7 +567,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Enumerate the full
    Target list here**, not just a name per intent: each Target with its intent,
    toplevel, and test list. The counting rule depends on the TB flavor (row 4);
-   `/booley-docs/TARGETS.md` is authoritative:
+   `/booley-docs/FLOW-SIM.md` (Cocotb Targets) is authoritative:
    - **Classic sentinel SV/UVM TB** — one Target per *intent* (sim / lint /
      asic / fpga). A distinct config (parameter/define set) or a distinct
      toplevel gets its own Target; nothing else does.
@@ -629,7 +636,8 @@ separate columns (see "How a row resolves"). The standard checklist:
    they need goes into the sandbox image (row 7). When a hook or generator
    invokes a recipe (for example `make <target>`), propose the tracked recipe
    file and its stimulus sources as additional Protected Inputs: tell the human
-   that Goal Mode will freeze them, check that no build output lands inside a
+   that a Measurement reports their edits, check that no build output lands
+   inside a
    proposed pattern, and record their agreement in this row. Step 2 writes
    `[project].protected_inputs` only from that agreement; see `/booley-docs/CONFIG.md` →
    "Additional Protected Inputs". Two shape constraints to plan against, both
@@ -642,6 +650,22 @@ separate columns (see "How a row resolves"). The standard checklist:
    Targets need different input dirs, the commands stage into the one `run_cwd`,
    they do not each get their own. (The commands themselves run from the **Project Root**, not from `run_cwd`, and nothing auto-creates directories — a staging
    script `mkdir -p`s its own target dir or `cd "$BOOLEY_RUN_CWD"` first.)
+6a. **Metrics — Enable metrics now or later?** A **defaults block** row,
+   default `later` (adoption is optional; never nag). `now` adds exactly one
+   `[<target>.sim]` table for every Target row 6 gives at least one Test, and
+   no other table; `later` changes nothing beyond the defaults `booley init`
+   wrote to `.booley/metrics.toml`. Resolves `evidence-forced: later` when no
+   Target has Tests (nothing to enable). Unattended: `later`,
+   `inferred`/high, no review star (a Developer Agent never adds tables
+   unasked). A Project-authored `metrics.toml` wins, because init never
+   overwrites it: Part A reads the file. When it already holds a
+   `[<target>.<flow>]` table, row 6a resolves `pre-set` and Setup leaves the
+   file alone. When it has no `[defaults.sim]` bound (an empty or hand-written
+   file), an empty `[<target>.sim]` table would be a load error ("no reported
+   metric"), so row 6a resolves `evidence-forced: later` with that reason.
+   Only a file whose `[defaults.sim]` holds a bound and that has no table
+   offers `now`; "the default bound" is then whatever that file's
+   `[defaults.sim]` says. Define Target Metrics from `../GLOSSARY.md` on first use.
 7. **Sandbox image** — base `booley-sandbox`, prebuilt `booley-sandbox-riscv`,
    or a project Dockerfile; driven by the toolchain determinant (firmware
    cross-compilers, `srec_cat`, Python dep pins for cocotb 1.x TBs, …).
@@ -703,18 +727,24 @@ separate columns (see "How a row resolves"). The standard checklist:
     still need authoring/confirmation, and Red for that Target when no safe seam
     exists. RTL elaboration alone never makes this row Green. An enabled synth
     Target with any unclassified candidate cannot be approved.
-11. **Style lint** — offer Verible style lint as a second lint Target only if
-    the user wants it (offer, never impose). "Never impose" means
-    never inflict a *foreign* style on a repo — it does not mean ignoring the
-    repo's own. **A strong in-repo signal makes this an ordinary inferred row:**
-    a `.rules.verible_lint`/`verible.filelist`, a CI job running
+11. **Lint Targets** — recommend two lint Targets by default: a Verilator lint
+    Target with `verilator_options: [-Wall]` (structural and semantic warnings:
+    `UNUSED*`, `UNDRIVEN`, `GENUNNAMED`, `ASCRANGE`, widths) and a Verible style
+    lint Target (`flow_options: {tool: verible}`). The user can decline either;
+    record each Target as `yes` or `declined` in the row. Reuse the repo's own
+    style rules when they exist: **a strong in-repo signal** (a
+    `.rules.verible_lint`/`verible.filelist`, a CI job running
     `verible-verilog-lint`, or a format/check script driving
-    `verible-verilog-format` (see the source-mutating-helper pile above) all say
-    the project already lints with Verible. With such a signal, propose `yes`
-    with that evidence and reuse the repo's own rules file as a
-    `file_type: veribleLintRules` fileset entry — you are matching the project,
-    not imposing. Unattended: signal ⇒ `yes` (`inferred`/high, not starred);
-    no signal ⇒ `no`, and say so in one line.
+    `verible-verilog-format`; see the source-mutating-helper pile above) says
+    the project already lints with Verible, so record the Verible Target as
+    `yes` with that evidence and reuse the repo's own rules file as a
+    `file_type: veribleLintRules` fileset entry. When the Targets lint upstream
+    RTL the Project does not own, tell the user that `-Wall` and Verible's
+    default rules may report findings there, and how to handle them: waive
+    Verilator findings in a `.vlt` control file with `lint_off -file
+    "<upstream path glob>"`, and scope the Verible Target's fileset to the
+    Project's own RTL. Never drop `-Wall` silently; removing it is the user's
+    recorded decision. Unattended: both `yes` (`inferred`/high, not starred).
 12. **Elaboration Check** — record whether the project needs the stronger
     `sim --mode elab-only-standalone` module sweep; ordinary Simulation already
     records its authenticated build-stage outcome.
@@ -723,8 +753,9 @@ separate columns (see "How a row resolves"). The standard checklist:
     suggests the defaults will not fit. Mark every supported synthesis
     configuration that Doctor must validate with `booley: {doctor: [synth]}`.
     Step 4 synthesizes the complete marked matrix end-to-end and retains the
-    largest measured boundary-command process-tree peak RSS to settle
-    `[jobs].heavy_memory` and `[sandbox].memory`. Record an execution-time check
+    largest measured boundary-command process-tree peak RSS to size
+    `[sandbox].memory`, which sets the Memory Budget. For Vivado, record the
+    license seats in `[jobs.seats]`. Record an execution-time check
     that every intended matrix member ran; do not guess one representative from
     filename or LOC.
 14. **Commercial EDA authority** — for host-provisioned Vivado: the registered
@@ -740,7 +771,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     - **Yes (hidden):** `.booley/` stays **untracked** in the RTL repo,
       excluded through the parent repo's `.git/info/exclude` (never tracked
       `.gitignore`), **and stealth mode turns on**: the commit-message scrub
-      removes protected AI/tool names from new commit messages, and hidden-core
+      rejects new commit messages that name protected AI/tools, and hidden-core
       projection makes ignored root copies when Booley authors cores.
       Row 16 = `hidden`, row 20 = `enabled = true`; both are `user-confirmed`
       from this one answer, including for hidden config-only projects.
@@ -776,12 +807,9 @@ separate columns (see "How a row resolves"). The standard checklist:
 17. **Specialists** — a **defaults block** row: default = none disabled.
     Every installed Specialist is discovered automatically; Step 2 writes
     `[specialists.<name>].enabled = false` only for an intentional opt-out.
-    Show optional reviewers and mutation testers with that proposed default.
-    One reason to change it: **`mutation_tester` has not supported cocotb-based
-    sim Targets** — its baseline runner drives a `V<toplevel>` binary, and a
-    Cocotb Target builds `Vtop` driven from Python over VPI. Verify current
-    support before using it on a cocotb project; unsupported, it burns a full
-    specialist run to report an infra error. Unattended: take the default as
+    Show the optional Specialists (reviewer, coverage analyst) with that
+    proposed default. Mutation testing is the `mutation` Flow, not a
+    Specialist, so it is not part of this row. Unattended: take the default as
     `inferred`/high, **no star**; an existing opt-out stays `pre-set`.
 18. **Parity check (optional)** — a **defaults block** row: compare Booley's
     results against the repo's native build system after the Step 4 gate.
@@ -806,14 +834,14 @@ separate columns (see "How a row resolves"). The standard checklist:
     Interactive hidden → `enabled = true`, including config-only projects;
     open → `enabled = false`. Preserve an existing hand-set `[stealth]` block
     as `pre-set`, including when it differs from those interactive defaults.
-    A commit-msg hook scrubs a configured banned-word list (`claude`,
-    `anthropic`, `codex`, `booley`, …) from new commit messages; it can also cap
+    A commit-msg hook rejects new commit messages that contain a configured
+    banned word (`claude`, `anthropic`, `codex`, `booley`, …); it can also cap
     the body (`max_body_lines`) or allowlist author identities
     (`allowed_authors`). Authored hidden cores remain self-contained under
     `.booley/cores/` and are projected into ignored RTL-root copies.
     **Unattended: write `enabled = false`**, matching row 16's unattended
-    `open`; star the choice `review` unless pre-set. Nobody consented to a
-    commit-message rewrite, so unattended setup never enables the scrub.
+    `open`; star the choice `review` unless pre-set. Nobody consented to
+    commit-message rejection, so unattended setup never enables the scrub.
     `booley init` creates `.booley/`'s own inner git repo *only* while
     `[stealth] enabled` is on. With the scrub off, a hidden-footprint Booley Directory is versioned nowhere until someone `git init`s it — flag that for
     Step 4's footprint work rather than letting the combination pass silently.
@@ -842,14 +870,15 @@ surfaced that the standard list doesn't name: generator steps, **git
 submodules** (a row whenever either participating repository's
 `git submodule status` is non-empty: the host-side
 initialized/clean/full-history precondition, and `[submodules].paths` if only
-some outer gitlinks should reach Goal worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
+some outer gitlinks should reach linked worktrees), **scope exclusions** (a VHDL
+twin, a subsystem nobody
 targets — say what is excluded and why, never leave it implied), multi-clock
 timing intent, environment modules, a TB stdout tee, unusual directory layouts.
 The checklist is the floor, not the ceiling.
 
 Close with the **execution-time checks** list: every planned verification that
 needs the sandbox (fusesoc target resolution, `-march` compile check, ingest
-smoke, image EDA-tool probes, submodule population in a Goal worktree). Steps
+smoke, image EDA-tool probes, submodule population in a linked worktree). Steps
 2–4 run these; include semantic, frontend, mapped-netlist, and physical-link
 checks for every enabled synthesis Target, plus CDC preservation checks when
 applicable. A failed check that contradicts a decision triggers the deviation
@@ -904,7 +933,7 @@ Refine the decision sheet with concrete options and their tradeoffs:
   confidence. Unattended: take those defaults with confidence, without a star.
 - **Codebase first**: never ask what the repo can answer. Ask to *confirm*
   low-confidence inferences, to *choose* where evidence genuinely
-  under-determines (TB flavor, the Target set / config variants, style lint,
+  under-determines (TB flavor, the Target set / config variants,
   host-EDA-tool placement), and to
   *supply* what only the user knows (license servers, which flows they care
   about, host EDA-tool installs).
@@ -1001,11 +1030,11 @@ compile-flag probe.
 
    For the image contents, how to pull or build it, and how to layer extra
   EDA tools on top with `# booley:keep` (needed when a repo like ibex also bakes
-   Python deps), see `/booley-docs/SANDBOX.md` → "RISC-V toolchain image".
+   Python deps), see `/booley-docs/SANDBOX.md` → "Custom sandbox image" (its "With the RISC-V image" callout).
 
 2. **Post-setup hook**: build the firmware on demand instead of committing a
-   `.hex`. A Project setup script can run inside the container after a Goal
-   worktree is created, before entry; point it at the repo's software build (Ibex's is a
+   `.hex`. A Project setup script can run inside the container after a
+   worktree is created; point it at the repo's software build (Ibex's is a
    Make target):
 
    ```bash
@@ -1014,9 +1043,8 @@ compile-flag probe.
    ```
 
    The explicit `_zicsr` is not cosmetic — the sandbox GCC won't assemble an
-   older project's default `-march=rv32imc` without it. See Booley's
-   `/booley-docs/TROUBLESHOOTING.md` → "RISC-V firmware won't assemble against the sandbox GCC"
-   for that and the vendor-ISA `-march` trap.
+   older project's default `-march=rv32imc` without it: GCC moved the CSR
+   instructions out of the base ISA.
 
    Keep the hook thin — have it call a **tracked** script in the repo
    (`booley/build_firmware.sh`) rather than holding the build recipe itself.
@@ -1030,10 +1058,7 @@ compile-flag probe.
    looks built from in-repo source; both nudge you toward this build-on-demand
    pattern.
 
-## Goalset policy in the plan
+## Dashboard task in the plan
 
-Record which seeded Goalsets need Project-specific rules. Ask whether a
-`goalsets/default.md` should apply to every Goal entry, and record the answer
-with the existing verification intent. Initialization seeds four Goalsets
-create-only and does not create a default. Also record any requested opt-out of
-the default Dashboard task with `[sandbox].dashboard=false`.
+Record any requested opt-out of the default Dashboard task with
+`[sandbox].dashboard=false`.

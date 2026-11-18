@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # PyPI distribution name ("booley" was taken); the import package stays `booley`.
 name = "booley-rtl"
 dynamic = ["version"]
-description = "The open-source Agentic Development Environment (ADE) for FPGA and ASIC development"
+description = "The open-source Agentic Development Environment (ADE) for RTL design and verification"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
@@ -62,28 +62,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Every pin lives once, in its narrow extra: Renovate rewrites one copy of a name
+# per file, so a second copy (the old `dev` list) goes stale and breaks the
+# constraints regeneration. Extras compose by self-reference (`booley-rtl[extra]`).
 test = [
-    "cryptography==50.0.2",
-    "hypothesis>=6.170.14",
-    "pytest==9.2.0",
-    "pytest-asyncio==1.4.0",
-    "pytest-xdist==3.8.0",
-    "pytest-timeout==2.4.0",
-    "pytest-repeat==0.9.4",
-    "pytest-cov==7.1.0",
-    # coverage.py 7.17.1 breaks SIGINT exit codes under patch = ["subprocess"]
-    # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
-    "coverage==7.17.0",
-    "diff-cover==10.6.0",
-]
-quality = [
-    "pyright==1.1.414",
-    "ruff==0.17.2",
-]
-mutation = [
-    "mutmut==3.8.1",
-]
-dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
     # guard and the trusted CI scanner.
     "cryptography==50.0.2",
@@ -106,17 +88,29 @@ dev = [
     "pytest-cov==7.1.0",
     # coverage.py 7.17.1 breaks SIGINT exit codes under patch = ["subprocess"]
     # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
+    # The coverage rule in .github/renovate.json repeats this hold.
     "coverage==7.17.0",
-    # CI quality gates. Exact pins keep local and hosted results reproducible;
-    # the quality extra repeats these pins for a smaller hosted install.
-    "diff-cover==10.6.0",
+    # CI quality gate (changed-line coverage). Exact pin keeps hosted results reproducible.
+    "diff-cover==11.0.1",
+    # The Mutant generator tests parse real Verilog.
+    "booley-rtl[hdl-parser]",
+]
+# Mutant generator parser (ADR 0088). Installed in the Sandbox image; the host
+# does not need it. Exact pin, held equal to base-python-requirements.txt by
+# tests/docker/test_sandbox_dockerfile.py.
+hdl-parser = [
+    "pyslang==12.1.0",
+]
+quality = [
     "pyright==1.1.414",
-    "mutmut==3.8.1",
-    # Exact pin, kept in lockstep with the `pip install ruff==...` step in
-    # .github/workflows/test.yml — a floor here let three different ruff versions
-    # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
-    # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
+    # Exact pin: a floor let three different ruff versions coexist locally, so
+    # `ruff format --check` disagreed with CI. Before bumping, re-run
+    # `ruff check .` + `ruff format --check .`.
     "ruff==0.17.2",
+]
+# Every development tool: the union of the extras above.
+dev = [
+    "booley-rtl[test,quality]",
 ]
 
 [project.scripts]
@@ -148,8 +142,7 @@ booley = [
     "data/**/*",
     # Runtime resources resolved relative to the installed package (__file__),
     # not just present in the dev tree — omitting these ships a wheel/image that
-    # blocks at runtime: runtime/worktree_create.sh (Goal setup and
-    # `booley worktree new`) and pre-commit-ruff.sh (git hook).
+    # blocks at runtime: runtime/worktree_create.sh (`booley worktree new`) and pre-commit-ruff.sh (git hook).
     "dev_support/*.sh",
     "runtime/*.sh",
 ]
@@ -233,7 +226,7 @@ known-first-party = ["booley"]
 #   PLR0915 (sim) — _run is a linear per-target drive loop (resolve,
 #             execute, classify, write report, accumulate display); splitting
 #             would scatter the per-config result/criterion bookkeeping.
-#   PLR0915 (init_cmd) — _step_interactive is a linear Step-12 setup flow
+#   PLR0915 (init_cmd) — _step_sandbox is a linear Step-12 setup flow
 #             (tracked-guard, build spec, check-only branch, write, docker
 #             provisioning); the sequential guards are one cohesive step.
 #   F401 (init_cmd) — after the Single-Responsibility split, init_cmd is a
@@ -250,7 +243,6 @@ known-first-party = ["booley"]
 #             upstream PR ships the file byte-identical (ADR 0033).
 "src/booley/flows/sim/trace_session.py" = ["PLR0915"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
-"src/booley/criteria/state.py" = ["PLR0912", "N818"]
 "src/booley/mcp/base.py" = ["B027"]
 "src/booley/specialists/reviewer.py" = ["PLR0912"]
 "src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
@@ -302,8 +294,7 @@ filterwarnings = [
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 source = ["booley"]
-# Goal Mode source is not measured while its tests are not collected: see tests/conftest.py.
-omit = ["tests/*", "*/booley/goals/*"]
+omit = ["tests/*"]
 branch = true
 # Raw shard artifacts are reported from a different runner. Canonical relative
 # paths also fold subprocess imports from temporary source checkouts back onto
@@ -328,63 +319,22 @@ show_missing = true
 skip_empty = true
 
 # ---------------------------------------------------------------------------
-# Pyright — incremental strict boundary checking
+# Pyright — whole-package checking, strict trust boundaries
 # ---------------------------------------------------------------------------
 [tool.pyright]
 pythonVersion = "3.11"
-# Incremental adoption: the rest of the source tree is intentionally deferred
-# until each package can be enabled without a blanket baseline or suppressions.
+# CI lints on Linux; pinning the platform keeps local runs on macOS and Windows hosts
+# (Agent Readiness) on the same error set as CI and the exclude list below.
+pythonPlatform = "Linux"
+# Pyright checks the whole package; `strict` marks the trust boundaries.
 typeCheckingMode = "basic"
-include = [
-    # Analyze the complete core package so new boundary modules cannot
-    # silently fall out of the checked surface.
-    "src/booley/core",
-    "src/booley/specialists/coverage_analysis.py",
-    "src/booley/specialists/coverage_analysis_schema.py",
-    "src/booley/flows/sim/coverage_analysis_input.py",
-    "src/booley/flows/sim/coverage_evidence.py",
-    "src/booley/flows/sim/coverage_point_query.py",
-    "src/booley/harness/coverage_cli.py",
-    "src/booley/mcp/coverage_evidence.py",
-    "src/booley/specialists/coverage_input.py",
-    "src/booley/specialists/coverage_analyst.py",
-    "src/booley/runtime/text_only_agent.py",
-    # Target selection is the architectural seam shared by every built-in Flow.
-    "src/booley/targets",
-    "src/booley/flows/lint/flow.py",
-    "src/booley/flows/sim/build.py",
-    "src/booley/flows/sim/flow.py",
-    "src/booley/flows/sim/verilator_coverage.py",
-    "src/booley/flows/sim/verilator_coverage_execution.py",
-    "src/booley/flows/sim/coverage_overlay.py",
-    "src/booley/flows/synth/flow.py",
-    "src/booley/flows/fpga/flow.py",
-    "src/booley/flows/implementation_comparison.py",
-    "src/booley/flows/implementation_report.py",
-    "src/booley/flows/synth/implementation_report.py",
-    "src/booley/flows/fpga/implementation_report.py",
-    "src/booley/runtime/booley_dir.py",
-    "src/booley/flows/sim/backends/cocotb_results.py",
-    "src/booley/flows/sim/result.py",
-    # Test Run names, selectors and seeds: the identity simulation evidence records.
-    "src/booley/config/tests_toml_rules.py",
-    "src/booley/flows/test_runs.py",
-    "src/booley/flows/target_test_plan.py",
-    "src/booley/flows/target_test_plan_loading.py",
-    "src/booley/flows/frozen_test_runs.py",
-    "src/booley/flows/simulator_family.py",
-    # Goal Mode records and the Goal argument trust boundary.
-    "src/booley/goals",
-    "src/booley/runtime/session_paths.py",
-    "src/booley/mcp/goal_changes.py",
-    "src/booley/mcp/goal_waivers.py",
-    "src/booley/mcp/goal_freshness.py",
-    "src/booley/mcp/goal_completion.py",
-    "src/booley/mcp/goal_generated_inputs.py",
-    "src/booley/review/goal_package.py",
-    "src/booley/runtime/publication_ownership.py",
-    "src/booley/runtime/pinned_history.py",
-]
+include = ["src/booley"]
+# Modules that still fail basic mode. The list only shrinks: fix a module to
+# remove its entry and lower EXCLUDE_CEILING in tests/ci/test_pyright_scope.py in
+# the same change; when renaming an excluded module, rename its entry; never add
+# a new module: new code is checked by default, so fix its errors instead. Keep
+# the list sorted.
+exclude = []
 strict = [
     # External-input coercion and the Booley Directory trust boundary.
     "src/booley/core/boundary.py",
@@ -397,15 +347,7 @@ strict = [
     "src/booley/flows/test_runs.py",
     "src/booley/flows/target_test_plan.py",
     "src/booley/flows/target_test_plan_loading.py",
-    "src/booley/flows/frozen_test_runs.py",
     "src/booley/flows/simulator_family.py",
-    "src/booley/goals",
-    "src/booley/mcp/goal_changes.py",
-    "src/booley/mcp/goal_waivers.py",
-    "src/booley/mcp/goal_freshness.py",
-    "src/booley/mcp/goal_completion.py",
-    "src/booley/mcp/goal_generated_inputs.py",
-    "src/booley/review/goal_package.py",
     "src/booley/runtime/publication_ownership.py",
     "src/booley/runtime/pinned_history.py",
 ]

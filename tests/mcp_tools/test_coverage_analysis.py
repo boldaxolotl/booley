@@ -1,17 +1,17 @@
 """Report-driven Analyst behavior at its agreed deep-module seam."""
 
-from booley.flows.sim.coverage_campaign import (
+from booley.flows.sim.coverage_record import (
     DurableTargetIdentity,
     decode_coverage_point_id,
 )
 from booley.specialists.coverage_analysis import CoverageAnalyzer
-from tests.flows.sim.coverage_campaign_test_support import decode_document
-from tests.flows.sim.test_coverage_campaign import _valid_document
-from tests.flows.sim.test_coverage_campaign_store import TARGET, _evaluated_campaign
+from tests.flows.sim.coverage_record_test_support import decode_document
+from tests.flows.sim.test_coverage_record import _valid_document
+from tests.flows.sim.test_coverage_record_store import TARGET, _evaluated_coverage_record
 
 
-def test_exact_eligible_campaign_produces_versioned_advisory_report():
-    campaign = decode_document(
+def test_exact_eligible_coverage_record_produces_versioned_advisory_report():
+    coverage_record = decode_document(
         _valid_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
     )
     calls = []
@@ -20,9 +20,9 @@ def test_exact_eligible_campaign_produces_versioned_advisory_report():
         calls.append(prompt)
         return {"hypotheses": [], "recommendations": [], "waiver_candidates": []}
 
-    report = CoverageAnalyzer(model).analyze_coverage_campaign(campaign, None, "Explain gaps")
+    report = CoverageAnalyzer(model).analyze_coverage_record(coverage_record, None, "Explain gaps")
     document = report.to_dict()
-    assert document["$schema"] == "booley.coverage-analysis/v1"
+    assert document["$schema"] == "booley.coverage-analysis/v3"
     assert document["eligibility"] == "eligible"
     assert document["closure_recommendation"] == "ungated_no_recommendation"
     assert document["observed_evidence"]["evaluation"]["status"] == "not_requested"
@@ -36,26 +36,28 @@ from fractions import Fraction
 
 import pytest
 
-from booley.flows.sim.coverage_campaign_store import (
-    load_coverage_campaign,
-    publish_coverage_campaign,
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+    publish_coverage_record,
 )
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 
 
-def test_incomplete_usable_campaign_keeps_independent_simulation_truth():
+def test_incomplete_usable_coverage_record_keeps_independent_simulation_truth():
     document = _valid_document()
     document["collection"]["status"] = "incomplete"
     document["normalization"]["status"] = "partial"
     document["rollups"] = []
     document["tests"]["runs"][0]["simulation_verdict"] = "fail"
     document["collector"]["capabilities"][0].update(collection="supported", scoring="scored_v1")
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     report = (
         CoverageAnalyzer(
             lambda prompt: {"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
-        .analyze_coverage_campaign(campaign, None, "")
+        .analyze_coverage_record(coverage_record, None, "")
         .to_dict()
     )
     assert report["eligibility"] == "eligible_with_limits"
@@ -69,22 +71,24 @@ def test_collector_error_rejects_before_model_invocation_with_reason():
     document["collection"]["status"] = "collector_error"
     document["normalization"]["status"] = "partial"
     document["rollups"] = []
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     calls = []
 
     with pytest.raises(CoverageAnalysisError, match="collector_error"):
-        CoverageAnalyzer(calls.append).analyze_coverage_campaign(campaign, None, "")
+        CoverageAnalyzer(calls.append).analyze_coverage_record(coverage_record, None, "")
 
     assert calls == []
 
 
 @pytest.mark.parametrize("change", ["nonterminal", "point_free", "incompatible", "invalid"])
-def test_unusable_campaign_rejects_before_model_invocation(change):
+def test_unusable_coverage_record_rejects_before_model_invocation(change):
     document = _valid_document()
     if change == "nonterminal":
         document["collection"]["status"] = "running"
     elif change == "invalid":
-        del document["campaign_id"]
+        del document["coverage_record_id"]
     else:
         document["points"] = []
         document["rollups"] = []
@@ -95,8 +99,10 @@ def test_unusable_campaign_rejects_before_model_invocation(change):
             document["evaluation"]["status"] = "blocked"
     calls = []
     with pytest.raises(ValueError):
-        campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
-        CoverageAnalyzer(calls.append).analyze_coverage_campaign(campaign, None, "")
+        coverage_record = decode_document(
+            document, DurableTargetIdentity(document["target"]["identity"])
+        )
+        CoverageAnalyzer(calls.append).analyze_coverage_record(coverage_record, None, "")
     assert calls == []
 
 
@@ -120,9 +126,13 @@ def test_unusable_campaign_rejects_before_model_invocation(change):
 )
 def test_model_cannot_overwrite_observations_or_invent_references(response):
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     with pytest.raises(CoverageAnalysisError):
-        CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(campaign, None, "")
+        CoverageAnalyzer(lambda prompt: response).analyze_coverage_record(
+            coverage_record, None, ""
+        )
 
 
 def test_invalid_reference_diagnostics_aggregate_paths_and_categories():
@@ -143,14 +153,18 @@ def test_invalid_reference_diagnostics_aggregate_paths_and_categories():
         "recommendations": [{"point_ids": ["cp1:x"], "action": "malformed"}],
         "waiver_candidates": [],
     }
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
 
     with pytest.raises(CoverageAnalysisError) as captured:
-        CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(campaign, None, "")
+        CoverageAnalyzer(lambda prompt: response).analyze_coverage_record(
+            coverage_record, None, ""
+        )
 
     message = str(captured.value)
-    assert "/hypotheses/0/point_ids/0: cp1_not_in_campaign" in message
-    assert "/hypotheses/1/point_ids/0: cp1_not_in_campaign" in message
+    assert "/hypotheses/0/point_ids/0: cp1_not_in_record" in message
+    assert "/hypotheses/1/point_ids/0: cp1_not_in_record" in message
     assert "/recommendations/0/point_ids/0: malformed_cp1" in message
     assert foreign_id not in message
 
@@ -174,7 +188,9 @@ def test_candidates_are_screened_and_never_approved(
 ):
     document = _valid_document()
     point_id = document["points"][0]["id"] if point == "known" else "unknown"
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     candidate = {
         "point_id": point_id,
         "reason": reason,
@@ -184,7 +200,7 @@ def test_candidates_are_screened_and_never_approved(
     response = {"hypotheses": [], "recommendations": [], "waiver_candidates": [candidate]}
     report = (
         CoverageAnalyzer(lambda prompt: response)
-        .analyze_coverage_campaign(campaign, None, "")
+        .analyze_coverage_record(coverage_record, None, "")
         .to_dict()
     )
     screened = report["waiver_candidates"][0]
@@ -200,15 +216,21 @@ def test_candidates_are_screened_and_never_approved(
 )
 def test_malformed_candidate_rejects_the_model_response(candidate):
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     response = {"hypotheses": [], "recommendations": [], "waiver_candidates": [candidate]}
     with pytest.raises(CoverageAnalysisError, match=r"candidate|Candidate"):
-        CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(campaign, None, "")
+        CoverageAnalyzer(lambda prompt: response).analyze_coverage_record(
+            coverage_record, None, ""
+        )
 
 
 def test_duplicate_exact_point_candidates_are_forbidden():
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     candidate = {
         "point_id": document["points"][0]["id"],
         "reason": "excluded",
@@ -220,8 +242,8 @@ def test_duplicate_exact_point_candidates_are_forbidden():
         "recommendations": [],
         "waiver_candidates": [candidate, candidate],
     }
-    report = CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(
-        campaign, None, ""
+    report = CoverageAnalyzer(lambda prompt: response).analyze_coverage_record(
+        coverage_record, None, ""
     )
     duplicate = report.to_dict()["waiver_candidates"][1]
     assert duplicate["screening"] == "forbidden"
@@ -233,9 +255,11 @@ def test_forged_source_snapshot_cannot_be_supplied_to_model():
     from booley.specialists.coverage_analysis import CoverageSourceClosure
 
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     snapshot = CoverageSourceClosure(
-        campaign.target.identity,
+        coverage_record.target.identity,
         {
             "rtl/counter.sv": {
                 "text": "SECRET",
@@ -250,7 +274,9 @@ def test_forged_source_snapshot_cannot_be_supplied_to_model():
         prompts.append(json.loads(prompt))
         return {"hypotheses": [], "recommendations": [], "waiver_candidates": []}
 
-    report = CoverageAnalyzer(model).analyze_coverage_campaign(campaign, snapshot, "").to_dict()
+    report = (
+        CoverageAnalyzer(model).analyze_coverage_record(coverage_record, snapshot, "").to_dict()
+    )
     assert report["source_access"] == "report_only"
     assert prompts[0]["source_access"] == "report_only"
     assert "SECRET" not in json.dumps(prompts[0])
@@ -269,25 +295,28 @@ def test_closure_recommendations_use_persisted_policy_not_simulation(status, rec
     from dataclasses import replace
     from fractions import Fraction
 
-    from booley.flows.sim.coverage_campaign import derive_coverage_rollups
     from booley.flows.sim.coverage_json import freeze_coverage_mapping
     from booley.flows.sim.coverage_policy import (
         ApprovedWaiverSet,
         CoverageCriterion,
         CoverageThreshold,
-        evaluate_coverage_campaign,
+        evaluate_coverage_record,
     )
+    from booley.flows.sim.coverage_record import derive_coverage_rollups
 
     document = _valid_document()
     document["tests"]["runs"][0]["simulation_verdict"] = "fail"
     document["collector"]["capabilities"][0].update(collection="supported", scoring="scored_v1")
     target = DurableTargetIdentity(document["target"]["identity"])
-    campaign = decode_document(document, target)
+    coverage_record = decode_document(document, target)
     if status == "fail":
         points = tuple(
-            replace(point, hits_by_run=freeze_coverage_mapping({})) for point in campaign.points
+            replace(point, hits_by_run=freeze_coverage_mapping({}))
+            for point in coverage_record.points
         )
-        campaign = replace(campaign, points=points, rollups=derive_coverage_rollups(points))
+        coverage_record = replace(
+            coverage_record, points=points, rollups=derive_coverage_rollups(points)
+        )
     criterion = (
         None
         if status == "not_requested"
@@ -297,14 +326,14 @@ def test_closure_recommendations_use_persisted_policy_not_simulation(status, rec
             None,
         )
     )
-    campaign = evaluate_coverage_campaign(
-        campaign, criterion, ApprovedWaiverSet({}, "sha256:" + "a" * 64, ())
+    coverage_record = evaluate_coverage_record(
+        coverage_record, criterion, ApprovedWaiverSet({}, "sha256:" + "a" * 64, ())
     )
     report = (
         CoverageAnalyzer(
             lambda prompt: {"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
-        .analyze_coverage_campaign(campaign, None, "")
+        .analyze_coverage_record(coverage_record, None, "")
         .to_dict()
     )
     assert report["closure_recommendation"] == recommendation
@@ -317,8 +346,8 @@ def test_closure_recommendations_use_persisted_policy_not_simulation(status, rec
 def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, expected_reason):
     from dataclasses import replace
 
-    from booley.flows.sim.coverage_campaign import derive_coverage_rollups
-    from tests.flows.sim.test_coverage_campaign import _FSM_POINT_ID, _TESTBENCH_POINT_ID
+    from booley.flows.sim.coverage_record import derive_coverage_rollups
+    from tests.flows.sim.test_coverage_record import _FSM_POINT_ID, _TESTBENCH_POINT_ID
 
     document = _valid_document()
     point = document["points"][0]
@@ -333,8 +362,8 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
         document["collector"]["capabilities"] = [{"record_class": "fsm", "status": "reported"}]
     point["disposition"] = {"kind": "unscored", "reason": "outside_v1_scoring"}
     # Build the new rollup using the public codec/model seam before analysis.
-    from booley.flows.sim.coverage_campaign import CoveragePoint, CoveragePointIdentity
     from booley.flows.sim.coverage_json import freeze_coverage_mapping
+    from booley.flows.sim.coverage_record import CoveragePoint, CoveragePointIdentity
 
     identity = point["identity"]
     observation = CoveragePoint(
@@ -349,15 +378,17 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
         point["hits_by_run"],
         freeze_coverage_mapping(point["disposition"]),
     )
-    from booley.flows.sim.coverage_campaign import encode_coverage_campaign
+    from booley.flows.sim.coverage_record import encode_coverage_record
 
     base = decode_document(
         _valid_document(), DurableTargetIdentity(document["target"]["identity"])
     )
-    document["rollups"] = encode_coverage_campaign(
+    document["rollups"] = encode_coverage_record(
         replace(base, points=(observation,), rollups=derive_coverage_rollups((observation,)))
     )["rollups"]
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     response = {
         "hypotheses": [],
         "recommendations": [],
@@ -372,7 +403,7 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
     }
     report = (
         CoverageAnalyzer(lambda prompt: response)
-        .analyze_coverage_campaign(campaign, None, "")
+        .analyze_coverage_record(coverage_record, None, "")
         .to_dict()
     )
     assert report["waiver_candidates"][0]["screening"] == "forbidden"
@@ -385,7 +416,7 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
         (
             {},
             "ready_for_human_review",
-            "A human must accept or reject this candidate through a Goal Change Proposal",
+            "A human must accept or reject this candidate",
         ),
         ({"run:smoke": 3}, "investigate", "Unreachability is contradicted by observed hits"),
     ],
@@ -393,42 +424,47 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
 def test_unreachable_needs_zero_hits_but_no_model_proof_reference(
     hits, expected, expected_reason
 ) -> None:
-    """ADR 0066: the review proof is written at approval; observed hits still contradict."""
+    """Observed hits contradict unreachability."""
     from dataclasses import replace
     from types import MappingProxyType
 
+    # The unreachable-with-hits branch needs a verified on-disk source closure and a re-digested
+    # record to reach through analyze_coverage_record; the screen is a pure function of its inputs.
     from booley.specialists.coverage_analysis import _candidate_screen
 
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
-    point = replace(campaign.points[0], hits_by_run=MappingProxyType(hits))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    point = replace(coverage_record.points[0], hits_by_run=MappingProxyType(hits))
     rtl = {point.identity.source: "sha256:" + "a" * 64}
     item = {"reason": "unreachable", "evidence": "Tied off", "proof_reference": ""}
 
+    # `object()` stands for the verified source closure; only its presence matters here.
     screening, reason = _candidate_screen(item, point, rtl, object())
     assert screening == expected
     assert reason == expected_reason
 
 
 def test_analysis_input_carries_recomputed_rollups_and_evaluation(tmp_path):
-    honest = _evaluated_campaign(1, 2, Fraction(50))
-    paths = publish_coverage_campaign(tmp_path, honest)
-    honest_manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    honest = _evaluated_coverage_record(1, 2, Fraction(50))
+    paths = publish_coverage_record(tmp_path, honest)
+    honest_manifest = json.loads(paths.coverage_record.read_text(encoding="utf-8"))
+    manifest = json.loads(paths.coverage_record.read_text(encoding="utf-8"))
     manifest["rollups"][0].update(covered_points=0, percent=0.0)
     manifest["evaluation"]["status"] = "fail"
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+    paths.coverage_record.write_text(json.dumps(manifest), encoding="utf-8")
 
-    loaded = load_coverage_campaign(paths.campaign, TARGET)
+    loaded = load_coverage_record(paths.coverage_record, TARGET)
     report = (
         CoverageAnalyzer(
             lambda prompt: {"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
-        .analyze_coverage_campaign(loaded.campaign, None, "", summary=loaded.summary)
+        .analyze_coverage_record(loaded.coverage_record, None, "", summary=loaded.summary)
         .to_dict()
     )
 
-    evidence = report["observed_evidence"]["campaign_manifest"]
+    evidence = report["observed_evidence"]["coverage_record_manifest"]
     assert evidence["rollups"] == honest_manifest["rollups"]
     assert evidence["evaluation"] == honest_manifest["evaluation"]
     assert report["closure_recommendation"] == "coverage_ready"

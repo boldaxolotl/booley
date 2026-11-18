@@ -12,10 +12,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from tests.subprocess_budget import run_bounded_child
 
 from booley.core.models import AgentArtifactPaths, AgentCallParams
 from booley.runtime import _claude_backend as claude
+from booley.runtime.agent_errors import UsageLimitError
 from booley.runtime.prompt_artifacts import write_prompt_artifacts
 
 
@@ -57,6 +59,19 @@ def _successful_result():
     )
 
 
+_NOW = 1_800_000_000
+_FAR_RESET = 1_800_108_000
+FAR_RESET_MESSAGE = (
+    "Claude usage limit reached (seven_day); resets at 2027-01-16T14:00:00Z,"
+    " too late to wait within this call's timeout"
+)
+
+
+def rejected_seven_day(resets_at):
+    info = SimpleNamespace(status="rejected", resets_at=resets_at, rate_limit_type="seven_day")
+    return _RateLimit(info)
+
+
 def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
     calls = []
     destinations = []
@@ -64,13 +79,7 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
     async def query(*, prompt, options):
         calls.append(prompt)
         if len(calls) == 1:
-            yield _RateLimit(
-                SimpleNamespace(
-                    status="rejected",
-                    resets_at=None,
-                    rate_limit_type="seven_day",
-                )
-            )
+            yield rejected_seven_day(None)
         else:
             yield _successful_result()
 
@@ -95,7 +104,7 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
         label="reviewer",
         artifact_paths=resolve,
     )
-    result = asyncio.run(claude.ClaudeSDKBackend().call(params))
+    result = asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(params))
     assert result.output == "done"
     assert calls == ["work", "work"]
     assert [p.name for p in destinations] == ["reviewer.jsonl", "reviewer-retry2.jsonl"]
@@ -106,6 +115,64 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
             == "work"
         )
         assert (tmp_path / "human" / f"{name}.md").exists()
+
+
+def fake_limit_query(monkeypatch, resets_at):
+    """Make every Claude query yield one rejected limit event; return (queries, sleep mock)."""
+    queries: list[str] = []
+
+    async def query(*, prompt, options):
+        queries.append(prompt)
+        yield rejected_seven_day(resets_at)
+
+    monkeypatch.setattr(claude, "RateLimitEvent", _RateLimit)
+    monkeypatch.setattr(claude, "query", query)
+    monkeypatch.setattr(claude, "wall_clock", lambda: _NOW)
+    sleep = AsyncMock()
+    monkeypatch.setattr(claude.anyio, "sleep", sleep)
+    return queries, sleep
+
+
+def _limit_params(tmp_path):
+    return AgentCallParams(
+        prompt="work", model="test-model", cwd=tmp_path, timeout_seconds=300, label="reviewer"
+    )
+
+
+def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(tmp_path, monkeypatch):
+    queries, sleep = fake_limit_query(monkeypatch, _FAR_RESET)
+
+    with pytest.raises(UsageLimitError) as raised:
+        asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path)))
+
+    assert str(raised.value) == FAR_RESET_MESSAGE
+    assert queries == ["work"]
+    sleep.assert_not_awaited()
+
+
+def test_claude_rejections_on_every_attempt_end_as_usage_limit(tmp_path, monkeypatch):
+    queries, _sleep = fake_limit_query(monkeypatch, _NOW + 5)
+
+    with pytest.raises(UsageLimitError) as raised:
+        asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path)))
+
+    assert str(raised.value) == (
+        "Claude usage limit reached (seven_day); resets at 2027-01-15T08:00:05Z;"
+        " still limited after 5 attempts"
+    )
+    assert len(queries) == 5
+
+
+def test_claude_limit_event_after_the_result_keeps_the_result(tmp_path, monkeypatch):
+    async def query(*, prompt, options):
+        yield _successful_result()
+        yield rejected_seven_day(_FAR_RESET)
+
+    monkeypatch.setattr(claude, "RateLimitEvent", _RateLimit)
+    monkeypatch.setattr(claude, "query", query)
+
+    backend = claude.ClaudeSDKBackend(auth_mode="visitor")
+    assert asyncio.run(backend.call(_limit_params(tmp_path))).output == "done"
 
 
 def test_runtime_import_and_artifact_use_never_load_ticket_board(tmp_path):

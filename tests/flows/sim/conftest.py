@@ -1,17 +1,15 @@
-"""Shared Simulation test fixtures: compile-surface doubles and Windows lock emulation."""
+"""Shared Simulation test fixtures: compile-surface doubles."""
 
-import sys
 from pathlib import Path
 
 import pytest
 
 from booley.bwave import waveform_store
-from booley.flows.sim import flow, verilator_coverage_execution
+from booley.flows.sim import elab_only, flow, verilator_coverage_execution
 from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.execution import engine
 from booley.targets.domain import FuseSocError, TargetHandle
 from booley.targets.selection import split_selector
-from tests.file_lock_probe import lock_is_held
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +29,7 @@ def explicit_surface_for_lightweight_target_handles(
         return resolve(handle)
 
     monkeypatch.setattr(engine, "resolve_target_compile_surface", resolve_or_fake)
-    monkeypatch.setattr(flow, "resolve_target_compile_surface", resolve_or_fake)
+    monkeypatch.setattr(elab_only, "resolve_target_compile_surface", resolve_or_fake)
     monkeypatch.setattr(
         verilator_coverage_execution, "resolve_target_compile_surface", resolve_or_fake
     )
@@ -46,6 +44,7 @@ def declared_trace_files_convert_after_the_run(monkeypatch: pytest.MonkeyPatch) 
 @pytest.fixture(autouse=True)
 def bare_identity_for_targets_without_a_core(monkeypatch: pytest.MonkeyPatch) -> None:
     """Layer tests with no ``.core``: an undeclared Target's identity is its bare name."""
+    # Private seam: no public input names a Target that has no .core; every record path calls this one method.
     identity = flow.SimulateFlow._target_identity
 
     def identity_or_bare(self: flow.SimulateFlow, target: str) -> str:
@@ -55,38 +54,3 @@ def bare_identity_for_targets_without_a_core(monkeypatch: pytest.MonkeyPatch) ->
             return split_selector(target)[1]
 
     monkeypatch.setattr(flow.SimulateFlow, "_target_identity", identity_or_bare)
-
-
-def _is_lock_file(path: Path) -> bool:
-    return path.name.endswith(".lock") and path.is_file()
-
-
-@pytest.fixture
-def mandatory_file_locks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Emulate Windows mandatory lock semantics on POSIX for retention tests.
-
-    While a lock is held, other handles cannot read its sentinel byte and its
-    containing directory cannot be renamed. Windows already behaves this way.
-    """
-    if sys.platform == "win32":
-        return
-    from booley.flows.sim import campaign_retention
-
-    monkeypatch.setattr(campaign_retention, "_MANDATORY_FILE_LOCKS", True)
-    read_bytes = Path.read_bytes
-    rename = Path.rename
-
-    def guarded_read_bytes(path: Path) -> bytes:
-        if _is_lock_file(path) and lock_is_held(path):
-            raise PermissionError(13, "Permission denied", str(path))
-        return read_bytes(path)
-
-    def guarded_rename(path: Path, target: Path) -> Path:
-        if path.is_dir() and any(
-            _is_lock_file(child) and lock_is_held(child) for child in path.rglob("*.lock")
-        ):
-            raise PermissionError(13, "Access is denied", str(path))
-        return rename(path, target)
-
-    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
-    monkeypatch.setattr(Path, "rename", guarded_rename)

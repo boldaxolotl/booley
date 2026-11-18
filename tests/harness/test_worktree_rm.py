@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import os
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from types import ModuleType
@@ -12,7 +15,11 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
-from tests.goals.conftest import git
+from booley.runtime.handles import reserve_session_handle
+from booley.runtime.pid import ProcessIdentity, capture_process_identity
+from booley.runtime.session_activity import process_session_key
+from tests.git_support import git
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -55,7 +62,7 @@ def _versioned(root: Path) -> Path:
     # Common Booley State is ignored in a real Booley Directory; `plans/` stays tracked.
     (booley_dir / ".gitignore").write_bytes(
         b"/handoffs/\n/reviewer-evidence/\n/flow-reports/\n/.runtime/\n/findings.jsonl\n"
-        b"/setup-evidence/\n"
+        b"/setup-evidence/\n/measurements/\n"
     )
     git(booley_dir, "add", "booley.toml", ".gitignore")
     git(booley_dir, "commit", "-qm", "project")
@@ -132,10 +139,6 @@ def _busy(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (nested / "handoffs").mkdir()
     (nested / "handoffs" / "h.md").write_bytes(b"handoff\n")
     _session(root, path)
-    from booley.goals.store import GoalStore
-    from tests.goals.test_store import _enter
-
-    _enter(GoalStore(root / ".booley"), path, "fix-20261006T101500Z")
     return path
 
 
@@ -151,7 +154,6 @@ def test_rm_refuses_and_names_every_reason(
     for reason in (
         "refusing to remove worktree s3",
         "live Session",
-        "active Goal Record fix-20261006T101500Z",
         "uncommitted change(s) in the worktree",
         "uncommitted change(s) in its Paired Checkout",
         "commit(s) on booley/s3 not in main",
@@ -182,33 +184,46 @@ def test_force_removes_despite_every_reason(
     assert "booley/s3" in _branches(repo) and "booley-worktree/s3" in _branches(repo / ".booley")
 
 
-def test_rm_refuses_unmerged_commits_on_a_goal_branch(
-    repo: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _add(repo, "g")
-    git(path, "switch", "-q", "-c", "booley/goal-fix-20261006T101500Z")
-    _commit(path, "goal.txt")
-
-    assert _rm(repo, "g") == 1
-
-    assert "1 commit(s) on booley/goal-fix-20261006T101500Z not in main" in capsys.readouterr().err
+def _hold_handle(root: Path, identity: ProcessIdentity) -> str:
+    """Reserve the Session handle of *identity*'s process, as the agent's launch does."""
+    return reserve_session_handle(root / ".booley", process_session_key(identity))
 
 
-def test_rm_refuses_when_goal_state_is_unreadable(
+def test_rm_refuses_a_worktree_whose_handle_holder_is_alive(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from booley.goals.store import GoalStore, GoalStoreError
+    # Bug caught: a running agent that made no Booley tool call has no registry row, so
+    # `rm` (and launch-time `gc`) would remove its worktree from under it.
+    _pin_namespace(monkeypatch)
+    identity = capture_process_identity(os.getpid())
+    assert identity is not None
+    assert _hold_handle(repo, identity) == "S1"  # before the worktree: a taken number is skipped
+    path = _add(repo, "s1")
 
-    def fail(self: GoalStore, worktree: Path) -> None:
-        raise GoalStoreError("two Goal Records claim this worktree")
+    assert _rm(repo, "s1") == 1
 
-    monkeypatch.setattr(GoalStore, "active_for_worktree", fail)
-    _add(repo, "w")
+    assert "  - live Session S1\n" in capsys.readouterr().err
+    assert path.is_dir()
 
-    assert _rm(repo, "w") == 1
 
-    err = capsys.readouterr().err
-    assert "Goal Mode state is unreadable: two Goal Records claim this worktree" in err
+def test_rm_ignores_a_handle_whose_holder_has_exited(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The reaped agent of a finished session must not block its own worktree's removal.
+    _pin_namespace(monkeypatch)
+    holder = subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE)
+    try:
+        identity = capture_process_identity(holder.pid)
+        assert identity is not None
+        assert _hold_handle(repo, identity) == "S1"
+    finally:
+        holder.communicate(b"\n", timeout=hang_guard_s())
+    path = _add(repo, "s1")
+
+    assert _rm(repo, "s1") == 0
+
+    assert "Removed worktree s1." in capsys.readouterr().out
+    assert not path.exists()
 
 
 def test_rm_counts_a_session_in_the_paired_checkout(
@@ -369,6 +384,7 @@ def _evidence_files(booley_dir: Path) -> dict[str, bytes]:
         "flow-reports/sim/1/artifacts/candidate/trace.fst": b"\x00\x01trace\xff",
         ".runtime/mcp-tool-reports/x/1/report.json": b"{}\n",
         "findings.jsonl": b'{"finding": 1}\n',
+        "measurements/" + "a" * 40 + "/r.json": b'{"schema": 1}\n',
         "setup-evidence/attachments/rows/a.txt": b"attachment\n",
     }
     for relative, content in files.items():

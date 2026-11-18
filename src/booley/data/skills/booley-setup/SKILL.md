@@ -106,7 +106,7 @@ devcontainer entered via **Reopen in Container** in VS Code, or
 worktree and runs the `booley` CLI in a container terminal; the sandbox
 toolchain ships in the container, so EDA-tool probes and smoke checks run directly
 (`verilator --version`, or `booley flow <name> --quiet …` — runs any Booley Flow, passing
-the rest of the line to it verbatim). `booley goal`, `booley dashboard`, and
+the rest of the line to it verbatim). `booley dashboard` and
 `booley doctor` are container commands here. Use `--quiet` for captured Flow
 reproduction output: direct shell calls otherwise add live stderr progress and
 an observation transcript. Human live-output options are documented in
@@ -119,7 +119,8 @@ The docs site (https://booley.dev/docs/, one page per doc name) shows the latest
 release, so use it only when its version equals the installed one.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
-refuses inside a Booley-issued Sandbox (a hand-written Sandbox runs Project Initialization only); the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
+refuses inside a Booley-issued Sandbox (a hand-written Sandbox runs Project
+Initialization only); the workflow CLI (`booley dashboard`, `bwave`) refuses
 on the host. To check explicitly: `/.dockerenv` exists only in the container.
 `SETUP-PLAN.md` carries the full context across the boundary — a fresh
 in-container session just re-invokes this skill and phase detection resumes
@@ -149,11 +150,15 @@ execution.
 Every step appends to one log as it goes:
 
 ```console
-booley feedback add --title "…" --severity blocker|workaround|note \
+booley feedback add --origin setup --title "…" --severity blocker|workaround|note \
   --exposed-by "the exact check that surfaced it" --step 4-doctor \
   --repro "booley doctor" --observed "…" --expected "…"
-booley feedback win --title "a check that passed first try"   # keeps the sample honest
+booley feedback win --origin setup --title "a check that passed first try"   # keeps the sample honest
 ```
+
+Every logging command takes `--origin setup`; it is required, and it keeps these
+entries in `.booley/SETUP-REPORT.md` (later `/booley-feedback` entries go to a
+separate `.booley/FEEDBACK-REPORT.md`).
 
 Two rules, and the second is the one that gets skipped:
 
@@ -164,7 +169,7 @@ Two rules, and the second is the one that gets skipped:
   guesses.
 - **Every sub-agent logs its own findings, into the same log.** A delegated Step 2
   or 4 is where most friction lives, and a sub-agent's context dies when it
-  returns — so its brief must say: *run `booley feedback add` for anything that
+  returns — so its brief must say: *run `booley feedback add --origin setup` for anything that
   surprised you, before you report back.* The log is a file precisely so that a
   finding survives the sub-agent that found it. Do not ask sub-agents to summarize
   findings in their return message and then re-log them yourself; that loses the
@@ -250,12 +255,9 @@ plain-English reason it matters.
    (including hybrid) with row 20 `enabled = true`. A fresh `booley init` records no Stealth choice
    (missing key = off), so it neither hid `.booley/` nor gave it a repo. Write
    the plan's `[stealth]` block into `.booley/booley.toml` now (Step 2 keeps
-   it). Undo init's non-Stealth line-ending edit: delete the root
-   `.gitattributes` if `git status` shows it untracked and it holds only
-   `* text=auto eol=lf`, otherwise remove just that added first line. Then
-   re-run `booley init`: it adds `/.booley` to `.git/info/exclude`, creates
-   the inner repo, keeps the line-ending rule repository-local, and activates
-   the commit-msg and pre-push hooks.
+   it). Then re-run `booley init`: it adds `/.booley` to
+   `.git/info/exclude`, creates the inner repo, and activates the commit-msg
+   and pre-push hooks.
 3. **Commercial EDA authority · host.** Only if row 14 selects
    host-provisioned EDA: perform Step 2's
    [host-authority bootstrap](steps/2-project-config.md#host-authority-bootstrap)
@@ -278,7 +280,7 @@ plain-English reason it matters.
    blocks completion and does not change `status`. Parity is the richest source
    of real Booley findings in the whole run — a number that differs from the
    native flow's is about as unambiguous as evidence gets — so log every
-   discrepancy with `booley feedback add`, not just the ones you can explain.
+   discrepancy with `booley feedback add --origin setup`, not just the ones you can explain.
 8. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
    `.booley/SETUP-REPORT.md`, and creates a redacted export only when the
    user explicitly requests one. Post-gate and non-blocking.
@@ -332,12 +334,12 @@ Two rules that outrank any step's local convenience. A step may look like it
 wants you to break these; it doesn't.
 
 - **Stay out of the repo (minimal footprint).** All of Booley's operational
-  state lives under `.booley/` — config, hooks, Goalsets, the project
+  state lives under `.booley/` — config, hooks, the project
   `docker/` image, logs, and `SETUP-PLAN.md`. Do **not** add or commit
   Booley-generated files into the target repo's tracked tree: no
   `README.booley.md` / integration notes, no logs, no generated artifacts
   explaining the onboarding. **This includes Step 6's own output** — the
-  findings log and the one `SETUP-REPORT.md` live in `.booley/`; a
+  findings log and the setup report `SETUP-REPORT.md` live in `.booley/`; a
   report about the setup is still a Booley-generated file. A redacted
   `BOOLEY-FEEDBACK.md` exists only after an explicit `booley feedback export`.
   The only Booley-touched files that legitimately

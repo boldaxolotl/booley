@@ -14,6 +14,7 @@ from booley.core.file_lock import acquire_file_lock, release_file_lock, wait_for
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
+from booley.runtime.mount_history import MountHistoryError, former_spellings, translate_stored_path
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.worktree_usage import session_number_taken
 
@@ -43,6 +44,11 @@ def job_prefix(endpoint: str) -> str:
     return "J-" + JOB_TYPES.get(endpoint, "JOB")
 
 
+def session_title(handle: str, name: str | None) -> str:
+    """The text a Session shows: ``S3 · uart-fix`` when it has a name, else ``S3``."""
+    return f"{handle} · {name}" if name else handle
+
+
 @dataclass
 class HandleMap:
     """Display allocations and direct aliases, loaded under the owner's writer lock."""
@@ -50,18 +56,43 @@ class HandleMap:
     entries: dict[str, str] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     next_number: int = 1
+    # Optional ``booley chat --name`` labels, keyed like ``entries`` (the entry key).
+    names: dict[str, str] = field(default_factory=dict)
     # Session maps only: numbers a worktree or branch occupies are never allocated.
     number_taken: Callable[[int], bool] | None = field(default=None, compare=False, repr=False)
 
     def stored(self) -> dict[str, object]:
         """The persisted fields; the allocation predicate never reaches storage."""
-        return {"entries": self.entries, "aliases": self.aliases, "next_number": self.next_number}
+        return {
+            "entries": self.entries,
+            "aliases": self.aliases,
+            "next_number": self.next_number,
+            "names": self.names,
+        }
 
     def labels(self) -> dict[str, str]:
         entries = self.entries
         return {k: entries[v] for k, v in self.aliases.items() if v in entries} | entries
 
-    def reserve(self, key: str, prefix: str, *, predecessors: tuple[str, ...] = ()) -> str:
+    def titles(self) -> dict[str, str]:
+        """Display title per key and alias; an alias shares its target's label."""
+        entries, names = self.entries, self.names
+        by_alias = {
+            k: session_title(entries[v], names.get(v))
+            for k, v in self.aliases.items()
+            if v in entries
+        }
+        return by_alias | {k: session_title(v, names.get(k)) for k, v in entries.items()}
+
+    def reserve(
+        self,
+        key: str,
+        prefix: str,
+        *,
+        predecessors: tuple[str, ...] = (),
+        name: str | None = None,
+    ) -> str:
+        """Reserve *key*'s handle; *name* replaces the stored label, ``None`` keeps it."""
         require_str_value(key, field="handle key")
         target = key if key in self.entries else self.aliases.get(key, key)
         if key in self.aliases and key not in self.entries and target not in self.entries:
@@ -80,14 +111,24 @@ class HandleMap:
         for old in predecessors:
             if old not in self.entries:
                 self.aliases.setdefault(old, target)
+        if name is not None:
+            self.names[target] = name
         return self.entries[target]
 
     def drop(self, keys: set[str]) -> None:
-        """Remove *keys* and every alias pointing at them; an empty map restarts numbering."""
+        """Remove *keys* and every alias pointing at them; an empty map restarts numbering.
+
+        An alias of a removed alias goes too: the Codex ownership marker of a resumed tab
+        points at the tab's own key, which is itself an alias of the first tab's entry.
+        """
         for key in keys:
             self.entries.pop(key, None)
+            self.names.pop(key, None)
+        removed = {name for name, target in self.aliases.items() if target in keys}
         self.aliases = {
-            name: target for name, target in self.aliases.items() if target not in keys
+            name: target
+            for name, target in self.aliases.items()
+            if target not in keys and target not in removed
         }
         if not self.entries:
             self.aliases.clear()
@@ -120,14 +161,54 @@ def run_id_submitted_at(run_id: str) -> float | None:
         return None
 
 
+_PATH_KEY = "worktree:path:"
+
+
+def path_key_spellings(key: str, *, record: str) -> tuple[str, ...]:
+    """*key* followed by the spellings a former mount gave it; path keys only."""
+    if not key.startswith(_PATH_KEY):
+        return (key,)
+    former = former_spellings(key.removeprefix(_PATH_KEY), record=record)
+    return (key, *(_PATH_KEY + path for path in former))
+
+
 def fallback_predecessors(key: str, work_dir: str | None) -> tuple[str, ...]:
     if not key.startswith("worktree:") or not work_dir:
         return ()
     root = Path(work_dir).resolve()
     for parent in (root, *root.parents[:127]):
         if (parent / ".git").is_dir() or (parent / ".git").is_file():
-            return tuple(dict.fromkeys((f"worktree:path:{root}", f"worktree:path:{parent}")))
-    return (f"worktree:path:{root}",)
+            found = tuple(dict.fromkeys((f"{_PATH_KEY}{root}", f"{_PATH_KEY}{parent}")))
+            break
+    else:
+        found = (f"{_PATH_KEY}{root}",)
+    return tuple(
+        dict.fromkeys(
+            spelling
+            for candidate in found
+            for spelling in path_key_spellings(candidate, record="session handle")
+        )
+    )
+
+
+def _current_spellings(handles: HandleMap) -> tuple[dict[str, str], dict[str, str]]:
+    """Labels and titles, plus those of former-mount path keys under their current spellings.
+
+    The current spellings are the lexical mount's and the resolved one's, as attribution
+    derives keys from resolved paths. A stored current-spelled key wins.
+    """
+    labels, titles = handles.labels(), handles.titles()
+    for key in tuple(labels):
+        if not key.startswith(_PATH_KEY):
+            continue
+        path = key.removeprefix(_PATH_KEY)
+        moved = translate_stored_path(path, record="session handle")
+        if moved == path:
+            continue
+        for current in dict.fromkeys((moved, str(Path(moved).resolve()))):
+            labels.setdefault(_PATH_KEY + current, labels[key])
+            titles.setdefault(_PATH_KEY + current, titles[key])
+    return labels, titles
 
 
 class HandleStore:
@@ -152,13 +233,14 @@ class HandleStore:
         if type(data.get("schema")) is not int or data["schema"] != 1:
             raise ValueError("unsupported handle map schema")
         entries, aliases = (require_dict(data.get(n), field=n) for n in ("entries", "aliases"))
-        if any(not isinstance(v, str) for m in (entries, aliases) for v in m.values()):
+        names = require_dict(data.get("names", {}), field="names")
+        if any(not isinstance(v, str) for m in (entries, aliases, names) for v in m.values()):
             raise ValueError("handle mapping must contain strings")
         highest = max(
             (int(m[0]) for v in entries.values() if (m := re.search(r"[0-9]+$", v))), default=0
         )
         counter = max(1, require_int(data.get("next_number"), field="handle counter"), highest + 1)
-        return HandleMap(entries, aliases, counter, taken)
+        return HandleMap(entries, aliases, counter, dict(names), taken)
 
     def save(self, handles: HandleMap) -> None:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)
@@ -174,13 +256,14 @@ class HandleStore:
         *,
         predecessors: tuple[str, ...] = (),
         wait_s: float | None = None,
+        name: str | None = None,
     ) -> str:
         root = self.root if self.jobs else self.root.parent
         wait = 1 if self.jobs else wait_s
         with _writer(root, wait_s=wait, booley_dir=self.booley_dir):
             handles = self.load()
             before = json.dumps(handles.stored(), sort_keys=True)
-            label = handles.reserve(key, prefix, predecessors=predecessors)
+            label = handles.reserve(key, prefix, predecessors=predecessors, name=name)
             if json.dumps(handles.stored(), sort_keys=True) != before:
                 self.save(handles)
             return label
@@ -200,11 +283,18 @@ class HandleStore:
                 self.save(handles)
             return handles
 
-    def snapshot(self) -> tuple[dict[str, str], tuple[str, ...]]:
+    def titled_snapshot(self) -> tuple[dict[str, str], dict[str, str], tuple[str, ...]]:
+        """Handles, display titles and diagnostics from one map read."""
         try:
-            return self.load().labels(), ()
-        except (OSError, ValueError, UnicodeError, RecursionError) as exc:
-            return {}, (f"{'Job' if self.jobs else 'Session'} handles unavailable: {exc}",)
+            handles = self.load()
+            labels, titles = _current_spellings(handles)
+        except (OSError, ValueError, UnicodeError, RecursionError, MountHistoryError) as exc:
+            return {}, {}, (f"{'Job' if self.jobs else 'Session'} handles unavailable: {exc}",)
+        return labels, titles, ()
+
+    def snapshot(self) -> tuple[dict[str, str], tuple[str, ...]]:
+        handles, _titles, diagnostics = self.titled_snapshot()
+        return handles, diagnostics
 
 
 @contextmanager
@@ -230,9 +320,31 @@ def session_writer(
     return _writer(booley_dir / "runtime/sessions", wait_s=wait_s, booley_dir=booley_dir)
 
 
-def reserve_session_handle(booley_dir: Path, key: str, *, wait_s: float | None = None) -> str:
-    """Reserve the Session handle for *key*, waiting up to *wait_s* for the writer lock."""
-    return HandleStore(booley_dir).reserve(key, "S", wait_s=wait_s)
+def reserve_session_handle(
+    booley_dir: Path,
+    key: str,
+    *,
+    wait_s: float | None = None,
+    predecessors: tuple[str, ...] = (),
+    name: str | None = None,
+) -> str:
+    """Reserve the Session handle for *key*, waiting up to *wait_s* for the writer lock.
+
+    *key* keeps the handle of the first of *predecessors* that has one (a resumed tab).
+    *name* labels the Session; ``None`` keeps a stored label.
+    """
+    return HandleStore(booley_dir).reserve(
+        key, "S", wait_s=wait_s, predecessors=predecessors, name=name
+    )
+
+
+def launched_session_title(booley_dir: Path, key: str, handle: str, name: str | None) -> str:
+    """The title a just-reserved Session shows, including a label stored by an earlier launch.
+
+    Read-only second map read; if it fails the title falls back to *handle* and *name*.
+    """
+    _handles, titles, _diagnostics = HandleStore(booley_dir).titled_snapshot()
+    return titles.get(key) or session_title(handle, name)
 
 
 def register_job(

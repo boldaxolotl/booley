@@ -125,7 +125,7 @@ def test_a_tty_that_is_not_our_controlling_terminal_is_not_terminal_mode(
     monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: True)
     monkeypatch.setattr(foreground_child.os, "tcgetpgrp", not_a_controlling_tty)
 
-    assert foreground_child._foreground_tty() is False
+    assert foreground_child.foreground_tty() is False
     assert foreground_child._ForegroundRun._is_foreground() is False
 
 
@@ -174,7 +174,7 @@ def _current_mask() -> frozenset[int]:
 def fake_terminal_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
     """Make `_ForegroundRun` believe it owns a terminal without touching process groups."""
     calls: list[tuple[str, int]] = []
-    monkeypatch.setattr(foreground_child, "_foreground_tty", lambda: True)
+    monkeypatch.setattr(foreground_child, "foreground_tty", lambda: True)
     monkeypatch.setattr(
         foreground_child.os, "setpgid", lambda pid, group: calls.append(("setpgid", pid))
     )
@@ -248,7 +248,7 @@ def test_the_parent_forwards_a_held_signal_to_the_child_once(
     name: str | None,
 ) -> None:
     """A copy that reached only the parent is consumed and re-sent, never left to kill it."""
-    monkeypatch.setattr(foreground_child, "_foreground_tty", lambda: terminal)
+    monkeypatch.setattr(foreground_child, "foreground_tty", lambda: terminal)
     monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: terminal)
     child = 4242
     sent: list[tuple[int, int]] = []
@@ -419,3 +419,85 @@ def test_a_pending_quit_costs_no_core_file_and_acts_before_the_exec(
     unblock = f"mask:{signal.SIG_UNBLOCK}:True"
     restore = f"mask:{signal.SIG_SETMASK}:False"  # handler back before the mask is restored
     assert events == [f"mask:{signal.SIG_BLOCK}:False", "rlimit", unblock, "exec", restore]
+
+
+# -- the exit hook ---------------------------------------------------------------
+
+
+def _fake_parent_of(monkeypatch: pytest.MonkeyPatch, events: list[tuple[object, ...]]) -> None:
+    """Pose as the parent of a forked child (pid 4242) that is signalled from outside."""
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+    monkeypatch.setattr(foreground_child.os, "fork", lambda: 4242)
+    monkeypatch.setattr(
+        foreground_child.os, "kill", lambda pid, number: events.append(("kill", pid, number))
+    )
+
+    def propagate(status: int) -> int:
+        events.append(("propagate", status))
+        return 129
+
+    monkeypatch.setattr(foreground_child, "_propagate", propagate)
+
+
+@_needs_fork
+def test_after_exit_sees_the_status_and_forwarded_hangup_before_propagation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Bug caught: a hook that runs after `_propagate` (which ends Booley by the agent's own
+    # signal), or a hang-up the parent relayed that the hook cannot tell from a plain exit.
+    events: list[tuple[object, ...]] = []
+    _fake_parent_of(monkeypatch, events)
+    died_of_hangup = int(signal.SIGHUP)
+
+    def wait_for_child(pid: int, _flags: int) -> tuple[int, int]:
+        # The terminal closes while the agent runs: the parent's handler relays the hang-up.
+        signal.getsignal(signal.SIGHUP)(signal.SIGHUP, None)
+        return pid, died_of_hangup
+
+    monkeypatch.setattr(foreground_child.os, "waitpid", wait_for_child)
+    entry = signal.signal(signal.SIGHUP, signal.SIG_DFL)  # a worker may have started ignoring it
+    try:
+        code = foreground_child.run_foreground_child(
+            lambda: 0, after_exit=lambda end: events.append(("after_exit", end))
+        )
+    finally:
+        signal.signal(signal.SIGHUP, entry)
+
+    assert events == [
+        ("kill", 4242, signal.SIGHUP),
+        ("after_exit", foreground_child.ChildExit(died_of_hangup, forwarded=True)),
+        ("propagate", died_of_hangup),
+    ]
+    assert code == 129
+
+
+@_needs_fork
+def test_after_exit_reports_a_plain_exit_as_not_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[object, ...]] = []
+    _fake_parent_of(monkeypatch, events)
+    monkeypatch.setattr(foreground_child.os, "waitpid", lambda pid, _flags: (pid, 3 << 8))
+
+    foreground_child.run_foreground_child(
+        lambda: 0, after_exit=lambda end: events.append(("after_exit", end))
+    )
+
+    assert events == [
+        ("after_exit", foreground_child.ChildExit(3 << 8, forwarded=False)),
+        ("propagate", 3 << 8),
+    ]
+
+
+@_needs_fork
+def test_after_exit_does_not_run_when_the_launch_ran_in_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_fork() -> int:
+        raise OSError("pids limit")
+
+    monkeypatch.setattr(foreground_child.os, "fork", refuse_fork)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+    called: list[foreground_child.ChildExit] = []
+
+    code = foreground_child.run_foreground_child(lambda: 4, after_exit=called.append)
+
+    assert (code, called) == (4, [])

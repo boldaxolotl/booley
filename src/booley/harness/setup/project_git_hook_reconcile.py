@@ -31,6 +31,7 @@ from booley.harness.setup.project_git_hook_bundle import (
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.sandbox_apply import shell_command
 
 _LEGACY_MANAGED_HOOKS = (
     "boundary.py",
@@ -380,10 +381,10 @@ def _bundle_tracking_detail(locations: _Locations) -> str | None:
         return None
     if tracked.returncode:
         raise RuntimeError(tracked.stderr.strip() or "Git bundle index inspection failed")
-    command = shlex.join(["git", "-C", str(owner), "rm", "--cached", "--", relative])
+    command = shell_command(["git", "-C", str(owner), "rm", "--cached", "--", relative])
     return (
         f"Generated Project Git-hook bundle is already tracked; untrack it with: {command}. "
-        "Commit the intentional removal and changed ignore policy yourself outside active Goal Mode; "
+        "Commit the intentional removal and changed ignore policy yourself; "
         "rerun init in other checkouts if removal deletes their local bundle."
     )
 

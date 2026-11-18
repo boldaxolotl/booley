@@ -183,34 +183,6 @@ def test_runtime_image_workflow_does_not_attest_a_pypi_release_wheel() -> None:
     assert all("dist" not in str(step["with"]["path"]) for step in uploads)
 
 
-def test_release_topology_splits_validation_by_image_dependency() -> None:
-    workflow = yaml.safe_load(
-        (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-    )
-
-    assert semantic.validate_release_topology(workflow) == ()
-
-    jobs = workflow["jobs"]
-    validation_jobs = {
-        "standard-image-contract",
-        "openroad-runtime",
-        "host-doctor-runtime",
-        "simulation-selftest-overlay",
-        "helper-image-metadata",
-        "riscv-image-contract",
-        "demo-goal-surface",
-        "picorv32-demo-flows",
-        "ibex-lint-demo",
-    }
-    assert validation_jobs <= set(jobs)
-    assert "demo-smoke" not in jobs
-    assert set(jobs["promote"]["needs"]) == {
-        "build-and-push",
-        "build-and-push-riscv",
-        *validation_jobs,
-    }
-
-
 def test_release_topology_rejects_riscv_output_reference_in_standard_job() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
@@ -244,6 +216,30 @@ def test_release_topology_requires_real_picorv32_flows_and_evidence() -> None:
 
     assert "picorv32-demo-flows must enable lint and simulation" in errors
     assert "picorv32-demo-flows must reject missing evidence" in errors
+
+
+def test_release_topology_requires_measurement_validation_before_record() -> None:
+    def errors_after(edit) -> tuple[str, ...]:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+        )
+        job = workflow["jobs"]["picorv32-demo-flows"]
+        record = next(
+            step for step in job["steps"] if step.get("name") == "Record PicoRV32 evidence"
+        )
+        record["run"] = edit(record["run"])
+        return semantic.validate_release_topology(workflow)
+
+    message = "picorv32-demo-flows must validate measurement evidence before recording it"
+    assert message not in errors_after(lambda run: run)
+    assert message in errors_after(
+        lambda run: run.replace(
+            "release_validation/measurement_evidence.py", "release_validation/x.py"
+        )
+    )
+    assert message in errors_after(lambda run: run.replace("--check picorv32.measured", ""))
+    check = "--check picorv32.measured"
+    assert message in errors_after(lambda run: check + " " + run.replace(check, ""))
 
 
 def test_release_topology_requires_shared_provenance_validation() -> None:

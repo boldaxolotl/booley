@@ -1,0 +1,81 @@
+{
+  "$schema": "booley.simulation-projection/v3",
+  "campaign_id": "a78dd944-c36e-47c2-b5cf-ff34d89bd88e",
+  "campaign_manifest": {
+    "bytes": 3676,
+    "kind": "simulation_campaign_manifest",
+    "owner": "a78dd944-c36e-47c2-b5cf-ff34d89bd88e",
+    "path": "campaign/manifest.json",
+    "path_base": "origin_target",
+    "sha256": "sha256:e45a4ae5122b1ca383dd6aa70b9ba5fcef7f3341cbd523e484569ae84ca6ab24"
+  },
+  "collection": "complete",
+  "complete": true,
+  "coverage_campaign": {
+    "bytes": 851,
+    "kind": "coverage_campaign_reference",
+    "owner": "a78dd944-c36e-47c2-b5cf-ff34d89bd88e",
+    "path": "coverage.json",
+    "path_base": "origin_target",
+    "sha256": "sha256:13e50b7a9c6f4a3ca9e3bbdc0f38136a28002e85661eb7de1cf2d1c96f8b0bcb"
+  },
+  "evaluation": "not_requested",
+  "flow": "sim",
+  "inconclusive": false,
+  "mode": "simulate",
+  "passed": true,
+  "target": "sim_0",
+  "target_identity": "acme:demo:counter:1#sim_0",
+  "test_runs": [
+    {
+      "args": [],
+      "env": {},
+      "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+      "grade": "pass",
+      "name": "reset@1",
+      "seed": 1,
+      "test": "reset",
+      "variant": null
+    },
+    {
+      "args": [],
+      "env": {},
+      "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+      "grade": "pass",
+      "name": "wrap@1",
+      "seed": 1,
+      "test": "wrap",
+      "variant": null
+    }
+  ],
+  "tests": [
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+      "name": "reset",
+      "passed": true,
+      "seed": 1,
+      "sva_errors": 0,
+      "test_run": "reset@1",
+      "timed_out": false,
+      "variant": null
+    },
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "fingerprint": "sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f",
+      "name": "wrap",
+      "passed": true,
+      "seed": 1,
+      "sva_errors": 0,
+      "test_run": "wrap@1",
+      "timed_out": false,
+      "variant": null
+    }
+  ]
+}

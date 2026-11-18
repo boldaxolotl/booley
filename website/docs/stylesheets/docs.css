@@ -123,8 +123,9 @@
 
 /* Variant callouts ("In stealth mode", "On Windows", ...): a collapsed
    <details> box that says only what changes in that variant. The prose
-   around it describes the baseline setup; docs/internals/CONTRIBUTING.md
-   ("Writing user docs") has the rule. GitHub renders the same markup. */
+   around it describes the baseline setup;
+   docs/internals/USER_DOCS_PRINCIPLES.md (principle 26) has the rule. GitHub
+   renders the same markup. */
 .doc-prose details { border: 1px solid var(--rule); margin: 0 0 1.2em; }
 .doc-prose summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: center;
   padding: 7px 14px; background: var(--fill-2); font: 650 15px/1.4 var(--sans); }
@@ -136,3 +137,10 @@
 .doc-prose details > :not(summary) { margin-left: 16px; margin-right: 16px; font-size: 16.5px; }
 .doc-prose details > summary + * { margin-top: 12px; }
 @media (prefers-reduced-motion: reduce) { .doc-prose summary::before { transition: none; } }
+
+/* Theme-paired images: a doc lists a light and a dark copy, marked with GitHub's
+   #gh-light-mode-only / #gh-dark-mode-only fragments so GitHub shows the one that
+   matches its theme. The site shows the one that matches the header toggle. */
+img[src$="#gh-dark-mode-only"],
+:root[data-theme="dark"] img[src$="#gh-light-mode-only"] { display: none; }
+:root[data-theme="dark"] img[src$="#gh-dark-mode-only"] { display: inline; }

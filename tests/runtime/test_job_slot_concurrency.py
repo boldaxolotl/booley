@@ -1,4 +1,4 @@
-"""Operating-system concurrency contracts for shared Job slots."""
+"""Operating-system concurrency contracts for the shared memory-class slot store."""
 
 from __future__ import annotations
 
@@ -10,7 +10,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tests.time_budget import hang_guard_s
+
 from booley.runtime import job_slots
+
+# One run-alone claim at a time: the single-holder vehicle for mutual exclusion.
+_RUN_ALONE = job_slots.MemoryClaim(budget_mb=1024, run_alone=True)
 
 
 def test_job_slot_import_does_not_require_fusesoc_api(tmp_path: Path) -> None:
@@ -40,15 +45,13 @@ def _hold_single_slot(
     maximum: Any,
     counter_lock: Any,
 ) -> None:
-    store = job_slots.SlotStore(
-        Path(root),
-        job_slots.SlotCaps(max_heavy=1),
-    )
-    start.wait(timeout=10)
+    store = job_slots.SlotStore(Path(root))
+    start.wait(timeout=hang_guard_s())
     token = store.acquire(
-        job_slots.CLASS_HEAVY,
+        job_slots.CLASS_MEMORY,
         pid=os.getpid(),
         poll_interval=0.005,
+        memory=_RUN_ALONE,
     )
     try:
         with counter_lock:
@@ -79,7 +82,7 @@ def test_single_slot_never_has_multiple_process_holders(tmp_path: Path) -> None:
         worker.start()
     try:
         for worker in workers:
-            worker.join(timeout=20)
+            worker.join(timeout=2 * hang_guard_s())
             assert not worker.is_alive(), "slot worker exceeded its bounded join"
             assert worker.exitcode == 0
     finally:
@@ -87,14 +90,14 @@ def test_single_slot_never_has_multiple_process_holders(tmp_path: Path) -> None:
             if worker.is_alive():
                 worker.terminate()
         for worker in workers:
-            worker.join(timeout=5)
+            worker.join(timeout=hang_guard_s())
 
     assert active.value == 0
     assert maximum.value == 1
 
 
 def test_acquire_recovers_stale_promotion_gate(tmp_path: Path) -> None:
-    class_dir = tmp_path / job_slots.CLASS_HEAVY
+    class_dir = tmp_path / job_slots.CLASS_MEMORY
     class_dir.mkdir(parents=True)
     gate = class_dir / ".promotion.lock"
     gate.write_text("987654321\n", encoding="utf-8")
@@ -102,14 +105,14 @@ def test_acquire_recovers_stale_promotion_gate(tmp_path: Path) -> None:
     os.utime(gate, (old, old))
     store = job_slots.SlotStore(
         tmp_path,
-        job_slots.SlotCaps(max_heavy=1),
         is_pid_alive=lambda pid: pid == os.getpid(),
     )
 
     token = store.acquire(
-        job_slots.CLASS_HEAVY,
+        job_slots.CLASS_MEMORY,
         pid=os.getpid(),
         poll_interval=0.005,
+        memory=_RUN_ALONE,
     )
     try:
         assert token.is_holder

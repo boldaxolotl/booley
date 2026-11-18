@@ -1,0 +1,12 @@
+1. Executing SLANG frontend.
+Top level design units:
+    w
+
+w.sv:1:9: warning: unknown pragma 'foobar' [-Wunknown-pragma]
+`pragma foobar
+        ^~~~~~
+w.sv:3:11: warning: unknown pragma 'foobar' [-Wunknown-pragma]
+  `pragma foobar
+          ^~~~~~
+
+Build succeeded: 0 errors, 2 warnings

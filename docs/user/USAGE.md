@@ -7,11 +7,18 @@ with AI coding agents to follow it.
 
 1. [Read this first](#read-this-first)
 2. [First, verify your setup](#first-verify-your-setup)
-3. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [what to ask for](#what-you-can-ask-for), [skills](#booley-skills), [good prompts](#write-a-useful-prompt), [long runs and results](#long-runs-and-results), [dashboard](#the-dashboard), [parallel work](#several-agents-at-once), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [editing instructions](#editing-project-instructions), [waveforms](#viewing-waveforms)
+3. [Developer Agent sessions](#developer-agent-sessions):
+    [first session](#open-your-first-developer-agent-session),
+    [what to ask for](#what-you-can-ask-for), [skills](#booley-skills),
+    [good prompts](#write-a-useful-prompt),
+    [long runs and results](#long-runs-and-results),
+    [dashboard](#the-dashboard), [parallel work](#several-agents-at-once),
+    [reviewing changes](#what-the-developer-agent-is-allowed-to-do),
+    [editing instructions](#editing-project-instructions),
+    [waveforms](#viewing-waveforms)
 4. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 
-Goal Mode has its own guide, [GOAL-MODE.md](GOAL-MODE.md). Every command,
-Flow, and Specialist is listed in [CLI-REFERENCE.md](CLI-REFERENCE.md).
+Every command is listed in [CLI-REFERENCE.md](CLI-REFERENCE.md).
 
 ## Read this first
 
@@ -29,11 +36,10 @@ code, and the hardware results.
 
 Booley offers two kinds of capability:
 
-- **Flows** (`sim`, `lint`, `synth`, `fpga`) run EDA tools in a fixed,
-  predictable way. No AI is involved.
-- **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
-  LLM-powered capabilities that each do one focused job. See
-  [Specialists](SPECIALISTS.md).
+- **Flows** (`sim`, `lint`, `synth`, `fpga`, `mutation`) run EDA tools, or
+  your tests, in a fixed, predictable way. No AI is involved.
+- **Specialists** (`reviewer`, `coverage_analyst`) are small AI capabilities
+  that each do one focused job. See [Specialists](SPECIALISTS.md).
 
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
 and keeps the Developer Agent away from the rest of your computer.
@@ -48,7 +54,7 @@ and keeps the Developer Agent away from the rest of your computer.
 
 Command blocks go in the terminal named in the text around them. Sentences in
 *italics* are prompts for the Developer Agent chat. Skills such as
-`/booley-goal` also go in the Developer Agent chat, not in a terminal.
+`/booley-heal` also go in the Developer Agent chat, not in a terminal.
 
 Booley uses some terms with exact meanings. When one is unfamiliar, look it up
 in the glossary linked from the [context map](../../GLOSSARY-MAP.md).
@@ -74,7 +80,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
   change it also walks you through the
   [upgrade review](DOCTOR.md#upgrade-review).
 - For a quick overview of Booley, start with `booley cheat`. It lists the
-  available sections; print the ones you need, for example `booley cheat --goals`
+  available sections; print the ones you need, for example `booley cheat --metrics`
   or `booley cheat --commands --project-files`. Use `booley cheat --all` for the
   whole cheatsheet; `booley cheat --list` also shows the section list.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
@@ -85,7 +91,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
   Booley or Sandbox Image update), run `booley doctor --deep`. See
   [DOCTOR.md](DOCTOR.md#automatic-checks).
 
-## Interactive Mode
+## Developer Agent sessions
 
 ### Open your first Developer Agent session
 
@@ -124,9 +130,11 @@ Don't continue until `booley doctor` shows no failures or warnings.
     the default CLI, so another one may ask you to sign in and lack Booley's tools.
 
     Arguments after `booley chat` and its own options (`--cli`, `-C`,
-    `--new-worktree`, `--here`) go to the
+    `--new-worktree`, `--here`, `--name`) go to the
     CLI unchanged. To resume an earlier conversation, run
-    `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
+    `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
+    `booley chat resume --last` (Codex); a conversation that ran in a worktree
+    reopens there (see [Several agents at once](#several-agents-at-once)).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
@@ -135,7 +143,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
 
 4. Type this first request into the chat:
 
-    > Check whether Booley Interactive Mode is ready. List the available
+    > Check whether Booley is ready in this session. List the available
     > Targets and explain what each one is for.
 
     The agent asks Booley for this and summarizes what it found.
@@ -156,13 +164,13 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 
 | Flow or Specialist | What it does | Try asking | Guide |
 | --- | --- | --- | --- |
-| `sim` | Builds and runs your tests in Verilator or Icarus, optionally with coverage | *"Debug the backpressure test failure on the `sim_heavy` target."* | [FLOW-SIM.md](FLOW-SIM.md), [TESTS.md](TESTS.md), [COVERAGE.md](COVERAGE.md) |
-| `lint` | Lints with Verilator (structure and semantics) or Verible (style) | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
-| `synth` | Quick ASIC area and timing estimate with Yosys and OpenROAD | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
-| `fpga` | FPGA implementation with AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
-| `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) |
-| `mutation_tester` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#mutation_tester) |
-| `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
+| `sim` | Builds and runs your tests and reports which pass, optionally with coverage on Verilator Targets | *"Debug the backpressure test failure on the `sim_heavy` target."* | [FLOW-SIM.md](FLOW-SIM.md), [TESTS.md](TESTS.md), [COVERAGE.md](COVERAGE.md) |
+| `lint` | Checks RTL for mistakes without simulating it and lists the findings | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
+| `synth` | Quick ASIC area and timing estimate while you iterate on RTL | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
+| `fpga` | Implements the design for an FPGA and reports resources and timing; needs AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
+| `mutation` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [FLOW-MUTATION.md](FLOW-MUTATION.md) |
+| `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [REVIEWER.md](REVIEWER.md) |
+| `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md#analyzing-a-coverage-record) |
 
 You don't need to know Flow names, flags, or where reports go. Give the agent
 the goal and any limits, and it works out the details. Options and results
@@ -174,13 +182,6 @@ the new `fifo_ptr` module to the `sim_full` Target."* It updates the `.core`
 file and `.booley/tests.toml` for you. The background is in
 [TARGETS.md](TARGETS.md) and [TESTS.md](TESTS.md).
 
-**Work that must be finished properly?** When a task has conditions that must
-hold before it counts as done (all tests pass, a clean review, area under a
-limit), type `/booley-goal` and describe the work, confirm the Goals, clear the
-chat, and type `/booley-goal start`. Booley then won't let the agent declare it
-done until each condition is met with evidence. See
-[GOAL-MODE.md](GOAL-MODE.md#how-to-use-goal-mode).
-
 ### Booley skills
 
 Skills are guided workflows you start by typing their name in the Developer
@@ -189,7 +190,6 @@ Agent chat:
 | Skill | Use it when |
 | --- | --- |
 | `/booley-setup` | Setting up a Project (you started this on the host during setup) |
-| `/booley-goal` | Work needs conditions that must be met, with evidence |
 | `/booley-heal` | Doctor reports problems, or a Flow stopped working |
 | `/booley-feedback` | Reporting a Booley bug, confusion, praise, or an idea |
 
@@ -217,9 +217,10 @@ was wrong or what evidence you want next.
 
 Every Flow or Specialist run is a **Job**. The agent starts it and waits for the
 result, which can take seconds for lint and much longer for big simulations or
-synthesis. By default only one simulation or synthesis runs at a time; others
-wait in a queue, so a run that seems stuck may just be waiting its turn. To
-allow more, see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
+synthesis. A simulation, synthesis or other EDA run starts while its estimated
+memory fits the Memory Budget; others wait in a queue, so a run that seems
+stuck may just be waiting its turn. To size the budget, see
+[Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
 
 The agent tells you the verdict and the paths to the report and logs. Reports
 from normal runs are kept under `.booley/flow-reports/`, never in your RTL. `booley resources`
@@ -238,8 +239,16 @@ The Dashboard has three windows; press `←` or `→` to switch:
 
 - **Sessions:** every Developer Agent session and what its agent last
   reported: working, waiting for a tool call, or waiting for your input.
-  Sessions waiting for your input or a Goal change decision are grouped under
+  Sessions waiting for your input are grouped under
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
+  When the session's checkout declares a `[target.flow]` table in
+  `metrics.toml`, a second line under the session shows its measurement:
+  `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
+  5d6e7f8: 1 unmet, 3 not evaluated` when it is not, or `measuring 2/5 · 14m 00s`
+  while a `booley measure` Job runs there. `Enter` on a line that has a report
+  opens its Markdown
+  [Measurement Report](METRIC-DRIVEN-DEVELOPMENT.md#read-the-measurement-report)
+  in your editor.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
   session.
   A `booley flow` or `booley specialist` run typed in a container terminal
@@ -247,16 +256,68 @@ The Dashboard has three windows; press `←` or `→` to switch:
   to `job.log`, shown as a link.
 - **Targets:** the Targets of one worktree, with their core and the Flows that
   can drive them. Press `Enter` on a Target for its filesets, tests, Test
-  Variants, and constraints. The **Worktree** item in the top bar picks the
-  worktree: those with a connected session come first, the main checkout last.
+  Variants, and constraints. When Run is available and a Flow can drive the
+  Target, the detail ends with those Flows (for a Simulation Target, also the
+  [Mutation Flow](FLOW-MUTATION.md)): press `↓` past its end, then `Enter`
+  on a Flow to open the Run form with the worktree and Target filled in; `Esc`
+  on the form itself returns to the detail.
+  The **Worktree** item in the top bar picks the worktree: those with a
+  connected session come first, the main checkout last.
+
+The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
+or `coverage_analyst` Specialist, as a Standalone Job. Pick the worktree and the
+Flow, then fill in the form the Dashboard builds from that Flow's options (the Project comes from
+the worktree, so `-C`, `--project`, and `--work-dir` are never offered). Each
+Common and Flow option is
+a field: `Enter` flips an on/off flag, opens a short list for an option with
+choices or a default/on/off pair, or opens a text editor. The Target field picks
+one Target of the worktree that the Flow can drive, or `automatic`; put more
+Targets in **Extra arguments**. Once you have chosen a Target, the test field of
+the Simulation Flow lists its [Test Runs](TESTS.md): each test, and each test
+with one of its Test Variants (written `test+variant`). `Enter` toggles a Test
+Run at once, and `Esc` only goes back to the form; choosing another Target
+clears them. **Extra arguments** takes seeds and further Targets too. When a
+list cannot be read, the open list says why, and **Extra arguments** still takes
+the Targets and Test Runs you type. Output and Expert options go in the
+**Extra arguments** field, typed as on the command line. `Esc` in a choice list
+or editor drops the change, `Enter` keeps it. **Review the command** checks it and shows the equivalent
+`cd … && booley flow …` command. The
+review screen also says whether the Job runs now or queues behind other Jobs
+(with its position). A Simulation, synthesis, FPGA, or lint Job is admitted by
+memory: the screen says it waits while its estimate does not fit the Memory
+Budget, without a position. The screen also warns when the worktree has a connected session,
+running Jobs, or uncommitted changes. A check it cannot make is reported as
+such. Synth and FPGA runs show their per-work-unit timeout. **Submit** starts
+the Job, unless, for a Specialist, its Agent CLI cannot sign in or its settings cannot be read:
+then Submit says why (with the fix) and does nothing until the problem is fixed.
+**Copy command** asks your terminal to copy the
+command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
+Finished filter switches to Running, which keeps the Job listed after it
+finishes. `Esc` returns to where you started.
+
+The `coverage_analyst` form has no Extra arguments field. Its Coverage Record
+row lists the `coverage.json` of each finished coverage run among the Jobs the
+Dashboard still lists under All, newest first; with none, only the row that
+types the path of any other `coverage.json` is shown. Instruction, max turns,
+and timeout follow, the last two under More.
 
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
-the first row to reach the top bar with the tabs, filters, and Help; the footer
-shows the keys you can use.
+the first row to reach the top bar with the tabs, filters, Run, and Help; the
+footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
-handle.
+handle, except a conversation resumed in its worktree, which keeps its handle.
+
+`booley chat --name uart-fix` labels a session: the terminal tab, the Claude
+session name and the Dashboard's session list, header and worktree picker show
+`S3 · uart-fix`. The Codex tab shows the label on Linux only; elsewhere Booley
+prints a note and the Dashboard still shows it. The label is a display aid only;
+the worktree and branch keep the handle (`s3`, `booley/s3`). A conversation
+resumed in its worktree keeps its handle and label, and `--name` on a resume sets
+a new label. The allowed characters are in the
+[CLI reference](CLI-REFERENCE.md#work-in-the-sandbox--container). Pass Claude's own `--name` as
+`booley chat -- --name <name>`.
 
 ### Several agents at once
 
@@ -264,33 +325,133 @@ Agents that share a checkout overwrite each other's edits, so `booley chat`
 keeps them apart. The first session runs in the main checkout. While it is
 running, the next `booley chat` creates a worktree `s<N>` on branch
 `booley/s<N>`, named after the session handle (`S3` gets `s3`), and starts
-there. It prints one line first:
+there. When the worktree is ready it prints:
 
 ```text
 Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
 ```
 
-A session that runs in the main checkout prints no such line. A worktree is
-made only when the main checkout is taken, so a lone session behaves as before.
+The reason is `the main checkout is in use by another booley chat`,
+`Session S2 is working in the main checkout`, `--new-worktree`, or
+`[worktree] chat = "always"`. A lone session runs in the main checkout and
+prints no such line.
+
+The worktree starts at the main checkout's last commit, so commit first what
+the new session needs: uncommitted changes to the Project's files are not
+copied. Booley also fills the Git submodules and runs the Project's post-setup
+hook before the agent starts, which can take minutes on a large Project; if a
+step fails, it removes the worktree and starts no agent.
+The worktree gets your current Booley configuration.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The worktree's branch is `wt/s<N>`, so the line above and the exit messages
+below name `wt/s3` instead of `booley/s3`.
+
+One warning names the uncommitted Booley Directory files left out of the new
+worktree.
+See [Stealth Mode](STEALTH.md).
+
+</details>
 
 - `booley chat --new-worktree` always starts in a new worktree.
 - `booley chat --here` always starts in the main checkout, for example to
   read code alongside another session.
-- `[chat] worktree = "auto" | "always" | "never"` in `.booley/booley.toml` sets
-  the default; see [Interactive sessions](CONFIG.md#interactive-sessions-chat).
+- `[worktree] chat = "auto" | "always" | "never"` in `.booley/booley.toml` sets
+  the default; see [Worktree settings](CONFIG.md#worktree-settings-worktree).
 - Run from inside an existing linked worktree, `booley chat` starts there and
   creates nothing.
+
+When the agent of a worktree session exits and you are still at the terminal,
+`booley chat` asks whether to keep or discard the worktree. The question lists
+the work that is not in the main checkout yet: uncommitted changes in the
+worktree and in its Paired Checkout, and the number of commits on each of its
+branches that main lacks (Git-ignored files are not counted):
+
+```text
+Session S3 has ended. Worktree s3: <path>
+Work not in main yet:
+  - 2 uncommitted change(s) in the worktree
+  - 3 commit(s) on booley/s3 not in main
+Discard deletes the uncommitted changes and keeps the branches. Booley never
+merges: merge what you need first.
+Keep or discard worktree s3? [K/d]
+```
+
+Enter keeps it. Discard removes the worktree, the same as
+`booley worktree rm s3`, and keeps its branches, so committed work stays
+reachable. Booley never merges anything for you. If the removal is refused, for
+example because the agent is still running somewhere,
+Booley shows why and asks a second time before it removes the worktree anyway.
+A session in the main checkout gets no question.
+
+Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
+when nobody can answer: output goes to a pipe or a file, the terminal was
+closed, or the agent was stopped by a signal. A kept worktree is normal.
+
+Manage worktrees from a container terminal:
+
+- `booley worktree list` shows each worktree's branch, unmerged work, and
+  live sessions.
+- `booley worktree rm <name>` removes one and keeps its branches. It refuses
+  while a session runs there or work would be lost.
+- `booley worktree gc` removes worktrees idle longer than `[worktree]
+  gc_older_than` (default `7d`). `booley chat` runs it at every launch.
+
+See [Worktrees](WORKTREES.md).
+
+#### Resuming a conversation
+
+Claude Code and Codex keep a conversation with the directory it ran in, so
+a conversation that ran in worktree `s3` cannot be resumed from the main
+checkout. Booley therefore sends a resume to the worktree the conversation ran
+in and keeps its handle (`S3` stays `S3`). It prints
+
+```text
+Booley session S3 resumes conversation <id> in worktree <path>.
+```
+
+- By id: `booley chat --resume <id>` (also `--resume=<id>` and `-r <id>`) for
+  Claude, `booley chat resume <id>` or `booley chat exec resume <id>` for Codex
+  (Codex options may come before `resume` and between `resume` and the id).
+- The latest conversation: Claude's `-c`/`--continue` and Codex's
+  `resume --last` (also after `exec`) continue the most recent conversation
+  (by the agent CLI's own last-update time) among the main checkout and the
+  worktrees whose session is not running; a main checkout in use is skipped
+  too. Booley then resumes that conversation by its id. If
+  Booley cannot tell which is newest, the agent CLI picks from the main
+  checkout, as before. `resume --last --all`, and a Codex resume that chooses
+  its own directory (`-C`/`--cd`, `--worktree`), are left to Codex.
+- A conversation that ran in the main checkout resumes in the main checkout.
+  So does one Booley has no record of; for Codex, a `NOTE` says so.
+- If the worktree has since been removed, the conversation resumes in the main
+  checkout after a `NOTE`.
+- Resuming refuses a checkout that is in use, except the main checkout under
+  `[worktree] chat = "never"`, which is shared. A conversation whose worktree
+  has a running session (a Codex started by hand counts) is refused with exit 2
+  (end that session first). A conversation that belongs in the main checkout
+  while it is in use is refused too; run `booley chat --here ...` to resume it
+  beside that session.
+- `--here` and `--new-worktree` keep their meaning, and a launch from inside a
+  linked worktree stays there: none of them is redirected by a resume. The
+  `[worktree] chat` setting decides where new sessions start, not where a
+  resume goes.
+- A conversation you started by hand inside a worktree (not through
+  `booley chat`) reopens in that worktree, but may get a new handle once its
+  earlier session has ended.
 
 Put both options before any arguments meant for the agent CLI. Claude Code's
 own `--worktree` still goes to the agent.
 
 The check is best effort for agents that did not start through Booley. A plain
 `claude` tab or a VS Code panel does not hold the main checkout, so Booley only
-notices it once it has made a Booley tool call. Start such sessions in a
-worktree yourself (ask the agent: *"Create a worktree named `fifo-fix` and work
-there."*) or use `booley chat`. Read-only sessions, such as one that only
-explains code or runs reviews, can share the main checkout. See
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-developer-agents-keep-clobbering-each-others-edits).
+notices it once it has made a Booley tool call. To keep such a session apart,
+start it with `booley chat --new-worktree` from a container terminal. Asking a
+running agent to create a worktree is not enough: its Booley tool calls still
+run on the main checkout. Start Codex with `booley chat` too. Read-only
+sessions, such as one that only explains code or runs reviews, can share the
+main checkout.
 
 ### What the Developer Agent is allowed to do
 
@@ -312,17 +473,15 @@ doesn't replace your own review.
 <details markdown>
 <summary>In stealth mode</summary>
 
-A Git hook removes AI and Booley names from commit messages and rejects
-`Co-Authored-By` lines. If a commit is rejected, the agent just retries without
-that line. See [STEALTH.md](STEALTH.md#commit-messages).
+A Git hook rejects commit messages that name AI tools or Booley, and
+`Co-Authored-By` lines. If a commit is rejected, the agent rewords the message
+and commits again. See [STEALTH.md](STEALTH.md#commit-messages).
 
 </details>
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley/.interactive_logs/`. Chat transcripts live in
-the Developer Agent CLI’s own session storage. If the
-Developer Agent can't reach Booley (`booley` is missing from its `/mcp` list), see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
+the Developer Agent CLI’s own session storage.
 
 ### Editing Project instructions
 
@@ -348,8 +507,8 @@ When a simulation with tracing fails, the Developer Agent reads the waveform on 
 with `bwave`. When *you* want to see it, ask: *"show me the FIFO handshake
 around the failure"*. The agent opens it in a VaporView tab in VS Code, showing
 just the signals and time range that matter. VS Code installs the extension
-automatically when you attach to the container. If it is missing, see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
+automatically when you attach to the container. If it is missing,
+`booley doctor` in the Sandbox prints the command that installs it.
 
 ## When Booley itself misbehaves
 

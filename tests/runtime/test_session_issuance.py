@@ -18,6 +18,7 @@ from unittest.mock import Mock
 import pytest
 from tests import eda_grant_support
 from tests.devcontainer_spec_support import build_spec
+from tests.docker_host_support import fake_docker_host
 from tests.session_issuance_support import (
     damaged,
     fixed,
@@ -27,6 +28,7 @@ from tests.session_issuance_support import (
     stub_keeper,
 )
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import host_config_path
@@ -37,6 +39,7 @@ from booley.eda.provisioning.licensing import flexnet_docker
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import booley, eda_grants
 from booley.runtime import devcontainer as dc
+from booley.runtime import host_docker as idk
 from booley.runtime import (
     inspection,
     issuance_invalidation,
@@ -44,10 +47,10 @@ from booley.runtime import (
     session_refresh,
     session_runtime,
 )
-from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.sandbox_apply import Attachment
 
 # Issuance fixtures replace PATH with a synthetic launcher directory.
 _HOST_PATH = os.environ.get("PATH", os.defpath)
@@ -344,7 +347,7 @@ def test_prepared_issue_restores_previous_spec_when_issuance_fails(
     runtime_spec._write_stamp(stamp, previous_issuance)
     keeper_restores = []
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.tag_image",
+        "booley.runtime.host_docker.tag_image",
         lambda source, target: keeper_restores.append((source, target)),
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:old")
@@ -387,8 +390,8 @@ def test_prepared_issue_restores_spec_when_writer_partially_fails(
         raise OSError("disk full")
 
     monkeypatch.setattr(dc, "write_devcontainer", partial_write)
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
-    monkeypatch.setattr("booley.runtime.interactive_docker.remove_image_tag", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.remove_image_tag", lambda _image: None)
 
     with pytest.raises(OSError, match="disk full"):
         runtime_spec.issue_prepared(project, prepared)
@@ -409,9 +412,9 @@ def test_failed_first_issue_removes_new_keeper_tag(
     def remove_keeper(image: str) -> None:
         removed.append(image)
 
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.remove_image_tag",
+        "booley.runtime.host_docker.remove_image_tag",
         remove_keeper,
     )
     monkeypatch.setattr(
@@ -436,7 +439,7 @@ def test_issue_fails_before_writing_when_keeper_state_cannot_be_inspected(
     writer = Mock()
     monkeypatch.setattr(dc, "write_devcontainer", writer)
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.image_id",
+        "booley.runtime.host_docker.image_id",
         lambda _image: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
     )
 
@@ -465,7 +468,7 @@ def _concurrent_licensed_project(
     monkeypatch.setattr(
         eda_requirements,
         "_relay_image_id",
-        lambda: "sha256:" + "d" * 64,
+        lambda _runner: "sha256:" + "d" * 64,
     )
     monkeypatch.setattr(runtime_spec, "pin_image", lambda *_args, **_kwargs: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_pin_initialize_command", lambda *_args: None)
@@ -478,7 +481,9 @@ def _concurrent_licensed_project(
         "_issuance",
         lambda *_args, **_kwargs: SimpleNamespace(project_data_layout="legacy"),
     )
-    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _root: ())
+    monkeypatch.setattr(
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _root, **_kwargs: ()
+    )
     return project
 
 
@@ -496,7 +501,7 @@ def test_builder_issuance_serializes_with_concurrent_grant_revoke(
 
     def persist(*_args, **_kwargs):
         persistence_entered.set()
-        if not allow_persistence.wait(2):
+        if not allow_persistence.wait(2 * hang_guard_s()):
             raise runtime_spec.RuntimeSpecError("test persistence gate timed out")
         return object()
 
@@ -521,13 +526,13 @@ def test_builder_issuance_serializes_with_concurrent_grant_revoke(
 
     issuer = threading.Thread(target=run_issue)
     issuer.start()
-    assert persistence_entered.wait(2)
+    assert persistence_entered.wait(hang_guard_s())
     revoker = threading.Thread(target=run_revoke)
     revoker.start()
     assert not revoke_done.wait(0.2)
     allow_persistence.set()
-    issuer.join(2)
-    revoker.join(2)
+    issuer.join(hang_guard_s())
+    revoker.join(hang_guard_s())
 
     assert issue_done.is_set() and revoke_done.is_set()
     assert errors == []
@@ -535,7 +540,7 @@ def test_builder_issuance_serializes_with_concurrent_grant_revoke(
 
 
 def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot resolve Sandbox Image"):
         runtime_spec._resolve_image_id("missing:latest")
@@ -705,7 +710,7 @@ _WITHDRAWN_ISSUANCE = (
 )
 
 
-@pytest.mark.parametrize("reader", ["validate", "authenticate", "issued", "recovery"])
+@pytest.mark.parametrize("reader", ["validate", "authenticate", "issued"])
 @pytest.mark.parametrize("remove_parent", [False, True])
 def test_missing_issuance_is_withdrawn(issued, reader, remove_parent) -> None:
     project, spec, path, _stamp = issued
@@ -717,7 +722,6 @@ def test_missing_issuance_is_withdrawn(issued, reader, remove_parent) -> None:
         "validate": lambda: runtime_spec.validate(project, spec, path),
         "authenticate": lambda: runtime_spec.authenticate(project, spec, path),
         "issued": lambda: runtime_spec.load_issued_snapshot(project),
-        "recovery": lambda: runtime_spec.load_recovery_snapshot(project, spec, path),
     }
     with pytest.raises(runtime_spec.RuntimeSpecError) as raised:
         readers[reader]()
@@ -803,22 +807,30 @@ def _move_stamp_to_legacy_location(project: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "damage",
+    ("damage", "fix"),
     [
         pytest.param(
             lambda project: _rewrite_stamp(project, lambda doc: doc.__setitem__("version", 4)),
+            "booley init --seed",
             id="old-version",
         ),
-        pytest.param(_move_stamp_to_legacy_location, id="legacy-location"),
+        # The legacy-location stamp is not read, so it is absent: refresh reissues it.
+        pytest.param(
+            _move_stamp_to_legacy_location, "booley session refresh", id="legacy-location"
+        ),
         pytest.param(
             lambda project: _rewrite_stamp(project, lambda doc: doc.pop("project_data_layout")),
+            "booley init --seed",
             id="missing-layout",
         ),
     ],
 )
-def test_doctor_names_reseed_for_rejected_pre_030_issuance(issued, damage) -> None:
-    """Doctor FAILs a rejected pre-0.3.0 issuance and names `booley init --seed`."""
+def test_doctor_names_repair_for_rejected_pre_030_issuance(
+    issued, monkeypatch, damage, fix
+) -> None:
+    """Doctor FAILs a rejected pre-0.3.0 issuance and names the repair that applies."""
     project, _spec, _path, _stamp = issued
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
     damage(project)
     request = inspection.RuntimeInspectionRequest(project, "sha256:" + "a" * 64, None)
     failures = [
@@ -828,13 +840,15 @@ def test_doctor_names_reseed_for_rejected_pre_030_issuance(issued, damage) -> No
     ]
     assert len(failures) == 1
     assert "Sandbox host issuance is invalid" in failures[0].message
-    assert "booley init --seed" in failures[0].fix
+    assert fix in failures[0].fix
 
 
 def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch) -> None:
     project, _spec, _path, _stamp = issued
     current = runtime_spec.stamp_path(project)
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setattr(
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kw: False
+    )
     monkeypatch.setattr(
         issuance_invalidation,
         "prepare",
@@ -863,16 +877,13 @@ def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch)
 def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mock:
     profile = eda_grant_support.register_license("site")
     grant = eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
     monkeypatch.setattr(
-        session_refresh,
-        "recover_project_locked",
-        lambda _root: SimpleNamespace(outcome=session_refresh.RecoveryOutcome.NONE),
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kw: False
     )
     cleanup = Mock(return_value=())
     monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", cleanup)
     docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
-    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
+    monkeypatch.setattr("booley.runtime.host_docker._run_docker", docker)
     monkeypatch.setattr(session_runtime, "_run", docker)
     monkeypatch.setattr(session_runtime, "_create_session_container", docker)
     monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", docker)
@@ -880,11 +891,12 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     assert authority.load_state().grants == ()
     assert issuance_invalidation.pending_invalidations() == ()
     assert not runtime_spec.stamp_path(project).exists()
-    cleanup.assert_called_once_with(str(project.resolve()))
+    cleanup.assert_called_once_with(str(project.resolve()), runner=idk.relay_docker)
     return docker
 
 
-@pytest.mark.parametrize("boundary", ["up", "ensure", "enter", "cli", "refresh"])
+@pytest.mark.usefixtures("fake_sandbox_attachment")
+@pytest.mark.parametrize("boundary", ["up", "ensure", "enter", "cli"])
 def test_real_revoke_reports_withdrawal_at_enter_and_cli(
     issued, monkeypatch, capsys, boundary
 ) -> None:
@@ -898,20 +910,12 @@ def test_real_revoke_reports_withdrawal_at_enter_and_cli(
                 getattr(session_runtime, boundary)(project)
         assert _WITHDRAWN_ISSUANCE in str(raised.value)
         assert "corrupt" not in str(raised.value)
-    elif boundary == "cli":
+    else:
         args = SimpleNamespace(session_command="enter", exec_cmd=["--", "true"])
         assert booley._cmd_session(args, project) == 2
         error = capsys.readouterr().err
         assert _WITHDRAWN_ISSUANCE in error
         assert "corrupt" not in error
-    else:
-        with pytest.raises(session_runtime.SessionError) as refresh_error:
-            session_refresh._load_recovery_issuance(
-                project, session_refresh.capture_session_spec(project)
-            )
-        assert str(refresh_error.value).startswith(
-            "cannot preserve the prior Sandbox: " + _WITHDRAWN_ISSUANCE
-        )
     docker.assert_not_called()
 
 
@@ -1043,14 +1047,6 @@ def test_recovery_snapshot_rejects_different_keeper(issued, monkeypatch) -> None
         runtime_spec.load_issued_snapshot(project)
 
 
-def test_recovery_snapshot_rejects_missing_keeper_image(issued, monkeypatch) -> None:
-    project, spec, path, _stamp = issued
-
-    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: None)
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox Image keeper is missing"):
-        runtime_spec.load_recovery_snapshot(project, spec, path)
-
-
 def test_no_eda_issuance_and_validation_never_open_authority_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1098,7 +1094,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(
             session_runtime,
-            "_strict_all_interactive_states",
+            "_strict_all_sandbox_states",
             lambda _project_id: [],
         )
         monkeypatch.setattr(session_runtime, "_create_session_container", lambda *_args: None)
@@ -1295,7 +1291,7 @@ def test_missing_project_data_bind_names_source_and_target(issued_preview, opera
 
     message = str(caught.value)
     assert docker_mount_path(source) in message
-    assert "/booley-project" in message
+    assert "/booley" in message
     assert "unavailable" in message
 
 
@@ -1415,7 +1411,7 @@ def _fake_docker_with_failing_keeper(
             return subprocess.CompletedProcess(args, 0, stamp.image_id + "\n", "")
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", fake)
+    monkeypatch.setattr("booley.runtime.host_docker._run_docker", fake)
 
 
 def test_keeper_docker_failure_is_not_reported_as_missing(issued, monkeypatch) -> None:
@@ -1433,9 +1429,7 @@ def test_retain_keeper_docker_failure_names_keeper_and_never_retags(issued, monk
     _project, _spec, _path, stamp = issued
     _fake_docker_with_failing_keeper(monkeypatch, stamp)
     tags: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        "booley.runtime.interactive_docker.tag_image", lambda *args: tags.append(args)
-    )
+    monkeypatch.setattr("booley.runtime.host_docker.tag_image", lambda *args: tags.append(args))
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="Cannot connect") as caught:
         runtime_spec._retain_issued_image(stamp)
@@ -1489,7 +1483,7 @@ def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> 
         retained[target] = retained[source]
 
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", retained.get)
-    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", tag)
+    monkeypatch.setattr("booley.runtime.host_docker.tag_image", tag)
     runtime_spec._retain_issued_image(replace(stamp, image=new_id, image_id=new_id))
     assert tags == [(new_id, stamp.keeper_image)]
     assert retained[stamp.keeper_image] == new_id
@@ -1500,7 +1494,7 @@ def test_reissuance_rejects_unverifiable_keeper(issued, monkeypatch) -> None:
     resolutions = iter((None, "sha256:other"))
 
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: next(resolutions))
-    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
+    monkeypatch.setattr("booley.runtime.host_docker.tag_image", lambda *_args: None)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper could not be verified"):
         runtime_spec._retain_issued_image(stamp)
 
@@ -1556,6 +1550,32 @@ def test_fixed_environment_drift_names_field_and_values(issued) -> None:
         runtime_spec._validate_environment(spec, None, "proxy")
 
     assert "NO_PROXY localhost,127.0.0.1 -> example.test" in str(caught.value)
+
+
+def test_run_args_validate_with_and_without_swap_limit():
+    """Specs issued before the swap limit existed and specs with it both validate."""
+    labels = ("booley.test=1",)
+    kwargs = {"expected_labels": labels, "private_network": None, "egress": "proxy"}
+
+    def check(limits: list[str]) -> None:
+        raw = [*runtime_spec._FIXED_RUN_ARGS, *limits, "--label", labels[0]]
+        runtime_spec._validate_run_args(raw, **kwargs)
+
+    for accepted in (
+        [],
+        ["--memory", "8g"],
+        ["--memory", "8g", "--memory-swap", "10g"],
+        ["--memory", "8g", "--memory-swap", "8g"],
+    ):
+        check(accepted)
+    for refused, error in (
+        (["--memory", "8g", "--memory-swap", "4g"], "swap limit"),
+        (["--memory", "8g", "--memory-swap", "lots"], "swap limit"),
+        (["--memory", "8g", "--memory-swap"], "swap limit"),
+        (["--memory-swap", "10g"], "issuance labels"),
+    ):
+        with pytest.raises(runtime_spec.RuntimeSpecError, match=error):
+            check(refused)
 
 
 @pytest.mark.parametrize(
@@ -1799,7 +1819,7 @@ def test_unproxied_licensed_seal_joins_routed_and_private_networks(
     profile = SimpleNamespace(name="site", lmgrd_port=2100)
     _license_profile_stubs(monkeypatch, profile)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "d" * 64)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: "sha256:" + "d" * 64)
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(
         project,
@@ -2217,7 +2237,7 @@ def test_seal_pins_absolute_host_executable_and_canonical_mount(issued) -> None:
     expected_source = str((project / ".booley").resolve())
     assert stamp.project_data_source == expected_source
     expected_mount_source = docker_mount_path(Path(expected_source))
-    assert f"source={expected_mount_source},target=/booley-project,type=bind" in spec["mounts"]
+    assert f"source={expected_mount_source},target=/booley,type=bind" in spec["mounts"]
     assert spec["mounts"][1] == (f"source={expected_mount_source},target=/work/.booley,type=bind")
     assert spec["mounts"][-1] == runtime_spec.expected_devcontainer_mount(project)
 
@@ -2290,7 +2310,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
     _license_profile_stubs(monkeypatch, profile)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
     first = "sha256:" + "a" * 64
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: first)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: first)
     prepared, path, stamp = issue_built(
         project,
         lambda inputs: build_spec(
@@ -2302,7 +2322,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
         monkeypatch,
     )
     assert stamp.relay_image_id == first
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "b" * 64)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: "sha256:" + "b" * 64)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="relay image has drifted"):
         runtime_spec.validate(project, prepared.spec, path)
 
@@ -2500,7 +2520,7 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
 def test_image_contract_is_inspected_without_starting_candidate_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
     calls: list[list[str]] = []
 
@@ -2520,7 +2540,7 @@ def test_image_contract_is_inspected_without_starting_candidate_code(
                 destination.write_bytes(b"\x7fELFfixture")
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(interactive_docker, "_run_docker", run)
+    monkeypatch.setattr(host_docker, "_run_docker", run)
     runtime_spec._validate_image_contract("sha256:trusted")
     assert not any(call[:2] in (["run", "--rm"], ["container", "start"]) for call in calls)
     create = calls[0]
@@ -2532,10 +2552,10 @@ def test_image_contract_is_inspected_without_starting_candidate_code(
 def test_image_contract_rejects_failed_inert_container_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.runtime import interactive_docker
+    from booley.runtime import host_docker
 
     monkeypatch.setattr(
-        interactive_docker,
+        host_docker,
         "_run_docker",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "failed"),
     )
@@ -2585,10 +2605,7 @@ def test_extracted_image_contract_requires_en_us_locale(tmp_path: Path) -> None:
 @pytest.mark.parametrize("section", ["remoteEnv", "containerEnv"])
 def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, section):
     project, spec, path, _stamp = issued
-    assert (
-        spec[section]["BOOLEY_COMPILER_CACHE_ROOT"]
-        == "/booley-project/.runtime/compiler-cache/ccache"
-    )
+    assert spec[section]["BOOLEY_COMPILER_CACHE_ROOT"] == "/booley/.runtime/compiler-cache/ccache"
     spec[section].pop("BOOLEY_COMPILER_CACHE_ROOT")
     with pytest.raises(runtime_spec.RuntimeSpecError):
         runtime_spec.validate(project, spec, path)
@@ -2601,9 +2618,9 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
 @pytest.mark.parametrize(
     "target",
     [
-        "/booley-project/hidden",
-        "//booley-project/hidden",
-        "/booley-project/../booley-project/hidden",
+        "/booley/hidden",
+        "//booley/hidden",
+        "/booley/../booley/hidden",
     ],
 )
 def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
@@ -2615,7 +2632,7 @@ def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
     prepared, path, stamp = issue_built(project, plain_builder(project), monkeypatch)
     spec = prepared.spec
-    assert not any("target=/booley-project," in mount for mount in spec["mounts"])
+    assert not any("target=/booley," in mount for mount in spec["mounts"])
     expected_source = docker_mount_path(project / ".booley")
     assert f"source={expected_source},target=/work/.booley,type=bind" in spec["mounts"]
     assert stamp.project_data_layout == "canonical-alias"
@@ -2678,7 +2695,7 @@ def test_canonical_alias_rejects_nonbind_mount_destination_synonyms(issued, monk
     prepared = runtime_spec.preview(project, plain_builder(project))
 
     def add_tmpfs_alias_mount(spec: dict) -> None:
-        spec["mounts"].append(f"type=tmpfs,{key}=//booley-project/hidden")
+        spec["mounts"].append(f"type=tmpfs,{key}=//booley/hidden")
 
     stub_keeper(monkeypatch)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
@@ -2718,9 +2735,9 @@ def test_validation_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypa
 @pytest.mark.parametrize(
     "mount",
     [
-        "type=tmpfs,Target=/booley-project/hidden",
-        'type=tmpfs,"dst=/booley-project/hidden"',
-        "type=tmpfs,target=/safe,dst=/booley-project/hidden",
+        "type=tmpfs,Target=/booley/hidden",
+        'type=tmpfs,"dst=/booley/hidden"',
+        "type=tmpfs,target=/safe,dst=/booley/hidden",
     ],
 )
 def test_mount_parser_rejects_noncanonical_or_conflicting_destination_authority(mount):
@@ -2982,7 +2999,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
 
     def git(*args, env=environment):
         return run_bounded_child(
-            [_HOST_GIT, "-C", str(project), *args], timeout=10, env=env, check=True
+            [_HOST_GIT, "-C", str(project), *args], env=env, check=True
         ).stdout.strip()
 
     git("init", "-q")
@@ -3000,7 +3017,6 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         [sys.executable, *dc.git_identity_command().split()[1:]],
         cwd=project,
         env=sandbox,
-        timeout=10,
     )
     assert applied.returncode == 0, applied.stderr
     for env, expected in (
@@ -3045,7 +3061,7 @@ def test_seal_refuses_missing_or_duplicate_directory_authority(issued, count):
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
     mounts = spec["mounts"]
-    selected = [raw for raw in mounts if runtime_spec._mount_target(raw) == "/booley-project"]
+    selected = [raw for raw in mounts if runtime_spec._mount_target(raw) == "/booley"]
     assert len(selected) == 1
     spec["mounts"] = [raw for raw in mounts if raw not in selected] + selected * count
     with pytest.raises(runtime_spec.RuntimeSpecError, match="one exact writable bind"):
@@ -3095,7 +3111,7 @@ def test_canonical_alias_rejects_external_directory_authority(issued, tmp_path):
 def test_runtime_directory_mount_refuses_inexact_host_bind(issued, damage):
     project, _spec, _path, _stamp = issued
     source = project / ".booley"
-    mount = f"source={docker_mount_path(source)},target=/booley-project,type=bind"
+    mount = f"source={docker_mount_path(source)},target=/booley,type=bind"
     mounts = {"missing": [], "duplicate": [mount, mount], "readonly": [mount + ",readonly"]}[
         damage
     ]
@@ -3134,8 +3150,10 @@ def test_policy_change_requires_refresh_even_when_shell_exports_change(issued, m
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.setenv(key, "SYNTHETIC")
     runtime_spec.validate(project, spec, path)
-    (project / ".booley" / "booley.toml").write_text('[agent]\nauth="subscription"\n')
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential policy/schema.*refresh"):
+    (project / ".booley" / "booley.toml").write_text('[agent]\nauth="api_key"\n')
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match=r"credential policy/schema has drifted$"
+    ):
         runtime_spec.validate(project, spec, path)
 
 
@@ -3215,6 +3233,14 @@ def _mutate_issuance_identity(setting, project, tmp_path, config, monkeypatch):
 def _refresh_source_mutator(project, tmp_path, monkeypatch):
     from booley.harness import init_cmd
 
+    fake_docker_host(monkeypatch)
+    real_swap_limit = init_cmd.memory_swap_limit
+    old_booley = {"on": False}
+    monkeypatch.setattr(
+        init_cmd,
+        "memory_swap_limit",
+        lambda *args: "" if old_booley["on"] else real_swap_limit(*args),
+    )
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -3236,10 +3262,13 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
             "git-email": '[agent.git]\nemail="changed@example.test"\n',
             "provider": '[agent]\nprovider="codex"\n',
             "memory": '[sandbox]\nmemory="8g"\n',
+            "swap": '[sandbox]\nmemory="8g"\n',
+            "swap-old": '[sandbox]\nmemory="8g"\n',
             "masks": '[sandbox]\nmask_paths=["private"]\n',
             "dashboard": "[sandbox]\ndashboard=false\n",
             "skills": "[sandbox]\nmount_host_skills=true\n",
         }
+        old_booley["on"] = setting == "swap-old"
         if setting in changes:
             prefix = "" if setting == "provider" else '[agent]\nprovider="claude"\n'
             config.write_text(prefix + changes[setting])
@@ -3254,7 +3283,13 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
         if setting in files:
             target = files[setting]
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("fixture")
+            # The default ``subscription`` policy inspects what it seeds, so the login and
+            # the config must be well-formed JSON.
+            fixtures = {
+                "auth-bind": json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC_LOGIN"}}),
+                "config-seed": json.dumps({"hasCompletedOnboarding": True}),
+            }
+            target.write_text(fixtures.get(setting, "fixture"))
         if setting == "credential-forwarding":
             monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_REFRESH_OAUTH")
         if setting == "pdk":
@@ -3271,6 +3306,7 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
         "git-email",
         "provider",
         "memory",
+        "swap",
         "masks",
         "dashboard",
         "timezone",
@@ -3290,12 +3326,12 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
 
     project, _spec, _path, stamp = issued
     mutate = _refresh_source_mutator(project, tmp_path, monkeypatch)
-    image = session_refresh.RefreshImage(
-        "booley-sandbox", stamp.image_id, image_graph_changed=False
-    )
+    if setting == "swap":
+        mutate("swap-old")  # a Sandbox issued by a Booley that set no swap limit
+    image = session_refresh.RefreshImage(stamp.image_id, None, None, False)
     initial = _RuntimeImages()
     initial.prepare_spec(project, image)
-    initial.reissue(project, image.selected_id, verbose=False)
+    initial.reissue(project)
     current = runtime_spec.load_issued_snapshot(project)
     mutate(setting)
     events = []
@@ -3304,17 +3340,8 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
         def inspect(self, *_args, **_kwargs):
             pass
 
-        def prepare(self, *_args, **_kwargs):
+        def converge(self, *_args, **_kwargs):
             return image
-
-        def validate(self, *_args, **_kwargs):
-            pass
-
-        def commit(self):
-            return image
-
-        def abort(self):
-            pass
 
         def finalize(self, *_args):
             pass
@@ -3323,45 +3350,42 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
             events.append("reissue")
             super().reissue(*args, **kwargs)
 
-    name = session_runtime.session_container_name(project)
-    parked = session_runtime.ParkedSession(
-        name,
-        name + "-pre-refresh",
-        True,
-        project_id="project",
-        reconnect_egress=False,
-        container_id="old",
-        image_id=current.image_id,
-    )
     monkeypatch.setattr(session_runtime, "vscode_session_container", lambda *_: None)
-    monkeypatch.setattr(session_runtime, "plan_session_refresh", lambda *_: parked)
-    monkeypatch.setattr(session_runtime, "park_planned_session", lambda *_: events.append("park"))
-    monkeypatch.setattr(session_runtime, "verify_refreshed_session", lambda *a, **k: None)
-    monkeypatch.setattr(session_runtime, "_up_unlocked", lambda *a, **k: events.append("up"))
-    monkeypatch.setattr(session_runtime, "discard_refresh_session", lambda *_: None)
-    monkeypatch.setattr(session_runtime, "refresh_container_id", lambda *_: "new", raising=False)
+    monkeypatch.setattr(session_runtime, "verified_headless_container", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "require_only_canonical_sandbox", lambda *_: None)
+    monkeypatch.setattr(
+        session_runtime, "check_refresh_start", lambda *_: events.append("check") or object()
+    )
+    monkeypatch.setattr(
+        session_runtime, "remove_refresh_predecessor", lambda *_: events.append("remove") or "old"
+    )
+    monkeypatch.setattr(session_runtime, "remove_refresh_relay", lambda *_: None)
+    monkeypatch.setattr(
+        session_runtime, "start_refreshed_sandbox", lambda *_: events.append("start") or "new"
+    )
+    monkeypatch.setattr(session_refresh, "_cleanup_owned_images", lambda *_: None)
     result = session_refresh.refresh(project, Images())
-    assert events == ["park", "reissue", "up"]
+    assert events == ["reissue", "check", "remove", "start"]
     assert result.outcome == "replaced"
     assert result.previous_container_id == "old" and result.container_id == "new"
+    assert runtime_spec.load_issued_snapshot(project) != current
     reissued = json.loads(dc.devcontainer_path(project).read_text())
     assert runtime_spec.validate(project, reissued, dc.devcontainer_path(project))
     if setting == "git-name":
         assert "Changed Name" in reissued["containerEnv"].values()
+    if setting == "swap":
+        assert reissued["runArgs"][reissued["runArgs"].index("--memory-swap") + 1] == "10g"
 
 
-def test_refresh_observes_sources_and_preview_once_before_parking(issued, monkeypatch):
-    """Preparation builds sources and previews the spec once, then reaches parking."""
+def test_refresh_observes_sources_and_preview_once(issued, monkeypatch):
+    """Preparing the refresh spec builds sources and previews the spec once."""
     from booley.harness import init_cmd
     from booley.harness.session_refresh import _RuntimeImages
 
     project, _spec, _path, stamp = issued
-    prior = runtime_spec.load_issued_snapshot(project)
-    image = session_refresh.RefreshImage(
-        "booley-sandbox", stamp.image_id, image_graph_changed=False
-    )
+    image = session_refresh.RefreshImage(stamp.image_id, None, None, False)
     observed = {"sources": 0, "preview": 0}
-    build_sources = init_cmd._interactive_spec_sources
+    build_sources = init_cmd._sandbox_spec_sources
     preview = runtime_spec.preview
 
     def count_sources(*args, **kwargs):
@@ -3372,20 +3396,9 @@ def test_refresh_observes_sources_and_preview_once_before_parking(issued, monkey
         observed["preview"] += 1
         return preview(*args, **kwargs)
 
-    class Images(_RuntimeImages):
-        def prepare(self, *_args, **_kwargs):
-            return image
-
-        def validate(self, *_args, **_kwargs):
-            pass
-
-    monkeypatch.setattr(init_cmd, "inspect_refreshable_runtime_image", lambda *a, **k: None)
-    monkeypatch.setattr(init_cmd, "_interactive_spec_sources", count_sources)
+    monkeypatch.setattr(init_cmd, "_sandbox_spec_sources", count_sources)
     monkeypatch.setattr(runtime_spec, "preview", count_preview)
-    monkeypatch.setattr(session_runtime, "plan_session_refresh", lambda *_: None)
-    images = Images()
-    images.inspect(project, verbose=False)
-    session_refresh._prepare_refresh(project, prior, images, verbose=False)
+    _RuntimeImages().prepare_spec(project, image)
     assert observed == {"sources": 1, "preview": 1}
 
 
@@ -3393,10 +3406,9 @@ def test_refresh_rejects_config_races_without_publishing(issued, monkeypatch):
     from booley.harness.session_refresh import _RuntimeImages
 
     project, _spec, path, stamp = issued
+    fake_docker_host(monkeypatch)
     adapter = _RuntimeImages()
-    image = session_refresh.RefreshImage(
-        "booley-sandbox", stamp.image_id, image_graph_changed=False
-    )
+    image = session_refresh.RefreshImage(stamp.image_id, None, None, False)
     adapter.prepare_spec(project, image)
     before = path.read_bytes(), runtime_spec.stamp_path(project).read_bytes()
     config = project / ".booley" / "booley.toml"
@@ -3410,7 +3422,7 @@ def test_refresh_rejects_config_races_without_publishing(issued, monkeypatch):
 
     monkeypatch.setattr(runtime_spec.eda_requirements, "lease_requirements", mutate)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="inputs changed"):
-        adapter.reissue(project, image.selected_id, verbose=False)
+        adapter.reissue(project)
     assert (path.read_bytes(), runtime_spec.stamp_path(project).read_bytes()) == before
 
 
@@ -3429,6 +3441,7 @@ def test_refresh_builder_uses_trusted_external_booley_directory(
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("fixture")
     monkeypatch.setattr(Path, "home", lambda: home)
+    fake_docker_host(monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(external))
     reset_cache()
     values = {
@@ -3439,7 +3452,7 @@ def test_refresh_builder_uses_trusted_external_booley_directory(
     }
     (external / "pipeline.toml").write_text(values[setting])
     ctx = init_cmd.InitContext(project_root=project, force=False, verbose=False)
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, None, stamp.image_id
     )
     assert sources.project_data_source == external
@@ -3451,12 +3464,12 @@ def test_refresh_builder_uses_trusted_external_booley_directory(
     }[setting]
     # The actual preview uses this same authorized source.
     adapter = _RuntimeImages()
-    adapter.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+    adapter.prepare_spec(project, session_refresh.RefreshImage(stamp.image_id, None, None, True))
     monkeypatch.delenv("BOOLEY_DIR")
     reset_cache()
     (project / "booley.toml").write_text('[project]\ndir="' + external.as_posix() + '"\n')
     with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot authorize"):
-        init_cmd._interactive_spec_sources(
+        init_cmd._sandbox_spec_sources(
             ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, None, stamp.image_id
         )
 
@@ -3469,23 +3482,22 @@ def test_refresh_dashboard_tasks_unchanged_until_verified_finalization(issued, m
     reconcile = Mock(side_effect=AssertionError("precommit dashboard mutation"))
     monkeypatch.setattr(dashboard_tasks, "reconcile", reconcile)
     adapter = _RuntimeImages()
-    adapter.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
-    adapter.reissue(project, stamp.image_id, verbose=False)
+    adapter.prepare_spec(project, session_refresh.RefreshImage(stamp.image_id, None, None, True))
+    adapter.reissue(project)
     reconcile.assert_not_called()
 
 
 @pytest.mark.parametrize("operation", ["add", "revoke"])
-def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
+def test_real_grant_changes_let_refresh_reissue_with_current_authority(
     issued, monkeypatch, operation
 ):
     from booley.harness import init_cmd
     from booley.harness.session_refresh import _RuntimeImages
 
     project, _spec, _path, stamp = issued
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
     monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(
-        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity: ()
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity, **_kwargs: ()
     )
     profile = eda_grant_support.register_license("site")
     if operation == "add":
@@ -3496,21 +3508,24 @@ def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
         eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
         eda_grants.GrantCoordinator().revoke(project, "vivado")
     assert not runtime_spec.stamp_path(project).exists()
+    # The withdrawn stamp is what refresh repairs: it reaches reissue instead of refusing.
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    with pytest.raises(
-        session_runtime.SessionError,
-        match=r"cannot preserve the prior Sandbox.*"
-        r"`booley session down`, `booley init --seed`, and `booley session up`",
-    ):
-        session_refresh.refresh(project, images)
-    images.inspect.assert_not_called()
-    images.prepare.assert_not_called()
+    images.converge.return_value = session_refresh.RefreshImage(stamp.image_id, None, None, False)
+    images.spec_is_current.return_value = False
+    monkeypatch.setattr(session_runtime, "require_only_canonical_sandbox", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "check_refresh_start", lambda *_: object())
+    monkeypatch.setattr(session_runtime, "remove_refresh_predecessor", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "remove_refresh_relay", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "start_refreshed_sandbox", lambda *_: "new")
+    monkeypatch.setattr(session_refresh, "_cleanup_owned_images", lambda *_: None)
+    assert session_refresh.refresh(project, images).outcome == "created"
+    images.reissue.assert_called_once_with(project.resolve())
     # Host init's builder and issuance boundary can reseed using current authority.
     # This Project does not request EDA; a grant alone never mounts or licenses it.
     adapter = _RuntimeImages()
-    adapter.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+    adapter.prepare_spec(project, session_refresh.RefreshImage(stamp.image_id, None, None, True))
     monkeypatch.setattr(runtime_spec, "_current_keeper_id", lambda _project: None)
-    adapter.reissue(project, stamp.image_id, verbose=False)
+    adapter.reissue(project)
     renewed = runtime_spec.inspect_prepared(project, adapter._spec)
     assert renewed.license_profile is None
     assert renewed.installation is None
@@ -3531,11 +3546,11 @@ def test_licensed_prepared_matching_and_relay_drift_use_full_validation(issued, 
     eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     relay = {"identity": "sha256:" + "d" * 64}
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: relay["identity"])
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: relay["identity"])
     adapter = _RuntimeImages()
-    image = session_refresh.RefreshImage("booley-sandbox", stamp.image_id)
+    image = session_refresh.RefreshImage(stamp.image_id, None, None, True)
     adapter.prepare_spec(project, image)
-    adapter.reissue(project, stamp.image_id, verbose=False)
+    adapter.reissue(project)
     assert adapter.spec_is_current(project)
     before = dc.devcontainer_path(project).read_text(encoding="utf-8")
     relay["identity"] = "sha256:" + "e" * 64
@@ -3556,10 +3571,10 @@ def test_fpga_disabled_prior_license_issuance_detects_withdrawn_grant(issued, mo
     profile = eda_grant_support.register_license("site")
     eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "d" * 64)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: "sha256:" + "d" * 64)
     adapter = _RuntimeImages()
-    adapter.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
-    adapter.reissue(project, stamp.image_id, verbose=False)
+    adapter.prepare_spec(project, session_refresh.RefreshImage(stamp.image_id, None, None, True))
+    adapter.reissue(project)
 
     booley_toml.write_text("[flows.fpga]\nenabled=false\n")
     reset_cache()
@@ -3734,7 +3749,7 @@ def _multi_cli_project(issued, monkeypatch, request, toml: str, app: str = "clau
     (project / ".booley" / "booley.toml").write_text(toml)
     reset_cache()
     request.addfinalizer(reset_cache)
-    sources = init_cmd._interactive_spec_sources(
+    sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, None
     )
     spec = sources.build(
@@ -3750,7 +3765,7 @@ def _issue_spec(project: Path, spec: dict, monkeypatch: pytest.MonkeyPatch) -> t
     return prepared.spec, path
 
 
-def _with_codex(spec: dict, project: Path, home: Path, policy: str = "auto") -> None:
+def _with_codex(spec: dict, project: Path, home: Path, policy: str = "subscription") -> None:
     """Turn a Claude-only *spec* into a Claude+Codex one: record, name, login, volume, hook."""
     claude_policy = spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"]
     spec["name"] = "Booley Interactive (claude, codex)"
@@ -3796,10 +3811,10 @@ def test_sealing_accepts_seeds_for_every_listed_cli(issued, monkeypatch, request
 
 
 _DAMAGED_RECORDS = {
-    "widened-record": "claude=auto,codex=auto",
-    "app-outside-record": "codex=auto",
-    "malformed-record": "claude=auto,bogus=auto",
-    "gateway-record": "claude=auto,codex=gateway",
+    "widened-record": "claude=subscription,codex=subscription",
+    "app-outside-record": "codex=subscription",
+    "malformed-record": "claude=subscription,bogus=subscription",
+    "gateway-record": "claude=subscription,codex=gateway",
 }
 # Codex on the gateway is a valid record entry since #2897: the Claude-only Sandbox it is
 # written into then differs from the record in name before anything else is checked.
@@ -3813,7 +3828,7 @@ _REFUSALS = {
     **dict.fromkeys(("state-volume", "stray-volume"), "agent state is not scoped"),
     "credential-env": "credential environment has drifted",
     "widened-record": "Sandbox identity has drifted",
-    "app-outside-record": "Agent CLIs codex=auto differ from",
+    "app-outside-record": "Agent CLIs codex=subscription differ from",
     "app-outside-clis-empty-record": "Agent CLI codex is not in",
     "typeless-volume": "agent state is not scoped",
     "claude-config-bind": "credential seed violates",
@@ -3907,19 +3922,6 @@ def test_sealing_refuses_seed_for_unlisted_cli(issued, monkeypatch, request):
             pytest.fail(f"{damage}: previewed")
 
 
-def test_sealing_checks_claude_config_seed_under_claude_policy(issued, monkeypatch, request):
-    toml = _CLAUDE_AND_CODEX + '\n[agent.auth]\nclaude = "auto"\ncodex = "subscription"\n'
-    project, spec, home = _multi_cli_project(
-        issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
-    )
-    # Credential fields are allowed in Claude's config under Claude's own auto policy,
-    # whatever stricter policy another listed CLI has.
-    (home / ".claude.json").write_text(json.dumps({"customApiKeyResponses": {"a": ["x"]}}))
-    _set_toml(project, request, toml)
-    _with_codex(spec, project, home, "subscription")
-    runtime_spec.preview(project, fixed(spec))
-
-
 def _mixed_policy_spec(issued, monkeypatch, request, claude: str, codex: str):
     """Issue and validate a Claude+Codex spec whose CLIs follow different ``[agent.auth]`` policies."""
     toml = _CLAUDE_AND_CODEX + f'\n[agent.auth]\nclaude = "{claude}"\ncodex = "{codex}"\n'
@@ -3980,9 +3982,28 @@ def test_default_change_without_clis_requires_refresh(issued, monkeypatch, reque
     _set_toml(project, request, '[agent]\ndefault = "codex"\n')
     with pytest.raises(
         runtime_spec.RuntimeSpecError,
-        match=r"without \[agent\] clis only \[agent\] default.*booley session refresh",
+        match=r"without \[agent\] clis only \[agent\] default is allowed\)$",
     ):
         runtime_spec.validate(project, issued_spec, path)
+
+
+def test_vscode_prepare_agent_cli_refusal_names_vscode_steps(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\ndefault = "claude"\n'
+    )
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
+    _set_toml(project, request, '[agent]\ndefault = "codex"\n')
+    monkeypatch.setattr(session_runtime, "_refuse_outdated_vscode_containers", lambda *_: None)
+
+    with pytest.raises(session_runtime.SessionError) as caught:
+        session_runtime._refuse_then_validate(project, issued_spec)
+
+    message = str(caught.value)
+    assert message.endswith(
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+    )
+    assert "session refresh" not in message
 
 
 def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
@@ -3992,7 +4013,9 @@ def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
     runtime_spec.validate(project, issued_spec, path)
     _set_toml(project, request, _CLAUDE_AND_CODEX)
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ.*refresh"):
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ from \[agent\] clis.*"
+    ):
         runtime_spec.validate(project, issued_spec, path)
 
 
@@ -4001,7 +4024,9 @@ def test_invalid_agent_config_fails_validation_as_spec_error(issued, monkeypatch
         issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
     )
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
-    _set_toml(project, request, '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n')
+    _set_toml(
+        project, request, '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "subscription"\n'
+    )
     with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent\] is invalid"):
         runtime_spec.validate(project, issued_spec, path)
 
@@ -4012,7 +4037,7 @@ def test_legacy_single_cli_spec_without_record_still_validates(issued, monkeypat
     )
     spec["remoteEnv"].pop("BOOLEY_AGENT_CLIS", None)
     # A spec issued before the record existed allows its single app under the primary policy.
-    assert dc.spec_cli_policies(spec) == {"claude": "auto"}
+    assert dc.spec_cli_policies(spec) == {"claude": "subscription"}
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
     runtime_spec.validate(project, issued_spec, path)
 
@@ -4098,4 +4123,192 @@ def test_gateway_spec_refusals(issued, monkeypatch, request, case):
     runtime_spec.preview(project, fixed(spec))  # the undamaged spec previews
     damage(spec, home)
     with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal):
+        runtime_spec.preview(project, fixed(spec))
+
+
+def _with_previous_mount(path: Path, mount: str) -> None:
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec["remoteEnv"]["BOOLEY_DIR"] = mount
+    path.write_bytes(json.dumps(spec).encode("utf-8"))
+
+
+def test_reissue_keeps_former_mount_for_unannotated_records(
+    issued_preview, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.runtime import job_records, sandbox_layout
+
+    project, prepared, path, _stamp = issued_preview
+    former = str(tmp_path / "former-mount")
+    _with_previous_mount(path, former)
+
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    source = runtime_spec.authorized_project_data_source(project)
+    history = json.loads((source / ".runtime" / "sandbox-mounts.json").read_bytes())
+    assert history == {"schema": 1, "mounts": [former]}
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    assert json.loads((source / ".runtime" / "sandbox-mounts.json").read_bytes()) == history
+    monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(source))
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "run-1.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "endpoint": "sim",
+                "started_at": "t",
+                "timeout_s": 60,
+                "work_dir": f"{former}/worktrees/wt",
+            }
+        ),
+        encoding="utf-8",
+    )
+    record = job_records.read_record("run-1", jobs)
+    assert record is not None
+    assert record.work_dir == str(source / "worktrees" / "wt")
+
+
+def test_reissue_rebases_former_mount_records_onto_booley(
+    issued_preview, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import mount_history
+
+    project, prepared, path, _stamp = issued_preview
+    _with_previous_mount(path, "/former-mount")
+
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    issued_spec = json.loads(path.read_text(encoding="utf-8"))
+    assert issued_spec["remoteEnv"]["BOOLEY_DIR"] == "/booley"
+    source = runtime_spec.authorized_project_data_source(project)
+    history = json.loads((source / mount_history.MOUNT_HISTORY).read_bytes())
+    assert history == {"schema": 1, "mounts": ["/former-mount"]}
+    monkeypatch.setattr(
+        mount_history, "_history_path", lambda: source / mount_history.MOUNT_HISTORY
+    )
+    rebased = mount_history.translate_stored_path("/former-mount/worktrees/wt", record="a Job")
+    assert rebased == "/booley/worktrees/wt"
+
+
+def test_issuance_refuses_external_image_without_booley_mount_point(
+    issued, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image built for an older Booley (and one the user manages) has no /booley."""
+    from booley.runtime import project_image
+
+    project, _spec, path, _stamp = issued
+    project_image.project_data_alias_capable.cache_clear()
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:" + "c" * 64)
+    monkeypatch.setattr(
+        project_image,
+        "run_captured_bounded",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "absent\n", ""),
+    )
+    before = path.read_bytes()
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="booley init --seed") as caught:
+        runtime_spec.preview(project, plain_builder(project))
+    project_image.project_data_alias_capable.cache_clear()
+
+    assert "rebuild or pull" in str(caught.value)
+    assert path.read_bytes() == before
+
+
+def test_reissue_refuses_former_mount_overlapping_workspace(issued_preview) -> None:
+    project, prepared, path, _stamp = issued_preview
+    for former in ("/work", "/work/.booley", "/"):
+        _with_previous_mount(path, former)
+        before = path.read_bytes()
+
+        with pytest.raises(
+            runtime_spec.RuntimeSpecError, match=r"devcontainer\.json.*booley init"
+        ):
+            runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+        assert path.read_bytes() == before
+
+
+def test_reissue_fails_before_replacing_spec_when_history_is_unwritable(
+    issued_preview, tmp_path: Path
+) -> None:
+    project, prepared, path, _stamp = issued_preview
+    _with_previous_mount(path, str(tmp_path / "former-mount"))
+    before = path.read_bytes()
+    source = runtime_spec.authorized_project_data_source(project)
+    (source / ".runtime").write_bytes(b"not a directory")
+
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    assert path.read_bytes() == before
+
+
+def test_reissue_ignores_previous_spec_without_a_mount(issued_preview) -> None:
+    project, prepared, path, _stamp = issued_preview
+    path.write_bytes(b"not json")
+
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    source = runtime_spec.authorized_project_data_source(project)
+    assert not (source / ".runtime" / "sandbox-mounts.json").exists()
+
+
+def test_posix_former_mount_is_usable_on_a_windows_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import PureWindowsPath
+
+    from booley.runtime import mount_history
+
+    monkeypatch.setattr(mount_history, "Path", PureWindowsPath)
+
+    mount_history._require_mount("/former-mount", PureWindowsPath("devcontainer.json"))  # type: ignore[arg-type]
+    with pytest.raises(mount_history.MountHistoryError, match="unusable"):
+        mount_history._require_mount("/work/x", PureWindowsPath("devcontainer.json"))  # type: ignore[arg-type]
+
+
+_CLAUDE_ONLY = '[agent]\nclis = ["claude"]\n'
+_CLAUDE_SUBSCRIPTION = _CLAUDE_ONLY + '\n[agent.auth]\nclaude = "subscription"\n'
+_CLAUDE_API_KEY = _CLAUDE_ONLY + '\n[agent.auth]\nclaude = "api_key"\n'
+
+
+def _claude_volume(spec: dict) -> str:
+    return next(raw for raw in spec["mounts"] if "type=volume" in raw)
+
+
+def test_unset_to_explicit_subscription_reissue_keeps_the_login_volume(
+    issued, monkeypatch, request
+):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    auto_spec, path = _issue_spec(project, spec, monkeypatch)
+    auto_volume = _claude_volume(auto_spec)
+
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_SUBSCRIPTION)
+    subscription_spec, path = _issue_spec(project, spec, monkeypatch)
+
+    assert dc.spec_cli_policies(subscription_spec) == {"claude": "subscription"}
+    assert _claude_volume(subscription_spec) == auto_volume
+    runtime_spec.validate(project, subscription_spec, path)
+
+
+def test_reissue_keeps_a_legacy_subscription_volume(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_SUBSCRIPTION)
+    project_id = dc.canonical_project_id(project)
+    legacy = dc.state_volume_mount("claude", project_id, "subscription", legacy=True)
+    # A spec issued before the volume was shared mounts the ``-subscription`` volume.
+    spec["mounts"][spec["mounts"].index(_claude_volume(spec))] = legacy
+    legacy_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, legacy_spec, path)
+
+    for _refresh in range(2):  # the kept volume survives every later refresh
+        project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_SUBSCRIPTION)
+        assert _claude_volume(spec) == legacy
+        refreshed, path = _issue_spec(project, spec, monkeypatch)
+        runtime_spec.validate(project, refreshed, path)
+
+    # Moving the CLI off ``subscription`` takes the policy's own volume.
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_API_KEY)
+    assert _claude_volume(spec) == dc.state_volume_mount("claude", project_id, "api_key")
+
+    foreign = legacy.replace(project_id, "foreign-project-id")
+    spec["mounts"][spec["mounts"].index(_claude_volume(spec))] = foreign
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="canonical Project"):
         runtime_spec.preview(project, fixed(spec))

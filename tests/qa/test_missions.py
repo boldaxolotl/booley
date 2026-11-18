@@ -2,12 +2,13 @@
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from booley.goals.model import GoalArg, parse_goal_args
-from booley.goals.translate import translate_goals
+from booley.measurement.metrics_file import parse_metrics_as_written
 from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import QA_SKILL_NAMES
 
@@ -19,7 +20,6 @@ MISSIONS = sorted(QA_ROOT.glob("missions/*/MISSION.md"))
 ASSET_PREFIXES = (
     "fixtures/",
     "prompts/",
-    "goals/",
     "spec/",
     "evaluator/",
     "probes/",
@@ -42,7 +42,9 @@ def test_every_mission_is_present():
     assert {path.parent.name for path in MISSIONS} == {
         "coverage",
         "gui",
+        "mutation",
         "picorv32",
+        "scheduler",
         "taxi",
         "uart",
     }
@@ -76,97 +78,20 @@ def test_installable_skill_markdown_links_do_not_escape_skill_directory(skill: P
     assert not escaping, f"{skill.relative_to(QA_ROOT)} has escaping links: {escaping}"
 
 
-def test_qa_skills_derive_repository_inputs_from_loaded_skill_path():
-    combined = "\n".join(path.read_text() for path in sorted(QA_ROOT.glob("*/SKILL.md")))
-    for required in (
-        "real path of this loaded `SKILL.md`",
-        "qa/DISK.md",
-        "qa/AREAS.md",
-        "qa/SMOKE.md",
-        "qa/missions/",
-    ):
-        assert required in combined
-
-
-def test_qa_run_uses_the_canonical_host_install():
-    skill = (QA_ROOT / "booley-qa-run" / "SKILL.md").read_text()
-    hard_rules = skill.split("## Hard rules", 1)[1].split("## Run directory", 1)[0]
-    install_step = skill.split("2. **", 1)[1].split("\n3. **", 1)[0]
-    compact_hard_rules = " ".join(hard_rules.split())
-    compact = " ".join(install_step.split())
-
-    assert "venv" not in compact
-    assert "may change only through step 2's Human Maintainer-approved" in compact_hard_rules
-    assert "replacement stays installed after the run" in compact_hard_rules
-    assert "is not a `resources.md` row" in compact_hard_rules
-    for required in (
-        "git fetch origin main",
-        "git rev-parse origin/main",
-        "booley --version",
-        "test the installed build",
-        "install `origin/main` as the canonical host install",
-        "booley bootstrap",
-        "Record the choice in `log.md`",
-    ):
-        assert required in compact
-
-
-JSON_BLOCK = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
-GOAL_FIXTURES = sorted(QA_ROOT.glob("missions/*/goals/*.md")) + sorted(
-    QA_ROOT.glob("shared/*/goals/*.md")
-)
-AD_HOC_FIXTURES = sorted(QA_ROOT.glob("missions/*/goals/*.json")) + sorted(
-    QA_ROOT.glob("shared/*/goals/*.json")
-)
-
-
-def _goal_args(text: str) -> tuple[GoalArg, ...]:
-    raw = json.loads(text.replace("<target>", "qa_target").replace("<spec>", "docs/spec.md"))
-    return parse_goal_args(raw)
-
-
-@pytest.mark.parametrize("fixture", GOAL_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
-def test_goalsets_parse_and_translate(fixture: Path) -> None:
-    markdown = fixture.read_text(encoding="utf-8")
-    assert markdown.startswith(f"# Goalset: {fixture.stem}\n")
-    assert "## Goals" in markdown
-    blocks = JSON_BLOCK.findall(markdown)
-    assert len(blocks) == 1
-    args = _goal_args(blocks[0])
-    translated = translate_goals(args)
-    assert translated.goals
-    assert all(arg.origin == fixture.stem for arg in args)
-    assert all(goal.origins == (fixture.stem,) for goal in translated.goals)
-
-
-@pytest.mark.parametrize("fixture", AD_HOC_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
-def test_ad_hoc_goals_parse_and_translate(fixture: Path) -> None:
-    translated = translate_goals(_goal_args(fixture.read_text(encoding="utf-8")))
-    assert translated.goals
-    assert all(goal.origins == ("ad-hoc",) for goal in translated.goals)
-
-
-@pytest.mark.parametrize(
-    "fixture",
-    [*GOAL_FIXTURES, *AD_HOC_FIXTURES],
-    ids=lambda p: str(p.relative_to(QA_ROOT)),
-)
-def test_mutation_scopes_name_source_files(fixture: Path) -> None:
-    text = fixture.read_text(encoding="utf-8")
-    payload = JSON_BLOCK.findall(text)[0] if fixture.suffix == ".md" else text
-    for goal in translate_goals(_goal_args(payload)).goals:
-        if goal.family.value == "mutation":
-            for entry in goal.params["scope"]:
-                assert not entry.endswith(("/", "\\")), entry
-                assert Path(entry).suffix in {".v", ".sv", ".vhd", ".vhdl"}, entry
-
-
 def test_uart_review_contract_contains_frozen_spec_text() -> None:
     spec = QA_ROOT / "missions/uart/spec"
     contract = (spec / "contract.md").read_text(encoding="utf-8")
     assert (spec / "corpus/hw/ip/uart/doc/registers.md").read_text(encoding="utf-8") in contract
     assert (spec / "mmio-addendum.md").read_text(encoding="utf-8") in contract
     assert len(contract) <= 30_000
+
+
+def test_taxi_setup_prompt_carries_the_sdc_fixture() -> None:
+    """The verbatim setup prompt hands the Setup agent the fixture's exact SDC text."""
+    taxi = QA_ROOT / "missions/taxi"
+    prompt = (taxi / "prompts/setup.md").read_text(encoding="utf-8")
+    sdc = (taxi / "fixtures/taxi_mac_10g.sdc").read_text(encoding="utf-8")
+    assert f"```tcl\n{sdc}```\n" in prompt
 
 
 def test_capability_map_links_resolve_to_mission_areas() -> None:
@@ -195,50 +120,41 @@ def test_qa_skill_names_do_not_overlap_packaged_product_skills() -> None:
     assert QA_SKILL_NAMES.isdisjoint(path.name for path in skills_dir().iterdir())
 
 
-AREA_HEADING = re.compile(r"^### (\d+)\. ([\w-]+) — .*\(~(\d+) min", re.MULTILINE)
+def test_scheduler_history_helper_round_trips(tmp_path: Path) -> None:
+    """`history_edit.py` rewrites matching records and restores the original bytes."""
+    helper = QA_ROOT / "missions" / "scheduler" / "fixtures" / "history_edit.py"
+    history = tmp_path / "history.json"
+    record = {
+        "key": {"target": "sim_icarus", "phase": "mem_hog", "flags": [], "test_run": ""},
+        "peak_memory_mb": 300.0,
+        "wall_s": 9.0,
+        "finished_at": "2026-11-14T00:00:00Z",
+    }
+    other = {**record, "key": {**record["key"], "phase": "sim_build"}}
+    original = json.dumps(
+        {"$schema": "booley.job-resource-history/v1", "records": [record, other]}
+    )
+    history.write_text(original, encoding="utf-8")
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-I", str(helper), *args, str(history)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert run("set", "--phase", "mem_hog", "--memory-mb", "40", "--wall-s", "2").returncode == 0
+    edited = json.loads(history.read_text(encoding="utf-8"))["records"]
+    assert [(r["peak_memory_mb"], r["wall_s"]) for r in edited] == [(40.0, 2.0), (300.0, 9.0)]
+    assert run("set", "--phase", "missing", "--wall-s", "1").returncode == 1
+    assert "mem_hog" in run("show").stdout
+    assert run("restore").returncode == 0
+    assert history.read_text(encoding="utf-8") == original
 
 
-def _areas(mission: Path) -> list[tuple[str, int]]:
-    """Return each area's slug and timebox minutes, in mission order."""
-    text = mission.read_text(encoding="utf-8")
-    headings = AREA_HEADING.findall(text)
-    # Every `###` heading under "## Areas" is an area with a number and a timebox.
-    areas_section = text.split("## Areas", 1)[1].split("\n## ", 1)[0]
-    assert len(headings) == areas_section.count("\n### "), mission
-    assert [int(number) for number, _, _ in headings] == list(range(1, len(headings) + 1))
-    return [(slug, int(minutes)) for _, slug, minutes in headings]
-
-
-@pytest.mark.parametrize("mission", MISSIONS, ids=lambda path: path.parent.name)
-def test_mission_areas_are_numbered_and_timeboxed(mission: Path) -> None:
-    slugs = [slug for slug, _ in _areas(mission)]
-    assert len(slugs) == len(set(slugs)), mission
-
-
-def test_gui_mission_follows_the_shared_runbook_in_issue_order() -> None:
-    mission = QA_ROOT / "missions" / "gui" / "MISSION.md"
-    areas = _areas(mission)
-    assert [slug for slug, _ in areas] == [
-        "setup",
-        "dashboard-default",
-        "dashboard-live",
-        "bwave-gui",
-        "stop-resume",
-        "terminal-output",
-        "goal-finish",
-        "live-preview",
-        "matrix",
-        "docs-site",
-        "cleanup",
-    ]
-    assert sum(minutes for _, minutes in areas) <= 240  # the mission's 4-hour budget
-    assert "](../../shared/codespaces/RUNBOOK.md)" in mission.read_text(encoding="utf-8")
-
-
-def test_gui_check_skill_follows_the_runbook_and_posts_through_the_guard() -> None:
-    skill = (QA_ROOT / "booley-gui-check" / "SKILL.md").read_text(encoding="utf-8")
-    assert "booley-gui-check" in QA_SKILL_NAMES
-    assert (QA_ROOT / "shared" / "codespaces" / "RUNBOOK.md").is_file()
-    assert "qa/shared/codespaces/RUNBOOK.md" in skill
-    # The PR comment goes through the confidential-content publisher, never raw `gh`.
-    assert "confidential_content_guard.py --repo . publish-pr comment" in skill
+def test_metrics_fixtures_load_with_the_product_parser() -> None:
+    fixtures = sorted(QA_ROOT.rglob("*metrics.toml"))
+    assert fixtures, "QA ships no metrics.toml fixture"
+    for fixture in fixtures:
+        parse_metrics_as_written(fixture.read_bytes())

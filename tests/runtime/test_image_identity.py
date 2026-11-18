@@ -5,9 +5,17 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 
 from booley.core.boundary import BoundaryError
 from booley.runtime import image_identity as identity
+from booley.runtime import project_image
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of project_image."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, project_image)
 
 
 def _metadata(
@@ -292,8 +300,6 @@ def test_decode_large_valid_metadata():
 
 
 def _layout_pair(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
     from booley.runtime import project_image
 
     parent_id, child_id = "sha256:" + "a" * 64, "sha256:" + "b" * 64
@@ -334,7 +340,9 @@ def _layout_pair(monkeypatch, tmp_path):
     monkeypatch.setattr(project_image, "inspect_layout_image", lambda ref, **_kw: records.get(ref))
     monkeypatch.setattr(project_image, "_image_history", _layout_history)
     monkeypatch.setattr(
-        project_image.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0)
+        project_image.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     return images, records, parent_labels, child_labels
 
@@ -471,12 +479,12 @@ def test_layout_rejects_matching_labels_for_local_data_topology(monkeypatch, tmp
 def test_layout_inspection_rejects_malformed_or_multiple_docker_records(
     monkeypatch: pytest.MonkeyPatch, output: str
 ) -> None:
-    from types import SimpleNamespace
-
     from booley.runtime import project_image
 
     monkeypatch.setattr(
-        project_image.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(stdout=output)
+        project_image.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
     )
     with pytest.raises(RuntimeError, match="layout image"):
         project_image.inspect_layout_image("candidate")
@@ -484,7 +492,6 @@ def test_layout_inspection_rejects_malformed_or_multiple_docker_records(
 
 def test_layout_inspection_preserves_exact_docker_record(monkeypatch: pytest.MonkeyPatch) -> None:
     import json
-    from types import SimpleNamespace
 
     from booley.runtime import project_image
 
@@ -493,7 +500,7 @@ def test_layout_inspection_preserves_exact_docker_record(monkeypatch: pytest.Mon
 
     def inspect(command, **kwargs):
         commands.append((command, kwargs))
-        return SimpleNamespace(stdout=json.dumps([record]))
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps([record]), stderr="")
 
     monkeypatch.setattr(project_image.subprocess, "run", inspect)
     assert project_image.inspect_layout_image("candidate", executable="docker-fixture") == record
@@ -526,14 +533,14 @@ def test_layout_docker_transport_failure_is_controlled(
 
 
 def test_layout_history_refuses_unbounded_docker_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    from types import SimpleNamespace
-
     from booley.runtime import project_image
 
     monkeypatch.setattr(
         project_image.subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(stdout="x" * 1_048_577),
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="x" * 1_048_577, stderr=""
+        ),
     )
     with pytest.raises(RuntimeError, match="exceeds bounds"):
         project_image._image_history("candidate", "docker")
@@ -584,8 +591,6 @@ def test_layout_proof_requires_inspection_to_match_requested_identity(monkeypatc
 
 
 def test_layout_proof_refuses_a_failed_alias_directory_probe(monkeypatch):
-    from types import SimpleNamespace
-
     from booley.runtime import project_image
 
     parent = "sha256:" + "a" * 64
@@ -595,7 +600,7 @@ def test_layout_proof_refuses_a_failed_alias_directory_probe(monkeypatch):
 
     def probe(command, **_kwargs):
         commands.append(command)
-        return SimpleNamespace(returncode=1)
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
 
     monkeypatch.setattr(project_image, "_image_history", _layout_history)
     monkeypatch.setattr(project_image.subprocess, "run", probe)

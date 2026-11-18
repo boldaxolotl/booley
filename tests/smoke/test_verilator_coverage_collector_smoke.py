@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import SimulationOptions
@@ -32,7 +33,7 @@ pytestmark = pytest.mark.skipif(
     shutil.which("verilator") is None or shutil.which("verilator_coverage") is None,
     reason="real smoke runs inside the pinned Booley Sandbox Image",
 )
-_TOOL_TIMEOUT_S = 120
+_TOOL_TIMEOUT_S = 4 * hang_guard_s()
 
 
 class _RealVerilatorExecution:
@@ -41,12 +42,8 @@ class _RealVerilatorExecution:
         self.build_dir = build_dir
 
     def build(self, request) -> SimulationBuildResult:
-        version = subprocess.run(
-            ["verilator", "--version"],
-            timeout=30,
-            check=True,
-            capture_output=True,
-            text=True,
+        version = run_bounded_child(
+            ["verilator", "--version"], timeout=SUBPROCESS_TIMEOUT_S, check=True
         ).stdout
         provenance = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
         if (
@@ -55,7 +52,7 @@ class _RealVerilatorExecution:
             or PINNED_VERILATOR.commit not in provenance.read_text(encoding="utf-8")
         ):
             return SimulationBuildResult(success=False, output=version)
-        result = subprocess.run(
+        result = run_bounded_child(
             [
                 "verilator",
                 "--binary",
@@ -67,9 +64,6 @@ class _RealVerilatorExecution:
                 *request.instrumentation,
                 str(self.source),
             ],
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=_TOOL_TIMEOUT_S,
         )
         return SimulationBuildResult(
@@ -82,13 +76,10 @@ class _RealVerilatorExecution:
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         environment = os.environ.copy()
         environment.update(request.environment)
-        result = subprocess.run(
+        result = run_bounded_child(
             [str(self.build_dir / "Vcounter_tb"), *request.argv_suffix],
             cwd=request.raw_path.parent,
             env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=_TOOL_TIMEOUT_S,
         )
         return SimulationRunResult(
@@ -98,14 +89,7 @@ class _RealVerilatorExecution:
 
     def command(self, request) -> SimulationCommandResult:
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            request.argv,
-            cwd=request.cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_TOOL_TIMEOUT_S,
-        )
+        result = run_bounded_child(list(request.argv), cwd=request.cwd, timeout=_TOOL_TIMEOUT_S)
         return SimulationCommandResult(
             returncode=result.returncode,
             stdout=result.stdout,
@@ -147,7 +131,7 @@ endmodule
             sources=(CoverageSource(str(source), "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("generated_main"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _RealVerilatorExecution(source, tmp_path / "build"))
@@ -164,10 +148,12 @@ endmodule
     ]
 
 
-def _invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+def _invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
     try:
+        # Unbounded child: the test handles the timeout itself and falls back to a timed_out result
         completed = subprocess.run(
             command,
+            cwd=cwd,
             timeout=timeout,
             capture_output=True,
             text=True,
@@ -278,9 +264,9 @@ def _collect_target(root: Path, test: str):
     return collect_target_coverage(
         handle,
         selected_tests=(test,),
-        artifact_root=root / "campaign",
+        artifact_root=root / "record",
         invoke=_invoke,
-        options=SimulationOptions(timeout_ms=30_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
 
 
@@ -319,7 +305,7 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
 
 def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> None:
     _write_custom_target(tmp_path)
-    raw_destination = tmp_path / "campaign/native/raw/001-custom@1.dat"
+    raw_destination = tmp_path / "record/native/raw/001-custom@1.dat"
     raw_destination.mkdir(parents=True)
 
     result = _collect_target(tmp_path, "custom")
@@ -332,16 +318,16 @@ def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> 
     hook = next(
         artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
     )
-    document = json.loads((tmp_path / "campaign" / hook.path).read_text(encoding="utf-8"))
+    document = json.loads((tmp_path / "record" / hook.path).read_text(encoding="utf-8"))
     assert document["events"] == [
         {"hook": "start", "sequence": 1, "success": True},
         {"hook": "write", "sequence": 2, "success": False},
     ]
 
 
-def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
+def _coverage_record_path(reports: Path, detail: Mapping[str, Any]) -> Path:
     """Locate the public Coverage reference from its typed, invocation-relative artifact."""
-    reference = detail["targets"]["sim"]["coverage_campaign"]
+    reference = detail["targets"]["sim"]["coverage_record"]
     assert reference["path_base"] == "report_invocation"
     return reports / "sim" / "1" / reference["path"]
 
@@ -350,10 +336,10 @@ def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
     "harness,trace",
     [("generated", False), ("generated", True), ("post_reset", False), ("custom", False)],
 )
-def test_real_coverage_flow_publishes_canonical_campaign(
+def test_real_coverage_flow_publishes_canonical_simulation_record(
     tmp_path: Path, harness: str, trace: bool
 ) -> None:
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
 
@@ -375,20 +361,20 @@ def test_real_coverage_flow_publishes_canonical_campaign(
     )
     if trace and harness == "generated":
         # The auto-main fixture builds no waveform writer, so the requested
-        # trace is honestly inconclusive (#884); the Coverage Campaign still
+        # trace is honestly inconclusive (#884); the Coverage Record still
         # publishes complete evidence below.
         assert result.exit_code == 1, result.outcome
         assert result.outcome.detail["targets"]["sim"]["simulation"] == "inconclusive"
     else:
         assert result.exit_code == 0, result.outcome
-    path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
-    resolved = resolve_coverage_campaign_reference(path)
-    campaign = resolved.loaded.campaign
-    assert campaign.target.identity == "booley:smoke:coverage:1#sim"
-    assert campaign.collection["status"] == "complete"
-    assert campaign.evaluation["status"] == "not_requested"
-    assert campaign.build["trace"] is trace
-    assert campaign.points
+    path = _coverage_record_path(tmp_path / "reports", result.outcome.detail)
+    resolved = resolve_coverage_record_reference(path)
+    coverage_record = resolved.loaded.coverage_record
+    assert coverage_record.target.identity == "booley:smoke:coverage:1#sim"
+    assert coverage_record.collection["status"] == "complete"
+    assert coverage_record.evaluation["status"] == "not_requested"
+    assert coverage_record.build["trace"] is trace
+    assert coverage_record.points
 
 
 def _prepare_cocotb_cache_project(root: Path) -> Path:
@@ -419,9 +405,9 @@ def _prepare_cocotb_cache_project(root: Path) -> Path:
     )
     (root / ".booley/tests.toml").write_text('[sim]\ntests = ["check", "another"]\n')
     (root / ".gitignore").write_text(".booley/.runtime/\nreports/\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
-    subprocess.run(["git", "add", "."], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
-    subprocess.run(
+    run_bounded_child(["git", "init", "-q"], cwd=root, check=True)
+    run_bounded_child(["git", "add", "."], cwd=root, check=True)
+    run_bounded_child(
         [
             "git",
             "-c",
@@ -434,19 +420,13 @@ def _prepare_cocotb_cache_project(root: Path) -> Path:
         ],
         cwd=root,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return helper
 
 
 def _git_status(root: Path) -> str:
-    return subprocess.run(
-        ["git", "status", "--porcelain=v1", "-uall"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    return run_bounded_child(
+        ["git", "status", "--porcelain=v1", "-uall"], cwd=root, check=True
     ).stdout
 
 
@@ -458,17 +438,15 @@ def _assert_python_cache_evidence(root: Path, helper: Path) -> None:
     assert Path(evidence["module"]).name == "test_case.py"
 
 
-def _assert_two_run_coverage_campaign(root: Path, detail: Mapping[str, Any]) -> None:
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+def _assert_two_run_coverage_record(root: Path, detail: Mapping[str, Any]) -> None:
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
 
-    resolved = resolve_coverage_campaign_reference(
-        _coverage_campaign_path(root / "reports", detail)
-    )
-    campaign = resolved.loaded.campaign
-    assert len(campaign.runs) == 2
-    raw = [artifact for artifact in campaign.artifacts if artifact.kind == "raw_native"]
+    resolved = resolve_coverage_record_reference(_coverage_record_path(root / "reports", detail))
+    coverage_record = resolved.loaded.coverage_record
+    assert len(coverage_record.runs) == 2
+    raw = [artifact for artifact in coverage_record.artifacts if artifact.kind == "raw_native"]
     assert len({artifact.path for artifact in raw}) == 2
-    assert {run.test for run in campaign.runs} == {"another", "check"}
+    assert {run.test for run in coverage_record.runs} == {"another", "check"}
 
 
 @pytest.mark.parametrize("coverage", [False, True])
@@ -488,7 +466,7 @@ def test_real_cocotb_flow_uses_one_process_per_selected_test(
     assert _git_status(root) == baseline
     _assert_python_cache_evidence(root, helper)
     if coverage:
-        _assert_two_run_coverage_campaign(root, result.outcome.detail)
+        _assert_two_run_coverage_record(root, result.outcome.detail)
 
 
 def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
@@ -526,7 +504,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
         binaries = {
             hashlib.sha256(path.read_bytes()).hexdigest()
             for path in root.rglob("Vtop")
-            if path.is_file() and "snapshot" not in path.parts
+            if path.is_file()
         }
         assert len(binaries) == len(previous) + 1
         assert previous.issubset(binaries)
@@ -554,7 +532,7 @@ def _add_module_sources(root: Path) -> None:
 
 def test_real_lexical_scan_reports_unused_module_sources(tmp_path):
     from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
     from booley.flows.sim.coverage_source_gaps import source_gap_paths
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
@@ -568,12 +546,12 @@ def test_real_lexical_scan_reports_unused_module_sources(tmp_path):
         SimRequest(target="sim", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports")
     )
     assert result.exit_code == 0, result.outcome.detail
-    path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
-    campaign = resolve_coverage_campaign_reference(path).loaded.campaign
-    paths = source_gap_paths(campaign)
+    path = _coverage_record_path(tmp_path / "reports", result.outcome.detail)
+    coverage_record = resolve_coverage_record_reference(path).loaded.coverage_record
+    paths = source_gap_paths(coverage_record)
     assert paths == ("rtl/conditional.sv", "rtl/unused.sv")
     assert "RTL sources without coverage points: 2" in result.outcome.report_text
     assert "rtl/unused.sv" in result.outcome.report_text
-    assert CoverageEvidenceSession(campaign, None).query({"view": "zero_point_sources"})[
+    assert CoverageEvidenceSession(coverage_record, None).query({"view": "zero_point_sources"})[
         "paths"
     ] == list(paths)

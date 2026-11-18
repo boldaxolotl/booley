@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from booley.flows.progress_lifecycle import repair_progress_after_reap
-from booley.goals.paths import record_paths
 from booley.mcp.call_context import CallContext
 from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
     _endpoint_subprocess_env,
     _run_subprocess,
+    cancel_grace_seconds,
+    stop_grace_seconds,
     write_synthetic_endpoint_end,
 )
 from booley.mcp.job_ownership import Caller, owns
@@ -33,7 +34,6 @@ from booley.mcp.job_results import (
     _KNOWN_JOB_ROOTS,
     JobRepository,
     LocatedJob,
-    job_binding,
     read_record_or_none,
 )
 from booley.runtime import job_records as jobrec
@@ -122,6 +122,8 @@ class JobLifecycle:
         self._job_roots: dict[str, Path | None] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_requested: set[str] = set()
+        # Why a withdrawn waiter was queued again (run id -> reason), for its cancellation text.
+        self._requeue_reasons: dict[str, str] = {}
         # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
         self._results: dict[str, tuple[int, str, str, bool]] = {}
         self._counter = 0
@@ -141,10 +143,7 @@ class JobLifecycle:
         return None if located is None else located.root
 
     def _write_root(self, rec: jobrec.JobRecord) -> Path | None:
-        """Use the admitted binding for every Goal write, including completion."""
-        binding = job_binding(rec)
-        if binding is not None:
-            return record_paths(binding.booley_dir, binding.record_id).jobs_dir
+        """Root for every write of *rec*, completion included."""
         return self._record_root(rec.run_id)
 
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
@@ -176,19 +175,12 @@ class JobLifecycle:
 
     @staticmethod
     def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
-        rec.work_dir = (
-            str(context.work_dir)
-            if context.binding
-            else (str(context.explicit_work_dir) if context.explicit_work_dir else None)
-        )
+        rec.work_dir = str(context.explicit_work_dir) if context.explicit_work_dir else None
         rec.session_key = context.session_key
-        rec.binding = None if context.binding is None else context.binding.to_json()
         from booley.runtime.booley_dir import resolve_common_booley_dir
 
         try:
-            project = (
-                context.binding.booley_dir if context.binding else resolve_common_booley_dir()
-            )
+            project = resolve_common_booley_dir()
             register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
@@ -202,17 +194,26 @@ class JobLifecycle:
         rec.process_identity = None if identity is None else identity.to_payload()
         jobrec.write_record(rec, root=self._write_root(rec))
 
-    def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
+    def _child_slot_state(self, rec: jobrec.JobRecord) -> job_slots.TokenState | None:
+        """The child's admission state, or ``None`` when it has no readable claim."""
         if rec.pid is None:
-            return False
+            return None
         root = job_slots.slots_dir()
         if root is None:
-            return False
+            return None
         try:
-            state = job_slots.SlotStore(root).state_for_pid(rec.pid)
+            return job_slots.SlotStore(root).state_for_pid(rec.pid)
         except OSError:
-            return False
+            return None
+
+    def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
+        state = self._child_slot_state(rec)
         return state is not None and state.state == job_slots.QUEUED
+
+    def _child_requeued(self, rec: jobrec.JobRecord) -> bool:
+        """Whether the child's claim says its Job was requeued after an OOM kill."""
+        state = self._child_slot_state(rec)
+        return state is not None and state.reason is not None
 
     def _stamp_run_started(self, rec: jobrec.JobRecord) -> None:
         rec.run_started_at = utc_now_rfc3339()
@@ -225,7 +226,7 @@ class JobLifecycle:
             self._repository.report_dirs(located),
             rec.endpoint,
             rec.run_id,
-            booley_dir=self._repository.report_booley_dir(located),
+            booley_dir=self._repository.report_booley_dir(),
         )
 
     def _record_terminal(
@@ -282,7 +283,7 @@ class JobLifecycle:
         claim, not this server's decision. The record lives under the call
         context's jobs root and names *owner*, the agent that started it.
         """
-        run_id = context.binding.invocation_id if context.binding else self._next_run_id(name)
+        run_id = self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
         rec.owner = owner
         self._submitted[run_id] = rec
@@ -307,12 +308,7 @@ class JobLifecycle:
         context: CallContext,
     ) -> tuple[int, str, str, bool]:
         """Run an inline endpoint while publishing bounded status state."""
-        rec = self._new_record(
-            context.binding.invocation_id if context.binding else uuid.uuid4().hex,
-            name,
-            cmd,
-            timeout,
-        )
+        rec = self._new_record(uuid.uuid4().hex, name, cmd, timeout)
         self._stamp_context(rec, context)
         self._job_roots[rec.run_id] = context.jobs_root
         _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
@@ -353,8 +349,10 @@ class JobLifecycle:
             on_spawn=lambda pid: self._stamp_pid(rec, pid),
             env=_endpoint_subprocess_env(context, pytest_scope=rec.endpoint, **overrides),
             is_queued=lambda: self._child_is_queued(rec),
+            is_requeued=lambda: self._child_requeued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
             log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
+            stop_grace=stop_grace_seconds(rec.endpoint),
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
@@ -380,10 +378,12 @@ class JobLifecycle:
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         rec.ended_at = utc_now_rfc3339()
+        reason = self._requeue_reasons.pop(rec.run_id, None)
+        queued_again = f" while queued again ({reason})" if reason else ""
         self._results[rec.run_id] = (
             130,
             "",
-            f"CANCELLED: job {rec.run_id} was stopped by request.",
+            f"CANCELLED: job {rec.run_id} was stopped by request{queued_again}.",
             False,
         )
         jobrec.write_record(rec, root=self._write_root(rec))
@@ -406,10 +406,14 @@ class JobLifecycle:
         root = job_slots.slots_dir()
         if rec.pid is None or root is None:
             return False
+        state = self._child_slot_state(rec)  # read before the withdrawal removes it
         try:
-            return job_slots.SlotStore(root).cancel_waiter(rec.pid)
+            withdrawn = job_slots.SlotStore(root).cancel_waiter(rec.pid)
         except OSError:
             return False
+        if withdrawn and state is not None and state.reason is not None:
+            self._requeue_reasons[rec.run_id] = state.reason
+        return withdrawn
 
     async def _cancel_tracked_task(
         self,
@@ -445,7 +449,7 @@ class JobLifecycle:
                 self._record_terminal(fresh, 2, timed_out=False)
             return
         if rec.pid is not None:
-            await self._cancel_process(rec.pid)
+            await self._cancel_process(rec.pid, cancel_grace_seconds(rec.endpoint))
             # A SIGTERMed owner records its own failure; that is still the user's
             # cancellation. Only a completion that won the race is kept as is.
             fresh = self._read_run(rec.run_id)
@@ -467,15 +471,23 @@ class JobLifecycle:
         if rec is None:
             return None
 
-        if jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
+        task = self._tasks.get(run_id)
+        supervised = task is not None and not task.done()
+        if not supervised and jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
             return "already_finished"
 
+        if supervised:
+            # A Job cancelled before its process published a PID is still running:
+            # let the supervising task start so its cancellation is recorded.
+            await asyncio.sleep(0)
+            rec = self._read_run(run_id) or rec
         was_queued = self._cancel_waiter(rec)
-        task = self._tasks.get(run_id)
         if task is not None:
             await self._cancel_tracked_task(run_id, task)
         else:
             await self._cancel_adopted_job(rec)
+        # A cancellation that was never recorded (the task had already finished) keeps no reason.
+        self._requeue_reasons.pop(run_id, None)
         final = self._read_run(run_id)
         if final is None or final.status != jobrec.STATUS_CANCELLED:
             return "finished"
@@ -517,7 +529,12 @@ class JobLifecycle:
             )
         # Terminal-from-disk (server restarted): no captured stdout/stderr.
         exit_code = rec.exit_code if rec and rec.exit_code is not None else None
-        if exit_code is None and report_fresh and isinstance(report.get("exit_code"), int):
+        if (
+            exit_code is None
+            and report is not None
+            and report_fresh
+            and isinstance(report.get("exit_code"), int)
+        ):
             # Orphan rescue: the run itself finished and wrote this job's
             # report — only the server died before recording the outcome.
             # Trust the report's exit code over a blanket failure, so a
@@ -550,9 +567,13 @@ class JobLifecycle:
         context: CallContext,
         wait_seconds: float,
         owner: str | None = None,
+        attach: bool = True,
     ) -> JobSubmission:
-        """Join identical live work or submit once, then wait within the inline budget."""
-        attached = self._repository.find_attachable(name, cmd, context=context)
+        """Join identical live work or submit once, then wait within the inline budget.
+
+        *attach* False always submits: the caller's argv does not pin what the work measures.
+        """
+        attached = self._repository.find_attachable(name, cmd) if attach else None
         run_id = (
             attached
             if attached is not None
@@ -614,7 +635,7 @@ class JobLifecycle:
     def _is_unread(self, rec: jobrec.JobRecord) -> bool:
         """Finished and not yet read by its owner.
 
-        Releases never stamped ``read_at``, and Interactive Mode keeps every Job
+        Releases never stamped ``read_at``, and the Sandbox keeps every Job
         record in the Project tree, so a record without an owner only counts when
         this server could still be the one to deliver it: still unrecorded as
         finished, or ended since the server started.

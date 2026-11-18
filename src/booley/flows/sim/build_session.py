@@ -42,7 +42,7 @@ from booley.targets.domain import TargetHandle
 from . import build_reuse
 from .build import PreparedSimulationBuild
 from .build_reuse import hash_file
-from .campaign_reports import simulation_booley_dir
+from .record_reports import simulation_booley_dir
 
 
 class SimulationBuildSlotError(RuntimeError):

@@ -1,0 +1,267 @@
+"""Simulation records are named for the Simulation Record, and Booley 0.4.0's are refused.
+
+Part 3 of ADR 0090 renames the Simulation Record manifest, attempt result, supervised
+child context and terminal causes. Every 0.4.0 record is read from committed bytes:
+``tests/flows/fixtures/booley_0_4_0/{complete,interrupted,coverage}`` were written by
+Booley 0.4.0's own ``SimulateFlow``.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from booley.flows.sim.record import codec, read_durable_results
+from booley.flows.sim.record.codec import (
+    SimulationRecordIntegrityError,
+    canonical_json_bytes,
+    decode_bundle_build_attempt,
+    decode_bundle_build_result,
+    decode_simulation_attempt,
+    decode_simulation_record_manifest,
+    decode_simulation_result,
+    decode_simulator_bundle,
+)
+from booley.runtime.execution_records import (
+    ExecutionId,
+    child_context_matches,
+    execution_paths,
+    read_json,
+)
+from booley.runtime.execution_recovery import recover_execution
+from tests.flows.sim import test_simulation_record_lane_pool as lane_pool
+from tests.flows.sim.simulation_record_test_support import _retained_invocation
+from tests.flows.sim.test_simulation_record_dependency import _two_role_simulation_records
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
+    _assert_refused,
+    _assert_unsupported_type,
+    copy_older_invocation,
+)
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
+    reports as _reports_fixture,
+)
+
+# The report-root fixture of the Part 1 tests, collected here under the same name.
+reports = _reports_fixture
+
+# Every schema Booley 0.4.0 wrote for the records this part renames, with the decoder
+# that must refuse it.
+_OLD_MANIFEST = "booley.simulation-campaign-manifest/v4"
+_OLD_RESULT = "booley.simulation-result/v3"
+_OLD_RECORDS = {
+    _OLD_MANIFEST: decode_simulation_record_manifest,
+    _OLD_RESULT: decode_simulation_result,
+    "booley.simulation-attempt/v1": decode_simulation_attempt,
+    "booley.bundle-build-attempt/v1": decode_bundle_build_attempt,
+    "booley.bundle-build-result/v1": decode_bundle_build_result,
+    "booley.simulator-bundle/v1": decode_simulator_bundle,
+    "booley.executable-snapshot/v1": codec.refuse_retired_document,
+}
+
+
+def _json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_bytes())
+
+
+def _at_record_layout(invocation: Path) -> None:
+    """Rename a 0.4.0 run's directories to the Record layout, so only a schema can refuse it."""
+    for simulation_record in sorted(invocation.glob("targets/*/campaign")):
+        simulation_record.rename(simulation_record.with_name("record"))
+    for coverage in sorted(invocation.rglob("coverage-campaign")):
+        coverage.rename(coverage.with_name("coverage-record"))
+
+
+def _rewrite(path: Path, raw: bytes) -> None:
+    path.chmod(0o600)
+    path.write_bytes(raw)
+
+
+# --- AC1: the names a run writes -----------------------------------------------------------
+
+
+def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
+    _reports, _project_data, store = _retained_invocation(tmp_path)
+
+    manifest = _json(store.manifest_path)
+    assert manifest["$schema"] == "booley.simulation-record-manifest/v1"
+    record_id = manifest["simulation_record_id"]
+    assert uuid.UUID(record_id).version == 4
+
+    schemas = {
+        "work-items/*/result.json": "booley.simulation-result/v5",
+        "work-items/*/attempts/*/attempt.json": "booley.simulation-attempt/v2",
+        "build-variants/*/attempts/*/build-attempt.json": "booley.bundle-build-attempt/v2",
+        "build-variants/*/attempts/*/build-result.json": "booley.bundle-build-result/v2",
+        "build-variants/*/attempts/*/evidence/bundle.json": "booley.simulator-bundle/v3",
+    }
+    for pattern, schema in schemas.items():
+        documents = sorted(store.root.glob(pattern))
+        assert documents, pattern
+        for path in documents:
+            document = _json(path)
+            assert document["$schema"] == schema, path
+            assert document["simulation_record_id"] == record_id, path
+
+    # The summary is retention's projection of the Record: its own schema, same identity key.
+    summary = _json(store.summary_path)
+    assert summary["$schema"] == "booley.simulation-record-summary/v1"
+    assert summary["simulation_record_id"] == record_id
+
+
+def test_prerequisites_name_the_simulation_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _invocation, candidate, baseline = _two_role_simulation_records(tmp_path, monkeypatch)
+    baseline_id = _json(baseline.manifest_path)["simulation_record_id"]
+    prerequisites = _json(candidate.manifest_path)["prerequisites"]
+    assert prerequisites
+    for entry in prerequisites:
+        assert entry["simulation_record_id"] == baseline_id
+        assert "campaign_id" not in entry
+        assert entry["manifest"]["kind"] == "simulation_record_manifest"
+
+
+def _prepared_lane(
+    simulation_record: lane_pool._SimulationRecord, parent: str
+) -> tuple[ExecutionId, Any]:
+    """Prepare one child lane the way the scheduler does, and return it with its paths."""
+    child = ExecutionId(uuid.uuid4().hex)
+    simulation_record.registry.prepare(
+        child,
+        work_item_id=simulation_record.items[0]["work_item_id"],
+        attempt_id=str(uuid.uuid4()),
+        attempt_ordinal=1,
+        attempt_directory=simulation_record.store.root / "attempt",
+        parent_execution_id=ExecutionId(parent),
+    )
+    return child, execution_paths(child, booley_dir=simulation_record.registry.project_data)
+
+
+def test_a_child_lane_writes_the_record_context_and_terminal_causes(tmp_path: Path) -> None:
+    simulation_record = lane_pool._SimulationRecord(tmp_path, ("alpha",), lanes=1)
+    try:
+        child, paths = _prepared_lane(simulation_record, "a" * 32)
+
+        context = read_json(paths.context)
+        assert context is not None
+        assert context["$schema"] == "booley.supervised-child-context/v2"
+        assert (
+            context["simulation_record_id"]
+            == simulation_record.manifest.document["simulation_record_id"]
+        )
+        assert "campaign_id" not in context
+        assert "record_id" not in context
+        assert child_context_matches(paths, child)
+
+        # A lane's cancellation request names the Record. The terminal cause
+        # ``record_error`` is pinned by the parametrized lane-pool test.
+        cancelled, cancelled_paths = _prepared_lane(simulation_record, "a" * 32)
+        assert simulation_record.registry.cancel(cancelled)
+        assert read_json(cancelled_paths.cancel)["reason"] == "record_cancelled"
+    finally:
+        simulation_record.slots.release(simulation_record.outer)
+
+
+# --- AC2: every 0.4.0 record is refused as older -------------------------------------------
+
+
+def test_a_0_4_0_manifest_is_refused_naming_its_invocation(reports: Path) -> None:
+    invocation = copy_older_invocation("0.4.0", "complete", reports)
+    _at_record_layout(invocation)
+    manifest = invocation / "targets" / "sim" / "record" / "manifest.json"
+
+    # The Dashboard reads it through this.
+    with pytest.raises(ValueError) as refused:
+        read_durable_results(manifest, "sha256:" + "0" * 64)
+    _assert_unsupported_type(refused.value)
+    _assert_refused(str(refused.value), _OLD_MANIFEST, invocation)
+
+
+def test_every_0_4_0_record_of_a_complete_run_is_refused(reports: Path) -> None:
+    invocation = copy_older_invocation("0.4.0", "complete", reports)
+    seen: set[str] = set()
+    for path in sorted(invocation.rglob("*.json")):
+        schema = _json(path).get("$schema")
+        decode = _OLD_RECORDS.get(schema)
+        if decode is None:
+            continue
+        seen.add(schema)
+        # Decoder level: a sibling record is reached only after its manifest, which is
+        # refused first, so this proves the decoder never reports it as corrupt.
+        with pytest.raises(ValueError) as excinfo:
+            decode(path.read_bytes())
+        _assert_unsupported_type(excinfo.value)
+        _assert_refused(str(excinfo.value), schema)
+    assert seen == set(_OLD_RECORDS)
+
+
+# --- AC4: no old name is an alias ------------------------------------------------------------
+
+
+def _with_old_key(document: dict[str, Any]) -> bytes:
+    document = dict(document)
+    document["campaign_id"] = document.pop("simulation_record_id", document.get("campaign_id"))
+    return canonical_json_bytes(document)
+
+
+def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
+    _reports, _project_data, store = _retained_invocation(tmp_path)
+    documents = {
+        decode_simulation_record_manifest: store.manifest_path,
+        decode_simulation_result: next(store.root.glob("work-items/*/result.json")),
+        decode_simulation_attempt: next(store.root.glob("work-items/*/attempts/*/attempt.json")),
+    }
+    for decode, path in documents.items():
+        # The old key is an unknown field: an integrity error, not an older Booley's record.
+        with pytest.raises(SimulationRecordIntegrityError, match="exact fields") as refused:
+            decode(_with_old_key(_json(path)))
+        assert "older Booley" not in str(refused.value)
+
+    # A context sidecar is the current one only: schema v1, or v2 with the old key, is not.
+    simulation_record = lane_pool._SimulationRecord(tmp_path / "lane", ("alpha",), lanes=1)
+    try:
+        child, paths = _prepared_lane(simulation_record, "a" * 32)
+        context = _json(paths.context)
+        for altered in (
+            {**context, "$schema": "booley.supervised-child-context/v1"},
+            json.loads(_with_old_key(context)),
+        ):
+            _rewrite(paths.context, canonical_json_bytes(altered))
+            assert not child_context_matches(paths, child)
+    finally:
+        simulation_record.slots.release(simulation_record.outer)
+
+
+def test_a_lane_a_0_4_0_booley_left_is_still_recovered(tmp_path: Path) -> None:
+    """Only recovery reads the 0.4.0 sidecar, so its claim is released."""
+    simulation_record = lane_pool._SimulationRecord(tmp_path, ("alpha",), lanes=1)
+    booley_dir = simulation_record.registry.project_data
+    try:
+        child, paths = _prepared_lane(simulation_record, "a" * 32)
+        other, other_paths = _prepared_lane(simulation_record, "a" * 32)
+        # The sidecar Booley 0.4.0 wrote: schema v1 and ``campaign_id``.
+        older = {
+            "$schema": "booley.supervised-child-context/v1",
+            "child_execution_id": child,
+            "parent_execution_id": "a" * 32,
+            "campaign_id": str(uuid.uuid4()),
+            "manifest_sha256": "sha256:" + "1" * 64,
+            "work_item_id": simulation_record.items[0]["work_item_id"],
+            "attempt_id": str(uuid.uuid4()),
+            "attempt_ordinal": 1,
+        }
+        _rewrite(paths.context, canonical_json_bytes(older))
+        # The same 0.4.0 sidecar naming another execution is not this execution's.
+        _rewrite(other_paths.context, canonical_json_bytes({**older, "child_execution_id": child}))
+
+        assert not child_context_matches(paths, child)
+        assert recover_execution(child, booley_dir=booley_dir)
+        assert read_json(paths.record)["tree_terminal"] is True
+        assert not recover_execution(other, booley_dir=booley_dir)
+        assert read_json(other_paths.record)["state"] == "waiting"
+    finally:
+        simulation_record.slots.release(simulation_record.outer)

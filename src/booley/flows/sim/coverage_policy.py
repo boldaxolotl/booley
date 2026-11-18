@@ -1,23 +1,23 @@
-"""Pure deterministic policy evaluation for Coverage Campaigns."""
+"""Pure deterministic policy evaluation for Coverage Records."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    CoverageRollup,
-    DurableTargetIdentity,
-    apply_point_dispositions,
-)
 from booley.flows.sim.coverage_json import (
     CRITERION_FINGERPRINT_JSON,
     content_digest,
     coverage_mapping_document,
     freeze_coverage_mapping,
+)
+from booley.flows.sim.coverage_record import (
+    CoverageRecord,
+    CoverageRollup,
+    DurableTargetIdentity,
+    apply_point_dispositions,
 )
 from booley.flows.sim.coverage_waivers import (
     ApprovedWaiver,
@@ -30,11 +30,11 @@ __all__ = [
     "ApprovedWaiverSet",
     "CoverageCriterion",
     "CoverageThreshold",
-    "EvaluatedCoverageCampaign",
+    "EvaluatedCoverageRecord",
     "ThresholdScore",
     "coverage_metrics",
     "coverage_threshold",
-    "evaluate_coverage_campaign",
+    "evaluate_coverage_record",
     "evaluation_json",
     "score_thresholds",
     "strict_reevaluation",
@@ -77,7 +77,7 @@ class CoverageCriterion:
                 )
 
 
-EvaluatedCoverageCampaign: TypeAlias = CoverageCampaign
+EvaluatedCoverageRecord: TypeAlias = CoverageRecord
 
 
 def threshold_number(value: Fraction) -> int | float:
@@ -90,7 +90,7 @@ def coverage_threshold(metric: str, stored: int | float) -> CoverageThreshold:
 
 
 def _criterion_fingerprint(
-    campaign: CoverageCampaign,
+    coverage_record: CoverageRecord,
     criterion: CoverageCriterion,
     required_tests: tuple[str, ...],
     waivers: ApprovedWaiverSet,
@@ -163,20 +163,21 @@ def score_thresholds(
     return ThresholdScore(tuple(rows), tuple(empty), "pass" if passed else "fail")
 
 
-def coverage_metrics(campaign: CoverageCampaign) -> dict[str, dict[str, object]]:
+def coverage_metrics(coverage_record: CoverageRecord) -> dict[str, dict[str, object]]:
     """Report per-metric threshold results for the Job report.
 
     Independent of the aggregate Criterion verdict, so blocked evaluations keep
     ``met``. Reads only the score's rows: a thresholded metric with no row has an
     empty denominator and cannot meet its floor.
     """
-    stored = campaign.evaluation["thresholds"]
+    # The Coverage Record validator admits only an object of finite numbers here.
+    stored = cast(Mapping[str, int | float], coverage_record.evaluation["thresholds"])
     thresholds = tuple(
         coverage_threshold(rollup.metric, stored[rollup.metric])
-        for rollup in campaign.rollups
+        for rollup in coverage_record.rollups
         if stored.get(rollup.metric) is not None
     )
-    rows = score_thresholds(campaign.rollups, thresholds).metrics
+    rows = score_thresholds(coverage_record.rollups, thresholds).metrics
     passed = {row["metric"] for row in rows if row["verdict"] == "pass"}
     return {
         rollup.metric: {
@@ -184,7 +185,7 @@ def coverage_metrics(campaign: CoverageCampaign) -> dict[str, dict[str, object]]
             "threshold": stored.get(rollup.metric),
             "met": None if stored.get(rollup.metric) is None else rollup.metric in passed,
         }
-        for rollup in campaign.rollups
+        for rollup in coverage_record.rollups
     }
 
 
@@ -192,76 +193,76 @@ def _diagnostic(code: str, pointer: str, message: str) -> dict[str, str]:
     return {"code": code, "pointer": pointer, "message": message}
 
 
-def _metric_available(campaign: CoverageCampaign, metric: str) -> bool:
+def _metric_available(coverage_record: CoverageRecord, metric: str) -> bool:
     return any(
         capability.record_class == metric
         and capability.status == "reported"
         and capability.attributes.get("collection") == "supported"
         and capability.attributes.get("scoring") == "scored_v1"
-        for capability in campaign.collector.capabilities
+        for capability in coverage_record.collector.capabilities
     )
 
 
-def _blocked_campaign(
-    campaign: CoverageCampaign,
+def _blocked_coverage_record(
+    coverage_record: CoverageRecord,
     criterion: CoverageCriterion,
     waivers: ApprovedWaiverSet,
     required_tests: tuple[str, ...],
     diagnostics: list[dict[str, str]],
-) -> EvaluatedCoverageCampaign:
+) -> EvaluatedCoverageRecord:
     ordered = sorted(criterion.thresholds, key=lambda item: _METRIC_ORDER.index(item.metric))
     evaluation = {
         "status": "blocked",
         "criterion_fingerprint": _criterion_fingerprint(
-            campaign, criterion, required_tests, waivers
+            coverage_record, criterion, required_tests, waivers
         ),
         "approved_waiver_set_digest": waivers.digest,
         "suite": {
             "status": "mismatch"
-            if sorted(required_tests) != sorted(campaign.selected_tests)
+            if sorted(required_tests) != sorted(coverage_record.selected_tests)
             else "match",
             "required": sorted(required_tests),
-            "selected": sorted(campaign.selected_tests),
+            "selected": sorted(coverage_record.selected_tests),
         },
         "thresholds": {item.metric: threshold_number(item.minimum_percent) for item in ordered},
         "metrics": [],
         "diagnostics": diagnostics,
     }
-    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
+    return replace(coverage_record, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def _target_suite_diagnostics(
-    campaign: CoverageCampaign,
+    coverage_record: CoverageRecord,
     criterion: CoverageCriterion,
     required_tests: tuple[str, ...],
 ) -> list[dict[str, str]]:
     diagnostics: list[dict[str, str]] = []
-    if str(criterion.target) != campaign.target.identity:
+    if str(criterion.target) != coverage_record.target.identity:
         diagnostics.append(
             _diagnostic(
                 "COV_EVAL_TARGET_MISMATCH",
                 "/target/identity",
-                "Campaign and Coverage Criterion belong to different Targets.",
+                "Coverage Record and Coverage Criterion belong to different Targets.",
             )
         )
-    if sorted(required_tests) != sorted(campaign.selected_tests):
+    if sorted(required_tests) != sorted(coverage_record.selected_tests):
         diagnostics.append(
             _diagnostic(
                 "COV_EVAL_SUITE_MISMATCH",
                 "/tests/selected",
-                "Campaign selection does not match the Coverage Criterion suite.",
+                "Coverage Record selection does not match the Coverage Criterion suite.",
             )
         )
     return diagnostics
 
 
 def _evidence_diagnostics(
-    campaign: CoverageCampaign,
+    coverage_record: CoverageRecord,
     criterion: CoverageCriterion,
     required_tests: tuple[str, ...],
 ) -> list[dict[str, str]]:
-    diagnostics = _target_suite_diagnostics(campaign, criterion, required_tests)
-    if campaign.collection.get("status") != "complete":
+    diagnostics = _target_suite_diagnostics(coverage_record, criterion, required_tests)
+    if coverage_record.collection.get("status") != "complete":
         diagnostics.append(
             _diagnostic(
                 "COV_EVAL_COLLECTION_INCOMPLETE",
@@ -269,7 +270,7 @@ def _evidence_diagnostics(
                 "Coverage collection is not complete.",
             )
         )
-    if campaign.normalization.get("status") == "incompatible":
+    if coverage_record.normalization.get("status") == "incompatible":
         diagnostics.append(
             _diagnostic(
                 "COV_EVAL_NORMALIZATION_INCOMPATIBLE",
@@ -280,7 +281,7 @@ def _evidence_diagnostics(
     unavailable = [
         item.metric
         for item in criterion.thresholds
-        if not _metric_available(campaign, item.metric)
+        if not _metric_available(coverage_record, item.metric)
     ]
     diagnostics.extend(
         _diagnostic(
@@ -293,10 +294,10 @@ def _evidence_diagnostics(
     return diagnostics
 
 
-def _ungated_campaign(
-    campaign: CoverageCampaign, diagnostics: list[dict[str, str]]
-) -> EvaluatedCoverageCampaign:
-    """Report a Campaign with no Criterion.
+def _ungated_coverage_record(
+    coverage_record: CoverageRecord, diagnostics: list[dict[str, str]]
+) -> EvaluatedCoverageRecord:
+    """Report a Coverage Record with no Criterion.
 
     Approved waivers have already been applied by the caller: they need no
     Criterion, only thresholds do. Waiver match findings block evaluation.
@@ -309,33 +310,33 @@ def _ungated_campaign(
         "metrics": [],
         "diagnostics": diagnostics,
     }
-    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
+    return replace(coverage_record, evaluation=freeze_coverage_mapping(evaluation))
 
 
-def _scored_campaign(
-    campaign: CoverageCampaign,
+def _scored_coverage_record(
+    coverage_record: CoverageRecord,
     criterion: CoverageCriterion,
     approved_waivers: ApprovedWaiverSet,
     required_tests: tuple[str, ...],
     score: ThresholdScore,
-) -> EvaluatedCoverageCampaign:
+) -> EvaluatedCoverageRecord:
     ordered = sorted(criterion.thresholds, key=lambda item: _METRIC_ORDER.index(item.metric))
     evaluation = {
         "status": score.status,
         "criterion_fingerprint": _criterion_fingerprint(
-            campaign, criterion, required_tests, approved_waivers
+            coverage_record, criterion, required_tests, approved_waivers
         ),
         "approved_waiver_set_digest": approved_waivers.digest,
         "suite": {
             "status": "match",
             "required": sorted(required_tests),
-            "selected": sorted(campaign.selected_tests),
+            "selected": sorted(coverage_record.selected_tests),
         },
         "thresholds": {item.metric: threshold_number(item.minimum_percent) for item in ordered},
         "metrics": list(score.metrics),
         "diagnostics": [],
     }
-    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
+    return replace(coverage_record, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def _waived_dispositions(waiver_match: ApprovedWaiverMatch) -> dict[str, dict[str, object]]:
@@ -353,25 +354,25 @@ def _waived_dispositions(waiver_match: ApprovedWaiverMatch) -> dict[str, dict[st
     }
 
 
-def evaluate_coverage_campaign(
-    campaign: CoverageCampaign,
+def evaluate_coverage_record(
+    coverage_record: CoverageRecord,
     criterion: CoverageCriterion | None,
     approved_waivers: ApprovedWaiverSet,
-) -> EvaluatedCoverageCampaign:
-    """Return a new immutable Campaign with deterministic policy evidence."""
-    waiver_match = approved_waivers.match(campaign)
-    campaign = apply_point_dispositions(campaign, _waived_dispositions(waiver_match))
+) -> EvaluatedCoverageRecord:
+    """Return a new immutable Coverage Record with deterministic policy evidence."""
+    waiver_match = approved_waivers.match(coverage_record)
+    coverage_record = apply_point_dispositions(coverage_record, _waived_dispositions(waiver_match))
     diagnostics = [
         _diagnostic(item.code, item.pointer, item.message) for item in waiver_match.findings
     ]
     if criterion is None:
-        return _ungated_campaign(campaign, diagnostics)
-    required_tests = campaign.declared_tests if criterion.tests is None else criterion.tests
-    diagnostics.extend(_evidence_diagnostics(campaign, criterion, required_tests))
-    score = score_thresholds(campaign.rollups, criterion.thresholds)
+        return _ungated_coverage_record(coverage_record, diagnostics)
+    required_tests = coverage_record.declared_tests if criterion.tests is None else criterion.tests
+    diagnostics.extend(_evidence_diagnostics(coverage_record, criterion, required_tests))
+    score = score_thresholds(coverage_record.rollups, criterion.thresholds)
     if (
-        campaign.collection.get("status") == "complete"
-        and campaign.normalization.get("status") != "incompatible"
+        coverage_record.collection.get("status") == "complete"
+        and coverage_record.normalization.get("status") != "incompatible"
     ):
         diagnostics.extend(
             _diagnostic(
@@ -382,35 +383,37 @@ def evaluate_coverage_campaign(
             for metric in score.empty
         )
     if diagnostics:
-        return _blocked_campaign(
-            campaign,
+        return _blocked_coverage_record(
+            coverage_record,
             criterion,
             approved_waivers,
             required_tests,
             diagnostics,
         )
-    return _scored_campaign(campaign, criterion, approved_waivers, required_tests, score)
+    return _scored_coverage_record(
+        coverage_record, criterion, approved_waivers, required_tests, score
+    )
 
 
-def _without_approved_waivers(campaign: CoverageCampaign) -> CoverageCampaign:
-    """The Campaign before any Approved Waiver was applied to its points."""
+def _without_approved_waivers(coverage_record: CoverageRecord) -> CoverageRecord:
+    """The Coverage Record before any Approved Waiver was applied to its points."""
     return apply_point_dispositions(
-        campaign,
+        coverage_record,
         {
             point.id: {"kind": "eligible"}
-            for point in campaign.points
+            for point in coverage_record.points
             if point.disposition.get("kind") == "waived" and "waiver_id" in point.disposition
         },
     )
 
 
 def strict_reevaluation(
-    campaign: CoverageCampaign, waivers: ApprovedWaiverSet, *, criterion: CoverageCriterion
-) -> EvaluatedCoverageCampaign:
-    """Evaluate a persisted Campaign strictly against a new Approved Waiver Set."""
-    return evaluate_coverage_campaign(_without_approved_waivers(campaign), criterion, waivers)
+    coverage_record: CoverageRecord, waivers: ApprovedWaiverSet, *, criterion: CoverageCriterion
+) -> EvaluatedCoverageRecord:
+    """Evaluate a persisted Coverage Record strictly against a new Approved Waiver Set."""
+    return evaluate_coverage_record(_without_approved_waivers(coverage_record), criterion, waivers)
 
 
-def evaluation_json(campaign: EvaluatedCoverageCampaign) -> Mapping[str, Any]:
+def evaluation_json(coverage_record: EvaluatedCoverageRecord) -> Mapping[str, Any]:
     """Plain JSON of an evaluation, as Criterion details store it."""
-    return coverage_mapping_document(campaign.evaluation)
+    return coverage_mapping_document(coverage_record.evaluation)

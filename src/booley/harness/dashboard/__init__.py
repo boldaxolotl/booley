@@ -1,1 +1,1 @@
-"""The read-only, Sandbox-scoped Booley Dashboard."""
+"""The Sandbox-scoped Booley Dashboard."""

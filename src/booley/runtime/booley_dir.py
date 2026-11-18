@@ -44,6 +44,7 @@ __all__ = [
     "resolve_checkout_booley_dir",
     "resolve_common_booley_dir",
     "resolve_main_checkout_root",
+    "sandbox_booley_dir",
 ]
 
 
@@ -140,3 +141,12 @@ def crossed_booley_dir_entry(path: Path) -> Path | None:
     except (OSError, RuntimeError):
         return None
     return None
+
+
+def sandbox_booley_dir(project_root: Path) -> str:
+    """Return the in-Sandbox ``BOOLEY_DIR`` for the repo mounted at ``/work``.
+
+    The Project's own Booley Directory (``.booley`` by default, or the
+    checkout's relocated ``[project].dir``) under the ``/work`` bind mount.
+    """
+    return f"/work/{own_booley_dir_repo_path(project_root).as_posix()}"

@@ -49,6 +49,9 @@ _WORK_DIR_PROPERTY: dict[str, Any] = {
     ),
 }
 
+# object: a schema property's values are arbitrary JSON; the checker needs a common value type.
+_Prop = dict[str, object]
+
 
 def _argparse_type_to_schema(action: argparse.Action) -> dict[str, Any]:
     """Map a single argparse action to a JSON schema property."""
@@ -154,7 +157,7 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
             continue
 
         dest = action.dest
-        # Exact-Campaign analysis makes instruction part of its public contract.
+        # Exact Coverage Record analysis makes instruction part of its public contract.
         public_instruction = parser.prog == "coverage_analyst" and dest == "instruction"
         if (dest in _FILTERED_DESTS and not public_instruction) or (
             is_specialist and dest in SPECIALIST_CLI_ONLY_DESTS
@@ -169,7 +172,7 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
 
         # CLI repetition is normalized back to the public comma-separated
         # scalar before any endpoint consumes it.
-        prop = {"type": "string"} if dest == "target" else _argparse_type_to_schema(action)
+        prop: _Prop = {"type": "string"} if dest == "target" else _argparse_type_to_schema(action)
         if action.type is parse_positive_int_arg:
             prop["minimum"] = 1
 

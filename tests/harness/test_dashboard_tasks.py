@@ -10,10 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from booley.runtime import dashboard_tasks as tasks
-from booley.runtime import devcontainer, runtime_context, session_issuance
+from booley.runtime import devcontainer, platform_paths, runtime_context, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
+from tests.subprocess_budget import run_bounded_child
 
 _REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
 
@@ -647,9 +648,7 @@ def test_tracked_task_file_is_preserved_with_informational_notice(
     tmp_path, monkeypatch, owned, disabled
 ):
     def git(*args):
-        result = subprocess.run(
-            ["git", *args], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=True
-        )
+        result = run_bounded_child(["git", *args], cwd=tmp_path, check=True)
         return result.stdout
 
     git("init", "-q")
@@ -705,20 +704,20 @@ def test_init_tracked_task_notice_is_one_informational_line(
         "add the task yourself or set [sandbox].dashboard = false"
     )
     plan = SimpleNamespace(dashboard_tasks=tasks.TaskPlan(notices=(notice,)), pending_details=())
-    monkeypatch.setattr(init_cmd, "_interactive_precondition_failed", lambda *a, **kw: False)
+    monkeypatch.setattr(init_cmd, "_sandbox_precondition_failed", lambda *a, **kw: False)
     monkeypatch.setattr(
         init_cmd,
-        "_interactive_spec_sources",
+        "_sandbox_spec_sources",
         lambda *a, **kw: SimpleNamespace(build=lambda: None, mask_paths=()),
     )
-    monkeypatch.setattr(init_cmd, "_inspect_interactive_plan", lambda *a: plan)
+    monkeypatch.setattr(init_cmd, "_inspect_sandbox_plan", lambda *a: plan)
     monkeypatch.setattr(
         init_cmd,
-        "_apply_interactive_plan",
+        "_apply_sandbox_plan",
         lambda *a: pytest.fail("informational plan should not need changes"),
     )
     ctx = InitContext(project_root=tmp_path, check_only=check_only)
-    init_cmd._step_interactive(ctx)
+    init_cmd._step_sandbox(ctx)
     output = capsys.readouterr().out
     assert output.count(notice) == 1
     assert "  !  " not in output
@@ -741,7 +740,7 @@ def test_git_tracking_failure_refuses_task_mutation(project, monkeypatch, failur
         return failure
 
     monkeypatch.setattr(tasks, "_task_file_tracked", _REAL_TASK_FILE_TRACKED)
-    monkeypatch.setattr(tasks.subprocess, "run", ls_files)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", ls_files)
     plan = tasks.inspect(project.root, project.data)
     assert not plan.pending
     assert "could not inspect Dashboard task Git tracking" in plan.diagnostics[0]

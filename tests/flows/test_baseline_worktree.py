@@ -10,19 +10,20 @@ from __future__ import annotations
 import io
 import logging
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from booley.flows.baseline_worktree import (
     BaselineWorktreeError,
-    _retarget_links,
     baseline_worktree,
     git_full_sha,
     git_short_sha,
 )
 from booley.runtime.submodule_materialization import materialize_submodules
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -40,9 +41,7 @@ def _select_worktree_state(tmp_path: Path, monkeypatch):
 
 
 def _git(repo: Path, *a: str) -> str:
-    result = subprocess.run(
-        ["git", *a], cwd=repo, check=True, capture_output=True, text=True, timeout=30
-    )
+    result = run_bounded_child(["git", *a], cwd=repo, check=True)
     return result.stdout.strip()
 
 
@@ -112,14 +111,6 @@ def test_worktree_removed_even_when_body_raises(tmp_path: Path) -> None:
         raise RuntimeError("boom")
 
     assert captured and not captured[0].exists()
-
-
-def test_detached_ref_already_checked_out_elsewhere(tmp_path: Path) -> None:
-    """``--detach`` means a ref that is the current branch's HEAD (already
-    "checked out" in the main worktree) can still be materialized."""
-    _init_repo(tmp_path)
-    with baseline_worktree(tmp_path, "HEAD") as wt:
-        assert (wt / "f.txt").read_text(encoding="utf-8") == "v2\n"
 
 
 def test_untracked_root_quarantine_marker_is_copied(tmp_path: Path) -> None:
@@ -413,26 +404,28 @@ def test_absolute_in_project_symlink_is_rebased_onto_the_worktree(tmp_path: Path
 
 
 def test_relative_link_through_symlinked_booley_dir_is_classified_physically(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     """The OS resolves a relative link from the entry's physical target, not from ``.booley``."""
+    from booley.core.booley_dir import reset_cache
+
     root = tmp_path / "root"
     data = tmp_path / "data"
-    (root / "rtl").mkdir(parents=True)
+    root.mkdir()
+    _init_repo(root)
+    (root / ".git" / "info" / "exclude").write_text("/.booley\n", encoding="utf-8", newline="\n")
+    (root / "rtl").mkdir()
+    (root / "rtl" / "top.v").write_text("baseline\n", encoding="utf-8")
+    _commit_all(root, "add rtl")
     (data / "cores").mkdir(parents=True)
     symlink_or_skip(root / ".booley", data)
     # Physically ``data/cores/rtl`` -> ``<tmp>/root/rtl``: repository RTL.
     symlink_or_skip(data / "cores" / "rtl", Path("../../root/rtl"))
-    wt = tmp_path / "wt"
-    (wt / "rtl").mkdir(parents=True)
-    copied = wt / ".booley" / "cores"
-    copied.mkdir(parents=True)
-    symlink_or_skip(copied / "rtl", Path("../../root/rtl"))
+    monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley"))
+    reset_cache()
 
-    missing = _retarget_links(root, wt, root / ".booley", wt / ".booley")
-
-    assert missing == []
-    assert (copied / "rtl").resolve() == (wt / "rtl").resolve()
+    with baseline_worktree(root, "HEAD") as wt:
+        assert (wt / ".booley" / "cores" / "rtl").resolve() == (wt / "rtl").resolve()
 
 
 def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path, monkeypatch) -> None:
@@ -601,12 +594,6 @@ def test_link_target_missing_from_the_ref_is_refused(tmp_path: Path) -> None:
     assert not list((tmp_path / ".booley").glob(".baseline-wt-*"))
 
 
-def test_no_stealth_cores_is_a_noop(tmp_path: Path) -> None:
-    _init_repo(tmp_path)
-    with baseline_worktree(tmp_path, "HEAD") as wt:
-        assert not (wt / ".booley").exists()
-
-
 @pytest.mark.parametrize("with_cores", [True, False], ids=["stealth-cores", "config-only"])
 def test_linked_worktree_baseline_mirrors_its_own_booley_directory(
     tmp_path: Path, monkeypatch, with_cores: bool
@@ -717,13 +704,8 @@ def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tu
     (outer / "rtl").mkdir()
     (outer / "rtl/top.v").write_text("module top; // historical\nendmodule\n", encoding="utf-8")
     _commit_all(outer, "historical RTL")
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=outer,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
+    revision = run_bounded_child(
+        ["git", "rev-parse", "HEAD"], cwd=outer, check=True
     ).stdout.strip()
     (outer / "rtl/top.v").write_text("module top; // current\nendmodule\n", encoding="utf-8")
     _commit_all(outer, "current RTL")
@@ -755,7 +737,7 @@ def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tu
 
 
 def _assert_topology_baseline(root: Path, candidate: Path, selector: str) -> None:
-    from booley.runtime.shared_infra import _load_rtl_config
+    from booley.core.booley_dir import own_booley_dir
     from booley.targets.catalog import TargetCatalog
 
     assert root != candidate
@@ -763,7 +745,8 @@ def _assert_topology_baseline(root: Path, candidate: Path, selector: str) -> Non
     assert "current" in (candidate / "rtl/top.v").read_text(encoding="utf-8")
     assert (root / ".booley/cores/ip/top.core").is_file()
     assert "historical" in (root / ".booley/cores/ip/rtl/top.v").read_text(encoding="utf-8")
-    assert _load_rtl_config(root)["flows"]["sim"]["run_cwd"] == "."
+    config = tomllib.loads((own_booley_dir(root) / "booley.toml").read_text(encoding="utf-8"))
+    assert config["flows"]["sim"]["run_cwd"] == "."
     assert TargetCatalog.build(root).select(selector).identity == f"acme:lib:top:1#{selector}"
 
 
@@ -855,7 +838,7 @@ def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch
 
 
 def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
-    """An outer worktree whose Paired Checkout branch has no upstream (a Goal worktree).
+    """An outer worktree whose Paired Checkout branch has no upstream (a linked worktree).
 
     Returns the outer worktree, its Paired Checkout, and the paired
     commit recorded at entry, which a later commit then moves past.
@@ -883,7 +866,7 @@ def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
 
 
 def test_entry_pinned_paired_project_needs_no_upstream(tmp_path: Path) -> None:
-    """A Goal pins the paired revision it recorded; no upstream fork point is guessed."""
+    """A caller pins the paired revision; no upstream fork point is guessed."""
     from booley.evidence.acceptance import PairedProjectBaseline
 
     goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
@@ -1048,6 +1031,8 @@ def test_pairing_probe_failure_never_selects_another_source(tmp_path, monkeypatc
     goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
     _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
     _git(paired, "branch", "--set-upstream-to=project-source")
+    # Private seam: only the pairing probes fail here, which no real git
+    # repository can be made to do on demand, so the test wraps the helper.
     real_git = module._git
 
     def failing_git(cwd, *args, timeout):

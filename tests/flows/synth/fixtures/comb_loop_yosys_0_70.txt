@@ -1,0 +1,43 @@
+--- yosys.log ---
+4.4. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Warning: found logic loop in module dut:
+    cell $not$/work/v1/dut.v:3$2 ($not) source: /work/v1/dut.v:3.14-3.23
+      A[0] --> Y[0]
+    cell $or$/work/v1/dut.v:4$3 ($or) source: /work/v1/dut.v:4.14-4.19
+      A[0] --> Y[0]
+    cell $and$/work/v1/dut.v:3$1 ($and) source: /work/v1/dut.v:3.16-3.22
+      A[0] --> Y[0]
+Found and reported 1 problems.
+4.24. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Warning: found logic loop in module dut:
+    cell $auto$simplemap.cc:106:simplemap_bitop$77 ($_OR_) source: /work/v1/dut.v:4.14-4.19
+      A[0] --> Y[0]
+    wire \b source: /work/v1/dut.v:2.11-2.12
+    cell $auto$simplemap.cc:106:simplemap_bitop$75 ($_AND_) source: /work/v1/dut.v:3.16-3.22
+      A[0] --> Y[0]
+    cell $auto$simplemap.cc:46:simplemap_not$76 ($_NOT_) source: /work/v1/dut.v:3.14-3.23
+      A[0] --> Y[0]
+    wire \a source: /work/v1/dut.v:2.8-2.9
+Found and reported 1 problems.
+Warnings: 2 unique messages, 3 total
+--- premap_check_dut.txt ---
+
+5. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Warning: found logic loop in module dut:
+    cell $auto$simplemap.cc:106:simplemap_bitop$77 ($_OR_) source: /work/v1/dut.v:4.14-4.19
+      A[0] --> Y[0]
+    wire \b source: /work/v1/dut.v:2.11-2.12
+    cell $auto$simplemap.cc:106:simplemap_bitop$75 ($_AND_) source: /work/v1/dut.v:3.16-3.22
+      A[0] --> Y[0]
+    cell $auto$simplemap.cc:46:simplemap_not$76 ($_NOT_) source: /work/v1/dut.v:3.14-3.23
+      A[0] --> Y[0]
+    wire \a source: /work/v1/dut.v:2.8-2.9
+Found and reported 1 problems.
+--- check_dut.txt ---
+
+10. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.

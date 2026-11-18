@@ -2,9 +2,7 @@
 
 Covers ``fusesoc_registry.classified_sources`` and ``source_dirs_from_core`` —
 the subprocess-free partition of design sources by the ``tags:[tb]`` marker that
-replaced the retired ``[sources.*]`` config as the single source of truth — plus
-the ``endpoint_diff._classify_files`` drift fix that keys off exact declared
-files rather than conventional ``tb/`` directory prefixes.
+replaced the retired ``[sources.*]`` config as the single source of truth.
 """
 
 from __future__ import annotations
@@ -15,8 +13,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.criteria.categories import CATEGORY_RTL, CATEGORY_TB
-from booley.flows.endpoint_diff import _classify_files
 from booley.fusesoc.fusesoc_registry import classified_sources, source_dirs_from_core
 
 
@@ -251,49 +247,3 @@ class TestSourceDirsFromCore:
             FuseSocError, match=r"category isolation requires a usable \.core; run booley setup"
         ):
             source_dirs_from_core(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# _classify_files — the drift fix (exact declared files, not tb/ prefixes)
-# ---------------------------------------------------------------------------
-
-
-class TestClassifyFilesDriftFix:
-    def test_tb_tagged_file_outside_tb_dir_classifies_as_tb(self, tmp_path: Path):
-        # The drift fix: a tags:[tb] file living OUTSIDE any conventional tb/
-        # directory is still TB — the prefix heuristic would have missed it.
-        _write_core(
-            tmp_path / "d.core",
-            """\
-            CAPI=2:
-            name: ::d
-            filesets:
-              rtl: {files: [rtl/dut.sv]}
-              tb:
-                files: [sim/checker.sv]
-                tags: [tb]
-            targets:
-              sim: {filesets: [rtl, tb], toplevel: checker}
-        """,
-        )
-        assert _classify_files(["sim/checker.sv"], tmp_path) == {CATEGORY_TB}
-        assert _classify_files(["rtl/dut.sv"], tmp_path) == {CATEGORY_RTL}
-
-    def test_unregistered_source_classifies_as_neither(self, tmp_path: Path):
-        # A path declared by no fileset is unclassified (empty set) — surfaced
-        # separately by the reviewer, never silently bucketed as RTL or TB.
-        _write_core(
-            tmp_path / "d.core",
-            """\
-            CAPI=2:
-            name: ::d
-            filesets:
-              rtl: {files: [rtl/dut.sv]}
-              tb:
-                files: [tb/tb_dut.sv]
-                tags: [tb]
-            targets:
-              sim: {filesets: [rtl, tb], toplevel: tb_dut}
-        """,
-        )
-        assert _classify_files(["misc/other.sv"], tmp_path) == set()

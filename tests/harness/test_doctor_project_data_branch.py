@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from booley.audit.doctor_waivers import load_doctor_waivers
+from booley.core.host_shell import quote_arg
 from booley.harness import doctor
 from booley.runtime.worktree_evidence import tracked_booley_paths
 from tests.harness.git_support import git_stdout as _git
@@ -39,7 +40,8 @@ def _run_check(root: Path) -> doctor._Reporter:
 
 
 def test_missing_project_data_destination_warns_with_migration_choices(tmp_path: Path) -> None:
-    root, booley_dir = _repositories(tmp_path, "main", "master")
+    (tmp_path / "it's").mkdir()
+    root, booley_dir = _repositories(tmp_path / "it's", "main", "master")
 
     reporter = _run_check(root)
 
@@ -50,8 +52,7 @@ def test_missing_project_data_destination_warns_with_migration_choices(tmp_path:
     assert finding.subject == "project-data"
     assert "main" in finding.message
     assert str(booley_dir) in finding.message
-    assert "git -C" in finding.fix
-    assert "switch -c main" in finding.fix
+    assert f"git -C {quote_arg(str(booley_dir))} switch -c {quote_arg('main')}" in finding.fix
     assert "project_destination_ref" in finding.fix
 
 
@@ -227,6 +228,7 @@ def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
     root = tmp_path / "project"
     planted = worktree / ".booley" / "runtime" / "session_activity" / "a"
     _plant(planted)
+    _plant(worktree / ".booley" / "measurements" / ("a" * 40) / "r.json")
     # A main checkout full of Common state is where that state belongs.
     _plant(root / ".booley" / "runtime" / "session_activity" / "main")
     _plant(root / ".booley" / "findings.jsonl")
@@ -237,6 +239,7 @@ def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
     assert [finding.check_id for finding in warnings] == ["project-data.common-state-in-worktree"]
     assert warnings[0].subject == str(worktree / ".booley")
     assert "runtime/session_activity" in warnings[0].message
+    assert "measurements" in warnings[0].message
     assert "findings.jsonl" not in warnings[0].message
     assert "git worktree remove" in warnings[0].fix
     assert planted.is_file()  # Doctor reports; it never deletes.

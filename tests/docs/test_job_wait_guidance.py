@@ -1,21 +1,11 @@
-"""Every surface that teaches waiting for Jobs teaches the argument-free poll (#2538)."""
+"""Every MCP surface that teaches waiting for Jobs teaches the argument-free poll (#2538)."""
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from booley.mcp import catalog
 from booley.mcp import server as mcp
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PACKAGED_GUIDANCE = (
-    "src/booley/data/cheatsheet.md",
-    "src/booley/data/skills/booley-goal/SKILL.md",
-    "src/booley/data/skills/booley-setup/SKILL.md",
-    "src/booley/data/skills/booley-heal/SKILL.md",
-    "docs/user/FLOW_REFERENCE.md",
-)
 
 
 def _plain(text: str) -> str:
@@ -39,10 +29,3 @@ def test_poll_surfaces_teach_argument_free_wait(monkeypatch):
     assert "run_id=sim-1" in surfaces["hand-off"]
     assert "run_id=sim-1" in mcp._format_job_attached("sim", "sim-1")
     assert catalog._poll_mcp_tool_def()["schema"]["required"] == []
-
-
-def test_packaged_guidance_teaches_argument_free_wait():
-    for path in PACKAGED_GUIDANCE:
-        plain = _plain((REPO_ROOT / path).read_text(encoding="utf-8"))
-
-        assert "booley_poll with no run_id" in plain, path

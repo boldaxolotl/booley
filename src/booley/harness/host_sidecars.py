@@ -1,4 +1,4 @@
-"""Desired-state reconciliation for global Interactive Mode Docker resources."""
+"""Desired-state reconciliation for global Sandbox Docker resources."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.core.egress_modes import EGRESS_MODES
-from booley.runtime import interactive_docker as legacy
+from booley.runtime import host_docker as legacy
 from booley.runtime.devcontainer import PROXY_PORT
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
@@ -126,6 +126,7 @@ class _ContainerState:
 class _ActiveSession:
     name: str
     project_root: str
+    vscode: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,8 +315,7 @@ def _retire_egress(
                 f"is present but unused under {_UNPROXIED_REASON}; "
                 "`booley bootstrap` removes it once no Sandbox runs",
             )
-        # Mutating Bootstrap runs Sandbox recovery before sidecar reconciliation.
-        _require_no_egress_blockers(network, docker, recovery_ran=intent is not Intent.CHECK)
+        _require_no_egress_blockers(network, docker)
         if intent is Intent.CHECK:
             return _egress_rows(
                 present,
@@ -343,16 +343,14 @@ def _egress_rows(
     )
 
 
-def _require_no_egress_blockers(
-    network: _NetworkState, docker: _DockerPort, *, recovery_ran: bool
-) -> None:
+def _require_no_egress_blockers(network: _NetworkState, docker: _DockerPort) -> None:
     """Refuse retirement while a Sandbox or foreign container could still need the network."""
     active = _active_sessions(docker)
     parked = _parked_refresh_predecessors(docker)
     if active or parked:
         summaries = (
             _active_session_summary(active),
-            _parked_predecessor_summary(parked, recovery_ran=recovery_ran),
+            _parked_predecessor_summary(parked),
         )
         described = ", ".join(summary for summary in summaries if summary)
         raise SidecarError(
@@ -985,7 +983,7 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
 def _project_root_from_inspection(
     document: dict[str, Any], labels: dict[str, str], name: str
 ) -> str | None:
-    """Return the host Project mounted by an Interactive Mode container."""
+    """Return the host Project mounted by a Sandbox container."""
     if folder := labels.get(_DEVCONTAINER_FOLDER_LABEL):
         return folder
     mounts = require_list(document.get("Mounts"), field=f"container {name}.Mounts")
@@ -1004,29 +1002,28 @@ def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
     """Describe active Sessions with a copyable Project-scoped shutdown command."""
     descriptions = []
     for session in sessions:
-        command = _shell_command(["booley", "session", "down", "--project", session.project_root])
-        descriptions.append(f"{session.name} (Project {session.project_root}; run `{command}`)")
+        if session.vscode:
+            # `session down` always refuses an editor-owned Sandbox; name its owner's remedy.
+            remedy = "close its VS Code window or stop it with Dev Containers"
+        else:
+            command = _shell_command(
+                ["booley", "session", "down", "--project", session.project_root]
+            )
+            remedy = f"run `{command}`"
+        descriptions.append(f"{session.name} (Project {session.project_root}; {remedy})")
     return ", ".join(descriptions)
 
 
-def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...], *, recovery_ran: bool) -> str:
-    """Describe parked refresh predecessors, leading with non-destructive recovery.
-
-    Once this Bootstrap's recovery ran, a remaining predecessor is one it could
-    not restore, so the remedy leads with the rename instead of a rerun.
-    """
-    lead = (
-        "Bootstrap's recovery left it in place; "
-        if recovery_ran
-        else "run `booley bootstrap` to recover it; if it remains, "
-    )
+def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...]) -> str:
+    """Describe parked rebuild predecessors, leading with the non-destructive rename."""
     descriptions = []
     for sandbox in parked:
         original = sandbox.name.removesuffix(legacy.REFRESH_BACKUP_SUFFIX)
         rename = _shell_command(["docker", "rename", sandbox.name, original])
         descriptions.append(
-            f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted refresh "
-            f"or rebuild: {lead}rename it back with `{rename}` or remove it after inspection)"
+            f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted "
+            "`booley session up --rebuild` or an older refresh: rename it back with "
+            f"`{rename}` when that name is free, or remove it after inspection)"
         )
     return ", ".join(descriptions)
 
@@ -1066,12 +1063,13 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
             raise SidecarError(f"cannot prove active Session ownership for {name}")
         if state.project_root is None:
             raise SidecarError(f"cannot identify owning Project for active Session {name}")
-        sessions.append(_ActiveSession(name, state.project_root))
+        vscode = _DEVCONTAINER_FOLDER_LABEL in (state.labels or {})
+        sessions.append(_ActiveSession(name, state.project_root, vscode))
     return tuple(sorted(sessions, key=lambda session: session.name))
 
 
 def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
-    """Return stopped Sandboxes parked by refresh or rebuild; restore needs their network."""
+    """Return stopped Sandboxes parked by `session up --rebuild`; restore needs their network."""
     result = docker.run(
         [
             "ps",

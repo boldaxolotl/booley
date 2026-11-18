@@ -1,4 +1,4 @@
-"""`booley coverage`: read-only views of a finished coverage run's retained record."""
+"""`booley coverage`: read-only views of a finished coverage run's Coverage Record."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING
 from booley.core.exit_codes import EXIT_ERROR, EXIT_SUCCESS
 
 if TYPE_CHECKING:
-    from booley.flows.sim.coverage_campaign import CoverageCampaign, CoveragePoint
     from booley.flows.sim.coverage_point_query import UncoveredPoints
+    from booley.flows.sim.coverage_record import CoveragePoint, CoverageRecord
 
 _RECORD_HINT = "Pass sim/<N>/targets/<target>/coverage.json of a retained coverage run."
 
@@ -24,7 +24,7 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
     commands = parser.add_subparsers(dest="coverage_command", required=True, metavar="<command>")
     uncovered = commands.add_parser(
         "uncovered",
-        help="List every uncovered scored point of one coverage record",
+        help="List every uncovered scored point of one Coverage Record",
         description=(
             "List every point no Test Run hit, as `source:line  metric  detail  hierarchy`, "
             "sorted by source, line, and metric. Waived and unscored points are not listed."
@@ -44,41 +44,41 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
     """List the uncovered points of one record; the Project is not consulted."""
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
     from booley.flows.sim.coverage_point_query import uncovered_points
 
     # `..` is normalized lexically so a typed relative path works; the shared reader
     # still refuses every symlinked folder except the `.booley` entry.
     record = Path(os.path.normpath(Path.cwd() / args.coverage_json))
     try:
-        campaign = read_coverage_campaign(record).campaign
+        coverage_record = read_coverage_record(record).coverage_record
     except (OSError, ValueError, RecursionError) as exc:
         reason = exc.__cause__ or exc
         print(
-            f"ERROR: cannot read coverage record {args.coverage_json}: {reason}", file=sys.stderr
+            f"ERROR: cannot read Coverage Record {args.coverage_json}: {reason}", file=sys.stderr
         )
         print(_RECORD_HINT, file=sys.stderr)
         return EXIT_ERROR
-    problem = _collection_problem(campaign)
+    problem = _collection_problem(coverage_record)
     if problem is not None:
         print(
             f"WARNING: coverage collection is {problem}; the list may be incomplete "
             "and is not a coverage result",
             file=sys.stderr,
         )
-    selection = uncovered_points(campaign.points, metric=args.metric, source=args.source)
+    selection = uncovered_points(coverage_record.points, metric=args.metric, source=args.source)
     for point in selection.points:
         print(_line(point))
     print(_summary(selection))
     return EXIT_SUCCESS
 
 
-def _collection_problem(campaign: CoverageCampaign) -> str | None:
+def _collection_problem(coverage_record: CoverageRecord) -> str | None:
     """Name why the record may lack points, or None when collection is complete and compatible."""
-    status = str(campaign.collection["status"])
+    status = str(coverage_record.collection["status"])
     if status != "complete":
         return status.upper()
-    if campaign.collector.native_format["compatibility"] != "compatible":
+    if coverage_record.collector.native_format["compatibility"] != "compatible":
         return "INCOMPATIBLE"
     return None
 

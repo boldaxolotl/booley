@@ -19,7 +19,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
 from booley.evidence.acceptance import PairedProjectBaseline
@@ -30,8 +30,8 @@ from booley.flows.cli_selection import CliInvocation
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
 from booley.flows.endpoint_state import EndpointState
-from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
 from booley.flows.invocation import resolve_timeout_ms
+from booley.flows.job_estimates import JobRequest
 from booley.flows.job_resources import JobResourceMonitor
 from booley.flows.prepared_invocation import (
     OrdinaryRunInvocation,
@@ -41,7 +41,14 @@ from booley.flows.prepared_invocation import (
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
-from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    OOM_STOPPED_MESSAGE,
+    EndpointOutcome,
+    ExecutionResult,
+    job_stopped_after_oom,
+    note_job_oom_kill,
+)
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -68,9 +75,45 @@ class SubprocessResult:
     # Peak resident memory of the locally-executed process tree.  ``None``
     # means the platform could not measure it (not zero usage).
     peak_rss_mb: float | None = None
-    # cgroup v2 OOM-kill counter delta observed across this command.  This
-    # corroborates an otherwise-ambiguous SIGKILL/rc137 as an actual OOM.
+    # cgroup v2 OOM-kill counter delta observed across this command.  It is
+    # container-wide evidence: another Job's kill moves it too.
     oom_kill_delta: int = 0
+    # A process of this command's own tree was killed by
+    # the OOM killer (``job_resources.own_oom_kill``). Set by ``_execute_local``.
+    oom_killed: bool = False
+    # The own kill was the host's: the Sandbox stayed below its own memory limit.
+    host_oom_kill: bool = False
+
+    @property
+    def oom_blamed(self) -> bool:
+        """Whether to classify this command's failure as an OOM kill.
+
+        Only the command's own kill counts, not another Job's in the same
+        container (ADR 0087).
+        """
+        return self.oom_killed
+
+
+def _blame_own_oom_kill(
+    measurement: job_resources.JobMeasurement,
+    result: SubprocessResult,
+    scope: Any,
+    *,
+    kill_logs: tuple[Path, ...] = (),
+    since: float = 0.0,
+) -> None:
+    """Mark a command whose own process the OOM killer took, and which kind it was.
+
+    A kill also counts for the whole Job, which the requeue reads for a kill at
+    the Sandbox's limit but not for a host kill (ADR 0087).
+    """
+    cancelled = scope is not None and scope.cancelled()
+    result.oom_killed = job_resources.own_oom_kill(
+        measurement, result, cancelled=cancelled, kill_logs=kill_logs, since=since
+    )
+    result.host_oom_kill = result.oom_killed and job_resources.host_oom_kill(measurement)
+    if result.oom_killed:
+        note_job_oom_kill(host=result.host_oom_kill)
 
 
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
@@ -147,7 +190,7 @@ def _communicate_local_process(
                 returncode=-1, stdout=stdout, stderr=stderr, timed_out=True, duration_s=elapsed
             )
         except BaseException:
-            logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
+            logger.info("Interrupted; killing the process tree of: %s", " ".join(cmd))
             kill_process_tree(proc)
             _finish_supervised_process(scope, proc)
             raise
@@ -188,11 +231,32 @@ class FlowMechanics:
 
     Subclasses implement ``_build_command`` and ``_interpret_result``.
     The base handles subprocess execution, timeout, and output capture.
+
+    Every Flow maps its grades onto one exit convention
+    (``booley.core.exit_codes``): 0 clean pass, 1 findings or a design failure,
+    2 the Flow could not reach a verdict (infrastructure, configuration, or
+    publication failure), 130 cancelled. Callers branch on 1 versus 2, so never
+    report an infrastructure problem as a design failure or the reverse.
+
+    Edalize emits the EDA command; Booley never delegates interpretation. A
+    verdict read from a file the run writes must come from this run (see
+    ``_is_stale_artifact``), and the exit code outranks the file: a nonzero exit
+    with no fresh evidence is never a pass.
     """
 
     endpoint_kind = "flow"
     report_schema = "booley.flow-report/v1"
     target_required = True
+
+    if TYPE_CHECKING:
+        # The EndpointState every concrete Flow also inherits defines these; they are
+        # declared for the checker only, so they cannot shadow the real ones at runtime.
+        name: str
+
+        @property
+        def args(self) -> Any: ...  # Any: mirrors EndpointState.args, whose type varies
+
+        def _requested_targets(self) -> list[str]: ...
 
     def _resolve_display_label(self) -> str | None:
         """Describe the requested Target scope without resolving it."""
@@ -207,10 +271,6 @@ class FlowMechanics:
             execution.flow_enabled(self.name, Path(self.args.work_dir))
         except execution.FlowConfigError as exc:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
-        resolved = self.execution_adapter.validate_and_resolve(self.args)
-        if isinstance(resolved, EndpointOutcome):
-            return resolved
-        self.flow_acceptance = resolved
         return None
 
     def _run(self) -> EndpointOutcome:
@@ -243,6 +303,23 @@ class FlowMechanics:
         """Return working directory for subprocess."""
         return self.args.work_dir
 
+    def _tool_environment(self, cwd: Path) -> tuple[dict[str, str], Path]:
+        """Return the child environment and Python artifact cache root for a tool in *cwd*.
+
+        *cwd* must be a checkout root (every caller passes ``work_dir`` or another
+        checkout's root): from a subdirectory the lookup would fall through to the
+        ambient ``BOOLEY_DIR``. ``BOOLEY_DIR`` names that checkout's own Booley
+        Directory: tools read this checkout's inputs, never another checkout's
+        (ADR 0082).
+        """
+        env = {**os.environ, **self._extra_subprocess_env()}
+        try:
+            checkout_dir = resolve_checkout_booley_dir(cwd)
+        except (OSError, RuntimeError, ValueError):
+            return env, Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        env["BOOLEY_DIR"] = str(checkout_dir)
+        return env, checkout_dir / ".runtime" / "python-artifacts"
+
     def _execute_local(
         self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
     ) -> SubprocessResult:
@@ -253,17 +330,17 @@ class FlowMechanics:
         """
         import sys as _sys
 
+        if job_stopped_after_oom():
+            # The Job is requeued: start nothing, and do not record a command that never ran.
+            return SubprocessResult(returncode=-1, stderr=OOM_STOPPED_MESSAGE)
+
         # python3 is not on PATH on Windows; use the running interpreter.
         if cmd and cmd[0] == "python3" and _sys.platform == "win32":
             cmd = [_sys.executable, *cmd[1:]]
 
         timeout = self._get_timeout() if timeout is None else timeout
         cwd = self._get_cwd() if cwd is None else cwd
-        env = {**os.environ, **self._extra_subprocess_env()}
-        try:
-            cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
-        except (OSError, RuntimeError, ValueError):
-            cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        env, cache_root = self._tool_environment(cwd)
         env = relocate_python_artifacts(
             env,
             cache_root,
@@ -284,15 +361,20 @@ class FlowMechanics:
         )
         monitor = JobResourceMonitor(label.split)
         env.update(monitor.temp_env())
+        dispatched = time.time()
         try:
             result = self._run_measured(cmd, cwd, env, scope, observer, monitor, timeout)
         finally:
             measurement = monitor.finish()  # also when interrupted, so its thread stops
-            shutil.rmtree(monitor.tmp_dir, ignore_errors=True)
+            if monitor.tmp_dir is not None:
+                shutil.rmtree(monitor.tmp_dir, ignore_errors=True)
         if result is None:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
         result.oom_kill_delta = measurement.oom_kill_delta or 0
+        _blame_own_oom_kill(
+            measurement, result, scope, kill_logs=label.kill_logs, since=dispatched
+        )
         job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
         return result
 
@@ -388,7 +470,8 @@ class FlowMechanics:
 
         File-based boundary results are age-gated
         against ``SubprocessResult.dispatched_unix`` so a leftover artifact
-        from an earlier run is never parsed as fresh. A file whose mtime cannot
+        from an earlier run is never parsed as fresh (a build that fails to
+        compile would otherwise leave the previous run's report to read as a pass). A file whose mtime cannot
         be read is treated as stale rather than risk a wrong parse.
         """
         if min_mtime is None:
@@ -406,15 +489,28 @@ class FlowMechanics:
 class BooleyFlow(FlowMechanics, EndpointContext):
     """Source-compatible Custom Flow extension with its historical CLI hooks."""
 
+    def _memory_admitted(self) -> bool:
+        """A Custom Flow runs commands in the Sandbox, so memory admission covers it (ADR 0087)."""
+        return True
+
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """The ordinary run, sized as the Flow's one phase for the Target it was given.
+
+        The phase is keyed by the Flow's name and the ``--target`` value, or the
+        empty Target when none was given: the key ``_execute_local`` records.
+        """
+        return OrdinaryRunInvocation(self._run, (JobRequest(self.name, self._selected_target),))
+
 
 RequestT = TypeVar("RequestT", bound=FlowRequest)
 
 
 class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
-    """Invocation seam shared only by Booley's four shipped Flows.
+    """Invocation seam shared only by Booley's five shipped Flows.
 
     The Flow is the single owner of its per-invocation state; every entry point
-    starts an invocation through ``_start_invocation``.
+    starts an invocation through ``_start_invocation``. Built-ins never inherit
+    ``EndpointContext``; only Custom Flows (``BooleyFlow``) do.
     """
 
     request_type: ClassVar[type[FlowRequest]] = FlowRequest
@@ -439,14 +535,11 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     )
 
     def __init__(self) -> None:
-        self._start_invocation(StandaloneFlowExecution())
+        self._start_invocation()
 
-    def _start_invocation(
-        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
-    ) -> None:
-        """Start one invocation: fresh EndpointState fields, adapter, request and Flow extras."""
-        EndpointState.__init__(self)  # new invocation id, display identity, Criteria ledger, ...
-        self.configure_flow_execution(adapter)
+    def _start_invocation(self, request: FlowRequest | None = None) -> None:
+        """Start one invocation: fresh EndpointState fields, request and Flow extras."""
+        EndpointState.__init__(self)  # new invocation id, display identity, ...
         self._args = request
         self.publication_resources = contextlib.ExitStack()
         # Baseline worktrees held open in `publication_resources`, by revision; each
@@ -465,6 +558,12 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         self.cycle_report_json: str | None = None
         self._prepared_target_selection = None
         self.begin_invocation()
+
+    def begin_requeued_attempt(self) -> None:
+        """Reset what the killed attempt left behind; keep the prepared Targets and seeds."""
+        super().begin_requeued_attempt()
+        self.cycle_report_json = None
+        job_resources.clear_label()
 
     def _finalize_result(self, result: EndpointOutcome) -> None:
         result.cycle_report_json = self.cycle_report_json or "{}"
@@ -513,10 +612,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
             return TargetSelectionInvocation(self, self._prepared_target_selection, self._run)
         return OrdinaryRunInvocation(self._run)
 
-    def conventional_report_families(self) -> set[str]:
-        """Families a non-strict Project may judge under their conventional Criterion names."""
-        return set(self.conventional_families)
-
     def _selected_target_selection(self) -> PreparedTargetSelection:
         """Return the complete selection prepared for this invocation."""
         prepared = getattr(self, "_prepared_target_selection", None)
@@ -532,14 +627,25 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         """Return the immutable selection prepared for this invocation."""
         return self._selected_target_selection().handles
 
+    def memory_job_requests(
+        self, handles: tuple[TargetHandle, ...]
+    ) -> tuple[JobRequest, ...] | None:
+        """The Resource History requests of a Job over *handles* (``None`` when unknown).
+
+        One request per selected Target. A ``--baseline`` run runs the same
+        Target at the baseline revision, so it adds no further request.
+        """
+        selectors = dict.fromkeys(handle.selector for handle in handles)
+        return tuple(JobRequest(self.name, selector) for selector in selectors)
+
     @property
     def _paired_project_baseline(self) -> PairedProjectBaseline:
-        return self.flow_acceptance.paired_project
+        return PairedProjectBaseline.standalone()
 
     def parse_args(self, argv: list[str] | None = None) -> RequestT:
         from booley.flows.builtin_cli import parse_request
 
-        self._start_invocation(self.execution_adapter, parse_request(self, argv))
+        self._start_invocation(parse_request(self, argv))
         return self.args
 
     def begin_invocation(self) -> None:
@@ -551,12 +657,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         one Flow object never answers a request from another request's state.
         """
 
-    def execute(
-        self,
-        request: RequestT,
-        *,
-        adapter: FlowExecutionAdapter | None = None,
-    ) -> ExecutionResult:
+    def execute(self, request: RequestT) -> ExecutionResult:
         """Execute typed input through a fresh, transport-independent invocation."""
         from dataclasses import replace
 
@@ -564,27 +665,17 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
         if not isinstance(request, self.request_type):
             raise TypeError(f"{self.name} requires {self.request_type.__name__}")
-        self._start_invocation(adapter or StandaloneFlowExecution(), replace(request))
+        self._start_invocation(replace(request))
         apply_environment(self._args, self.endpoint_kind)
         return self.execute_prepared()
 
-    def execute_cli(
-        self,
-        argv: list[str] | None = None,
-        *,
-        adapter: FlowExecutionAdapter | None = None,
-    ) -> ExecutionResult:
+    def execute_cli(self, argv: list[str] | None = None) -> ExecutionResult:
         from booley.flows.builtin_cli import execute_cli
 
-        return execute_cli(self, argv, adapter=adapter)
+        return execute_cli(self, argv)
 
-    def main(
-        self,
-        argv: list[str] | None = None,
-        *,
-        adapter: FlowExecutionAdapter | None = None,
-    ) -> int:
-        return self.execute_cli(argv, adapter=adapter).exit_code
+    def main(self, argv: list[str] | None = None) -> int:
+        return self.execute_cli(argv).exit_code
 
     def cli(self) -> None:
         from booley.flows.endpoint_cli import cli

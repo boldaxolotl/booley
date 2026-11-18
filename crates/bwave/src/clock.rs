@@ -1,17 +1,26 @@
 //! Advisory analysis of a selected clock against its uniform sampling grid.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
-#[derive(Clone, Debug, Serialize)]
+/// One observation about the clock; reason as in clockVerdict.reason, plus
+/// multiple_clock_periods when candidate clocks disagree (context only).
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[schemars(rename = "clockFinding", deny_unknown_fields)]
 pub struct ClockFinding {
     pub reason: String,
     pub tick: Option<u64>,
     pub detail: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[schemars(rename = "clockVerdict", deny_unknown_fields)]
 pub struct ClockVerdict {
+    #[schemars(extend("enum" = ["pass", "warning", "unavailable"]), transform = crate::output::without_type)]
     pub status: String,
+    /// Cause of the status: regular, stopped_stretches, off_grid_edge,
+    /// non_integer_period, unknown_clock or insufficient_edges. See
+    /// `bwave docs show reference/sync-vs-async`.
     pub reason: String,
     pub clock: String,
     pub first_off_grid_tick: Option<u64>,
@@ -20,14 +29,16 @@ pub struct ClockVerdict {
     pub stopped: StopSummary,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, JsonSchema)]
+#[schemars(rename = "stopSummary", deny_unknown_fields)]
 pub struct StopSummary {
     pub stretches: usize,
     pub total_cycles: u64,
     pub longest: Option<StoppedRange>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[schemars(rename = "stoppedRange", deny_unknown_fields)]
 pub struct StoppedRange {
     pub from_cycle: u64,
     pub to_cycle: u64,

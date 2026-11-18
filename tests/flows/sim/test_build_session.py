@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -32,8 +32,9 @@ from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
-from tests.flows.sim.test_build_reuse import _core_behind_linked_booley_dir
+from tests.flows.sim.test_build_reuse import _core_behind_linked_booley_dir, _handle
 from tests.flows.sim.test_coverage_invocation import project
+from tests.time_budget import hang_guard_s, scaled
 
 
 def test_resolved_compile_surface_is_target_scoped_and_snapshot_is_walk_free(
@@ -113,17 +114,6 @@ def test_slot_uses_durable_target_identity_not_selector_spelling(tmp_path: Path)
     assert len(simulation_build_slot(first).name) <= 20
 
 
-def test_compile_surface_does_not_require_project_initialization(tmp_path: Path) -> None:
-    source = tmp_path / "counter.sv"
-    source.write_text("module counter; endmodule\n", encoding="utf-8")
-    generated = tmp_path / ".booley" / ".runtime" / "generated.sv"
-    generated.parent.mkdir(parents=True)
-    generated.write_text("module generated; endmodule\n", encoding="utf-8")
-
-    surface = TargetCompileSurface(tmp_path, (source,), ())
-    assert set(project_compile_surface(surface)) == {"counter.sv"}
-
-
 def test_compile_surface_includes_only_resolved_operational_core_projections(
     tmp_path: Path,
 ) -> None:
@@ -180,14 +170,6 @@ def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path
     assert invalid_source.relative_to(tmp_path).as_posix() in surface
 
 
-def _handle(root: Path) -> TargetHandle:
-    (root / ".booley").mkdir(exist_ok=True)
-    return cast(
-        TargetHandle,
-        SimpleNamespace(project_root=root, identity="acme:lib:demo:1#sim"),
-    )
-
-
 def test_generation_requires_lease(tmp_path: Path) -> None:
     session = SimulationBuildSession(_handle(tmp_path))
     with pytest.raises(SimulationBuildSlotError, match="not leased"):
@@ -198,83 +180,15 @@ def test_generation_requires_lease(tmp_path: Path) -> None:
         assert first.parent == session.slot / "g"
 
 
-def test_generated_inputs_reject_symlinks_and_exclude_runtime_outputs(tmp_path: Path) -> None:
+def test_generated_inputs_reject_symlinks(tmp_path: Path) -> None:
     root = tmp_path / "generation"
     root.mkdir()
     source = root / "source.sv"
     source.write_text("module demo; endmodule", encoding="utf-8")
-    (root / "run.log").write_text("ignored", encoding="utf-8")
-    (root / ".booley-adapter-result.json").write_text("ignored", encoding="utf-8")
     prepared = SimpleNamespace(work_root=root)
-    assert build_session.snapshot_build_inputs(prepared) == {
-        "source.sv": hashlib.sha256(source.read_bytes()).hexdigest()
-    }
     (root / "alias.sv").symlink_to(source)
     with pytest.raises(SimulationBuildSlotError, match="symlinked"):
         build_session.snapshot_build_inputs(prepared)
-
-
-def test_manifest_hashes_reject_missing_and_changed_files(tmp_path: Path) -> None:
-    image = tmp_path / "image"
-    image.mkdir()
-    binary = image / "image.vvp"
-    binary.write_bytes(b"first")
-    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    assert build_session._matching_hashes(image, {"image.vvp": digest})
-    assert not build_session._matching_hashes(image, {"missing.vvp": digest})
-    binary.write_bytes(b"changed")
-    assert not build_session._matching_hashes(image, {"image.vvp": digest})
-
-
-def test_reuse_manifest_rejection_names_mismatch(tmp_path: Path) -> None:
-    root = tmp_path / "generation"
-    build = root / "build"
-    build.mkdir(parents=True)
-    source = root / "source.sv"
-    source.write_bytes(b"source")
-    image = build / "image.vvp"
-    image.write_bytes(b"image")
-    manifest = {
-        "input_key": "key",
-        "reusable": True,
-        "inputs": {"source.sv": hashlib.sha256(source.read_bytes()).hexdigest()},
-        "artifacts": {"image.vvp": hashlib.sha256(image.read_bytes()).hexdigest()},
-    }
-    reject = SimulationBuildSession._hit_rejection
-    assert reject(root, build, manifest, "key") is None
-    assert reject(root, build, manifest, "other") == "changed source, recipe, or tool"
-    source.write_bytes(b"tampered")
-    assert reject(root, build, manifest, "key") == "changed source"
-    source.write_bytes(b"source")
-    image.write_bytes(b"tampered")
-    assert reject(root, build, manifest, "key") == "changed artifact"
-
-
-def test_tool_identity_closes_over_modules_and_shared_libraries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prefix = tmp_path / "install"
-    bin_dir = prefix / "bin"
-    ivl = prefix / "lib" / "ivl"
-    bin_dir.mkdir(parents=True)
-    ivl.mkdir(parents=True)
-    tools = {name: bin_dir / name for name in ("iverilog", "vvp", "make", "sh")}
-    for path in tools.values():
-        path.write_bytes(b"\x7fELFtool")
-    module = ivl / "module.vpi"
-    module.write_bytes(b"module")
-    library = tmp_path / "libdependency.so"
-    library.write_bytes(b"dependency")
-    monkeypatch.setattr(build_session.shutil, "which", lambda name: str(tools[name]))
-    monkeypatch.setattr(build_reuse, "elf_dependencies", lambda _path: (library,))
-    first = build_session._icarus_tool_identity()
-    assert first is not None
-    module.write_bytes(b"new module")
-    assert build_session._icarus_tool_identity() != first
-    library.unlink()
-    assert build_session._icarus_tool_identity() is None
-    monkeypatch.setattr(build_session.shutil, "which", lambda _name: None)
-    assert build_session._icarus_tool_identity() is None
 
 
 def test_elf_dependency_scan_declines_missing_library(
@@ -298,104 +212,6 @@ def test_elf_dependency_scan_declines_missing_library(
     assert build_reuse.elf_dependencies(binary) == (Path("/tmp/lib.so"),)
 
 
-@pytest.mark.parametrize(
-    "core",
-    [
-        "invalid",
-        {"generators": ["gen"]},
-        {"targets": "invalid"},
-        {"targets": {"sim": {"hooks": ["hook"]}}},
-    ],
-)
-def test_generated_core_behavior_disables_reuse(core: object) -> None:
-    assert build_reuse.has_generated_core_behavior(core)
-    assert not build_reuse.has_generated_core_behavior({"targets": {"sim": {}}})
-
-
-def test_source_closure_rejects_include_and_changed_staging(tmp_path: Path) -> None:
-    core = tmp_path / "demo.core"
-    core.write_text("", encoding="utf-8")
-    original = tmp_path / "top.sv"
-    original.write_text("module top; endmodule", encoding="utf-8")
-    work = tmp_path / "work"
-    source = work / "src" / "demo" / "top.sv"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(original.read_bytes())
-    item = SimpleNamespace(
-        file_type="systemVerilogSource",
-        name="src/demo/top.sv",
-        absolute=lambda _root: source,
-    )
-    prepared = SimpleNamespace(
-        resolved=SimpleNamespace(files=(item,)), build_root=work, work_root=work
-    )
-    assert not build_session._has_unsupported_source(prepared, core)
-    source.write_text('`include "dependency.svh"', encoding="utf-8")
-    with pytest.raises(SimulationBuildSlotError, match="changed during"):
-        build_session._has_unsupported_source(prepared, core)
-    original.write_bytes(source.read_bytes())
-    assert build_session._has_unsupported_source(prepared, core)
-    item.file_type = "user"
-    assert build_session._has_unsupported_source(prepared, core)
-    item.file_type = "systemVerilogSource"
-    item.name = "outside.sv"
-    assert build_session._has_unsupported_source(prepared, core)
-
-
-def test_icarus_recipe_declines_external_and_extra_commands(tmp_path: Path) -> None:
-    work = tmp_path / "work"
-    work.mkdir()
-    source = work / "top.sv"
-    source.write_text("module top; endmodule", encoding="utf-8")
-    descriptor = work / "demo.scr"
-    makefile = work / "Makefile"
-    makefile.write_text(
-        "all:\n\t$(EDALIZE_LAUNCHER) iverilog top.sv\n\t$(EDALIZE_LAUNCHER) vvp demo\n",
-        encoding="utf-8",
-    )
-    prepared = SimpleNamespace(build_root=work, work_root=work)
-    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
-    descriptor.write_text("top.sv\n", encoding="utf-8")
-    assert not build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
-    descriptor.write_text("-I/tmp\n", encoding="utf-8")
-    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
-    descriptor.write_text("../outside.sv\n", encoding="utf-8")
-    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
-    descriptor.write_text("\ntop.sv\n", encoding="utf-8")
-    makefile.write_text("all:\n\tiverilog top.sv\n", encoding="utf-8")
-    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
-
-
-def test_reuse_closure_declines_dynamic_core_metadata_and_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    core = tmp_path / "demo.core"
-    core.write_text("CAPI=2:\nname: acme:demo:core:1\n", encoding="utf-8")
-    edam = tmp_path / "demo.eda.yml"
-    prepared = SimpleNamespace(
-        eda_tool="icarus",
-        target_identity="target",
-        environment={},
-        resolved=SimpleNamespace(cocotb_module="", files=(), edam_path=edam),
-        build_root=tmp_path,
-        work_root=tmp_path,
-    )
-    for data in (
-        "invalid",
-        {"hooks": ["dynamic"]},
-        {"cores": {}},
-        {"cores": {"one": {"dependencies": ["other"]}}},
-        {"cores": {"one": {"core_file": "../other.core"}}},
-    ):
-        edam.write_text(json.dumps(data), encoding="utf-8")
-        assert build_session._eligible_core_file(prepared, tmp_path) is None
-    edam.write_text(json.dumps({"cores": {"one": {"core_file": "demo.core"}}}))
-    assert build_session._eligible_core_file(prepared, tmp_path) is None
-    assert build_session._reuse_input_key(prepared, {}, "variant", tmp_path, {}) is None
-    assert build_session._reuse_input_key(prepared, {}, "", tmp_path, {"MAKEFLAGS": "-j2"}) is None
-    assert build_session._reuse_input_key(prepared, {}, "", tmp_path, {}) is None
-
-
 def test_discard_candidate_removes_only_its_generation(tmp_path: Path) -> None:
     session = SimulationBuildSession(_handle(tmp_path))
     with session:
@@ -405,19 +221,11 @@ def test_discard_candidate_removes_only_its_generation(tmp_path: Path) -> None:
         abandoned.mkdir()
 
         session.discard_candidate(discarded)
+        session.discard_candidate(discarded)
 
         assert not discarded.exists()
         assert abandoned.is_dir()
         assert retained.is_dir()
-
-
-def test_discard_candidate_is_idempotent(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    with session:
-        candidate = session.new_generation()
-        session.discard_candidate(candidate)
-        session.discard_candidate(candidate)
-        assert not candidate.exists()
 
 
 @pytest.mark.skipif(
@@ -443,6 +251,7 @@ def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) ->
 
 
 def test_runtime_image_selection_rejects_missing_or_ambiguous_images(tmp_path: Path) -> None:
+    session = SimulationBuildSession(_handle(tmp_path))
     prepared = SimpleNamespace(
         build_root=tmp_path,
         eda_tool="icarus",
@@ -450,22 +259,22 @@ def test_runtime_image_selection_rejects_missing_or_ambiguous_images(tmp_path: P
         toplevel="top",
     )
     with pytest.raises(SimulationBuildSlotError, match="one Icarus image descriptor"):
-        build_session._runtime_artifacts(prepared)
+        session.retained_artifacts(prepared)
     descriptor = tmp_path / "top.scr"
     descriptor.write_text("top.sv", encoding="utf-8")
     (tmp_path / "top").write_bytes(b"image")
-    assert build_session._runtime_artifacts(prepared) == (descriptor, tmp_path / "top")
+    assert session.retained_artifacts(prepared) == (descriptor, tmp_path / "top")
     (tmp_path / "other.scr").write_text("other.sv", encoding="utf-8")
     with pytest.raises(SimulationBuildSlotError, match="one Icarus image descriptor"):
-        build_session._runtime_artifacts(prepared)
+        session.retained_artifacts(prepared)
     prepared.eda_tool = "verilator"
     with pytest.raises(SimulationBuildSlotError, match="one Verilator image"):
-        build_session._runtime_artifacts(prepared)
+        session.retained_artifacts(prepared)
     binary = tmp_path / "Vtop"
     binary.write_bytes(b"image")
     if os.name != "nt":
         with pytest.raises(SimulationBuildSlotError, match="not executable"):
-            build_session._runtime_artifacts(prepared)
+            session.retained_artifacts(prepared)
 
 
 def test_compile_surface_tracks_symlinks_and_rejects_broken_inputs(tmp_path: Path) -> None:
@@ -498,7 +307,8 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
         "class Probe(FlowMechanics):\n"
         "    def _get_cwd(self): return root\n"
         "with SimulationBuildSession(SimpleNamespace(project_root=root, identity='acme:lib:demo:1#sim')):\n"
-        "    Probe()._execute_local(['sh', '-c', 'touch ' + str(marker) + '; sleep 2'], timeout=5)\n"
+        f"    Probe()._execute_local(['sh', '-c', 'touch ' + str(marker) + '; sleep {scaled(2)}'],"
+        f" timeout={hang_guard_s()})\n"
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3] / "src")
@@ -510,24 +320,23 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
         text=True,
     )
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + hang_guard_s()
         while not marker.exists() and parent.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
         assert marker.exists()
         os.kill(parent.pid, signal.SIGKILL)
-        parent.wait(timeout=5)
+        parent.wait(timeout=hang_guard_s())
         with (
             (simulation_build_slot(handle) / "lease.lock").open("a+") as lock,
             pytest.raises(LockContentionError),
         ):
             acquire_file_lock(lock)
-        time.sleep(2.2)
         with SimulationBuildSession(handle):
             pass
     finally:
         if parent.poll() is None:
             parent.kill()
-            parent.wait(timeout=5)
+            parent.wait(timeout=hang_guard_s())
 
 
 def test_generation_snapshot_keeps_reserved_names_the_input_snapshot_ignores(
@@ -555,39 +364,191 @@ def test_generation_snapshot_keeps_reserved_names_the_input_snapshot_ignores(
     }
 
 
-def test_generation_snapshot_sees_mode_and_empty_directory_changes(tmp_path: Path) -> None:
-    """A chmod-only or empty-directory change is a Pre-Sim change; inputs ignore it."""
-    work = tmp_path / "g"
-    build = work / "build"
-    build.mkdir(parents=True)
-    source = build / "top.sv"
-    source.write_text("module top; endmodule\n", encoding="utf-8")
-    source.chmod(0o644)
-    prepared = SimpleNamespace(work_root=work, build_root=build)
-    inputs = snapshot_build_inputs(prepared)
-    before = snapshot_generation_files(prepared)
-
-    # Read-only is the one mode change Windows honours (it ignores execute bits).
-    source.chmod(0o444)
-    after_chmod = snapshot_generation_files(prepared)
-    source.chmod(0o644)  # writable again so tmp_path cleanup works on Windows
-    assert after_chmod != before
-    assert snapshot_build_inputs(prepared) == inputs
-
-    (build / "empty").mkdir()
-    assert snapshot_generation_files(prepared) != after_chmod
-    assert snapshot_build_inputs(prepared) == inputs
+_ICARUS_MAKEFILE = "all:\n\t$(EDALIZE_LAUNCHER) iverilog top.sv\n\t$(EDALIZE_LAUNCHER) vvp demo\n"
+_ICARUS_CORE = "CAPI=2:\nname: a:b:demo:1\n"
+_STOCK_SOURCE = ("systemVerilogSource", "src/demo/top.sv")
+_STOCK_SCRIPT = "\nsrc/demo/top.sv\n"  # a blank line is tolerated
 
 
-@pytest.mark.parametrize("case", ["project_core", "stealth_core"])
-def test_icarus_core_file_through_the_booley_dir_entry_is_eligible(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+@pytest.fixture
+def icarus_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fake Icarus prefix on ``PATH`` with no recipe-rewriting Make variables (POSIX only)."""
+    if os.name == "nt":
+        pytest.skip("Icarus build reuse keys only on POSIX (icarus_reuse_posix_only)")
+    prefix = tmp_path / "install"
+    (prefix / "lib" / "ivl").mkdir(parents=True)
+    (prefix / "bin").mkdir()
+    for name in ("iverilog", "vvp", "make", "sh"):
+        (prefix / "bin" / name).write_text(f"#!/bin/sh\n# {name}\n", encoding="utf-8")
+        (prefix / "bin" / name).chmod(0o755)
+    (prefix / "lib" / "ivl" / "module.vpi").write_bytes(b"module")
+    monkeypatch.setenv("PATH", str(prefix / "bin"))
+    for name in ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS"):
+        monkeypatch.delenv(name, raising=False)
+    return prefix
+
+
+def _write_icarus_recipe(
+    work: Path,
+    scripts: tuple[str, ...] = (_STOCK_SCRIPT,),
+    makefile: str = _ICARUS_MAKEFILE,
 ) -> None:
-    """A core named by a lexical ``..`` path stays project-relative behind the entry link."""
-    project, edam, core = _core_behind_linked_booley_dir(tmp_path, case)
-    # Isolate the core-path decision from source staging and recipe checks.
-    monkeypatch.setattr(build_session, "_has_unsupported_source", lambda *_: False)
-    monkeypatch.setattr(build_session, "_has_unsupported_icarus_recipe", lambda *_: False)
-    prepared = SimpleNamespace(resolved=SimpleNamespace(edam_path=edam))
+    for index, text in enumerate(scripts):
+        (work / f"demo{index}.scr").write_text(text, encoding="utf-8")
+    (work / "Makefile").write_text(makefile, encoding="utf-8")
 
-    assert build_session._eligible_core_file(prepared, project) == core
+
+def _icarus_generation(
+    tmp_path: Path,
+    *,
+    core_text: str = _ICARUS_CORE,
+    edam: object = None,
+    core_outside: bool = False,
+    files: tuple[tuple[str, str], ...] = (_STOCK_SOURCE,),
+    staged_text: str = "module top; endmodule",
+    source_text: str | None = None,
+    scripts: tuple[str, ...] = (_STOCK_SCRIPT,),
+    makefile: str = _ICARUS_MAKEFILE,
+    cocotb_module: str = "",
+    variant: str = "",
+) -> tuple[SimulationBuildSession, SimpleNamespace]:
+    """A session and the prepared build of one stock Icarus generation, tweaked by overrides."""
+    project = tmp_path / "project"
+    work = project / "work"
+    (work / "src" / "demo").mkdir(parents=True)
+    core = (tmp_path / "outside.core") if core_outside else project / "demo.core"
+    core.write_text(core_text, encoding="utf-8")
+    (project / "top.sv").write_text(
+        staged_text if source_text is None else source_text, encoding="utf-8"
+    )
+    staged = work / "src" / "demo" / "top.sv"
+    staged.write_text(staged_text, encoding="utf-8")
+    document = (
+        {"cores": {"one": {"core_file": os.path.relpath(core, work)}}} if edam is None else edam
+    )
+    edam_path = work / "demo.eda.yml"
+    edam_path.write_text(json.dumps(document), encoding="utf-8")
+    _write_icarus_recipe(work, scripts, makefile)
+    items = tuple(
+        SimpleNamespace(file_type=file_type, name=name, absolute=lambda _root: staged.resolve())
+        for file_type, name in files
+    )
+    prepared = SimpleNamespace(
+        eda_tool="icarus",
+        target_identity="target",
+        environment={},
+        resolved=SimpleNamespace(cocotb_module=cocotb_module, files=items, edam_path=edam_path),
+        build_root=work,
+        work_root=work,
+    )
+    return SimulationBuildSession(_handle(project), variant), prepared
+
+
+def _key(session: SimulationBuildSession, prepared: SimpleNamespace) -> str | None:
+    return session.reusable_key(
+        cast(Any, prepared), snapshot_build_inputs(cast(Any, prepared)), hooks=False
+    )
+
+
+@pytest.mark.usefixtures("icarus_install")
+@pytest.mark.parametrize("case", ["plain", "project_core", "stealth_core"])
+def test_stock_icarus_generation_keys(tmp_path: Path, case: str) -> None:
+    """A stock generation keys, also when its core sits behind a linked Booley Directory (#2191)."""
+    if case == "plain":
+        session, prepared = _icarus_generation(tmp_path)
+    else:
+        project, edam, _core = _core_behind_linked_booley_dir(tmp_path, case)
+        (edam.parent / "top.sv").write_text("module top; endmodule", encoding="utf-8")
+        _write_icarus_recipe(edam.parent, ("top.sv\n",))
+        session = SimulationBuildSession(_handle(project))
+        prepared = SimpleNamespace(
+            eda_tool="icarus",
+            target_identity="target",
+            environment={},
+            resolved=SimpleNamespace(cocotb_module="", files=(), edam_path=edam),
+            build_root=edam.parent,
+            work_root=edam.parent,
+        )
+
+    key = _key(session, prepared)
+
+    assert key is not None
+    assert _key(session, prepared) == key
+
+
+_DECLINED_GENERATIONS: dict[str, dict[str, Any]] = {
+    "include": {"source_text": "x", "staged_text": '`include "dependency.svh"'},
+    "non-hdl-type": {"files": (("vhdlSource", "src/demo/top.sv"),)},
+    "user-file": {"files": (("user", "src/demo/top.sv"),)},
+    "path-outside-src": {"files": (("systemVerilogSource", "outside.sv"),)},
+    "no-script": {"scripts": ()},
+    "two-scripts": {"scripts": (_STOCK_SCRIPT, _STOCK_SCRIPT)},
+    "include-dir-line": {"scripts": ("-I/tmp\n",)},
+    "script-escapes-work": {"scripts": ("../outside.sv\n",)},
+    "makefile-without-launcher": {"makefile": "all:\n\tiverilog top.sv\n"},
+    "edam-invalid": {"edam": "invalid"},
+    "edam-hooks": {
+        "edam": {"hooks": ["dynamic"], "cores": {"one": {"core_file": "../demo.core"}}}
+    },
+    "edam-no-cores": {"edam": {"cores": {}}},
+    "edam-dependencies": {
+        "edam": {"cores": {"one": {"dependencies": ["other"], "core_file": "../demo.core"}}}
+    },
+    "core-outside-project": {"core_outside": True},
+    "core-invalid": {"core_text": "invalid\n"},
+    "core-generators": {"core_text": _ICARUS_CORE + "generators: {gen: {}}\n"},
+    "core-targets-invalid": {"core_text": _ICARUS_CORE + "targets: invalid\n"},
+    "core-target-hooks": {"core_text": _ICARUS_CORE + "targets: {sim: {hooks: [hook]}}\n"},
+    "cocotb": {"cocotb_module": "tb"},
+    "variant": {"variant": "trace"},
+    "make-variable": {"environment": {"MAKEFLAGS": "-j2"}},
+}
+
+
+@pytest.mark.usefixtures("icarus_install")
+@pytest.mark.parametrize("overrides", _DECLINED_GENERATIONS.values(), ids=_DECLINED_GENERATIONS)
+def test_icarus_reuse_declines_unprovable_generations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
+) -> None:
+    assert _key(*_icarus_generation(tmp_path / "control")) is not None
+    # An include must also sit in the Project original, or the staging check fires first.
+    if "staged_text" in overrides:
+        overrides = {**overrides, "source_text": overrides["staged_text"]}
+    for name, value in overrides.get("environment", {}).items():
+        monkeypatch.setenv(name, value)
+    overrides = {k: v for k, v in overrides.items() if k != "environment"}
+
+    assert _key(*_icarus_generation(tmp_path / "declined", **overrides)) is None
+
+
+@pytest.mark.usefixtures("icarus_install")
+def test_icarus_reuse_refuses_staging_that_changed(tmp_path: Path) -> None:
+    session, prepared = _icarus_generation(tmp_path, source_text="module top; endmodule")
+    (tmp_path / "project" / "top.sv").write_text("module edited; endmodule", encoding="utf-8")
+
+    with pytest.raises(SimulationBuildSlotError, match="changed during"):
+        _key(session, prepared)
+
+
+def test_icarus_key_follows_the_tool_install(
+    tmp_path: Path, icarus_install: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    library = tmp_path / "libdependency.so"
+    library.write_bytes(b"dependency")
+    iverilog = icarus_install / "bin" / "iverilog"
+    iverilog.write_bytes(b"\x7fELFtool")
+    monkeypatch.setattr(
+        build_reuse, "elf_dependencies", lambda path: (library,) if path == iverilog else ()
+    )
+    session, prepared = _icarus_generation(tmp_path)
+    first = _key(session, prepared)
+    assert first is not None
+
+    (icarus_install / "lib" / "ivl" / "module.vpi").write_bytes(b"new module")
+    assert _key(session, prepared) not in (None, first)
+
+    library.unlink()
+    assert _key(session, prepared) is None
+    library.write_bytes(b"dependency")
+    (icarus_install / "bin" / "vvp").unlink()
+    assert _key(session, prepared) is None

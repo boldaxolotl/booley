@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 
@@ -31,9 +32,9 @@ work="$2"
 if (( $# == 2 )); then
   exit 0
 fi
-mkdir -p "$work/abc-control" "$work/collision-preserve" "$work/collision-attribute"
+mkdir -p "$work/abc-control" "$work/collision-preserve" "$work/collision-attribute" "$work/comb-loop"
 mkdir -p "$work/repair-off/reports" "$work/repair-on/reports"
-for path in synth.ys synth-undriven.ys abc-control/synth.ys collision-preserve/synth.ys collision-attribute/synth.ys run_openroad-repair-off.tcl run_openroad-repair-on.tcl repair-off/run_openroad.tcl repair-on/run_openroad.tcl; do
+for path in synth.ys synth-undriven.ys abc-control/synth.ys collision-preserve/synth.ys collision-attribute/synth.ys comb-loop/synth.ys run_openroad-repair-off.tcl run_openroad-repair-on.tcl repair-off/run_openroad.tcl repair-on/run_openroad.tcl; do
   echo generated > "$work/$path"
 done
 """
@@ -51,8 +52,13 @@ case "$work" in
     echo 'Assertion failed'
     exit 1
     ;;
+  */comb-loop)
+    printf 'Warning: found logic loop in module dut:\nFound and reported 1 problems.\n' > "$work/premap_check_dut.txt"
+    echo 'Found and reported 0 problems.' > "$work/check_dut.txt"
+    ;;
   *)
     echo healthy > "$work/log_abc_dut.txt"
+    echo 'Found and reported 0 problems.' > "$work/premap_check_dut.txt"
     if [[ "$PROBE_FAILURE" == synthesis ]]; then
       echo 'primary synthesis diagnostic' > "$work/check_dut.txt"
     elif [[ "$3" == *synth-undriven.ys ]]; then
@@ -113,7 +119,7 @@ def _run_staged_probe(
     evidence = tmp_path / "evidence"
     if blocked_export:
         evidence.touch()
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             "bash",
             str(_ROOT / ".github/scripts/verify_openroad_runtime.sh"),
@@ -126,9 +132,6 @@ def _run_staged_probe(
             "TMPDIR": str(scratch),
             "PROBE_FAILURE": failure,
         },
-        capture_output=True,
-        text=True,
-        timeout=10,
         check=False,
     )
     assert not list(scratch.iterdir())
@@ -161,6 +164,8 @@ def test_successful_openroad_probe_requires_successful_export(
     if not blocked_export:
         assert (evidence / "check_dut_driven.txt").is_file()
         assert (evidence / "check_dut_undriven.txt").is_file()
+        assert (evidence / "premap_check_dut.txt").is_file()
+        assert (evidence / "comb-loop/premap_check_dut.txt").is_file()
         assert (evidence / "repair-on/reports/placement.txt").is_file()
 
 

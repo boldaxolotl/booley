@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.criteria.endpoint_catalog import EndpointCriterionRelationship
 from booley.mcp.endpoint_config import endpoint_is_enabled, parse_specialist_config
 
 logger = logging.getLogger(__name__)
@@ -27,8 +26,6 @@ class McpToolInfo:
     path: str
     description: str
     code_modifying: bool = False
-    satisfies: tuple[str, ...] = ()
-    satisfies_args: dict[str, str] | None = None
     # Canonical endpoint family: deterministic Flow, Specialist, or a direct
     # non-Flow MCP endpoint.
     kind: str = "mcp_tool"
@@ -52,9 +49,19 @@ SKIP_MODULES = frozenset(
     }
 )
 
-BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga")
-_FLOW_BASE_NAMES = frozenset({"BooleyFlow", "BuiltinFlow"})
+BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga", "mutation")
+_FLOW_BASE_NAMES = frozenset({"BooleyFlow", "BuiltinFlow", "ImplementationFlow"})
 _ENDPOINT_BASE_NAMES = _FLOW_BASE_NAMES | {"McpTool", "Specialist"}
+
+
+def flow_blurb(description: str) -> str:
+    """Return the first sentence of a Flow description, on one line.
+
+    Endpoint descriptions can run to paragraphs; the listing shows the lead
+    sentence whole. Width fitting belongs to the table (TTY only), so piped
+    output is never cut mid-sentence.
+    """
+    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
 
 
 def discover_mcp_tools(
@@ -93,11 +100,11 @@ def discover_mcp_inventory(
     """Read unfiltered endpoint metadata without executing Project Python."""
     if booley_src is None:
         booley_src = Path(__file__).resolve().parent.parent
-    discovered = _scan_builtin_flows(booley_src / "flows", {})
+    discovered = _scan_builtin_flows(booley_src / "flows")
     for package in ("mcp", "specialists"):
-        discovered.extend(_scan_directory(booley_src / package, {}, builtin=True, package=package))
+        discovered.extend(_scan_directory(booley_src / package, builtin=True, package=package))
     if project_mcp_tools_dir and project_mcp_tools_dir.is_dir():
-        discovered.extend(_scan_directory(project_mcp_tools_dir, {}, builtin=False))
+        discovered.extend(_scan_directory(project_mcp_tools_dir, builtin=False))
     return discovered
 
 
@@ -117,10 +124,7 @@ def filter_mcp_tools(
     ]
 
 
-def _scan_builtin_flows(
-    flows_dir: Path,
-    flow_config: dict[str, Any],
-) -> list[McpToolInfo]:
+def _scan_builtin_flows(flows_dir: Path) -> list[McpToolInfo]:
     """Discover only the explicitly registered built-in Flow packages."""
     results: list[McpToolInfo] = []
     for package_name in BUILTIN_FLOW_PACKAGES:
@@ -136,25 +140,18 @@ def _scan_builtin_flows(
         if info is None:
             logger.warning("Built-in Flow metadata missing: %s", flow_file)
             continue
-        endpoint_entry = flow_config.get(info.name)
-        if isinstance(endpoint_entry, dict) and endpoint_entry.get("enabled") is False:
-            logger.debug("MCP endpoint %s disabled via config", info.name)
-            continue
         results.append(info)
     return results
 
 
 def _scan_directory(
     endpoint_dir: Path,
-    specialist_config: dict[str, Any],
-    flow_config: dict[str, Any] | None = None,
     *,
     builtin: bool,
     package: str = "",
 ) -> list[McpToolInfo]:
-    """Scan a directory for enabled MCP endpoint subclasses via AST."""
+    """Scan a directory for MCP endpoint subclasses via AST."""
     results: list[McpToolInfo] = []
-    flow_config = flow_config or {}
     if not endpoint_dir.is_dir():
         return results
 
@@ -165,10 +162,6 @@ def _scan_directory(
 
         info = extract_mcp_tool_info(py_file, builtin=builtin, package=package)
         if info is None:
-            continue
-
-        if not endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config):
-            logger.debug("MCP endpoint %s disabled via config", info.name)
             continue
 
         results.append(info)
@@ -220,8 +213,6 @@ def _extract_endpoint_metadata_attrs(node: ast.ClassDef) -> dict[str, Any]:
     name = ""
     description = ""
     code_modifying = False
-    satisfies: list[str] | None = None
-    satisfies_args: dict[str, str] | None = None
 
     for item in node.body:
         # Handle both `name = "x"` (Assign) and `name: str = "x"` (AnnAssign)
@@ -242,17 +233,11 @@ def _extract_endpoint_metadata_attrs(node: ast.ClassDef) -> dict[str, Any]:
             description = val
         elif attr_name == "code_modifying" and isinstance(val, bool):
             code_modifying = val
-        elif attr_name == "satisfies" and isinstance(val, list):
-            satisfies = val
-        elif attr_name == "satisfies_args" and isinstance(val, dict):
-            satisfies_args = val
 
     return {
         "name": name,
         "description": description,
         "code_modifying": code_modifying,
-        "satisfies": satisfies,
-        "satisfies_args": satisfies_args,
     }
 
 
@@ -272,15 +257,11 @@ def _build_mcp_tool_info(
         kind = "specialist"
     else:
         kind = "mcp_tool"
-    satisfies = attrs["satisfies"]
-    satisfies_args = attrs["satisfies_args"]
     return McpToolInfo(
         name=attrs["name"],
         path=rel_path,
         description=attrs["description"],
         code_modifying=attrs["code_modifying"],
-        satisfies=tuple(satisfies) if satisfies else (),
-        satisfies_args=satisfies_args if satisfies_args else None,
         kind=kind,
     )
 
@@ -335,17 +316,3 @@ def _get_constant_value(node: ast.expr) -> Any:  # noqa: PLR0911 — one early r
             result[kv] = vv
         return result
     return None
-
-
-def criterion_endpoint_relationships(
-    endpoints: list[McpToolInfo],
-) -> tuple[EndpointCriterionRelationship, ...]:
-    """Adapt discovered MCP metadata into dependency-neutral immutable values."""
-    return tuple(
-        EndpointCriterionRelationship(
-            command=endpoint.name,
-            satisfies=endpoint.satisfies,
-            arguments=tuple(sorted((endpoint.satisfies_args or {}).items())),
-        )
-        for endpoint in endpoints
-    )

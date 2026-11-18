@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from .coverage_campaign import CoveragePoint
+from .coverage_record import CoveragePoint
 
 
 def coverage_point_covered(point: CoveragePoint) -> bool:
@@ -74,7 +74,7 @@ def coverage_point_detail(point: CoveragePoint) -> str:
 
 
 def coverage_point_line(point: CoveragePoint) -> int:
-    """The first source line of a point; a loaded Campaign guarantees it is an integer."""
+    """The first source line of a point; a loaded Coverage Record guarantees it is an integer."""
     start = point.identity.location["start"]
     assert isinstance(start, Mapping)
     line = start["line"]

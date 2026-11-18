@@ -1,0 +1,28 @@
+{
+  "complete": true,
+  "completed_targets": [
+    "sim_0"
+  ],
+  "coverage": true,
+  "detail": {
+    "sim_0": {
+      "criterion_fingerprint": null,
+      "diagnostics": [],
+      "exit_code": 0,
+      "metrics": [],
+      "status": "not_requested",
+      "suite": {
+        "status": "not_evaluated"
+      },
+      "thresholds": {}
+    }
+  },
+  "flow": "sim",
+  "pending_targets": [],
+  "phase": "complete",
+  "run_id": "",
+  "targets": [
+    "sim_0"
+  ],
+  "timestamp": "2026-11-12T22:28:27Z"
+}

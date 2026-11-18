@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
@@ -15,11 +14,12 @@ from booley.harness.endpoint_help import _parse_help, _parser_copy, _ParserSynta
 from booley.mcp.base import McpTool
 from booley.mcp.registry import McpToolInfo
 from booley.runtime.booley_dir import reset_cache
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
     for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
@@ -432,14 +432,3 @@ def test_unknown_endpoint_help_cannot_list_from_host(
     assert captured.out == ""
     assert "Available" not in captured.err
     assert "runs inside the Booley Sandbox" in captured.err
-
-
-def test_diagnostic_help_is_truthful_only_on_human_surface():
-    from booley.flows.builtin_cli import build_parser
-    from booley.flows.lint.flow import LintFlow
-
-    human = " ".join(build_parser(LintFlow(), human=True).format_help().split())
-    transport = build_parser(LintFlow()).format_help()
-    assert "CLI runs never record Goal evidence" in human
-    assert "Run without satisfying Goals" in transport
-    assert "CLI runs never" not in transport

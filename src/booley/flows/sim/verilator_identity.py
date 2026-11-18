@@ -12,6 +12,6 @@ class VerilatorCollectorIdentity:
 
 
 PINNED_VERILATOR = VerilatorCollectorIdentity(
-    tag="v5.052",
-    commit="ea338be98e1e838d3518809ce8899f85a009963c",
+    tag="v5.054",
+    commit="bbb60a403932a9f695cb6ff001ceb73de6ad9234",
 )

@@ -17,6 +17,10 @@ src/*.egg-info/
 # source commit into the package so a wheel install can report it (F-5).
 src/booley/_build_commit.py
 
+# Rendered from SHIPPED_DOCS by the same build step (booley.runtime.packaged_docs);
+# build output, never committed or edited.
+src/booley/data/docs/
+
 # Rust bwave tool
 crates/bwave/target/
 crates/bwave/test_vcds/
@@ -34,13 +38,6 @@ crates/bwave/tests/perf_real_baseline.json
 /worktrees/
 /.worktrees/
 /tmp/
-
-# Mutation testing cache and one-off helper scripts
-/mutants/
-src/.mutmut-results*.json
-src/_mutmut_check.py
-src/_run_wave*.py
-src/_test_one_mutant.py
 
 # Agent temp scripts (tmp/ is gitignored above)
 
@@ -67,8 +64,6 @@ dist/
 # This committed fixture must override user-global `.booley/` ignores.
 !/tests/fixtures/cocotb_counter/.booley/
 !/tests/fixtures/cocotb_counter/.booley/**
-!/tests/fixtures/goal_mode_smoke/.booley/
-!/tests/fixtures/goal_mode_smoke/.booley/**
 
 # Native bwave binary — built by CI into the wheel's package data (and by the
 # sandbox image build into the installed package). Never committed.

@@ -1,0 +1,452 @@
+"""Borrow the admitted outer lane and acquire per-item child lanes, each under its own claim."""
+
+from __future__ import annotations
+
+import sys
+import threading
+import uuid
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import cast
+
+from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.memory_admission import fixed_job_threads, job_threads_at_start
+from booley.runtime.cpu_budget import available_cpu_count
+from booley.runtime.execution_records import ExecutionId
+from booley.runtime.job_slots import (
+    CLASS_MEMORY,
+    ClaimAbortedError,
+    LeaseHealth,
+    MemoryClaim,
+    SlotStore,
+    SlotToken,
+)
+from booley.runtime.supervised_execution import SupervisedExecutionScope
+
+from .child_protocol import ChildExecutionRegistry, PreparedChild
+from .model import SimulationRecordManifest
+
+_MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
+_SHUTDOWN_POLL_SLICES = 10
+
+
+class SimulationRecordCapacityError(RuntimeError):
+    """The record can no longer safely use its admitted capacity."""
+
+
+class LeaseLostError(SimulationRecordCapacityError):
+    """One child lane lost its lease; the other lanes can still finish."""
+
+
+@dataclass(frozen=True, slots=True)
+class OuterPermit:
+    """The borrowed outer lane; it is never released by this module."""
+
+    execution_id: ExecutionId | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChildPermit:
+    """One exact child lease acquired for one Simulation Work Item."""
+
+    work_item_id: str
+    child_execution_id: ExecutionId
+    token: SlotToken
+    lease_health: LeaseHealth
+    scope: SupervisedExecutionScope
+
+
+class SimulationRecordCapacity:
+    """Deep adapter from an admitted endpoint context to record permits."""
+
+    def __init__(
+        self,
+        admission: AdmissionContext,
+        manifest: SimulationRecordManifest,
+        project_data: Path,
+        item_claim: Callable[[Mapping[str, object]], MemoryClaim | None] | None = None,
+    ) -> None:
+        self._admission = admission
+        self._item_claim = item_claim
+        self._target = str(cast(Mapping[str, object], manifest.document["target"])["selector"])
+        self._lanes = ChildExecutionRegistry.from_project_data(
+            manifest, project_data, booley_dir=project_data
+        )
+        self._shutdown = threading.Event()
+        self._outer_entered = False
+        self._waiting: dict[str, SlotToken] = {}
+        # Child permits inside their work, and those whose lost lease was handled.
+        self._held: dict[str, ChildPermit] = {}
+        self._recovered_lost: set[str] = set()
+        # Lease IDs proven held after the child's work, so the child may be
+        # published terminal. A later token loss is then normal reaping.
+        self._confirmed: set[str] = set()
+        # Lease IDs the cancel moved into recovery after the lane's claim was
+        # promoted behind its snapshot: that loss is the cancel's, not another cause's.
+        self._cancel_recovered: set[str] = set()
+        self._gate = threading.Lock()
+        self._cause: str | None = None
+
+    @property
+    def items_admitted(self) -> bool:
+        """True when each work item takes its own Memory Reservation (memory admission)."""
+        return self._item_claim is not None
+
+    @property
+    def max_lanes(self) -> int:
+        """Lanes the record may start: the container's cores when each item is admitted
+        by memory (admission decides how many run at once), else one."""
+        return available_cpu_count() if self.items_admitted else 1
+
+    @property
+    def managed(self) -> bool:
+        return self._admission.mode == "managed"
+
+    @property
+    def parent_execution_id(self) -> ExecutionId:
+        return self._admission.parent_execution_id
+
+    @property
+    def shutdown_requested(self) -> bool:
+        return self._cancelled()
+
+    @property
+    def shutdown_timeout_seconds(self) -> float:
+        return self._admission.timeout_seconds or 30.0
+
+    @contextmanager
+    def outer_permit(self) -> Iterator[OuterPermit]:
+        """Lend the already-held outer permit exactly once."""
+        if self._outer_entered:
+            raise SimulationRecordCapacityError("outer record permit may be borrowed exactly once")
+        self._outer_entered = True
+        if self.managed and (
+            self._admission.slot_store is None or self._admission.outer_token is None
+        ):
+            raise SimulationRecordCapacityError("managed admission is missing its outer token")
+        yield OuterPermit(self._admission.execution_id)
+
+    def outer_scope(self, stopped: Callable[[], bool]) -> SupervisedExecutionScope:
+        """The supervised scope of the outer lane's items."""
+        return SupervisedExecutionScope(
+            None,
+            self._lanes.project_data,
+            lambda: stopped() or self.shutdown_requested,
+            self.cancellation_cause,
+        )
+
+    def work_item_claim(
+        self, item: Mapping[str, object], *, alone: bool = False
+    ) -> MemoryClaim | None:
+        """The Memory Reservation *item* takes itself; ``None`` while it runs under the Flow's.
+
+        With *alone* the claim is the whole budget (an item requeued after an
+        out-of-memory kill), so it runs beside no other claim that reserves memory.
+        """
+        claim = None if self._item_claim is None else self._item_claim(item)
+        if claim is None or not alone:
+            return claim
+        return replace(claim, reservation_mb=None, run_alone=True)
+
+    @contextmanager
+    def child_permit(
+        self,
+        work_item_id: str,
+        *,
+        attempt_id: str,
+        attempt_ordinal: int,
+        attempt_directory: Path,
+        publish: Callable[[ExecutionId], None],
+        memory: MemoryClaim,
+        queue_reason: str | None = None,
+        tests: Sequence[str] = (),
+    ) -> Iterator[ChildPermit]:
+        """Give one lane its identity and slot, retiring both on exit.
+
+        ``publish`` gets the lane ID before the slot is requested. A *memory*
+        claim is the item's Memory Reservation; it fixes the item's thread count
+        at its share of the cores for everything it runs.
+        *queue_reason* names why a requeued item claims again. While the Flow
+        still reserves memory, the claim takes over its reservation and queue place.
+        *tests* are the item's test names, shown beside its run, Flow and Target
+        in queue reports.
+        """
+        store = self._admission.slot_store
+        if not self.managed or store is None:
+            raise SimulationRecordCapacityError("unmanaged records cannot acquire child permits")
+        child_id = ExecutionId(uuid.uuid4().hex)
+        prepared = self._lanes.prepare(
+            child_id,
+            work_item_id=work_item_id,
+            attempt_id=attempt_id,
+            attempt_ordinal=attempt_ordinal,
+            attempt_directory=attempt_directory,
+            parent_execution_id=self.parent_execution_id,
+        )
+        try:
+            publish(child_id)
+            if self._cancelled():
+                raise ClaimAbortedError("record shutdown requested")
+            token = self._acquire_child(store, child_id, memory, queue_reason, tests)
+        except BaseException:
+            self._lanes.mark_terminal(prepared, "record_error")
+            raise
+        try:
+            threads = self._item_thread_count(store)
+        except BaseException:
+            # The lane never started: prove it terminal first, so retiring releases the claim.
+            self._lanes.mark_terminal(prepared, "record_error")
+            self._retire(store, child_id, token)
+            raise
+        with (
+            self._held_lane(store, work_item_id, prepared, token) as permit,
+            fixed_job_threads(threads),
+        ):
+            yield permit
+        if not store.token_absent(token):
+            raise SimulationRecordCapacityError(
+                f"child token remained after terminal proof: {child_id}"
+            )
+
+    def _item_thread_count(self, store: SlotStore) -> int:
+        """The item's share of the cores, counted now that its own claim is admitted.
+
+        The item's Flow holds a zero reservation by now, so its token is left out.
+        """
+        flow_token = self._admission.outer_token
+        if not isinstance(flow_token, SlotToken):
+            raise SimulationRecordCapacityError("a memory-admitted record holds a Flow token")
+        return job_threads_at_start(store, available_cpu_count(), own_flow=flow_token)
+
+    @contextmanager
+    def _held_lane(
+        self, store, work_item_id: str, prepared: PreparedChild, token: SlotToken
+    ) -> Iterator[ChildPermit]:
+        """Run one lane's work on its slot; mark the lane terminal, then release the slot."""
+        child_id = prepared.execution_id
+        scope = SupervisedExecutionScope(
+            child_id,
+            self._lanes.project_data,
+            lambda: token.lease_health.lost.is_set() or self.shutdown_requested,
+            lambda: self._child_cancellation_cause(permit),
+        )
+        permit = ChildPermit(work_item_id, child_id, token, token.lease_health, scope)
+        with self._gate:
+            self._held[token.lease_id] = permit
+        lease_lost = f"lease lost for child execution {child_id}"
+        cause = "record_error"
+        try:
+            try:
+                try:
+                    # A claim admitted as the record was cancelled never starts its item.
+                    if self._cancelled():
+                        if permit.lease_health.lost.is_set() and not self._cancel_took_lease(
+                            permit
+                        ):
+                            raise LeaseLostError(lease_lost)
+                        raise ClaimAbortedError("record cancellation requested")
+                    yield permit
+                except SimulationRecordCapacityError as exc:
+                    cause = self._failed_cause(exc, permit)
+                    if permit.lease_health.lost.is_set() and not self.shutdown_requested:
+                        raise LeaseLostError(lease_lost) from exc
+                    raise
+                cause = "completed" if self._confirm_lease(permit) else "lease_lost"
+                self._lanes.mark_terminal(prepared, cause)
+                if cause == "lease_lost" and not (
+                    self._cancelled() and self._cancel_took_lease(permit)
+                ):
+                    raise LeaseLostError(lease_lost)
+                if self._cancelled():
+                    raise ClaimAbortedError("record cancellation requested")
+            finally:
+                self._retire(store, child_id, token)
+        except BaseException:
+            # A "completed" cause here means marking it terminal itself failed.
+            self._lanes.mark_terminal(prepared, "record_error" if cause == "completed" else cause)
+            raise
+
+    def _retire(self, store, child_id: ExecutionId, token: SlotToken) -> None:
+        with self._gate:
+            self._held.pop(token.lease_id, None)
+            self._cancel_recovered.discard(token.lease_id)
+            self._recovered_lost.discard(token.lease_id)
+            self._confirmed.discard(token.lease_id)
+        if not self._lanes.is_terminal(child_id):
+            store.begin_token_recovery(token)
+            self._lanes.cancel(child_id)
+        if self._lanes.is_terminal(child_id):
+            store.release(token)
+
+    def _cancel_took_lease(self, permit: ChildPermit) -> bool:
+        """True when the cancel itself moved this lane's lease toward loss."""
+        with self._gate:
+            return permit.token.lease_id in self._cancel_recovered
+
+    @staticmethod
+    def _failed_cause(exc: SimulationRecordCapacityError, permit: ChildPermit) -> str:
+        """The terminal cause of a lane whose work raised a capacity error."""
+        from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+
+        stopped = isinstance(exc.__cause__, PreSimScopeStoppedError)
+        return "lease_lost" if stopped and permit.lease_health.lost.is_set() else "record_error"
+
+    def _child_cancellation_cause(self, permit: ChildPermit) -> str | None:
+        if permit.lease_health.lost.is_set():
+            return (
+                f"Memory Reservation lease lost: {permit.token.job_class}/{permit.token.path.name}"
+            )
+        return self.cancellation_cause()
+
+    def _confirm_lease(self, permit: ChildPermit) -> bool:
+        """Prove the lease is held before the lane goes terminal; reaping is normal after."""
+        store = self._admission.slot_store
+        assert store is not None, "child permits exist only under managed admission"
+        held = not permit.lease_health.lost.is_set() and store.renew(permit.token)
+        if held:
+            with self._gate:
+                self._confirmed.add(permit.token.lease_id)
+        return held
+
+    def _acquire_child(
+        self,
+        store,
+        child_execution_id: ExecutionId,
+        memory: MemoryClaim,
+        queue_reason: str | None,
+        tests: Sequence[str],
+    ) -> SlotToken:
+        submitted: list[SlotToken] = []
+        outer = self._admission.outer_token
+
+        def register(token: SlotToken) -> None:
+            with self._gate:
+                self._waiting[token.lease_id] = token
+            submitted.append(token)
+
+        try:
+            token = store.acquire(
+                CLASS_MEMORY,
+                pid=store.pid,
+                argv=list(sys.argv),
+                role=self._admission.role,
+                timeout_s=self._admission.timeout_seconds,
+                poll_interval=min(
+                    _MAX_CHILD_ACQUIRE_POLL_SECONDS,
+                    self.shutdown_timeout_seconds / _SHUTDOWN_POLL_SLICES,
+                ),
+                should_abort=self._cancelled,
+                execution_id=child_execution_id,
+                on_submitted=register,
+                memory=memory,
+                queue_reason=queue_reason,
+                succeeds=outer if isinstance(outer, SlotToken) else None,
+                job=self._admission.work_item_label(self._target, tests),
+            )
+        except BaseException:
+            with self._gate:
+                for queued in submitted:
+                    self._waiting.pop(queued.lease_id, None)
+            raise
+        with self._gate:
+            self._waiting.pop(token.lease_id, None)  # granted: no longer a queued claim
+        return token
+
+    def cancellation_cause(self) -> str | None:
+        """Why the record was first cancelled, or ``None`` while it was not."""
+        with self._gate:
+            return self._cause
+
+    def _latch_cause(self, cause: str | None) -> None:
+        """Record the first cancellation cause; later triggers never overwrite it."""
+        if cause is None:
+            return
+        with self._gate:
+            if self._cause is None:
+                self._cause = cause
+
+    def cancel_waiters(self, cause: str | None = None) -> None:
+        """Stop admission and withdraw only this record's queued claims.
+
+        ``cause`` is latched before shutdown is signalled; calls without one
+        never mask the cause that triggered them.
+        """
+        self._latch_cause(cause)
+        self._shutdown.set()
+        store = self._admission.slot_store
+        if store is None:
+            return
+        with self._gate:
+            waiting = tuple(self._waiting.values())
+            held = tuple(
+                permit
+                for lease_id, permit in self._held.items()
+                if lease_id not in self._confirmed
+            )
+        for token in waiting:
+            if store.cancel_waiter_token(token):
+                continue
+            if token.execution_id is not None:
+                # Promoted behind the snapshot: record the cancel's recovery before the loss.
+                if not token.lease_health.lost.is_set():
+                    with self._gate:
+                        self._cancel_recovered.add(token.lease_id)
+                store.begin_token_recovery(token)
+                self._lanes.cancel(token.execution_id)
+        for permit in held:  # a held lane keeps its lease; only its execution is cancelled
+            if not permit.lease_health.lost.is_set() and not store.token_absent(permit.token):
+                with self._gate:  # the cancelled execution's reaped claim is the cancel's loss
+                    self._cancel_recovered.add(permit.token.lease_id)
+            self._lanes.cancel(permit.child_execution_id)
+
+    def hold_outer_until(self, exited: threading.Event) -> None:
+        """Keep the outer slot held until ``exited`` is set (the last lane left)."""
+        store = self._admission.slot_store
+        token = self._admission.outer_token
+        if store is None or not isinstance(token, SlotToken):
+            return
+        store.defer_release_until(token, exited)
+
+    def recover_lost_children(self) -> None:
+        """Start exact recovery of each held child whose lease was lost, once.
+
+        Called from the scheduler's await loop, so recovery begins while the lane's
+        work is still running. It never stops the record: a lost child lease is
+        scoped to that lane's item. Confirmed children are skipped: their token
+        was reaped after the terminal record, so there is nothing to recover.
+        """
+        store = self._admission.slot_store
+        with self._gate:
+            lost = [
+                permit
+                for lease_id, permit in self._held.items()
+                if permit.lease_health.lost.is_set()
+                and lease_id not in self._recovered_lost
+                and lease_id not in self._confirmed
+            ]
+            self._recovered_lost.update(permit.token.lease_id for permit in lost)
+        for permit in lost:
+            if store is not None:
+                store.begin_token_recovery(permit.token)
+            self._lanes.cancel(permit.child_execution_id)
+
+    def _cancelled(self) -> bool:
+        if self._shutdown.is_set():
+            return True
+        if not self._admission.cancellation():
+            return False
+        self._latch_cause(
+            self._admission.cancellation_cause() or "admission cancellation requested"
+        )
+        return True
+
+
+__all__ = [
+    "ChildPermit",
+    "LeaseLostError",
+    "OuterPermit",
+    "SimulationRecordCapacity",
+    "SimulationRecordCapacityError",
+]

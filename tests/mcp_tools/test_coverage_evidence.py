@@ -1,4 +1,4 @@
-"""Bounded model-facing views over one fully validated Coverage Campaign."""
+"""Bounded model-facing views over one fully validated Coverage Record."""
 
 import json
 from dataclasses import replace
@@ -7,18 +7,18 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.flows.sim.coverage_analysis_input import CoverageSourceClosure
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_evidence import (
     MAX_RESPONSE_BYTES,
     CoverageEvidenceSession,
     decode_coverage_evidence_audit,
 )
 from booley.flows.sim.coverage_json import freeze_coverage_mapping
-from tests.flows.sim.coverage_campaign_test_support import decode_document
-from tests.flows.sim.test_coverage_campaign import _valid_document
+from booley.flows.sim.coverage_record import DurableTargetIdentity
+from tests.flows.sim.coverage_record_test_support import decode_document
+from tests.flows.sim.test_coverage_record import _valid_document
 
 
-def _campaign_with_waiver():
+def _coverage_record_with_waiver():
     document = _valid_document()
     document["points"][0]["hits_by_run"] = {}
     document["points"][0]["disposition"] = {
@@ -42,8 +42,8 @@ def _campaign_with_waiver():
 
 
 def test_points_view_keeps_complete_approved_waiver_disposition():
-    campaign = _campaign_with_waiver()
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = _coverage_record_with_waiver()
+    session = CoverageEvidenceSession(coverage_record, None)
 
     result = session.query({"view": "points", "disposition": "waived"})
 
@@ -56,7 +56,7 @@ def test_points_view_keeps_complete_approved_waiver_disposition():
 
 
 def test_overview_counts_waivers_without_expanding_every_point():
-    session = CoverageEvidenceSession(_campaign_with_waiver(), None)
+    session = CoverageEvidenceSession(_coverage_record_with_waiver(), None)
 
     result = session.query({"view": "overview"})
 
@@ -68,9 +68,11 @@ def test_overview_counts_waivers_without_expanding_every_point():
 def test_verbose_overview_falls_back_to_bounded_rollups():
     document = _valid_document()
     document["collection"]["diagnostics"] = ["x" * 100_000]
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
 
-    result = CoverageEvidenceSession(campaign, None).query({"view": "overview"})
+    result = CoverageEvidenceSession(coverage_record, None).query({"view": "overview"})
 
     assert result["overview_truncated"] is True
     assert result["rollups"][0]["total_points"] == 1
@@ -78,11 +80,11 @@ def test_verbose_overview_falls_back_to_bounded_rollups():
 
 
 def test_points_filter_and_cursor_are_deterministic():
-    campaign = _campaign_with_waiver()
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = _coverage_record_with_waiver()
+    session = CoverageEvidenceSession(coverage_record, None)
 
     first = session.query({"view": "points", "disposition": "waived", "limit": 1})
-    repeated = CoverageEvidenceSession(campaign, None).query(
+    repeated = CoverageEvidenceSession(coverage_record, None).query(
         {"view": "points", "disposition": "waived", "limit": 1}
     )
 
@@ -91,9 +93,9 @@ def test_points_filter_and_cursor_are_deterministic():
 
 
 def test_model_facing_points_use_stable_short_references_and_audit_exact_ids():
-    campaign = _campaign_with_waiver()
-    point = campaign.points[0]
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = _coverage_record_with_waiver()
+    point = coverage_record.points[0]
+    session = CoverageEvidenceSession(coverage_record, None)
 
     first = session.query({"view": "points", "disposition": "waived"})
     repeated = session.query({"view": "points", "disposition": "waived"})
@@ -105,14 +107,14 @@ def test_model_facing_points_use_stable_short_references_and_audit_exact_ids():
 
 
 def test_complete_evidence_audit_is_validated_into_public_and_private_parts():
-    campaign = _campaign_with_waiver()
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = _coverage_record_with_waiver()
+    session = CoverageEvidenceSession(coverage_record, None)
     session.query({"view": "points", "disposition": "waived"})
 
     audit = decode_coverage_evidence_audit(session.analysis_scope())
 
-    assert audit.analysis_scope["point_ids"] == (campaign.points[0].id,)
-    assert audit.point_references == {"point:1": campaign.points[0].id}
+    assert audit.analysis_scope["point_ids"] == (coverage_record.points[0].id,)
+    assert audit.point_references == {"point:1": coverage_record.points[0].id}
     assert "point_references" not in audit.analysis_scope
 
 
@@ -126,7 +128,7 @@ def test_complete_evidence_audit_is_validated_into_public_and_private_parts():
     ],
 )
 def test_evidence_audit_rejects_invalid_persisted_fields(field, invalid):
-    session = CoverageEvidenceSession(_campaign_with_waiver(), None)
+    session = CoverageEvidenceSession(_coverage_record_with_waiver(), None)
     session.query({"view": "points", "disposition": "waived"})
     audit = session.analysis_scope()
     audit[field] = invalid
@@ -136,8 +138,8 @@ def test_evidence_audit_rejects_invalid_persisted_fields(field, invalid):
 
 
 def test_rejected_delivery_does_not_authorize_point_reference():
-    campaign = _campaign_with_waiver()
-    session = CoverageEvidenceSession(campaign, None, total_budget_bytes=1)
+    coverage_record = _coverage_record_with_waiver()
+    session = CoverageEvidenceSession(coverage_record, None, total_budget_bytes=1)
 
     result = session.query({"view": "points", "disposition": "waived"})
 
@@ -148,8 +150,8 @@ def test_rejected_delivery_does_not_authorize_point_reference():
 
 
 def test_oversized_response_does_not_authorize_point_reference():
-    campaign = _campaign_with_waiver()
-    point = campaign.points[0]
+    coverage_record = _coverage_record_with_waiver()
+    point = coverage_record.points[0]
     identity = replace(
         point.identity,
         collector=freeze_coverage_mapping(
@@ -157,7 +159,7 @@ def test_oversized_response_does_not_authorize_point_reference():
         ),
     )
     session = CoverageEvidenceSession(
-        replace(campaign, points=(replace(point, identity=identity),)), None
+        replace(coverage_record, points=(replace(point, identity=identity),)), None
     )
 
     with pytest.raises(ValueError, match="exceeds the response limit"):
@@ -167,10 +169,12 @@ def test_oversized_response_does_not_authorize_point_reference():
 
 
 def test_points_cursor_advances_within_the_same_filtered_query():
-    campaign = _campaign_with_waiver()
-    point = campaign.points[0]
-    campaign = replace(campaign, points=(point, replace(point, id=f"{point.id}-second")))
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = _coverage_record_with_waiver()
+    point = coverage_record.points[0]
+    coverage_record = replace(
+        coverage_record, points=(point, replace(point, id=f"{point.id}-second"))
+    )
+    session = CoverageEvidenceSession(coverage_record, None)
 
     first = session.query({"view": "points", "disposition": "waived", "limit": 1})
     second = session.query(
@@ -189,10 +193,12 @@ def test_points_cursor_advances_within_the_same_filtered_query():
 
 
 def test_points_cursor_cannot_be_reused_with_different_filters():
-    campaign = _campaign_with_waiver()
-    point = campaign.points[0]
-    campaign = replace(campaign, points=(point, replace(point, id=f"{point.id}-second")))
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = _coverage_record_with_waiver()
+    point = coverage_record.points[0]
+    coverage_record = replace(
+        coverage_record, points=(point, replace(point, id=f"{point.id}-second"))
+    )
+    session = CoverageEvidenceSession(coverage_record, None)
     first = session.query({"view": "points", "disposition": "waived", "limit": 1})
 
     with pytest.raises(ValueError, match="does not match this query"):
@@ -209,11 +215,14 @@ def test_points_cursor_cannot_be_reused_with_different_filters():
 def test_points_encode_only_returned_pages_and_reuse_filtered_selection(monkeypatch):
     from booley.flows.sim import coverage_evidence
 
-    campaign = _campaign_with_waiver()
-    point = campaign.points[0]
-    campaign = replace(campaign, points=(point, replace(point, id=f"{point.id}-second")))
+    coverage_record = _coverage_record_with_waiver()
+    point = coverage_record.points[0]
+    coverage_record = replace(
+        coverage_record, points=(point, replace(point, id=f"{point.id}-second"))
+    )
     match_calls = 0
     encode_calls = 0
+    # The test proves the filter runs once per query, so it counts calls to the filter itself.
     match = coverage_evidence._matches
     encode = coverage_evidence.encode_coverage_point
 
@@ -229,7 +238,7 @@ def test_points_encode_only_returned_pages_and_reuse_filtered_selection(monkeypa
 
     monkeypatch.setattr(coverage_evidence, "_matches", counted_match)
     monkeypatch.setattr(coverage_evidence, "encode_coverage_point", counted_encode)
-    session = CoverageEvidenceSession(campaign, None)
+    session = CoverageEvidenceSession(coverage_record, None)
 
     first = session.query({"view": "points", "disposition": "waived", "limit": 1})
     after_first = match_calls
@@ -242,18 +251,18 @@ def test_points_encode_only_returned_pages_and_reuse_filtered_selection(monkeypa
         }
     )
 
-    assert after_first == len(campaign.points)
+    assert after_first == len(coverage_record.points)
     assert match_calls == after_first
     assert encode_calls == len(first["points"]) + len(second["points"])
 
 
 def test_points_covered_false_filter_is_not_treated_as_unfiltered():
-    campaign = _campaign_with_waiver()
-    point = campaign.points[0]
+    coverage_record = _coverage_record_with_waiver()
+    point = coverage_record.points[0]
     covered = replace(point, id=f"{point.id}-covered", hits_by_run={"run:reset": 1})
     uncovered = replace(point, id=f"{point.id}-uncovered", hits_by_run={})
-    campaign = replace(campaign, points=(covered, uncovered))
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = replace(coverage_record, points=(covered, uncovered))
+    session = CoverageEvidenceSession(coverage_record, None)
 
     result = session.query({"view": "points", "covered": False})
 
@@ -261,11 +270,13 @@ def test_points_covered_false_filter_is_not_treated_as_unfiltered():
     assert session.analysis_scope()["point_ids"] == [uncovered.id]
 
 
-def test_source_view_is_limited_to_exact_campaign_point_ids():
+def test_source_view_is_limited_to_exact_coverage_record_point_ids():
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     source = "\n".join(f"line {line}" for line in range(1, 21)) + "\n"
-    point = campaign.points[0]
+    point = coverage_record.points[0]
     point = replace(
         point,
         identity=replace(
@@ -279,9 +290,9 @@ def test_source_view_is_limited_to_exact_campaign_point_ids():
             ),
         ),
     )
-    campaign = replace(campaign, points=(point,))
+    coverage_record = replace(coverage_record, points=(point,))
     sources = CoverageSourceClosure(
-        campaign.target.identity,
+        coverage_record.target.identity,
         freeze_coverage_mapping(
             {
                 "rtl/counter.sv": {
@@ -292,7 +303,7 @@ def test_source_view_is_limited_to_exact_campaign_point_ids():
             }
         ),
     )
-    session = CoverageEvidenceSession(campaign, sources)
+    session = CoverageEvidenceSession(coverage_record, sources)
 
     result = session.query({"view": "source", "point_ids": [point.id], "context_lines": 2})
 
@@ -303,10 +314,12 @@ def test_source_view_is_limited_to_exact_campaign_point_ids():
 
 def test_source_view_resolves_only_previously_delivered_point_references():
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     source = "\n".join(f"line {line}" for line in range(1, 21)) + "\n"
     sources = CoverageSourceClosure(
-        campaign.target.identity,
+        coverage_record.target.identity,
         freeze_coverage_mapping(
             {
                 "rtl/counter.sv": {
@@ -317,7 +330,7 @@ def test_source_view_resolves_only_previously_delivered_point_references():
             }
         ),
     )
-    session = CoverageEvidenceSession(campaign, sources)
+    session = CoverageEvidenceSession(coverage_record, sources)
 
     with pytest.raises(ValueError, match="Unknown Coverage Point reference"):
         session.query({"view": "source", "point_refs": ["point:1"]})
@@ -331,12 +344,14 @@ def test_source_view_resolves_only_previously_delivered_point_references():
 
 def test_source_view_preserves_requested_order_and_duplicates():
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
-    first = campaign.points[0]
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    first = coverage_record.points[0]
     second = replace(first, id=f"{first.id}-second")
-    campaign = replace(campaign, points=(first, second))
+    coverage_record = replace(coverage_record, points=(first, second))
     sources = CoverageSourceClosure(
-        campaign.target.identity,
+        coverage_record.target.identity,
         freeze_coverage_mapping(
             {
                 "rtl/counter.sv": {
@@ -347,7 +362,7 @@ def test_source_view_preserves_requested_order_and_duplicates():
             }
         ),
     )
-    session = CoverageEvidenceSession(campaign, sources)
+    session = CoverageEvidenceSession(coverage_record, sources)
 
     session.query({"view": "source", "point_ids": [second.id, first.id, second.id]})
 
@@ -359,14 +374,14 @@ def test_source_view_preserves_requested_order_and_duplicates():
 
 
 def test_source_view_unknown_id_depends_on_verified_source_access():
-    campaign = _campaign_with_waiver()
+    coverage_record = _coverage_record_with_waiver()
 
-    assert CoverageEvidenceSession(campaign, None).query(
+    assert CoverageEvidenceSession(coverage_record, None).query(
         {"view": "source", "point_ids": ["unknown"]}
     ) == {"source_access": "report_only", "excerpts": []}
 
     sources = CoverageSourceClosure(
-        campaign.target.identity,
+        coverage_record.target.identity,
         freeze_coverage_mapping(
             {
                 "rtl/counter.sv": {
@@ -378,7 +393,7 @@ def test_source_view_unknown_id_depends_on_verified_source_access():
         ),
     )
     with pytest.raises(ValueError, match="Unknown Coverage Point"):
-        CoverageEvidenceSession(campaign, sources).query(
+        CoverageEvidenceSession(coverage_record, sources).query(
             {"view": "source", "point_ids": ["unknown"]}
         )
 
@@ -386,18 +401,20 @@ def test_source_view_unknown_id_depends_on_verified_source_access():
 def test_session_enforces_the_persisted_point_ceiling(monkeypatch):
     from booley.flows.sim import coverage_evidence
 
-    campaign = _campaign_with_waiver()
-    point = campaign.points[0]
-    campaign = replace(campaign, points=(point, replace(point, id=f"{point.id}-second")))
+    coverage_record = _coverage_record_with_waiver()
+    point = coverage_record.points[0]
+    coverage_record = replace(
+        coverage_record, points=(point, replace(point, id=f"{point.id}-second"))
+    )
     monkeypatch.setattr(coverage_evidence, "MAX_POINTS", 1)
 
     with pytest.raises(ValueError, match="session limit"):
-        CoverageEvidenceSession(campaign, None)
+        CoverageEvidenceSession(coverage_record, None)
 
 
 def test_cumulative_budget_stops_unbounded_model_retrieval():
-    campaign = _campaign_with_waiver()
-    session = CoverageEvidenceSession(campaign, None, total_budget_bytes=1_500)
+    coverage_record = _coverage_record_with_waiver()
+    session = CoverageEvidenceSession(coverage_record, None, total_budget_bytes=1_500)
 
     first = session.query({"view": "points", "disposition": "waived"})
     second = session.query({"view": "points", "disposition": "waived"})
@@ -410,36 +427,36 @@ def test_cumulative_budget_stops_unbounded_model_retrieval():
     }
 
 
-def test_bound_tool_deep_loads_campaign_and_publishes_audit(tmp_path, monkeypatch):
+def test_bound_tool_deep_loads_coverage_record_and_publishes_audit(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
-    campaign_path = source_project(tmp_path)
+    coverage_record_path = source_project(tmp_path)
     audit_path = tmp_path / "audit.json"
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(audit_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
     result = coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
-    assert result["campaign_id"].startswith("campaign:")
+    assert result["coverage_record_id"].startswith("campaign:")
     audit = json.loads(audit_path.read_text())
     assert audit["queries"] == [{"point_ids": [], "returned": 0, "view": "overview"}]
     assert audit["point_references"] == {}
     assert audit["evidence_bytes_delivered"] > 0
 
 
-def test_bound_tool_uses_audit_path_as_session_identity(tmp_path, monkeypatch):
+def test_bound_tool_uses_audit_path_as_session_identity(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
-    campaign_path = source_project(tmp_path)
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    coverage_record_path = source_project(tmp_path)
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(tmp_path / "first-audit.json"))
     result = coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
     point_ref = result["points"][0]["point_ref"]
@@ -451,35 +468,33 @@ def test_bound_tool_uses_audit_path_as_session_identity(tmp_path, monkeypatch):
         )
 
 
-def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(tmp_path, monkeypatch):
+def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
-    campaign_path = source_project(tmp_path)
-    point_path = campaign_path.with_name("coverage-points.jsonl.gz")
+    coverage_record_path = source_project(tmp_path)
+    point_path = coverage_record_path.with_name("coverage-points.jsonl.gz")
     stored = bytearray(point_path.read_bytes())
     stored[-1] ^= 1
     point_path.write_bytes(stored)
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
     with pytest.raises(ValueError, match="COV_POINT_FORMAT"):
         coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
 
-def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch):
+def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch, fresh_evidence_session):
     from booley.mcp import coverage_evidence
     from tests.mcp_tools.test_coverage_analyst import source_project
 
-    campaign_path = source_project(tmp_path)
+    coverage_record_path = source_project(tmp_path)
     audit_path = tmp_path / "audit.json"
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(coverage_record_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(audit_path))
-    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
-    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
     with pytest.raises(ValueError, match="Unknown evidence query fields"):
         coverage_evidence.query_active_coverage_evidence({"view": "points", "unsupported": True})
@@ -491,11 +506,11 @@ def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch):
     assert "Unknown evidence query fields" in json.loads(audit_path.read_text())["terminal_error"]
 
 
-def _campaign_with_source_gaps(count=157):
-    from booley.flows.sim.coverage_campaign import CoverageFinding
+def _coverage_record_with_source_gaps(count=157):
+    from booley.flows.sim.coverage_record import CoverageFinding
     from booley.flows.sim.coverage_source_gaps import GAP_CODE
 
-    campaign = _campaign_with_waiver()
+    coverage_record = _coverage_record_with_waiver()
     paths = [f"rtl/file_{index:04d}.sv" for index in range(count)]
     closure = freeze_coverage_mapping(
         {"rtl": [{"path": p, "sha256": "sha256:" + "a" * 64} for p in paths], "testbench": []}
@@ -510,15 +525,15 @@ def _campaign_with_source_gaps(count=157):
         for i in range(count)
     )
     return replace(
-        campaign,
+        coverage_record,
         source_closure=closure,
         findings=(*unrelated, *gaps),
     ), paths
 
 
 def test_zero_point_sources_are_fully_pageable_without_source_access_or_point_references():
-    campaign, paths = _campaign_with_source_gaps()
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record, paths = _coverage_record_with_source_gaps()
+    session = CoverageEvidenceSession(coverage_record, None)
     overview = session.query({"view": "overview"})["rtl_sources_without_points"]
     assert overview["total_sources"] == len(paths)
     assert overview["omitted"] == len(paths) - 50
@@ -548,11 +563,11 @@ def test_zero_point_sources_are_fully_pageable_without_source_access_or_point_re
 
 
 def test_zero_point_sources_cursor_and_budget_preserve_audit_contract():
-    campaign, _paths = _campaign_with_source_gaps()
-    session = CoverageEvidenceSession(campaign, None, total_budget_bytes=1)
+    coverage_record, _paths = _coverage_record_with_source_gaps()
+    session = CoverageEvidenceSession(coverage_record, None, total_budget_bytes=1)
     assert session.query({"view": "zero_point_sources"})["error"] == "evidence_budget_exhausted"
     decode_coverage_evidence_audit(session.analysis_scope())
-    session = CoverageEvidenceSession(campaign, None)
+    session = CoverageEvidenceSession(coverage_record, None)
     first = session.query({"view": "zero_point_sources", "limit": 10})
     with pytest.raises(ValueError, match="cursor"):
         session.query(
@@ -564,38 +579,45 @@ def test_zero_point_sources_cursor_and_budget_preserve_audit_contract():
         )
 
 
-def test_minimal_overview_retains_count():
-    from booley.flows.sim.coverage_evidence import _minimal_overview
+def test_minimal_overview_retains_count(monkeypatch):
+    from booley.flows.sim import coverage_evidence as module
 
-    campaign, paths = _campaign_with_source_gaps()
-    overview = CoverageEvidenceSession(campaign, None).query({"view": "overview"})
-    minimal = _minimal_overview(overview)["rtl_sources_without_points"]
+    coverage_record, paths = _coverage_record_with_source_gaps()
+    session = CoverageEvidenceSession(coverage_record, None)
+    full = len(json.dumps(session.query({"view": "overview"}), separators=(",", ":")))
+    # Only an overview too large for one response is cut down to its rollups.
+    monkeypatch.setattr(module, "MAX_RESPONSE_BYTES", full - 1)
+
+    minimal = CoverageEvidenceSession(coverage_record, None).query({"view": "overview"})[
+        "rtl_sources_without_points"
+    ]
+
     assert minimal["total_sources"] == len(paths)
     assert minimal["omitted"] == len(paths)
     assert minimal["query"]["view"] == "zero_point_sources"
 
 
 def test_malformed_source_gap_pointers_are_skipped():
-    from booley.flows.sim.coverage_campaign import CoverageFinding
+    from booley.flows.sim.coverage_record import CoverageFinding
     from booley.flows.sim.coverage_source_gaps import GAP_CODE, source_gap_paths
 
-    campaign, paths = _campaign_with_source_gaps(1)
-    campaign = replace(
-        campaign,
+    coverage_record, paths = _coverage_record_with_source_gaps(1)
+    coverage_record = replace(
+        coverage_record,
         findings=(
-            *campaign.findings,
+            *coverage_record.findings,
             CoverageFinding("warning", GAP_CODE, "/source_closure/rtl/999/path", "bad"),
-            campaign.findings[-1],
+            coverage_record.findings[-1],
         ),
     )
-    assert source_gap_paths(campaign) == tuple(paths)
+    assert source_gap_paths(coverage_record) == tuple(paths)
 
 
-def _mixed_campaign():
-    """A Campaign with eligible, waived, unscored, hit and never-hit points over two sources."""
+def _mixed_coverage_record():
+    """A Coverage Record with eligible, waived, unscored, hit and never-hit points over two sources."""
     from tests.flows.sim.test_coverage_point_query import _point
 
-    campaign = _campaign_with_waiver()
+    coverage_record = _coverage_record_with_waiver()
     points = (
         _point("rtl/b.sv", 5),
         _point("rtl/a.sv", 7),
@@ -605,7 +627,7 @@ def _mixed_campaign():
         _point("rtl/b.sv", 3, "branch", subject={"outcome": "if"}),
         _point("tb/tb.sv", 4, kind="unscored"),
     )
-    return replace(campaign, points=points)
+    return replace(coverage_record, points=points)
 
 
 @pytest.mark.parametrize(
@@ -616,8 +638,8 @@ def _mixed_campaign():
 def test_evidence_points_and_uncovered_command_select_the_same_points(filters):
     from booley.flows.sim.coverage_point_query import uncovered_points
 
-    campaign = _mixed_campaign()
-    session = CoverageEvidenceSession(campaign, None)
+    coverage_record = _mixed_coverage_record()
+    session = CoverageEvidenceSession(coverage_record, None)
 
     result = session.query(
         {"view": "points", "covered": False, "disposition": "eligible", "limit": 100, **filters}
@@ -625,7 +647,9 @@ def test_evidence_points_and_uncovered_command_select_the_same_points(filters):
 
     references = session.analysis_scope()["point_references"]
     evidence_ids = {references[point["point_ref"]] for point in result["points"]}
-    command_ids = {point.id for point in uncovered_points(campaign.points, **filters).points}
+    command_ids = {
+        point.id for point in uncovered_points(coverage_record.points, **filters).points
+    }
     assert evidence_ids == command_ids
     assert result["matched_points"] == len(command_ids)
     assert command_ids

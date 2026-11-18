@@ -2,8 +2,9 @@
 
 Uses long-sleeping python subprocesses as stand-ins for sim_proc and
 bwave_proc, so the test runs cross-platform without needing iverilog,
-verilator, or bwave on PATH.  Every test that starts a monitor pairs it with
-``stop_monitor`` so no monitor thread outlives the test.
+verilator, or bwave on PATH.  Every test that starts a monitor stops it with
+``stop_monitor``, bounded where a kill may be in flight, so no monitor thread
+outlives the test.
 """
 
 from __future__ import annotations
@@ -14,17 +15,39 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
+from typing import Protocol
 
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.time_budget import hang_guard_s, scaled
 
+from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime import platform_paths
 from booley.runtime.platform_paths import popen_new_group_kwargs
+
+#: Bound on one stall kill, from monitor start to every process dead: ``stop_monitor``'s
+#: docstring puts the kill path at about 30 s on Windows (about 10 s on POSIX). Kept below
+#: the per-test limit so a kill that never happens fails as an assertion.
+_MONITOR_KILL_DEADLINE_S = scaled(40)
+#: Bound on the ``finally`` stop. Cleanup runs after the test body, which may already have
+#: spent its deadline: a short bound keeps a hung kill inside the per-test limit, so the
+#: body's assertion message survives instead of an unattributed worker timeout.
+_CLEANUP_STOP_S = scaled(5)
+#: Sleeper lifetime: far beyond every deadline here, so a sleeper can only die early
+#: by being killed. (A 30 s sleeper would exit on its own inside a 40 s deadline and
+#: turn a missing kill into a pass.)
+_SLEEPER_LIFETIME_S = 600
+#: Extra time the AC1 test adds to the tree-kill, so the kill finishes well past the
+#: 5 s window the old fixed wait allowed.
+_SLOW_TREE_KILL_S = 5.0
 
 
 def _spawn_sleeper() -> subprocess.Popen:
-    """Spawn a Python subprocess that sleeps for 30s — long enough to outlast
-    any reasonable test, so the only way it exits is if the monitor kills it.
+    """Spawn a Python subprocess that sleeps for ``_SLEEPER_LIFETIME_S`` — long
+    enough to outlast any wait here, so the only way it exits is if the monitor
+    kills it.
 
     Spawned in its *own* process group (via popen_new_group_kwargs, matching
     how real sim/bwave procs are launched) so that the monitor's
@@ -33,21 +56,94 @@ def _spawn_sleeper() -> subprocess.Popen:
     with it.
     """
     return subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
+        [sys.executable, "-c", f"import time; time.sleep({_SLEEPER_LIFETIME_S})"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         **popen_new_group_kwargs(),
     )
 
 
-def _wait_dead(proc: subprocess.Popen, timeout: float = 5.0) -> bool:
-    """Poll until proc exits, returning True if it died inside the window."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
+class _Killable(Protocol):
+    """What the kill wait needs from a process or stream: an id and ``poll()``."""
+
+    @property
+    def pid(self) -> int: ...
+
+    def poll(self) -> object: ...
+
+
+def _poll_until(predicate: Callable[[], bool], deadline: float) -> bool:
+    """Evaluate ``predicate`` at least once, then every 50 ms until true or ``deadline``.
+
+    ``deadline`` is an absolute ``time.monotonic()`` value. Returns the last result.
+    """
+    while True:
+        if predicate():
             return True
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.05)
-    return False
+
+
+def _stop_monitor_within(session: TraceSession, timeout_s: float) -> bool:
+    """Run ``session.stop_monitor`` on a helper thread; True if it returned in time.
+
+    ``stop_monitor`` joins an in-flight stall kill without a bound, so a kill that
+    never ends would hang the test. The helper thread is a daemon: a stuck join
+    cannot keep the interpreter alive.
+    """
+    helper = threading.Thread(target=session.stop_monitor, daemon=True)
+    helper.start()
+    helper.join(timeout=max(0.0, timeout_s))
+    return not helper.is_alive()
+
+
+def _await_monitor_kill(
+    session: TraceSession,
+    *killed: _Killable,
+    reported: Callable[[], bool] | None = None,
+    deadline_s: float = _MONITOR_KILL_DEADLINE_S,
+) -> None:
+    """Wait in event order for the monitor's kill, one deadline over all steps.
+
+    1. the monitor reports the kill (default: ``session.stall_killed``);
+    2. ``stop_monitor`` returns, which joins the in-flight kill work;
+    3. every process in ``killed`` is dead.
+
+    Raises ``AssertionError`` naming the step that missed the deadline.
+    """
+    deadline = time.monotonic() + deadline_s
+    is_reported = reported if reported is not None else (lambda: session.stall_killed)
+    assert _poll_until(is_reported, deadline), "the monitor never reported a stall kill"
+    assert _stop_monitor_within(session, deadline - time.monotonic()), (
+        "stop_monitor did not return: the stall kill outlived its bound"
+    )
+    for proc in killed:
+        assert _poll_until(lambda proc=proc: proc.poll() is not None, deadline), (
+            f"pid {proc.pid} survived the stall kill"
+        )
+
+
+def _declared_stream_stalled_recorded(session: TraceSession) -> bool:
+    """True once the manifest records a ``declared_stream_stalled`` event.
+
+    A missing manifest means "not yet": ``TraceSession`` keeps its status in memory
+    until the first write, and the spare-simulator path writes first at that event.
+    The write is an atomic replace, so a present file is always complete JSON.
+    """
+    try:
+        manifest = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    return any(event.get("kind") == "declared_stream_stalled" for event in manifest["events"])
+
+
+def _kill_all(*procs: subprocess.Popen) -> None:
+    """Kill and reap every process still running (test cleanup)."""
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=hang_guard_s())
 
 
 class _StreamStub:
@@ -91,7 +187,18 @@ class _AliveStub:
 class TestStallKill:
     """The monitor must kill sim+bwave when .bwave never grows."""
 
-    def test_kills_after_stall_threshold(self, tmp_path):
+    def test_kills_after_stall_threshold(self, tmp_path, monkeypatch):
+        # The tree-kill is slowed past the old fixed 5 s window: the wait must follow
+        # the monitor's kill, not a guess at how long the kill takes.
+        real_kill_process_tree = platform_paths.kill_process_tree
+
+        def slow_kill_process_tree(proc):
+            time.sleep(_SLOW_TREE_KILL_S)
+            real_kill_process_tree(proc)
+
+        monkeypatch.setattr(
+            "booley.runtime.platform_paths.kill_process_tree", slow_kill_process_tree
+        )
         # .bwave file is never created → size stays at 0 forever
         ts = TraceSession(work_dir=tmp_path)
         sim_proc = _spawn_sleeper()
@@ -100,26 +207,52 @@ class TestStallKill:
             ts.start_monitor(
                 _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
-                stall_timeout=0.2,
+                stall_timeout=scaled(0.2),
                 poll_interval=0.05,
                 kill_after_stalls=2,
             )
-            # 2 windows x 0.2s = 0.4s expected kill time; allow generous slack
-            assert _wait_dead(sim_proc, timeout=5.0), (
-                "sim_proc should have been tree-killed by the monitor"
-            )
-            assert _wait_dead(bwave_proc, timeout=5.0), (
-                "bwave_proc should have been killed by the monitor"
+            _await_monitor_kill(
+                ts,
+                sim_proc,
+                bwave_proc,
+                deadline_s=_MONITOR_KILL_DEADLINE_S + _SLOW_TREE_KILL_S,
             )
             assert ts.stall_killed is True
             assert ts.stall_message is not None
             assert "stalled" in ts.stall_message
+            text = (tmp_path / "trace_incident.txt").read_text(encoding="utf-8")
+            assert "bwave trace pipeline stalled" in text
+            assert "cache_dir:" in text
+            assert "processes:" in text
         finally:
-            ts.stop_monitor()
-            for p in (sim_proc, bwave_proc):
-                if p.poll() is None:
-                    p.kill()
-                    p.wait(timeout=2)
+            _kill_all(sim_proc, bwave_proc)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
+
+    def test_stall_kill_wait_fails_when_the_tree_survives(self, tmp_path, monkeypatch):
+        # The monitor reports the kill but never kills the process tree: the wait
+        # must fail instead of passing on the report alone.
+        monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", lambda _proc: None)
+        ts = TraceSession(work_dir=tmp_path)
+        sim_proc = _spawn_sleeper()
+        bwave_proc = _spawn_sleeper()
+        try:
+            ts.start_monitor(
+                _StreamStub(bwave_proc, ts.bwave_path),
+                sim_proc,
+                stall_timeout=scaled(0.2),
+                poll_interval=0.05,
+                kill_after_stalls=2,
+            )
+            assert _poll_until(
+                lambda: ts.stall_killed, time.monotonic() + _MONITOR_KILL_DEADLINE_S
+            )
+            # Join here so only the liveness step spends the short budget below.
+            assert _stop_monitor_within(ts, _MONITOR_KILL_DEADLINE_S)
+            with pytest.raises(AssertionError, match="survived the stall kill"):
+                _await_monitor_kill(ts, sim_proc, deadline_s=scaled(1))
+        finally:
+            _kill_all(sim_proc, bwave_proc)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
 
     def test_natural_exit_during_incident_io_is_not_claimed_as_a_stall_kill(
         self, tmp_path, monkeypatch
@@ -150,6 +283,8 @@ class TestStallKill:
             lambda _proc: pytest.fail("completed process must not be tree-killed"),
         )
 
+        # Private seam: the race needs the process to exit inside incident I/O at the kill
+        # decision, which `start_monitor` cannot schedule.
         session._kill_stalled_pipeline(0, 30.0, proc, Stream())
 
         assert session.stall_killed is False
@@ -159,6 +294,8 @@ class TestStallKill:
         """AC2: stopping does not wait out the poll interval."""
         session = TraceSession(tmp_path)
         monitors: list[threading.Thread] = []
+        # Private seam: the thread that `start_monitor` spawns is not exposed, so the test
+        # wraps `_monitor_stalls` to hold it.
         real_monitor = session._monitor_stalls
 
         def recording_monitor(*args):
@@ -169,7 +306,7 @@ class TestStallKill:
         session.start_monitor(_AliveStub(), _AliveStub(), stall_timeout=30.0, poll_interval=30.0)
         try:
             # Wait until the monitor thread is running.
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + hang_guard_s()
             while not monitors and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert len(monitors) == 1
@@ -178,7 +315,7 @@ class TestStallKill:
             elapsed = time.monotonic() - started
         finally:
             session.stop_monitor()
-        assert elapsed < 5.0
+        assert elapsed < scaled(5)
         assert not monitors[0].is_alive()
         session.stop_monitor()  # idempotent
 
@@ -194,7 +331,7 @@ class TestStallKill:
 
         def blocked_incident(*_args, **_kwargs):
             entered.set()
-            release.wait(timeout=30)
+            release.wait(timeout=hang_guard_s())
             return tmp_path / "incident.txt"
 
         monkeypatch.setattr(session, "write_incident", blocked_incident)
@@ -205,6 +342,8 @@ class TestStallKill:
         bwave.kill = lambda: events.append("bwave_kill")  # type: ignore[method-assign]
         snapshot: dict[str, bool] = {}
         monitors: list[threading.Thread] = []
+        # Private seam: the thread that `start_monitor` spawns is not exposed, so the test
+        # wraps `_monitor_stalls` to hold it.
         real_monitor = session._monitor_stalls
 
         def recording_monitor(*args):
@@ -223,7 +362,7 @@ class TestStallKill:
             session.start_monitor(
                 bwave, sim, stall_timeout=0.0, poll_interval=0.01, kill_after_stalls=1
             )
-            assert entered.wait(timeout=10), "the stall kill never started"
+            assert entered.wait(timeout=hang_guard_s()), "the stall kill never started"
             helper.start()
             # A bounded join would have returned by now.
             helper.join(timeout=2.0)
@@ -231,7 +370,7 @@ class TestStallKill:
         finally:
             release.set()
             if helper.ident is not None:
-                helper.join(timeout=10)
+                helper.join(timeout=hang_guard_s())
             session.stop_monitor()
         assert not helper.is_alive()
         assert snapshot == {"killed": True, "monitor_alive": False}
@@ -262,6 +401,7 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
     session = TraceSession(tmp_path / "work")
+    threads_before = set(threading.enumerate())
     try:
         session.start_monitor(
             conversion,
@@ -271,15 +411,22 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
             kill_after_stalls=2,
             spare_simulator=True,
         )
+        monitors = [t for t in threading.enumerate() if t not in threads_before]
+        assert monitors, "start_monitor spawned no thread"
         time.sleep(1.0)  # ten stall windows with nothing written
         assert conversion.poll() is None
         assert sim_proc.poll() is None
-    finally:
         sim_proc.kill()
-        sim_proc.wait(timeout=5)
+        sim_proc.wait(timeout=hang_guard_s())
+        # The monitor ends by itself once the simulator is gone, before any stop request.
+        for monitor in monitors:
+            monitor.join(timeout=hang_guard_s())
+        assert not any(monitor.is_alive() for monitor in monitors)
+    finally:
+        _kill_all(sim_proc)
         session.stop_monitor()
         conversion.kill()
-        conversion.finish(timeout_s=5)
+        conversion.finish(timeout_s=hang_guard_s())
 
 
 @_posix_only
@@ -303,128 +450,111 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
         session.start_monitor(
             conversion,
             sim_proc,
-            stall_timeout=0.1,
+            stall_timeout=scaled(0.1),
             poll_interval=0.05,
             kill_after_stalls=2,
             spare_simulator=True,
         )
-        assert _wait_dead(conversion, timeout=10.0), "stalled converter should be killed"
-        writer.join(timeout=10.0)
+        _await_monitor_kill(
+            session,
+            conversion,
+            reported=lambda: _declared_stream_stalled_recorded(session),
+        )
+        writer.join(timeout=_MONITOR_KILL_DEADLINE_S)
         assert not writer.is_alive(), "the writer must be drained, not left blocked"
         assert sim_proc.poll() is None
         assert session.stall_killed is False
     finally:
         sim_proc.kill()
-        sim_proc.wait(timeout=5)
-        session.stop_monitor()
-        conversion.finish(timeout_s=5)
+        sim_proc.wait(timeout=hang_guard_s())
+        _stop_monitor_within(session, _CLEANUP_STOP_S)
+        conversion.finish(timeout_s=hang_guard_s())
 
 
 class TestTraceStatusManifest:
-    def test_inspection_records_queryable_trace_metadata(self, tmp_path, monkeypatch):
-        trace = tmp_path / "trace.fst"
-        trace.write_bytes(MINIMAL_FST_BYTES)
-        monkeypatch.setattr(
-            "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
-        )
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "data": {
-                            "scope_prefix": "tb.dut",
-                            "root_scopes": ["tb"],
-                            "signal_count": 42,
-                            "total_ticks": 900,
-                            "signals": [{"name": "clk"}],
-                        }
-                    }
-                ),
-                stderr="",
+    @pytest.mark.parametrize(
+        ("data", "scope", "usable", "top_scope", "signal_count", "reason", "total_ticks"),
+        [
+            (
+                {
+                    "scope_prefix": "tb.dut",
+                    "root_scopes": ["tb"],
+                    "signal_count": 42,
+                    "total_ticks": 900,
+                },
+                "",
+                True,
+                "tb.dut",
+                42,
+                "",
+                900,
             ),
-        )
-
-        inspection = TraceSession(tmp_path).inspect(trace)
-
-        assert inspection.usable is True
-        assert inspection.artifact is not None
-        assert inspection.artifact.top_scope == "tb.dut"
-        assert inspection.artifact.signal_count == 42
-        status = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
-        assert status["trace_metadata"]["total_ticks"] == 900
-
-    def test_inspection_accepts_queryable_trace_with_multiple_root_scopes(
-        self, tmp_path, monkeypatch
+            # Cocotb/Verilator exposes $rootio beside the DUT, so no common prefix exists.
+            (
+                {
+                    "scope_prefix": "",
+                    "root_scopes": ["$rootio", "uart16550"],
+                    "signal_count": 148,
+                    "total_ticks": 1705,
+                },
+                "",
+                True,
+                "$rootio, uart16550",
+                148,
+                "",
+                1705,
+            ),
+            (
+                {
+                    "scope_prefix": "other_dut",
+                    "root_scopes": ["other_dut"],
+                    "signal_count": 12,
+                    "total_ticks": 20,
+                },
+                "uart16550",
+                False,
+                None,
+                None,
+                "expected DUT scope 'uart16550'",
+                None,
+            ),
+        ],
+        ids=["metadata", "multiple-root-scopes", "different-dut-scope"],
+    )
+    def test_inspection_of_a_queryable_trace(
+        self,
+        tmp_path,
+        monkeypatch,
+        data,
+        scope,
+        usable,
+        top_scope,
+        signal_count,
+        reason,
+        total_ticks,
     ):
-        """Cocotb/Verilator exposes $rootio beside the DUT, so no common prefix exists."""
         trace = tmp_path / "trace.fst"
         trace.write_bytes(MINIMAL_FST_BYTES)
         monkeypatch.setattr(
             "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
         )
+        stdout = json.dumps({"data": {**data, "signals": [{"name": "clk"}]}})
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "data": {
-                            "scope_prefix": "",
-                            "root_scopes": ["$rootio", "uart16550"],
-                            "signal_count": 148,
-                            "total_ticks": 1705,
-                            "signals": [{"name": "$rootio.clk"}],
-                        }
-                    }
-                ),
-                stderr="",
-            ),
+            lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=stdout, stderr=""),
         )
 
-        inspection = TraceSession(tmp_path).inspect(trace)
+        inspection = TraceSession(tmp_path, trace_scope=scope).inspect(trace)
 
-        assert inspection.usable is True
-        assert inspection.artifact is not None
-        assert inspection.artifact.top_scope == "$rootio, uart16550"
-        assert inspection.artifact.signal_count == 148
-
-    def test_inspection_rejects_a_different_dut_scope(self, tmp_path, monkeypatch):
-        trace = tmp_path / "trace.fst"
-        trace.write_bytes(MINIMAL_FST_BYTES)
-        monkeypatch.setattr(
-            "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
-        )
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "data": {
-                            "scope_prefix": "other_dut",
-                            "root_scopes": ["other_dut"],
-                            "signal_count": 12,
-                            "total_ticks": 20,
-                            "signals": [{"name": "clk"}],
-                        }
-                    }
-                ),
-                stderr="",
-            ),
-        )
-
-        inspection = TraceSession(tmp_path, trace_scope="uart16550").inspect(trace)
-
-        assert inspection.usable is False
-        assert "expected DUT scope 'uart16550'" in inspection.failure_reason
+        assert inspection.usable is usable
+        assert reason in (inspection.failure_reason or "")
+        if usable:
+            assert inspection.artifact is not None
+            assert inspection.artifact.top_scope == top_scope
+            assert inspection.artifact.signal_count == signal_count
+            status = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
+            assert status["trace_metadata"]["total_ticks"] == total_ticks
 
     def test_postprocess_retries_unscoped_when_scoped_build_writes_no_cache(
         self,
@@ -493,13 +623,13 @@ class TestTraceStatusManifest:
             return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"boom")
 
         monkeypatch.setattr(waveform_store.subprocess, "run", fake_run)
-        return TraceSession(work_dir=tmp_path / "work", trace_scope="tb"), builds
-
-    def test_one_budget_covers_postprocess_and_find(self, tmp_path, monkeypatch):
-        session, builds = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
         vcd = tmp_path / "work" / "dump.vcd"
         vcd.parent.mkdir()
         vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+        return TraceSession(work_dir=tmp_path / "work", trace_scope="tb"), builds, vcd
+
+    def test_one_budget_covers_postprocess_and_find(self, tmp_path, monkeypatch):
+        session, builds, vcd = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
         session.start_conversion_budget(60)
 
         session.postprocess(vcd)  # scoped build consumes the whole 60 s; retry skipped
@@ -509,10 +639,7 @@ class TestTraceStatusManifest:
         assert found == tmp_path / "work" / "trace.vcd"
 
     def test_exhausted_budget_is_trace_incident(self, tmp_path, monkeypatch, capsys):
-        session, builds = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
-        vcd = tmp_path / "work" / "dump.vcd"
-        vcd.parent.mkdir()
-        vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+        session, builds, vcd = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
         session.start_conversion_budget(0)  # already spent
 
         session.postprocess(vcd)
@@ -523,11 +650,15 @@ class TestTraceStatusManifest:
         assert status["attempts"][-1]["status"] == "vcd_only"
         assert session.find() == tmp_path / "work" / "trace.vcd"  # raw VCD, never a waveform
 
-    def test_cleanup_fifo_publishes_bwave_to_work_dir(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("returncode", "published", "status"),
+        [(0, True, "success"), (7, False, "no_artifact")],
+        ids=["converted", "failed-conversion"],
+    )
+    def test_cleanup_fifo_publishes_only_a_successful_conversion(
+        self, tmp_path, returncode, published, status
+    ):
         ts = TraceSession(work_dir=tmp_path)
-
-        from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
-
         ts.bwave_path.parent.mkdir(parents=True, exist_ok=True)
         ts.bwave_path.write_bytes(MINIMAL_FST_BYTES)
 
@@ -535,46 +666,19 @@ class TestTraceStatusManifest:
             def finish(self):
                 return ConversionResult(
                     ts.bwave_path,
-                    attempts=(ConversionAttempt(None, 0),),
+                    attempts=(ConversionAttempt(None, returncode),),
                     inspection=inspect_store(ts.bwave_path, probe_reader=False),
                 )
 
         ts.cleanup_fifo(FakeConversion())
 
-        published = tmp_path / "trace.fst"
-        assert ts.bwave_path.exists()
-        assert published.exists()
-        assert published.read_bytes() == ts.bwave_path.read_bytes()
-
+        assert ts.work_bwave_path.exists() is published
+        if published:
+            assert ts.bwave_path.exists()
+            assert ts.work_bwave_path.read_bytes() == ts.bwave_path.read_bytes()
         data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
-        assert any(event["kind"] == "bwave_published" for event in data["events"])
-        assert data["attempts"][-1]["status"] == "success"
-
-    def test_cleanup_fifo_does_not_publish_failed_conversion(self, tmp_path, monkeypatch):
-        ts = TraceSession(work_dir=tmp_path)
-
-        from booley.bwave.waveform_store import (
-            ConversionAttempt,
-            ConversionResult,
-            inspect_store,
-        )
-
-        ts.bwave_path.parent.mkdir(parents=True, exist_ok=True)
-        ts.bwave_path.write_bytes(MINIMAL_FST_BYTES)
-
-        class FakeConversion:
-            def finish(self):
-                return ConversionResult(
-                    ts.bwave_path,
-                    attempts=(ConversionAttempt(None, 7),),
-                    inspection=inspect_store(ts.bwave_path, probe_reader=False),
-                )
-
-        ts.cleanup_fifo(FakeConversion())
-
-        assert not ts.work_bwave_path.exists()
-        data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
-        assert data["attempts"][-1]["status"] == "no_artifact"
+        assert any(e["kind"] == "bwave_published" for e in data["events"]) is published
+        assert data["attempts"][-1]["status"] == status
 
     def test_incident_manifest_records_failure_and_return_codes(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path)
@@ -583,7 +687,7 @@ class TestTraceStatusManifest:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        proc.wait(timeout=5)
+        proc.wait(timeout=hang_guard_s())
 
         ts.write_incident("no artifact", sim_proc=proc)
 
@@ -592,32 +696,6 @@ class TestTraceStatusManifest:
         assert data["failure_reason"] == "no artifact"
         assert data["return_codes"]["sim"] == 7
         assert data["events"][-1]["kind"] == "incident"
-
-    def test_stall_writes_trace_incident(self, tmp_path):
-        ts = TraceSession(work_dir=tmp_path)
-        sim_proc = _spawn_sleeper()
-        bwave_proc = _spawn_sleeper()
-        try:
-            ts.start_monitor(
-                _StreamStub(bwave_proc, ts.bwave_path),
-                sim_proc,
-                stall_timeout=0.2,
-                poll_interval=0.05,
-                kill_after_stalls=1,
-            )
-            assert _wait_dead(sim_proc, timeout=5.0)
-            incident = tmp_path / "trace_incident.txt"
-            assert incident.exists()
-            text = incident.read_text(encoding="utf-8")
-            assert "bwave trace pipeline stalled" in text
-            assert "cache_dir:" in text
-            assert "processes:" in text
-        finally:
-            ts.stop_monitor()
-            for p in (sim_proc, bwave_proc):
-                if p.poll() is None:
-                    p.kill()
-                    p.wait(timeout=2)
 
     def test_no_kill_when_bwave_grows(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path)
@@ -629,20 +707,21 @@ class TestTraceStatusManifest:
 
         sim_proc = _spawn_sleeper()
         bwave_proc = _spawn_sleeper()
+        stall_s = scaled(0.2)
         try:
             ts.start_monitor(
                 _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
-                stall_timeout=0.2,
+                stall_timeout=stall_s,
                 poll_interval=0.05,
                 kill_after_stalls=3,
             )
-            # Grow the file every 50 ms for ~0.6 s — exceeds total kill window
-            # (3 x 0.2 = 0.6 s) but no individual stall lasts long enough.
+            # Grow the file every quarter stall window for three windows: that exceeds the
+            # total kill window (3 stalls) but no individual stall lasts long enough.
             for _i in range(12):
                 with target.open("ab") as f:
                     f.write(b"x")
-                time.sleep(0.05)
+                time.sleep(stall_s / 4)
             # Both procs must still be alive.
             assert sim_proc.poll() is None, "sim_proc was killed despite growth"
             assert bwave_proc.poll() is None, "bwave_proc was killed despite growth"
@@ -653,4 +732,4 @@ class TestTraceStatusManifest:
             for p in (sim_proc, bwave_proc):
                 if p.poll() is None:
                     p.kill()
-                    p.wait(timeout=2)
+                    p.wait(timeout=hang_guard_s())

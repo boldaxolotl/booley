@@ -33,6 +33,49 @@ def test_configured_sandbox_memory_accepts_current_and_legacy_shapes() -> None:
     assert resource_policy.configured_sandbox_memory({"sandbox": "invalid"}) == ""
 
 
+_MEMINFO = "MemTotal:       16384000 kB\nMemFree: 1 kB\nSwapTotal:       2097152 kB\n"
+
+
+def test_parse_meminfo_reads_memory_and_swap_in_bytes() -> None:
+    host = resource_policy.parse_meminfo(_MEMINFO)
+    assert host == resource_policy.HostMemory(16384000 * 1024, 2 * _GIB)
+    with pytest.raises(ValueError, match="SwapTotal"):
+        resource_policy.parse_meminfo("MemTotal: 1 kB\n")
+    with pytest.raises(ValueError, match="MemTotal"):
+        resource_policy.parse_meminfo("SwapTotal: 1 kB\n")
+
+
+def test_configured_sandbox_swap_reads_the_section() -> None:
+    assert resource_policy.configured_sandbox_swap({"sandbox": {"swap": " 2g "}}) == "2g"
+    assert resource_policy.configured_sandbox_swap({"sandbox": {"swap": 3}}) == ""
+    assert resource_policy.configured_sandbox_swap({"sandbox": "invalid"}) == ""
+
+
+_SWAP_ROWS = [
+    ("12g", "", 16 * _GIB, "15g"),
+    ("12g", "", 1 * _GIB, "13g"),
+    ("12g", "", 0, "12g"),
+    ("12g", "lots", 16 * _GIB, "15g"),
+    ("12g", "0", 16 * _GIB, "12g"),
+    ("12g", "2g", 0, "14g"),
+    ("1000m", "", 16 * _GIB, "1250m"),
+    ("1000k", "", 16 * _GIB, "1250k"),
+    ("1001", "", 16 * _GIB, "1251"),
+    ("", "2g", 16 * _GIB, ""),
+    ("lots", "2g", 16 * _GIB, ""),
+]
+
+
+def test_memory_swap_limit() -> None:
+    """The default swap is a quarter of memory, capped at the host's swap."""
+    for memory, swap, host_swap, expected in _SWAP_ROWS:
+        assert resource_policy.memory_swap_limit(memory, swap, host_swap) == expected, (
+            memory,
+            swap,
+            host_swap,
+        )
+
+
 def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeypatch) -> None:
     invalid = tmp_path / "memory.max"
     invalid.write_text("invalid", encoding="utf-8")
@@ -44,75 +87,6 @@ def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeyp
 
     invalid.write_text(str(9 * _GIB), encoding="utf-8")
     assert resource_policy.cgroup_memory_limit_bytes() == 9 * _GIB
-
-
-def test_heavy_reservation_validates_configured_value() -> None:
-    default = resource_policy.heavy_memory_reservation(None, None, ())
-    invalid = resource_policy.heavy_memory_reservation("lots", None, ())
-    zero = resource_policy.heavy_memory_reservation("0g", None, ())
-
-    assert default == resource_policy.HeavyMemoryReservation(4 * _GIB, "4g default")
-    assert invalid.bytes == 4 * _GIB
-    assert "unparseable" in str(invalid.error)
-    assert "greater than zero" in str(zero.error)
-
-
-def test_calibrated_peak_adds_margin_and_rounds_up_to_gib() -> None:
-    calibration = resource_policy.SynthesisMemoryCalibration(
-        target="asic_full",
-        peak_rss_bytes=int(15.8 * _GIB),
-    )
-
-    reservation = resource_policy.heavy_memory_reservation(
-        "16g",
-        calibration,
-        ("asic_full",),
-    )
-
-    assert reservation.bytes == 19 * _GIB
-    assert reservation.error is None
-    assert reservation.evidence == "15.8g measured on asic_full + 15% margin"
-
-
-def test_larger_configured_reservation_is_not_reduced_by_calibration() -> None:
-    calibration = resource_policy.SynthesisMemoryCalibration("asic_full", 8 * _GIB)
-
-    reservation = resource_policy.heavy_memory_reservation(
-        "16g",
-        calibration,
-        ("asic_full",),
-    )
-
-    assert reservation.bytes == 16 * _GIB
-    assert reservation.evidence == "configured 16g; calibrated peak 8g"
-
-
-def test_calibration_must_belong_to_current_doctor_matrix() -> None:
-    calibration = resource_policy.SynthesisMemoryCalibration("asic_small", 7 * _GIB)
-    current = resource_policy.heavy_memory_reservation(
-        None,
-        calibration,
-        ("asic_small", "asic_full"),
-    )
-    stale = resource_policy.heavy_memory_reservation(
-        None,
-        calibration,
-        ("asic_full",),
-    )
-
-    assert current.error is None
-    assert "unselected Target 'asic_small'" in str(stale.error)
-
-
-def test_memory_requirement_exposes_typed_admission_arithmetic() -> None:
-    requirement = resource_policy.memory_requirement(
-        max_heavy=2,
-        heavy_job_bytes=4 * _GIB,
-        agent_count=1,
-        agent_bytes=_GIB,
-    )
-
-    assert requirement.required_bytes == 11 * _GIB
 
 
 def test_doctor_does_not_reimplement_extracted_resource_mechanisms() -> None:
@@ -128,7 +102,6 @@ def test_doctor_does_not_reimplement_extracted_resource_mechanisms() -> None:
         "_cgroup_memory_limit_bytes",
         "_configured_sandbox_memory",
         "_fmt_g",
-        "_heavy_job_mem_bytes",
         "_parse_mem_limit",
     }
     assert not function_names & extracted

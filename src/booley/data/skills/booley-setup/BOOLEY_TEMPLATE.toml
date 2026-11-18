@@ -3,12 +3,12 @@
 
 [project]
 name = "<project>"
-# Extra files Goal Mode freezes: recipes and stimulus sources that hooks or
+# Extra files whose edits Booley flags: recipes and stimulus sources that hooks or
 # generators consume. Paths are relative to the Project Root; keep generated
 # outputs out of the patterns. Add only with the human's agreement.
 # protected_inputs = ["Makefile", "firmware/**/*.c"]
 
-# Optional identity for Developer Agent commits in Interactive and Goal Mode.
+# Optional identity for Developer Agent commits in the Sandbox.
 # Values are applied to each checkout at worktree scope. Missing fields use the
 # neutral defaults `Dev` and `dev@localhost`.
 # [agent.git]
@@ -58,21 +58,19 @@ enabled = false
 
 [flows.synth]
 enabled = false              # synthesis recipe belongs in Target flow_options
-# Doctor deep-runs every Target whose doctor list contains `synth` and retains
-# the largest measured memory peak.
+# Doctor deep-runs every Target whose doctor list contains `synth`;
+# `booley resources` reports their peak memory.
 
 [jobs]
-# heavy_memory = "4g"        # per-HEAVY-job reservation; calibrate in Step 4
+# Seat Caps are mandatory for a licensed tool such as Vivado.
+# [jobs.seats]
+# vivado = 1                 # license seats Booley may use at once
 
 # NOTE: RTL-vs-TB source isolation is derived from the .core filesets — a file
-# tagged `tags: [tb]` is testbench, everything else is RTL (ADR 0026). There is
+# tagged `tags: [tb]` is testbench, everything else is RTL. There is
 # no [sources.*] table in booley.toml anymore; tag your testbench fileset in the
 # .core instead (see CORE_TEMPLATE.yaml).
 
 # Dashboard opens on VS Code folder attachment; false removes the owned task.
 # [sandbox]
 # dashboard = true
-
-# Quiet attributable presence expires after this many seconds (60..604800).
-# [goals]
-# quiet_after = 7200

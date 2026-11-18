@@ -16,8 +16,16 @@ from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import health, runtime_context
 from tests.booley_checkouts_support import LAYOUTS, linked_worktree
-from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.harness.test_doctor import _write_project
+
+
+@pytest.fixture(autouse=True)
+def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the doctor probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
+
 
 __all__ = ["flow_project"]
 
@@ -35,7 +43,7 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
     shutil.copytree(flow_project / ".booley", data)
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, data, target_is_directory=True)
     config = data / "booley.toml"
     config.write_text(
@@ -60,7 +68,15 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
 
     configure_project_alias(monkeypatch, alias, data)
     monkeypatch.setattr(doctor._DoctorFlowRuntime, "inside", property(lambda _self: not host))
-    monkeypatch.setattr(doctor._DoctorFlowRuntime, "command", lambda _self, inner, **_kw: inner)
+
+    def command(_self, inner, *, env=None):
+        """Inside the Sandbox only the subprocess env reaches the Flow; from the host, docker -e."""
+        if not host:
+            return inner
+        pairs = [part for name, value in (env or {}).items() for part in ("-e", f"{name}={value}")]
+        return ["docker", "exec", *pairs, "booley-session", *inner]
+
+    monkeypatch.setattr(doctor._DoctorFlowRuntime, "command", command)
     return audit, data, alias
 
 
@@ -71,6 +87,9 @@ def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
 
     real_run = subprocess.run
     executions = []
+    # What each Doctor Flow run saw: its argv values, its environment, and the
+    # Common Booley Directory its Resource History would be written to.
+    launches = []
 
     def run(argv, **kwargs):
         if "booley.flows.sim" not in argv:
@@ -79,31 +98,39 @@ def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
         emitted = Path(values[values.index("--report-dir") + 1])
         assert emitted.is_relative_to(alias if host else data)
         values[values.index("--work-dir") + 1] = str(flow_project)
+        env = dict(kwargs.get("env", {}))
+        # A containerized Flow receives the docker ``-e NAME=VALUE`` pairs.
+        pairs = [argv[i + 1] for i, part in enumerate(argv) if part == "-e"]
+        env.update(pair.partition("=")[::2] for pair in pairs)
+        launches.append((values, env))
         with monkeypatch.context() as scoped:
-            for name, value in kwargs.get("env", {}).items():
+            for name, value in env.items():
                 scoped.setenv(name, value)
             flow = SimulateFlow()
             outcome = flow.execute_cli(values).outcome
+            from booley.runtime.booley_dir import resolve_common_booley_dir
+
+            launches[-1] += (resolve_common_booley_dir(),)
         executions.append(outcome)
         return subprocess.CompletedProcess(argv, outcome.exit_code, outcome.report_text, "")
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
-    return executions
+    return executions, launches
 
 
 def _assert_real_bad_simulation_report(outcome, build_failure):
-    campaign = outcome.detail["campaigns"]["sim"]
-    assert campaign["complete"] is True
-    assert campaign["test_run_total"] == campaign["observation_total"] == 1
-    assert campaign["test_runs"][0]["grade"] == "fail"
-    observation = campaign["observations"][0]
-    assert campaign["test_runs"][0]["test"] == observation["test"] == "first"
+    simulation_record = outcome.detail["records"]["sim"]
+    assert simulation_record["complete"] is True
+    assert simulation_record["test_run_total"] == simulation_record["observation_total"] == 1
+    assert simulation_record["test_runs"][0]["grade"] == "fail"
+    observation = simulation_record["observations"][0]
+    assert simulation_record["test_runs"][0]["test"] == observation["test"] == "first"
     if build_failure:
         assert observation["execution"] == "blocked_by_build"
         assert observation["failure_class"] == "design"
         assert "%Error: BAD source" in observation["detail"]["reason"]
     else:
-        assert campaign["build_stage"] == []
+        assert simulation_record["build_stage"] == []
         assert observation["execution"] == "completed"
         assert observation["functional"] == "fail"
         assert observation["failure_class"] != "infrastructure"
@@ -120,10 +147,13 @@ def test_project_alias_doctor_executes_real_simulation(
     request.addfinalizer(reset_cache)
     audit, data, alias = _alias_doctor_project(flow_project, tmp_path, monkeypatch, host)
     if not build_failure:
-        (data / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
-            "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
-        )
-    executions = _real_simulation_transport(monkeypatch, flow_project, alias, data, host)
+        # The Flow reads the checkout's own Booley Directory (a copy here, the alias in
+        # a real Sandbox), so the fixture changes both.
+        for booley_dir in (data, flow_project / ".booley"):
+            (booley_dir / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
+                "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
+            )
+    executions, launches = _real_simulation_transport(monkeypatch, flow_project, alias, data, host)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._run_deep_checks(
         audit,
@@ -158,8 +188,28 @@ def test_project_alias_doctor_executes_real_simulation(
         assert reporter.result(0).clean
         assert "correctly graded a failure" in output
     reports = data / doctor.DOCTOR_TMP_DIR / "flow-reports"
-    assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 3
+    assert len(list(reports.glob("sim/*/targets/sim/record/manifest.json"))) == 3
     assert len(list(reports.glob("sim/*/progress.json"))) == 3
+    _assert_doctor_runs_write_no_history(monkeypatch, launches)
+
+
+def _assert_doctor_runs_write_no_history(monkeypatch, launches) -> None:
+    """Doctor's three Flow runs add no Resource History record; the same run outside Doctor does."""
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.runtime import resource_history
+
+    assert len(launches) == 3
+    for _values, _env, history_dir in launches:
+        assert resource_history.load_records(history_dir) == []
+    values, env, history_dir = launches[0]
+    with monkeypatch.context() as scoped:
+        for name, value in env.items():
+            scoped.setenv(name, value)
+        scoped.delenv("BOOLEY_INTERNAL_DOCTOR_RUN")
+        assert SimulateFlow().execute_cli(values).outcome.exit_code == 0
+    # (The control reuses Doctor's retained image, so it records no build.)
+    phases = {record["key"]["phase"] for record in resource_history.load_records(history_dir)}
+    assert "sim_run" in phases
 
 
 def _project(root):
@@ -172,7 +222,7 @@ def _project(root):
     )
 
 
-def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path, monkeypatch):
+def test_disabled_flows_do_not_require_deep_checks(tmp_path, monkeypatch):
     project = _project(tmp_path)
     monkeypatch.setattr(doctor, "_flow_enabled", lambda *_args: False)
     tracker = deep.DeepCheckTracker()
@@ -193,6 +243,7 @@ def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path
 
 def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, monkeypatch):
     project = _project(tmp_path)
+    project.booley_toml = {"flows": {"fpga": {}}}
     monkeypatch.setattr(doctor, "_doctor_targets", lambda *_args: [])
     tracker = deep.DeepCheckTracker()
     reporter = doctor._Reporter.create()
@@ -207,19 +258,22 @@ def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, mo
         completeness=tracker,
     )
     assert "sim.doctor-targets" in tracker.missing
+    assert "fpga.doctor-targets" in tracker.missing
     assert "sim.selftest.good" in tracker.missing
     assert "lint.selftest.bad" in tracker.missing
 
 
-def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monkeypatch):
+@pytest.mark.parametrize("waived", [False, True])
+def test_missing_selftest_fixture_stays_incomplete_waived_or_not(tmp_path, monkeypatch, waived):
     project = _project(tmp_path)
     from booley.audit.doctor_waivers import load_doctor_waivers
 
-    path = project.booley_dir / "doctor-waivers.toml"
-    path.write_text(
-        'version=1\n[[waiver]]\ncheck="flow.fail-path-unvalidated"\n'
-        'reason="Reviewed exclusion"\npermanent=true\n'
-    )
+    if waived:
+        path = project.booley_dir / "doctor-waivers.toml"
+        path.write_text(
+            'version=1\n[[waiver]]\ncheck="flow.fail-path-unvalidated"\n'
+            'reason="Reviewed exclusion"\npermanent=true\n'
+        )
     reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
     tracker = deep.DeepCheckTracker()
     monkeypatch.setattr(doctor, "_flow_enabled", lambda _project, flow: flow == "sim")
@@ -232,9 +286,11 @@ def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monke
         reporter.fail_,
         completeness=tracker,
     )
-    assert reporter.result(0).clean
-    assert reporter.counts["waived"] == 1
+    assert reporter.result(0).clean is waived
+    assert reporter.counts["waived"] == int(waived)
+    assert reporter.counts["warn"] == int(not waived)
     assert tracker.missing == ("sim.selftest.bad", "sim.selftest.good")
+    assert deep.DeepAttemptSummary(tracker.missing, (), IMAGE).complete is False
 
 
 @pytest.mark.parametrize("skip_agents", [False, True])
@@ -247,12 +303,12 @@ def test_clean_host_deep_probe_is_incomplete_and_omitted_agents_are_named(
         doctor, "_observe_sandbox_identity", lambda *_args: (IMAGE, booley.__version__)
     )
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *_args, **_kw: None)
-    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *_args, **_kw: None)
+    _stub_core_resolution_owner(monkeypatch)
     reporter = doctor._Reporter.create(
         profile=doctor._DoctorProfile.from_args(argparse.Namespace(skip_agent_checks=skip_agents))
     )
     summary = doctor._run_deep_phase(
-        project, "docker", doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
+        project, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
     )
     assert reporter.result(0).clean
     assert not summary.complete
@@ -272,85 +328,106 @@ def test_start_identity_controls_qualification(tmp_path, monkeypatch, identity, 
     observe = Mock(return_value=identity)
     monkeypatch.setattr(doctor, "_observe_sandbox_identity", observe)
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *_args, **_kw: None)
-    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *_args, **_kw: None)
+    _stub_core_resolution_owner(monkeypatch)
     runtime = doctor._DoctorFlowRuntime(tmp_path, "docker", "sandbox")
-    summary = doctor._run_deep_phase(
-        _project(tmp_path), "docker", runtime, doctor._Reporter.create()
-    )
+    summary = doctor._run_deep_phase(_project(tmp_path), runtime, doctor._Reporter.create())
     assert summary.identity_reasons == (reason,)
     assert not summary.complete
     observe.assert_called_once_with(tmp_path, "sandbox")
 
 
-def test_inside_local_core_resolution_completes_without_docker(tmp_path, monkeypatch):
-    project = _project(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+def _stub_core_resolution_owner(monkeypatch):
+    """Replace the owner with a stand-in that reports every selector resolved."""
+    from booley.runtime import core_resolution
+
     monkeypatch.setattr(
-        doctor, "_project_target_matrix", lambda _: SimpleNamespace(seed_targets=("sim_fast",))
+        core_resolution,
+        "inspect_core_resolution",
+        lambda request: core_resolution.CoreResolutionResult(
+            DiagnosticReport(), request.selectors
+        ),
     )
-    commands = []
+
+
+# sha256(selector)[:16], the stable completeness identifier Doctor requires per Target.
+_SIM_OK_ID = "core.resolve.1527659c7ec1081d"
+_SIM_BAD_ID = "core.resolve.6febf8d38b2fe65d"
+
+
+def _core_resolution_project(root):
+    """A Project whose Doctor selects ``sim_ok`` and ``sim_bad`` but not ``sim_vendor``."""
+    project = _project(root)
+    selected = "flow: sim\n    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
+    unselected = "flow: sim\n    flow_options: {tool: verilator}\n"
+    shape = "    filesets: [rtl, tb]\n    toplevel: tb\n"
+    (root / "unit.core").write_bytes(
+        (
+            "CAPI=2:\nname: ::unit:0\nfilesets:\n"
+            "  rtl:\n    files:\n      - rtl/dut.sv: {file_type: systemVerilogSource}\n"
+            "  tb:\n    files:\n      - tb/tb.sv: {file_type: systemVerilogSource}\n"
+            "    tags: [tb]\ntargets:\n"
+            f"  sim_ok:\n    {selected}{shape}"
+            f"  sim_bad:\n    {selected}{shape}"
+            f"  sim_vendor:\n    {unselected}{shape}"
+        ).encode()
+    )
+    return project
+
+
+def test_core_resolution_requires_and_completes_one_identifier_per_selected_target(
+    tmp_path, monkeypatch
+):
+    """Deep completeness names exactly the selected Targets and completes each verdict."""
+    project = _core_resolution_project(tmp_path)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    payloads = []
 
     def run(argv, **_kwargs):
-        commands.append(argv)
+        payload = json.loads(argv[-1])
+        payloads.append([item["selector"] for item in payload])
+        verdicts = [
+            {"selector": item["selector"], "ok": item["selector"] == "sim_ok", "err": "no"}
+            for item in payload
+        ]
         return subprocess.CompletedProcess(
-            argv,
-            0,
-            "[[CORE_RESOLVE_JSON]]" + json.dumps([{"selector": "sim_fast", "ok": True}]),
-            "",
+            argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(verdicts), ""
         )
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
-    reporter = doctor._Reporter.create()
-    tracker = deep.DeepCheckTracker()
-    doctor._run_core_resolve_checks(
-        project,
-        None,
-        reporter.pass_,
-        reporter.skip_,
-        reporter.fail_,
-        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
-        completeness=tracker,
-    )
-    assert tracker.missing == ()
-    assert commands[0][:2] == ["python3", "-c"]
-    assert reporter.result(0).clean
+    required, completed = set(), {}
+    real_require, real_completed = deep.DeepCheckTracker.require, deep.DeepCheckTracker.completed
 
+    def require(tracker, identifier):
+        required.add(identifier)
+        real_require(tracker, identifier)
 
-def test_host_fusesoc_fallback_cannot_certify_a_sandbox(tmp_path, monkeypatch):
-    project = _project(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(
-        doctor, "_project_target_matrix", lambda _: SimpleNamespace(seed_targets=("sim_fast",))
-    )
-    monkeypatch.setattr(doctor.shutil, "which", lambda _: "/usr/bin/fusesoc")
-    monkeypatch.setattr(
-        doctor.subprocess, "run", Mock(side_effect=AssertionError("host resolution"))
-    )
+    def complete(tracker, identifier, value):
+        completed[identifier] = value
+        real_completed(tracker, identifier, value)
+
+    monkeypatch.setattr(deep.DeepCheckTracker, "require", require)
+    monkeypatch.setattr(deep.DeepCheckTracker, "completed", complete)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
-    doctor._run_core_resolve_checks(
-        project,
-        None,
-        reporter.pass_,
-        reporter.skip_,
-        reporter.fail_,
-        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
-        completeness=tracker,
-    )
-    assert tracker.missing
-    assert reporter.result(0).clean
 
-
-@pytest.mark.parametrize(
-    "entries", [[], [{"selector": "other", "ok": True}], [{"selector": "selected", "ok": "yes"}]]
-)
-def test_core_completion_requires_all_selected_verdicts(entries):
-    reporter = doctor._Reporter.create()
-    proc = subprocess.CompletedProcess([], 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(entries), "")
-    assert (
-        doctor._grade_core_resolution(proc, {"selected": None}, reporter.pass_, reporter.fail_)
-        == ()
+    doctor._run_core_resolution(
+        project, doctor._DoctorFlowRuntime(tmp_path, None), reporter, tracker
     )
-    assert not reporter.result(1).clean
+
+    assert payloads == [["sim_bad", "sim_ok"]], "the unselected Target is never resolved"
+    assert required == {_SIM_OK_ID, _SIM_BAD_ID}
+    assert completed == {_SIM_OK_ID: True, _SIM_BAD_ID: True}
+    assert tracker.missing == ()
+    assert (reporter.counts["pass"], reporter.counts["fail"]) == (1, 1)
+
+    # No runtime to enter: both identifiers stay required and incomplete, with one SKIP.
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    skipped, unfinished = doctor._Reporter.create(), deep.DeepCheckTracker()
+    doctor._run_core_resolution(
+        project, doctor._DoctorFlowRuntime(tmp_path, None), skipped, unfinished
+    )
+    assert unfinished.missing == (_SIM_OK_ID, _SIM_BAD_ID)
+    assert skipped.counts["skip"] == 1
+    assert payloads == [["sim_bad", "sim_ok"]], "an unavailable runtime dispatches nothing"
 
 
 @pytest.mark.parametrize("early", ["scheduled", "changed", "quiet"])
@@ -383,10 +460,7 @@ def test_session_up_reports_deep_once_through_all_health_branches(
     observe.assert_called_once_with(tmp_path, container="sandbox")
 
 
-@pytest.mark.parametrize("storage_fails", [False, True])
-def test_probe_cost_accounting_and_completeness_are_independent(
-    tmp_path, monkeypatch, storage_fails
-):
+def test_probe_cost_accounting_and_completeness_are_independent(tmp_path, monkeypatch):
     from booley.harness import developer_probe
 
     project = _project(tmp_path)
@@ -398,15 +472,11 @@ def test_probe_cost_accounting_and_completeness_are_independent(
         lambda _: developer_probe.ProbeMeasurement(1024, True, usage),
     )
     monkeypatch.setattr(developer_probe, "probe_model_access", lambda *_args, **_kw: usage)
-    if storage_fails:
-        monkeypatch.setattr(
-            developer_probe, "record_measurement", Mock(side_effect=OSError("unwritable"))
-        )
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
     assert reporter.agent_calls[0] == doctor._AgentCallRecord("agent probe", usage)
     assert {call.label for call in reporter.agent_calls[1:]} <= {"model probe"}
-    assert tracker.missing == (("developer-probe",) if storage_fails else ())
+    assert tracker.missing == ()
 
 
 _MODEL_CONFIG = """
@@ -416,23 +486,23 @@ default = "claude"
 
 [models]
 reviewer = "gpt-6-astra"
-coverage_analyst = "claude-sonnet-5-5"
+coverage_analyst = "claude-opus-5-5"
 """
 
 
 def _model_probe_world(tmp_path, monkeypatch, *, gateway=False, config_body=_MODEL_CONFIG):
-    """A Sandbox-side Project whose Specialists run on three models across two CLIs.
+    """A Sandbox-side Project whose Specialists run on two models across two CLIs.
 
-    reviewer on Codex (gpt-6-astra), mutation_tester on Claude's built-in default
-    (claude-opus-5-5), and coverage_analyst on the internal model (claude-sonnet-5-5),
-    which the memory probe already exercises.
+    reviewer on Codex (gpt-6-astra) and coverage_analyst on Claude's built-in default
+    (claude-opus-5-5); the internal model (claude-sonnet-5-5) is the memory probe's own.
     """
     from booley.config import agent as agent_config
-    from booley.harness import developer_probe
 
     project = _project(tmp_path)
     config = project.booley_dir / "booley.toml"
-    config.write_text(config.read_text() + config_body, encoding="utf-8")
+    # The fixture's own `[agent]` table would duplicate the one in *config_body*.
+    base = config.read_text().replace('[agent]\nauth = "subscription"\n', "")
+    config.write_text(base + config_body, encoding="utf-8")
     for name in (
         "BOOLEY_PRIMARY_AUTH",
         "BOOLEY_PRIMARY_PROVIDER",
@@ -448,7 +518,6 @@ def _model_probe_world(tmp_path, monkeypatch, *, gateway=False, config_body=_MOD
     monkeypatch.setattr(agent_config, "_agent_settings", None)
     agent_config.load_agent_settings(project.project_root, booley_dir=project.booley_dir)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(developer_probe, "record_measurement", lambda *_args: tmp_path / "p.json")
     return project
 
 
@@ -507,7 +576,7 @@ def test_deep_probes_every_resolved_model_and_passes_when_accepted(tmp_path, mon
     assert _messages(reporter, Severity.FAIL) == []
     accepted = " ".join(_messages(reporter, Severity.PASS))
     assert "gpt-6-astra accepted by the provider ([models] reviewer)" in accepted
-    assert "claude-opus-5-5 accepted by the provider ([models] mutation_tester)" in accepted
+    assert "claude-opus-5-5 accepted by the provider ([models] coverage_analyst)" in accepted
     assert len(reporter.agent_calls) == 1 + len(probed)
     assert tracker.missing == ()
 
@@ -529,7 +598,12 @@ def test_deep_fails_naming_model_and_config_key_when_provider_refuses_it(tmp_pat
 
 
 def test_deep_internal_model_refusal_is_not_reported_as_an_auth_problem(tmp_path, monkeypatch):
-    project = _model_probe_world(tmp_path, monkeypatch)
+    # coverage_analyst runs on the internal model, so its key is the one a refusal names.
+    project = _model_probe_world(
+        tmp_path,
+        monkeypatch,
+        config_body=_MODEL_CONFIG.replace('"claude-opus-5-5"', '"claude-sonnet-5-5"'),
+    )
 
     _probed, reporter, _tracker = _run_model_probes(
         project, monkeypatch, internal=_refusal("claude-sonnet-5-5", "claude")
@@ -598,7 +672,6 @@ default = "claude"
 
 [models]
 reviewer = ["claude-opus-5-5", "gpt-6-luna"]
-mutation_tester = ["claude-opus-5-5", "gpt-6-luna"]
 coverage_analyst = ["claude-opus-5-5", "gpt-6-luna"]
 """
 
@@ -622,11 +695,11 @@ def test_deep_model_list_passes_when_first_entry_is_accepted(tmp_path, monkeypat
 
     probed, reporter, tracker = _run_model_probes(project, monkeypatch)
 
-    assert probed == ["claude-opus-5-5"]  # one probe serves all three lists
+    assert probed == ["claude-opus-5-5"]  # one probe serves both lists
     assert _messages(reporter, Severity.FAIL) == []
     assert _messages(reporter, Severity.WARN) == []
     passed = _messages(reporter, Severity.PASS)
-    for name in ("reviewer", "mutation_tester", "coverage_analyst"):
+    for name in ("reviewer", "coverage_analyst"):
         assert f"Specialist model list for [models] {name}: claude-opus-5-5 accepted" in " ".join(
             passed
         )
@@ -643,7 +716,7 @@ def test_deep_model_list_warns_naming_skipped_and_refused_entries(tmp_path, monk
     assert probed == ["claude-opus-5-5", "gpt-6-luna"]
     assert _messages(reporter, Severity.FAIL) == []
     warnings = _messages(reporter, Severity.WARN)
-    assert len(warnings) == 3
+    assert len(warnings) == 2
     assert any("[models] reviewer falls back to gpt-6-luna" in w for w in warnings)
     assert "claude-opus-5-5 (refused by the provider)" in " ".join(warnings)
     assert tracker.missing == ()
@@ -672,7 +745,7 @@ def test_deep_model_list_fails_when_no_entry_works(tmp_path, monkeypatch):
 
     assert probed == ["claude-opus-5-5", "gpt-6-luna"]
     failures = _messages(reporter, Severity.FAIL)
-    assert len(failures) == 3
+    assert len(failures) == 2
     reviewer = next(f for f in failures if "`[models] reviewer`" in f)
     assert "No model in `[models] reviewer` could run" in reviewer
     assert "'claude-opus-5-5' (refused by the provider)" in reviewer
@@ -716,14 +789,15 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
     monkeypatch.setattr(doctor, "_run_project_phase", lambda *_args, **_kw: (None, audit))
 
-    def health(_project, _runtime, _verbose, reporter, _progress):
+    def health(_project, _runtime, reporter, _progress):
         if health_failure:
             reporter.fail_("unrelated project health failed", "repair project")
 
     monkeypatch.setattr(doctor, "_run_flow_and_core_phase", health)
     for name in (
         "_check_runtime_location",
-        "_check_memory_invariant",
+        "_check_sandbox_memory",
+        "_check_sandbox_swap",
         "_run_container_checks",
         "_run_mcp_checks",
         "_run_project_checks",
@@ -922,6 +996,7 @@ def test_core_resolve_snippet_builds_in_the_checkout_from_a_worktree(
 ):
     """The in-Sandbox snippet keeps per-checkout build roots even when ``BOOLEY_DIR`` names main."""
     from booley.fusesoc import fusesoc_registry
+    from booley.runtime import core_resolution
     from booley.targets.catalog import TargetCatalog
 
     _main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime="sandbox")
@@ -938,6 +1013,6 @@ def test_core_resolve_snippet_builds_in_the_checkout_from_a_worktree(
     payload = json.dumps([{"selector": "sim_fast", "build_key": "key"}])
     monkeypatch.setattr("sys.argv", ["-c", payload])
 
-    exec(compile(doctor._CORE_RESOLVE_SNIPPET, "<snippet>", "exec"), {})
+    exec(compile(core_resolution._CORE_RESOLVE_SNIPPET, "<snippet>", "exec"), {})
 
     assert build_roots == [worktree / ".booley" / "runtime/doctor/core-resolve" / "key"]

@@ -19,6 +19,7 @@ from fusesoc.vlnv import Vlnv
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
+from booley.flows.job_resources import resolved_source_bytes
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
@@ -27,7 +28,9 @@ from booley.flows.sim.build import (
     SimulationBuildPreparationError,
     build_failure_report,
     classify_build_outcome,
+    measured_setup_runner,
     prepare_simulation_build,
+    setup_timeout_s,
     simulation_build_script,
 )
 from booley.flows.sim.build_session import (
@@ -43,12 +46,12 @@ from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
     resolve_pre_sim_commands,
 )
-from booley.flows.sim.coverage_campaign import CoverageFinding
 from booley.flows.sim.coverage_overlay import (
     CoverageOverlay,
     coverage_overlay_vlnv,
     write_coverage_overlay,
 )
+from booley.flows.sim.coverage_record import CoverageFinding
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
     AdapterAttemptRequest,
@@ -62,6 +65,7 @@ from booley.flows.sim.execution.contract import (
     pre_sim_failure_message,
 )
 from booley.flows.sim.execution.engine import (
+    history_test_names,
     launch_environment,
     prepare_simulation_work,
     simulation_adapter_kind,
@@ -80,10 +84,11 @@ from booley.fusesoc.fusesoc_registry import (
     mirrored_export_name,
     native_cores_ignored,
 )
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
-from .coverage_campaign import SimulationVerdict
+from .coverage_record import SimulationVerdict
 from .verilator_coverage import (
     PINNED_VERILATOR,
     CoverageCollectionRequest,
@@ -143,7 +148,11 @@ class VerilatorCoverageExecution:
         self._build_variant: str | None = None
         self._trace_mode = "vcd_fifo"
         self._attempt_run_cwd: Path | None = None
-        self._snapshot_bound = False
+        self._bundle_bound = False
+        self._evidence_root: Path | None = None
+        self._verify_bundle: Callable[[], None] | None = None
+        # Size of the resolved Target's files, labelled on every later command.
+        self._source_bytes: int | None = None
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         """Prepare and compile the collector-selected isolated build variant."""
@@ -152,7 +161,10 @@ class VerilatorCoverageExecution:
         self._artifact_paths = ()
         self._build_variant = None
         self._attempt_run_cwd = None
-        self._snapshot_bound = False
+        self._bundle_bound = False
+        self._evidence_root = None
+        self._verify_bundle = None
+        self._source_bytes = None
         commands = self._commands()
         if commands and self._build_access() == "legacy-per-test":
             return SimulationBuildResult(
@@ -173,6 +185,7 @@ class VerilatorCoverageExecution:
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
                     return SimulationBuildResult(False, prepared)
+                self._source_bytes = resolved_source_bytes(prepared.resolved)
                 if project_compile_surface(compile_surface) != sources_before:
                     raise SimulationBuildSlotError(
                         "Project compile inputs changed during coverage preparation"
@@ -237,6 +250,11 @@ class VerilatorCoverageExecution:
                 build_root=build_root,
                 resolution_vlnv=overlay.vlnv,
                 environment=simulation_target_environment(self._handle),
+                setup_runner=measured_setup_runner(
+                    self._invoke,
+                    target=self._handle.selector,
+                    timeout_s=setup_timeout_s(self._build_timeout_s()),
+                ),
             )
             if prepared.resolved.cocotb_module and request.variant.trace:
                 trace_overlay.validate_cocotb_trace_mode(
@@ -251,6 +269,10 @@ class VerilatorCoverageExecution:
                 overlay.cleanup()
         return prepared
 
+    def _build_timeout_s(self) -> int:
+        timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
+        return max(1, timeout_ms // 1000)
+
     def _execute_build(
         self,
         prepared: PreparedSimulationBuild,
@@ -259,8 +281,7 @@ class VerilatorCoverageExecution:
         token = new_attempt_token()
         script = simulation_build_script(prepared, token)
         script = _in_directory_script(self._handle.project_root, script)
-        timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
-        timeout_s = max(1, timeout_ms // 1000)
+        timeout_s = self._build_timeout_s()
         observe_stage(
             self._handle.selector,
             "building",
@@ -269,6 +290,7 @@ class VerilatorCoverageExecution:
             log=prepare_attempt_log(
                 prepared.build_root, self._handle.selector, token, self._handle.project_root
             ),
+            source_bytes=self._source_bytes,
         )
         announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
@@ -295,7 +317,7 @@ class VerilatorCoverageExecution:
         if request.target.identity != self._handle.identity:
             return SimulationRunResult("inconclusive", "coverage Target identity mismatch")
         try:
-            if self._snapshot_bound:
+            if self._bundle_bound:
                 return self._run_prepared(request, prepared)
             with SimulationBuildSession(self._handle, variant):
                 return self._run_prepared(request, prepared)
@@ -316,6 +338,7 @@ class VerilatorCoverageExecution:
         prepared: PreparedSimulationBuild,
     ) -> SimulationRunResult:
         _prepare_artifact_directories(request)
+        evidence_root = self._evidence_root or prepared.build_root
         token = new_attempt_token()
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         test_names = (request.test.name,)
@@ -324,11 +347,13 @@ class VerilatorCoverageExecution:
             attempt_token=token,
             target_identity=self._handle.identity,
             selected_tests=test_names,
-            result_path=prepared.build_root / f".booley-coverage-adapter-{token}.json",
+            result_path=evidence_root / f".booley-coverage-adapter-{token}.json",
         )
         work = self._prepare_work(request, prepared, transport)
         before = _snapshot_pre_sim_state(self._handle, prepared, request, self._artifact_paths)
-        pre_sim = self._run_pre_sim(prepared, test_names, work.run_cwd, work.test_runs)
+        pre_sim = self._run_pre_sim(
+            evidence_root, prepared, test_names, work.run_cwd, work.test_runs
+        )
         sink = getattr(self, "_pre_sim_evidence_sink", None)
         if pre_sim is not None and sink is not None:
             sink(pre_sim)
@@ -348,6 +373,9 @@ class VerilatorCoverageExecution:
                 pre_sim,
                 infrastructure_error=pre_sim.status == "spawn_error",
             )
+        if self._verify_bundle is not None:
+            # Pre-Sim Commands and the run before this one could change the bundle.
+            self._verify_bundle()
         return self._execute_run(request, prepared, transport, work, pre_sim)
 
     def _prepare_work(
@@ -368,10 +396,15 @@ class VerilatorCoverageExecution:
             # rendered by the launch path every Simulation shares.
             test_runs=None if request.test.run is None else (request.test.run,),
         )
-        return replace(work, run_cwd=str(self._attempt_run_cwd)) if self._attempt_run_cwd else work
+        if self._attempt_run_cwd:
+            work = replace(work, run_cwd=str(self._attempt_run_cwd))
+        if self._evidence_root is not None:
+            work = replace(work, work_dir=str(self._evidence_root))
+        return work
 
     def _run_pre_sim(
         self,
+        evidence_root: Path,
         prepared: PreparedSimulationBuild,
         test_names: tuple[str, ...],
         run_cwd: str,
@@ -380,7 +413,7 @@ class VerilatorCoverageExecution:
         return run_pre_sim_commands(
             self._handle,
             test_names=test_names,
-            build_root=prepared.build_root,
+            build_root=evidence_root,
             eda_tool=prepared.eda_tool,
             timeout_s=DEFAULT_TIMEOUT_S,
             simulator_environment=simulation_target_environment(self._handle),
@@ -399,6 +432,7 @@ class VerilatorCoverageExecution:
         work: PreparedSimulationWork,
         pre_sim: PreSimEvidence | None,
     ) -> SimulationRunResult:
+        evidence_root = transport.result_path.parent
         invocation = prepare_adapter_invocation(work)
         environment = {
             **launch_environment(simulation_target_environment(self._handle), work.environment),
@@ -406,19 +440,7 @@ class VerilatorCoverageExecution:
         }
         script = _environment_script(environment, invocation)
         script = _in_directory_script(self._handle.project_root, script)
-        observe_stage(
-            self._handle.selector,
-            "executing",
-            evidence_root=prepared.build_root,
-            attempt_token=transport.attempt_token,
-            log=prepare_attempt_log(
-                prepared.build_root,
-                self._handle.selector,
-                transport.attempt_token,
-                self._handle.project_root,
-            ),
-            tests=(request.test.name,),
-        )
+        self._observe_executing(request, prepared, transport, work)
         try:
             executed = execute_adapter_attempt(
                 self._invoke,
@@ -428,17 +450,42 @@ class VerilatorCoverageExecution:
                     + (work.trace_convert_timeout_s if work.trace else 0)
                     + _ADAPTER_CLEANUP_MARGIN_S,
                     transport,
-                    prepared.build_root,
+                    evidence_root,
                 ),
             )
         finally:
             observe_stage(
                 self._handle.selector,
                 "postprocessing",
-                evidence_root=prepared.build_root,
+                evidence_root=evidence_root,
                 attempt_token=transport.attempt_token,
+                source_bytes=self._source_bytes,
             )
         return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
+
+    def _observe_executing(
+        self,
+        request: SimulationRunRequest,
+        prepared: PreparedSimulationBuild,
+        transport: AdapterTransportIdentity,
+        work: PreparedSimulationWork,
+    ) -> None:
+        evidence_root = transport.result_path.parent
+        observe_stage(
+            self._handle.selector,
+            "executing",
+            evidence_root=evidence_root,
+            attempt_token=transport.attempt_token,
+            log=prepare_attempt_log(
+                evidence_root,
+                self._handle.selector,
+                transport.attempt_token,
+                self._handle.project_root,
+            ),
+            tests=(request.test.name,),
+            history_tests=history_test_names(self._handle, prepared, work.test_runs),
+            source_bytes=self._source_bytes,
+        )
 
     def _commands(self) -> tuple[str, ...]:
         if self._pre_sim_commands is not None:
@@ -452,7 +499,7 @@ class VerilatorCoverageExecution:
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         """Run one collector utility in its requested artifact directory."""
-        observe_stage(self._handle.selector, "postprocessing")
+        observe_stage(self._handle.selector, "postprocessing", source_bytes=self._source_bytes)
         announce_unit(f"coverage: {request.argv[0]}", target=self._handle.selector)
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"
@@ -468,33 +515,44 @@ class VerilatorCoverageExecution:
             raise SimulationBuildSlotError("coverage simulator image has no artifacts")
         return prepared.build_root, self._artifact_paths
 
-    def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
-        """Execute only from the campaign-owned snapshot and claimed run directory."""
+    def bind_authenticated_attempt(
+        self,
+        bundle_root: Path,
+        evidence_root: Path,
+        run_cwd: Path,
+        verify_bundle: Callable[[], None],
+    ) -> None:
+        """Execute from the record's bundle, writing only to *evidence_root*.
+
+        *verify_bundle* runs before every launch, after the run's Pre-Sim Commands.
+        """
         prepared = self._prepared
         if prepared is None:
             raise SimulationBuildSlotError("coverage simulator image is not authorized")
         try:
             rebound_paths = tuple(
-                snapshot_root / path.relative_to(prepared.build_root)
+                bundle_root / path.relative_to(prepared.build_root)
                 for path in self._artifact_paths
             )
         except ValueError as exc:
             raise SimulationBuildSlotError("coverage image escapes its authorized root") from exc
         self._prepared = replace(
             prepared,
-            work_root=snapshot_root,
-            build_root=snapshot_root,
+            work_root=bundle_root,
+            build_root=bundle_root,
         )
         self._artifact_paths = rebound_paths
         self._attempt_run_cwd = run_cwd
-        self._snapshot_bound = True
+        self._evidence_root = evidence_root
+        self._verify_bundle = verify_bundle
+        self._bundle_bound = True
 
     def _collector_identity(self) -> tuple[VerilatorCollectorIdentity | None, str]:
         version = self._invoke(["verilator", "--version"], timeout=30)
         output = version.stdout + ("\n" + version.stderr if version.stderr else "")
         match = _VERSION_RE.search(output)
         expected = f"{PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}"
-        guidance = "rebuild the Sandbox image (booley session refresh)"
+        guidance = f"recreate the Sandbox on a rebuilt Sandbox Image: {UNKNOWN_SANDBOX_STEPS}"
         if version.returncode != 0 or version.timed_out or match is None:
             message = (
                 "Verilator coverage collector version could not be determined "
@@ -577,7 +635,7 @@ def _selected_runs(
     selected_tests: tuple[str, ...],
     test_runs: tuple[TestRun, ...] | None,
 ) -> tuple[SelectedCoverageRun, ...]:
-    """One collector process per Test Run, in the order the campaign records them."""
+    """One collector process per Test Run, in the order the Coverage Record records them."""
     if test_runs is None and not selected_tests:
         return ()
     if test_runs is None:

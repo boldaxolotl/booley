@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -28,6 +27,7 @@ from booley.mcp.session_registry import Attribution, SessionRow
 from booley.runtime.job_records import JobRecord
 from booley.runtime.session_activity import UNKNOWN, WAITING_USER, WORKING, Activity
 from booley.runtime.timefmt import rfc3339_from_epoch
+from tests.time_budget import hang_guard_s
 
 NOW = 1791454200  # 2026-10-08T10:10:00Z
 STARTED = rfc3339_from_epoch(NOW - 300)
@@ -37,7 +37,7 @@ NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """A slow worker must finish the first read before any key press."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 def stamp(seconds_ago: float) -> str:
@@ -52,12 +52,12 @@ def facts(number: int, state: str = WORKING, ago: float | None = 60, **overrides
     values = {
         "key": f"codex:{number:02}",
         "handle": f"S{number}",
+        "title": f"S{number}",
         "mode": "Interactive",
         "branch": "main",
         "work_dir": f"/work/s{number}",
         "started": "5m ago",
         "activity": Activity(state, "" if ago is None else stamp(ago)),
-        "proposals": 0,
     }
     return sessions.SessionFacts(**{**values, **overrides})
 
@@ -101,7 +101,7 @@ def test_sessions_are_grouped_by_what_needs_you_with_counts():
     overview = sessions.build(
         [
             facts(1, WAITING_USER, ago=100),
-            facts(2, WORKING, ago=50, proposals=1),  # a proposal needs you whatever it does
+            facts(2, WAITING_USER, ago=50),
             facts(3, WORKING),
             facts(4, "waiting for tool call"),
             facts(5, UNKNOWN, ago=None),
@@ -159,6 +159,48 @@ def test_longest_in_state_first_ties_and_unparseable_by_handle_number():
         120,
     )
     assert overview.keys[1:] == ["codex:03", "codex:02", "codex:10", "codex:04", "codex:11"]
+
+
+def test_named_session_row_shows_its_title_and_sorts_by_handle_number():
+    # Bug caught: the row showed the bare handle, or the order parsed the display title
+    # (`S10 · x` sorting before `S2`, or a named session sorting last).
+    from booley.harness.dashboard import sessions
+
+    overview = sessions.build(
+        [
+            facts(10, ago=100, title="S10 \u00b7 x"),
+            facts(2, ago=100, title="S2 \u00b7 uart-fix"),
+            facts(3, ago=100),
+        ],
+        [],
+        NOW,
+        120,
+    )
+    assert overview.keys[1:] == ["codex:02", "codex:03", "codex:10"]
+    rows = [line.plain for line in overview.rows[1:]]
+    assert rows[0].startswith("S2 \u00b7 uart-fix")
+    assert rows[1].startswith("S3 ")
+    assert rows[2].startswith("S10 \u00b7 x")
+
+
+def test_long_title_is_cut_before_other_columns_drop():
+    # Bug caught: one long label squeezed Branch out of every row, or the Activity below
+    # its 40-cell floor.
+    from booley.harness.dashboard import sessions
+
+    long_title = "S1 \u00b7 " + "a" * 32  # the longest allowed label
+    busy = facts(1, title=long_title, jobs=("\u25b6 J-SIM3 sim fifo_top_level_with_a_long_name",))
+    other = facts(2)
+    overview = sessions.build([busy, other], [], NOW, 80)
+    header, first, second = overview.header.plain, overview.rows[1].plain, overview.rows[2].plain
+    assert "Branch" in header
+    cell = first[: header.index("Mode") - 2].rstrip()
+    assert cell.startswith("S1 \u00b7 ") and cell.endswith("\u2026")
+    assert "main" in first and "main" in second
+    assert second.startswith("S2 ")
+    assert len(first[header.index("Activity") :]) == 40  # Activity keeps its floor
+    for line in overview.rows:
+        assert line.cell_len <= 80
 
 
 # --- AC3 ---------------------------------------------------------------------
@@ -243,7 +285,7 @@ def test_columns_align_and_absent_values_are_dim_dashes():
     from booley.harness.dashboard import sessions
 
     bare = facts(45, branch="", work_dir="")
-    full = facts(2, branch="feature/x", work_dir="/work/fifo", mode="Goal 1/5")
+    full = facts(2, branch="feature/x", work_dir="/work/fifo", mode="Interactive")
     overview = sessions.build([bare, full], [], NOW, 120)
     lines = plain_lines(overview)
     assert "·  ·" not in "".join(lines.values())
@@ -254,7 +296,7 @@ def test_columns_align_and_absent_values_are_dim_dashes():
         "codex:45": {"Session": "S45", "Mode": "Interactive", "Branch": "—", "Work dir": "—"},
         "codex:02": {
             "Session": "S2",
-            "Mode": "Goal 1/5",
+            "Mode": "Interactive",
             "Branch": "feature/x",
             "Work dir": "/work/fifo",
         },
@@ -282,7 +324,7 @@ def test_narrowing_drops_start_age_then_work_dir_then_branch():
         1,
         branch="feature/long-branch",
         work_dir="/work/projects/fifo",
-        mode="Goal 1/5",
+        mode="Interactive",
         activity=Activity(WORKING, stamp(190)),
     )
 
@@ -337,21 +379,11 @@ def test_long_values_end_in_ellipsis_and_paths_keep_their_tail():
 # --- AC7 ---------------------------------------------------------------------
 
 
-def test_session_row_keeps_jobs_goal_summary_proposals_and_warnings():
+def test_session_row_keeps_jobs_and_warnings():
     from booley.harness.dashboard import sessions
 
     row = SessionRow(Attribution("codex:00", "thread", "/work/a", "wt"), STARTED, STARTED)
     twin = SessionRow(Attribution("codex:01", "thread", "/work/b", "wt"), STARTED, STARTED)
-    goal = model.GoalView(
-        "fixture",
-        record=SimpleNamespace(
-            worktree=SimpleNamespace(key="wt"),
-            state=SimpleNamespace(value="active"),
-            branch="goal/fixture",
-        ),
-        status=SimpleNamespace(met=1, goals=(0,) * 5, pending_proposals=1),
-        diagnostic="WARNING: first problem\nWARNING: second problem",
-    )
     job = JobView(
         Path("/jobs"),
         JobRecord("one", "sim", STARTED, 60, argv=["--target", "fifo"], session_key="codex:00"),
@@ -362,19 +394,16 @@ def test_session_row_keeps_jobs_goal_summary_proposals_and_warnings():
     app.snapshot = replace(
         world({"codex:00": Activity(WAITING_USER, stamp(100))}, jobs=(job,)),
         sessions=(row, twin),
-        goals=(goal,),
         session_handles={"codex:00": "S1", "codex:01": "S2"},
     )
     overview = sessions.build([app._session_facts(row)], [], NOW, 400)
     line = plain_lines(overview)["codex:00"]
     assert "\n" not in line
     for expected in (
-        "Goal 1/5",
+        "Interactive",
         "waiting 1m 40s",
-        "1 proposal",
         "▶ J-SIM1 sim fifo",
         "WARNING shared worktree",
-        "WARNING: first problem · WARNING: second problem",
     ):
         assert expected in line, expected
 
@@ -418,20 +447,10 @@ async def test_standalone_running_jobs_group_and_enter_opens_detail():
 async def test_sessions_tab_shows_needs_you_count():
     needing = {
         "codex:00": Activity(WAITING_USER, stamp(30)),
-        "codex:01": Activity(WORKING, stamp(30)),
+        "codex:01": Activity(WAITING_USER, stamp(30)),
+        "codex:02": Activity(WORKING, stamp(30)),
     }
     current = {"snapshot": world(needing, count=3)}
-    # Session 2 has a pending proposal, which needs the human as much as waiting does.
-    goal = model.GoalView(
-        "fixture",
-        record=SimpleNamespace(
-            worktree=SimpleNamespace(key="wt1"),
-            state=SimpleNamespace(value="active"),
-            branch="goal/fixture",
-        ),
-        status=SimpleNamespace(met=0, goals=(0,), pending_proposals=1),
-    )
-    current["snapshot"] = replace(current["snapshot"], goals=(goal,))
     app = DashboardApp(lambda: current["snapshot"])
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()

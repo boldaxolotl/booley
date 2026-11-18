@@ -39,8 +39,8 @@ import yaml
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict, as_str
 
-from .campaign_reports import simulation_booley_dir
 from .compiler_cache import RESERVED as COMPILER_CACHE_MANAGED
+from .record_reports import simulation_booley_dir
 
 # Upper bound on files a read closure may name; a larger closure is not reused.
 MAX_CLOSURE_FILES = 100_000

@@ -8,8 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import docker_base_contract
 
@@ -61,12 +60,9 @@ def _remote_runner(documents: dict):
 
 
 def _fingerprint(repo: Path) -> str:
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(_SCRIPT), "--repo", str(repo), "--manifest", "inputs.txt"],
-        capture_output=True,
         check=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
@@ -85,7 +81,7 @@ def test_contract_changes_with_content_but_not_mtime(tmp_path: Path) -> None:
 
 def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
     (tmp_path / "inputs.txt").write_text("../outside\n", encoding="utf-8")
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             str(_SCRIPT),
@@ -94,10 +90,7 @@ def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
             "--manifest",
             "inputs.txt",
         ],
-        capture_output=True,
         check=False,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 2
@@ -116,7 +109,7 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
     (tmp_path / "inputs.txt").write_text("linked.txt\n", encoding="utf-8")
     (tmp_path / "linked.txt").symlink_to(outside)
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             str(_SCRIPT),
@@ -125,10 +118,7 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
             "--manifest",
             "inputs.txt",
         ],
-        capture_output=True,
         check=False,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 2
@@ -698,25 +688,3 @@ def test_publish_decision_follows_the_published_contract(tmp_path: Path, monkeyp
         verdict, seen = _publish_decision(repo, monkeypatch, resolution)
         assert verdict == expected
         assert seen == [(_BASE_REFERENCE, docker_base_contract.contract(repo, "inputs.txt"))]
-
-
-def test_base_publish_job_is_gated_on_the_publish_decision() -> None:
-    workflow = yaml.safe_load(
-        Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
-    )
-    gate = workflow["jobs"]["stable-base-contract"]
-    publish = workflow["jobs"]["build-publish-smoke"]
-
-    commands = " ".join(step.get("run", "") for step in gate["steps"])
-    assert f"--publish-decision {_BASE_REFERENCE}" in commands
-    assert "--github-output" in commands
-    assert gate["outputs"] == {"publish": "${{ steps.decide.outputs.publish }}"}
-    assert publish["needs"] == "stable-base-contract"
-    # Fail toward rebuilding: a failed gate must not skip the build, even on a manual run.
-    assert " ".join(publish["if"].split()) == (
-        "${{ !cancelled() && (github.event_name == 'workflow_dispatch' "
-        "|| needs.stable-base-contract.result != 'success' "
-        "|| needs.stable-base-contract.outputs.publish == 'true') }}"
-    )
-    # Path filters cannot read content, so pyproject.toml still starts the workflow.
-    assert "pyproject.toml" in workflow[True]["push"]["paths"]

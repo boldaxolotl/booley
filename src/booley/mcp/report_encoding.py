@@ -14,10 +14,13 @@ import os
 from typing import Any
 
 from booley.flows.endpoint_reporting import _contains_whole_line_block
+from booley.runtime.endpoint_execution import OOM_REQUEUE_MARKER
 
 logger = logging.getLogger(__name__)
 _DEFAULT_MAX_STDOUT_BYTES = 12_000
 _DEFAULT_MAX_STDERR_BYTES = 4_000
+# Over this, `_structured_from_report` returns `reports: []` and `truncated: true`, keeping the
+# verdict and artifact pointers so the agent can still open the durable report.
 _MAX_STRUCTURED_REPORT_BYTES = 64 * 1024
 
 
@@ -388,9 +391,28 @@ def _enforce_structured_budget(payload: dict[str, Any]) -> None:
 
 
 def _simulation_transport_report(report: dict[str, Any]) -> dict[str, Any]:
-    if report.get("flow") == "sim" and isinstance(report.get("cycle_counts"), dict):
-        report = dict(report)
-        del report["cycle_counts"]
+    """Drop the per-Test-Run maps (``cycle_counts``, ``records.*.metrics``) from a ``sim`` report.
+
+    They grow with the Test Run count; the full values stay in ``report.json``.
+    """
+    if report.get("flow") != "sim":
+        return report
+    report = dict(report)
+    report.pop("cycle_counts", None)
+    detail = report.get("detail")
+    records = detail.get("records") if isinstance(detail, dict) else None
+    if isinstance(detail, dict) and isinstance(records, dict):
+        report["detail"] = {
+            **detail,
+            "records": {
+                selector: (
+                    {key: value for key, value in record.items() if key != "metrics"}
+                    if isinstance(record, dict)
+                    else record
+                )
+                for selector, record in records.items()
+            },
+        }
     return report
 
 
@@ -476,7 +498,11 @@ def _append_stream_section(
     shown = stream[-limit:] if truncated else stream
     rendered = shown
     if truncated and mark_truncation:
-        rendered = f"... (truncated, showing last {limit} bytes)\n{shown}"
+        rendered = (
+            f"... (truncated: at least {len(stream) - limit} earlier bytes dropped, "
+            f"showing last {limit} bytes; the cap is fixed — narrow the request "
+            f"rather than rerun it)\n{shown}"
+        )
     parts.append(f"\n--- {label} ---\n{rendered}")
     return shown, truncated
 
@@ -521,6 +547,16 @@ def _append_report_section(
         parts.append("\n--- report ---\n" + "\n".join(report_lines))
 
 
+def _final_attempt_stdout(stdout: str) -> str:
+    """The stdout a requeued Job's final attempt wrote, from its last requeue marker on.
+
+    The agent must not read the killed attempt's verdicts (ADR 0087); the
+    marker line stays so the result says why the output starts there.
+    """
+    start = stdout.rfind(OOM_REQUEUE_MARKER)
+    return stdout if start < 0 else stdout[start:]
+
+
 def _format_mcp_tool_result(
     exit_code: int,
     stdout: str,
@@ -533,7 +569,7 @@ def _format_mcp_tool_result(
     shown_stdout, stdout_truncated = _append_stream_section(
         parts,
         label="stdout",
-        stream=stdout,
+        stream=_final_attempt_stdout(stdout),
         limit=_max_stdout_bytes(),
         mark_truncation=True,
     )
@@ -553,9 +589,7 @@ def _format_mcp_tool_result(
         stderr_truncated=stderr_truncated,
     )
 
-    rendered = "\n".join(parts)
-    reason = (report or {}).get("detail", {}).get("evidence_discarded")
-    return f"evidence discarded: {reason}\n{rendered}" if reason else rendered
+    return "\n".join(parts)
 
 
 class ReportEncoder:

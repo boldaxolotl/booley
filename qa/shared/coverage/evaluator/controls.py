@@ -1,4 +1,4 @@
-"""Literal independent oracle controls, separate from real product Campaign evidence."""
+"""Literal independent oracle controls, separate from real product Coverage Record evidence."""
 
 import argparse
 import gzip
@@ -43,8 +43,8 @@ def _manifest(header: dict, rollup: dict, compressed: bytes, raw: bytes) -> dict
         for metric in ["line", "branch", "expression"]
     ]
     return {
-        "$schema": "booley.coverage-campaign/v4",
-        "campaign_id": "qa-control",
+        "$schema": measurements.RECORD_SCHEMA,
+        "coverage_record_id": "qa-control",
         "target": {"identity": header["target_identity"]},
         "tests": {"runs": [{"id": "r1", "test": "half"}]},
         "evaluation": {"status": "fail"},
@@ -74,8 +74,8 @@ def specimen(root: Path) -> tuple[Path, dict]:
         "percent": 50,
     }
     header = {
-        "$schema": "booley.coverage-points/v1",
-        "campaign_id": "qa-control",
+        "$schema": "booley.coverage-points/v2",
+        "coverage_record_id": "qa-control",
         "target_identity": "booley:qa:coverage:1#sim_toggle",
     }
     raw = b"".join(json.dumps(row).encode() + b"\n" for row in [header, *points])
@@ -95,21 +95,17 @@ def exercise(mode: str, root: Path) -> None:
         corrupt = bytearray(point_store.read_bytes())
         corrupt[-1] ^= 1
         point_store.write_bytes(corrupt)
-    manifest, points = measurements.read_campaign(path)
+    manifest, points = measurements.read_record(path)
     if mode == "hit-count":
         points[0]["hits_by_run"]["r1"] = 3
     elif mode == "source-grouping":
         manifest["source_rollups"][0]["source"] = "rtl/other.sv"
-    elif mode == "rational-verdict":
-        manifest["evaluation"]["status"] = "pass"
     measurements.verify_known_answer(manifest, points, case)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "mode", choices=["positive", "hit-count", "source-grouping", "digest", "rational-verdict"]
-    )
+    parser.add_argument("mode", choices=["positive", "hit-count", "source-grouping", "digest"])
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="coverage-oracle-") as directory:
         try:

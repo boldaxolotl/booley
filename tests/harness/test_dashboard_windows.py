@@ -10,14 +10,11 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from textual.widgets import DataTable, Header, Static
+from textual.widgets import DataTable, Header
 
-from booley.criteria.presentation import CriterionPresentation
-from booley.goals.model import GoalFamily, GoalSpec
-from booley.harness.dashboard import model, sessions
+from booley.harness.dashboard import sessions
 from booley.harness.dashboard.app import DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import RecentCall
@@ -29,71 +26,21 @@ from tests.harness.test_dashboard import (
     open_session,
     snapshot,
 )
+from tests.time_budget import hang_guard_s
 
-# Goal keys in the order the session list must show them (failing first).
-GOAL_ORDER = ["g-failing", "g-recheck", "g-notrun", "g-checking", "g-passing"]
-# The session list starts with its five Goals, then a spacer and the
-# Booley activity rule, the pending proposal row, then the running Jobs owned by the session.
-PROPOSAL_ROW = len(GOAL_ORDER) + 2
-JOB_ROW = PROPOSAL_ROW + 1
+# The session list starts with the running Jobs owned by the session.
+JOB_ROW = 0
 
 
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """Let a slow CI worker finish the first read before any key press (#2023)."""
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
 
 
-def _goal_detail(key, state, *, checking=False, artifacts=()):
-    return model.GoalDetail(
-        key,
-        state,
-        CriterionPresentation("Lint top", "Target top", "must pass", "", "Target top · must pass"),
-        {"recorded_at": STAMP, "detail": {"findings": 1}},
-        checking=checking,
-        artifacts=artifacts,
-    )
-
-
-def world(*, jobs=45, artifacts=0):
-    """Two sessions; S1 has a Goal of five states, a proposal and `jobs` extra running Jobs."""
+def world(*, jobs=45):
+    """Two sessions; S1 also owns `jobs` extra running Jobs."""
     current = snapshot(2)
-    proposal = SimpleNamespace(
-        proposal=SimpleNamespace(
-            id="change",
-            before=None,
-            after=GoalSpec("lint_clean_top", GoalFamily.LINT, "top", {}, ("ad-hoc",)),
-            to_json=lambda: {
-                "id": "change",
-                "kind": "relax",
-                "before": None,
-                "after": {},
-                "rationale": "r",
-            },
-        ),
-        state="pending",
-        decision=None,
-        closed_by_abandonment=False,
-    )
-    evidence_paths = tuple(f"/evidence/path-{index}.log" for index in range(artifacts))
-    # Deliberately unordered: the list must sort by status.
-    details = (
-        _goal_detail("g-passing", "passing"),
-        _goal_detail("g-checking", "passing", checking=True),
-        _goal_detail("g-failing", "failing", artifacts=evidence_paths),
-        _goal_detail("g-notrun", "not yet run"),
-        _goal_detail("g-recheck", "needs recheck"),
-    )
-    goal = model.GoalView(
-        "fixture",
-        record=SimpleNamespace(
-            worktree=SimpleNamespace(key="wt0"),
-            state=SimpleNamespace(value="active"),
-            branch="goal/fixture",
-        ),
-        status=SimpleNamespace(met=1, goals=details, pending_proposals=1, proposals=(proposal,)),
-        goals=details,
-    )
     extra = tuple(
         JobView(
             Path("/jobs"),
@@ -104,7 +51,6 @@ def world(*, jobs=45, artifacts=0):
     )
     return replace(
         current,
-        goals=(goal,),
         jobs=JobSnapshot((*current.jobs.jobs, *extra)),
         sessions=(
             replace(current.sessions[0], calls=(RecentCall(STAMP, "sim", "completed"),)),
@@ -139,8 +85,6 @@ async def open_row(app, pilot, row):
 DEPTHS = {
     "sessions-overview": (False, (), "overview"),
     "session": (False, (("session", "codex:00"),), "session"),
-    "goal": (False, (("session", "codex:00"), "enter"), "goal"),
-    "proposal": (False, (("session", "codex:00"), ("open", PROPOSAL_ROW)), "proposal"),
     "job-from-session": (False, (("session", "codex:00"), ("open", JOB_ROW)), "job"),
     "sessions-help": (False, (("help",),), "help"),
     "jobs-list": (True, (), "jobs"),
@@ -205,11 +149,8 @@ async def test_switching_back_restores_detail_selection_and_scroll():
 
         await pilot.press("left")
         await open_session(app, pilot, "codex:00")
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.navigation.view == "goal"
-        goal = app.navigation
-        assert goal.selected == "g-failing"
+        session = app.navigation
+        assert session.view == "session"
 
         await pilot.press("right")
         await pilot.pause()
@@ -227,7 +168,7 @@ async def test_switching_back_restores_detail_selection_and_scroll():
         assert aside.scroll_y == 3
         await pilot.press("left")
         await pilot.pause()
-        assert app.navigation == goal
+        assert app.navigation == session
         await pilot.press("right")
         await pilot.pause()
         assert app.navigation.view == "job"
@@ -243,9 +184,6 @@ async def test_escape_goes_back_within_window_and_stops_at_top():
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 24)) as pilot:
         await open_session(app, pilot, "codex:00")
-        await pilot.press("enter")
-        assert app.navigation.view == "goal"
-        await pilot.press("escape")
         assert app.navigation.view == "session"
         await pilot.press("escape")
         assert app.navigation.view == "overview"
@@ -294,11 +232,11 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
         await pilot.press("left")
         assert bar.cursor == 0
         assert app.navigation.view == "jobs"  # choosing needs Enter
-        # Jobs window bar: Sessions, Jobs, Targets, Running, Finished, All, owner, Help.
-        await pilot.press(*["right"] * 8)
-        assert bar.cursor == 7  # clamped at Help, no wrap
+        # Jobs window bar: Sessions, Jobs, Targets, Running, Finished, All, owner, Run, Help.
+        await pilot.press(*["right"] * 9)
+        assert bar.cursor == 8  # clamped at Help, no wrap
 
-        await pilot.press(*["left"] * 7, "enter")
+        await pilot.press(*["left"] * 8, "enter")
         await pilot.pause()
         assert app.navigation.view == "overview"
         assert app.focused is bar
@@ -308,7 +246,7 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
         assert app.navigation.view == "jobs"
         assert app.focused is bar
 
-        await pilot.press(*["right"] * 6, "enter")
+        await pilot.press(*["right"] * 7, "enter")
         await pilot.pause()
         assert app.navigation.view == "help"
         # Help has no list: the detail takes the keyboard at once (#2886).
@@ -342,13 +280,11 @@ async def test_up_in_empty_list_focuses_top_bar_and_escape_returns():
 
 @pytest.mark.asyncio
 async def test_up_in_detail_scrolls_then_focuses_top_bar():
-    current = world(artifacts=40)
+    current = world()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 14)) as pilot:
-        await open_session(app, pilot, "codex:00")
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.navigation.view == "goal"
+        await choose_in_bar(app, pilot, "Help")
+        assert app.navigation.view == "help"
         aside = app.query_one("#aside")
         assert app.focused is aside
         assert aside.max_scroll_y > 2
@@ -419,22 +355,6 @@ async def test_notices_hidden_when_there_is_nothing_to_say():
 # --- AC6 ---------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_session_goals_single_column_status_order_and_enter_opens_evidence():
-    current = world()
-    app = DashboardApp(lambda: current)
-    async with app.run_test(size=(180, 30)) as pilot:
-        await open_session(app, pilot, "codex:00")
-        assert len(table_of(app).columns) == 1
-        assert app.row_keys[: len(GOAL_ORDER)] == GOAL_ORDER
-        table_of(app).move_cursor(row=0, animate=False)
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.navigation.view == "goal"
-        assert app.navigation.selected == GOAL_ORDER[0]
-        assert "Last check:" in str(app.query_one("#detail", Static).render())
-
-
 # --- AC7 ---------------------------------------------------------------------
 
 
@@ -449,19 +369,7 @@ async def test_list_header_is_set_per_view():
         assert overview.split()[:2] == ["Session", "Mode"]
         assert overview.split()[-1] == "Activity"
         await open_session(app, pilot, "codex:00")
-        assert column_label(app) == "Goals"
-        # Goals and Booley activity are separate sections: a spacer and a titled rule
-        # sit between them, and neither can take the cursor.
-        gap = app.row_keys.index(sessions.HEADER_PREFIX + "spacer")
-        assert gap == len(GOAL_ORDER)
-        assert app.row_keys[gap + 1] == sessions.HEADER_PREFIX + "booley-activity"
-        assert {gap, gap + 1} <= table_of(app).header_rows
-        rule = table_of(app).get_row_at(gap + 1)[0].plain
-        assert rule.startswith("── Booley activity ─")
-        await pilot.press("escape")
-        await pilot.pause()
-        # S2 runs no Goal: Booley activity heads its list and needs no section rule.
-        await open_session(app, pilot, "codex:01")
+        # A session's list is its Booley activity alone: no section rule between lists.
         assert column_label(app) == "Booley activity"
         assert not any(key.startswith(sessions.HEADER_PREFIX) for key in app.row_keys)
         await pilot.press("escape")
@@ -475,7 +383,6 @@ async def test_list_header_is_set_per_view():
             "Session",
             "State",
             "Result",
-            "Crit",
             "Elapsed",
         ]
 

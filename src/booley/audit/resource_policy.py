@@ -1,18 +1,16 @@
-"""Memory admission and synthesis-calibration policy for environment audits."""
+"""Memory Budget parsing and formatting for environment audits."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import as_dict, as_str
 
 GIB_BYTES = 1024**3
-DEFAULT_HEAVY_JOB_BYTES = 4 * GIB_BYTES
 MEMORY_HEADROOM_BYTES = 2 * GIB_BYTES
-SYNTHESIS_MARGIN_PERCENT = 15
 
 CGROUP_MEMORY_LIMIT_PATHS = (
     Path("/sys/fs/cgroup/memory.max"),
@@ -20,43 +18,6 @@ CGROUP_MEMORY_LIMIT_PATHS = (
 )
 _CGROUP_UNLIMITED_FLOOR = 1 << 60
 _MEMORY_SUFFIXES = {"b": 1, "k": 1024, "m": 1024**2, "g": GIB_BYTES}
-
-
-@dataclass(frozen=True, slots=True)
-class SynthesisMemoryCalibration:
-    """Peak memory observed for one completed synthesis Target."""
-
-    target: str
-    peak_rss_bytes: int
-
-
-@dataclass(frozen=True, slots=True)
-class HeavyMemoryReservation:
-    """The effective HEAVY-job reservation and the evidence behind it."""
-
-    bytes: int
-    evidence: str
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryRequirement:
-    """Resource terms that determine the minimum safe container memory."""
-
-    max_heavy: int
-    heavy_job_bytes: int
-    agent_count: int
-    agent_bytes: int
-    headroom_bytes: int = MEMORY_HEADROOM_BYTES
-
-    @property
-    def required_bytes(self) -> int:
-        """Total memory required when every admitted workload coincides."""
-        return (
-            self.max_heavy * self.heavy_job_bytes
-            + self.agent_count * self.agent_bytes
-            + self.headroom_bytes
-        )
 
 
 def format_memory(byte_count: int | float) -> str:
@@ -102,83 +63,64 @@ def configured_sandbox_memory(config: Mapping[str, object]) -> str:
     return (as_str(memory, "") or "").strip()
 
 
-def heavy_memory_reservation(
-    configured_memory: object,
-    calibration: SynthesisMemoryCalibration | None,
-    selected_targets: Sequence[str],
-) -> HeavyMemoryReservation:
-    """Resolve configured and measured evidence into one HEAVY reservation."""
-    reservation = _configured_reservation(configured_memory)
-    if reservation.error or calibration is None:
-        return reservation
-    calibration_error = _calibration_error(calibration, selected_targets)
-    if calibration_error:
-        return HeavyMemoryReservation(reservation.bytes, reservation.evidence, calibration_error)
-    return _calibrated_reservation(reservation, calibration)
+def configured_sandbox_swap(config: Mapping[str, object]) -> str:
+    """Return the configured ``[sandbox].swap``, or an empty string when absent."""
+    section = as_dict(config.get("sandbox"), default={}) or {}
+    return (as_str(section.get("swap", ""), "") or "").strip()
 
 
-def _configured_reservation(configured_memory: object) -> HeavyMemoryReservation:
-    if configured_memory is None:
-        return HeavyMemoryReservation(DEFAULT_HEAVY_JOB_BYTES, "4g default")
-    configured_text = as_str(configured_memory)
-    if configured_text is None:
-        return _unparseable_reservation(configured_memory)
-    parsed = parse_memory_limit(configured_text)
-    if parsed is None:
-        return _unparseable_reservation(configured_memory)
-    if parsed <= 0:
-        return HeavyMemoryReservation(
-            DEFAULT_HEAVY_JOB_BYTES,
-            "4g default",
-            "[jobs] heavy_memory must be greater than zero",
-        )
-    return HeavyMemoryReservation(parsed, f"configured {format_memory(parsed)}")
+@dataclass(frozen=True)
+class HostMemory:
+    """The memory and swap of the Docker host, in bytes."""
+
+    memory_bytes: int
+    swap_bytes: int
 
 
-def _unparseable_reservation(configured_memory: object) -> HeavyMemoryReservation:
-    return HeavyMemoryReservation(
-        DEFAULT_HEAVY_JOB_BYTES,
-        "4g default",
-        f"[jobs] heavy_memory = {configured_memory!r} is unparseable; use a value such as '8g'",
-    )
+def _meminfo_bytes(text: str, key: str) -> int:
+    match = re.search(rf"^{key}:\s*(\d+)\s*kB\s*$", text, re.MULTILINE)
+    if match is None:
+        raise ValueError(f"no {key} line in the meminfo text")
+    return int(match.group(1)) * 1024
 
 
-def _calibration_error(
-    calibration: SynthesisMemoryCalibration,
-    selected_targets: Sequence[str],
-) -> str | None:
-    if calibration.target not in selected_targets:
-        return (
-            f"stored synthesis memory calibration is for unselected Target "
-            f"{calibration.target!r}; rerun doctor --deep over the current Doctor matrix"
-        )
-    return None
+def parse_meminfo(text: str) -> HostMemory:
+    """Parse ``/proc/meminfo`` text into :class:`HostMemory`.
+
+    Raises:
+        ValueError: ``MemTotal`` or ``SwapTotal`` is missing.
+    """
+    return HostMemory(_meminfo_bytes(text, "MemTotal"), _meminfo_bytes(text, "SwapTotal"))
 
 
-def _calibrated_reservation(
-    configured: HeavyMemoryReservation,
-    calibration: SynthesisMemoryCalibration,
-) -> HeavyMemoryReservation:
-    with_margin = calibration.peak_rss_bytes * (100 + SYNTHESIS_MARGIN_PERCENT) // 100
-    measured = ((with_margin + GIB_BYTES - 1) // GIB_BYTES) * GIB_BYTES
-    if measured <= configured.bytes:
-        evidence = (
-            f"{configured.evidence}; calibrated peak {format_memory(calibration.peak_rss_bytes)}"
-        )
-        return HeavyMemoryReservation(configured.bytes, evidence)
-    evidence = (
-        f"{format_memory(calibration.peak_rss_bytes)} measured on {calibration.target} "
-        f"+ {SYNTHESIS_MARGIN_PERCENT}% margin"
-    )
-    return HeavyMemoryReservation(measured, evidence)
+def _format_exact_size(byte_count: int) -> str:
+    """Render a byte count in the largest unit that holds it exactly."""
+    for suffix, factor in (("g", GIB_BYTES), ("m", 1024**2), ("k", 1024)):
+        if byte_count % factor == 0:
+            return f"{byte_count // factor}{suffix}"
+    return str(byte_count)
 
 
-def memory_requirement(
-    *,
-    max_heavy: int,
-    heavy_job_bytes: int,
-    agent_count: int,
-    agent_bytes: int,
-) -> MemoryRequirement:
-    """Build the typed arithmetic behind Doctor's memory admission check."""
-    return MemoryRequirement(max_heavy, heavy_job_bytes, agent_count, agent_bytes)
+def sandbox_swap_bytes(memory: str, swap: str, host_swap_bytes: int) -> int | None:
+    """Return the swap a Sandbox may use beyond *memory*, or ``None`` with no memory limit.
+
+    A parseable *swap* is used as written (``"0"`` means no swap). An empty or
+    unparseable *swap* defaults to a quarter of *memory*, capped at the swap the
+    Docker host has, so a typo never escapes the cap.
+    """
+    memory_bytes = parse_memory_limit(memory)
+    if memory_bytes is None:
+        return None
+    swap_limit = parse_memory_limit(swap)
+    if swap_limit is not None:
+        return swap_limit
+    return min(memory_bytes // 4, host_swap_bytes)
+
+
+def memory_swap_limit(memory: str, swap: str, host_swap_bytes: int) -> str:
+    """Return the Docker ``--memory-swap`` value (memory plus swap), or ``""`` with no memory."""
+    swap_bytes = sandbox_swap_bytes(memory, swap, host_swap_bytes)
+    memory_bytes = parse_memory_limit(memory)
+    if swap_bytes is None or memory_bytes is None:
+        return ""
+    return _format_exact_size(memory_bytes + swap_bytes)

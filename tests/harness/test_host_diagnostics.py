@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -17,9 +19,9 @@ from booley.runtime import (
     runtime_context,
     session_admission,
     session_issuance,
-    session_refresh,
 )
 from booley.runtime.host_install import HostInstallationIdentity
+from booley.runtime.private_store import session_store_repair
 
 
 def _identity() -> HostInstallationIdentity:
@@ -164,7 +166,8 @@ def test_host_diagnosis_reports_canonical_installation(monkeypatch):
     assert "executable=/usr/local/bin/booley" in finding.message
 
 
-def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
+def test_host_diagnosis_rejects_mismatched_current_installation(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
     identity = _identity()
     actual = replace(identity, revision="def456")
     report = host_diagnostics.Findings()
@@ -178,6 +181,34 @@ def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
     assert "revision abc123 -> def456" in finding.message
     assert identity.distribution_root not in finding.message
     assert "--update" in finding.fix
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell-script stand-ins for booley")
+def test_host_diagnosis_lists_shadowing_path_install(tmp_path, monkeypatch):
+    paths: list[Path] = []
+    for directory, version in (("old", "0.9.0"), ("new", "1.2.3")):
+        (tmp_path / directory).mkdir()
+        script = tmp_path / directory / "booley"
+        script.write_bytes(f"#!/bin/sh\necho 'booley {version} (abc, x)'\n".encode())
+        script.chmod(0o755)
+        paths.append(script.resolve())
+    old, new = paths
+    monkeypatch.setenv("PATH", os.pathsep.join(str(item.parent) for item in paths))
+    identity = replace(_identity(), executable=str(old), version="0.9.0")
+    actual = replace(identity, executable=str(new), version="1.2.3", revision="def456")
+    report = host_diagnostics.Findings()
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: actual)
+
+    host_diagnostics._inspect_host_installation(report)
+
+    finding = report.report().findings[0]
+    assert finding.severity is Severity.FAIL
+    assert f"{old} (v0.9.0, recorded), {new} (v1.2.3, running)" in finding.message
+    assert finding.fix == (
+        "remove or upgrade the installs listed before the one you want, "
+        "or run `booley bootstrap --update` to record the running one"
+    )
 
 
 def test_host_diagnosis_reports_missing_current_installation(monkeypatch):
@@ -264,7 +295,6 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
     for module, attribute in (
         (session_issuance, "stamp_store"),
         (session_admission, "claim_store"),
-        (session_refresh, "journal_store"),
         (issuance_invalidation, "journal_store"),
     ):
         store = getattr(module, attribute)()
@@ -283,6 +313,13 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
         assert str(path) in failure.message
         assert "booley init --seed --project" in failure.message
         assert path.read_bytes() == before
+    # Only the journal owes Docker cleanup; the stamp and the claim keep the plain repair.
+    stamp_failure, claim_failure, journal_failure = failures
+    for (path, _), failure in zip(misnamed[:2], (stamp_failure, claim_failure), strict=True):
+        assert failure.message.endswith(session_store_repair(path, held_root))
+        assert "docker" not in failure.message
+    assert "docker container rm -f" in journal_failure.message
+    assert "run any Docker commands it names" in journal_failure.fix
 
 
 def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
@@ -294,7 +331,6 @@ def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
     stores = (
         session_issuance.stamp_store(),
         session_admission.claim_store(),
-        session_refresh.journal_store(),
         issuance_invalidation.journal_store(),
     )
     for store in stores:
@@ -305,3 +341,109 @@ def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
 
     assert not [f for f in findings if f.severity is Severity.FAIL]
     assert any(f"Session stores: {len(stores)} per-Project file(s)" in f.message for f in findings)
+
+
+def _remembered_project(root: Path) -> str:
+    """Remember an initialized Project and return its stored root."""
+    from booley.projects import inventory
+
+    (root / ".booley").mkdir(parents=True)
+    inventory.remember_project(root)
+    return str(root.resolve())
+
+
+def _forgotten_stamp_findings(findings) -> list:
+    return [f for f in findings if f.check_id == "host.forgotten-project-stamps"]
+
+
+def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
+    monkeypatch, tmp_path: Path
+):
+    """Only stamps of deleted roots outside the Project Inventory raise the WARN."""
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    from types import SimpleNamespace
+
+    from booley.projects import inventory
+
+    remembered = _remembered_project(tmp_path / "remembered")
+    # A remembered Project whose directory is gone is still in the inventory: no WARN.
+    remembered_gone = _remembered_project(tmp_path / "remembered-gone")
+    shutil.rmtree(remembered_gone)
+    granted_gone = str(tmp_path / "granted-gone")
+    grant = SimpleNamespace(project_root=granted_gone)
+    monkeypatch.setattr(inventory, "_authority_grants", lambda: (grant,))
+    seeded = tmp_path / "seeded-worktree"
+    seeded.mkdir()
+    deleted = [str(tmp_path / "gone-a"), str(tmp_path / "gone-b")]
+    stamps = session_issuance.stamp_store()
+    for root in (remembered, remembered_gone, granted_gone, str(seeded), *deleted):
+        stamps.write(root, json.dumps({"project_root": root}))
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    warnings = _forgotten_stamp_findings(findings)
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert warning.severity is Severity.WARN
+    assert warning.message.startswith("2 ")
+    for root in deleted:
+        assert f"booley projects forget --purge {root}" in warning.fix
+    for kept in (remembered, remembered_gone, granted_gone, str(seeded)):
+        assert kept not in warning.fix
+
+    for root in deleted:
+        stamps.private.root.joinpath(stamps.filename(root)).unlink()
+    findings = host_diagnostics.inspect_host().report.findings
+    assert not _forgotten_stamp_findings(findings)
+    assert not [f for f in findings if f.severity is Severity.FAIL]
+
+
+def test_host_doctor_skips_forgotten_stamp_check_when_inventory_is_unreadable(
+    monkeypatch, tmp_path: Path
+):
+    """A corrupt Project Inventory skips the check instead of failing or crashing Doctor."""
+    from booley.projects import inventory
+
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    gone = str(tmp_path / "gone")
+    session_issuance.stamp_store().write(gone, json.dumps({"project_root": gone}))
+    inventory.state_path().parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    inventory.state_path().write_bytes(b"not json")
+    inventory.state_path().chmod(0o600)
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    assert not _forgotten_stamp_findings(findings)
+    skips = [f for f in findings if f.severity is Severity.SKIP]
+    assert any("forgotten-Project stamp check skipped" in f.message for f in skips)
+    assert any("Project Inventory is unreadable" in f.message for f in skips)
+
+
+def test_host_doctor_does_not_call_an_unreadable_root_deleted(monkeypatch, tmp_path: Path):
+    """A root that cannot be checked (EACCES, stale mount) never earns a purge remedy."""
+    import os
+
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    unreadable = str(tmp_path / "unreadable")
+    session_issuance.stamp_store().write(unreadable, json.dumps({"project_root": unreadable}))
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if str(path) == unreadable:
+            raise PermissionError(13, "Permission denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    assert not _forgotten_stamp_findings(findings)

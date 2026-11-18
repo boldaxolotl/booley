@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support import changed_line_coverage as gate
 
@@ -17,13 +17,10 @@ _MESSAGE = 'MESSAGE = "Session Runtime unavailable"\n'
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ("git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args),
+    return run_bounded_child(
+        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
         cwd=repo,
-        capture_output=True,
-        text=True,
         check=True,
-        timeout=30,
     ).stdout.strip()
 
 
@@ -130,13 +127,10 @@ def test_merge_base_prefers_the_newest_main(repo):
 
 
 def test_launcher_outside_a_checkout_explains_and_fails(tmp_path):
-    result = subprocess.run(
-        (sys.executable, str(_LAUNCHER), "--coverage-xml", str(tmp_path / "coverage.xml")),
+    result = run_bounded_child(
+        [sys.executable, str(_LAUNCHER), "--coverage-xml", str(tmp_path / "coverage.xml")],
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=30,
     )
     assert result.returncode == 2
     assert "changed-line coverage: git rev-parse --show-toplevel failed" in result.stderr

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime import platform_paths
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     submodule_paths,
@@ -133,24 +133,16 @@ def refresh_relative_worktree_config(worktree: Path) -> None:
 
 
 def _read_worktree_config(config: Path, key: str) -> str | None:
-    result = subprocess.run(
-        ["git", "config", "--file", str(config), "--get", key],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=_TIMEOUT_S,
+    result = platform_paths.run_captured_bounded(
+        ["git", "config", "--file", str(config), "--get", key], timeout=_TIMEOUT_S, errors="strict"
     )
     value = result.stdout.strip()
     return value if result.returncode == 0 and value else None
 
 
 def _set_worktree_config(config: Path, key: str, value: str) -> None:
-    result = subprocess.run(
-        ["git", "config", "--file", str(config), key, value],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=_TIMEOUT_S,
+    result = platform_paths.run_captured_bounded(
+        ["git", "config", "--file", str(config), key, value], timeout=_TIMEOUT_S, errors="strict"
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
@@ -262,13 +254,8 @@ def _registered_worktrees(repository: Path) -> dict[Path, str]:
 
 
 def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=_TIMEOUT_S,
-        check=False,
+    result = platform_paths.run_captured_bounded(
+        ["git", *args], timeout=_TIMEOUT_S, cwd=repository, errors="strict"
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()

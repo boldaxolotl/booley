@@ -3,7 +3,8 @@
 The host-side Sandbox Attachment owns a durable record and requests cancellation
 through a sibling control file.  This in-Sandbox supervisor is a Linux
 subreaper: descendants that outlive their immediate parent are adopted here,
-so a child that calls ``setsid()`` cannot escape scoped cleanup.
+so a child that calls ``setsid()`` cannot escape scoped cleanup.  Adopted
+orphans are reaped as they exit, so none stays a zombie while the command runs.
 """
 
 from __future__ import annotations
@@ -149,15 +150,34 @@ def _signal_owned_tree(signum: int) -> set[int]:
 
 
 def _reap_adopted(child: subprocess.Popen[Any]) -> None:
+    """Reap every exited adopted orphan, never the uncollected direct child.
+
+    While ``Popen`` has not collected the direct child, peek with ``WNOWAIT``
+    and stop when the peek reports the direct child: ``Popen`` must collect
+    it to keep its exit status. Polling, not a ``SIGCHLD`` handler, avoids
+    racing ``Popen``'s own wait.
+    """
     child.poll()
-    if child.returncode is None:
-        return
-    reaped_pid = 1
-    while reaped_pid > 0:
+    while (orphan_pid := _exited_orphan_pid(child)) is not None:
         try:
-            reaped_pid, _status = os.waitpid(-1, os.WNOHANG)
+            reaped_pid, _status = os.waitpid(orphan_pid, os.WNOHANG)
         except ChildProcessError:
             return
+        if reaped_pid == 0:
+            return
+
+
+def _exited_orphan_pid(child: subprocess.Popen[Any]) -> int | None:
+    """Return an exited child's PID unless it is the uncollected direct child."""
+    try:
+        exited = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:
+        return None
+    if exited is None:
+        return None
+    if child.returncode is None and exited.si_pid == child.pid:
+        return None
+    return exited.si_pid
 
 
 def _wait_for_tree_exit(
@@ -294,6 +314,7 @@ def _wait_until_stop(
             last_change = time.monotonic()
         if time.monotonic() - last_change >= attachment_timeout_s:
             return "attachment_expired", False, signal.SIGINT
+        _reap_adopted(child)
         time.sleep(_POLL_SECONDS)
     return "exited", False, signal.SIGTERM
 

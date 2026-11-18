@@ -9,15 +9,13 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from rich.cells import cell_len
 from textual.widgets import DataTable, Static
 
-from booley.criteria.presentation import CriterionPresentation
 from booley.harness.dashboard import app as dashboard_app
-from booley.harness.dashboard import model, sessions
+from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
@@ -25,12 +23,13 @@ from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import WAITING_USER, WORKING, Activity
 from tests.harness.test_dashboard_sessions import NOW, STARTED, stamp, standalone_job, world
+from tests.time_budget import hang_guard_s
 
 
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """A slow worker must finish the first read before any key press."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 def detail_text(app) -> str:
@@ -65,34 +64,13 @@ def session_row(
 
 
 ONE_CALL = (RecentCall(STARTED, "sim", "ok"),)
-GOAL_NAMES = ("Lint top clean", "Sim fifo passes")
 
 
-def criterion(name: str) -> CriterionPresentation:
-    return CriterionPresentation(name, "Target top", "must pass", "", "Target top")
-
-
-def goal_view(worktree: str, state: str, *, session_key: str | None = None, **status):
-    """A Goal on ``worktree``; ``status`` keywords fill its status, none leaves it unavailable."""
-    return model.GoalView(
-        "fixture",
-        record=SimpleNamespace(
-            worktree=SimpleNamespace(key=worktree),
-            state=SimpleNamespace(value=state),
-            branch="goal/fixture",
-            session_key=session_key,
-        ),
-        status=SimpleNamespace(proposals=(), **status) if status else None,
-        goals=tuple(model.GoalDetail(name, "passing", criterion(name), {}) for name in GOAL_NAMES),
-    )
-
-
-def snapshot_of(rows, *, jobs=(), goals=(), activity=None) -> model.DashboardSnapshot:
+def snapshot_of(rows, *, jobs=(), activity=None) -> model.DashboardSnapshot:
     """A snapshot of ``rows`` named S1.. in order, observed at NOW."""
     return model.DashboardSnapshot(
         tuple(rows),
         jobs=JobSnapshot(tuple(jobs)),
-        goals=tuple(goals),
         observed_at=NOW,
         activity=activity or {},
         session_handles={row.attribution.key: f"S{index + 1}" for index, row in enumerate(rows)},
@@ -138,7 +116,6 @@ async def test_interactive_session_preview_lists_fields_and_only_unfinished_jobs
         # S1 shares its worktree with S2 and has no branch, work dir or Booley call.
         session_row(0, "wt0"),
         session_row(1, "wt0", work_dir="/work/b", branch="feature/b", calls=ONE_CALL),
-        # S3's Goal ended: its row beside the preview is Interactive, so the preview is too.
         session_row(2, "wt2", work_dir="/work/c", branch="main"),
     ]
     jobs = [
@@ -147,11 +124,8 @@ async def test_interactive_session_preview_lists_fields_and_only_unfinished_jobs
         job_view("three", "J-SIM3", "completed"),
         job_view("four", "J-SIM4", "orphaned"),
     ]
-    ended = goal_view(
-        "wt2", "finished", session_key="codex:02", met=1, goals=(0,) * 3, pending_proposals=0
-    )
     activity = {"codex:00": Activity(WAITING_USER, stamp(100))}
-    app = DashboardApp(lambda: snapshot_of(rows, jobs=jobs, goals=[ended], activity=activity))
+    app = DashboardApp(lambda: snapshot_of(rows, jobs=jobs, activity=activity))
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
         move_to(app, "codex:00")
@@ -169,7 +143,6 @@ async def test_interactive_session_preview_lists_fields_and_only_unfinished_jobs
         ]
         assert first[8] == "Unfinished Jobs:"
         assert [line.split(" · ")[0] for line in first[9:]] == ["J-SIM1", "J-LINT2"]
-        assert "Goals" not in "\n".join(first)
 
         move_to(app, "codex:01")
         await pilot.pause()
@@ -183,21 +156,25 @@ async def test_interactive_session_preview_lists_fields_and_only_unfinished_jobs
         await pilot.pause()
         third = detail_text(app)
         assert third.startswith("S3 · Interactive")
-        assert "Goals" not in third
 
 
 @pytest.mark.asyncio
-async def test_goal_mode_session_preview_has_one_line_goal_summary():
-    rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture")]
-    goal = goal_view("wt0", "active", met=2, goals=(0,) * 5, pending_proposals=1)
-    app = DashboardApp(lambda: snapshot_of(rows, goals=[goal]))
+async def test_preview_shows_the_session_title():
+    # Bug caught: the preview's first line showed only the handle for a named session.
+    rows = [session_row(0, "wt0"), session_row(1, "wt1")]
+    current = replace(
+        snapshot_of(rows),
+        session_titles={"codex:00": "S1 \u00b7 uart-fix", "codex:01": "S2"},
+    )
+    app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
-        text = detail_text(app)
-        assert text.startswith("S1 · Goal Mode")
-        assert text.splitlines().count("Goals 2/5 met · 1 proposal pending") == 1
-        # The summary is one line: the Goal list belongs to session detail.
-        assert not any(name in text for name in GOAL_NAMES)
+        move_to(app, "codex:00")
+        await pilot.pause()
+        assert detail_text(app).startswith("S1 \u00b7 uart-fix \u00b7 Interactive")
+        move_to(app, "codex:01")
+        await pilot.pause()
+        assert detail_text(app).startswith("S2 \u00b7 Interactive")
 
 
 @pytest.mark.asyncio
@@ -268,24 +245,20 @@ async def test_overview_columns_fit_the_list_beside_the_preview():
 
 @pytest.mark.asyncio
 async def test_enter_from_preview_opens_unchanged_session_detail():
-    rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture", calls=ONE_CALL)]
-    goal = goal_view("wt0", "active", met=1, goals=(0,) * 2, pending_proposals=0)
+    rows = [session_row(0, "wt0", work_dir="/work/a", branch="feature/x", calls=ONE_CALL)]
     job = job_view("one", "J-SIM1", "running")
     activity = {"codex:00": Activity(WORKING, stamp(100))}
-    app = DashboardApp(lambda: snapshot_of(rows, jobs=[job], goals=[goal], activity=activity))
+    app = DashboardApp(lambda: snapshot_of(rows, jobs=[job], activity=activity))
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
         assert app.query_one("#aside").display
-        assert detail_text(app).startswith("S1 · Goal Mode")
+        assert detail_text(app).startswith("S1 · Interactive")
         await pilot.press("enter")
         await pilot.pause()
         assert app.navigation.view == "session"
         assert not app.query_one("#aside").display
         assert str(app.query_one("#orientation", Static).render()) == ORIENTATION
         assert app.row_keys == [
-            *GOAL_NAMES,
-            sessions.HEADER_PREFIX + "spacer",
-            sessions.HEADER_PREFIX + "booley-activity",
             "job:" + json.dumps(job.key),
             "call:0",
         ]
@@ -293,7 +266,7 @@ async def test_enter_from_preview_opens_unchanged_session_detail():
 
 # Captured from the unmodified session detail of the fixture above.
 ORIENTATION = (
-    "S1 · /work/a · goal/fixture · Goal Mode · connected · Started 5m ago\n"
+    "S1 · /work/a · feature/x · Interactive · connected · Started 5m ago\n"
     "Working · 1m 40s\n"
     "Last Booley call: sim · 5m ago\n"
     "Session key: codex:00"
@@ -301,15 +274,11 @@ ORIENTATION = (
 
 
 def test_session_header_accents_facts_but_not_agent_written_summary():
-    """Header facts carry accents; the agent-written summary stays plain but for headings."""
-    rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture", calls=ONE_CALL)]
-    goal = replace(
-        goal_view("wt0", "active", met=1, goals=(0,) * 2, pending_proposals=0),
-        terminal_summary="## What changed\n- Working bus connected · Session key: x",
-    )
+    """Header facts carry accents."""
+    rows = [session_row(0, "wt0", work_dir="/work/a", branch="feature/x", calls=ONE_CALL)]
     activity = {"codex:00": Activity(WAITING_USER, stamp(100))}
-    app = DashboardApp(lambda: snapshot_of(rows, goals=[goal], activity=activity))
-    app.snapshot = snapshot_of(rows, goals=[goal], activity=activity)
+    app = DashboardApp(lambda: snapshot_of(rows, activity=activity))
+    app.snapshot = snapshot_of(rows, activity=activity)
     app.navigation = replace(app.navigation, view="session", session="codex:00")
     text, _, _ = app._content()
 
@@ -321,7 +290,3 @@ def test_session_header_accents_facts_but_not_agent_written_summary():
     assert "bold" in " ".join(style_of("S1"))  # The title line stands out.
     for fragment in ("Last Booley call:", "Session key:", "connected", "sim"):
         assert style_of(fragment), fragment
-    # The Markdown heading marker is dropped; the heading is styled as a label.
-    assert "## " not in text.plain and style_of("What changed")
-    summary = text.plain.index("- Working")
-    assert not style_of("- Working bus connected · Session key: x", summary)

@@ -24,6 +24,7 @@ from typing import Any
 from booley.config.project_config import project_name
 from booley.runtime import auth_token
 from booley.runtime.platform_paths import docker_mount_path as _docker_mount_path
+from booley.runtime.platform_paths import run_captured_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ class DockerSandboxConfig:
     extra_env: dict[str, str] = field(default_factory=dict)
     needs_network: bool = True
     memory_limit: str = "512m"
+    # Docker ``--memory-swap`` (memory plus swap); empty adds no flag.
+    memory_swap: str = ""
     pids_limit: int = 512
 
     def verify(self) -> str | None:  # noqa: PLR0911 — ordered precondition ladder; each early return is a distinct health-check failure
@@ -60,13 +63,7 @@ class DockerSandboxConfig:
             return "docker not found on PATH"
 
         try:
-            result = subprocess.run(
-                ["docker", "info"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
+            result = run_captured_bounded(["docker", "info"], timeout=15)
             if result.returncode != 0:
                 stderr = (result.stderr or "").strip()
                 # Distinguish permission errors from a down daemon — collapsing
@@ -89,13 +86,7 @@ class DockerSandboxConfig:
             return "docker not found on PATH"
 
         try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", self.image],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
+            result = run_captured_bounded(["docker", "image", "inspect", self.image], timeout=15)
             if result.returncode != 0:
                 return (
                     f"Docker image '{self.image}' not found. "
@@ -312,6 +303,7 @@ class DockerRunner:
             network,
             "--memory",
             self.config.memory_limit,
+            *(["--memory-swap", self.config.memory_swap] if self.config.memory_swap else []),
             "--pids-limit",
             str(self.config.pids_limit),
             "--security-opt",

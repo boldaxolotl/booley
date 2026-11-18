@@ -19,6 +19,13 @@ from booley.fusesoc import selftest_overlay
 from booley.harness import doctor
 from booley.runtime import runtime_context
 from tests.diagnostic_helpers import _require_doctor_warning
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the doctor probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
 
 
 class _Rec:
@@ -91,7 +98,7 @@ def _simulation_failure_report(target="sim_core", test="hello_world", variant=No
         "flow": "sim",
         "exit_code": 1,
         "detail": {
-            "campaigns": {
+            "records": {
                 target: {
                     "complete": True,
                     "build_stage": [],
@@ -316,51 +323,76 @@ def test_unvalidated_warning_names_the_sim_footprint_tradeoff(tmp_path, monkeypa
     assert ".booley/selftest/sim/bad-overlay/" in sim_warn
 
 
+@pytest.mark.parametrize(
+    ("flow", "build", "fixture_hint"),
+    [
+        ("sim", _audit, ".booley/selftest/sim/bad-overlay/"),
+        ("lint", _lint_audit, "lint_selftest_bad"),
+    ],
+    ids=["sim", "lint"],
+)
+def test_unvalidated_warning_says_waiver_keeps_deep_due(
+    tmp_path, monkeypatch, flow, build, fixture_hint
+):
+    """A waiver stops the warning counting, but the self-tests still cannot run."""
+    _set_venue(monkeypatch, False)
+    rec = _Rec()
+    project = build(tmp_path, fixture=False)
+
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
+
+    warns = [m for lvl, m in rec.events if lvl == "warn"]
+    warning = next(m for m in warns if m.startswith(f"{flow} fail-path unvalidated"))
+    assert fixture_hint in warning
+    assert "The setup agent authors the known-bad fixture." in warning
+    assert f"deep Doctor stays due until {flow} has its known-bad fixture" in warning
+
+
 def test_footprint_note_exists_for_every_selftest_tool():
     """A Flow added to the self-test registry without a note would silently lose it."""
     assert set(doctor._SELFTEST_FLOWS) <= set(doctor._SELFTEST_FOOTPRINT_NOTE)
 
 
-def _evidence_mutations(report, campaign, observation):
+def _evidence_mutations(report, simulation_record, observation):
     return {
-        "incomplete": (campaign, "complete", False),
+        "incomplete": (simulation_record, "complete", False),
         "wrong-exit": (report, "exit_code", 0),
         "wrong-flow": (report, "flow", "lint"),
         "wrong-schema": (report, "$schema", "booley.simulation-report/v2"),
-        "truncated": (campaign, "observations_truncated", True),
-        "rows-truncated": (campaign, "test_runs_truncated", True),
-        "wrong-count": (campaign, "test_run_total", 2),
-        "wrong-observation-count": (campaign, "observation_total", 2),
-        "bool-count": (campaign, "test_run_total", True),
+        "truncated": (simulation_record, "observations_truncated", True),
+        "rows-truncated": (simulation_record, "test_runs_truncated", True),
+        "wrong-count": (simulation_record, "test_run_total", 2),
+        "wrong-observation-count": (simulation_record, "observation_total", 2),
+        "bool-count": (simulation_record, "test_run_total", True),
         "mismatched-pair": (observation, "test", "other"),
         "timeout": (observation, "execution", "timed_out"),
         "crash": (observation, "execution", "crashed"),
         "infra": (observation, "failure_class", "infrastructure"),
         "inconclusive": (observation, "functional", "inconclusive"),
-        "nonfailing-row": (campaign["test_runs"][0], "grade", "pass"),
-        "build-stage": (campaign, "build_stage", [{"failure_class": "infrastructure"}]),
-        "wrong-variant": (campaign["test_runs"][0], "variant", "other"),
-        "wrong-name": (campaign["test_runs"][0], "name", "other@1"),
+        "nonfailing-row": (simulation_record["test_runs"][0], "grade", "pass"),
+        "build-stage": (simulation_record, "build_stage", [{"failure_class": "infrastructure"}]),
+        "wrong-variant": (simulation_record["test_runs"][0], "variant", "other"),
+        "wrong-name": (simulation_record["test_runs"][0], "name", "other@1"),
         "malformed-detail": (report, "detail", []),
-        "malformed-row": (campaign, "test_runs", [42]),
-        "malformed-observation": (campaign, "observations", [42]),
+        "malformed-row": (simulation_record, "test_runs", [42]),
+        "malformed-observation": (simulation_record, "observations", [42]),
     }
 
 
 def _evidence_case(kind):
     report = _simulation_failure_report()
-    campaign = report["detail"]["campaigns"]["sim_core"]
-    observation = campaign["observations"][0]
-    changes = _evidence_mutations(report, campaign, observation)
+    simulation_record = report["detail"]["records"]["sim_core"]
+    observation = simulation_record["observations"][0]
+    changes = _evidence_mutations(report, simulation_record, observation)
     if kind in changes:
         owner, key, value = changes[kind]
         owner[key] = value
     elif kind == "missing-rows":
-        del campaign["test_runs"]
+        del simulation_record["test_runs"]
     elif kind == "wrong-target":
-        report["detail"]["campaigns"]["other"] = report["detail"]["campaigns"].pop("sim_core")
+        report["detail"]["records"]["other"] = report["detail"]["records"].pop("sim_core")
     elif kind == "wrong-test":
-        campaign["test_runs"][0]["test"] = observation["test"] = "other"
+        simulation_record["test_runs"][0]["test"] = observation["test"] = "other"
     elif kind == "build-failed":
         observation.update(
             execution="blocked_by_build",
@@ -369,12 +401,12 @@ def _evidence_case(kind):
             detail={"reason": "%Error: stale ports"},
         )
     elif kind == "unpaired-failures":
-        second_row = dict(campaign["test_runs"][0], grade="pass")
+        second_row = dict(simulation_record["test_runs"][0], grade="pass")
         second_observation = dict(observation)
         observation["functional"] = "pass"
-        campaign["test_runs"].append(second_row)
-        campaign["observations"].append(second_observation)
-        campaign.update(test_run_total=2, observation_total=2)
+        simulation_record["test_runs"].append(second_row)
+        simulation_record["observations"].append(second_observation)
+        simulation_record.update(test_run_total=2, observation_total=2)
     elif kind == "dirty-assertions":
         observation.update(functional="pass", assertions="dirty")
     return report
@@ -539,3 +571,37 @@ def test_unremovable_report_fails_without_executing_bad_case(tmp_path, monkeypat
     doctor._run_selftest_checks(project, _runtime(project), rec.p, rec.w, rec.s, rec.f)
     assert executions == ["good"]
     assert any("cannot clear prior report" in message for message in rec.fails())
+
+
+def test_sim_bad_selftest_grades_the_renamed_records_field(tmp_path):
+    """The Simulation self-test reads ``detail.records``; the old field no longer grades."""
+    project = _audit(tmp_path)
+    path = doctor._selftest_report_path(project)
+    path.parent.mkdir(parents=True)
+
+    def grade(report: dict) -> tuple[bool, _Rec]:
+        path.write_text(json.dumps(report))
+        rec = _Rec()
+        accepted = doctor._grade_sim_bad_selftest(
+            project,
+            doctor._SelftestCase("sim_core", None, "case"),
+            subprocess.CompletedProcess([], 1, "", ""),
+            "bad sim",
+            rec.p,
+            rec.w,
+        )
+        return accepted, rec
+
+    current = _simulation_failure_report()
+    assert "records" in current["detail"]
+    accepted, rec = grade(current)
+    assert accepted, "a report with detail.records was not graded"
+    assert rec.events == [("pass", "bad sim correctly graded a failure")]
+
+    # The same report under the retired field name fails grading like a malformed report.
+    retired = _simulation_failure_report()
+    retired["detail"]["campaigns"] = retired["detail"].pop("records")
+    accepted, rec = grade(retired)
+    assert not accepted
+    assert [level for level, _ in rec.events] == ["warn"]
+    assert "fail-path unvalidated" in rec.events[0][1]

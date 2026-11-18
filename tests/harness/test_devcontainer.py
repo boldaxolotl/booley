@@ -1,4 +1,4 @@
-"""Tests for the Interactive Mode devcontainer spec generator (ADR 0018 WS0)."""
+"""Tests for the Sandbox devcontainer spec generator (ADR 0018 WS0)."""
 
 from __future__ import annotations
 
@@ -69,13 +69,16 @@ class TestBuildSpec:
             assert int(args[args.index("--pids-limit") + 1]) == dc.SESSION_PIDS_LIMIT
 
     def test_memory_limit_rendered_when_set(self):
-        """ADR 0028 Decision 12: [sandbox] memory feeds a --memory run arg."""
-        spec = build_spec(dc.APP_NONE, memory="8g")
+        """ADR 0087: [sandbox] memory feeds a --memory run arg, its swap a --memory-swap one."""
+        spec = build_spec(dc.APP_NONE, memory="8g", memory_swap="8g")
         args = spec["runArgs"]
         assert args[args.index("--memory") + 1] == "8g"
+        assert args[args.index("--memory-swap") + 1] == "8g"
+        assert args.index("--memory-swap") == args.index("--memory") + 2
+        assert "--memory-swap" not in build_spec(dc.APP_NONE, memory="8g")["runArgs"]
 
     def test_no_memory_limit_by_default(self):
-        """Empty memory (the default) sets no limit — pre-0028 parity."""
+        """Empty memory (the default) sets no limit."""
         assert "--memory" not in build_spec(dc.APP_NONE)["runArgs"]
 
     def test_credential_plan_is_required(self):
@@ -114,6 +117,18 @@ class TestBuildSpec:
             f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target={dc.BOOLEY_DIR_TARGET},type=bind"
         )
 
+    def test_booley_dir_mounts_at_booley(self):
+        # The literal is pinned on purpose: user docs and the CI demo scripts name it.
+        spec = build_spec(dc.APP_NONE)
+        assert (
+            spec["mounts"][0] == f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target=/booley,type=bind"
+        )
+        assert spec["remoteEnv"]["BOOLEY_DIR"] == "/booley"
+        assert (
+            spec["containerEnv"]["BOOLEY_COMPILER_CACHE_ROOT"]
+            == "/booley/.runtime/compiler-cache/ccache"
+        )
+
     def test_custom_booley_dir_source(self):
         spec = build_spec(
             dc.APP_NONE,
@@ -131,7 +146,7 @@ class TestBuildSpec:
         spec = build_spec(dc.APP_NONE)
         assert spec["containerEnv"] == {
             **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
-            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
+            "BOOLEY_COMPILER_CACHE_ROOT": "/booley/.runtime/compiler-cache/ccache",
         }
 
     def test_fixed_container_env_is_literal_host_policy(self):
@@ -142,7 +157,7 @@ class TestBuildSpec:
         assert spec["containerEnv"] == {
             **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
             "XILINXD_LICENSE_FILE": "2100@booley-license-xilinx",
-            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
+            "BOOLEY_COMPILER_CACHE_ROOT": "/booley/.runtime/compiler-cache/ccache",
         }
 
     def test_local_timezone_is_forwarded_to_runtime_processes(self):
@@ -188,7 +203,7 @@ class TestBuildSpec:
         )
 
     def test_mask_under_booley_dir_masks_both_container_views(self):
-        # .booley is visible TWICE (via /work and /booley-project), so
+        # .booley is visible TWICE (via /work and /booley), so
         # a subtree under it must be masked in both views or the bytes remain
         # readable through the second mount.
         spec = build_spec(
@@ -286,7 +301,7 @@ class TestMaskPathsValidation:
             assert error is not None and "workspace-relative" in error, entry
 
     def test_rejects_masking_the_whole_booley_dir(self):
-        # The session reads booley.toml through /booley-project — masking the
+        # The session reads booley.toml through /booley — masking the
         # entire dir bricks the runtime rather than hiding a secret.
         for entry in [".booley", ".booley/"]:
             error = dc.mask_paths_error([entry])
@@ -740,7 +755,7 @@ def test_project_resource_name_identity_bytes_remain_stable(tmp_path):
     assert expected in devcontainer.state_volume_mount("claude", expected)
 
 
-def test_explicit_policy_partitions_persistent_state(tmp_path, monkeypatch):
+def test_subscription_keeps_the_unsuffixed_login_volume(tmp_path, monkeypatch):
     from booley.runtime import auth_token
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -752,9 +767,16 @@ def test_explicit_policy_partitions_persistent_state(tmp_path, monkeypatch):
             project_id="one-project",
             cli_seeds=[dc.CliSeeds(auth_token.credential_plan("claude", mode))],
         )
-        for mode in ("auto", "subscription", "api_key")
+        for mode in (auth_token.VISITOR_AUTH, "subscription", "api_key")
     ]
     volumes = [next(mount for mount in spec["mounts"] if "type=volume" in mount) for spec in specs]
-    assert len(set(volumes)) == 3
-    assert "-subscription," in volumes[1]
+    assert volumes[0] == volumes[1]
+    assert "-subscription" not in volumes[1]
+    assert volumes[2] != volumes[0]
     assert "-api_key," in volumes[2]
+    legacy = dc.state_volume_mount("claude", "one-project", "subscription", legacy=True)
+    assert legacy is not None
+    assert "-subscription," in legacy
+    assert dc.legacy_subscription_clis([legacy, volumes[0]], "one-project") == {"claude"}
+    assert dc.legacy_subscription_clis([volumes[0]], "one-project") == frozenset()
+    assert dc.legacy_subscription_clis([legacy], "other-project") == frozenset()

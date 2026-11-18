@@ -7,8 +7,13 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from booley.config import agent_app
-from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_settings_from_env
+from booley.config import agent, agent_app
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    VISITOR_AUTH,
+    GatewayConfigError,
+    gateway_settings_from_env,
+)
 from booley.runtime import atomic_files, auth_token, health, incontainer_setup
 from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
 
@@ -75,33 +80,41 @@ def _hook_start_directory() -> Path:
     return cwd
 
 
-def resolve_auto_choice() -> agent_app.AgentAppChoice:
-    """Pick the agent app for ``BOOLEY_AGENT_APP=auto`` from this start's credentials.
+_LABELS = {auth_token.APP_CLAUDE: "Claude", auth_token.APP_CODEX: "Codex"}
 
-    Order: a Claude credential, a Codex credential, a complete gateway
-    configuration (Codex), then Claude with its login offered. A visitor's own
-    credential always beats the gateway, so ``BOOLEY_PRIMARY_AUTH=gateway``
-    counts as ``auto`` here: the gateway is only the fallback. Reasons name
-    credential sources (variables and paths), never values.
+
+def resolve_auto_choice() -> agent_app.AgentAppChoice:
+    """Pick the agent apps for ``BOOLEY_AGENT_APP=auto`` from this start's credentials.
+
+    Every CLI with a credential is allowed, Claude first (the default), then
+    Codex. With no credential: a complete gateway configuration (Codex alone),
+    then Claude alone with its login offered. A visitor's own credential always
+    beats the gateway, so ``BOOLEY_PRIMARY_AUTH=gateway`` counts as the
+    visitor mode here: the gateway is only that mode's fallback. Reasons name credential sources
+    (variables and paths), never values.
     """
-    raw_policy = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip().lower() or None
+    raw_policy = agent.env_auth_mode(os.environ.get("BOOLEY_PRIMARY_AUTH"))
     policy = None if raw_policy == GATEWAY_AUTH else raw_policy
-    lookup = policy or "auto"
+    lookup = policy or VISITOR_AUTH
     # Look where registration looks ($HOME), so the published reason names a
     # credential the registered app will really use.
     home = incontainer_setup._agent_home()
-    claude = auth_token.login_credential(auth_token.APP_CLAUDE, lookup, home=home)
-    codex = auth_token.login_credential(auth_token.APP_CODEX, lookup, home=home)
-    if claude is not None:
-        reason = f"Claude credential from {claude.source}"
-        if codex is not None:
-            reason += "; a Codex credential is also present, Claude is preferred"
-        return agent_app.AgentAppChoice(auth_token.APP_CLAUDE, policy, reason)
-    if codex is not None:
-        return agent_app.AgentAppChoice(
-            auth_token.APP_CODEX, policy, f"Codex credential from {codex.source}"
+    logged_in = {
+        app: credential
+        for app in _LABELS
+        if (credential := auth_token.login_credential(app, lookup, home=home)) is not None
+    }
+    if logged_in:
+        clis = tuple(logged_in)
+        default = clis[0]
+        reason = "; ".join(
+            f"{_LABELS[app]} credential from {credential.source}"
+            for app, credential in logged_in.items()
         )
-    if lookup == "auto":
+        if len(clis) > 1:
+            reason += f"; {_LABELS[default]} is the default"
+        return agent_app.AgentAppChoice(default, policy, reason, clis)
+    if lookup == VISITOR_AUTH:
         try:
             gateway = gateway_settings_from_env()
         except GatewayConfigError:
@@ -111,9 +124,13 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
                 auth_token.APP_CODEX,
                 GATEWAY_AUTH,
                 f"no Claude or Codex credential; gateway at {gateway.url} ({gateway.token_source})",
+                (auth_token.APP_CODEX,),
             )
     return agent_app.AgentAppChoice(
-        auth_token.APP_CLAUDE, policy, "no credential and no gateway; Claude's login is offered"
+        auth_token.APP_CLAUDE,
+        policy,
+        "no credential and no gateway; Claude's login is offered",
+        (auth_token.APP_CLAUDE,),
     )
 
 
@@ -165,20 +182,61 @@ def _guarded_step(label: str, step: Callable[[], str]) -> str:
         return "refused"
 
 
-def _apply_issued_gateway(app: str, status: str) -> str:
-    """Per-CLI gateway steps of an issued Sandbox, appended to *status*.
+def _repair_worktrees() -> str:
+    """Repair worktree pointers naming a former mount; fail-soft, never blocks registration.
 
-    Codex's gateway provider is written whichever app is the default; Claude's
-    settings get the gateway blanked. Each step is guarded on its own, so a refused
-    Claude registration still hides the gateway.
+    Returns ``current``, ``repaired``, ``problems`` or ``failed``.
     """
-    from booley.config.agent import issued_codex_gateway
+    from booley.runtime import worktree_mount_repair
 
-    tokens = [status]
-    if app != "codex" and issued_codex_gateway():
-        tokens.append(_guarded_step("gateway", incontainer_setup._apply_codex_gateway))
-    tokens.append(_guarded_step("claude-gateway", incontainer_setup.hide_gateway_from_claude))
-    return " ".join(tokens)
+    try:
+        result = worktree_mount_repair.repair_mount_registrations(_hook_start_directory())
+    except (OSError, RuntimeError) as exc:
+        # MountHistoryError is a RuntimeError; either way the Sandbox still starts.
+        print(f"warning: worktree pointers not repaired: {exc}", file=sys.stderr)
+        return "failed"
+    for problem in result.problems:
+        print(f"warning: {problem.message()}", file=sys.stderr)
+    if result.problems:
+        return "problems"
+    return "repaired" if result.repaired or result.pruned else "current"
+
+
+def _register_clis(clis: tuple[str, ...], trust: tuple[str, ...]) -> str:
+    """Register every allowed CLI; one CLI's refusal never stops the others.
+
+    Returns the CLIs' status tokens, ``<cli>:refused`` for a refused one (an
+    unreadable user config is left untouched), or ``none`` when no CLI is allowed.
+    """
+    if not clis:
+        return incontainer_setup.register("none")
+    statuses: list[str] = []
+    for cli in clis:
+        try:
+            statuses.append(incontainer_setup.register(cli, trust_paths=trust))
+        except ValueError as exc:
+            # The rest of the hook (the other CLIs, upgrade note, auto-doctor) must
+            # still run to help diagnose it.
+            print(f"error: registration refused: {cli}: {exc}", file=sys.stderr)
+            statuses.append(f"{cli}:refused")
+    return " ".join(statuses)
+
+
+def _hide_issued_gateway(status: str) -> str:
+    """Append the step that blanks the gateway in Claude's settings to *status*.
+
+    Guarded on its own, so a refused registration still hides the gateway. Codex's
+    gateway provider needs no step here: an issued Sandbox lists Codex whenever its
+    record routes it through the gateway, so its registration writes the provider.
+    """
+    return (
+        f"{status} {_guarded_step('claude-gateway', incontainer_setup.hide_gateway_from_claude)}"
+    )
+
+
+def _any_refused(status: str) -> bool:
+    """Whether a status line carries a refused registration or step."""
+    return any(token == "refused" or token.endswith(":refused") for token in status.split())
 
 
 def main() -> None:
@@ -191,29 +249,30 @@ def main() -> None:
     # Right after the record changes, so no run that already sees the new app is
     # marked stale.
     invalidation = _invalidate_health() if choice_changed else ""
-    app = choice.app if choice else os.environ.get("BOOLEY_AGENT_APP", "none")
-    server = (
-        "skipped" if app == "none" else incontainer_setup.ensure_http_server(mode="interactive")
-    )
-    trust = () if app == "none" else sandbox_trust_paths(_hook_start_directory())
-    try:
-        status = incontainer_setup.register(app, trust_paths=trust)
-    except ValueError as exc:
-        # An unreadable user config is refused untouched; the rest of the hook
-        # (upgrade note, auto-doctor) must still run to help diagnose it.
-        print(f"error: registration refused: {exc}", file=sys.stderr)
-        status = "refused"
-    status = _apply_issued_gateway(app, status)
+    worktrees = _repair_worktrees()
+    clis = agent.sandbox_agent_clis()
+    server = incontainer_setup.ensure_http_server(mode="interactive") if clis else "skipped"
+    trust = sandbox_trust_paths(_hook_start_directory()) if clis else ()
+    status = _hide_issued_gateway(_register_clis(clis, trust))
     upgrade = observe_upgrade()
     doctor_launch = launch_auto_doctor()
-    chosen = f" app:{choice.app} (BOOLEY_AGENT_APP=auto: {choice.reason})" if choice else ""
     print(
-        f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{doctor_launch} "
-        f"{status}{chosen}{invalidation}",
+        f"booley incontainer-register: worktrees:{worktrees} server:{server} upgrade:{upgrade} health:{doctor_launch} "
+        f"{status}{_auto_suffix(choice)}{invalidation}",
         file=sys.stderr,
     )
-    if "refused" in status.split():
+    if _any_refused(status):
         sys.exit(1)
+
+
+def _auto_suffix(choice: agent_app.AgentAppChoice | None) -> str:
+    """The status line's note on the ``auto`` choice; empty for an explicit app."""
+    if choice is None:
+        return ""
+    suffix = f" app:{choice.app} (BOOLEY_AGENT_APP=auto: {choice.reason})"
+    if len(choice.clis) > 1:
+        suffix += f" clis:{','.join(choice.clis)}"
+    return suffix
 
 
 if __name__ == "__main__":

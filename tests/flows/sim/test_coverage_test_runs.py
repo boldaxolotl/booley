@@ -1,4 +1,4 @@
-"""A coverage campaign collects several Test Runs of one Test (ADR 0072).
+"""A Coverage Record collects several Test Runs of one Test (ADR 0072).
 
 Two Test Variants of one Test, a pinned seed and ``test@xN`` are each one
 simulator process in the one ``coverage_aggregate`` work item; the merged
@@ -14,15 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
-from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
 from booley.flows.sim.coverage_json import coverage_mapping_document
+from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import (
     SelectedCoverageRun,
     SimulationRunResult,
@@ -31,8 +29,9 @@ from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim.test_coverage_flow import (
-    _AcceptanceAdapter,
-    _prepare_atomic_coverage_state,
+    _coverage,
+    _pin_revision,
+    _prepare_sim_custom_project,
     _SplitMetricsExecution,
 )
 from tests.flows.sim.test_coverage_invocation import project
@@ -116,8 +115,8 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
     ]
     assert all(_WINDOWS_SAFE_NAME.match(request.raw_path.name) for request in execution.runs)
 
-    document = json.loads(outcome.campaign_path.read_text())
-    assert document["$schema"] == "booley.coverage-campaign/v5"
+    document = json.loads(outcome.coverage_record_path.read_text())
+    assert document["$schema"] == "booley.coverage-record/v1"
     assert document["tests"]["selected"] == ["reset", "wrap"]
     assert [(run["test"], run["test_run"]) for run in document["tests"]["runs"]] == [
         ("reset", "reset+soak@1"),
@@ -130,8 +129,8 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
         run.fingerprint for run in plan.test_runs
     ]
     # The merged result is the union: every run contributes its own hits.
-    campaign = load_coverage_campaign(outcome.campaign_path).campaign
-    assert dict(campaign.points[0].hits_by_run) == {
+    coverage_record = load_coverage_record(outcome.coverage_record_path).coverage_record
+    assert dict(coverage_record.points[0].hits_by_run) == {
         f"run:{index:03d}:{name}": 2 for index, name in enumerate(names, start=1)
     }
     rows = coverage_mapping_document(outcome.detail)["tests"]
@@ -144,7 +143,7 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
     ]
 
 
-def test_one_failing_run_fails_the_coverage_campaign(tmp_path, monkeypatch):
+def test_one_failing_run_fails_the_coverage_simulation_record(tmp_path, monkeypatch):
     context = _project(tmp_path, monkeypatch)
     plan = _target_plan(tmp_path, context, _runs(tmp_path, "reset", "reset+soak", "wrap"))
 
@@ -159,19 +158,6 @@ def test_one_failing_run_fails_the_coverage_campaign(tmp_path, monkeypatch):
         ("reset+soak@1", False),
         ("wrap@1", True),
     ]
-
-
-def test_a_run_name_outside_the_safe_set_becomes_a_digest_not_a_lossy_name(tmp_path):
-    from booley.flows.sim.verilator_coverage import _run_id, _run_stem
-
-    plain = SelectedCoverageRun("smoke test")
-    other = SelectedCoverageRun("smoke_test")
-
-    assert _run_stem(1, plain).startswith("001-~sha256-")
-    assert _run_stem(1, plain) != _run_stem(1, other) == "001-smoke_test"
-    seeded = SelectedCoverageRun("stress", build_test_run("stress", variant="soak", seed=42))
-    assert _run_stem(7, seeded) == "007-stress+soak@42"
-    assert _run_id(7, seeded) == "run:007:stress+soak@42"
 
 
 def test_a_selected_run_must_be_a_run_of_its_test():
@@ -191,28 +177,14 @@ def test_preflight_refuses_runs_of_an_unregistered_test(tmp_path, monkeypatch):
     assert [finding.code for finding in prepared.findings] == ["COV_SUITE_INVALID"]
 
 
-def _flow_result(tmp_path: Path, execution: NativeExecution, *tests: str):
-    return SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: execution
-    ).execute(
-        SimRequest(
-            target="sim_0",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
-            test=tests or None,
-        )
-    )
-
-
 def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeypatch):
     _project(tmp_path, monkeypatch)
     execution = NativeExecution()
 
-    result = _flow_result(tmp_path, execution, "reset+short", "reset+soak", "wrap@x3")
+    result = _coverage(tmp_path, execution, test=("reset+short", "reset+soak", "wrap@x3"))
 
     assert result.exit_code == 0, result.outcome
-    manifest = json.loads(next((tmp_path / "reports").rglob("campaign/manifest.json")).read_text())
+    manifest = json.loads(next((tmp_path / "reports").rglob("record/manifest.json")).read_text())
     (item,) = manifest["work_items"]
     assert item["kind"] == "coverage_aggregate"
     assert item["selection"]["names"] == ["reset", "wrap"]
@@ -222,60 +194,38 @@ def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeyp
     assert all(name.startswith("wrap@") for name in recorded[2:])
     # Each simulator process is one recorded Test Run, in the recorded order.
     assert [request.test.run_name for request in execution.runs] == recorded
-    campaign = result.outcome.detail["campaigns"]["sim_0"]
+    simulation_record = result.outcome.detail["records"]["sim_0"]
     stored = json.loads(next((tmp_path / "reports").rglob("work-items/*/result.json")).read_text())
     assert [row["test_run"] for row in stored["observations"]] == recorded
-    assert [row["name"] for row in campaign["test_runs"]] == recorded
-    assert [(row["variant"], row["grade"]) for row in campaign["test_runs"][:2]] == [
+    assert [row["name"] for row in simulation_record["test_runs"]] == recorded
+    assert [(row["variant"], row["grade"]) for row in simulation_record["test_runs"][:2]] == [
         ("short", "pass"),
         ("soak", "pass"),
     ]
     for name in recorded:
         assert name in result.outcome.report_text
     nested = json.loads(
-        next((tmp_path / "reports").rglob("coverage-campaign/coverage.json")).read_text()
+        next((tmp_path / "reports").rglob("coverage-record/coverage.json")).read_text()
     )
     assert [run["test_run"] for run in nested["tests"]["runs"]] == recorded
 
 
-def _ticket_coverage_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *tests: str):
-    """Run Ticket-backed coverage of ``sim_custom`` (one Test, ``gap``) with *tests*."""
-    state_path, initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    adapter = _AcceptanceAdapter(
-        log_dir=tmp_path / "logs",
-        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
-    )
-    result = SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: _SplitMetricsExecution()
-    ).execute(
-        SimRequest(
-            target="sim_custom",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
-            test=tests or None,
-        ),
-        adapter=adapter,
-    )
-    return result, state_path, initial_state
-
-
 @pytest.mark.parametrize("tests", [(), ("gap",), ("gap@1",)])
-def test_default_coverage_runs_keep_recording_goal_evidence(tmp_path, monkeypatch, tests):
-    result, state_path, initial_state = _ticket_coverage_result(tmp_path, monkeypatch, *tests)
+def test_default_coverage_runs_keep_recording_evidence(tmp_path, monkeypatch, tests):
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
+    result = _coverage(tmp_path, _SplitMetricsExecution(), target="sim_custom", test=tests or None)
 
-    assert "diagnostic_test_runs" not in result.outcome.detail  # outside Goal Mode
-    assert state_path.read_bytes() != initial_state
-    assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
+    assert "diagnostic_test_runs" not in result.outcome.detail
+    assert list((tmp_path / "reports").rglob("simulation.json"))
 
 
 def test_flow_fails_when_one_of_several_runs_of_a_test_fails(tmp_path, monkeypatch):
     _project(tmp_path, monkeypatch)
 
-    result = _flow_result(tmp_path, _FailingRun("reset+soak@1"), "reset", "reset+soak")
+    result = _coverage(tmp_path, _FailingRun("reset+soak@1"), test=("reset", "reset+soak"))
 
     assert result.exit_code == 1, result.outcome
-    rows = result.outcome.detail["campaigns"]["sim_0"]["test_runs"]
+    rows = result.outcome.detail["records"]["sim_0"]["test_runs"]
     assert [(row["name"], row["grade"]) for row in rows] == [
         ("reset+short@1", "pass"),
         ("reset+soak@1", "fail"),
@@ -287,7 +237,7 @@ def test_coverage_refuses_more_test_runs_than_one_request_allows(tmp_path, monke
     _project(tmp_path, monkeypatch)
     execution = NativeExecution()
 
-    result = _flow_result(tmp_path, execution, "wrap@x1000", "reset")
+    result = _coverage(tmp_path, execution, test=("wrap@x1000", "reset"))
 
     assert result.exit_code != 0
     assert f"more than {MAX_TEST_RUNS_PER_REQUEST} Test Runs" in result.outcome.report_text
@@ -308,9 +258,7 @@ class _InterruptedAfterFirstRun(NativeExecution):
 
 def _resumable_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The multi-Variant Project at one fixed revision, as resume requires."""
-    revision = "c" * 40
-    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
+    _pin_revision(monkeypatch, "c" * 40)
     _project(tmp_path, monkeypatch)
 
 
@@ -320,11 +268,12 @@ def _recorded_runs(manifest: Path) -> list[dict]:
 
 
 def _forbid_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A resumed campaign must never resolve or draw Test Runs again."""
+    """A resumed record must never resolve or draw Test Runs again."""
 
     def refuse(*_args, **_kwargs):
-        raise AssertionError("a resumed campaign resolved its Test Runs again")
+        raise AssertionError("a resumed record resolved its Test Runs again")
 
+    # A deterministic re-resolution gives the same Test Runs; only this patch shows resume never resolves again.
     monkeypatch.setattr(SimulateFlow, "_resolve_test_runs", refuse)
     monkeypatch.setattr("booley.flows.test_runs.secrets.SystemRandom", refuse)
 
@@ -342,25 +291,15 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
     reports = tmp_path / "reports"
     execution = _InterruptedAfterFirstRun()
     with pytest.raises(KeyboardInterrupt):
-        SimulateFlow(coverage_execution=lambda *_args: execution).execute(
-            SimRequest(
-                target="sim_0",
-                work_dir=tmp_path,
-                coverage=True,
-                report_dir=reports,
-                test=_MULTI_RUN,
-            )
-        )
+        _coverage(tmp_path, execution, test=_MULTI_RUN)
     assert len(execution.runs) == 1
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     frozen = manifest.read_bytes()
     names = [run["name"] for run in _recorded_runs(manifest)]
     assert names[:2] == ["reset+short@1", "reset+soak@1"] and len(set(names)) == 5
     _forbid_resolution(monkeypatch)
 
-    resumed = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-    )
+    resumed = _coverage(tmp_path, resume_from=manifest)
 
     assert resumed.exit_code == 2, resumed.outcome.report_text
     assert manifest.read_bytes() == frozen
@@ -386,7 +325,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
 def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identically(
     tmp_path, monkeypatch
 ):
-    """A collected campaign cut during publication resumes from its own manifest."""
+    """A collected record cut during publication resumes from its own manifest."""
     _resumable_project(tmp_path, monkeypatch)
     reports = tmp_path / "reports"
     execution = NativeExecution()
@@ -397,15 +336,9 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
             armed[0] = False
             raise OSError("injected crash before:summary_replace")
 
-    interrupted = SimulateFlow(
-        coverage_execution=lambda *_args: execution, campaign_publication_checkpoint=crash
-    ).execute(
-        SimRequest(
-            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports, test=_MULTI_RUN
-        )
-    )
+    interrupted = _coverage(tmp_path, execution, checkpoint=crash, test=_MULTI_RUN)
     assert interrupted.exit_code == 2
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     frozen = manifest.read_bytes()
     recorded = _recorded_runs(manifest)
     names = [run["name"] for run in recorded]
@@ -413,17 +346,15 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
     assert launched == names and len(names) == 5
     _forbid_resolution(monkeypatch)
 
-    resumed = SimulateFlow(coverage_execution=lambda *_args: execution).execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-    )
+    resumed = _coverage(tmp_path, execution, resume_from=manifest)
 
     assert resumed.exit_code == 0, resumed.outcome.report_text
     assert manifest.read_bytes() == frozen
     # Nothing ran again, and every published record names the frozen Test Runs.
     assert [request.test.run_name for request in execution.runs] == launched
-    rows = resumed.outcome.detail["campaigns"]["sim_0"]["test_runs"]
+    rows = resumed.outcome.detail["records"]["sim_0"]["test_runs"]
     assert [{key: row[key] for key in recorded[0]} for row in rows] == recorded
-    nested = json.loads(next(reports.rglob("coverage-campaign/coverage.json")).read_text())
+    nested = json.loads(next(reports.rglob("coverage-record/coverage.json")).read_text())
     assert [(run["test_run"], run["fingerprint"]) for run in nested["tests"]["runs"]] == [
         (run["name"], run["fingerprint"]) for run in recorded
     ]

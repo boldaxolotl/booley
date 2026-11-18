@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 from booley.config.host_config import load_host_policy
+from booley.core.host_shell import quote_arg
 from booley.harness import bootstrap, bootstrap_cli
 from booley.runtime import session_admission
 from booley.runtime.image_lifecycle import Intent
@@ -30,12 +31,14 @@ def _current_result(intent: Intent = Intent.ENSURE) -> bootstrap.BootstrapResult
     return bootstrap.BootstrapResult(intent, (finding,))
 
 
-def _sandbox(name: str, egress: str, *, vscode: bool) -> session_admission.Sandbox:
+def _sandbox(
+    name: str, egress: str, *, vscode: bool, root: Path | None = None
+) -> session_admission.Sandbox:
     now = datetime(2026, 1, 1, tzinfo=UTC)
     return session_admission.Sandbox(
         container_id=f"id-{name}",
         name=name,
-        project_root=f"/work/{name}",
+        project_root=str(root) if root else f"/work/{name}",
         project_id=None,
         created_at=now,
         started_at=now,
@@ -60,7 +63,7 @@ class _Host:
             bootstrap_cli, "inspect_bootstrap", lambda **_kw: _current_result(Intent.CHECK)
         )
         monkeypatch.setattr(
-            "booley.runtime.session_refresh.shared_recovery_blocks_command",
+            "booley.runtime.issuance_invalidation.shared_recovery_blocks_command",
             lambda **_kwargs: False,
         )
         monkeypatch.setattr(session_admission, "running_sandboxes", self._running_sandboxes)
@@ -101,7 +104,9 @@ def test_invalid_egress_result_writes_nothing_and_skips_bootstrap(
     original = b'[sandbox]\negress_allowlist = ["example.com"]\n'
     host.config.parent.mkdir(parents=True)
     host.config.write_bytes(original)
-    monkeypatch.setattr("booley.runtime.session_refresh.shared_recovery_blocks_command", _fail)
+    monkeypatch.setattr(
+        "booley.runtime.issuance_invalidation.shared_recovery_blocks_command", _fail
+    )
 
     assert host.run(egress="unproxied") == 2
 
@@ -211,21 +216,29 @@ def test_check_only_egress_already_recorded_is_current(
 
 
 def test_mode_change_names_running_sandboxes_on_old_mode(
-    host: _Host, capsys: pytest.CaptureFixture[str]
+    host: _Host, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    editor = _sandbox("editor", "proxy", vscode=True)
-    headless = _sandbox("headless", "proxy", vscode=False)
+    roots = {name: tmp_path / name for name in ("editor", "headless")}
+    for root in roots.values():
+        root.mkdir()
+    editor = _sandbox("editor", "proxy", vscode=True, root=roots["editor"])
+    headless = _sandbox("headless", "proxy", vscode=False, root=roots["headless"])
     host.sandboxes = lambda: (editor, headless, _sandbox("current", "unproxied", vscode=False))
 
     assert host.run(egress="unproxied") == 0
 
     out = capsys.readouterr().out
-    assert "Sandbox editor (Project /work/editor) still runs with egress 'proxy'" in out
+    assert f"Sandbox editor (Project {roots['editor']}) still runs with egress 'proxy'" in out
     assert "Dev Containers: Rebuild Container" in out
-    assert "Sandbox headless (Project /work/headless) still runs with egress 'proxy'" in out
+    assert f"Sandbox headless (Project {roots['headless']}) still runs with egress 'proxy'" in out
     # The remedy quotes commands per host shell, so compare against its own rendering.
     assert session_admission.recreate_remedy(editor) in out
     assert session_admission.recreate_remedy(headless) in out
+    editor_command = f"booley init --project {quote_arg(str(roots['editor']))}"
+    headless_command = f"booley session refresh --project {quote_arg(str(roots['headless']))}"
+    assert f"run `{editor_command}`, then use Dev Containers: Rebuild Container" in out
+    assert f"recreate it: run `{headless_command}` on the host" in out
+    assert "--seed" not in out
     assert "Sandbox current" not in out
 
 

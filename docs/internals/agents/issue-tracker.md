@@ -1,93 +1,133 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all
-operations.
+How agents read and write this repository's issues and specs, which live as
+GitHub issues. Skills that "publish to the issue tracker" or "fetch the
+ticket" (`triage`, `to-spec`, `to-tickets`, `wayfinder`, the issue pipeline)
+read it for the commands and labels. The brief a `ready-for-agent` issue
+needs is in [agent-brief.md](agent-brief.md).
 
-## Conventions
+## Commands
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`.
-- **Read an issue**: `gh issue view <number> --comments`, also fetching labels.
-- **List issues**: use `gh issue list` with appropriate state and label filters.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
-- **Apply or remove labels**: `gh issue edit <number> --add-label "..."` or
-  `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+Run `gh` inside the clone or a worktree: it takes the repository from the
+`origin` remote, and `gh api` fills `{owner}` and `{repo}` the same way.
 
-Infer the repository from `git remote -v`; `gh` does this automatically inside
-the clone.
+- **List:** `gh issue list --state open --label <label> --limit 200`. Without
+  `--limit`, `gh` returns 30 issues.
+- **Create:** `gh issue create --title "$(cat <title-file>)" --body-file <body-file> --label <label>`
+- **Comment:** `gh issue comment <n> --body-file <file>`
 
-## Agent Briefs
+Draft every title, body, and comment in a local file and scan it with
+`python3 .github/scripts/confidential_content_guard.py --repo . pr-text --file <draft>`
+before submitting that same file, as `AGENTS.md` requires. That is why the
+commands read files instead of taking `--body "..."`. Close with a scanned
+closing comment, then `gh issue close <n> --reason completed` (or
+`--reason "not planned"`).
 
-A `ready-for-agent` issue needs an Agent Brief comment. Write and place it per
-[agent-brief.md](agent-brief.md).
+## Pull requests
 
-## Pull requests as a triage surface
+**PRs as a request surface: no.** Triage covers issues only.
 
-**PRs as a request surface: no.**
+Issues and pull requests share one number space. Resolve a bare `#<n>` with
+`gh pr view <n>` first and fall back to `gh issue view <n>`.
 
-GitHub shares one number space across issues and pull requests. Resolve an
-ambiguous number with `gh pr view <number>` and fall back to
-`gh issue view <number>`.
+## Sub-issues and blocking
 
-## When a skill says "publish to the issue tracker"
+Split work, `to-tickets` output, and Wayfinder tickets all use GitHub's native
+sub-issues. Link a child to its parent and start the child's body with
+`Part of #<parent>.`:
 
-Create a GitHub issue.
+```bash
+child_id=$(gh api repos/{owner}/{repo}/issues/<child> --jq .id)
+gh api --method POST repos/{owner}/{repo}/issues/<parent>/sub_issues -F sub_issue_id="$child_id"
+```
 
-## When a skill says "fetch the relevant ticket"
+The `id` here is the issue's database ID, not its `#` number.
 
-Run `gh issue view <number> --comments`.
+Record each blocking edge twice. The issue pipeline reads only
+`Blocked by: #<n>, #<m>` lines in the issue body or its Agent Brief, so write
+that line. GitHub's UI and the Wayfinder frontier read native dependencies,
+so add those too:
+
+```bash
+blocker_id=$(gh api repos/{owner}/{repo}/issues/<blocker> --jq .id)
+gh api --method POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id="$blocker_id"
+```
+
+An issue is unblocked when every blocker is closed.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The map is one issue with child issues as decision
-tickets.
+Used by `/wayfinder`. The map is one issue labeled `wayfinder:map`, with its
+body laid out as the `wayfinder` skill specifies.
 
-- **Map**: an issue labelled `wayfinder:map` containing Destination, Notes,
-  Decisions so far, Not yet specified, and Out of scope.
-- **Child ticket**: a GitHub sub-issue linked to the map. If sub-issues are
-  unavailable, add it to a task list in the map and place `Part of #<map>` in
-  the child body.
-- **Ticket labels**: `wayfinder:research`, `wayfinder:prototype`,
-  `wayfinder:grilling`, or `wayfinder:task`.
-- **Blocking**: use GitHub's native issue dependencies. If unavailable, use a
-  `Blocked by: #<number>` line in the child body.
-- **Frontier**: the map's open, unblocked, and unassigned child issues.
-- **Claim**: assign the issue to the driving developer before starting work.
-- **Resolve**: record the answer in a comment, close the issue, and add a
-  concise linked pointer to the map's Decisions-so-far section.
+- **Child ticket:** a sub-issue of the map (see above), labeled one of
+  `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or
+  `wayfinder:task`. The issue pipeline never admits an issue with a
+  `wayfinder:` label.
+- **Frontier:** the map's open children with no open blocker and no assignee,
+  in map order:
+
+    ```bash
+    gh api --paginate repos/{owner}/{repo}/issues/<map>/sub_issues \
+      --jq '.[] | select(.state == "open" and (.assignees | length) == 0
+              and .issue_dependencies_summary.blocked_by == 0) | .number'
+    ```
+
+- **Claim:** `gh issue edit <n> --add-assignee @me`, before any other work.
+- **Resolve:** comment the answer, close the issue, then add a one-line linked
+  gist to the map's Decisions so far section with `gh issue edit <map> --body-file`.
 
 ## Agent claims
 
-An agent that takes an issue claims it with a task-specific comment, then
-assigns the issue to the authenticated login. Draft and scan the comment as
-`AGENTS.md` requires, and post exactly:
+The issue pipeline claims an issue with `op claim` and `op release-claim`.
+An agent that works an issue unattended by hand follows the same protocol:
+post the comment ``Claimed by agent `<agent-id>`.`` (drafted and scanned as
+above), then assign the issue to the authenticated login. The earliest claim
+not released wins, ordered by `createdAt`, then comment ID. Read every page
+of comments and the assignees before assigning and again before each later
+state-changing command; these reads detect a conflict but are not a lock.
 
-```text
-Claimed by agent `<agent-id>`.
-```
+Release only after every command the run started has stopped and none of its
+PRs is queued: post ``Released claim <claim-comment-id> by agent `<agent-id>`:
+<reason>.``, then remove the run's own assignment. GitHub authenticates the
+login, not the agent ID, so a release counts only when the releasing run can
+match it to its own recorded command, or the maintainer authorizes it.
+Elapsed time never releases a claim. To recover an abandoned claim, the
+maintainer confirms the claiming run has stopped and authorizes the takeover.
 
-The earliest claim that has not been released wins, ordered by `createdAt`,
-then comment ID. Read every page of comments and the assignees before
-assigning and before each later state-changing command; stop when a claim or
-assignee appears that the last read did not show. These reads detect a
-conflict. They are not a lock: two hosts can still race.
+## Triage labels
 
-Release a claim only after every command the claiming run started has stopped
-and no PR of that run is still queued. Post a release comment that names the
-original claim comment ID, the run, and the reason, then remove the run's own
-assignment:
+State labels equal the triage skill's role names: `needs-triage`,
+`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`, plus
+`tracker`.
 
-```text
-Released claim <claim-comment-id> by agent `<agent-id>`: <reason>.
-```
+### Tracker and pipeline labels
 
-GitHub authenticates the login, not the agent ID written in a comment. A
-release therefore counts only when the releasing run can match it to its own
-recorded command and the returned comment ID, or when the maintainer
-authorizes the release or handoff. A release comment alone, written under a
-shared login by an agent that cannot show that record, does not free the
-claim. Elapsed time never releases a claim.
+`tracker` marks a parent whose work was split into sub-issues
+([One PR per issue](agent-brief.md#one-pr-per-issue)). Whoever files the
+sub-issues puts it on the parent in place of its state label: triage after its
+own split, or the issue pipeline after its planner splits a `ready-for-agent`
+issue. Sweeps for issues that need attention then skip the parent. A tracker
+has no Agent Brief and is never `ready-for-agent`. Close it when its last
+sub-issue closes.
 
-An open PR for the issue keeps it out of automatic selection even after its
-claim is released. To recover an abandoned claim, the maintainer confirms that
-the old run and its processes have stopped, then authorizes the takeover.
+The issue pipeline never admits an issue labeled `needs-triage`,
+`needs-info`, or any `wayfinder:` label. While a ticket waits on a maintainer
+question, labeling the issue `needs-triage`, `ready-for-human`, or `wontfix`
+takes it back: the pipeline stops the ticket.
+
+### Category labels
+
+`bug`, `enhancement`, and `documentation`. `documentation` is a third
+category beyond the triage skill's two. A `documentation` change edits only
+`*.md` files and files under `docs/`, and may rerun an existing generator; the
+pipeline refuses a `documentation` branch that changes any other file. Text
+generated from code, text a guard test keeps in sync with code, and a
+requested guard test all need code changes, so they are `bug` or
+`enhancement`.
+
+A code change that also updates docs is `bug` or `enhancement` and may carry
+`documentation` as well. When an issue has several category labels, the
+pipeline uses the strongest: `bug`, then `enhancement`, then `documentation`.
+The category decides which models work the ticket: `documentation` tickets
+get Claude only and never a GUI check.

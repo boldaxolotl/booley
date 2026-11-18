@@ -1,0 +1,105 @@
+# Rules for .github/scripts/doc_change_class.py. The classes, labels, and the
+# local run command are in docs/internals/agents/doc-change-classes.md.
+#
+# Move a kind between classes by editing its class line. Add a kind with
+# [[kind]]: name, class, check, paths, and a comment saying why it has that
+# class. Add a check to CHECKS and _check in doc_change_class.py, with a test.
+# The script rejects unknown keys, classes, and checks.
+#
+# Patterns use fnmatch: "*" matches any characters, including "/".
+# The class of a kind is the only thing to edit to move it between classes.
+# A renamed file matches a kind when either path matches, except a kind of class
+# none, which needs both paths to match.
+
+# A path is a doc change when it matches one of these (any *.md file and
+# anything under docs/).
+doc_paths = ["*.md", "docs/*"]
+
+# Class of a doc change that matches no kind below.
+default_class = "postreview"
+
+# The changelog is generated from changelog.d fragments, so editing it needs no
+# sign-off.
+[[kind]]
+name = "changelog"
+class = "none"
+check = "changed"
+paths = ["CHANGELOG.md", "*/CHANGELOG.md"]
+
+# The glossaries define terms every other doc relies on.
+[[kind]]
+name = "glossary"
+class = "premerge"
+check = "changed"
+paths = ["GLOSSARY-MAP.md", "GLOSSARY.md", "*/GLOSSARY.md"]
+
+# An ADR records a decision the maintainer owns.
+[[kind]]
+name = "adr"
+class = "premerge"
+check = "changed"
+paths = ["docs/adr/*"]
+
+# Adding, deleting, or renaming a user page changes what users can find.
+[[kind]]
+name = "user-page-set"
+class = "premerge"
+check = "page-set"
+paths = [
+  "README.md",
+  "docs/user/*.md",
+  "website/*.md",
+  "crates/bwave/docs/public/*.md",
+]
+
+# Adding, removing, or renaming a level-1 or level-2 heading changes a user
+# page's structure.
+[[kind]]
+name = "user-page-headings"
+class = "premerge"
+check = "headings"
+paths = [
+  "README.md",
+  "docs/user/*.md",
+  "website/*.md",
+  "crates/bwave/docs/public/*.md",
+]
+
+# The principles set the rules every doc and every change follows.
+[[kind]]
+name = "principles"
+class = "premerge"
+check = "changed"
+paths = [
+  "docs/internals/DOCS_PRINCIPLES.md",
+  "docs/internals/USER_DOCS_PRINCIPLES.md",
+  "docs/internals/CODING_PRINCIPLES.md",
+]
+
+# Agent instruction files steer every agent session.
+[[kind]]
+name = "agent-instructions"
+class = "premerge"
+check = "changed"
+paths = ["AGENTS.md", "*/AGENTS.md", "CLAUDE.md", "*/CLAUDE.md"]
+
+# Skills are instructions agents follow: the packaged skills and the QA skills.
+[[kind]]
+name = "skills"
+class = "premerge"
+check = "changed"
+paths = ["src/booley/data/skills/*", "qa/booley-*"]
+
+# A new command or option in the CLI reference is a public contract.
+[[kind]]
+name = "cli-reference-entry"
+class = "premerge"
+check = "cli-entries"
+paths = ["docs/user/CLI-REFERENCE.md"]
+
+# A new key in the config reference is a public contract.
+[[kind]]
+name = "config-reference-key"
+class = "premerge"
+check = "config-keys"
+paths = ["docs/user/CONFIG.md"]

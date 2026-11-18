@@ -1,35 +1,13 @@
 # bwave value
 
-## Synopsis
-
-```bash
-bwave value <FST_FILE> --at N [-s PATTERN[%RADIX] ...]
-            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--virtual "name = expr"]
-            [--format text|json] [--limit N]
-```
-
 ## Semantics
 
 Snapshot of selected signals at one time point. Unlike
 `signal` (a trace across cycles), `value` answers "what
 were these signals on cycle N?". Cheap: a single store
-lookup per matched signal.
-
-In sync mode a bare `--at N` is a cycle number. In async
-mode the timestamp needs a unit suffix (`12345t`,
-`500ns`); see `reference/time-tokens`. If sync is
-requested but no clock was found, `--at` is interpreted
-as a tick and the output reports `at_unit: "tick"`.
-
-## Defaults and requiredness
-
-- `<FST_FILE>` required.
-- `--at N` required. Negative points precede the physical
-  origin and exit with code 2, including with `--with-reset`.
-- `-s PATTERN` optionally selects stored and Virtual Signal
-  rows. Without it, every stored and virtual row is selected.
-- Standard global options apply.
+lookup per matched signal. `--at` takes a time token
+(`reference/time-tokens`); without a usable clock it is a
+tick (`reference/sync-vs-async`).
 
 ## Output shape
 
@@ -66,62 +44,17 @@ JSON mode emits a `valueData` envelope:
 ```
 
 The `value` field is the **raw store value**: no
-Verilog-literal prefix, no padding. Renderers add prefixes
-in text mode based on the radix suffix. See
-`reference/json-envelope`.
-
-## Common errors
-
-- **Time selection**: use `--at N` and rely on sync/async
-  mode to disambiguate units.
-- **`--at` out of range**: N exceeds the simulation
-  length. The store reports its max cycle / tick; use
-  `bwave stats` to find the bounds.
-- **Value shows `'hX` or `'hZ`**: signal really is X/Z
-  at that cycle (typically pre-reset or driven by
-  uninitialised logic). Not a B-Wave bug.
-- **`# Snapshot at tick N` instead of `cycle N`**: no
-  clock was detected. Either pass `--clock PATTERN` or
-  switch to `--async`. See
-  `troubleshooting/clock-detection`.
+Verilog-literal prefix, no padding. Text mode renders it in
+the pattern's radix, also without a prefix. `bwave schema`
+has the full grammar.
 
 ## Examples
 
-Snapshot the FSM state at the cycle of interest:
-
 ```bash
 bwave value sim.fst --at 1234 -s "*state*" -s "*data*"
-```
-
-Decimal radix for counters:
-
-```bash
-bwave value sim.fst --at 500 -s "*counter*%d"
-```
-
-Async snapshot at a specific timestamp (sim has no
-clock):
-
-```bash
 bwave value sim.fst --at 12345t --async -s "*"
-```
-
-Snapshot driven by a virtual predicate as well:
-
-```bash
 bwave value sim.fst --at 1000 \
-    --virtual "hsk = *valid & *ready" \
-    -s "hsk" -s "*state*"
-```
-
-Virtual definitions may be unselected helpers for later
-definitions. They are evaluated but omitted from the snapshot:
-
-```bash
-bwave value sim.fst --at 1000 \
-    --virtual "valid = *req & *ready" \
-    --virtual "stalled = valid & *busy" \
-    -s "stalled"
+    --virtual "hsk = *valid & *ready" -s "hsk" -s "*state*"
 ```
 
 ## Clock-grid behavior

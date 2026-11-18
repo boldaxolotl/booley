@@ -8,7 +8,6 @@ Sandbox's ``GIT_CONFIG_COUNT`` override is set (or not) in the environment.
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,8 @@ from booley.audit.diagnostic_results import Severity
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.harness import activity_hooks, doctor, web_isolation
 from booley.runtime import dashboard_extension, runtime_context
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from tests.subprocess_budget import run_bounded_child
 
 OVERRIDE_ID = "sandbox.git-identity-override"
 GITCONFIG_ID = "sandbox.gitconfig-identity"
@@ -32,9 +32,7 @@ class _SandboxGit:
         self.monkeypatch = monkeypatch
         self.checkout = root / "checkout"
         self.checkout.mkdir()
-        subprocess.run(
-            ["git", "init", "-q", str(self.checkout)], check=True, timeout=SUBPROCESS_TIMEOUT_S
-        )
+        run_bounded_child(["git", "init", "-q", str(self.checkout)], check=True)
         self.booley_dir = self.checkout / ".booley"
         self.booley_dir.mkdir()
         (self.booley_dir / "booley.toml").write_text(
@@ -138,6 +136,11 @@ def test_missing_override_warns_with_check_id(sandbox_git, capsys):
     assert finding.subject is None
     assert "Visitor" in finding.message
     assert "global" in finding.message
+    assert (
+        f"recreate the Sandbox so it picks up the current [agent.git] ({UNKNOWN_SANDBOX_STEPS})"
+        in finding.fix
+    )
+    assert "refresh and recreate" not in finding.fix
     assert OVERRIDE_ID in capsys.readouterr().out
 
 

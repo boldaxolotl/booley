@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -80,6 +80,7 @@ def _run_worktree_create(
     # Output goes to files, not pipes: if the script hangs, the timeout kill
     # must not then wait for a descendant (git, python) that still holds a pipe
     # (CPython's Windows post-kill ``communicate()`` has no time limit).
+    # Kept on subprocess.run: needs stdin data and writes output to files
     with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
         completed = subprocess.run(
             [bash_bin(), str(worktree_create_script())],
@@ -95,68 +96,6 @@ def _run_worktree_create(
         stdout = out.read().decode("utf-8", errors="replace")
         stderr = err.read().decode("utf-8", errors="replace")
     return subprocess.CompletedProcess(completed.args, completed.returncode, stdout, stderr)
-
-
-def _assert_moved_worktree_portable(
-    tmp_path: Path,
-    moved_root: Path,
-    moved_worktree: Path,
-) -> None:
-    status = _git(moved_worktree, "status", "--short")
-    listing = _git(moved_root, "worktree", "list", "--porcelain")
-    assert status.returncode == 0, status.stderr
-    assert listing.returncode == 0, listing.stderr
-    assert moved_worktree.as_posix() in listing.stdout
-    assert "prunable" not in listing.stdout
-
-    pointer = (
-        (moved_worktree / ".git").read_text(encoding="utf-8").removeprefix("gitdir: ").strip()
-    )
-    assert not Path(pointer).is_absolute()
-    administration = (moved_worktree / pointer).resolve()
-    reverse = (administration / "gitdir").read_text(encoding="utf-8").strip()
-    assert not Path(reverse).is_absolute()
-    core_worktree = _git(moved_worktree, "config", "--worktree", "--get", "core.worktree")
-    hooks_path = _git(moved_worktree, "config", "--worktree", "--get", "core.hooksPath")
-    assert core_worktree.returncode == 0 and not Path(core_worktree.stdout.strip()).is_absolute()
-    assert hooks_path.returncode == 0 and not Path(hooks_path.stdout.strip()).is_absolute()
-    repository_format = _git(moved_root, "config", "--get", "core.repositoryFormatVersion")
-    relative_extension = _git(moved_root, "config", "--get", "extensions.relativeWorktrees")
-    assert repository_format.stdout.strip() == "1"
-    assert relative_extension.stdout.strip() == "true"
-    assert (administration / "hooks" / "pre-commit").is_file()
-
-    with (moved_worktree / ".gitmodules").open("a", encoding="utf-8") as stream:
-        stream.write("# host-visible\n")
-    assert _git(moved_worktree, "add", ".gitmodules").returncode == 0
-    python_bin = tmp_path / "bin"
-    python_bin.mkdir()
-    python_wrapper = python_bin / "python"
-    python_wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
-    python_wrapper.chmod(0o755)
-    commit = subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Test User",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-m",
-            "verify portable hooks",
-        ],
-        cwd=moved_worktree,
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            **os.environ,
-            "PATH": f"{python_bin}{os.pathsep}{os.environ['PATH']}",
-            "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
-        },
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    assert commit.returncode == 0, commit.stderr
 
 
 class TestWorktreeCreateScript:
@@ -367,12 +306,4 @@ class TestWorktreeCreateScript:
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    return run_bounded_child(["git", *args], cwd=cwd)

@@ -72,23 +72,24 @@ during reset, they're invisible.
 Check the header line for the reset detection result:
 
 ```
-# reset: tb.dut.rst_n  deasserts @ cycle 5
+# reset: tb.dut.rst_n (active-low by name, auto) deasserts @ 25ns; 2 cycles skipped (--with-reset to include)
 ```
 
-If your event was before cycle 5 (in this example),
+If your event was in those skipped cycles (in this example),
 add `--with-reset`:
 
 ```bash
 bwave find sim.fst "*error*" 'h1 --first --with-reset
 ```
 
-See `troubleshooting/reset-skipping` for the full
-detection rules.
+See `reference/sync-vs-async` for how the reset is
+detected.
 
 ## 3. Time range outside the simulation
 
 `-t 50000:60000` on a 10000-cycle sim returns nothing
-silently. Verify the simulation length with `stats`:
+and prints a `# WARNING:` with the trace's extent.
+Verify the simulation length with `stats`:
 
 ```bash
 bwave stats sim.fst -s "*clk*"
@@ -109,12 +110,6 @@ bwave stats sim.fst -s "*state*"
 The `value_hist` field tells you exactly which values
 the signal took and how often. If `'d5` isn't in the
 histogram, no match is possible.
-
-Also check radix: are you searching for `'d255` but the
-store holds `'hFF`? Both should match (they're the same
-value), but `255` vs `'hFF` with width prefixes can
-diverge if the stored width doesn't match the literal
-width. See `troubleshooting/radix-pitfalls`.
 
 ## 5. Wrong clock detected (sync mode only)
 

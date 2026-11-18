@@ -1,12 +1,14 @@
 ---
 name: booley-qa-run
-description: Only when the user explicitly asks, run a Booley QA mission — a timeboxed bug hunt on a pinned IP against a candidate Booley build — and write findings for later triage.
+description: Only when the user explicitly asks, run a Booley QA mission — a timeboxed bug hunt on a pinned IP against a candidate Booley build — write findings, and triage them automatically.
+disable-model-invocation: true
 ---
 
 # Run a Booley QA mission
 
-Use this skill only when the user explicitly invokes it. This is behavioral
-guidance for clients without enforceable invocation metadata.
+Use this skill only when the user explicitly invokes it. Claude Code enforces
+this through `disable-model-invocation` and Codex through
+`agents/openai.yaml`; other clients get it as behavioral guidance only.
 
 Before acting, resolve the real path of this loaded `SKILL.md` (following the
 installed link). Its parent is the skill directory, its grandparent is
@@ -21,9 +23,11 @@ errors, and friction points as the mission's timebox allows. The mission tells
 you *where* to look; you decide *how* to get there when the documented path
 breaks.
 
-Inputs from the user: a mission name (`picorv32`, `taxi`, `uart`, `coverage`, `gui` — a directory
+Inputs from the user: a mission name (`picorv32`, `taxi`, `uart`, `coverage`, `mutation`, `gui` — a directory
 under `qa/missions/`), a Booley build (an exact commit or a published version),
-an artifact root, and optionally `smoke` to also run the release smoke list.
+an artifact root, and optionally `smoke` to also run the release smoke list,
+`no-triage` to leave the findings for later triage, and `jury=<model>,...`
+to pass to automatic triage.
 
 ## Operating principles
 
@@ -48,8 +52,9 @@ an artifact root, and optionally `smoke` to also run the release smoke list.
 
 ## Hard rules
 
-- Keep all changes local: no `git push`, issue or PR creation, or other external
-  submission.
+- Until the run is complete (step 5 done), keep all changes local: no
+  `git push`, issue or PR creation, or other external submission. Step 6's
+  automatic triage then files issues under its own rules.
 - Leave Booley source unchanged; workarounds live in the run dir.
 - Keep credentials and tokens out of evidence, prompts, and Projects. Redact
   secrets from captured output before saving it.
@@ -59,11 +64,16 @@ an artifact root, and optionally `smoke` to also run the release smoke list.
   `origin/main` path; that replacement stays installed after the run and is not
   a `resources.md` row.
 - Baseline IP and Project pins stay fixed; change designs only through the
-  mission's prompts and Goal children; keep hidden faults and evaluator inputs
-  with the operator.
+  mission's prompts and the children they go to; keep hidden faults and
+  evaluator inputs with the operator.
 - Before creating anything outside the run dir (container, image, worktree,
   branch, registration, grant, remote, mount, background process, file or
   directory), append it to `resources.md`. Cleanup releases exactly those rows.
+  `booley init` on a staged Project is one such step: it registers the Project
+  and creates its issued Session image tag and agent-state volume. Give it one
+  row, released by `booley session down` and then
+  `booley projects forget --purge <project>` before the Project directory is
+  deleted.
 - Write scratch files, backups and probe scripts under `<run-dir>/scratch/<area>/`,
   never `/tmp`. Anything that must live elsewhere gets its row first.
 
@@ -111,27 +121,37 @@ Write each finding the moment you observe it, before any workaround or retry.
 3. **Smoke** (when requested). Walk `qa/SMOKE.md` from the derived source root and put its table in
    `log.md`.
 4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and apply
-   `qa/shared/GOAL-CHILD.md` for its Goal areas. Work the areas in priority order
+   `qa/shared/DEVELOPER-CHILD.md` for its areas that hand design work to a
+   child. Work the areas in priority order
    under the principles above. Keep `log.md` current after each area:
    `done`, `partial`, or `skipped`, with the reason.
 5. **Cleanup.** Run the mission's cleanup area (Booley's own cleanup is under
    test), then release every remaining `resources.md` row and mark it. Keep the
    run dir. A release you cannot complete is marked `failed` with a note, and
-   is reported to the user. Before deleting a Project directory, copy each Goal
-   Record's `record.json`, `booley_state.json`, `operations/` and
-   `logs/acceptance/` into `evidence/cleanup/`; triage needs them to diagnose
-   Goal state findings. Last, list `/tmp/qa-*` and other run-named paths
-   outside the run dir; report any leftover without a row as a `qa-bug`.
-6. **Report.** Make sure `findings.md` and `log.md` are complete and tell the
-   user: finding count by kind and severity, areas skipped, cleanup failures,
-   smoke verdict, and that `booley-qa-triage` turns the findings into issues.
+   is reported to the user. Before deleting a Project directory, copy the Main
+   Booley Directory's `measurements/` into `evidence/cleanup/`; triage needs it
+   to diagnose measurement findings. Last, list `/tmp/qa-*` and other run-named
+   paths outside the run dir; report any leftover without a row as a `qa-bug`.
+6. **Triage.** Make sure `findings.md` and `log.md` are complete. Unless the
+   user passed `no-triage`, read `booley-qa-triage/SKILL.md` under the derived
+   `qa/` directory and run its automatic mode on this run directory,
+   passing any `jury=` argument. A triage stop (no T3 Code, a juror
+   unavailable) leaves the run complete: record it in `log.md` and carry its
+   reason and rerun command into the report.
+7. **Report.** Tell the user: finding count by kind and severity, areas
+   skipped, cleanup failures, smoke verdict, and the triage report (or that
+   `/booley-qa-triage` turns the findings into issues, when triage was skipped
+   or stopped).
 
 The run is complete when every area is `done`, `partial`, or `skipped` with a
-reason, every `resources.md` row is released or marked `failed`, and the report
-is delivered.
+reason and every `resources.md` row is released or marked `failed`. The skill
+is done when triage has finished, stopped, or been skipped, and the report is
+delivered.
 
 ## Resuming
 
 After context compaction or a hand-over, reread this file, the mission,
 `log.md`, and `resources.md`, then continue from the first area that is not
-`done`. An operator that cannot continue the mission runs step 5 and step 6.
+`done`. An operator that cannot continue the mission runs steps 5 to 7. When
+cleanup is done and `<run-dir>/triage.md` exists, resume automatic triage
+instead; it keeps the clusters already decided.

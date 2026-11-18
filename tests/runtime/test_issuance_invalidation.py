@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import subprocess
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.lifecycle_lock_support import observe_lifecycle_contention
+from tests.time_budget import hang_guard_s
 
+from booley.audit.diagnostic_results import Findings, Severity
+from booley.core.host_shell import quote_arg
+from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing import flexnet_docker
-from booley.harness import eda_grants
+from booley.harness import eda_grants, host_diagnostics
+from booley.runtime import host_docker as idk
 from booley.runtime import (
     issuance_invalidation,
     session_issuance,
@@ -41,7 +49,7 @@ def test_pending_revoke_invalidates_stamp_then_cleans_resources(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda root: (events.append(("resources", root)), ())[1],
+        lambda root, **_kwargs: (events.append(("resources", root)), ())[1],
     )
 
     assert issuance_invalidation.recover_project_locked(project_identity)
@@ -71,10 +79,10 @@ def test_legacy_journal_keys_still_recover_with_cleanup(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda root: (events.append(("resources", root)), ())[1],
+        lambda root, **_kwargs: (events.append(("resources", root)), ())[1],
     )
 
-    assert session_refresh.shared_recovery_blocks_command(read_only=False)
+    assert issuance_invalidation.shared_recovery_blocks_command(read_only=False)
 
     assert events == [("stamp", project_identity), ("resources", project_identity)]
     assert issuance_invalidation.pending_invalidations() == ()
@@ -90,7 +98,7 @@ def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda _root: ("container:stale",),
+        lambda _root, **_kwargs: ("container:stale",),
     )
 
     with pytest.raises(issuance_invalidation.InvalidationError, match="residual objects"):
@@ -100,7 +108,7 @@ def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda _root: (),
+        lambda _root, **_kwargs: (),
     )
     assert issuance_invalidation.recover_all_locked() == (project_identity,)
     assert issuance_invalidation.pending_invalidations() == ()
@@ -117,6 +125,54 @@ def test_tampered_invalidation_journal_fails_closed(tmp_path: Path) -> None:
         issuance_invalidation.pending_invalidations()
     with pytest.raises(issuance_invalidation.InvalidationError, match="identity mismatch"):
         issuance_invalidation.recover_project_locked(project_identity)
+    assert journal.exists()
+
+
+def test_misnamed_journal_repair_names_the_cleanup_it_still_owes(tmp_path: Path) -> None:
+    project_identity = str((tmp_path / "project").resolve())
+    different_identity = str((tmp_path / "different-project").resolve())
+    issuance_invalidation.prepare(project_identity)
+    journal = issuance_invalidation.journal_store().path(project_identity)
+    journal.write_text(json.dumps({"project_root": different_identity}), encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def recorder(args: list[str], _timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        listing = {"container": "relay\n", "network": "private\n"}.get(args[0], "")
+        return subprocess.CompletedProcess(args, 0, listing if args[1] == "ls" else "", "")
+
+    # Booley's own cleanup for the Project the misnamed file holds: the printed
+    # commands must select exactly what it lists and remove.
+    assert (
+        flexnet_docker.cleanup_project_resources_for_identity(different_identity, runner=recorder)
+        == ()
+    )
+    list_calls = [args for args in calls if args[1] == "ls"]
+    assert [args for args in calls if args[1] == "rm"] == [
+        ["container", "rm", "-f", "relay"],
+        ["network", "rm", "private"],
+    ]
+
+    for refuse in (
+        issuance_invalidation.pending_invalidations,
+        lambda: issuance_invalidation.recover_project_locked(project_identity),
+    ):
+        with pytest.raises(issuance_invalidation.InvalidationError) as caught:
+            refuse()
+        message = str(caught.value)
+        container_rm = (
+            "docker container rm -f $(docker container ls -aq --filter label=booley.project-id="
+        )
+        network_rm = "docker network rm $(docker network ls -q --filter label=booley.project-id="
+        assert container_rm in message
+        assert network_rm in message
+        for args in list_calls:
+            assert "docker " + " ".join(args) + ")" in message
+        assert str(journal) in message
+        assert f"booley init --seed --project {quote_arg(different_identity)}" in message
+        assert message.index(container_rm) < message.index(f"remove {journal}")
+        assert message.index(network_rm) < message.index(f"remove {journal}")
+        assert "keep the file and retry" in message
     assert journal.exists()
 
 
@@ -162,7 +218,6 @@ def test_public_session_runtime_translates_unsafe_invalidation_store(
     operation: str,
 ) -> None:
     project, booley_config = _make_invalidation_store_unsafe(tmp_path)
-    monkeypatch.setattr(session_refresh, "has_pending_refresh", lambda _root: False)
     monkeypatch.setattr(
         session_runtime,
         "_up_unlocked",
@@ -179,23 +234,64 @@ def test_public_session_runtime_translates_unsafe_invalidation_store(
     assert f"chmod 700 {booley_config}" in message
 
 
-def test_shared_recovery_completes_invalidation_and_refresh_journals(
+def test_shared_recovery_reacts_only_to_invalidations(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    events = []
+    identity = str((tmp_path / "project").resolve())
+    leftover = _leftover_refresh_journal("old-refresh-journal")
+    monkeypatch.setattr(session_issuance, "invalidate_project", lambda _root: None)
     monkeypatch.setattr(
-        issuance_invalidation,
-        "recover_all_locked",
-        lambda: events.append("invalidation") or ("/project",),
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _root, **_kwargs: ()
     )
-    monkeypatch.setattr(
-        session_refresh,
-        "recover_all_locked",
-        lambda: events.append("refresh") or (object(),),
-    )
+    blocks = issuance_invalidation.shared_recovery_blocks_command
 
-    assert session_refresh.shared_recovery_blocks_command(read_only=False)
-    assert events == ["invalidation", "refresh"]
+    # A leftover refresh journal is neither read nor reported.
+    assert not blocks(read_only=True)
+    assert not blocks(read_only=False)
+
+    issuance_invalidation.prepare(identity)
+    # The read-only form reports a pending invalidation and completes nothing.
+    assert blocks(read_only=True)
+    assert issuance_invalidation.pending_invalidations() == (identity,)
+    # The mutating form completes it and reports that it did.
+    assert blocks(read_only=False)
+    assert issuance_invalidation.pending_invalidations() == ()
+    assert not blocks(read_only=False)
+    assert leftover.read_bytes() == b"not a journal"
+
+
+def _leftover_refresh_journal(name: str) -> Path:
+    """Plant the garbage file an interrupted pre-roll-forward refresh could have left."""
+    directory = config_dir() / "eda" / "session-refresh"
+    for parent in (*reversed(directory.parents[:3]), directory):
+        parent.mkdir(mode=0o700, exist_ok=True)
+    leftover = directory / name
+    leftover.write_bytes(b"not a journal")
+    return leftover
+
+
+def test_leftover_refresh_journal_blocks_no_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    leftover = _leftover_refresh_journal(hashlib.sha256(str(project).encode()).hexdigest())
+    monkeypatch.setattr(session_runtime, "_load_spec", lambda _root: {})
+    monkeypatch.setattr(
+        session_issuance, "validate", lambda *_a, **_kw: SimpleNamespace(spec_sha256="digest")
+    )
+    monkeypatch.setattr(session_runtime, "resolve_running_sandbox", lambda _root: None)
+    monkeypatch.setattr(idk, "container_exists", lambda _name: False)
+
+    assert session_runtime.status(project) == "absent"
+    assert session_runtime.validate(project) == "digest"
+    assert not issuance_invalidation.shared_recovery_blocks_command(read_only=True)
+    report = Findings()
+    host_diagnostics._inspect_session_stores(report)
+    assert not [f for f in report.report().findings if f.severity is Severity.FAIL]
+    assert leftover.read_bytes() == b"not a journal"
 
 
 def _waiting_runtime_command(
@@ -216,14 +312,29 @@ def _waiting_runtime_command(
             return session_runtime.up(project)
 
         return run
-    monkeypatch.setattr(
-        session_refresh,
-        "_refresh_unlocked",
-        lambda *_args, **_kwargs: events.append("refresh"),
-    )
+    image = session_refresh.RefreshImage("sha256:image", None, None, False)
+
+    class Images:
+        def inspect(self, _project: Path) -> None:
+            events.append("refresh")
+
+        def converge(self, _project: Path, *, verbose: bool) -> session_refresh.RefreshImage:
+            return image
+
+        def prepare_spec(self, _project: Path, _image: session_refresh.RefreshImage) -> None:
+            pass
+
+        def spec_is_current(self, _project: Path) -> bool:
+            return True
+
+        def finalize(self, _project: Path) -> None:
+            pass
+
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "verified_headless_container", lambda *_args: "id")
 
     def run() -> object:
-        return session_refresh.refresh(project, object())
+        return session_refresh.refresh(project, Images())
 
     return run
 
@@ -247,7 +358,7 @@ def _start_grant_mutation(project, mutation, monkeypatch, done, errors) -> threa
         authority, "_prepare_revoke_grant", lambda identity, _kind: mutation(identity)
     )
     monkeypatch.setattr(
-        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity: ()
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity, **_kwargs: ()
     )
 
     def run_grant() -> None:
@@ -282,18 +393,17 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     def mutation(_identity: str):
         def commit() -> str:
             commit_entered.set()
-            if not release_commit.wait(2):
+            if not release_commit.wait(2 * hang_guard_s()):
                 raise RuntimeError("test grant gate timed out")
             events.append("grant-commit")
             return "grant"
 
         yield commit
 
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
     monkeypatch.setattr(session_issuance, "invalidate_project", lambda _identity: None)
 
     grant = _start_grant_mutation(project, mutation, monkeypatch, grant_done, errors)
-    assert commit_entered.wait(2)
+    assert commit_entered.wait(hang_guard_s())
 
     runtime_waiting = observe_lifecycle_contention(monkeypatch)
     operation = _waiting_runtime_command(project, monkeypatch, runtime_command, events)
@@ -302,13 +412,13 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
         args=(operation, errors, runtime_done),
     )
     runtime.start()
-    assert runtime_waiting.wait(2)
+    assert runtime_waiting.wait(hang_guard_s())
     assert events == []
     assert not runtime_done.is_set()
 
     release_commit.set()
-    grant.join(2)
-    runtime.join(2)
+    grant.join(hang_guard_s())
+    runtime.join(hang_guard_s())
     assert grant_done.is_set()
     assert runtime_done.is_set()
     assert errors == []

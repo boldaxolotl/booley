@@ -21,7 +21,7 @@ NEW_RUNTIME_PATHS = (
 
 def git(root: Path, *args: str) -> str:
     """Run bounded Git against an isolated fixture repository."""
-    return run_bounded_child(["git", "-C", str(root), *args], timeout=10, check=True).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 def initialize_repository(root: Path, data: Path, monkeypatch: pytest.MonkeyPatch) -> None:

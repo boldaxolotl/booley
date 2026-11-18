@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.target_parameters import ParameterValue
 from booley.targets.catalog import TargetCatalog
+from tests.subprocess_budget import run_bounded_child
 
 pytestmark = pytest.mark.string_parameter_eda
 
@@ -35,9 +35,7 @@ def prerequisites():
 
 def _run(argv, cwd):
     args = [str(arg) for arg in argv]
-    result = subprocess.run(
-        args, cwd=cwd, text=True, capture_output=True, timeout=120, check=False
-    )
+    result = run_bounded_child(args, cwd=cwd)
     assert result.returncode == 0, f"{argv!r}\n{result.stdout}\n{result.stderr}"
     return result
 
@@ -71,6 +69,7 @@ def test_real_typed_receiver(tmp_path, value, frontend):
         frontend=frontend,
         timing=StaTimingConfig(mode="logical"),
     )
+    # No public entry runs only the frontend script; the test stops before tech mapping.
     pipeline._write_yosys_script(spec, tmp_path)
     script = tmp_path / "synth.ys"
     lines = script.read_text().splitlines()  # run only the frontend, before tech mapping
@@ -131,6 +130,8 @@ targets:
     sim.parse_args(["--project", str(tmp_path), "--target", "sim", "--mode", "elab-only"])
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     build_root = tmp_path / "sim-build"
+    # Each step below drives one Flow stage against the real tool without the rest of the
+    # run (no public entry stops after the build, and the full run needs the seat caps).
     prepared = sim._prepare_elab_only_target(
         "sim", time.monotonic(), handle=handle, build_root=build_root
     )

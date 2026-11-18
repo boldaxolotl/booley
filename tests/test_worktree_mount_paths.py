@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.runtime import platform_paths
 from booley.runtime.booley_dir import reset_cache
 
 
@@ -78,7 +79,7 @@ def test_git_version_transport_failure_keeps_absolute_fallback(
     def unavailable(*_args, **_kwargs) -> None:
         raise OSError("Git unavailable")
 
-    monkeypatch.setattr(worktree_paths.subprocess, "run", unavailable)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", unavailable)
     assert not worktree_paths._git_supports_relative_paths()
 
 

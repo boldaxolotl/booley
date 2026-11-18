@@ -39,7 +39,7 @@ class SimSummary(TypedDict):
 #: Marker a run-half prints when the *harness* failed rather than the design:
 #: no built binary in the build dir, a missing simulator, a broken cocotb
 #: install. Such a run produced **no observation at all**, so a caller that
-#: grades sim outcomes (mutation_tester's kill/survive decision) must treat it
+#: grades sim outcomes (the Mutation Flow's kill/survive decision) must treat it
 #: as "unknown", never as a verdict — a nonzero exit from a missing executable
 #: is not a detected mutation (SETUP-F-41b). Distinct from ``[SIM_RESULT]``,
 #: which always reports something the simulator actually observed.
@@ -54,6 +54,11 @@ def format_infra_error(reason: str) -> str:
 def has_infra_error(output: str) -> bool:
     """True when *output* carries a run-half infra-failure marker."""
     return SIM_INFRA_ERROR_PREFIX in output
+
+
+def has_simulation_timeout(output: str) -> bool:
+    """True when a run-half printed its own ``<EDA-tool> simulation timed out`` line."""
+    return _SIMULATION_TIMEOUT_RE.search(output) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +111,9 @@ def parse_sim_verdict(
 # *design*; treating it as infra drops it from the SVA count and turns a FAIL
 # with rc=0 into an INCONCLUSIVE — a false-PASS-adjacent lie.
 _HARNESS_EDA_TOOL = r"(?i:verilator|iverilog|icarus|cocotb)"
+_SIMULATION_TIMEOUT_RE = re.compile(
+    rf"^ERROR: {_HARNESS_EDA_TOOL} simulation timed out", re.MULTILINE
+)
 
 # Harness-emitted *infrastructure* markers — every ``ERROR:`` line Booley's own
 # build/run/trace/guard machinery prints. They all begin "ERROR: ...", which the

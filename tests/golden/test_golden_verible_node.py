@@ -15,13 +15,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 from tests.golden.conftest import assert_matches_golden
+from tests.subprocess_budget import run_bounded_child
 
 pytest.importorskip("edalize")
 
@@ -165,12 +165,8 @@ def _configure_real_lint_child(tmp_path: Path, spelling: str) -> str:
         "assert 'rules' in Lint.get_tool_options({'tool': spelling}); "
         "Lint(edam=json.loads(sys.argv[3]), work_root=sys.argv[4]).configure()"
     )
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(nodes), spelling, json.dumps(edam), str(tmp_path)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    completed = run_bounded_child(
+        [sys.executable, "-c", script, str(nodes), spelling, json.dumps(edam), str(tmp_path)]
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return (tmp_path / "Makefile").read_text(encoding="utf-8")

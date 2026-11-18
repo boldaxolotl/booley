@@ -27,13 +27,14 @@ from types import SimpleNamespace
 import pytest
 
 from booley.harness.dashboard import command
+from tests.time_budget import hang_guard_s, scaled
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="Linux PTY, abstract sockets and /proc are required"
 )
 
 # Bound on every wait for a child; the whole module stays far below the CI test timeout.
-_DEADLINE_SECONDS = 20.0
+_DEADLINE_SECONDS = hang_guard_s()
 _CURSOR_REQUEST = b"\x1b[6n"
 _CURSOR_REPLY = b"\x1b[1;1R"
 
@@ -109,6 +110,7 @@ class _PtyDashboard:
         self._master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         try:
+            # Kept on subprocess.Popen: PTY child the test drives and signals.
             self.process = subprocess.Popen(
                 [sys.executable, "-c", _DASHBOARD_CHILD, str(tmp_path), scope],
                 stdin=slave,
@@ -143,8 +145,9 @@ class _PtyDashboard:
     def close(self) -> None:
         if self.process.poll() is None:
             self.process.kill()
-        self.process.wait(timeout=5)
-        self._reader.join(timeout=5)
+        # Kept on subprocess.Popen: reaping the PTY child the test signalled.
+        self.process.wait(timeout=hang_guard_s())
+        self._reader.join(timeout=hang_guard_s())
         os.close(self._master)
 
 
@@ -175,17 +178,17 @@ def _thresholds(monkeypatch, *, seen: float, unseen: float, reply: float = 0.5) 
     probe = getattr(command, "view_probe", None)
     if probe is None:
         return
-    monkeypatch.setattr(probe, "SEEN_WITHIN", seen)
-    monkeypatch.setattr(probe, "UNSEEN_AFTER", unseen)
-    monkeypatch.setattr(probe, "REPLY_SECONDS", reply)
-    monkeypatch.setattr(probe, "TERM_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(probe, "SEEN_WITHIN", scaled(seen))
+    monkeypatch.setattr(probe, "UNSEEN_AFTER", scaled(unseen))
+    monkeypatch.setattr(probe, "REPLY_SECONDS", scaled(reply))
+    monkeypatch.setattr(probe, "TERM_GRACE_SECONDS", scaled(0.5))
 
 
 def test_unseen_dashboard_is_not_open_and_a_new_one_starts(tmp_path, monkeypatch, scope, newcomer):
     _thresholds(monkeypatch, seen=0.5, unseen=1.5)
     old = _PtyDashboard(scope, tmp_path, answers=False)
     try:
-        time.sleep(2.0)  # past the unseen threshold: nobody answered since the start
+        time.sleep(scaled(2.0))  # past the unseen threshold: nobody answered since the start
         policy = command.attach_policy(tmp_path)
         assert policy["already_open"] is False, "an unseen Dashboard counted as open"
         assert policy["enabled"] is True
@@ -208,7 +211,7 @@ def test_takeover_leaves_no_earlier_dashboard_running(tmp_path, monkeypatch, sco
 
     monkeypatch.setattr(command, "DashboardApp", watching_app)
     try:
-        time.sleep(2.0)
+        time.sleep(scaled(2.0))
         assert command.run_dashboard(tmp_path) == 0
         assert running_at_launch == [False], "no new Dashboard started over the earlier one"
         assert old.process.poll() is not None
@@ -218,6 +221,7 @@ def test_takeover_leaves_no_earlier_dashboard_running(tmp_path, monkeypatch, sco
 
 def test_wedged_owner_is_stopped_before_takeover(tmp_path, monkeypatch, scope, newcomer):
     _thresholds(monkeypatch, seen=0.5, unseen=1.5)
+    # Kept on subprocess.Popen: wedged child the test drives and signals.
     wedged = subprocess.Popen(
         [sys.executable, "-c", _WEDGED_CHILD, scope],
         stdout=subprocess.PIPE,
@@ -233,7 +237,8 @@ def test_wedged_owner_is_stopped_before_takeover(tmp_path, monkeypatch, scope, n
         assert wedged.poll() == -signal.SIGKILL, "the wedged owner was not killed"
     finally:
         wedged.kill()
-        wedged.wait(timeout=5)
+        # Kept on subprocess.Popen: reaping the wedged child the test killed.
+        wedged.wait(timeout=hang_guard_s())
         if wedged.stdout is not None:
             wedged.stdout.close()
 
@@ -242,7 +247,7 @@ def test_seen_dashboard_still_refuses(tmp_path, monkeypatch, scope, newcomer, ca
     _thresholds(monkeypatch, seen=2.0, unseen=4.0)
     visible = _PtyDashboard(scope, tmp_path, answers=True)
     try:
-        time.sleep(4.5)  # beyond the unseen threshold: only heartbeat answers keep it seen
+        time.sleep(scaled(4.5))  # beyond the unseen threshold: only heartbeat answers keep it seen
         policy = command.attach_policy(tmp_path)
         assert policy["already_open"] is True
         assert policy["reason"] == "The Dashboard is already open in this Sandbox."

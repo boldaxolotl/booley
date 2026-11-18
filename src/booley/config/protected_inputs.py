@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import fnmatch
 import tomllib
 from collections.abc import Mapping
+from functools import cache
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -34,6 +36,26 @@ def validate_declaration(value: str) -> str:
             f"[project].protected_inputs entry {value!r} must use *, ?, or whole-segment ** globs"
         )
     return value
+
+
+def declaration_matches(declaration: str, path: str) -> bool:
+    """Segment-local wildcards; ** matches zero or more complete path components."""
+    pattern = declaration + "**" if declaration.endswith("/") else declaration
+    parts, candidate = pattern.split("/"), path.split("/")
+
+    @cache
+    def match(i: int, j: int) -> bool:
+        if i == len(parts):
+            return j == len(candidate)
+        if parts[i] == "**":
+            return match(i + 1, j) or (j < len(candidate) and match(i, j + 1))
+        return (
+            j < len(candidate)
+            and fnmatch.fnmatchcase(candidate[j], parts[i])
+            and match(i + 1, j + 1)
+        )
+
+    return match(0, 0)
 
 
 def validate_input_path(value: str) -> str:

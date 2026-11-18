@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import os
 import shutil
 import subprocess
@@ -10,7 +9,7 @@ import sys
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
 
 import pytest
 
@@ -20,7 +19,14 @@ from booley.specialists.specialist_workspace import (
     isolated_agent_workspace,
     restore_result_paths,
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.mcp_tools.reviewer_support import (
+    ScriptedAgent,
+    guide_of,
+    install_agent,
+    issue,
+    run_review,
+)
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 
 def _git(args: list[str], cwd: Path) -> None:
@@ -32,6 +38,34 @@ def _git(args: list[str], cwd: Path) -> None:
         text=True,
         timeout=SUBPROCESS_TIMEOUT_S,
     )
+
+
+def _rtl_tb_project(repo: Path) -> None:
+    """Commit ``rtl/dut.sv`` and ``tb/tb.sv`` with the ``.core`` that classifies them."""
+    from tests.agent_workspace.test_isolation import _write_core
+
+    for name in ("rtl/dut.sv", "tb/tb.sv"):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n", encoding="utf-8")
+    _write_core(repo)
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv"], repo)
+
+
+def _review_argv(repo: Path, category: str, focus: str, scope: str, *extra: str) -> list[str]:
+    """Arguments of a Reviewer run over *repo*."""
+    return [
+        "--work-dir", str(repo), "--category", category, "--focus", focus, "--scope", scope, *extra
+    ]  # fmt: skip
+
+
+@pytest.fixture
+def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
+    """The shared scripted agent behind a real read-only snapshot (no workspace patch)."""
+    # The watchdog starts a polling thread whenever the parent PID is above 1.
+    monkeypatch.setattr(
+        "booley.specialists.specialist.parent_death_watchdog", lambda _name: nullcontext()
+    )
+    return install_agent(monkeypatch, snapshot=True)
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -178,49 +212,48 @@ def test_result_paths_are_restored(tmp_path: Path) -> None:
     assert restored.captured_agent_capability_calls["ReportFindings"] == [{"path": expected}]
 
 
-def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path, monkeypatch) -> None:
+def test_reviewer_invokes_agent_in_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: ScriptedAgent
+) -> None:
     repo = _repo(tmp_path)
-    (repo / "rtl").mkdir()
-    (repo / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    (repo / "tb").mkdir()
-    (repo / "tb" / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
-    from tests.agent_workspace.test_isolation import _write_core
-
-    _write_core(repo)
-    _git(["add", "rtl/dut.sv", "tb/tb.sv"], repo)
+    _rtl_tb_project(repo)
     caller = repo / "caller"
     (caller / "out").mkdir(parents=True)
-    (caller / "out/report.md").write_text("embedded opposite source\n")
+    (caller / "out/report.md").write_text("embedded opposite source\n", encoding="utf-8")
     (repo / "out").mkdir()
-    (repo / "out/keep.md").write_text("authored support\n")
+    (repo / "out/keep.md").write_text("authored support\n", encoding="utf-8")
     monkeypatch.chdir(caller)
-    params = AgentCallParams(prompt="review", model="test", cwd=repo)
 
-    def fake_call(call_params: AgentCallParams, *, on_event) -> AgentResult:
-        assert on_event is not None
-        assert not (Path(call_params.cwd) / "caller/out").exists()
-        assert (Path(call_params.cwd) / "out/keep.md").is_file()
-        isolated_file = Path(call_params.cwd) / "tracked.sv"
-        assert Path(call_params.cwd) != repo
-        assert (Path(call_params.cwd) / "rtl" / "dut.sv").is_file()
-        assert not (Path(call_params.cwd) / "tb/tb.sv").exists()
-        assert (repo / "rtl" / "dut.sv").is_file()
-        assert (repo / "tb" / "tb.sv").is_file()
-        isolated_file.write_text("agent edit\n", encoding="utf-8")
-        return AgentResult(output=f"finding in {isolated_file}")
+    scripts: dict[str, Any] = {}  # per guide, so concurrent calls never share a snapshot path
+    seen: list[dict[str, bool]] = []
 
-    endpoint = ReviewerSpecialist()
-    endpoint._args = argparse.Namespace(category="rtl", scope="tracked.sv", report_dir=Path("out"))
-    with (
-        patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
-        patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
-    ):
-        result = endpoint._invoke_agent(params, on_event=lambda _event: None)
+    def inside_the_call(params: AgentCallParams) -> None:
+        root = Path(params.cwd)
+        seen.append(
+            {
+                "isolated": root != repo,
+                "report_dir_hidden": not (root / "caller/out").exists(),
+                "authored_support_kept": (root / "out/keep.md").is_file(),
+                "own_category_kept": (root / "rtl/dut.sv").is_file(),
+                "opposite_hidden": not (root / "tb/tb.sv").exists(),
+            }
+        )
+        (root / "tracked.sv").write_text("agent edit\n", encoding="utf-8")
+        scripts[guide_of(params)] = {"issues": [issue(file=str(root / "rtl/dut.sv"))]}
 
+    agent.on_call = inside_the_call
+    agent.answer(scripts)
+    result, _ = run_review(_review_argv(repo, "rtl", "bugs", "rtl/dut.sv", "--report-dir", "out"))
+
+    assert result.exit_code == 0, result.report_text
+    assert seen
+    assert all(all(view.values()) for view in seen), seen
     assert (repo / "tracked.sv").read_text(encoding="utf-8") == "old\n"
     assert (repo / "rtl" / "dut.sv").is_file()
     assert (repo / "tb" / "tb.sv").is_file()
-    assert str(repo / "tracked.sv") in result.output
+    # The snapshot path in the agent's answer is restored to the live one: in scope, not filtered.
+    assert [Path(row["file"]).name for row in result.detail["issue_list"]] == ["dut.sv"]
+    assert result.detail["filtered"] == []
 
 
 def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_path):
@@ -236,7 +269,7 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
     bundle = data / ".managed/project-git-hooks.pyz"
     bundle.parent.mkdir()
     bundle.write_bytes(build_project_git_hook_bundle().content)
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -248,8 +281,6 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
             ".booley/hooks/check.py",
         ],
         check=True,
-        capture_output=True,
-        timeout=10,
     )
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     with isolated_agent_workspace(params, "read_only") as (isolated, _snapshot):
@@ -260,174 +291,10 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
     assert bundle.is_file()
 
 
-def _mutation_endpoint(repo: Path, monkeypatch):
-    from booley.specialists.mutation_tester import MutationTesterSpecialist
-
-    endpoint = MutationTesterSpecialist()
-    endpoint.parse_args(["--work-dir", str(repo), "--target", "sim", "--scope", "rtl/dut.sv"])
-    monkeypatch.setattr(endpoint, "_resolve_model", lambda: "test")
-    monkeypatch.setattr(endpoint, "_session_file_path", lambda _key: repo.parent / "session")
-    monkeypatch.setattr(
-        "booley.specialists.specialist.parent_death_watchdog", lambda *_: nullcontext()
-    )
-    return endpoint
-
-
-def _mutation_repo(tmp_path: Path, *, tb_dir="tb"):
-    from tests.agent_workspace.test_isolation import _write_core
-
-    repo = _repo(tmp_path)
-    _write_core(repo, tb_dirs=[tb_dir])
-    for rel, text in [
-        ("rtl/dut.sv", "assign x = a + b;\n"),
-        (f"{tb_dir}/tb.sv", "// testbench\n"),
-    ]:
-        path = repo / rel
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(text)
-    _git(["add", "."], repo)
-    _git(
-        ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "sources"],
-        repo,
-    )
-    (repo / "rtl/dut.sv").write_text("assign x = live + b;\n")
-    (repo / "rtl/new.sv").write_text("// untracked RTL\n")
-    return repo
-
-
-def _mutation_output(path: str):
-    import json
-
-    return json.dumps(
-        {
-            "mutations": [
-                {
-                    "index": 1,
-                    "category": "operator",
-                    "file": path,
-                    "line": 1,
-                    "original_code": "live + b",
-                    "mutated_code": "live - b",
-                }
-            ]
-        }
-    )
-
-
-def _mutation_plan(repo):
-    from booley.specialists.mutation_tester import MutationRunPlan
-
-    return MutationRunPlan(
-        scope_files=["rtl/dut.sv"],
-        scope_hashes={},
-        work_dir=repo,
-        target="sim",
-        tb_top="tb",
-        report_dir=None,
-        min_detected=1,
-        count=1,
-        auto_mode=False,
-        formula_count=1,
-        source_size_budget=None,
-    )
-
-
-@pytest.mark.parametrize("tb_dir", ["tb", "verification"])
-@pytest.mark.parametrize("absolute", [False, True])
-def test_mutation_snapshot_proposals_resolve_live_wip(tmp_path, monkeypatch, tb_dir, absolute):
-    repo = _mutation_repo(tmp_path, tb_dir=tb_dir)
-    endpoint = _mutation_endpoint(repo, monkeypatch)
-    snapshots = []
-    before = sorted(str(p.relative_to(repo)) for p in repo.rglob("*") if ".git" not in p.parts)
-
-    def provider(params, *, on_event):
-        root = Path(params.cwd)
-        snapshots.append(root)
-        assert root != repo
-        assert (repo / tb_dir / "tb.sv").is_file()
-        assert (
-            sorted(str(p.relative_to(repo)) for p in repo.rglob("*") if ".git" not in p.parts)
-            == before
-        )
-        assert not (root / tb_dir / "tb.sv").exists()
-        assert not (root / "rtl/new.sv").exists()  # unscoped and unregistered
-        assert (root / "rtl/dut.sv").read_text() == "assign x = live + b;\n"
-        assert params.allowed_agent_capabilities == ["Read", "Grep", "Glob"]
-        assert str(root / "rtl/dut.sv") in params.prompt
-        (root / "rtl/dut.sv").write_text("snapshot edit\n")
-        # A concurrent author must survive proposer cleanup too.
-        (repo / "tracked.sv").write_text("concurrent author\n")
-        path = str(root / "rtl/dut.sv") if absolute else "rtl/dut.sv"
-        return AgentResult(output=_mutation_output(path), session_id="resume-id")
-
-    monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
-    specs, _, error = endpoint._proposal_round(f"Read {repo / 'rtl/dut.sv'}", 1)
-    assert error is None
-    assert specs[0].file == "rtl/dut.sv"
-    resolved, problem = endpoint._resolve_proposals(specs, _mutation_plan(repo))
-    assert problem == "" and resolved is not None
-    assert resolved.mutations[0].original == b"live + b"
-    assert resolved.mutations[0].line == 1
-    assert (repo / "rtl/dut.sv").read_text() == "assign x = live + b;\n"
-    assert (repo / "tracked.sv").read_text() == "concurrent author\n"
-    assert all(not root.exists() for root in snapshots)
-
-
-@pytest.mark.parametrize("returned_path", ["current", "stale", "outside"])
-def test_mutation_snapshot_resume_paths(tmp_path, monkeypatch, returned_path):
-    repo = _mutation_repo(tmp_path)
-    endpoint = _mutation_endpoint(repo, monkeypatch)
-    snapshots = []
-
-    def provider(params, *, on_event):
-        root = Path(params.cwd)
-        assert root != repo
-        assert (repo / "tb/tb.sv").is_file()
-        assert not (root / "tb/tb.sv").exists()
-        if snapshots:
-            assert params.resume_session and params.session_id == "resume-id"
-            assert not snapshots[0].exists()
-            assert root != snapshots[0]
-        snapshots.append(root)
-        path = root / "rtl/dut.sv"
-        if len(snapshots) == 2 and returned_path == "stale":
-            path = snapshots[0] / "rtl/dut.sv"
-        elif len(snapshots) == 2 and returned_path == "outside":
-            path = tmp_path / "outside.sv"
-        return AgentResult(output=_mutation_output(str(path)), session_id="resume-id")
-
-    monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
-    for round_idx in (1, 2):
-        specs, _, error = endpoint._proposal_round("propose", round_idx)
-        assert error is None
-        resolved, problem = endpoint._resolve_proposals(specs, _mutation_plan(repo))
-        if round_idx == 2 and returned_path != "current":
-            assert resolved is None and "escapes scope" in problem
-        else:
-            assert resolved is not None and problem == ""
-    assert all(not root.exists() for root in snapshots)
-
-
-def test_mutation_snapshot_cleanup_on_provider_exception(tmp_path, monkeypatch):
-    repo = _mutation_repo(tmp_path)
-    endpoint = _mutation_endpoint(repo, monkeypatch)
-    snapshots = []
-
-    def provider(params, *, on_event):
-        snapshots.append(Path(params.cwd))
-        assert Path(params.cwd) != repo
-        assert (repo / "tb/tb.sv").is_file()
-        raise RuntimeError("provider failed")
-
-    monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
-    specs, elapsed, error = endpoint._proposal_round("propose", 1)
-    assert specs == [] and elapsed == 0 and error.exit_code == 2
-    assert (repo / "tb/tb.sv").is_file()
-    assert all(not root.exists() for root in snapshots)
-
-
 def test_snapshot_commit_disables_git_auto_maintenance(tmp_path, monkeypatch):
     """A detached auto-maintenance would race the snapshot's removal and leave it behind."""
+    # Private seam: the ``-c gc.auto=0`` flags live only on the snapshot commit command line
+    # and leave no trace a public call can read.
     from booley.specialists import specialist_workspace
 
     calls: list[list[str]] = []
@@ -521,7 +388,7 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
         data / "selftest/sim/bad-overlay",
         data / ".baseline-wt-stale",
         data / "worktrees/case",
-        data / ".runtime/mutation_tester/lock/variants",
+        data / ".runtime/mutation/campaign/variants",
         repo / "custom-logs/reverted",
         repo / "custom-runtime",
         repo / "custom-output",
@@ -686,6 +553,10 @@ def _cpp_source_status(repo):
     )
 
 
+# Undeclared non-HDL files: readable context for both Reviewers, never reviewed (#4052).
+_UNSCOPED_CPP = ["shared/unknown.C", "shared/unknown.HXX", "shared/backup.HPP.bak"]
+
+
 def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
     from booley.runtime.booley_dir import reset_cache
 
@@ -715,12 +586,9 @@ def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
     hidden = [
         "shared/dut.sv",
         "shared/rtl.c",
-        "shared/unknown.C",
-        "shared/unknown.HXX",
-        "shared/backup.HPP.bak",
         "tracked.sv",
     ]
-    for name in visible + hidden:
+    for name in visible + hidden + _UNSCOPED_CPP:
         path = repo / name
         path.parent.mkdir(exist_ok=True)
         path.write_text("// authored source\n")
@@ -730,7 +598,7 @@ def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
     core_path.write_text(_CPP_REVIEW_CORE)
     _git(["add", "--force", str(core_path.relative_to(repo))], repo)
     _git(["add", "shared/main.cpp", "shared/dut.sv", "shared/rtl.c"], repo)
-    before = {name: (repo / name).read_bytes() for name in visible + hidden}
+    before = {name: (repo / name).read_bytes() for name in visible + hidden + _UNSCOPED_CPP}
     status = _cpp_source_status(repo)
     return repo, visible, hidden, before, status
 
@@ -741,6 +609,8 @@ def _assert_cpp_review_snapshot(params, repo, visible, hidden, category):
     for name in visible:
         assert (root / name).is_file(), name
         _git(["show", f"HEAD:./{name}"], root)
+    for name in _UNSCOPED_CPP:
+        assert (root / name).is_file(), name
     for name in hidden:
         assert not (root / name).exists(), name
         assert (
@@ -754,78 +624,66 @@ def _assert_cpp_review_snapshot(params, repo, visible, hidden, category):
             != 0
         )
     if category == "tb":
-        assert "C/C++ testbench" in params.system_prompt
+        if "(tb-hunt)" not in params.system_prompt:  # the checklist call; the hunt call has none
+            assert "C/C++ testbench" in params.system_prompt
         assert "Canonical style guide for SystemVerilog" not in params.system_prompt
         assert "Cocotb" not in params.system_prompt
         assert "shared/helper.CPP" in params.prompt
 
 
-def _cpp_review_result(root, category, finding_path):
-    import json
-
-    issues = [
-        {
-            "severity": "MINOR",
-            "confidence": "HIGH",
-            "category": "quality" if category == "tb" else "bugs",
-            "file": str(root / path),
-            "line": 1,
-            "summary": summary,
-            "kind": "code_defect",
-            "disposition": "current",
-            "ticket_clause": "testbench quality",
-        }
-        for path, summary in [
-            (finding_path, "header finding"),
-            ("shared/unknown.C", "outside finding"),
+def _cpp_review_result(root: Path, category: str, finding_path: str) -> dict[str, Any]:
+    """The agent's answer: one finding in *finding_path*, one in an undeclared C++ file."""
+    return {
+        "issues": [
+            issue(
+                severity="MINOR",
+                category="quality" if category == "tb" else "bugs",
+                file=str(root / path),
+                line=1,
+                summary=summary,
+                ticket_clause="testbench quality",
+            )
+            for path, summary in [
+                (finding_path, "header finding"),
+                ("shared/unknown.C", "outside finding"),
+            ]
         ]
-    ]
-    return AgentResult(output=json.dumps({"issues": issues}))
+    }
 
 
 @pytest.mark.parametrize("category", ["tb", "rtl"])
 @pytest.mark.parametrize("layout", ["flat", "nested", "nested-stealth"])
-def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, category, layout):
+def test_interactive_cpp_review_uses_real_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent: ScriptedAgent,
+    category: str,
+    layout: str,
+) -> None:
     """Admission, prompt, isolation and finding filtering use the same exact scope."""
     repo, visible, hidden, before, status = _cpp_review_project(tmp_path, monkeypatch, layout)
     if category == "rtl":
-        hidden = [
-            *visible,
-            "shared/unknown.C",
-            "shared/unknown.HXX",
-            "shared/backup.HPP.bak",
-            "tracked.sv",
-        ]
-        visible = ["shared/dut.sv", "shared/rtl.c"]
+        # helper.CPP is declared nowhere: readable context for the RTL Reviewer too.
+        hidden = [name for name in visible if name != "shared/helper.CPP"] + ["tracked.sv"]
+        visible = ["shared/dut.sv", "shared/rtl.c", "shared/helper.CPP"]
     scope = visible if category == "tb" else ["shared/dut.sv"]
     finding_path = "shared/api.hpp" if category == "tb" else "shared/dut.sv"
-    calls = []
+    scripts: dict[str, Any] = {}  # per guide, so concurrent calls never share a snapshot path
+    problems: list[AssertionError] = []
 
-    def fake_call(params, *, on_event):
-        calls.append(params)
-        _assert_cpp_review_snapshot(params, repo, visible, hidden, category)
-        return _cpp_review_result(Path(params.cwd), category, finding_path)
+    def inside_the_call(params: AgentCallParams) -> None:
+        try:  # an assertion raised here would read as a provider failure, so collect it
+            _assert_cpp_review_snapshot(params, repo, visible, hidden, category)
+        except AssertionError as problem:
+            problems.append(problem)
+        scripts[guide_of(params)] = _cpp_review_result(Path(params.cwd), category, finding_path)
 
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        [
-            "--work-dir",
-            str(repo),
-            "--category",
-            category,
-            "--focus",
-            "quality" if category == "tb" else "bugs",
-            "--scope",
-            ",".join(scope),
-        ]
-    )
-    endpoint.read_state()
-    with (
-        patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
-        patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
-    ):
-        result = endpoint._run_review()
-    assert calls, result.report_text
+    agent.on_call = inside_the_call
+    agent.answer(scripts)
+    focus = "quality" if category == "tb" else "bugs"
+    result, _ = run_review(_review_argv(repo, category, focus, ",".join(scope)))
+    assert agent.calls, result.report_text
+    assert not problems, problems[0]
     assert result.exit_code != 2, result.report_text
     assert "header finding" in result.report_text
     assert "outside finding" not in result.report_text
@@ -869,7 +727,9 @@ def test_spaced_source_cannot_gain_opposite_scope(tmp_path, category, suffix, co
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs SIGKILL and the Linux Sandbox")
-def test_specialist_launch_reclaims_killed_run_scratch(tmp_path, monkeypatch):
+def test_specialist_launch_reclaims_killed_run_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: ScriptedAgent
+) -> None:
     """AC4/AC5: a launch removes the scratch of a SIGKILL-ed run and nothing else."""
     from tests.owned_scratch_support import (
         exited_process_payload,
@@ -893,23 +753,132 @@ def test_specialist_launch_reclaims_killed_run_scratch(tmp_path, monkeypatch):
     assert own_identity is not None
     write_marker(live, own_identity.to_payload())
     write_marker(dead, exited_process_payload())
-    endpoint = ReviewerSpecialist()
-    endpoint._args = argparse.Namespace(category=None, scope="", report_dir=None)
-    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    # The sweep runs in every agent call, and the run classifies the rtl source it reviews.
+    _rtl_tb_project(repo)
     try:
-        with (
-            patch(
-                "booley.specialists.specialist._call_agent_sync",
-                return_value=AgentResult(output="ok"),
-            ),
-            patch(
-                "booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()
-            ),
-        ):
-            endpoint._invoke_agent(params, on_event=lambda _event: None)
+        result, _ = run_review(_review_argv(repo, "rtl", "bugs", "rtl/dut.sv"))
+        assert result.exit_code == 0, result.report_text
+        assert agent.calls
         assert [path for path in (*killed, dead) if path.exists()] == []
         assert live.is_dir()
         assert unmarked.is_dir()
     finally:
         for path in killed:  # unfixed code leaves the nested home in the real /tmp
             shutil.rmtree(path, ignore_errors=True)
+
+
+def _write_fw_core(repo: Path, rtl_files: str) -> None:
+    """A ``.core`` whose rtl fileset lists *rtl_files* and whose tb fileset is ``tb/tb.sv``."""
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
+        f"  rtl:\n    files: [{rtl_files}]\n"
+        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
+        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _snapshot_view(
+    repo: Path, agent: ScriptedAgent, category: str, names: tuple[str, ...]
+) -> dict[str, bool]:
+    """Run a Reviewer and report which of *names* the snapshot of its agent call holds."""
+    scope, focus = ("rtl/dut.sv", "bugs") if category == "rtl" else ("tb/tb.sv", "quality")
+    seen: dict[str, bool] = {}
+
+    def inside_the_call(params: AgentCallParams) -> None:
+        root = Path(params.cwd)
+        seen.update({name: (root / name).is_file() for name in names})
+
+    agent.on_call = inside_the_call
+    result, _ = run_review(_review_argv(repo, category, focus, scope))
+    assert agent.calls, result.report_text
+    return seen
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_reviewers_read_unclassified_files_in_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: ScriptedAgent, category: str
+) -> None:
+    """Files in no RTL or TB fileset are readable by both Reviewers (#4052).
+
+    Undeclared HDL-named files stay hidden; the opposite category stays hidden.
+    """
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    visible = (
+        "fw/start.c",
+        "fw/boot.hex",
+        "firmware/boot.S",
+        "sw/main.c",
+        "sw/regs.h",
+        "sw/gen.py",
+    )
+    hidden = ("fw/rom.sv~", "sw/stub.SV", "tb/tb.sv" if category == "rtl" else "rtl/dut.sv")
+    for name in ("rtl/dut.sv", "tb/tb.sv", *visible, *hidden):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n", encoding="utf-8")
+    _write_fw_core(repo, "rtl/dut.sv")
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", *visible], repo)
+
+    seen = _snapshot_view(repo, agent, category, (*visible, *hidden))
+
+    assert {name: seen[name] for name in visible} == dict.fromkeys(visible, True)
+    assert {name: seen[name] for name in hidden} == dict.fromkeys(hidden, False)
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+@pytest.mark.parametrize(
+    ("rtl_files", "names", "visible_to"),
+    [
+        pytest.param(  # a source the RTL fileset lists under fw/ is hidden from the TB Reviewer
+            "rtl/dut.sv, fw/rom.sv, {fw/rom.vhd: {file_type: vhdlSource}}",
+            ("fw/rom.sv", "fw/rom.vhd"),
+            "rtl",
+            id="rtl-fileset-files-under-fw",
+        ),
+        pytest.param(  # a C source in the RTL fileset is a sim harness input: TB-side, as documented
+            "rtl/dut.sv, {fw/boot.c: {file_type: cSource}}",
+            ("fw/boot.c",),
+            "tb",
+            id="c-source-in-rtl-fileset",
+        ),
+    ],
+)
+def test_fileset_sources_under_fw_follow_their_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent: ScriptedAgent,
+    category: str,
+    rtl_files: str,
+    names: tuple[str, ...],
+    visible_to: str,
+) -> None:
+    """A fileset-listed source under ``fw/`` follows its category, not the directory name (#4052)."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    for name in ("rtl/dut.sv", "tb/tb.sv", *names):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n", encoding="utf-8")
+    _write_fw_core(repo, rtl_files)
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", *names], repo)
+
+    seen = _snapshot_view(repo, agent, category, names)
+
+    assert seen == dict.fromkeys(names, category == visible_to)
+
+
+def test_a_caller_supplied_event_callback_reaches_the_agent_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller that streams its own events is not given the default display callback."""
+    agent = install_agent(monkeypatch)
+    endpoint, seen = ReviewerSpecialist(), lambda _event: None
+    endpoint.parse_args(_review_argv(tmp_path, "rtl", "bugs", "rtl/dut.sv"))
+    params = endpoint._single_review_params("bugs", None)
+
+    # Private seam: a Reviewer run always streams to the display, so only a direct call
+    # passes its own callback.
+    endpoint._invoke_agent(params, on_event=seen)
+
+    assert agent.on_events == [seen]

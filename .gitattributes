@@ -15,14 +15,28 @@ qa/** -text
 # bytes, including trailing blank lines in run logs, stay as captured.
 tests/qa/fixtures/** -text -whitespace
 
+# Captured Booley 0.3.0 Simulation records keep their exact bytes.
+tests/flows/fixtures/booley_0_3_0/** -text -whitespace
+
+# Captured Booley 0.4.0 Simulation records keep their exact bytes.
+tests/flows/fixtures/booley_0_4_0/** -text -whitespace
+
 # Captured Cocotb console output keeps the producer's trailing spaces.
 tests/fixtures/cocotb_timeout_progress/2.1.0/*.log -text -whitespace
+
+# Captured Yosys `stat` output keeps the producer's trailing spaces and final blank line.
+tests/flows/synth/fixtures/mapped_latch_yosys_*.txt -text -whitespace
+
+# Captured slang diagnostics keep the producer's trailing spaces in echoed source gutters.
+tests/flows/synth/fixtures/slang_*_yosys_*.txt -text -whitespace
 
 # Frozen experiment downloads retain exact bytes, including blank patch context.
 website/docs/blog/posts/harness-matters/*.patch -text -whitespace
 website/docs/blog/posts/harness-matters/agent-prompt.txt -text
 
-# Many parallel PRs each append a bullet under `## Unreleased`. Union merge keeps
+# Ordinary changes add a fragment under `changelog.d/` instead of editing these
+# files; the union attribute stays for PRs opened before fragments existed. Many
+# such PRs each append a bullet under `## Unreleased`. Union merge keeps
 # both sides' added lines, so a local `git merge origin/main` no longer stops on
 # a CHANGELOG conflict. The packaged mirror must stay byte-identical (tested).
 # Caveat: union never reports conflicts, so it suits append-only bullet lists;

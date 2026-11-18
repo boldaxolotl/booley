@@ -56,13 +56,12 @@ class VersionAttribution:
 
 def _git_output(root: Path, *args: str) -> str:
     """Return stripped Git output, or an empty string when Git cannot answer."""
+    # Imported here: ``import booley`` loads this module, and platform_paths pulls in asyncio.
+    from booley.runtime import platform_paths
+
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            check=False,
+        result = platform_paths.run_captured_bounded(
+            ["git", "-C", str(root), *args], timeout=_GIT_TIMEOUT_SECONDS, errors="strict"
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -97,8 +96,9 @@ def _distribution_attribution(package_file: Path) -> VersionAttribution | None:
     for name in ("booley-rtl", "booley"):
         for dist in importlib.metadata.distributions(name=name):
             files = dist.files
+            # ``locate_file`` is typed as a path-like protocol without ``resolve``; it is a Path.
             if not files or not any(
-                dist.locate_file(path).resolve() == resolved for path in files
+                Path(str(dist.locate_file(path))).resolve() == resolved for path in files
             ):
                 continue
             version = dist.version.strip()

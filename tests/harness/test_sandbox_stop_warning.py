@@ -299,7 +299,7 @@ def test_run_probe_execs_the_probe_in_the_sandbox_without_caller_stdin(
         seen["argv"], seen["kwargs"] = argv, kwargs
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(warning, "run_captured_bounded", fake_run)
 
     warning._run_probe(SANDBOX)
 

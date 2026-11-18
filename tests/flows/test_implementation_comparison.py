@@ -1,12 +1,8 @@
-from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from booley.criteria.templates import BASELINE_TARGET_PARAM
-from booley.flows.baseline_worktree import resolve_ticket_baseline
 from booley.flows.implementation_comparison import (
     ImplementationComparisonError,
     TargetExecutionRef,
@@ -15,56 +11,17 @@ from booley.flows.implementation_comparison import (
     resolve_target_execution_ref,
     target_pair_for_candidate,
     target_pair_plans_for_handles,
-    target_pairs_for_candidates,
+    target_plan_for_handle,
 )
-from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-
-
-@dataclass(frozen=True)
-class ResolvedTargetBinding:
-    flow: str
-    criterion: str
-    baseline: str
-    candidate: str
-    baseline_selector: str = ""
-    candidate_selector: str = ""
-
-    @property
-    def criterion_key(self):
-        return self.criterion.rsplit(".", 1)[-1]
 
 
 def select_target(project_root, token, *, for_flow=None):
     return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
 
 
-def test_missing_metadata_preserves_equal_target_behavior() -> None:
-    (plan,) = target_pairs_for_candidates({}, "synthesis_ok_", ["synth_default"])
-    assert plan.baseline.selector == "synth_default"
-    assert plan.candidate.selector == "synth_default"
-    assert not plan.basis_bound
-
-
-def test_reads_paired_baseline_from_candidate_criterion() -> None:
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
-
-    (plan,) = target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
-    assert plan.baseline.selector == "synth_before"
-    assert plan.candidate.selector == "synth_after"
-
-
-def test_invalid_persisted_baseline_fails_closed() -> None:
-    criteria = {"synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: ""})}
-
-    with pytest.raises(ImplementationComparisonError, match="invalid baseline Target"):
-        target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
-
-
-def _basis_project(tmp_path: Path, *, schema: int = 5) -> SimpleNamespace:
-    assert schema == 5
+def _project(tmp_path: Path) -> None:
     (tmp_path / "toy.core").write_text(
         """CAPI=2:
 name: acme:lib:toy:1.0
@@ -72,466 +29,91 @@ targets:
   synth_before: {flow: generic, flow_options: {tool: yosys}}
   synth_after: {flow: generic, flow_options: {tool: yosys}}
   synth_other: {flow: generic, flow_options: {tool: yosys}}
-  fpga_before: {flow: generic, flow_options: {tool: verilator}}
-  fpga_after: {flow: generic, flow_options: {tool: verilator}}
   lint_only: {flow: lint, flow_options: {tool: verilator}}
-  synth_selftest_bad:
-    flow: generic
-    flow_options: {tool: yosys, booley: {doctor_selftest: true}}
 """,
         encoding="utf-8",
     )
-    return SimpleNamespace(
-        bindings=(
-            ResolvedTargetBinding(
-                flow="synth",
-                criterion="criteria.mandatory.synthesis_ok",
-                baseline="acme:lib:toy:1.0#synth_before",
-                candidate="acme:lib:toy:1.0#synth_after",
-                baseline_selector="synth_before",
-                candidate_selector="synth_after",
-            ),
-        ),
-        participants=(SimpleNamespace(role="outer", authoring_sha="a" * 40),),
-    )
 
 
-def test_basis_executes_selector_verified_against_recorded_pair(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path)
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
+def test_each_candidate_is_paired_with_itself(tmp_path: Path) -> None:
+    _project(tmp_path)
+    after = select_target(tmp_path, "synth_after", for_flow="synth")
+    other = select_target(tmp_path, "synth_other", for_flow="synth")
 
-    pairs = target_pairs_for_candidates(
-        criteria,
-        "synthesis_ok_",
-        ["synth_after"],
-        basis=basis,
-        project_root=tmp_path,
-        flow="synth",
-    )
+    plans = target_pair_plans_for_handles((after, other), flow="synth")
 
-    assert pairs[0].baseline.selector == "synth_before"
-    assert pairs[0].candidate.selector == "synth_after"
-    assert pairs[0].basis_bound
+    assert [(plan.baseline, plan.candidate) for plan in plans] == [
+        (plan.candidate, plan.candidate) for plan in plans
+    ]
+    assert [plan.candidate.selector for plan in plans] == [after.selector, other.selector]
+    assert {plan.flow for plan in plans} == {"synth"}
 
 
-def test_basis_accepts_multiple_parameters_for_one_candidate(tmp_path: Path) -> None:
-    original = _basis_project(tmp_path)
-    bindings = tuple(
-        ResolvedTargetBinding(
-            flow="synth",
-            criterion=f"criteria.mandatory.synthesis_ok_{parameter}",
-            baseline="acme:lib:toy:1.0#synth_before",
-            candidate="acme:lib:toy:1.0#synth_after",
-            baseline_selector="synth_before",
-            candidate_selector="synth_after",
-        )
-        for parameter in ("area", "frequency")
-    )
-    basis = SimpleNamespace(bindings=bindings, participants=original.participants)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    criteria = {
-        f"synthesis_ok_{parameter}": SimpleNamespace(
-            params={
-                "target": "acme:lib:toy:1.0#synth_after",
-                BASELINE_TARGET_PARAM: "synth_before",
-            }
-        )
-        for parameter in ("area", "frequency")
-    }
+def test_plan_lookup_defaults_to_the_target_paired_with_itself(tmp_path: Path) -> None:
+    _project(tmp_path)
+    handle = select_target(tmp_path, "synth_after", for_flow="synth")
 
-    (plan,) = target_pair_plans_for_handles(
-        criteria,
-        "synthesis_ok_",
-        (candidate,),
-        basis=basis,
-        flow="synth",
-    )
+    plan = target_plan_for_handle((), handle, flow="synth")
 
-    assert (plan.baseline.selector, plan.candidate.selector) == ("synth_before", "synth_after")
-    assert plan.basis_bound
-
-    criteria["synthesis_ok_frequency"].params[BASELINE_TARGET_PARAM] = "synth_other"
-    with pytest.raises(ImplementationComparisonError, match=r"conflicting .* Target pairs"):
-        target_pair_plans_for_handles(
-            criteria,
-            "synthesis_ok_",
-            (candidate,),
-            basis=basis,
-            flow="synth",
-        )
+    assert plan.baseline == plan.candidate
+    assert plan.candidate.identity == handle.identity
+    (planned,) = target_pair_plans_for_handles((handle,), flow="synth")
+    assert target_plan_for_handle((planned,), handle, flow="synth") is planned
 
 
-def test_current_schema_executes_exact_sealed_selectors(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
-
-    pairs = target_pairs_for_candidates(
-        criteria,
-        "synthesis_ok_",
-        ["synth_after"],
-        basis=basis,
-        project_root=tmp_path,
-        flow="synth",
-    )
-
-    assert pairs[0].baseline.selector == "synth_before"
-    assert pairs[0].candidate.selector == "synth_after"
-    assert pairs[0].basis_bound
-
-
-@pytest.mark.parametrize(
-    ("flow", "criterion", "baseline_name", "candidate_name"),
-    [
-        ("synth", "synthesis_ok", "synth_before", "synth_after"),
-        ("fpga", "fpga_impl_ok", "fpga_before", "fpga_after"),
-    ],
-)
-def test_synth_and_fpga_share_current_schema_pair_plan_contract(
-    tmp_path: Path,
-    flow: str,
-    criterion: str,
-    baseline_name: str,
-    candidate_name: str,
-) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    vlnv = "acme:lib:toy:1.0"
-    binding = ResolvedTargetBinding(
-        flow=flow,
-        criterion=f"criteria.mandatory.{criterion}",
-        baseline=f"{vlnv}#{baseline_name}",
-        candidate=f"{vlnv}#{candidate_name}",
-        baseline_selector=f"{vlnv}#{baseline_name}",
-        candidate_selector=f"{vlnv}#{candidate_name}",
-    )
-    basis = _basis_with_binding(basis, binding)
-    candidate = select_target(tmp_path, binding.candidate_selector, for_flow=flow)
-    criteria = {
-        f"{criterion}_{candidate_name}": SimpleNamespace(
-            params={
-                "target": binding.candidate,
-                "_target_selector": binding.candidate_selector,
-                BASELINE_TARGET_PARAM: binding.baseline_selector,
-            }
-        )
-    }
-
-    (plan,) = target_pair_plans_for_handles(
-        criteria,
-        f"{criterion}_",
-        (candidate,),
-        basis=basis,
-        flow=flow,
-    )
-
-    assert plan.flow == flow
-    assert plan.baseline.selector == binding.baseline_selector
-    assert plan.candidate.selector == binding.candidate_selector
-
-
-def test_current_schema_finds_authored_criterion_and_keeps_sealed_selector(
+def test_resolution_uses_the_planned_selector(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    (tmp_path / "other.core").write_text(
-        "CAPI=2:\n"
-        "name: other:lib:other:1.0\n"
-        "targets:\n"
-        "  synth_after: {flow: generic, flow_options: {tool: yosys}}\n",
-        encoding="utf-8",
-    )
-    binding = ResolvedTargetBinding(
-        flow="synth",
-        criterion="criteria.mandatory.synthesis_ok",
-        baseline="acme:lib:toy:1.0#synth_before",
-        candidate="acme:lib:toy:1.0#synth_after",
-        baseline_selector="acme:lib:toy:1.0#synth_before",
-        candidate_selector="acme:lib:toy:1.0#synth_after",
-    )
-    basis = _basis_with_binding(basis, binding)
-    candidate = select_target(tmp_path, binding.candidate_selector, for_flow="synth")
-    assert candidate.selector == "toy#synth_after"
-    criteria = {
-        "synthesis_ok_authored-spelling": SimpleNamespace(
-            params={
-                "target": binding.candidate,
-                "_target_selector": binding.candidate_selector,
-                BASELINE_TARGET_PARAM: binding.baseline_selector,
-            }
-        )
-    }
-
-    (plan,) = target_pair_plans_for_handles(
-        criteria,
-        "synthesis_ok_",
-        (candidate,),
-        basis=basis,
-        flow="synth",
-    )
-
-    assert plan.baseline.selector == binding.baseline_selector
-    assert plan.candidate.selector == binding.candidate_selector
+    _project(tmp_path)
+    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
+    (plan,) = target_pair_plans_for_handles((candidate,), flow="synth")
     resolve = Mock()
     resolve.return_value = object()
     monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+
     resolve_target_execution_ref(candidate, plan.candidate, build_root=tmp_path / "build")
+
     assert resolve.call_args.args == (candidate,)
     assert resolve.call_args.kwargs["build_root"] == tmp_path / "build"
-
-
-def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _basis_project(tmp_path, schema=5)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    criteria = {
-        "synthesis_ok_authored-spelling": SimpleNamespace(
-            params={
-                "target": candidate.identity,
-                "_target_selector": "acme:lib:toy:1.0#synth_after",
-                "_baseline_ref": "sealed-base",
-            }
-        )
-    }
-    monkeypatch.setattr(
-        "booley.flows.baseline_worktree.git_full_sha",
-        lambda _ref, _root: "a" * 40,
-    )
-
-    baseline, full_sha, error = resolve_ticket_baseline(
-        criteria,
-        "synthesis_ok_",
-        (candidate,),
-        None,
-        tmp_path,
-        "synth",
-    )
-
-    assert (baseline, full_sha, error) == ("sealed-base", "a" * 40, None)
-
-
-def test_unresolvable_pinned_baseline_ref_is_reported(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _basis_project(tmp_path, schema=5)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    criteria = {
-        "synthesis_ok_area": SimpleNamespace(
-            params={"target": candidate.identity, "_baseline_ref": "sealed-base"}
-        )
-    }
-    monkeypatch.setattr("booley.flows.baseline_worktree.git_full_sha", lambda _ref, _root: None)
-
-    assert resolve_ticket_baseline(
-        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
-    ) == ("sealed-base", None, "synth: pinned baseline ref cannot be resolved to a commit")
-
-
-def test_multiple_synth_parameters_can_share_one_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _basis_project(tmp_path, schema=5)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    criteria = {
-        f"synthesis_ok_{parameter}": SimpleNamespace(
-            params={"target": candidate.identity, "_baseline_ref": baseline}
-        )
-        for parameter, baseline in (("area", "sealed-base"), ("frequency", "sealed-base"))
-    }
-    monkeypatch.setattr(
-        "booley.flows.baseline_worktree.git_full_sha",
-        lambda _ref, _root: "a" * 40,
-    )
-
-    assert resolve_ticket_baseline(
-        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
-    ) == ("sealed-base", "a" * 40, None)
-
-    criteria["synthesis_ok_frequency"].params["_baseline_ref"] = "other-base"
-    assert resolve_ticket_baseline(
-        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
-    ) == (None, None, "synth: selected criteria carry conflicting baseline refs")
-
-
-def _basis_with_binding(
-    basis: SimpleNamespace,
-    binding: ResolvedTargetBinding,
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        bindings=(binding,),
-        participants=basis.participants,
-    )
 
 
 def test_plan_has_no_public_authority_constructor() -> None:
     ref = TargetExecutionRef("acme:lib:dut:1#synth", "synth", "acme:lib:dut:1")
     with pytest.raises(TypeError, match="created by the pair-plan factory"):
-        TargetPairPlan("synth", ref, ref, None, object())
-
-
-def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    empty_selector_binding = ResolvedTargetBinding(
-        flow="synth",
-        criterion="criteria.mandatory.synthesis_ok",
-        baseline="acme:lib:toy:1.0#synth_before",
-        candidate="acme:lib:toy:1.0#synth_after",
-        baseline_selector="",
-        candidate_selector="synth_after",
-    )
-    basis = SimpleNamespace(
-        bindings=(empty_selector_binding,),
-        participants=basis.participants,
-    )
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
-
-    with pytest.raises(ImplementationComparisonError, match="empty callable selector"):
-        target_pairs_for_candidates(
-            criteria,
-            "synthesis_ok_",
-            ["synth_after"],
-            basis=basis,
-            project_root=tmp_path,
-            flow="synth",
-        )
-
-
-def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    basis = SimpleNamespace(
-        bindings=(*basis.bindings, *basis.bindings),
-        participants=basis.participants,
-    )
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
-
-    with pytest.raises(ImplementationComparisonError, match="no unique"):
-        target_pairs_for_candidates(
-            criteria,
-            "synthesis_ok_",
-            ["synth_after"],
-            basis=basis,
-            project_root=tmp_path,
-            flow="synth",
-        )
-
-
-def test_sealed_plan_rejects_missing_binding(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    basis = SimpleNamespace(
-        bindings=(),
-        participants=basis.participants,
-    )
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
-
-    with pytest.raises(ImplementationComparisonError, match="no unique"):
-        target_pairs_for_candidates(
-            criteria,
-            "synthesis_ok_",
-            ["synth_after"],
-            basis=basis,
-            project_root=tmp_path,
-            flow="synth",
-        )
+        TargetPairPlan("synth", ref, ref, object())
 
 
 def test_batch_rejects_duplicate_canonical_candidates(tmp_path: Path) -> None:
-    _basis_project(tmp_path)
+    _project(tmp_path)
     first = select_target(tmp_path, "synth_after", for_flow="synth")
     second = select_target(tmp_path, "acme:lib:toy:1.0#synth_after", for_flow="synth")
 
     with pytest.raises(ImplementationComparisonError, match="duplicates canonical identity"):
-        target_pair_plans_for_handles(
-            {},
-            "synthesis_ok_",
-            (first, second),
-            flow="synth",
-        )
+        target_pair_plans_for_handles((first, second), flow="synth")
 
 
 def test_pair_lookup_has_no_equal_target_fallback(tmp_path: Path) -> None:
-    _basis_project(tmp_path)
+    _project(tmp_path)
     handle = select_target(tmp_path, "synth_after", for_flow="synth")
-    plans = target_pair_plans_for_handles(
-        {},
-        "synthesis_ok_",
-        (handle,),
-        flow="synth",
-    )
+    plans = target_pair_plans_for_handles((handle,), flow="synth")
 
     with pytest.raises(ImplementationComparisonError, match="no unique"):
         target_pair_for_candidate(plans, "acme:lib:toy:1.0#synth_other")
 
 
-@pytest.mark.parametrize("baseline", [None, "synth_other"])
-def test_basis_rejects_resumed_state_that_disagrees_with_record(
-    tmp_path: Path, baseline: str | None
-) -> None:
-    basis = _basis_project(tmp_path)
-    params = {} if baseline is None else {BASELINE_TARGET_PARAM: baseline}
-    criteria = {"synthesis_ok_synth_after": SimpleNamespace(params=params)}
-
-    with pytest.raises(ImplementationComparisonError, match="does not match the frozen baseline"):
-        target_pairs_for_candidates(
-            criteria,
-            "synthesis_ok_",
-            ["synth_after"],
-            basis=basis,
-            project_root=tmp_path,
-            flow="synth",
-        )
-
-
 def test_candidate_flow_mismatch_is_rejected_by_pair_factory(tmp_path: Path) -> None:
-    _basis_project(tmp_path)
+    _project(tmp_path)
     candidate = select_target(tmp_path, "lint_only")
 
     with pytest.raises(ImplementationComparisonError, match="cannot be driven"):
-        target_pair_plans_for_handles({}, "synthesis_ok_", (candidate,), flow="synth")
-
-
-def test_baseline_flow_mismatch_is_rejected_before_setup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _basis_project(tmp_path)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    setup = Mock(side_effect=AssertionError("FuseSoC setup must not run"))
-    monkeypatch.setattr(fusesoc_registry, "_resolve_target", setup)
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "lint_only"})
-    }
-
-    with pytest.raises(ImplementationComparisonError, match="cannot be driven"):
-        target_pair_plans_for_handles(criteria, "synthesis_ok_", (candidate,), flow="synth")
-    setup.assert_not_called()
+        target_pair_plans_for_handles((candidate,), flow="synth")
 
 
 def test_baseline_checkout_missing_target_is_rejected(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
-    plans = target_pairs_for_candidates(
-        criteria,
-        "synthesis_ok_",
-        ["synth_after"],
-        basis=basis,
-        project_root=tmp_path,
-        flow="synth",
-    )
+    _project(tmp_path)
+    handle = select_target(tmp_path, "synth_after", for_flow="synth")
+    plans = target_pair_plans_for_handles((handle,), flow="synth")
     missing = tmp_path / "missing"
     missing.mkdir()
 
@@ -540,18 +122,9 @@ def test_baseline_checkout_missing_target_is_rejected(tmp_path: Path) -> None:
 
 
 def test_baseline_checkout_identity_change_is_rejected(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
-    }
-    plans = target_pairs_for_candidates(
-        criteria,
-        "synthesis_ok_",
-        ["synth_after"],
-        basis=basis,
-        project_root=tmp_path,
-        flow="synth",
-    )
+    _project(tmp_path)
+    handle = select_target(tmp_path, "synth_before", for_flow="synth")
+    plans = target_pair_plans_for_handles((handle,), flow="synth")
     changed = tmp_path / "changed"
     changed.mkdir()
     (changed / "changed.core").write_text(
@@ -564,35 +137,3 @@ def test_baseline_checkout_identity_change_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ImplementationComparisonError, match="expected"):
         baseline_execution_context(plans, changed)
-
-
-def test_doctor_private_candidate_cannot_enter_sealed_plan(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    basis = _basis_project(tmp_path, schema=5)
-    binding = ResolvedTargetBinding(
-        flow="synth",
-        criterion="criteria.mandatory.synthesis_ok",
-        baseline="acme:lib:toy:1.0#synth_before",
-        candidate="acme:lib:toy:1.0#synth_selftest_bad",
-        baseline_selector="synth_before",
-        candidate_selector="synth_selftest_bad",
-    )
-    basis = _basis_with_binding(basis, binding)
-    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-    candidate = select_target(tmp_path, binding.candidate_selector, for_flow="synth")
-    criteria = {
-        "synthesis_ok_synth_selftest_bad": SimpleNamespace(
-            params={BASELINE_TARGET_PARAM: "synth_before"}
-        )
-    }
-
-    with pytest.raises(ImplementationComparisonError, match="Doctor-private"):
-        target_pair_plans_for_handles(
-            criteria,
-            "synthesis_ok_",
-            (candidate,),
-            basis=basis,
-            flow="synth",
-        )

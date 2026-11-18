@@ -34,7 +34,7 @@ class SynthArguments(BuiltinArguments):
                 ),
                 PPA_HELP,
                 HelpOption(
-                    "fresh_openroad",
+                    "no_cache",
                     "When omitted, reuse the stored OpenROAD result when every OpenROAD input matches.",
                 ),
             ),
@@ -143,8 +143,8 @@ class SynthArguments(BuiltinArguments):
             "Overrides the selected Target's flow_options.frontend (default sv2v).",
         )
         parser.add_argument(
-            "--fresh-openroad",
-            dest="fresh_openroad",
+            "--no-cache",
+            dest="no_cache",
             action="store_true",
             help="Run OpenROAD even when its inputs match the last run of this Target, "
             "and replace the stored OpenROAD result.",

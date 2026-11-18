@@ -4,28 +4,29 @@ from __future__ import annotations
 
 import argparse
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.criteria.state import DevelopmentState
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
 from booley.flows.builtin_cli import parse_request
 from booley.flows.endpoint_cli import normalize_target_arg
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
-from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
+from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
 from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.request import FlowRequest
-from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
+from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.request import SynthRequest
 from booley.mcp.base import EXIT_ERROR
+from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import DuplicateTargetError
@@ -37,13 +38,17 @@ BUILTINS = (
     (AsicSynthesizeFlow, "synth", 1_800_000),
     (FpgaImplFlow, "fpga", 7_200_000),
 )
+FLOW_TYPES = [flow_type for flow_type, *_ in BUILTINS]
 
 
-@pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
+def _write_config(root: Path, text: str) -> None:
+    (root / ".booley").mkdir(exist_ok=True)
+    (root / ".booley" / "booley.toml").write_text(text, encoding="utf-8", newline="\n")
+
+
+@pytest.mark.parametrize("flow_type", FLOW_TYPES)
 def test_builtin_target_repetition_normalizes_to_ordered_scalar(
     flow_type: type[BuiltinFlow],
-    _name: str,
-    _default_ms: int,
 ) -> None:
     repeated = flow_type().parse_args(["--target", "a", "--target", "b,c"])
     comma_list = flow_type().parse_args(["--target", "a,b,c"])
@@ -105,20 +110,17 @@ def test_duplicate_target_fails_before_start_event_or_admission(
                 "which was already selected by 'a'"
             )
 
-    flow = flow_type()
-    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(
         TargetCatalog, "build", classmethod(lambda _cls, _root: DuplicateCatalog())
     )
     monkeypatch.setattr(
-        "booley.flows.endpoint_session._write_display_event",
-        lambda *_args: pytest.fail("published start event for invalid Target selection"),
-    )
-    monkeypatch.setattr(
         EndpointState,
-        "_acquire_job_slot",
-        lambda _self: pytest.fail("acquired a slot for invalid Target selection"),
+        "admission",
+        lambda *_args, **_kwargs: pytest.fail("entered admission for invalid Target selection"),
     )
+    flow = flow_type()
 
     result = flow.execute_cli(
         [
@@ -140,12 +142,14 @@ def test_duplicate_target_fails_before_start_event_or_admission(
     report = json.loads((tmp_path / "reports" / f"{flow.name}.json").read_text())
     assert report["exit_code"] == 2
     assert "already selected" in report["report_text"]
+    # The display log is written when a start event is published.
+    assert not (tmp_path / "runtime" / "display.jsonl").exists()
 
 
-@pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
+@pytest.mark.parametrize("flow_type", FLOW_TYPES)
 @pytest.mark.parametrize("option,expected", [("--timeout-ms", 2500), ("--timeout", 2500000)])
 def test_builtin_timeout_conversion(
-    flow_type: type[BooleyFlow], _name: str, _default_ms: int, option: str, expected: int
+    flow_type: type[BooleyFlow], option: str, expected: int
 ) -> None:
     args = flow_type().parse_args(["--target", "demo", option, "2500"])
     assert args.timeout_ms == expected
@@ -162,75 +166,41 @@ def test_timeout_precedence_is_call_then_config_then_default(
     _flow_type: type[BooleyFlow],
     name: str,
     default_ms: int,
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     configured = default_ms + 1
-    monkeypatch.setattr(
-        "booley.runtime.shared_infra._load_rtl_config",
-        lambda _work_dir: {"flows": {name: {"timeout_ms": configured}}},
-    )
+    _write_config(tmp_path, f"[flows.{name}]\ntimeout_ms = {configured}\n")
+    unconfigured = tmp_path / "unconfigured"
+    unconfigured.mkdir()
 
     assert resolve_timeout_ms(name, tmp_path, default_ms + 2) == default_ms + 2
     assert resolve_timeout_ms(name, tmp_path, None) == configured
     assert resolve_timeout_ms(name, None, None) == configured
-
-    monkeypatch.setattr(
-        "booley.runtime.shared_infra._load_rtl_config",
-        lambda _work_dir: {},
-    )
-    assert resolve_timeout_ms(name, None, None) == default_ms
+    assert resolve_timeout_ms(name, unconfigured, None) == default_ms
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "1000", float("nan")])
-def test_malformed_configured_timeout_is_a_boundary_error(
-    value: object,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(
-        "booley.runtime.shared_infra._load_rtl_config",
-        lambda _work_dir: {"flows": {"lint": {"timeout_ms": value}}},
-    )
+@pytest.mark.parametrize("value", ["0", "-1", "true", "1.5", '"1000"', "nan"])
+def test_malformed_configured_timeout_is_a_boundary_error(value: str, tmp_path: Path) -> None:
+    _write_config(tmp_path, f"[flows.lint]\ntimeout_ms = {value}\n")
 
     with pytest.raises(BoundaryError, match=r"\[flows\.lint\]\.timeout_ms"):
         resolve_timeout_ms("lint", tmp_path, None)
-
-
-def test_budget_plan_derives_aggregate_execution_and_setup() -> None:
-    plan = BudgetPlan(
-        timeout_ms=4_000,
-        work_units=3,
-        setup_grace_per_unit_s=2,
-        finalize_grace_s=5,
-        outer_floor_s=10,
-    )
-
-    assert plan.execution_s == 12
-    assert plan.setup_grace_s == 6
-    assert plan.outer_timeout_s == 23
 
 
 def test_builtin_pre_state_gate_validates_timeout_before_dry_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(
-        "booley.runtime.shared_infra._load_rtl_config",
-        lambda _work_dir: {"flows": {"lint": {"timeout_ms": "invalid"}}},
-    )
+    _write_config(tmp_path, '[flows.lint]\ntimeout_ms = "invalid"\n')
     monkeypatch.setattr(
         "booley.flows.base.runtime_context.container_only_error",
         lambda _command: None,
     )
-    flow = LintFlow()
-    flow.parse_args(["--target", "demo", "--work-dir", str(tmp_path), "--dry-run"])
 
-    rejection = flow._pre_state_gate()
+    result = LintFlow().execute_cli(["--target", "demo", "--work-dir", str(tmp_path), "--dry-run"])
 
-    assert rejection is not None
-    assert rejection.exit_code == 2
-    assert "timeout_ms must be an integer" in rejection.report_text
+    assert result.exit_code == 2
+    assert "timeout_ms must be an integer" in result.outcome.report_text
 
 
 class _CustomTimeoutFlow(BooleyFlow):
@@ -286,7 +256,7 @@ def test_cli_report_preserves_authored_repeated_target_argv(
         "--report-dir",
         str(report_dir),
     ]
-    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     replace_run(
         monkeypatch,
         flow,
@@ -322,57 +292,26 @@ def _plan(flow: str, *, errors: tuple[str, ...] = ()) -> FlowPlan:
     )
 
 
-@pytest.mark.parametrize(("flow_type", "name", "_default_ms"), BUILTINS)
-def test_builtin_dry_run_renderer_has_one_common_shape(
-    flow_type: type[BuiltinFlow],
-    name: str,
-    _default_ms: int,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    flow = flow_type()
-    flow.parse_args(["--target", "demo", "--dry-run"])
-
-    result = flow._dry_run_result(_plan(name))
-
-    assert result.exit_code == 0
-    assert set(result.detail) == {
-        "schema_version",
-        "flow",
-        "mode",
-        "semantic_plan_fingerprint",
-        "work_units",
-        "aggregate_errors",
-        "planning_disclosures",
-    }
-    assert json.loads(capsys.readouterr().out) == result.detail
-
-
-def test_builtin_dry_run_aggregate_errors_exit_two(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    flow = LintFlow()
-    flow.parse_args(["--target", "demo", "--dry-run"])
-
-    result = flow._dry_run_result(_plan("lint", errors=("demo: invalid",)))
-
-    assert result.exit_code == EXIT_ERROR
-    assert result.detail["aggregate_errors"] == ["demo: invalid"]
-    assert json.loads(capsys.readouterr().out) == result.detail
-
-
 class _DryLifecycleFlow(BuiltinFlow):
     """Minimal built-in proving the shared non-persisting lifecycle."""
 
     name = "dry_contract"
 
+    def __init__(self, errors: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.errors = errors
+
     def _resolve_job_class(self) -> str:
-        return "heavy"
+        return "memory"
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         return None
 
+    # Private seam: only a built-in Flow's own run reaches the shared dry-run
+    # renderer, and every shipped Flow needs resolvable Targets and its
+    # toolchain to plan.
     def _run(self) -> EndpointOutcome:
-        return self._dry_run_result(_plan(self.name))
+        return self._dry_run_result(_plan(self.name, errors=self.errors))
 
 
 class _VerdictLifecycleFlow(BuiltinFlow):
@@ -394,59 +333,41 @@ class _VerdictLifecycleFlow(BuiltinFlow):
         return self.outcome
 
 
-def test_state_backed_flow_success_reaches_stdout_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
-    flow = _VerdictLifecycleFlow(EndpointOutcome(report_text="Simulation verdict: PASS"))
-
-    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
-
-    captured = capsys.readouterr()
-    assert execution.exit_code == 0
-    assert captured.out.count("Simulation verdict: PASS") == 1
-    assert "Simulation verdict: PASS" not in captured.err
-
-
-def test_state_backed_flow_failure_reaches_stderr_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
-    flow = _VerdictLifecycleFlow(
-        EndpointOutcome(exit_code=EXIT_ERROR, report_text="Simulation verdict: ERROR")
-    )
-
-    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
-
-    captured = capsys.readouterr()
-    assert execution.exit_code == EXIT_ERROR
-    assert captured.err.count("Simulation verdict: ERROR") == 1
-    assert "Simulation verdict: ERROR" not in captured.out
-
-
-def test_self_printing_flow_verdict_is_not_repeated(
+@pytest.mark.parametrize(
+    ("outcome", "self_print", "shown", "absent"),
+    [
+        (EndpointOutcome(report_text="Simulation verdict: PASS"), False, "out", "err"),
+        (
+            EndpointOutcome(exit_code=EXIT_ERROR, report_text="Simulation verdict: ERROR"),
+            False,
+            "err",
+            "out",
+        ),
+        (
+            EndpointOutcome(exit_code=EXIT_ERROR, report_text="Simulation verdict: FAIL"),
+            True,
+            "out",
+            "err",
+        ),
+    ],
+    ids=["success", "failure", "self-printed"],
+)
+def test_state_backed_flow_verdict_reaches_one_stream_once(
+    outcome: EndpointOutcome,
+    self_print: bool,
+    shown: str,
+    absent: str,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    flow = _VerdictLifecycleFlow(
-        EndpointOutcome(exit_code=EXIT_ERROR, report_text="Simulation verdict: FAIL"),
-        self_print=True,
-    )
+    flow = _VerdictLifecycleFlow(outcome, self_print=self_print)
 
     execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
 
-    captured = capsys.readouterr()
-    assert execution.exit_code == EXIT_ERROR
-    assert captured.out.count("Simulation verdict: FAIL") == 1
-    assert "Simulation verdict: FAIL" not in captured.err
+    streams = dict(zip(("out", "err"), capsys.readouterr(), strict=True))
+    assert execution.exit_code == outcome.exit_code
+    assert streams[shown].count(outcome.report_text) == 1
+    assert outcome.report_text not in streams[absent]
 
 
 def test_typed_flow_execution_does_not_publish_to_process_streams(
@@ -468,13 +389,10 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = SimulateFlow()
-    prepared_campaign = PreparedSimulationEndpoint((), None, (), {})
-    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared_campaign))
+    prepared_simulation_record = PreparedSimulationEndpoint((), None, (), {})
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared_simulation_record))
     monkeypatch.setattr(
         flow,
         "run_prepared_simulation",
@@ -496,13 +414,15 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
     assert "Coverage verdict: PASS" not in captured.err
 
 
+@pytest.mark.parametrize("errors", [(), ("demo: invalid",)], ids=["planned", "planning-failed"])
 def test_builtin_dry_run_skips_admission_and_normal_persistence(
+    errors: tuple[str, ...],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
+    state_file.write_bytes(b'{"opaque": true}\n')
     state_before = state_file.read_bytes()
     logs_dir = tmp_path / "logs"
     report_dir = tmp_path / "reports"
@@ -510,34 +430,53 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs_dir))
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(logs_dir / ".runtime"))
-    flow = _DryLifecycleFlow()
+    admitted: list[object] = []
+    admission = EndpointState.admission
 
-    with (
-        mock.patch.object(
-            EndpointState,
-            "_acquire_job_slot",
-            side_effect=AssertionError("dry-run acquired a heavy slot"),
-        ),
-        mock.patch.object(
-            EndpointState,
-            "_post_run",
-            side_effect=AssertionError("dry-run entered normal persistence"),
-        ),
-    ):
-        execution = flow.execute_cli(
-            [
-                "--target",
-                "demo",
-                "--dry-run",
-                "--work-dir",
-                str(tmp_path),
-                "--report-dir",
-                str(report_dir),
-            ]
-        )
+    @contextmanager
+    def spy_admission(self: EndpointState, prepared: Any, *, requeued: bool = False):
+        with admission(self, prepared, requeued=requeued) as borrowed:
+            admitted.append(borrowed)
+            yield borrowed
 
-    assert execution.exit_code == 0
+    monkeypatch.setattr(EndpointState, "admission", spy_admission)
+
+    execution = _DryLifecycleFlow(errors).execute_cli(
+        [
+            "--target",
+            "demo",
+            "--dry-run",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(report_dir),
+        ]
+    )
+
     captured = capsys.readouterr()
+    assert admitted == [None]
+    assert set(execution.outcome.detail) == {
+        "schema_version",
+        "flow",
+        "mode",
+        "semantic_plan_fingerprint",
+        "work_units",
+        "aggregate_errors",
+        "planning_disclosures",
+    }
+    assert state_file.read_bytes() == state_before
+    assert [path.relative_to(report_dir).as_posix() for path in report_dir.rglob("*")] == [
+        "dry_contract",
+        "dry_contract/flow_plan.json",
+    ]
+    plan = json.loads((report_dir / "dry_contract" / "flow_plan.json").read_text())
+    assert plan == execution.outcome.detail
+    if errors:
+        assert execution.exit_code == EXIT_ERROR
+        assert json.loads(captured.out) == execution.outcome.detail
+        assert captured.err.count("Dry-run planning failed: demo: invalid") == 1
+        return
+    assert execution.exit_code == 0
     plan_text, separator, summary = captured.out.rpartition("\nDry run: 1 work unit(s)\n")
     assert separator
     assert summary == ""
@@ -546,13 +485,6 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
         captured.err
         == "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
     )
-    assert state_file.read_bytes() == state_before
-    assert [path.relative_to(report_dir).as_posix() for path in report_dir.rglob("*")] == [
-        "dry_contract",
-        "dry_contract/flow_plan.json",
-    ]
-    plan = json.loads((report_dir / "dry_contract" / "flow_plan.json").read_text())
-    assert plan == execution.outcome.detail
     events = [
         json.loads(line)
         for line in (logs_dir / ".runtime" / "display.jsonl").read_text().splitlines()
@@ -568,9 +500,6 @@ def test_direct_dry_run_uses_project_data_default_without_numbering(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     flow = _DryLifecycleFlow()
 
@@ -582,58 +511,6 @@ def test_direct_dry_run_uses_project_data_default_without_numbering(
     assert not (report_root / "dry_contract/1").exists()
     assert not (report_root / "dry_contract.json").exists()
     assert not any(path.name == "report.json" for path in report_root.rglob("*"))
-
-
-def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    state_before = state_file.read_bytes()
-    report_dir = tmp_path / "reports"
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
-    flow = _DryLifecycleFlow()
-    monkeypatch.setattr(
-        flow,
-        "_run",
-        lambda: flow._dry_run_result(_plan(flow.name, errors=("demo: invalid",))),
-    )
-
-    with (
-        mock.patch.object(
-            EndpointState,
-            "_acquire_job_slot",
-            side_effect=AssertionError("dry-run acquired a heavy slot"),
-        ),
-        mock.patch.object(
-            EndpointState,
-            "_post_run",
-            side_effect=AssertionError("dry-run entered normal persistence"),
-        ),
-    ):
-        execution = flow.execute_cli(
-            [
-                "--target",
-                "demo",
-                "--dry-run",
-                "--work-dir",
-                str(tmp_path),
-                "--report-dir",
-                str(report_dir),
-            ]
-        )
-
-    captured = capsys.readouterr()
-    assert execution.exit_code == EXIT_ERROR
-    assert json.loads(captured.out) == execution.outcome.detail
-    assert captured.err.count("Dry-run planning failed: demo: invalid") == 1
-    assert state_file.read_bytes() == state_before
-    assert [path.relative_to(report_dir).as_posix() for path in report_dir.rglob("*")] == [
-        "dry_contract",
-        "dry_contract/flow_plan.json",
-    ]
 
 
 def test_sim_verbose_cli_and_typed_request_construct_identical_output_request(tmp_path):

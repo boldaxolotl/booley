@@ -62,7 +62,7 @@ def run_bootstrap(args: object) -> int:
 
 def _check_bootstrap(args: object) -> BootstrapResult:
     from booley.runtime import issuance_invalidation, session_runtime
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     change = _plan_egress(getattr(args, "egress", None), Intent.CHECK)
     if isinstance(change, BootstrapResult):
@@ -98,7 +98,7 @@ def _mutate_bootstrap(
     without_qa: bool,
 ) -> BootstrapResult | None:
     from booley.runtime import issuance_invalidation, session_runtime
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     with host_lifecycle_lock("host bootstrap"):
         change = _plan_egress(getattr(args, "egress", None), intent)

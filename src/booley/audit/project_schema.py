@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from pathlib import Path
 from typing import Any, Final
 
 from booley.audit.config_common import (
@@ -12,8 +13,16 @@ from booley.audit.config_common import (
     fail_finding,
     failure,
 )
-from booley.config.goals import parse_dashboard
-from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
+from booley.config.sandbox import parse_dashboard
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    as_str,
+    is_str_list,
+    require_bool,
+    require_dict,
+)
+from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
     {
@@ -26,8 +35,6 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "jobs",
         "interactive",
         "feedback",
-        "goals",
-        "chat",
         "eda",
         "stealth",
         "submodules",
@@ -55,7 +62,7 @@ RETIRED_BOOLEY_TOML_TABLES = {
         "retired — move deterministic settings to [flows.*] and Specialist "
         "settings to [specialists.*]"
     ),
-    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
+    "fusesoc": "Target scoping now lives in .core files; delete this table",
     "sources": (
         "file sources come from the .core description (testbench filesets carry "
         "tags: [tb]); delete this table"
@@ -68,6 +75,8 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
     findings: list[ConfigFinding] = []
     for key in data:
         if key in KNOWN_BOOLEY_TOML_TABLES or key in IGNORED_BOOLEY_TOML_TABLES:
+            continue
+        if key == "goals":  # a retired section: audit_retired_goals_section reports it
             continue
         if key == "mcp_tools":
             findings.append(
@@ -112,7 +121,15 @@ def audit_specialist_table(
                 fail_finding(f"{field} must be a table", "use enabled = true or false")
             )
             continue
-        if specialist_names is not None and name not in specialist_names:
+        if specialist_names is not None and name in RETIRED_SPECIALIST_TO_FLOW:
+            flow = RETIRED_SPECIALIST_TO_FLOW[name]
+            findings.append(
+                fail_finding(
+                    f"{field}: {name!r} is no longer a Specialist",
+                    f"replace [specialists.{name}] with [flows.{flow}]",
+                )
+            )
+        elif specialist_names is not None and name not in specialist_names:
             findings.append(
                 fail_finding(
                     f"{field}: {name!r} is not a discovered Specialist",
@@ -315,7 +332,7 @@ def audit_interactive_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         return ConfigTableAudit()
     return failure(
         "booley.toml [interactive].app is retired",
-        "delete it and select the runtime with [agent].provider",
+        "delete it and select the runtime with [agent].default",
     )
 
 
@@ -368,34 +385,86 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
     return ConfigTableAudit()
 
 
-def audit_chat_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the `[chat]` table so Doctor and `booley chat` reject the same values."""
-    from booley.config.chat import parse_chat_worktree
+def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate ``[worktree]``: the ``chat`` placement mode and the ``gc_older_than`` age."""
+    from booley.config.worktree import parse_chat_mode, parse_gc_older_than
 
     try:
-        parse_chat_worktree(data)
+        require_dict(data.get("worktree", {}), field="[worktree]")
     except ValueError as exc:
-        return failure(str(exc), 'set [chat].worktree to "auto", "always" or "never"')
-    return ConfigTableAudit()
-
-
-def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the ``booley worktree gc`` idle age."""
-    from booley.config.worktree import parse_gc_older_than
-
+        return failure(f"booley.toml {exc}", "make [worktree] a table")
+    findings: list[ConfigFinding] = []
     try:
         parse_gc_older_than(data)
     except ValueError as exc:
-        return failure(f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"')
-    return ConfigTableAudit()
-
-
-def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate Goal presentation knobs without inferring client lifecycle."""
-    from booley.config.goals import parse_quiet_after
-
+        findings.append(
+            fail_finding(
+                f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"'
+            )
+        )
     try:
-        parse_quiet_after(data)
+        parse_chat_mode(data)
     except ValueError as exc:
-        return failure(str(exc), "set [goals].quiet_after to 60..604800 seconds")
-    return ConfigTableAudit()
+        findings.append(
+            fail_finding(
+                f"booley.toml {exc}", 'set [worktree].chat to "auto", "always" or "never"'
+            )
+        )
+    return ConfigTableAudit(tuple(findings))
+
+
+def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate ``[jobs.seats]``."""
+    from booley.config.jobs import SeatCapError, parse_seat_caps
+
+    findings: list[Any] = []
+    try:
+        parse_seat_caps(data)
+    except SeatCapError as exc:
+        findings.extend(
+            failure(
+                f"booley.toml {exc}",
+                "set [jobs.seats] <tool> = <seats you own> (a positive whole number), "
+                "or delete the entry",
+            ).findings
+        )
+    return ConfigTableAudit(tuple(findings))
+
+
+def audit_retired_jobs_keys(path: Path) -> ConfigTableAudit:
+    """One FAIL per retired ``[jobs]`` key the ``booley.toml`` at *path* still sets."""
+    from booley.config.jobs import retired_jobs_keys, retired_jobs_keys_fix
+
+    return ConfigTableAudit(
+        tuple(
+            fail_finding(
+                f"booley.toml sets retired [jobs] key {found.key} (line {found.line})",
+                f"{retired_jobs_keys_fix(found)} (in {path})",
+            )
+            for found in retired_jobs_keys(path)
+        )
+    )
+
+
+def audit_retired_goals_section(path: Path) -> ConfigTableAudit:
+    """One FAIL when the ``booley.toml`` at *path* still has a ``[goals]`` section (Goal Mode is gone)."""
+    from booley.config.retired import (
+        goals_section_fix,
+        goals_section_location,
+        goals_section_spans,
+        has_goals_section,
+    )
+
+    spans = goals_section_spans(path)
+    if not has_goals_section(path):
+        return ConfigTableAudit()
+    return ConfigTableAudit(
+        (
+            ConfigFinding(
+                ConfigFindingSeverity.FAIL,
+                f"booley.toml has a [goals] section{goals_section_location(spans)}; Goal Mode was removed",
+                goals_section_fix(path, spans),
+                check_id="config.retired-goals",
+            ),
+        )
+    )

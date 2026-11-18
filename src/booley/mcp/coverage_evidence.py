@@ -9,7 +9,7 @@ from booley.core.boundary import require_dict, require_str
 from booley.flows.sim.coverage_analysis_input import (
     CoverageSourceClosure,
     coverage_sources,
-    read_coverage_campaign,
+    read_coverage_record,
     verified_source_snapshot,
 )
 from booley.flows.sim.coverage_evidence import CoverageEvidenceError, CoverageEvidenceSession
@@ -22,22 +22,25 @@ _TERMINAL_ERROR: tuple[_SessionKey, str] | None = None
 
 
 def query_active_coverage_evidence(value: Mapping[str, object]) -> dict[str, object]:
-    """Query the Campaign bound to this isolated nested MCP server."""
+    """Query the Coverage Record bound to this isolated nested MCP server."""
     global _ACTIVE_SESSION, _TERMINAL_ERROR
 
-    campaign_path = os.environ.get("BOOLEY_COVERAGE_CAMPAIGN", "")
+    coverage_record_path = os.environ.get("BOOLEY_COVERAGE_RECORD", "")
     project_root = os.environ.get("BOOLEY_COVERAGE_PROJECT", "")
     source_snapshot = os.environ.get("BOOLEY_COVERAGE_SOURCE_SNAPSHOT", "")
-    if not campaign_path or not project_root:
-        raise CoverageEvidenceError("No active Coverage Campaign is bound to this tool")
+    if not coverage_record_path or not project_root:
+        raise CoverageEvidenceError("No active Coverage Record is bound to this tool")
     audit_path = os.environ.get("BOOLEY_COVERAGE_AUDIT", "")
-    key = (campaign_path, project_root, source_snapshot, audit_path)
+    key = (coverage_record_path, project_root, source_snapshot, audit_path)
     if _TERMINAL_ERROR is not None and _TERMINAL_ERROR[0] == key:
         _write_terminal_audit(key, audit_path, _TERMINAL_ERROR[1])
         raise CoverageEvidenceError(f"Evidence session already failed: {_TERMINAL_ERROR[1]}")
     try:
         if _ACTIVE_SESSION is None or _ACTIVE_SESSION[0] != key:
-            _ACTIVE_SESSION = (key, _load_session(campaign_path, project_root, source_snapshot))
+            _ACTIVE_SESSION = (
+                key,
+                _load_session(coverage_record_path, project_root, source_snapshot),
+            )
             _TERMINAL_ERROR = None
         result = _ACTIVE_SESSION[1].query(value)
     except (OSError, ValueError) as exc:
@@ -61,12 +64,12 @@ def _write_terminal_audit(key: _SessionKey, audit_path: str, error: str) -> None
 
 
 def _load_session(
-    campaign_path: str, project_root: str, source_snapshot: str
+    coverage_record_path: str, project_root: str, source_snapshot: str
 ) -> CoverageEvidenceSession:
-    loaded = read_coverage_campaign(Path(campaign_path))
+    loaded = read_coverage_record(Path(coverage_record_path))
     if not source_snapshot:
-        sources = coverage_sources(loaded.campaign, Path(project_root))
-        return CoverageEvidenceSession(loaded.campaign, sources)
+        sources = coverage_sources(loaded.coverage_record, Path(project_root))
+        return CoverageEvidenceSession(loaded.coverage_record, sources)
     document = require_dict(
         json.loads(Path(source_snapshot).read_text(encoding="utf-8")),
         field="verified source snapshot",
@@ -75,10 +78,10 @@ def _load_session(
         require_str(document, "target_identity"),
         freeze_coverage_mapping(require_dict(document.get("files"), field="files")),
     )
-    sources = verified_source_snapshot(loaded.campaign, sources)
+    sources = verified_source_snapshot(loaded.coverage_record, sources)
     if sources is None:
-        raise CoverageEvidenceError("Verified source snapshot disagrees with Campaign")
-    return CoverageEvidenceSession(loaded.campaign, sources)
+        raise CoverageEvidenceError("Verified source snapshot disagrees with Coverage Record")
+    return CoverageEvidenceSession(loaded.coverage_record, sources)
 
 
 def _write_audit(path: Path, value: Mapping[str, object]) -> None:

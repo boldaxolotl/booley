@@ -2,26 +2,19 @@
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 from rich.console import Console
 from rich.style import Style
 
-import booley.harness.dashboard.app as module
-from booley.criteria.presentation import CriterionPresentation
 from booley.harness.dashboard.app import (
     SEMANTIC_STYLE,
     DashboardApp,
-    Navigation,
-    _evidence_detail,
     job_detail,
     job_paths,
 )
 from booley.harness.dashboard.jobs import JobView
 from booley.harness.dashboard.links import linked_text
-from booley.harness.dashboard.model import GoalDetail
 from booley.presentation.report_results import present_report, project_facts
-from booley.review.goal_package import proposal_facts
 from booley.runtime.job_records import JobRecord
 
 STAMP = "2026-10-08T10:00:00Z"
@@ -37,7 +30,7 @@ def job(report=None, exit_code=0, endpoint="sim", **kwargs):
     )
 
 
-def campaign(passed=2, failed=0):
+def simulation_record(passed=2, failed=0):
     return {
         "grade": "fail" if failed else "pass",
         "observation_counts": {
@@ -79,38 +72,7 @@ def implementation(grade="pass"):
     }
 
 
-def proposal_app(monkeypatch, facts):
-
-    view = SimpleNamespace(
-        proposal=SimpleNamespace(id="p"), state="pending", closed_by_abandonment=False
-    )
-    goal = SimpleNamespace(status=SimpleNamespace(proposals=[view]))
-    app = DashboardApp(lambda: None)
-    app.navigation = Navigation("proposal", selected="p")
-    monkeypatch.setattr(app, "_session", lambda: ("", goal))
-    monkeypatch.setattr(module, "proposal_presentation", lambda _: facts)
-    return app, goal
-
-
-def test_details_never_dump_structures(monkeypatch):
-    goal = GoalDetail(
-        "key",
-        "passing",
-        CriterionPresentation("Human Goal", "", "", "", ""),
-        {"recorded_at": STAMP, "detail": {"warnings": 2, "unknown": {"arbitrary": "secret"}}},
-        ({"producer": "sim", "detail": {"passed": True}},),
-    )
-    app, selected = proposal_app(
-        monkeypatch,
-        {
-            "kind": "retarget",
-            "state": "pending",
-            "before": "Old",
-            "after": "New",
-            "rationale": "scope",
-            "unknown": {"secret": 1},
-        },
-    )
+def test_details_never_dump_structures():
     texts = [
         job_detail(
             job(
@@ -120,62 +82,39 @@ def test_details_never_dump_structures(monkeypatch):
                 }
             )
         ),
-        _evidence_detail(goal),
-        app._selected_proposal_detail(),
-        app._session_activity(selected, app._session_row()[0])[0][1],
     ]
     for text in texts:
         assert "{'" not in text and '{"' not in text and "json.dumps" not in text, (
             "structured data must become readable facts"
         )
         assert "\x1b" not in text
-    assert "Extra data in report" in _evidence_detail(goal)
-
     assert (
         present_report({"flow": "unknown", "report_text": '{"secret": 1}'}).result_rows[0].value
         == "Summary unavailable"
     )
 
 
-def test_flow_and_criterion_are_independent():
-    report = {
-        "flow": "sim",
-        "exit_code": 0,
-        "criterion_key": "coverage_top",
-        "criterion_met": False,
-    }
-    text = job_detail(job(report))
-    assert "Flow result: PASSED" in text, "exit success must remain separate from Criterion"
-    assert "Criterion: coverage_top · not met" in text
-    assert text.splitlines()[0].startswith("Flow result:")
-
-    result = present_report(report)
-    assert result.flow_result.semantic == "pass" and result.criterion.semantic == "fail"
-    styled = DashboardApp(lambda: None)._job_detail(job(report))
-    assert styled.get_style_at_offset(Console(), styled.plain.index("PASSED")) == Style.parse(
-        SEMANTIC_STYLE["pass"]
-    )
-    assert styled.get_style_at_offset(Console(), styled.plain.index("not met")) == Style.parse(
-        SEMANTIC_STYLE["fail"]
-    )
-
-
-def test_criterion_hidden():
+def test_older_report_criterion_fields_show_no_criterion_row():
     for criterion in [
-        {},
+        {"criterion_key": "coverage_top", "criterion_met": False},
+        {"criterion_key": "coverage_top", "criterion_met": True},
         {"criterion_key": "", "criterion_met": False},
         {"criterion_met": True},
         {"criterion_key": "sim_top", "criterion_met": None},
         {"criterion_key": "sim_top"},
-        {"criterion_key": "", "criterion_met": True, "detail": {"targets": 2}},
     ]:
-        text = job_detail(job({"flow": "sim", **criterion}))
-        assert "Flow result: PASSED" in text, (
-            "unbound results still need an execution-derived Flow result"
-        )
-        assert "Criterion:" not in text
+        report = {"flow": "sim", "exit_code": 0, **criterion}
+        text = job_detail(job(report))
+        assert "Flow result: PASSED" in text
+        assert "Criterion" not in text and "not met" not in text
+        assert text.splitlines()[0].startswith("Flow result:")
 
-        assert present_report({"exit_code": 0, **criterion}).criterion is None
+        result = present_report(report)
+        assert not hasattr(result, "criterion")
+    styled = DashboardApp(lambda: None)._job_detail(job(report))
+    assert styled.get_style_at_offset(Console(), styled.plain.index("PASSED")) == Style.parse(
+        SEMANTIC_STYLE["pass"]
+    )
 
 
 def test_exit_taxonomy_and_soft_warnings():
@@ -213,7 +152,9 @@ def test_exit_taxonomy_and_soft_warnings():
         ),
     ]:
         report = {
-            "flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool": endpoint,
+            "flow"
+            if endpoint in {"sim", "lint", "synth", "fpga", "mutation"}
+            else "mcp_tool": endpoint,
             "exit_code": 0 if code != 0 else 1,
             "passed": code != 0,
             "detail": detail,
@@ -234,7 +175,7 @@ def test_exit_taxonomy_and_soft_warnings():
 ROWS = [
     (
         "sim",
-        {"campaigns": {"top": {**campaign(), "grade": "inconclusive"}}},
+        {"records": {"top": {**simulation_record(), "grade": "inconclusive"}}},
         "grade inconclusive",
         [],
     ),
@@ -253,7 +194,7 @@ ROWS = [
         )
         for outcome in ("advisory", "corrective", "no_findings")
     ],
-    ("sim", {"campaigns": {"top": campaign()}}, "2/2 tests passed", ["top"]),
+    ("sim", {"records": {"top": simulation_record()}}, "2/2 tests passed", ["top"]),
     (
         "sim",
         {"mode": "elab-only", "targets": [{"target": "top", "passed": True}]},
@@ -280,7 +221,7 @@ ROWS = [
             "targets": {
                 "top": {"simulation": "pass", "collection": "complete", "evaluation": "fail"}
             },
-            "campaigns": {"top": campaign(1, 1)},
+            "records": {"top": simulation_record(1, 1)},
         },
         "Coverage: 0/1 Targets met",
         ["evaluation fail", "1/2 tests passed", "test_bad", "23"],
@@ -338,11 +279,10 @@ ROWS = [
         ["Major: 1", "Gate: passed"],
     ),
     (
-        "mutation_tester",
+        "mutation",
         {
             "detected": 3,
             "not_detected": 1,
-            "invalid": 2,
             "total_valid": 4,
             "min_detected": 3,
             "classified": [
@@ -350,7 +290,7 @@ ROWS = [
             ],
         },
         "Mutation: 3/4 detected",
-        ["Invalid: 2", "unit.sv:12", "min 3"],
+        ["unit.sv:12", "min 3"],
     ),
     (
         "coverage_analyst",
@@ -370,7 +310,9 @@ ROWS = [
 def test_each_flow_report_row():
     for endpoint, detail, headline, required in ROWS:
         report = {
-            "flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool": endpoint,
+            "flow"
+            if endpoint in {"sim", "lint", "synth", "fpga", "mutation"}
+            else "mcp_tool": endpoint,
             "exit_code": 0,
             "detail": detail,
         }
@@ -390,6 +332,17 @@ def test_each_flow_report_row():
         assert headline in pure and all(part in pure for part in required)
 
 
+def test_mutation_detail_has_no_invalid_row():
+    """A Mutant that does not build is replaced, so no result states an invalid count."""
+    detail = {"detected": 3, "not_detected": 1, "invalid": 2, "total_valid": 4, "min_detected": 3}
+    result = present_report({"flow": "mutation", "exit_code": 0, "detail": detail})
+
+    labels = [line.label for line in result.result_rows]
+    assert "Not detected" in labels
+    assert not any("invalid" in label.lower() for label in labels)
+    assert "Invalid" not in job_detail(job({"flow": "mutation", "exit_code": 0, "detail": detail}))
+
+
 def test_report_locations_and_coverage_miss():
     for key in [False, True]:
         for evaluation in ["pass", "fail", "blocked"]:
@@ -402,36 +355,36 @@ def test_report_locations_and_coverage_miss():
                         "top": {"evaluation": evaluation},
                         "other": {"evaluation": "pass"},
                     },
-                    "campaigns": {"top": campaign()},
+                    "records": {"top": simulation_record()},
                 },
             }
             if key:
                 report.update(criterion_key="coverage_top", criterion_met=evaluation == "pass")
             text = job_detail(job(report))
             assert "Flow result: PASSED" in text and f"evaluation {evaluation}" in text
-            assert ("Criterion:" in text) == key
+            assert "Criterion:" not in text
 
             assert present_report(report).flow_result.semantic == "pass"
 
 
 def test_multitarget_and_list_caps():
-    campaigns = {f"t{i}": campaign(2, 1) for i in range(8)}
-    report = {"flow": "sim", "detail": {"campaigns": campaigns}}
+    simulation_records = {f"t{i}": simulation_record(2, 1) for i in range(8)}
+    report = {"flow": "sim", "detail": {"records": simulation_records}}
     text = job_detail(job(report))
     assert "16/24 tests passed" in text, "aggregate counts must use canonical observation counts"
     assert "3 more Targets" in text and "t7:" not in text
-    campaigns = {
+    simulation_records = {
         "top": {
             "observation_counts": {"functional": {"pass": 2, "fail": 8}},
             "observations": [{"test": f"bad{i}", "functional": "fail"} for i in range(7)],
             "observations_truncated": True,
         }
     }
-    text = job_detail(job({"flow": "sim", "detail": {"campaigns": campaigns}}))
+    text = job_detail(job({"flow": "sim", "detail": {"records": simulation_records}}))
     assert "3 more failures" in text and "bad6" not in text
     assert "preview" in text
 
-    result = present_report({"flow": "sim", "detail": {"campaigns": {"top": {}}}})
+    result = present_report({"flow": "sim", "detail": {"records": {"top": {}}}})
     assert "unavailable" in result.flow_result.value
     assert len(result.result_rows) <= 24
     targets = {
@@ -481,69 +434,7 @@ def test_configuration_and_artifact_links():
     assert len(links.spans) == 4
 
 
-def test_goal_proposal_facts_preserved(monkeypatch):
-    facts = {
-        "kind": "retarget",
-        "state": "pending",
-        "before": "Old Goal",
-        "after": "New Goal",
-        "rationale": "new scope",
-        "review_retarget_effect": "Discards prior evidence",
-        "waiver": {
-            "candidate_id": "w1",
-            "candidate": {"scope": "line", "reason": "unreachable"},
-            "policy": {"enabled": True, "config": {"anchor": "project", "directory": "waivers"}},
-            "approval_root": "hidden",
-        },
-        "decision": {
-            "decision": "approve",
-            "reason": "accepted scope",
-            "source": "chat",
-            "payload_digest": "hidden",
-        },
-    }
-    app, selected = proposal_app(monkeypatch, facts)
-    text = app._selected_proposal_detail()
-    assert "Before: Old Goal" in text, "proposal approval facts need labeled human text"
-    for part in (
-        "New Goal",
-        "new scope",
-        "Discards",
-        "unreachable",
-        "enabled",
-        "waivers",
-        "accepted scope",
-        "Approval remains in chat",
-    ):
-        assert part in text
-    assert "hidden" not in text
-    inline = app._session_activity(selected, app._session_row()[0])[0][1]
-    assert (
-        "Old Goal" in inline
-        and "New Goal" in inline
-        and "pending" in inline
-        and "\n" not in inline
-    )
-    goal = GoalDetail(
-        "key",
-        "passing",
-        CriterionPresentation("Human Goal", "", "", "", ""),
-        {"recorded_at": STAMP, "detail": {"passed": True, "warnings": 2}},
-        ({"producer": "sim", "recorded_at": STAMP, "detail": {"passed": False}},),
-        artifacts=("/a/evidence",),
-        test_runs=("Test Run frozen -> rerun exact",),
-    )
-    text = _evidence_detail(goal)
-    assert text.startswith("Test Run frozen -> rerun exact\n")
-    assert (
-        "Immutable derivation provenance" in text
-        and "sim" in text
-        and STAMP in text
-        and "/a/evidence" in text
-    )
-
-
-def test_campaign_producer_failure_axes_are_visible():
+def test_simulation_record_producer_failure_axes_are_visible():
 
     for execution, functional, assertions in [
         ("crash", "not_observed", "not_observed"),
@@ -572,7 +463,7 @@ def test_campaign_producer_failure_axes_are_visible():
             "flow": "sim",
             "exit_code": 1,
             "detail": {
-                "campaigns": {
+                "records": {
                     "top": {
                         "grade": "fail",
                         "observation_counts": counts,
@@ -617,14 +508,14 @@ def test_multitarget_implementation_metrics_keep_target_names():
 
 def test_known_endpoint_unknown_detail_uses_safe_fallback():
 
-    for endpoint in ("lint", "reviewer", "mutation_tester", "coverage_analyst"):
+    for endpoint in ("lint", "reviewer", "mutation", "coverage_analyst"):
         for detail in (
             {"eda_tool_error": "launch failed"},
             {"total_warnings": {"bad": 1}},
             {"issues": None},
         ):
             report = {
-                "flow" if endpoint == "lint" else "mcp_tool": endpoint,
+                "flow" if endpoint in {"lint", "mutation"} else "mcp_tool": endpoint,
                 "exit_code": 2,
                 "detail": detail,
                 "report_text": 'Executable unavailable\n{"secret": 1}\n\x1b[31mbad',
@@ -668,22 +559,3 @@ def test_multiline_proposal_facts_preserve_human_text():
         )
         assert "\t" not in text
     assert "danger" not in str(project_facts({"rationale": "\x1b[31mdanger"}))
-
-
-def test_retarget_warning_preserves_required_followup():
-
-    facts = proposal_facts(
-        {
-            "id": "p",
-            "kind": "retarget",
-            "before": None,
-            "after": {"family": "review"},
-            "rationale": "scope",
-        },
-        lambda _: "Review",
-    )
-    rows = project_facts(facts)
-    warning = next(row.value for row in rows if row.label == "Review retarget effect")
-    assert warning.endswith("A new discovery review is required after approval."), (
-        "retarget safety warning must remain complete"
-    )

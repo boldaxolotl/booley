@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from booley.core.run_command import CommandError, CommandRun, run_command
+from tests.time_budget import scaled
 
 PY = sys.executable
 
@@ -45,7 +46,7 @@ class TestRunCommand:
         assert run.ok
 
     def test_timeout_sets_timed_out(self):
-        run = run_command([PY, "-c", "import time; time.sleep(5)"], timeout=0.2)
+        run = run_command([PY, "-c", "import time; time.sleep(5)"], timeout=scaled(0.2))
         assert run.timed_out
         assert not run.ok
         assert "timed out" in run.failure_excerpt()

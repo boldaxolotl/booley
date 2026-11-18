@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, ClassVar
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.eda_failures import find_missing_executable
+from booley.flows.sim.build import SimulationBuildPreparationError
+from booley.flows.sim.execution import SimulationExecution
+from booley.flows.sim.execution.engine import TRACE_CLEANUP_MARGIN_S
 from booley.flows.sim.execution.telemetry import (
     parse_build_seconds,
     parse_run_seconds,
@@ -20,31 +23,26 @@ from booley.flows.sim.execution.telemetry import (
 from booley.flows.sim.flow import (
     SimulateFlow as ProductionSimulateFlow,
 )
-from booley.flows.sim.flow import (
-    _artifact_path_component,
-    _filter_tests,
-    _resolve_sim_campaign_work_units,
-)
 from booley.flows.sim.mode import SimulationMode
+from booley.flows.sim.request import SimRequest
+from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import ExecutionResult
-from tests.flows.sim.campaign_boundary import (
+from tests.flows.sim.leased_session import canned_build_session
+from tests.flows.sim.simulation_record_boundary import (
     FAIL_PROCESS,
     INCONCLUSIVE_PROCESS,
     PASS_PROCESS,
-    CampaignSimRun,
     Launch,
-    run_campaign_sim,
+    SimulationRecordSimRun,
+    run_simulation_record_sim,
 )
-from tests.flows.sim.leased_session import canned_build_session
 from tests.target_test_support import write_sim_preview_project
-
-# Built-in Flow execution inside the Sandbox.
-_FLOW_ENABLED = True
 
 
 class SimulateFlow(ProductionSimulateFlow):
-    """Concrete Flow used by the campaign compatibility tests."""
+    """Concrete Flow used by the record compatibility tests."""
 
 
 @pytest.fixture(autouse=True)
@@ -54,136 +52,118 @@ def _canned_build_session():
         yield
 
 
-def _display_flow(tmp_path: Path, target: str, *args: str) -> SimulateFlow:
+def _start_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets, **kwargs) -> str | None:
+    """The display label of the first ``endpoint_start`` event of a record-path run."""
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+    run_simulation_record_sim(tmp_path, monkeypatch, targets, PASS_PROCESS, **kwargs)
+    lines = (tmp_path / "runtime/display.jsonl").read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in lines]
+    return next(event["display_label"] for event in events if event["type"] == "endpoint_start")
+
+
+@pytest.mark.parametrize(
+    ("targets", "request_args", "expected"),
+    [
+        pytest.param(
+            {"sim_mul": ["smoke", "edge"]},
+            {"target": "sim_mul", "test": ("smoke",)},
+            "target sim_mul · test smoke",
+            id="one-requested-test",
+        ),
+        pytest.param(
+            {"sim_mul": ["mul_base", "mul_edge"]},
+            {"target": "sim_mul", "test": ("mul_base", "mul_edge")},
+            "target sim_mul · 2 tests",
+            id="distinct-exact-tests",
+        ),
+        pytest.param(
+            {"sim_mul": ["smoke", "edge"]},
+            {"target": "sim_mul", "skip": {"sim_mul": ["edge"]}},
+            "target sim_mul · test smoke",
+            id="configured-skip-applied",
+        ),
+        pytest.param(
+            {"sim_a": ["smoke"], "sim_b": ["smoke"]},
+            {"target": "sim_a,sim_b", "test": ("smoke",)},
+            "2 targets · test smoke",
+            id="same-test-across-targets",
+        ),
+        pytest.param(
+            {"sim_a": ["smoke"], "sim_b": []},
+            {"target": "sim_a,sim_b"},
+            "2 targets · tests",
+            id="undeclared-target",
+        ),
+        pytest.param(
+            {"sim_core": []},
+            {"target": "sim_core", "mode": "elab_only", "dry_run": True},
+            "target sim_core · elaboration",
+            id="elaboration-mode",
+        ),
+    ],
+)
+def test_display_label_names_the_requested_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets, request_args, expected: str
+):
+    assert _start_label(tmp_path, monkeypatch, targets, **request_args) == expected
+
+
+def test_a_request_outside_the_sandbox_is_refused(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    if runtime_context.inside_session_runtime():
+        pytest.skip("the refusal needs a host process")
+
+    result = SimulateFlow().execute(
+        SimRequest(work_dir=tmp_path, report_dir=tmp_path / "reports", target="lite")
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    assert "runs inside the Booley Sandbox" in result.outcome.report_text
+
+
+@pytest.mark.parametrize(
+    ("target", "names", "skips", "expected"),
+    [
+        ("::demo:core:0#sim_mul", RuntimeError("boom"), {}, "target sim_mul · tests"),
+        (
+            "sim_mul",
+            {"sim_mul": ["smoke", "edge"]},
+            {"sim_mul": ["edge"]},
+            "target sim_mul · test smoke",
+        ),
+        ("sim_a,sim_b", {"sim_a": ["smoke"]}, {}, "2 targets · tests"),
+    ],
+    ids=["discovery-failure", "skips-applied", "undeclared-target"],
+)
+def test_display_label_of_a_target_no_core_declares(
+    tmp_path: Path, target: str, names: Any, skips: dict[str, list[str]], expected: str
+):
     flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", target, *args])
-    return flow
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", target])
+
+    # Private seam: the endpoint refuses a Target no core declares before it emits the label, so only
+    # a stubbed discovery reaches the label's registry-only fallback.
+    failure = {"side_effect": names} if isinstance(names, Exception) else {"return_value": names}
+    with (
+        patch("booley.flows.sim.flow._get_test_names", **failure),
+        patch("booley.flows.sim.test_selection._get_test_skips", return_value=skips),
+    ):
+        assert flow._resolve_display_label() == expected
 
 
-def test_display_label_names_one_requested_test(tmp_path: Path):
-    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul", "--test", "smoke")
-
-    with patch("booley.flows.sim.flow._get_test_names", return_value={}):
-        label = flow._resolve_display_label()
-
-    assert label == "target sim_mul · test smoke"
-
-
-def test_display_label_counts_distinct_exact_tests(tmp_path: Path):
-    flow = _display_flow(tmp_path, "sim_mul", "--test", "mul_base", "--test", "mul_edge")
-
+def test_simulation_record_work_units_are_summed_over_every_target(tmp_path: Path):
+    # Private seam: the Target catalog and skip list need a real FuseSoC resolve.
     with (
         patch(
-            "booley.flows.sim.flow._get_test_names",
-            return_value={"sim_mul": ["mul_base", "mul_edge"]},
-        ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
-    ):
-        label = flow._resolve_display_label()
-
-    assert label == "target sim_mul · 2 tests"
-
-
-def test_display_label_applies_configured_skips_before_naming_test(tmp_path: Path):
-    flow = _display_flow(tmp_path, "sim_mul")
-
-    with (
-        patch(
-            "booley.flows.sim.flow._get_test_names",
-            return_value={"sim_mul": ["smoke", "edge"]},
-        ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={"sim_mul": ["edge"]}),
-    ):
-        label = flow._resolve_display_label()
-
-    assert label == "target sim_mul · test smoke"
-
-
-def test_display_label_deduplicates_same_test_across_targets(tmp_path: Path):
-    flow = _display_flow(tmp_path, "sim_a,sim_b", "--test", "smoke")
-
-    with (
-        patch(
-            "booley.flows.sim.flow._get_test_names",
-            return_value={"sim_a": ["smoke"], "sim_b": ["smoke"]},
-        ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
-    ):
-        label = flow._resolve_display_label()
-
-    assert label == "2 targets · test smoke"
-
-
-def test_display_label_uses_unknown_suite_when_any_target_is_undeclared(tmp_path: Path):
-    flow = _display_flow(tmp_path, "sim_a,sim_b")
-
-    with (
-        patch(
-            "booley.flows.sim.flow._get_test_names",
-            return_value={"sim_a": ["smoke"]},
-        ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
-    ):
-        label = flow._resolve_display_label()
-
-    assert label == "2 targets · tests"
-
-
-def test_display_label_uses_elaboration_mode_without_test_discovery(tmp_path: Path):
-    flow = _display_flow(tmp_path, "sim_core", "--mode", "elab-only-standalone")
-
-    with patch("booley.flows.sim.flow._get_test_names") as get_tests:
-        label = flow._resolve_display_label()
-
-    assert label == "target sim_core · elaboration"
-    get_tests.assert_not_called()
-
-
-def test_display_label_failure_uses_neutral_tests_with_short_target(tmp_path: Path):
-    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul")
-
-    with patch("booley.flows.sim.flow._get_test_names", side_effect=RuntimeError("boom")):
-        label = flow._resolve_display_label()
-
-    assert label == "target sim_mul · tests"
-
-
-def test_display_label_does_not_resolve_target_catalog(tmp_path: Path):
-    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul", "--test", "smoke")
-
-    with (
-        patch("booley.flows.sim.flow._get_test_names", return_value={}),
-        patch("booley.targets.catalog.TargetCatalog.build") as build_catalog,
-    ):
-        flow._resolve_display_label()
-
-    build_catalog.assert_not_called()
-
-
-def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
-    with (
-        patch(
-            "booley.flows.sim.flow._target_is_cocotb",
-            side_effect=lambda _root, target: target == "cocotb",
+            "booley.flows.sim.watchdog_sizing._get_test_names",
+            return_value={"one": ["smoke", "stress", "known_hang"], "two": ["smoke"]},
         ),
         patch(
-            "booley.flows.sim.flow._get_test_names",
-            return_value={
-                "native": ["smoke", "stress", "known_hang"],
-                "cocotb": ["one", "two", "three"],
-            },
-        ),
-        patch(
-            "booley.flows.sim.flow._get_test_skips",
-            return_value={"native": ["known_hang"]},
+            "booley.flows.sim.watchdog_sizing._get_test_skips",
+            return_value={"one": ["known_hang"]},
         ),
     ):
-        units = _resolve_sim_campaign_work_units(
-            tmp_path,
-            "native,cocotb",
-        )
-
-    assert units == 3  # two native processes plus one cocotb batch
+        assert resolve_simulation_record_work_units(tmp_path, "one,two") == 3
 
 
 @pytest.mark.parametrize(
@@ -193,261 +173,39 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
         (SimulationMode.ELAB_ONLY_STANDALONE, 3),
     ],
 )
-def test_campaign_work_units_count_elaboration_modes(
+def test_simulation_record_work_units_count_elaboration_modes(
     tmp_path: Path,
     mode: SimulationMode,
     expected: int,
 ) -> None:
-    assert _resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
+    assert resolve_simulation_record_work_units(tmp_path, "one,two", mode=mode) == expected
 
 
-def test_artifact_path_component_never_embeds_unsafe_test_names():
-    assert _artifact_path_component("sign_case_65") == "sign_case_65"
-    encoded = _artifact_path_component("../../outside/reports")
-    assert encoded.startswith("~sha256-")
-    assert "/" not in encoded
-    assert encoded != _artifact_path_component("../../different")
+@pytest.mark.parametrize(
+    ("parser", "output", "expected"),
+    [
+        (parse_build_seconds, "make\nBOOLEY_BUILD_MILLISECONDS: 5000\n[SIM_RESULT] PASSED", 5.0),
+        (parse_run_seconds, "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=19", 0.019),
+        (
+            parse_sim_cpu_seconds,
+            "BOOLEY_SIM_CPU_SECONDS: user=1.250000 system=0.125000",
+            (1.25, 0.125),
+        ),
+        (parse_build_seconds, "no marker here", 0.0),
+        (parse_build_seconds, "", 0.0),
+        # Only a line-anchored marker counts: a log quoting the string is no measurement.
+        (parse_build_seconds, "echo BOOLEY_BUILD_MILLISECONDS: 9000", 0.0),
+    ],
+)
+def test_build_time_telemetry_parsers(parser, output: str, expected):
+    assert parser(output) == expected
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def test_job_class_is_memory():
+    from booley.runtime import job_slots
 
-
-def _env_with_state(state_file: Path, slug: str = "test-ticket") -> dict[str, str]:
-    env = os.environ.copy()
-    env["BOOLEY_SLUG"] = slug
-    env["BOOLEY_STATE_FILE"] = str(state_file)
-    return env
-
-
-def _make_state(tmp_path: Path) -> Path:
-    """Create a fresh state file and return its path."""
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    return state_file
-
-
-def _make_flow(
-    tmp_path: Path,
-    *,
-    config: str = "lite",
-    tb_top: str = "alu_tb",
-    extra_args: list[str] | None = None,
-    seed_core: bool = True,
-) -> SimulateFlow:
-    """Build a SimulateFlow with parsed args and loaded state.
-
-    tb_top left the CLI surface (ADR 0021); a sim Target's ``toplevel`` IS its
-    TB top, so it comes from the resolved Target. ADR 0022 made the ``.core`` the
-    sole design-description home (the configs.toml ``tb_top`` source was removed),
-    so the helper seeds it via a co-located ``.core`` whose Target ``toplevel`` is
-    *tb_top* — the cheap, no-subprocess read ``tb_top_for_target(resolved=None)``
-    performs (``fusesoc_registry.core_target_toplevel``). Only written for a
-    single valid Target name (a comma-list / empty ``config`` is not a Target).
-    """
-    state_file = _make_state(tmp_path)
-    report_dir = tmp_path / "reports"
-    # Seed tb_top via a co-located .core the no-resolve tb_top_for_target reads
-    # (BOOLEY_DIR=tmp_path). Skip for multi/empty config (not a Target)
-    # and when the caller authors its own .core (seed_core=False). Two distinct
-    # cores sharing a Target name is legal now (ADR 0030, first-wins view), but
-    # this helper still seeds only one to keep the resolved Target unambiguous.
-    # ADR 0039: resolve_target_selection validates every token against the
-    # .core surface unconditionally, so seed one core per named config
-    # (comma-lists included — the old transitional zero-.core skip is gone).
-    if seed_core and config and config.strip() == config:
-        for name in [c.strip() for c in config.split(",") if c.strip()]:
-            core_file = tmp_path / f"{name}.core"
-            if not core_file.exists():
-                core_file.write_text(
-                    "CAPI=2:\n"
-                    f"name: ::{name}:0\n"
-                    "targets:\n"
-                    f"  {name}:\n"
-                    "    flow: sim\n"
-                    "    flow_options: {tool: verilator}\n"
-                    f"    toplevel: {tb_top}\n",
-                    encoding="utf-8",
-                )
-    argv = [
-        "--work-dir",
-        str(tmp_path),
-        "--report-dir",
-        str(report_dir),
-        "--target",
-        config,
-    ]
-    if extra_args:
-        argv.extend(extra_args)
-    env = _env_with_state(state_file)
-    booley_dir = tmp_path / ".booley"
-    if booley_dir.exists():
-        env["BOOLEY_DIR"] = str(booley_dir)
-    flow = SimulateFlow()
-    with patch.dict(os.environ, env):
-        flow.parse_args(argv)
-    flow.read_state()
-    return flow
-
-
-# ---------------------------------------------------------------------------
-# Build-time attribution (first test of a run pays the edalize make)
-# ---------------------------------------------------------------------------
-
-
-class TestBuildTimeAttribution:
-    """Build-time telemetry parsers: the first test of a run pays the whole model
-    rebuild, so the build seconds are split out of the reported run time."""
-
-    def test_parse_build_seconds_extracts_marker(self):
-        output = "make stuff\nBOOLEY_BUILD_MILLISECONDS: 5000\n[SIM_RESULT] PASSED"
-        assert parse_build_seconds(output) == 5.0
-
-    def test_parse_run_seconds_extracts_authenticated_wrapper_record(self):
-        output = "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=19"
-        assert parse_run_seconds(output) == 0.019
-
-    def test_parse_sim_cpu_seconds_extracts_user_and_system_time(self):
-        output = "BOOLEY_SIM_CPU_SECONDS: user=1.250000 system=0.125000"
-        assert parse_sim_cpu_seconds(output) == (1.25, 0.125)
-
-    def test_parse_build_seconds_absent_marker_is_zero(self):
-        assert parse_build_seconds("no marker here") == 0.0
-        assert parse_build_seconds("") == 0.0
-
-    def test_parse_build_seconds_ignores_mid_line_mention(self):
-        # Only a line-anchored marker counts — a log quoting the string must
-        # not be parsed as a measurement.
-        assert parse_build_seconds("echo BOOLEY_BUILD_MILLISECONDS: 9000") == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Test name filtering
-# ---------------------------------------------------------------------------
-
-
-class TestFilterTests:
-    def test_partial_name_does_not_match(self):
-        tests = ["lite_smoke", "lite_stress", "lite_boot"]
-        assert _filter_tests(tests, "stress") == []
-
-    def test_multiple_exact_names_preserve_request_order(self):
-        tests = ["lite_smoke", "lite_stress", "lite_boot"]
-        assert _filter_tests(tests, ("lite_boot", "lite_smoke")) == [
-            "lite_boot",
-            "lite_smoke",
-        ]
-
-    def test_exact_match(self):
-        tests = ["lite_smoke"]
-        assert _filter_tests(tests, "lite_smoke") == ["lite_smoke"]
-
-
-# ---------------------------------------------------------------------------
-# Skip-list (tests.toml `skip` + --skip): known-hang exclusion
-# ---------------------------------------------------------------------------
-
-
-class TestSkipList:
-    _NAMES: ClassVar[dict[str, list[str]]] = {
-        "lite": ["lite_smoke", "lite_stress", "lite_boot"],
-    }
-
-    def test_config_skip_excludes_named_tests(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with patch(
-            "booley.flows.sim.flow._get_test_skips", return_value={"lite": ["lite_stress"]}
-        ):
-            assert flow._resolve_tests_to_run("lite", self._NAMES) == [
-                "lite_smoke",
-                "lite_boot",
-            ]
-
-    def test_multiple_config_skips(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with patch(
-            "booley.flows.sim.flow._get_test_skips",
-            return_value={"lite": ["lite_stress", "lite_boot"]},
-        ):
-            assert flow._resolve_tests_to_run("lite", self._NAMES) == ["lite_smoke"]
-
-    def test_explicit_test_overrides_skip(self, tmp_path: Path):
-        # Naming a skipped test by hand is a clear override of the skip list.
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "lite_stress"])
-        with patch(
-            "booley.flows.sim.flow._get_test_skips", return_value={"lite": ["lite_stress"]}
-        ):
-            assert flow._resolve_tests_to_run("lite", self._NAMES) == ["lite_stress"]
-
-    def test_all_skipped_is_rejected(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with patch(
-            "booley.flows.sim.flow._get_test_skips",
-            return_value={"lite": list(self._NAMES["lite"])},
-        ):
-            result = flow._validate_runnable_tests(["lite"], self._NAMES)
-            assert result is not None
-            assert result.exit_code == EXIT_ERROR
-            assert "no runnable tests" in result.report_text
-            assert flow._resolve_tests_to_run("lite", self._NAMES) == []
-
-    def test_no_skip_runs_every_test(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with patch("booley.flows.sim.flow._get_test_skips", return_value={}):
-            assert flow._resolve_tests_to_run("lite", self._NAMES) == self._NAMES["lite"]
-
-
-# ---------------------------------------------------------------------------
-# --test validation: an unknown name must error, not run the default test
-# (false-green footgun — contrast with --target, which is validated).
-# ---------------------------------------------------------------------------
-
-
-class TestUnknownTestSelector:
-    _NAMES: ClassVar[dict[str, list[str]]] = {
-        "lite": ["lite_smoke", "lite_stress", "lite_boot"],
-    }
-
-    def test_valid_exact_name_passes(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "lite_stress"])
-        assert flow._validate_test_selector(["lite"], self._NAMES) is None
-
-    def test_no_selector_is_noop(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        assert flow._validate_test_selector(["lite"], self._NAMES) is None
-
-    def test_no_declared_list_rejects_named_selection(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "anything"])
-        assert flow._validate_test_selector(["lite"], {}) is not None
-
-    def test_unknown_for_one_of_many_targets_errors(self, tmp_path: Path):
-        # Valid for one target, absent from another → still an error: the target
-        # missing the test would otherwise run its default and report a PASS.
-        names = {"lite": ["lite_smoke"], "full": ["full_sign"]}
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "lite_smoke"])
-        result = flow._validate_test_selector(["lite", "full"], names)
-        assert result is not None
-        assert result.exit_code == EXIT_ERROR
-        assert "full" in result.report_text
-
-
-# ---------------------------------------------------------------------------
-# Target selection
-# ---------------------------------------------------------------------------
-
-
-class TestExecutionValidation:
-    def test_job_class_is_heavy(self, tmp_path: Path):
-        from booley.runtime import job_slots
-
-        flow = _make_flow(tmp_path, config="lite")
-        assert flow._resolve_job_class() == job_slots.CLASS_HEAVY
-
-
-# ---------------------------------------------------------------------------
-# Dry-run mode
-# ---------------------------------------------------------------------------
+    # Private seam: the job class is read only by the job-slot admission, which needs a live slot store.
+    assert SimulateFlow()._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
 def _preview(
@@ -472,61 +230,32 @@ def _preview(
     )
 
 
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        pytest.param(ValueError("preview failed"), "preview failed", id="value-error"),
+        # A private mirror refusal (#2895) is a planning error, not an escaped exception.
+        pytest.param(
+            SimulationBuildPreparationError("mirror refused"),
+            "mirror refused",
+            id="mirror-refused",
+        ),
+    ],
+)
+def test_dry_run_reports_preview_errors_as_planning_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, message: str
+) -> None:
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise error
+
+    monkeypatch.setattr(SimulationExecution, "preview", refuse)
+    result = _preview(tmp_path, monkeypatch, {"lite": ["smoke"]}, target="lite")
+
+    assert result.exit_code == EXIT_ERROR
+    assert f"lite: {message}" in result.outcome.report_text
+
+
 class TestDryRun:
-    def test_plan_keeps_non_shell_commands_unchanged(self, tmp_path: Path) -> None:
-        flow = _make_flow(tmp_path, config="lite")
-        command = ("make", "-C", ".booley_work/sim")
-
-        assert flow._redact_plan_environment("lite", command) == command
-
-    def test_plan_collects_preview_errors(self, tmp_path: Path) -> None:
-        flow = _make_flow(tmp_path, config="lite")
-        execution = MagicMock()
-        execution.preview.side_effect = ValueError("preview failed")
-        flow._simulation_execution_override = execution
-
-        units, errors = flow._plan_simulation_targets(
-            ["lite"],
-            {},
-            role="ordinary",
-            revision=None,
-        )
-
-        assert units == []
-        assert errors == ["lite: preview failed"]
-
-    def test_plan_reports_a_refused_private_mirror_as_a_planning_error(
-        self, tmp_path: Path
-    ) -> None:
-        """A mirror refusal (#2895) is a planning error, not an escaped exception."""
-        from booley.flows.sim.build import SimulationBuildPreparationError
-
-        flow = _make_flow(tmp_path, config="lite")
-        execution = MagicMock()
-        execution.preview.side_effect = SimulationBuildPreparationError("mirror refused")
-        flow._simulation_execution_override = execution
-
-        units, errors = flow._plan_simulation_targets(["lite"], {}, role="ordinary", revision=None)
-
-        assert units == []
-        assert errors == ["lite: mirror refused"]
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_plan_fingerprint_changes_with_configured_environment(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ) -> None:
-        flow = _make_flow(tmp_path, config="lite")
-        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "fast"}):
-            first = flow._plan_simulation(["lite"], {})
-        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "safe"}):
-            second = flow._plan_simulation(["lite"], {})
-
-        assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
-
     @pytest.mark.parametrize(
         ("targets", "request_args", "expected"),
         [
@@ -560,7 +289,7 @@ class TestDryRun:
         assert result.exit_code == EXIT_SUCCESS, outcome.report_text
         assert {
             preview["target"]["selector"]: preview["work_items"]
-            for preview in outcome.detail["campaign_preview"]
+            for preview in outcome.detail["record_preview"]
         } == expected
         assert outcome.detail["mutated"] is False
         # A dry run reserves no invocation directory and takes no lock.
@@ -568,33 +297,10 @@ class TestDryRun:
         assert not [p for p in report_root.glob("*") if p.name.isdigit() or p.suffix == ".lock"]
 
 
-# ---------------------------------------------------------------------------
-# Command building
-# ---------------------------------------------------------------------------
-
-
-class TestCommandBuilding:
-    # Adapter command rendering is covered through SimulationExecution.preview.
-
-    def test_trace_scope_left_the_surface(self, tmp_path: Path):
-        """--trace-scope was removed (ADR 0022): the --trace overlay traces full
-        hierarchy, so simulate neither accepts nor forwards a scope."""
-        import pytest
-
-        # The flag is no longer a recognized argument (argparse exits on it)...
-        with pytest.raises(SystemExit):
-            _make_flow(tmp_path, extra_args=["--trace", "--trace-scope", "tb.dut"])
-        # ...and the Flow exposes no trace_scope.
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        assert not hasattr(flow.args, "trace_scope")
-
-
-# ---------------------------------------------------------------------------
-# Ordinary simulation through the campaign path (SimulateFlow.execute)
+# Ordinary simulation through the record path (SimulateFlow.execute)
 #
-# These run the real endpoint, campaign planning and execution, and Criteria
-# reconciliation; only the process edge is faked (``campaign_boundary``).
-# ---------------------------------------------------------------------------
+# These run the real endpoint, record planning and execution, and Criteria
+# reconciliation; only the process edge is faked (``simulation_record_boundary``).
 
 
 def _projection(tmp_path: Path, target: str = "lite") -> dict[str, Any]:
@@ -603,45 +309,66 @@ def _projection(tmp_path: Path, target: str = "lite") -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _launched_tests(run: CampaignSimRun) -> list[str]:
+def _launched_tests(run: SimulationRecordSimRun) -> list[str]:
     return [test for _target, tests in run.launched for test in tests]
 
 
-def test_campaign_rejects_unknown_test_without_launching(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("targets", "selector", "message"),
+    [
+        (
+            {"lite": ["smoke", "stress"]},
+            ("typo",),
+            "unknown exact test(s) for target 'lite': typo",
+        ),
+        (
+            {"lite": ["lite_stress"]},
+            ("stress",),
+            "unknown exact test(s) for target 'lite': stress",
+        ),
+        ({"lite": []}, ("anything",), "requires target 'lite' to have a registered test catalog"),
+        # Valid for one Target but absent from another: the other would run its default and PASS.
+        ({"lite": ["lite_smoke"], "full": ["full_sign"]}, ("lite_smoke",), "for target 'full'"),
+    ],
+    ids=["typo", "partial-name", "no-catalog", "one-of-many-targets"],
+)
+def test_simulation_record_rejects_unknown_test_without_launching(
+    tmp_path: Path, monkeypatch, targets, selector: tuple[str, ...], message: str
+):
     # The reported bug: --test no_such_test used to run the TB's default test and
-    # report PASS. The campaign must reject it before any simulator launches.
-    run = run_campaign_sim(
-        tmp_path,
-        monkeypatch,
-        {"lite": ["smoke", "stress"]},
-        PASS_PROCESS,
-        target="lite",
-        test=("typo",),
+    # report PASS. The record must reject it before any simulator launches.
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, targets, PASS_PROCESS, target=",".join(targets), test=selector
     )
     assert run.result.exit_code == EXIT_ERROR
-    report_text = run.result.outcome.report_text
-    assert "typo" in report_text
-    assert "lite" in report_text
-    # The declared tests are listed so the fix (a typo) is one hop away.
-    assert "smoke" in report_text
+    assert message in run.result.outcome.report_text
     assert run.launched == []
 
 
 @pytest.mark.parametrize(
-    ("selector", "expected"),
-    [(None, ["smoke", "boot"]), (("stress",), ["stress"])],
-    ids=["one-skip", "explicit-test-overrides-skip"],
+    ("skip", "selector", "expected"),
+    [
+        (["stress"], None, ["smoke", "boot"]),
+        (["stress", "boot"], None, ["smoke"]),
+        (["stress"], ("stress",), ["stress"]),
+        (["stress"], ("boot", "smoke"), ["boot", "smoke"]),
+    ],
+    ids=["one-skip", "two-skips", "explicit-test-overrides-skip", "input-order"],
 )
-def test_campaign_runs_tests_left_by_skip_list(
-    tmp_path: Path, monkeypatch, selector: tuple[str, ...] | None, expected: list[str]
+def test_simulation_record_runs_tests_left_by_skip_list(
+    tmp_path: Path,
+    monkeypatch,
+    skip: list[str],
+    selector: tuple[str, ...] | None,
+    expected: list[str],
 ):
     # Naming a skipped test by hand is a clear override of the skip list.
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         {"lite": ["smoke", "stress", "boot"]},
         PASS_PROCESS,
-        skip={"lite": ["stress"]},
+        skip={"lite": skip},
         target="lite",
         test=selector,
     )
@@ -649,8 +376,8 @@ def test_campaign_runs_tests_left_by_skip_list(
     assert _launched_tests(run) == expected
 
 
-def test_campaign_rejects_target_whose_tests_are_all_skipped(tmp_path: Path, monkeypatch):
-    run = run_campaign_sim(
+def test_simulation_record_rejects_target_whose_tests_are_all_skipped(tmp_path: Path, monkeypatch):
+    run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         {"lite": ["smoke", "stress"]},
@@ -696,13 +423,13 @@ def _lite_passes_full_fails(launch: Launch) -> SubprocessResult:
     ],
     ids=["summary-pass", "summary-fail", "inconclusive", "two-tests-pass", "mixed-targets"],
 )
-def test_campaign_verdict_sets_exit_code(
+def test_simulation_record_verdict_sets_exit_code(
     tmp_path: Path, monkeypatch, targets, process, target, exit_code, grades
 ):
-    run = run_campaign_sim(tmp_path, monkeypatch, targets, process, target=target)
+    run = run_simulation_record_sim(tmp_path, monkeypatch, targets, process, target=target)
     outcome = run.result.outcome
     assert run.result.exit_code == exit_code, outcome.report_text
-    assert {name: row["grade"] for name, row in outcome.detail["campaigns"].items()} == grades
+    assert {name: row["grade"] for name, row in outcome.detail["records"].items()} == grades
     report = (tmp_path / "reports/sim/1/report.json").resolve()
     assert f"report: {report}" in outcome.report_text
     assert report.is_file()
@@ -710,58 +437,69 @@ def test_campaign_verdict_sets_exit_code(
         assert "INCONCLUSIVE" in outcome.report_text
 
 
-def _ticket_state(tmp_path: Path, monkeypatch, keys: list[str]) -> Path:
-    """Save a strict Ticket state declaring *keys*, and name it as the state file."""
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.slug, state.ticket_type = "ticket", "implementation"
-    state.init_criteria(dict.fromkeys(keys, True), strict=True)
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    return state_path
+CRASH_PROCESS = SubprocessResult(returncode=-11, stdout="[SIM_CYCLES] 12\n", duration_s=1.0)
 
 
 @pytest.mark.parametrize(
-    ("process", "ticket", "expected"),
+    ("process", "exit_code", "plain", "per_test", "verdicts"),
     [
-        (_lite_passes_full_fails, True, {"sim_pass_lite": True, "sim_pass_full": False}),
-        (INCONCLUSIVE_PROCESS, True, {"sim_pass_lite": False, "sim_pass_full": False}),
-        (PASS_PROCESS, False, {"sim_pass_lite": True}),
-        (FAIL_PROCESS, False, {"sim_pass_lite": False}),
-        (INCONCLUSIVE_PROCESS, False, {}),
+        (PASS_PROCESS, EXIT_SUCCESS, {"tests_failed": 0, "tests_total": 1}, {"smoke@1": 2561}, 0),
+        (FAIL_PROCESS, EXIT_FAILURE, {"tests_failed": 1, "tests_total": 1}, None, 1),
+        (CRASH_PROCESS, EXIT_FAILURE, {"tests_failed": 1, "tests_total": 1}, None, 1),
     ],
-    ids=[
-        "ticket-mixed",
-        "ticket-inconclusive",
-        "standalone-pass",
-        "standalone-fail",
-        "standalone-inconclusive",
-    ],
+    ids=["pass", "fail", "crash"],
 )
-def test_campaign_records_criteria(
-    tmp_path: Path, monkeypatch, process, ticket: bool, expected: dict[str, bool]
+def test_simulation_run_records_no_criterion(
+    tmp_path: Path,
+    monkeypatch,
+    process: SubprocessResult,
+    exit_code: int,
+    plain: dict[str, int],
+    per_test: dict[str, int] | None,
+    verdicts: int,
 ):
-    """Ticket Mode reconciles every declared Criterion through the acceptance
-    coordinator; a standalone run records pass and fail but nothing when inconclusive."""
-    from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
+    """A hand-run ``sim`` keeps its verdict, exit status and metric values, derives no
+    Criterion and writes no development-state or evidence file."""
+    from booley.measurement.flow_metrics import report_metric_values
+    from booley.measurement.metrics_file import Bound, TableRules
+    from booley.measurement.verdicts import FlowValues, evaluate_table, measure_exit_code
 
-    targets = {"lite": ["smoke"], "full": ["smoke"]} if ticket else {"lite": ["smoke"]}
-    if not ticket:
-        monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
-        run = run_campaign_sim(tmp_path, monkeypatch, targets, process, target="lite")
-        criteria = run.flow.state.criteria
-        assert {key: criterion.met for key, criterion in criteria.items()} == expected
-        return
-    state_path = _ticket_state(tmp_path, monkeypatch, list(expected))
-    recorder = _AcceptanceAdapter(
-        log_dir=tmp_path / "logs",
-        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"
     )
-    run_campaign_sim(tmp_path, monkeypatch, targets, process, target="lite,full", adapter=recorder)
-    saved = DevelopmentState.load(state_path)
-    assert {key: saved.is_met(key) for key in expected} == expected
-    # One acceptance transaction per declared Criterion: the coordinator recorded them.
-    assert len(saved.acceptance_transactions) == len(expected)
+
+    assert run.result.exit_code == exit_code
+    assert list(tmp_path.rglob("state.json")) == []
+    assert not (tmp_path / "logs").exists()
+    report = json.loads((tmp_path / "reports/sim/1/report.json").read_text(encoding="utf-8"))
+    values = report_metric_values("sim", report["detail"])["lite"]
+    assert values.plain == plain
+    assert values.per_test == ({"cycle_count": per_test} if per_test else {})
+    rules = TableRules(
+        "t",
+        "vlnv:x#t",
+        "sim",
+        (Bound("tests_failed_max", "tests_failed", "max", 0, None, None, None),),
+        (),
+    )
+    judged = evaluate_table(rules, FlowValues(values, values.clocks))
+    assert measure_exit_code(result.verdict for result in judged) == verdicts
+
+
+def test_simulation_run_leaves_declared_criteria_untouched(tmp_path: Path, monkeypatch):
+    """Criteria declared in a state file are neither evaluated, baselined nor recorded."""
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(b'{"opaque": true}\n')
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    before = state_path.read_bytes()
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite"
+    )
+
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+    assert run.launched == [("lite", ("smoke",))]
+    assert state_path.read_bytes() == before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
@@ -773,7 +511,7 @@ def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
     unreadable.mkdir(parents=True)
     unreadable.chmod(0)
     try:
-        run = run_campaign_sim(
+        run = run_simulation_record_sim(
             tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite"
         )
     finally:
@@ -782,8 +520,8 @@ def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
     assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
 
 
-def test_campaign_projection_reports_tests_and_label(tmp_path: Path, monkeypatch):
-    run = run_campaign_sim(
+def test_simulation_record_projection_reports_tests_and_label(tmp_path: Path, monkeypatch):
+    run = run_simulation_record_sim(
         tmp_path, monkeypatch, {"lite": ["smoke", "stress"]}, PASS_PROCESS, target="lite"
     )
     report = _projection(tmp_path)
@@ -810,7 +548,9 @@ def test_configured_cycle_sentinel_reaches_report_and_projection(tmp_path: Path,
         ),
         duration_s=1.0,
     )
-    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["coremark"]}, process, target="lite")
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["coremark"]}, process, target="lite"
+    )
 
     assert "coremark: cycles=31415" in run.result.outcome.report_text
     assert _projection(tmp_path)["tests"][0]["cycles"] == 31415
@@ -821,7 +561,7 @@ def _run_logs(tmp_path: Path) -> list[Path]:
     return sorted((tmp_path / "reports").rglob("execution-evidence/run.log"))
 
 
-def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monkeypatch):
+def test_simulation_record_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monkeypatch):
     """Each HDL launch gets durable evidence before the next one starts."""
     first_bytes: list[bytes] = []
 
@@ -835,7 +575,7 @@ def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monke
             returncode=0, stdout="SMOKE_ONLY\n[SIM_RESULT] PASSED\n", duration_s=0.1
         )
 
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path, monkeypatch, {"lite": ["smoke", "stress"]}, process, target="lite"
     )
 
@@ -849,9 +589,9 @@ def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monke
     assert "SMOKE_ONLY" not in stress_log.read_text(encoding="utf-8")
 
 
-def test_consecutive_campaigns_preserve_first_evidence(tmp_path: Path, monkeypatch):
+def test_consecutive_simulation_records_preserve_first_evidence(tmp_path: Path, monkeypatch):
     def run(output: str) -> tuple[Path, bytes]:
-        run_campaign_sim(
+        run_simulation_record_sim(
             tmp_path,
             monkeypatch,
             {"lite": ["smoke"]},
@@ -871,14 +611,14 @@ def test_consecutive_campaigns_preserve_first_evidence(tmp_path: Path, monkeypat
     assert b"SECOND_ONLY" in second_bytes
 
 
-def test_campaign_crash_keeps_completed_target_in_progress(tmp_path: Path, monkeypatch):
+def test_simulation_record_crash_keeps_completed_target_in_progress(tmp_path: Path, monkeypatch):
     def process(launch: Launch) -> SubprocessResult:
         if launch.target == "full":
             raise RuntimeError("simulated outer interruption")
         return PASS_PROCESS
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "sim-checkpoint-1")
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path, monkeypatch, {"lite": ["smoke"], "full": ["smoke"]}, process, target="lite,full"
     )
 
@@ -896,7 +636,7 @@ def test_default_report_root_uses_project_data(tmp_path: Path, monkeypatch):
     rtl = tmp_path / "rtl-checkout"
     rtl.mkdir()
     project_data = tmp_path / "project-data"
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         rtl,
         monkeypatch,
         {"lite": []},
@@ -912,22 +652,22 @@ def test_default_report_root_uses_project_data(tmp_path: Path, monkeypatch):
     assert not (rtl / "flow-reports").exists()
 
 
-# ---------------------------------------------------------------------------
-# Timeout
-# ---------------------------------------------------------------------------
-
-
 class TestTimeout:
-    def test_mcp_default_timeout_allows_trace_retry(self):
-        assert SimulateFlow.default_timeout == 1290
+    def test_mcp_default_timeout_allows_trace_retry(self, tmp_path: Path):
+        flow = SimulateFlow()
+        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite"])
+        # Private seam: the wrapper timeout is read only by the MCP watchdog, not by a result.
+        default_run_s = flow._get_timeout()  # pyright: ignore[reportPrivateUsage]
+        retry_allowance = 2 * default_run_s + TRACE_CLEANUP_MARGIN_S
 
-    def test_default_timeout(self, tmp_path: Path):
-        flow = _make_flow(tmp_path)
-        assert flow._get_timeout() == 600  # 600000ms -> 600s
+        assert SimulateFlow.default_timeout >= retry_allowance
 
     def test_custom_timeout(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, extra_args=["--timeout-ms", "120000"])
-        assert flow._get_timeout() == 120
+        flow = SimulateFlow()
+        flow.parse_args(
+            ["--work-dir", str(tmp_path), "--target", "lite", "--timeout-ms", "120000"]
+        )
+        assert flow.args.timeout_ms == 120000
 
     def test_timeout_results_in_fail(self, tmp_path: Path, monkeypatch):
         # The wrapper killed the launch: no adapter result, only the timed-out process.
@@ -937,7 +677,9 @@ class TestTimeout:
             timed_out=True,
             duration_s=600.0,
         )
-        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+        run = run_simulation_record_sim(
+            tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"
+        )
 
         assert run.result.exit_code == EXIT_FAILURE
         test = _projection(tmp_path)["tests"][0]
@@ -947,11 +689,6 @@ class TestTimeout:
         assert "TIMEOUT: simulation exceeded" in test["error_tail"]
         assert hint in test["error_tail"]
         assert hint in run.result.outcome.report_text
-
-
-# ---------------------------------------------------------------------------
-# Elaboration failure detection
-# ---------------------------------------------------------------------------
 
 
 class TestErrorTailSource:
@@ -971,7 +708,9 @@ class TestErrorTailSource:
             stderr=noise,
             duration_s=5.0,
         )
-        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+        run = run_simulation_record_sim(
+            tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"
+        )
 
         assert run.result.exit_code == EXIT_FAILURE
         tail = _projection(tmp_path)["tests"][0]["error_tail"]
@@ -982,7 +721,7 @@ class TestErrorTailSource:
         """A failed build produces no sim stdout — the excerpt must carry the
         stderr diagnostic so it is not lost."""
         build = SubprocessResult(returncode=1, stderr="%Error: rtl/top.sv:17: syntax error\n")
-        run = run_campaign_sim(
+        run = run_simulation_record_sim(
             tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite", build=build
         )
 
@@ -991,52 +730,23 @@ class TestErrorTailSource:
         assert "syntax error" in _projection(tmp_path)["tests"][0]["error_tail"]
 
 
-# ---------------------------------------------------------------------------
 # ravenoc F-32 — a missing EDA binary is a Flow error, never a test failure
-# ---------------------------------------------------------------------------
 
 
-class TestMissingExecutableDetection:
-    def test_dash_not_found(self):
-        from booley.flows.sim.flow import find_missing_executable
-
-        assert find_missing_executable("/bin/sh: 1: verilator: not found") == "verilator"
-
-    def test_bash_command_not_found(self):
-        from booley.flows.sim.flow import find_missing_executable
-
-        assert find_missing_executable("bash: fusesoc: command not found") == "fusesoc"
-
-    def test_make_no_such_file(self):
-        from booley.flows.sim.flow import find_missing_executable
-
-        text = "make[1]: verilator: No such file or directory"
-        assert find_missing_executable(text) == "verilator"
-
-    def test_fusesoc_spawn_guard(self):
-        from booley.flows.sim.flow import find_missing_executable
-
-        text = "could not invoke fusesoc (fusesoc): [Errno 2] No such file or directory: 'fusesoc'"
-        assert find_missing_executable(text) == "fusesoc"
-
-    def test_bare_spawn_failure_names_the_eda_tool(self):
-        from booley.flows.sim.flow import find_missing_executable
-
-        text = "FileNotFoundError: [Errno 2] No such file or directory: 'xrun'"
-        assert find_missing_executable(text) == "xrun"
-
-    def test_missing_data_file_is_not_a_missing_binary(self):
-        from booley.flows.sim.flow import find_missing_executable
-
+@pytest.mark.parametrize(
+    ("text", "tool"),
+    [
+        ("/bin/sh: 1: verilator: not found", "verilator"),
+        ("bash: fusesoc: command not found", "fusesoc"),
+        ("make[1]: verilator: No such file or directory", "verilator"),
         # A plain setup failure keeps its own message and exit-1 grading.
-        text = "FileNotFoundError: [Errno 2] No such file or directory: '/work/foo.core'"
-        assert find_missing_executable(text) is None
-
-    def test_ordinary_compile_error_is_not_a_missing_binary(self):
-        from booley.flows.sim.flow import find_missing_executable
-
-        text = "%Error: tb.sv:12: Cannot find file containing module: 'dut'\nnot found\n"
-        assert find_missing_executable(text) is None
+        ("FileNotFoundError: [Errno 2] No such file or directory: '/work/foo.core'", None),
+        ("%Error: tb.sv:12: Cannot find file containing module: 'dut'\nnot found\n", None),
+    ],
+    ids=["dash", "bash", "make", "missing-data-file", "compile-error"],
+)
+def test_missing_executable_detection(text: str, tool: str | None):
+    assert find_missing_executable(text) == tool
 
 
 class TestMissingExecutableIsEdaToolError:
@@ -1052,7 +762,7 @@ class TestMissingExecutableIsEdaToolError:
                 "ERROR: Verilator elaboration failed (rc=127)\n"
             ),
         )
-        run = run_campaign_sim(
+        run = run_simulation_record_sim(
             tmp_path, monkeypatch, {"lite": ["t1"]}, PASS_PROCESS, target="lite", build=build
         )
         outcome = run.result.outcome
@@ -1070,66 +780,8 @@ class TestMissingExecutableIsEdaToolError:
                 '[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n'
             ),
         )
-        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["t1"]}, process, target="lite")
+        run = run_simulation_record_sim(
+            tmp_path, monkeypatch, {"lite": ["t1"]}, process, target="lite"
+        )
         assert run.result.exit_code == EXIT_FAILURE
         assert "eda_tool_error" not in run.result.outcome.detail
-
-
-# ---------------------------------------------------------------------------
-# Selector round trip: producer argv -> run-half argparse (F-12 family)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("met", [True, False, None])
-def test_standalone_elab_only_final_headline(tmp_path, met):
-    from booley.flows.sim.build import BuildOutcome
-    from booley.flows.sim.flow import ElabOnlyTargetResult
-    from booley.runtime.endpoint_execution import EndpointOutcome
-    from tests.flows.report_headline import final_report_omits_headline
-
-    flow = _make_flow(tmp_path, config="lite", extra_args=["--mode", "elab-only"])
-    flow.args.state_file = None
-    flow.read_state()
-    build = BuildOutcome(
-        True,
-        None if met is None else ("pass" if met else "fail"),
-        "infrastructure" if met is None else (None if met else "design"),
-    )
-    flow._record_elab_only_criterion(ElabOnlyTargetResult("lite", outcome=build))
-    result = EndpointOutcome(exit_code=2 if met is None else (0 if met else 1))
-    with flow.publication_resources:
-        report = final_report_omits_headline(flow, result)
-    assert report["exit_code"] == result.exit_code
-    if met is None:
-        assert "elab_pass_lite" not in flow.state.criteria
-    else:
-        assert flow.state.criteria["elab_pass_lite"].met is met
-    assert flow.state._file_path is None
-
-
-def test_target_report_write_survives_transient_replace_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.sim.flow import _atomic_write_json
-    from tests.sharing_error_support import hold_replaces
-
-    path = tmp_path / "targets" / "sim_a" / "simulation.json"
-    path.parent.mkdir(parents=True)
-    attempts = hold_replaces(monkeypatch, {path: 1})
-    _atomic_write_json(path, {"passed": True})
-    assert json.loads(path.read_text(encoding="utf-8")) == {"passed": True}
-    assert attempts[path] == 2
-
-
-def test_target_report_write_retries_before_raising_lasting_sharing_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.sim.flow import _atomic_write_json
-    from tests.sharing_error_support import hold_replaces
-
-    path = tmp_path / "targets" / "sim_a" / "simulation.json"
-    path.parent.mkdir(parents=True)
-    attempts = hold_replaces(monkeypatch, {path: 100})
-    with pytest.raises(PermissionError):
-        _atomic_write_json(path, {"passed": True})
-    assert attempts[path] > 1

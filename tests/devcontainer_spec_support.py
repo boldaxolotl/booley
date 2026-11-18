@@ -17,9 +17,10 @@ def build_spec(
     token_source: str | None = None,
     config_source: str | None = None,
     credentials: Mapping[str, str] | None = None,
+    policy: str = "subscription",
     **options: Any,
 ) -> dict[str, Any]:
-    """Build a spec through one host-independent ``auto`` credential plan for *app*.
+    """Build a spec through one host-independent credential plan (``subscription`` unless *policy* says otherwise) for *app*.
 
     The plan is constructed directly: ``auth_token.credential_plan`` reads the host
     environment and credential files, which would add ``${localEnv:}`` keys and seed
@@ -29,9 +30,9 @@ def build_spec(
     """
     plan = auth_token.CredentialPlan(
         app,
-        "auto",
+        policy,
         None,
-        auth_token.allowed_credential_keys(app, "auto"),
+        auth_token.allowed_credential_keys(app, policy),
         tuple(sorted((credentials or {}).items())),
         subscription_seed=Path(login_source) if login_source else None,
         token_seed=Path(token_source) if token_source else None,

@@ -13,8 +13,10 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import reset_git_command_config
 from tests.source_checkout_support import copy_source_checkout
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.runtime import build_stamp
+from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL = "booley_rtl-0.2.15-py3-none-any.whl"
@@ -42,9 +44,9 @@ def isolated_git(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_TEST_GIT_HOOKS", str(empty))
 
 
-def init_git(root):
+def init_git(root, *, timeout: float = SUBPROCESS_TIMEOUT_S):
     def git(*args):
-        subprocess.run(
+        run_bounded_child(
             [
                 "git",
                 "-c",
@@ -55,8 +57,7 @@ def init_git(root):
             ],
             cwd=root,
             check=True,
-            capture_output=True,
-            timeout=10,
+            timeout=timeout,
         )
 
     git("init")
@@ -78,6 +79,8 @@ def checkout(tmp_path, monkeypatch):
         target.write_text("fixture\n")
     (root / "src/booley/payload.py").write_text("VALUE = 1\n")
     (root / "VERSION").write_text("0.2.15\n")
+    # The real ignore rules, so build output (the rendered docs) is ignored as in a checkout.
+    shutil.copyfile(ROOT / ".gitignore", root / ".gitignore")
     from booley.runtime import image_build_contracts
 
     monkeypatch.setattr(
@@ -111,6 +114,15 @@ def wire_frontend(monkeypatch, action):
     return module
 
 
+def untracked_and_modified(root):
+    """Return Git's porcelain status of *root*, listing every untracked file."""
+    return run_bounded_child(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        check=True,
+    ).stdout
+
+
 def assert_clean(root):
     assert not build_stamp.stamp_path(root).exists()
     assert not build_stamp.development_context_path(root).exists()
@@ -127,6 +139,7 @@ def test_explicit_profile_selects_only_new_wheel_and_prints_absolute_path(
     (dist / WHEEL).write_bytes(b"previous")
     (checkout / "build").mkdir()
     (checkout / "build/stale.py").write_text("stale")
+    status_before = untracked_and_modified(checkout)
 
     def build(root, staging):
         namespace = {}
@@ -136,6 +149,10 @@ def test_explicit_profile_selects_only_new_wheel_and_prints_absolute_path(
         assert namespace["COMMIT"].endswith("+dirty")
         assert len(namespace["DEVELOPMENT_CONTEXT_SHA256"]) == 64
         assert build_stamp.development_context_path(root).is_file()
+        # The shared step rendered every shipped doc before the frontend ran.
+        for source in SHIPPED_DOCS:
+            copy = root / PACKAGED_DOCS_RELATIVE_DIR / Path(source).name
+            assert copy.read_bytes() == (root / source).read_bytes()
         assert not (root / "build").exists()
         print("frontend log", file=sys.stderr)
         (staging / WHEEL).write_bytes(b"new")
@@ -148,6 +165,9 @@ def test_explicit_profile_selects_only_new_wheel_and_prints_absolute_path(
     assert (dist / WHEEL).read_bytes() == b"new"
     assert stale.read_bytes() == b"old"
     assert_clean(checkout)
+    # The rendered docs stay behind as Git-ignored output: the build adds no file to status.
+    assert (checkout / PACKAGED_DOCS_RELATIVE_DIR).is_dir()
+    assert untracked_and_modified(checkout) == status_before
 
 
 @pytest.mark.parametrize("failure", ["stamp", "build", "timeout", "publish", "cleanup"])
@@ -264,14 +284,10 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
         f"(out/{WHEEL!r}).write_bytes(b'new')\n"
         "print('stub frontend log')\n"
     )
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-P", str(root / ".github/scripts/build_development_wheel.py")],
         cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": str(frontend)},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == str((root / "dist" / WHEEL).resolve()) + "\n"
@@ -297,7 +313,7 @@ def test_unresolvable_checkout_preserves_dist(
         checkout.rename(relocated)
         checkout = relocated
     elif layout == "no-head":
-        subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True, timeout=10)
+        run_bounded_child(["git", "init", str(checkout)], check=True)
     elif layout in {"redirected", "spoofed-root"}:
         other = tmp_path / "other"
         other.mkdir()
@@ -357,11 +373,9 @@ def test_unresolved_stamp_return_prevents_frontend(checkout, monkeypatch, capsys
 
 def test_linked_worktree_remains_supported(checkout, tmp_path, monkeypatch):
     linked = tmp_path / "linked"
-    subprocess.run(
+    run_bounded_child(
         ["git", "-C", str(checkout), "worktree", "add", "-b", "linked", str(linked)],
         check=True,
-        capture_output=True,
-        timeout=10,
     )
     for tree in build_stamp._DEVELOPMENT_CONTEXT_TREES:
         (linked / tree).mkdir(parents=True, exist_ok=True)

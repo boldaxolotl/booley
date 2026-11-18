@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from booley.bwave.contract import (
     BEYOND_RANGE_MARKER,
@@ -29,6 +30,8 @@ from booley.bwave.contract import (
 )
 from booley.flows.sim.trace_session import TraceSession
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
+from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -43,13 +46,7 @@ EMPTY_VCD = (
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(_native_bwave_binary()), *args],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    return run_bounded_child([str(_native_bwave_binary()), *args], timeout=2 * hang_guard_s())
 
 
 def _build_store(vcd: Path, out: Path) -> Path:
@@ -192,7 +189,7 @@ def test_native_open_ended_range_includes_tail_clock_events(
 ) -> None:
     from booley.bwave import cli
 
-    monkeypatch.setattr(cli, "_load_sessions", lambda: {})
+    monkeypatch.setattr(cli, "_load_sessions", lambda *_args: {})
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
     resolver = cli._TickResolver(str(store), "test")
     assert resolver.range_to_ticks("170ns:") == (170, 200)
@@ -202,3 +199,45 @@ def test_native_open_ended_range_includes_tail_clock_events(
     assert result.returncode == EXIT_OK, result.stderr
     times = [match["time"] for match in json.loads(result.stdout)["data"]["matches"]]
     assert times == [175, 185, 195]
+
+
+RESET_VCD = (
+    "$timescale 1ns $end\n$scope module tb $end\n"
+    '$var wire 1 ! clk $end\n$var wire 1 " rst_n $end\n$var wire 1 # flag $end\n'
+    "$upscope $end\n$enddefinitions $end\n"
+    '#0\n0!\n0"\n0#\n#5\n1!\n#10\n0!\n1#\n#15\n1!\n#20\n0!\n0#\n'
+    '#25\n1!\n1"\n#30\n0!\n#35\n1!\n#40\n0!\n'
+)
+NO_RESET_VCD = (
+    RESET_VCD.replace('$var wire 1 " rst_n $end\n', "").replace('0"\n', "").replace('1"\n', "")
+)
+
+
+def test_reset_object_validates_against_published_schema(tmp_path: Path) -> None:
+    schema = json.loads(
+        (BOOLEY_ROOT / "crates" / "bwave" / "schema" / "bwave.json").read_text(encoding="utf-8")
+    )
+    validator = Draft202012Validator(schema)
+    with_reset = tmp_path / "with_reset.vcd"
+    with_reset.write_bytes(RESET_VCD.encode())
+    without_reset = tmp_path / "without_reset.vcd"
+    without_reset.write_bytes(NO_RESET_VCD.encode())
+    stores = {
+        "with": _build_store(with_reset, tmp_path / "with_reset.fst"),
+        "without": _build_store(without_reset, tmp_path / "without_reset.fst"),
+    }
+    cases = [
+        (stores["with"], ["find", "flag", "'b1"], "tb.rst_n", 2, False),
+        (stores["with"], ["overview"], "tb.rst_n", 2, False),
+        (stores["with"], ["find", "flag", "'b1", "--with-reset"], "tb.rst_n", 0, True),
+        (stores["without"], ["overview"], None, 0, False),
+    ]
+    for path, command, signal, skipped, with_flag in cases:
+        result = _run(command[0], str(path), *command[1:], "--format", "json")
+        assert result.returncode == EXIT_OK, result.stderr
+        payload = json.loads(result.stdout)
+        assert list(validator.iter_errors(payload)) == []
+        reset = payload["reset"]
+        assert reset["skipped_cycles"] == skipped
+        assert reset["with_reset"] is with_flag
+        assert reset["signal"] == signal

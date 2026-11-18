@@ -87,8 +87,8 @@ them accepting tier names that no longer exist.
   Sandbox. URL and token still come only from the environment.
 - Projects with tier keys or `[models.roles]` must migrate before Booley loads
   their config; the error message gives the replacement.
-- `booley init` still records `provider`; it keeps an `[agent.auth]` table it
-  finds.
+- `booley init` keeps an `[agent.auth]` table it finds. (It recorded `provider`
+  when this was written; see the 2026-11-11 amendment.)
 
 ## Amendments (2026-11-06): list fallback (#2836)
 
@@ -119,8 +119,13 @@ back.
   with its reason (not logged in, not in `clis`, refused by the provider).
 - **Recording.** Every Specialist result carries the model that ran. A
   fallback adds the first choice and each passed-over entry with its reason to
-  the result detail, a line to the report, and the Criterion evidence, so the
-  Review Package shows it.
+  the result detail, a line to the report, so the Review Package shows it.
 - **Deep Doctor.** It walks each list with the launch rules: PASS when the
   first entry works, WARN naming the skipped or refused entries and the model
   chosen, FAIL when none works.
+
+## Amendment (2026-11-11): init records default (#3227)
+
+`booley init` now records the default Agent CLI as `[agent] default`, not the
+older alias `provider`. An existing `provider` key is kept as written and still
+works; error and Doctor text names `[agent] default`.

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.audit.project_schema import audit_known_tables
+from booley.audit.project_schema import audit_known_tables, audit_specialist_table
 from booley.harness.setup import readiness
 from booley.mcp.endpoint_config import get_endpoint_config
 from booley.mcp.endpoint_validation import _load_endpoint_config as endpoint_config
@@ -190,14 +190,14 @@ def test_mcp_entry_point_renders_catalog_configuration_error(tmp_path, monkeypat
 
 
 def test_endpoint_validation_reads_the_resolved_booley_directory(tmp_path):
-    from booley.mcp.endpoint_validation import validate_custom_endpoints_and_criteria
+    from booley.mcp.endpoint_validation import validate_custom_endpoints
 
     project = tmp_path / "project-data"
     project.mkdir()
     (tmp_path / "booley.toml").write_text('[project]\ndir = "project-data"\n')
     (project / "booley.toml").write_text("[specialists.reveiwer]\nenabled = false\n")
     with pytest.raises(ValueError, match="reveiwer"):
-        validate_custom_endpoints_and_criteria(tmp_path)
+        validate_custom_endpoints(tmp_path)
 
 
 @pytest.mark.parametrize("names", [(), ("local",)])
@@ -236,3 +236,24 @@ def test_supplied_inventory_preserves_unreadable_config_policy(tmp_path):
 
     with pytest.raises(EndpointConfigError, match="Cannot read"):
         read_endpoint_config(tmp_path, specialist_names=())
+
+
+def test_stale_mutation_tester_specialist_table_names_flows_mutation(tmp_path, monkeypatch):
+    """Mutation testing is a Flow now: the old ``[specialists.mutation_tester]`` table says so."""
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
+    project.mkdir()
+    (project / "booley.toml").write_text(
+        "[specialists.mutation_tester]\nenabled = false\n", encoding="utf-8"
+    )
+    hint = "replace [specialists.mutation_tester] with [flows.mutation]"
+
+    audit = audit_specialist_table(
+        {"specialists": {"mutation_tester": {"enabled": False}}},
+        {item.name for item in discover_mcp_tools() if item.kind == "specialist"},
+    )
+    assert [finding.fix for finding in audit.findings] == [hint]
+    assert "no longer a Specialist" in audit.findings[0].message
+
+    with pytest.raises(ValueError, match=r"no longer a Specialist.*" + r"\[flows\.mutation\]"):
+        get_endpoint_config(tmp_path)

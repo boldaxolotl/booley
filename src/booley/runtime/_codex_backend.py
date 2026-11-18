@@ -219,7 +219,7 @@ class CodexBackend:
     itself (subscription login via `codex login`).
     """
 
-    def __init__(self, auth_mode: str = "auto") -> None:
+    def __init__(self, auth_mode: str = "subscription") -> None:
         # The resolved [agent] auth policy. Under "subscription" the spawn env
         # is scrubbed of OPENAI_API_KEY (Codex then authenticates via its
         # auth.json login); under "api_key" the health check fails loud when no
@@ -520,7 +520,7 @@ def _populate_private_codex_home(
     codex_dir: Path,
     booley_env: dict[str, str],
     enabled_mcp_tools: list[str] | None = None,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> None:
     """Regenerate one destination config and link the existing native credential."""
     from .mcp_config import generate_codex_config
@@ -549,7 +549,7 @@ def _ensure_nested_codex_home(
     parent_label: str,
     allowed_mcp_tools: list[str] | None,
     extra_env: dict[str, str] | None = None,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> str:
     """Create a cached private home exposing only the nested agent's MCP allowlist.
 
@@ -667,7 +667,7 @@ async def _resolve_gateway_command_token() -> str | None:
 async def _codex_spawn(
     cmd: list[str],
     params: AgentCallParams,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> tuple[asyncio.subprocess.Process, Path]:
     """Spawn the codex subprocess with piped I/O.
 
@@ -677,9 +677,9 @@ async def _codex_spawn(
     """
     command_token = await _resolve_gateway_command_token() if auth_mode == GATEWAY_AUTH else None
     env = None
-    if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
-        from .auth_token import subscription_creds_path
+    from .auth_token import credential_plan, defers_to_cli, subscription_creds_path
 
+    if not defers_to_cli(auth_mode) and os.environ.get("CODEX_HOME"):
         env = {**os.environ, "CODEX_HOME": str(subscription_creds_path("codex").parent)}
     if _inside_container() and not params.text_only:
         env = dict(os.environ)
@@ -705,11 +705,9 @@ async def _codex_spawn(
         if auth_mode == "subscription":
             env.pop("OPENAI_API_KEY", None)
 
-    from .auth_token import credential_plan
-
     plan = credential_plan("codex", auth_mode)
     plan.require_credential()
-    if auth_mode != "auto" or plan.values:
+    if not defers_to_cli(auth_mode) or plan.values:
         env = plan.child_environment(dict(os.environ) if env is None else env)
     if command_token is not None:
         env = _with_command_token(env, command_token)
@@ -738,7 +736,7 @@ async def _codex_run_subprocess(
     *,
     full_prompt: str,
     on_event: Any,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
     on_start: Callable[[], None] | None = None,
 ) -> tuple[str, str, int]:
     """Spawn codex exec, stream I/O, return (stdout, stderr, returncode)."""
@@ -781,6 +779,8 @@ async def _codex_run_subprocess(
         proc,
         timeout_seconds=params.timeout_seconds,
     )
+    # ``_stream_and_drain`` awaited ``proc.wait()``, so the exit status is set here.
+    assert proc.returncode is not None
     if not prompt_fed and proc.returncode == 0:
         # A success would answer a truncated prompt; a non-zero exit is
         # classified from Codex's own output by the caller.

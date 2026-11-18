@@ -81,7 +81,7 @@ def test_claude_backend_always_denies_provider_web_tools(tmp_path: Path) -> None
 
     options = _claude_backend._build_sdk_options(params)
 
-    assert options.disallowed_agent_capabilities == ["Bash", "WebFetch", "WebSearch"]
+    assert options.disallowed_tools == ["Bash", "WebFetch", "WebSearch"]
 
 
 def test_codex_backend_forces_web_search_disabled(tmp_path: Path, monkeypatch) -> None:

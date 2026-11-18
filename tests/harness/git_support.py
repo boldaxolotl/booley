@@ -9,5 +9,5 @@ from tests.subprocess_budget import run_bounded_child
 
 def git_stdout(repository: Path, *args: str) -> str:
     """Run Git successfully in ``repository`` and return stripped stdout."""
-    result = run_bounded_child(["git", *args], cwd=repository, timeout=30, check=True)
+    result = run_bounded_child(["git", *args], cwd=repository, check=True)
     return result.stdout.strip()

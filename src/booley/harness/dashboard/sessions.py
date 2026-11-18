@@ -32,6 +32,8 @@ STANDALONE_GROUP = "STANDALONE JOBS"
 GROUP_ORDER = (NEEDS_YOU, WORKING_GROUP, UNKNOWN_GROUP, STANDALONE_GROUP)
 #: Row keys of group header rows start with this; no session or Job key does.
 HEADER_PREFIX = "group:"
+#: Row keys of a measurement line that has a report to open: this plus the session key.
+MEASUREMENT_PREFIX = "measurement:"
 ABSENT = "—"
 ELLIPSIS = "…"
 
@@ -42,11 +44,12 @@ SESSION, MODE, BRANCH, WORK_DIR, STARTED, ACTIVITY = range(6)
 LABELS = ("Session", "Mode", "Branch", "Work dir", "Started", "Activity")
 GAP = 2
 #: Narrowest a column is squeezed before columns drop; Activity is cut last, below 40 cells.
-_FLOORS = {BRANCH: 8, WORK_DIR: 10, ACTIVITY: 40}
+#: A long ``--name`` title is cut at the Session floor rather than pushing Branch out.
+_FLOORS = {SESSION: 12, BRANCH: 8, WORK_DIR: 10, ACTIVITY: 40}
 #: Columns that disappear when the list is too narrow, first to go first.
 DROP_ORDER = (STARTED, WORK_DIR, BRANCH)
 #: Spare width is handed out in this order, each up to the column's natural width.
-GROW_ORDER = (ACTIVITY, BRANCH, WORK_DIR)
+GROW_ORDER = (SESSION, ACTIVITY, BRANCH, WORK_DIR)
 
 
 @dataclass(frozen=True)
@@ -54,18 +57,23 @@ class SessionFacts:
     """What one overview row needs to know about a connected session."""
 
     key: str
+    #: The bare ``S3`` handle; ordering uses its number.
     handle: str
-    #: ``Interactive``, ``Goal m/n``, or ``Goal`` when Goal status is unavailable.
+    #: What the row shows: ``S3 · uart-fix`` for a named session, else the handle.
+    title: str
+    #: The session mode; always ``Interactive``.
     mode: str
     branch: str
     work_dir: str
     started: str
     activity: Activity
-    proposals: int
     #: Running-Job summaries such as ``▶ J-SIM3 sim fifo 1m 12s``.
     jobs: tuple[str, ...] = ()
-    #: Shared-worktree warning, shared-attribution notice and Goal diagnostic.
+    #: Shared-worktree warning and shared-attribution notice.
     notices: tuple[str, ...] = ()
+    #: The measurement line shown under the row, and the report Enter on it opens.
+    measurement: str = ""
+    report: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,8 +110,8 @@ def session_key_label(key: str) -> str:
 
 
 def group_of(facts: SessionFacts) -> str:
-    """A pending proposal needs the human whatever the session is doing."""
-    if facts.activity.state == WAITING_USER or facts.proposals > 0:
+    """A session waiting for the human needs them; a working one is working."""
+    if facts.activity.state == WAITING_USER:
         return NEEDS_YOU
     if facts.activity.state in {WORKING, WAITING_TOOL}:
         return WORKING_GROUP
@@ -121,9 +129,9 @@ def order_key(facts: SessionFacts) -> tuple[bool, float, float, str]:
 
 
 def _short_activity(activity: Activity, now: float) -> str:
-    """The activity with how long it has lasted; unknown is said plainly."""
+    """The activity with how long it has lasted; unknown says why."""
     if activity.state == UNKNOWN:
-        return "unknown"
+        return f"unknown ({activity.cause})"
     try:
         lasted = " " + format_duration(now - parse_timestamp(activity.since).timestamp())
     except ValueError:
@@ -134,15 +142,9 @@ def _short_activity(activity: Activity, now: float) -> str:
 
 
 def last_column(facts: SessionFacts, now: float) -> str:
-    """Activity, or the running Jobs of a working session, then proposals and notices."""
+    """Activity, or the running Jobs of a working session, then notices."""
     activity = _short_activity(facts.activity, now)
-    proposals = (
-        f"{facts.proposals} proposal{'s' * (facts.proposals != 1)}" if facts.proposals else ""
-    )
-    # Waiting leads with the wait; a session needing the human only by proposal leads with it.
-    parts = (
-        [activity, proposals] if facts.activity.state == WAITING_USER else [proposals, activity]
-    )
+    parts = [activity]
     jobs_replace_activity = group_of(facts) == WORKING_GROUP and facts.jobs
     parts = list(facts.jobs) if jobs_replace_activity else [*parts, *facts.jobs]
     return " · ".join(part for part in [*parts, *facts.notices] if part)
@@ -201,6 +203,13 @@ def _line(widths: dict[int, int], cells: Sequence[str], style: str) -> Text:
     return line
 
 
+def _measurement_key(facts: SessionFacts) -> str:
+    """Selectable only when there is a report to open; otherwise the cursor skips the line."""
+    if facts.report:
+        return MEASUREMENT_PREFIX + facts.key
+    return HEADER_PREFIX + MEASUREMENT_PREFIX + facts.key
+
+
 def build(
     sessions: Sequence[SessionFacts],
     standalone: Sequence[StandaloneJob],
@@ -209,12 +218,13 @@ def build(
 ) -> Overview:
     """Group, order and fit every row for a list ``width`` cells wide."""
     grouped: dict[str, list[tuple[str, tuple[str, ...]]]] = {name: [] for name in GROUP_ORDER}
+    lines_of = {facts.key: facts for facts in sessions if facts.measurement}
     for facts in sorted(sessions, key=order_key):
         grouped[group_of(facts)].append(
             (
                 facts.key,
                 (
-                    facts.handle,
+                    facts.title,
                     facts.mode,
                     facts.branch or ABSENT,
                     facts.work_dir or ABSENT,
@@ -237,4 +247,7 @@ def build(
         for key, cells in grouped[name]:
             keys.append(key)
             lines.append(_line(widths, cells, dim))
+            if key in lines_of:
+                keys.append(_measurement_key(lines_of[key]))
+                lines.append(Text(cut("  " + lines_of[key].measurement, width), style=dim))
     return Overview(_line(widths, LABELS, "bold"), keys, lines)

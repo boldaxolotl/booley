@@ -3,7 +3,8 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard and Goal presence, worktree cleanup, and feedback redaction. Settings for one Flow, the Sandbox, or
+Dashboard, worktree settings (where `booley chat` starts,
+cleanup of idle worktrees, and Git submodules), and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
@@ -15,38 +16,42 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[worktree]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
 | `[flows.synth]` | [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth) |
 | `[flows.fpga]` | [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga) |
+| `[flows.mutation]` | [Mutation testing](FLOW-MUTATION.md#configuration-flowsmutation) |
 | `[sandbox]`, host `config.toml`, custom images | [SANDBOX.md](SANDBOX.md) |
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
-| `[submodules]`, `.core` files, Cocotb Targets | [TARGETS.md](TARGETS.md) |
+| `.core` files | [TARGETS.md](TARGETS.md) |
+| Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
+| `metrics.toml` | [Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#write-metricstoml) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
 ## booley.toml
 
 The file sits in the Booley Directory, `.booley/` at the top of your repository.
-`[project].name` is the Project's name; Booley shows it in messages and
-replaces it in redacted feedback.
+`[project].name` is the Project's name. `booley init` shows it in its output,
+and [`/booley-feedback`](#feedback-feedback) replaces it with a placeholder in
+the copy it writes for you to share.
 
 `.booley` can be a symlink to a Booley Directory kept elsewhere, for example in
-a separate repository. `booley init` remembers where the link points. If you
-move the link on purpose, run `booley init --repin-booley-dir`; otherwise point
-it back. Until the two agree, `booley doctor` fails with `project.booley-dir-pin`.
-A running Sandbox keeps using the location it started with until you run
-`booley session refresh`.
+a separate repository. Booley follows the link on the host and mounts its
+target into the Sandbox separately. `booley init` remembers where the link
+points. If you move the link on purpose, run `booley init --repin-booley-dir`;
+otherwise point it back. Until the two agree, `booley doctor` fails with `project.booley-dir-pin`.
+A running Sandbox keeps using the location it started with until you
+[recreate it](SANDBOX.md#applying-sandbox-changes).
 
 ### Additional Protected Inputs: `[project].protected_inputs`
 
-In Goal Mode, Booley freezes the files that decide how a Goal is judged, so the
-agent can't pass a Goal by changing the yardstick. Booley's own configuration
-and `.booley/hooks/` are always frozen. List your own files here when they also
-shape the result, such as a Makefile a hook runs, firmware sources, or
+Booley's own configuration and `.booley/hooks/` are always protected. List your
+own files here when they also shape the result, such as a Makefile a hook runs,
+firmware sources, or
 reference vectors. Booley can't find them from your scripts, so list each one:
 
 ```toml
@@ -56,7 +61,7 @@ protected_inputs = ["Makefile", "firmware/**/*.c", "vectors/"]
 ```
 
 Leaving the key out or the list empty adds nothing. Paths are relative to the
-Project Root of the Goal's worktree and use `/` on every host.
+Project Root and use `/` on every host.
 
 | Form | Example | Matches |
 |---|---|---|
@@ -64,34 +69,21 @@ Project Root of the Goal's worktree and use `/` on every host.
 | Glob | `firmware/**/*.c` | `*` and `?` stay within one folder; `**` alone spans any number of folders, including none; dotfiles match |
 | Directory | `vectors/` | every file below it; the trailing `/` is required |
 
-**When you start a Goal**, Booley lists the matched files. It refuses to start,
-naming the entry at fault, when an entry:
+Booley rejects an entry that is absolute, contains `..`, a backslash, `[]`,
+`{}`, or `**` joined to other characters (`**.c`), or names a directory without
+the trailing `/`. A Measurement reports edits to the files these entries match.
 
-- matches no file, or matches a file Git doesn't track (untracked or ignored);
-- matches into a submodule, a nested repository, `.git`, or Goal Record storage;
-- is absolute, contains `..`, a backslash, `[]`, `{}`, or `**` joined to other
-  characters (`**.c`), or names a directory without the trailing `/`;
-- matches a symlink that doesn't resolve to a tracked file in the repository.
-
-**While the Goal runs**, adding, removing, renaming, or editing a matched file,
-or committing such a change, warns at once and blocks Finish. Restoring the file
-clears it. To change the list itself, abandon the Goal and start again; an
-approved Goal Change can't lift the protection.
-
-Two limits:
-
-- Keep build outputs out of the patterns. A build that writes into a protected
-  folder counts as an edit, so prefer `firmware/**/*.c` to `firmware/` when
-  compilation writes there.
-- An edit made and reverted while a Flow is running goes unnoticed.
+Keep build outputs out of the patterns. A build that writes into a protected
+folder counts as an edit, so prefer `firmware/**/*.c` to `firmware/` when
+compilation writes there.
 
 ## Flow and Specialist availability: `enabled`
 
 Every Flow and Specialist is on by default. Turn one off when the Project has no
-use for it, for example lint on a design whose lint setup isn't ready:
+use for it, for example ASIC synthesis on an FPGA-only Project:
 
 ```toml
-[flows.lint]
+[flows.synth]
 enabled = false
 
 [specialists.coverage_analyst]
@@ -99,7 +91,7 @@ enabled = false
 ```
 
 A disabled Flow disappears from what the Developer Agent can run. A disabled
-Specialist also disappears from `booley specialist` and from Goal sessions. The
+Specialist also disappears from `booley specialist` and from agent sessions. The
 value must be `true` or `false`, and Doctor rejects Specialist names it doesn't
 know. Custom Flows and Specialists your Project adds use the same switch.
 
@@ -107,59 +99,102 @@ To choose a Specialist's model, see [`[models]`](#model-selection-models).
 
 ## Jobs & concurrency (`[jobs]`)
 
-Every Flow or Specialist run is a **Job**. Simulation, synthesis, and FPGA
-implementation are heavy Jobs; Specialists are light Jobs, limited by the AI
-provider rather than memory. Each kind has a cap so parallel agents don't run the
-Sandbox out of memory. Work beyond the cap waits in a queue instead of failing,
-and running Jobs are never interrupted. The defaults:
+Every Flow or Specialist run is a **Job**. Every Job is admitted against a
+**Memory Budget**: a Job starts when its estimated memory fits in what the
+budget has left, and otherwise waits in a queue instead of failing. The queue
+has no limit: a Job waits until it runs or you cancel it. Specialists and mutation
+campaigns are admitted by memory too, and a Specialist waits when the budget is
+full. Running Jobs are never interrupted. The defaults:
 
 ```toml
-[jobs]
-max_heavy = 1         # heavy Jobs running at once
-heavy_memory = "4g"   # memory set aside per heavy Job
-max_light = 3         # Specialist Jobs running at once
-queue_max = 8         # Jobs that may wait per kind; beyond this a request is refused
+[sandbox]
+memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes from it
+
+[jobs.seats]
+# vivado = 1             # licensed seats Booley may use at once; required for Vivado
 ```
 
-Raise `max_heavy` only when the Sandbox has the memory for it. `booley doctor
---deep` measures how much memory synthesis really needs; plain `booley doctor`
-then warns when `[sandbox].memory` can't hold `max_heavy` heavy Jobs plus the
-agents. With `max_heavy` above 1, a simulation campaign also runs independent
-tests in parallel.
+The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
+reserve: the memory the running agents, the MCP server, and the Dashboard use,
+plus 2 GB. Without `[sandbox].memory` the Sandbox has no limit, so Booley starts
+from the machine's installed memory, which the Sandbox shares with everything
+else; `booley doctor` warns while it is unset.
 
-Caps apply to one Project. They don't share commercial license seats between
-Projects.
+Booley reserves the largest peak memory it recorded for a Job
+([resource history](#job-resource-history)), plus 25%. With no record of its
+own, the Job borrows the largest peak recorded for the same Target and step,
+then for that step anywhere in the Project. Only a step Booley has never
+measured makes the Job run alone. A Simulation Record runs independent tests
+in parallel while their reservations fit.
+
+If the kernel kills a Job for running out of memory because the Sandbox has
+used `[sandbox].memory` plus its
+[swap](SANDBOX.md#project-settings-sandbox), Booley runs it again once,
+alone. A second kill fails the Job.
+
+If the host itself runs out of memory while the Sandbox stays below that
+limit, running alone does not help, so Booley does not retry the Job. The
+result says the host ran out of memory: free memory on the host, or lower
+`[sandbox].memory` and recreate the Sandbox, then run the Job again. A kill
+Booley cannot see (inside a FuseSoC generator, a Pre-Sim Command or a mutation
+run, for example) is a plain failure.
+
+Limits apply to one Project.
+
+`[jobs.seats]` caps the licensed seats of a commercial tool, such as `vivado`.
+Every licensed tool a Project uses needs one: without it Doctor fails and the
+Flow is refused.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Seat Caps don't share commercial license seats between Projects. See
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
+
+</details>
 
 ### Job resource history
 
 Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target and Job phase. `booley resources` prints
-the run count and the minimum, median, and maximum peak memory and wall-clock
-time for each (`--json` for scripts). Use it to choose `heavy_memory` and
-`[sandbox].memory`.
+keeps the newest 20 runs per Target and Job phase, with no overall cap. Each
+Specialist run that calls its Agent CLI is measured too (the Agent CLI's
+processes, not Booley's own, and not their temporary files) and kept 20 per
+Specialist; Specialist runs do not change the figures of any Target. An entry
+with no run in the last 90 days is deleted the next time any Job records. Peak
+memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
+recorded before that rule keep their earlier peak. `booley resources` prints the
+run count and the minimum, median, and maximum peak memory and wall-clock time
+for each, with one line per Specialist after the Targets (`--json` for
+scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation has its own entry
+(`tests=first+slow`; the default Variant keeps the bare Test name), and the
+seeds of one Variant share it. Flow runs that `booley doctor` starts are not
+recorded. If the history is not valid JSON or was written by another Booley
+version, the next Job keeps it as
+`.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
+one.
 
 ## Agent CLIs (`[agent]`)
 
-Booley runs its agents on an **Agent CLI**: Claude Code (`claude`) or Codex
-(`codex`). `clis` lists the ones your Project may use, and `default` picks the
-one the Developer Agent and Booley's own calls run on:
+Booley runs the Developer Agent and the Specialists on an **Agent CLI**:
+Claude Code (`claude`) or Codex (`codex`).
 
 ```toml
 [agent]
-clis = ["claude", "codex"]   # the Agent CLIs this Project may use
-default = "claude"           # must be one of them
+clis = ["claude", "codex"]   # every Agent CLI this Project may use
+default = "claude"           # the one used unless you pick another
 ```
 
-Without `clis`, the Project uses only the default CLI. `clis` also decides
-which logins the Sandbox receives, see
-[Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
-Without `default`, the
-first entry of `clis` is the default. `provider` is the older name for
-`default` and still works; `booley init` asks for it (default `claude`) and
-keeps your answer on re-runs, and `booley init --provider codex` sets it
-without the prompt. Each Specialist runs on the Agent CLI its model needs, so
-list a second CLI only when a [`[models]`](#model-selection-models) entry asks
-for it.
+- **`default`** is what `booley chat` opens. It also runs Specialists unless a
+  [`[models]`](#model-selection-models) entry needs the other CLI. Without it, the first entry of `clis` is the default.
+- **`clis`**: listing a second CLI lets you open it with
+  `booley chat --cli codex`, lets a `[models]` entry run a Specialist on it, and
+  gives the Sandbox its login (see
+  [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox)).
+  Without `clis`, the Project uses only `default`.
+
+`booley init` asks for the default CLI (Enter picks `claude`) and keeps your
+answer on re-runs. `booley init --provider codex` skips the prompt. `provider`
+is the older name for `default` and still works.
 
 ### Pinning what bills (`[agent] auth`)
 
@@ -169,16 +204,19 @@ pays:
 ```toml
 [agent]
 default = "claude"
-auth = "subscription"   # "subscription", "api_key", or "auto" (default)
+auth = "subscription"   # "subscription" or "api_key"
 ```
 
-- **`auto`**: the Agent CLI decides, and an API key beats a subscription.
 - **`subscription`**: Booley removes API keys from the agents' environment so
   the subscription pays.
 - **`api_key`**: the API key pays.
 
+Leave `auth` out and the subscription pays, whatever API key is exported.
+`booley doctor` still fails on a missing `auth`, so the choice is on record.
+
 A single value applies to every CLI in `clis`. To bill each CLI differently,
-use a table with one entry per CLI; a CLI you leave out uses `auto`:
+use a table with one entry per CLI; `booley doctor` fails for a CLI you leave
+out:
 
 ```toml
 [agent]
@@ -189,17 +227,22 @@ claude = "subscription"
 codex = "api_key"
 ```
 
-A table may name only CLIs listed in `clis`. Codex also accepts `gateway`,
-which sends its calls through a model gateway set up for your Sandbox; Claude
-Code does not. A Sandbox that Booley issues for you forwards the gateway
-settings from your shell for Codex only; see
-[Codex through a model gateway](SANDBOX.md#codex-through-a-model-gateway).
+A table may name only CLIs listed in `clis`.
 
-With `subscription` or `api_key`, `booley doctor` fails when the default CLI's
-credential is missing instead of quietly billing the other one; for another CLI
-in `clis` it only warns, unless a `[models]` entry runs a Specialist on that CLI:
-then a missing credential fails under any `auth` value. On the command line,
-`booley init --auth api-key` (with a hyphen) records `api_key`. Why to pick one:
+`booley doctor` checks that the credential you picked exists, so Booley never
+quietly bills the other one:
+
+- **Any CLI in `clis`** whose `auth` is missing or `"auto"`: fails, naming the
+  value `booley init` would record (`subscription` with a login, `api_key` with
+  only a key). Set it under `[agent]` or `[agent.auth]`, or re-run `booley init`.
+- **Default CLI**, with `subscription` or `api_key`: a missing credential fails.
+- **Another CLI in `clis`**: a missing credential warns. If a `[models]` entry
+  runs a Specialist on that CLI, it fails whatever `auth` says.
+
+`booley init` records the policy it detects for each CLI in `clis`: one string
+when they agree, an `[agent.auth]` table when they differ. It keeps an explicit
+value; `booley init --auth api-key` (with a hyphen) records
+`api_key` without detection. Why to pick one:
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
 ### Git identity (`[agent.git]`)
@@ -215,29 +258,9 @@ email = "developer@example.com"
 
 Without it, commits use `Dev <dev@localhost>`. It overrides any gitconfig in the
 Sandbox and leaves your host checkout alone; `git -c`, `--author`, and
-`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After a change, recreate the Sandbox
-(`booley session refresh`). Doctor run in the Sandbox warns when Git would use
-another identity, and names the fix, including for a hand-written devcontainer
-spec such as GitHub Codespaces.
-
-## Interactive sessions (`[chat]`)
-
-```toml
-[chat]
-worktree = "auto"    # "auto" (default), "always", or "never"
-```
-
-Decides where `booley chat` starts when you run it from the main checkout:
-
-- `auto`: in the main checkout when no other Booley session is using it,
-  otherwise in a new worktree `s<N>` on branch `booley/s<N>`.
-- `always`: always in a new worktree.
-- `never`: always in the main checkout.
-
-`booley chat --new-worktree` and `--here` override it for one launch. Any other
-value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
-linked worktree, `booley chat` starts there whatever this says. See
-[Several agents at once](USAGE.md#several-agents-at-once).
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After a change,
+[recreate the Sandbox](SANDBOX.md#after-changing-sandbox-settings). Doctor run
+in the Sandbox warns when Git would use another identity, and names the fix.
 
 ## Model selection (`[models]`)
 
@@ -254,19 +277,18 @@ default = "claude"
 reviewer = "gpt-6-astra"   # runs on Codex
 ```
 
-The `[models]` keys are `reviewer`, `mutation_tester`, and `coverage_analyst`.
-Any other key, a model that is neither `claude-*` nor `gpt-*`, or a model whose
-CLI isn't in `clis` stops Booley from loading the config, and `booley doctor`
-names the entry. The Developer Agent itself uses your Agent CLI's own model
-setting, not this table.
+The `[models]` keys are `reviewer` and `coverage_analyst`. Any other key, a
+model that is neither `claude-*` nor `gpt-*`, or a model whose CLI isn't in
+`clis` stops Booley from loading the config, and `booley doctor` names the
+entry. The Developer Agent itself uses your Agent CLI's own model setting, not
+this table.
 
-A Specialist without an entry, and Booley's own small internal steps, use the
-default CLI's built-in model, so most Projects need no `[models]` at all:
+A Specialist without an entry uses the default CLI's built-in model, so most
+Projects need no `[models]` at all:
 
 | Used by | Claude Code | Codex |
 |---|---|---|
 | Specialists | `claude-opus-5-5` | `gpt-6.1-sol` |
-| Booley's internal calls | `claude-sonnet-5-5` | `gpt-6-luna` |
 
 Booley passes the model to the Agent CLI as written and never swaps it: if your
 account can't run it, the Specialist fails and the error names the `[models]`
@@ -276,96 +298,159 @@ entry to change. `booley doctor --deep` checks every model ahead of time.
 keys or a `[models.roles]` table doesn't load; the error shows the `[models]`
 entries to use instead.
 
-## Dashboard and quiet Goal presence (`[goals]`)
+## Dashboard (`[sandbox].dashboard`)
 
 ```toml
 [sandbox]
 dashboard = true     # open the Dashboard when VS Code attaches to the Sandbox
-
-[goals]
-quiet_after = 7200   # seconds, 60 to 604800
 ```
 
 With `dashboard = false` the [Dashboard](USAGE.md#the-dashboard) does not
 open on its own; `booley dashboard` in a container terminal still opens it, and
 so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
-Git folder). If it doesn't open when it should, see [Dashboard
-troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
+Git folder).
 
-A Goal session that makes no Booley call for `quiet_after` seconds (default two
-hours) counts as quiet. The Dashboard may drop it from the Sessions list, and
-Doctor warns that the Goal has no recent activity. Quiet never ends or abandons
-a Goal.
+## Worktrees
 
-## Worktree cleanup (`[worktree]`)
+### Worktree settings (`[worktree]`)
 
 ```toml
 [worktree]
+chat = "auto"          # "auto" (default), "always", or "never"
 gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
 ```
 
-`booley worktree gc` removes worktrees whose last use is older than this age,
-keeping any that `booley worktree rm` would refuse (default `"7d"`). The
-setting is read from the main checkout's `.booley/booley.toml`; a worktree's own
-copy is ignored. `booley worktree gc --older-than AGE` overrides it. See
-[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+`chat` decides where `booley chat` starts when you run it from the main
+checkout:
+
+- `auto`: in the main checkout when no other Booley session is using it,
+  otherwise in a new worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in
+  Stealth Mode).
+- `always`: always in a new worktree; if the main checkout was free, the launch
+  holds it until its session ends, so a later `auto` launch starts in a
+  worktree too.
+- `never`: always in the main checkout.
+
+`booley chat --new-worktree` and `--here` override it for one launch. Any other
+value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
+linked worktree, `booley chat` starts there whatever this says. See
+[Several agents at once](USAGE.md#several-agents-at-once).
+
+`booley worktree gc` removes worktrees whose last use is older than
+`gc_older_than`, keeping any that `booley worktree rm` would refuse (default
+`"7d"`). Every `booley chat` launch runs the same cleanup with this age.
+`gc_older_than` is read from the main checkout's `.booley/booley.toml`; a
+worktree's own copy is ignored. `booley worktree gc --older-than AGE` overrides
+it. See [Cleaning up idle worktrees](WORKTREES.md#cleaning-up-idle-worktrees).
+
+### Worktree setup hooks (`.booley/hooks/`)
+
+Keep Project setup scripts, such as a `.booley/hooks/post-setup.sh` that builds a
+toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
+`post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
+Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
+and logged, and a failure removes the worktree again. Keep generated build
+outputs ignored by Git.
+
+### Git submodules (`[submodules]`)
+
+Baseline comparisons run in separate git worktrees. Booley
+fills each worktree's submodules from your local copy at the same path, at the
+commit the branch pins, without cloning anything, so private SSH URLs are
+fine. Recursive submodules work the same way.
+
+Run this once on the host:
+
+```bash
+git submodule update --init --recursive
+```
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`.booley` is its own Git repository, so initialize its submodules too:
+
+```bash
+git -C .booley submodule update --init --recursive
+```
+
+See [Stealth Mode](STEALTH.md).
+
+</details>
+
+Each submodule must be present, clean, and have its full history (not a
+shallow clone) before a baseline run starts. Otherwise the run stops
+with one of:
+
+- `submodule <path> not found in source Project; initialize it first`
+- `submodule <path> is dirty`
+- `submodule <path> is shallow; fetch its complete history first`
+- `local objects for submodule <path> are incomplete`
+
+The last one means your local copy lacks objects for the commit the branch
+pins; fetch in that submodule. Booley always uses the pinned commit, even when your checkout
+has a newer one.
+
+To copy only some submodules (skip a large docs or board submodule nothing
+builds from), list the ones you want in `booley.toml`:
+
+```toml
+[submodules]
+paths = ["deps/bus_pkg", "deps/axi_verif"]
+```
+
+Without `paths`, every top-level submodule is copied; `paths = []` copies
+none. Unlisted submodules appear as empty directories in the worktree.
+Submodules nested inside a listed one are always copied.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The list applies to the RTL repository only: every submodule of the `.booley`
+repository is always copied. See [Stealth Mode](STEALTH.md).
+
+</details>
 
 ## Feedback (`[feedback]`)
 
 `/booley-feedback` records bugs, confusion, and opinions in a local report,
-`.booley/SETUP-REPORT.md` (`FEEDBACK-REPORT.md` on a Project that never ran
-setup). Booley never sends feedback anywhere. When you ask the skill for a copy
+`.booley/FEEDBACK-REPORT.md`. Booley never sends feedback anywhere. When you ask the skill for a copy
 to share, it writes `.booley/BOOLEY-FEEDBACK.md` with your Project's details
 replaced; read it before you send it. How to report: [When Booley itself
 misbehaves](USAGE.md#when-booley-itself-misbehaves).
 
-The `[feedback]` table tunes only that redaction:
+| Replaced | Becomes |
+|---|---|
+| Project Root, in every checkout | `<repo>` |
+| Home directory and any `/home/<user>`, `/Users/<user>`, or `C:\Users\<user>` path | `<home>` |
+| Git remote URLs, and the remote's `org/repo` | `<remote>`, `<org>/<repo>` |
+| Your Git name and email; any other email | `<author>`, `<author-email>`; `<email>` |
+| Design names: Project name, checkout folders, and `.core` Target names, VLNV parts, and toplevels | `<module-1>`, `<module-2>`, … |
+| `redact_extra` terms and `[stealth]` banned words and substrings | `<redacted>` |
+
+Each design name keeps its number throughout, so the report still reads. Names
+under four characters and generic ones such as `top` are never replaced. EDA
+tool names and versions, error text, tracebacks, and timing and area numbers
+are kept, because a report without them can't be acted on. A design name
+inside a quoted log line can slip through, so read attached log tails too.
+Redaction is best effort, not a guarantee.
 
 ```toml
 [feedback]
 # redact_extra = ["codename"]   # extra terms to replace
-# redact_identifiers = false    # keep module and Target names (default: replace them)
+# redact_identifiers = false    # keep design names (default: replace them)
 ```
 
-**Replaced:** absolute paths (Project Root, home directory, any `/home/<user>`),
-Git remote URLs and their `org/repo`, your Git name and email, and the design
-names in `booley.toml` and your `.core` files (Project name, Target names, VLNV
-parts, toplevels). Design names become stable placeholders such as `<module-3>`,
-so the report still reads. `redact_extra` terms are replaced too, as are any
-`[stealth]` `banned_words` and `banned_substrings` you set.
+For an open-source design whose names are already public,
+`redact_identifiers = false` gives the maintainer a more useful report.
 
-**Kept**, because a report without them can't be acted on: EDA tool names and
-versions, error text, tracebacks, and timing and area numbers. That reveals
-which commercial EDA tools you license, and a design name that appears only
-inside a quoted log line slips through. Attached log tails are redacted with the
-rest, but a log line is arbitrary text, so read them in the shared file.
+<details markdown>
+<summary>With host-installed licensed tools</summary>
 
-Redaction is a best-effort list, not a guarantee. For an open-source design
-whose module names are already public, `redact_identifiers = false` gives the
-maintainer a more useful report.
+Kept tool names reveal which commercial EDA tools you license. See
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
 
-## Explicit Flow Targets and Doctor selection
-
-A Flow run that doesn't name a Target uses the only eligible one, and fails
-when there are several ([Choosing Targets](FLOW_REFERENCE.md#choosing-targets)).
-Doctor checks only the Targets you mark for it. The mark sits in the `.core`
-file, beside the Target:
-
-```yaml
-targets:
-  lint_core:
-    flow: lint
-    flow_options:
-      tool: verilator
-      booley: {doctor: [lint]}
-```
-
-The allowed names are `sim`, `lint`, `synth`, and `fpga`. Plain `booley doctor`
-dry-runs each marked Target and `booley doctor --deep` runs it. For `fpga`,
-deep Doctor skips the full implementation and prints the command to run it
-yourself. An unmarked Target still runs whenever you or the agent ask for it.
-With an enabled `[flows.fpga]` table, Doctor fails until some Target is marked
-`fpga`; set `enabled = false` there if the Project has no FPGA build yet.
+</details>
 
 ## Advanced setups
 
@@ -374,8 +459,8 @@ description](TARGETS.md#design-description-core)). Two extension points remain
 for what a `.core` can't express:
 
 - **A build step per test**, such as compiling the selected test's firmware or
-  staging vectors: [Pre-run
-  commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
+  staging vectors: [Pre-Sim
+  Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
 - **A new kind of check** with its own pass criteria: a custom MCP tool, below.
 
 The EDA tools Booley supports are listed in
@@ -387,23 +472,6 @@ A Project can add its own tools for the Developer Agent as Python files in
 `.booley/mcp_tools/`. The agent discovers them and calls them like the built-in
 ones; ask it to write one. To switch one off, prefix its filename with `_`, for
 example `_project_check.py`. How they work: [MCP-TOOLS.md](../internals/MCP-TOOLS.md).
-
-### Worktree setup hooks
-
-Keep Project setup scripts, such as a `.booley/hooks/post-setup.sh` that builds a
-toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
-`post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
-Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
-and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git, and commit deliberate inputs before Goal entry. Hooks
-are frozen as Protected Inputs while a Goal runs.
-
-Goal Mode's baseline runs, which measure the Goal's base commit, also run
-`post-setup` in their fresh checkout of that commit, with `BOOLEY_WORKTREE` set
-to it, so files the hook builds (a firmware image, say) exist at the base too. Make the hook safe to run
-twice and read its inputs from the checkout. If it fails, only the Targets that
-need its output lose their baseline, with the hook's error as the reason. A
-hook that changes a tracked file makes the baseline unavailable.
 
 ## Something wrong here?
 

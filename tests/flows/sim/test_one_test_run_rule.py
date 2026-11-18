@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.sim.campaign.test_run_binding import observation_test_runs
-from booley.flows.sim.campaign.test_run_report import (
+from booley.flows.sim.record.test_run_binding import observation_test_runs
+
+# Private seam: the report row reader is reached only with a stored observation, which needs a finished run record.
+from booley.flows.sim.record.test_run_report import (
     TEST_RUN_GRADES,
     _observed_run,
     test_run_grade,
@@ -85,7 +87,7 @@ def test_the_one_grade_table(passed, infrastructure, inconclusive, grade):
     assert grade in TEST_RUN_GRADES
 
 
-def test_coverage_runs_are_graded_by_the_campaign_table():
+def test_coverage_runs_are_graded_by_the_simulation_record_table():
     """An infrastructure failure is an error on the coverage path, even when inconclusive."""
     from booley.flows.sim.coverage_acceptance import coverage_run_grade
 

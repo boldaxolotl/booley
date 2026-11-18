@@ -1,0 +1,58 @@
+name: Docs post-review digest
+
+# Opens the weekly digest of merged docs-postreview pull requests.
+# The issue body carries the maintainer steps. A manual run defaults to a dry
+# run that prints the digest and writes nothing.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the digest and write nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+# A manual run and the scheduled one must not both open a digest for a window.
+concurrency:
+  group: docs-postreview-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    name: digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Recorded before the checkout: every PR merged at or before this instant
+      # has its merge commit in the checkout.
+      - name: Record cut-off
+        run: echo "CUTOFF=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Open digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PYTHONPATH: src
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            python .github/scripts/docs_postreview_digest.py --cutoff "$CUTOFF" --dry-run
+          else
+            python .github/scripts/docs_postreview_digest.py --cutoff "$CUTOFF"
+          fi

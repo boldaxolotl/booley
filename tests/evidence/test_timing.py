@@ -4,7 +4,6 @@ from booley.evidence.timing import (
     per_clock_from_json,
     per_clock_to_json,
     worst_clock,
-    worst_fmax_from_json,
 )
 
 
@@ -30,4 +29,3 @@ def test_worst_clock_uses_fmax_then_critical_path_then_slack() -> None:
     }
 
     assert worst_clock(clocks) is clocks["slow"]
-    assert worst_fmax_from_json(per_clock_to_json(clocks)) == 100.0

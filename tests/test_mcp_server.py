@@ -6,8 +6,10 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +24,7 @@ from booley.mcp import (
     report_encoding,
 )
 from booley.runtime import health_presentation
+from tests.time_budget import hang_guard_s, scaled
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -361,7 +364,7 @@ class TestRunSubprocess:
         code, _out, err, timed_out = asyncio.run(
             self._run_subprocess(
                 [sys.executable, "-c", "import time; time.sleep(5)"],
-                timeout=1,
+                timeout=scaled(1),
             ),
         )
         assert code == 2
@@ -393,7 +396,7 @@ class TestRunSubprocess:
         script = (
             "import os, sys, time, subprocess, pathlib\n"
             "subprocess.Popen([sys.executable, '-c',"
-            f' "import time, pathlib; time.sleep(1.5);'
+            f' "import time, pathlib; time.sleep({scaled(1.5)});'
             f" pathlib.Path({str(survived)!r}).write_text('x')\"])\n"
             f"pathlib.Path({str(started)!r}).write_text(str(os.getpid()))\n"
             "time.sleep(30)\n"
@@ -401,9 +404,10 @@ class TestRunSubprocess:
 
         async def drive():
             task = asyncio.create_task(
-                self._run_subprocess([sys.executable, "-c", script], timeout=30)
+                self._run_subprocess([sys.executable, "-c", script], timeout=hang_guard_s())
             )
-            for _ in range(250):  # up to ~5s for the child to come up
+            child_deadline = time.monotonic() + hang_guard_s()
+            while time.monotonic() < child_deadline:  # wait for the child to come up
                 if started.exists():
                     break
                 await asyncio.sleep(0.02)
@@ -411,7 +415,7 @@ class TestRunSubprocess:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            await asyncio.sleep(2.0)  # past the grandchild's 1.5s write attempt
+            await asyncio.sleep(scaled(2.0))  # past the grandchild's write attempt
 
         asyncio.run(drive())
         assert not survived.exists(), (
@@ -436,6 +440,28 @@ class TestRunSubprocess:
         assert code == 0
         assert out.endswith("END_MARKER")
         assert len(out.encode("utf-8")) <= cap
+
+
+def test_mutation_watchdog_follows_resolved_timeout(tmp_path):
+    mcp_stubs = {
+        "mcp": MagicMock(),
+        "mcp.server": MagicMock(),
+        "mcp.server.models": MagicMock(),
+        "mcp.server.request_state": MagicMock(),
+        "mcp.server.stdio": MagicMock(),
+        "mcp.types": MagicMock(),
+    }
+    with patch.dict(sys.modules, mcp_stubs):
+        from booley.mcp.server import _mcp_tool_timeout_seconds as watchdog
+
+    mutation_def = {"default_timeout": 1800}
+    project = {"work_dir": str(tmp_path)}
+    # No override: the run's 30-minute default, exactly the outer wait it always had.
+    assert watchdog("mutation", project, mutation_def) == 1800
+    # A larger budget (which also raises the --count auto cap) is not cut off at 30 minutes.
+    assert watchdog("mutation", {**project, "timeout_ms": 3_600_000}, mutation_def) == 3600
+    # A smaller one never shrinks the wait below the Flow's default.
+    assert watchdog("mutation", {**project, "timeout_ms": 60_000}, mutation_def) == 1800
 
 
 class TestMcpToolTimeoutSeconds:
@@ -472,19 +498,19 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_configured_default_gets_small_margin(self, tmp_path):
         with patch(
-            "booley.flows.sim.flow._resolve_sim_timeout_ms",
-            return_value=600_000,
+            "booley.flows.sim.config.resolve_sim_timeout_ms",
+            return_value=900_000,
         ):
             timeout = self._mcp_tool_timeout_seconds(
                 "sim",
                 {"work_dir": str(tmp_path), "trace": False},
                 {"default_timeout": 600},
             )
-        assert timeout == 4830
+        assert timeout == 5130
 
-    def test_simulate_campaign_budget_scales_by_work_units(self):
+    def test_simulate_simulation_record_budget_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=4,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -496,7 +522,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -509,7 +535,7 @@ class TestMcpToolTimeoutSeconds:
     def test_coverage_trace_budget_adds_conversion_per_unit(self):
         def coverage_timeout(trace: bool) -> int:
             with patch(
-                "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+                "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
                 return_value=2,
             ):
                 return self._mcp_tool_timeout_seconds(
@@ -524,7 +550,7 @@ class TestMcpToolTimeoutSeconds:
         from booley.flows.sim.mode import SimulationMode
 
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ) as resolve_units:
             timeout = self._mcp_tool_timeout_seconds(
@@ -542,7 +568,7 @@ class TestMcpToolTimeoutSeconds:
     def test_watchdog_sizing_sees_the_requested_seed(self):
         """``--seed random`` splits Cocotb batches, so sizing must know about it."""
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ) as resolve_units:
             self._mcp_tool_timeout_seconds(
@@ -562,30 +588,39 @@ class TestMcpToolTimeoutSeconds:
 
         assert timeout == 2 * 3600 + 30
 
-    def test_cycle_count_baseline_uses_same_budget_for_both_revisions(
+    @pytest.mark.parametrize(
+        ("tool", "criterion", "arguments", "default", "expected"),
+        [
+            ("synth", "synthesis_ok_core", {"target": "core", "timeout_ms": 4_000_000}, 600, 4180),
+            ("fpga", "fpga_impl_ok_core", {"target": "core", "timeout_ms": 4_000_000}, 600, 4180),
+            ("sim", "cycle_count_core", {"target": "core", "timeout_ms": 10_000}, 1, 4240),
+        ],
+        ids=["synth", "fpga", "sim"],
+    )
+    def test_criterion_baseline_ref_never_changes_the_budget(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        tool: str,
+        criterion: str,
+        arguments: dict[str, Any],
+        default: int,
+        expected: int,
     ):
+        """A baseline revision pinned by a state-file Criterion does not double the budget."""
         state = tmp_path / "state.json"
         state.write_text(
-            json.dumps(
-                {"criteria": {"cycle_count_core": {"params": {"_baseline_ref": "a" * 40}}}}
-            ),
+            json.dumps({"criteria": {criterion: {"params": {"_baseline_ref": "a" * 40}}}}),
             encoding="utf-8",
         )
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=1,
         ):
-            timeout = self._mcp_tool_timeout_seconds(
-                "sim",
-                {"target": "core", "timeout_ms": 10_000},
-                {"default_timeout": 1},
-            )
+            timeout = self._mcp_tool_timeout_seconds(tool, arguments, {"default_timeout": default})
 
-        assert timeout == 2 * (3600 + 600 + 10) + 30
+        assert timeout == expected
 
     def test_lint_short_timeout_uses_outer_floor(self):
         timeout = self._mcp_tool_timeout_seconds(
@@ -641,58 +676,6 @@ class TestMcpToolTimeoutSeconds:
             {"default_timeout": 600},
         )
         assert timeout == 4 * 4000 + 4 * 60 + 120
-
-    def test_synth_ticket_baseline_budgets_both_passes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        state = tmp_path / "state.json"
-        state.write_text(
-            json.dumps(
-                {
-                    "criteria": {
-                        "synthesis_ok_core": {
-                            "params": {"_baseline_ref": "a" * 40},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
-
-        timeout = self._mcp_tool_timeout_seconds(
-            "synth",
-            {"target": "core", "timeout_ms": 4_000_000},
-            {"default_timeout": 600},
-        )
-
-        assert timeout == 2 * 4000 + 2 * 60 + 120
-
-    def test_fpga_ticket_baseline_budgets_both_passes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        state = tmp_path / "state.json"
-        state.write_text(
-            json.dumps(
-                {
-                    "criteria": {
-                        "fpga_impl_ok_core": {
-                            "params": {"_baseline_ref": "a" * 40},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
-
-        timeout = self._mcp_tool_timeout_seconds(
-            "fpga",
-            {"target": "core", "timeout_ms": 4_000_000},
-            {"default_timeout": 7200},
-        )
-
-        assert timeout == 2 * 4000 + 2 * 60 + 120
 
     def test_simulate_no_timeout_arg_honors_config_knob(self, tmp_path: Path):
         """F4: without a call override, the watchdog honors [flows.sim].timeout_ms.
@@ -778,7 +761,7 @@ class TestMcpToolTimeoutSeconds:
             encoding="utf-8",
         )
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -982,15 +965,15 @@ class TestResolveTranscriptDir:
     def test_creates_dir_under_logs(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        result = self._resolve("mutation_tester", counts)
-        assert result == tmp_path / ".runtime" / "transcripts" / "mutation_tester" / "1"
+        result = self._resolve("reviewer", counts)
+        assert result == tmp_path / ".runtime" / "transcripts" / "reviewer" / "1"
         assert result.is_dir()
 
     def test_sequential_numbering(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        r1 = self._resolve("mutation_tester", counts)
-        r2 = self._resolve("mutation_tester", counts)
+        r1 = self._resolve("reviewer", counts)
+        r2 = self._resolve("reviewer", counts)
         assert r1.name == "1"
         assert r2.name == "2"
 
@@ -998,7 +981,7 @@ class TestResolveTranscriptDir:
         """Must still return a valid dir (not None) even without BOOLEY_LOGS_DIR."""
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
         counts = self._new_counts()
-        result = self._resolve("mutation_tester", counts)
+        result = self._resolve("reviewer", counts)
         assert result.is_dir()
         assert "transcripts" in str(result)
 
@@ -1015,7 +998,7 @@ class TestMcpExposureFiltering:
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
-        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("submit_run_report", catalog.Exposure.from_mapping(os.environ))
@@ -1026,7 +1009,7 @@ class TestMcpExposureFiltering:
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
         assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
         bwave_tools = [
@@ -1098,7 +1081,7 @@ class TestCoverageEvidenceTool:
     def test_bound_nested_server_exposes_only_coverage_evidence(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
-        monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", "/reports/coverage.json")
+        monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", "/reports/coverage.json")
         monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", "/project")
 
         tools = catalog.visible_definitions(catalog.Exposure.from_mapping(os.environ), [])
@@ -1110,10 +1093,10 @@ class TestCoverageEvidenceTool:
         assert "point_refs" in tools[0]["description"]
         assert "point_ids" not in tools[0]["description"]
 
-    def test_coverage_evidence_is_hidden_without_bound_campaign(self, monkeypatch):
+    def test_coverage_evidence_is_hidden_without_bound_simulation_record(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
-        monkeypatch.delenv("BOOLEY_COVERAGE_CAMPAIGN", raising=False)
+        monkeypatch.delenv("BOOLEY_COVERAGE_RECORD", raising=False)
         monkeypatch.delenv("BOOLEY_COVERAGE_PROJECT", raising=False)
 
         assert not catalog.coverage_visible(catalog.Exposure.from_mapping(os.environ))
@@ -1191,14 +1174,11 @@ class TestBooleyStatus:
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_measure",
             "booley_poll",
             "booley_report",
             "booley_status",
             "booley_targets",
-            "goal_enter",
-            "goal_finish",
-            "goal_propose_change",
-            "goal_status",
             "sim",
         ]
 
@@ -1340,15 +1320,12 @@ class TestBooleySleep:
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_measure",
             "booley_poll",
             "booley_report",
             "booley_sleep",
             "booley_status",
             "booley_targets",
-            "goal_enter",
-            "goal_finish",
-            "goal_propose_change",
-            "goal_status",
             "sim",
         ]
 
@@ -1505,7 +1482,7 @@ class TestBwaveDispatch:
     def _patch_dispatch(self, monkeypatch):
         calls = []
 
-        async def fake_run(cmd, timeout=600):
+        async def fake_run(cmd, **_kwargs):
             calls.append(cmd)
             return 0, "ok", "", False
 
@@ -1567,7 +1544,7 @@ class TestBwaveDispatch:
         assert events[1]["duration_s"] >= 0
 
     def test_bwave_nonzero_exit_and_stderr_are_preserved(self, tmp_path, monkeypatch):
-        async def fake_run(cmd, timeout=600):
+        async def fake_run(cmd, **_kwargs):
             return 9, "", "bad virtual signal", False
 
         def fake_text_content(**kwargs):
@@ -1598,8 +1575,55 @@ class TestBwaveDispatch:
         assert events[-1]["type"] == "endpoint_end"
         assert events[-1]["exit_code"] == 9
 
+    def test_routed_call_reads_the_worktree_store(self, tmp_path, monkeypatch):
+        """A routed bwave call resolves `@<alias>` from the caller's checkout store (#3483)."""
+        import booley
+        from booley.mcp.application import McpRequestContext
+
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        for checkout, marker in ((main, "main_mark"), (worktree, "tree_mark")):
+            store = checkout / ".booley" / ".runtime" / "bwave"
+            store.mkdir(parents=True)
+            session = {"dut": {"trace": "trace.fst", "markers": {marker: 7}}}
+            (store / "bwave_sessions.json").write_text(json.dumps(session), encoding="utf-8")
+        (tmp_path / "private-tmp").mkdir()
+        for name in ("TMPDIR", "TEMP", "TMP"):
+            monkeypatch.setenv(name, str(tmp_path / "private-tmp"))
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+        monkeypatch.setenv("PYTHONPATH", str(Path(booley.__file__).resolve().parents[1]))
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+        monkeypatch.chdir(main)
+        monkeypatch.setattr(
+            self.mcp_server,
+            "TextContent",
+            lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
+        )
+
+        def call(request_context):
+            result = asyncio.run(
+                self.mcp_server._dispatch_application_tool(
+                    "bwave",
+                    {"extra_args": ["markers", "@dut", "list"]},
+                    {},
+                    jobs=MagicMock(),
+                    status_mcp_tool_names=[],
+                    mcp_tool_call_counts={},
+                    request_context=request_context,
+                )
+            )
+            return result[0].text
+
+        routed = call(McpRequestContext(checkout=worktree))
+        unrouted = call(None)
+
+        assert "tree_mark" in routed and "main_mark" not in routed
+        assert "main_mark" in unrouted and "tree_mark" not in unrouted
+
     def test_bwave_spawn_error_still_closes_console_activity(self, tmp_path, monkeypatch):
-        async def fail_to_spawn(cmd, timeout=600):
+        async def fail_to_spawn(cmd, **_kwargs):
             raise OSError("spawn failed")
 
         monkeypatch.setattr(self.mcp_server, "_run_subprocess", fail_to_spawn)
@@ -1643,12 +1667,12 @@ class TestBwaveDispatch:
 
 
 # ---------------------------------------------------------------------------
-# _load_agent_settings_from_toml (Interactive Mode honors [agent] in booley.toml)
+# _load_agent_settings_from_toml (the Sandbox honors [agent] in booley.toml)
 # ---------------------------------------------------------------------------
 
 
 class TestLoadAgentSettingsFromToml:
-    """Interactive Mode must preload agent settings from booley.toml.
+    """The Sandbox MCP server must preload agent settings from booley.toml.
 
     Regression guard: without this, Runtime may lazily use defaults even when
     the Project selected another provider.
@@ -1790,6 +1814,16 @@ class TestBuiltinDiscoveryGate:
         assert errors == []
         assert {r["name"] for r in results} == {endpoint.name for endpoint in discovered}
 
+    def test_implementation_flows_are_discovered_as_flows(self):
+        # Synth and FPGA derive from ImplementationFlow, not BuiltinFlow directly:
+        # the import-free scan must still list them, or their CLI and MCP tools vanish.
+        from booley.mcp.registry import discover_mcp_tools
+
+        kinds = {info.name: info.kind for info in discover_mcp_tools()}
+
+        assert kinds["synth"] == "flow"
+        assert kinds["fpga"] == "flow"
+
 
 # ---------------------------------------------------------------------------
 # main() — proxy env self-heal
@@ -1882,7 +1916,7 @@ class TestMainProxySelfHeal:
 
 
 # ---------------------------------------------------------------------------
-# Interactive Mode: honest answer for a deliberately hidden MCP tool (F-38)
+# Sandbox MCP server: honest answer for a deliberately hidden MCP tool (F-38)
 # ---------------------------------------------------------------------------
 
 
@@ -1896,7 +1930,7 @@ def test_simulation_count_transport_omits_only_full_mapping():
         "flow": "sim",
         "passed": True,
         "detail": {
-            "campaigns": {
+            "records": {
                 "sim": {
                     "observations": [{"test": "one", "cycle_count": 7}],
                     "artifacts": {"simulation": {"path": "targets/sim/simulation.json"}},
@@ -1922,11 +1956,11 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
 ):
     from types import SimpleNamespace
 
-    from booley.flows.sim.flow import _campaign_report_lines
+    from booley.flows.sim.record_presentation import _simulation_record_report_lines
     from booley.flows.test_runs import build_test_run
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
-    from tests.flows.sim.campaign_test_support import _recorded_campaign
+    from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
 
     manifest = Path("/manifest.json")
     pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
@@ -1934,7 +1968,7 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
     smoke = build_test_run("smoke")
-    observation = _recorded_campaign(tmp_path, (smoke,)).fact(
+    observation = _recorded_simulation_record(tmp_path, (smoke,)).fact(
         smoke, test="smoke", cycle_count=7, detail={"reason": "x" * 3870}
     )
     outcome = SimpleNamespace(
@@ -1943,7 +1977,7 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
         aggregate_grade="fail",
         observations=[observation],
     )
-    card = "\n".join(_campaign_report_lines([outcome]))
+    card = "\n".join(_simulation_record_report_lines([outcome]))
     assert len(card.encode()) + 2 <= budget
     result = EndpointOutcome(exit_code=1, report_text=card)
     if completion_error:
@@ -1961,7 +1995,7 @@ def test_fetched_simulation_card_never_expands_top_level_counts():
 
     report = {
         "flow": "sim",
-        "detail": {"campaigns": {}},
+        "detail": {"records": {}},
         "cycle_counts": {"sim": [{"test": "hidden-full-row", "cycle_count": 7}]},
     }
     assert "hidden-full-row" not in _format_report_card(report, "sim")
@@ -1978,7 +2012,7 @@ def test_live_sim_checkpoint_survives_mcp_background_responses(
     monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
 
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
-    context = CallContext(tmp_path, tmp_path / "jobs", None, None, tmp_path, {}, None)
+    context = CallContext(tmp_path, tmp_path / "jobs", None, tmp_path, {}, None)
     monkeypatch.setattr(server, "job_roots", lambda: [context.jobs_root])
 
     asyncio.run(_live_checkpoint_scenario(server, context, tmp_path, monkeypatch, response_kind))
@@ -2018,7 +2052,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
         write_progress_json(tmp_path / "flow-reports/sim/2/progress.json", foreign)
         checkpoints[run_id] = checkpoint
         entered.set()
-        await asyncio.wait_for(release.wait(), timeout=5)
+        await asyncio.wait_for(release.wait(), timeout=hang_guard_s())
         return 0, "", "", False
 
     monkeypatch.setattr(server, "_run_subprocess", gated_child)
@@ -2027,7 +2061,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
     original_wait = jobs.wait
 
     async def inline_wait(run_id, seconds):
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await asyncio.wait_for(entered.wait(), timeout=hang_guard_s())
         return await original_wait(run_id, seconds)
 
     monkeypatch.setattr(jobs, "wait", inline_wait)
@@ -2041,7 +2075,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
         _assert_live_checkpoint(structured, checkpoints[run_id])
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=5)
+        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=hang_guard_s())
 
 
 async def _live_checkpoint_response(
@@ -2085,27 +2119,27 @@ def _assert_live_checkpoint(structured, checkpoint):
     assert "exit_code" not in report
 
 
-def test_registered_poll_observes_blocked_campaign_simulation(tmp_path, monkeypatch):
-    """A campaign launch blocked in the simulator shows as one live, running target."""
+def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatch):
+    """A record launch blocked in the simulator shows as one live, running target."""
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
     from booley.mcp import server
     from booley.runtime.timefmt import utc_now_rfc3339
-    from tests.flows.sim.campaign_boundary import PASS_PROCESS, run_campaign_sim
+    from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 
-    run_id = "gated-campaign-sim"
+    run_id = "gated-record-sim"
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
     entered, release = Event(), Event()
 
     def blocked_launch(_launch):
         entered.set()
-        assert release.wait(30), "test failed to release simulator launch"
+        assert release.wait(hang_guard_s()), "test failed to release simulator launch"
         return PASS_PROCESS
 
     def submit(pool):
         return pool.submit(
-            run_campaign_sim,
+            run_simulation_record_sim,
             tmp_path,
             monkeypatch,
             {"sim": ["smoke"]},
@@ -2150,7 +2184,7 @@ def _poll_blocked_flow(
     with pool_type(max_workers=1) as pool:
         future = submit(pool)
         try:
-            assert entered.wait(30), "simulator launch was not reached"
+            assert entered.wait(hang_guard_s()), "simulator launch was not reached"
             application = server._build_mcp_application([], [], server._McpLifetime(None, None))
             payload = asyncio.run(
                 application.call_tool(
@@ -2176,7 +2210,7 @@ def _poll_blocked_flow(
         finally:
             release.set()
             # The released run must finish cleanly, not merely stop blocking.
-            assert future.result(timeout=30).result.exit_code == 0
+            assert future.result(timeout=hang_guard_s()).result.exit_code == 0
 
 
 def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():

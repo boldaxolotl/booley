@@ -1,0 +1,10 @@
+1. Executing SLANG frontend.
+bad.sv:2: ERROR: expected ';'
+Top level design units:
+    dut
+
+ERROR: Design elaboration failed; see full log for details
+  wire w = a
+            ^
+
+Build failed: 1 error, 0 warnings

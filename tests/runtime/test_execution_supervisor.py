@@ -26,6 +26,7 @@ from tests.execution_test_support import (
     wait_for,
 )
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
@@ -37,6 +38,8 @@ from booley.runtime.execution_records import (
     request_cancellation,
     write_attachment_heartbeat,
 )
+from booley.runtime.process_group import new_group_kwargs
+from booley.runtime.supervised_execution import SupervisedProcessSet
 
 
 def _unique_execution_id() -> ExecutionId:
@@ -61,7 +64,7 @@ def _start_supervisor_with_test_heartbeat(
     heartbeat_path: Path,
     command: list[str],
     *,
-    grace_seconds: float = 0.25,
+    grace_seconds: float = scaled(0.25),
 ) -> subprocess.Popen[str]:
     bootstrap = (
         "from pathlib import Path\n"
@@ -89,7 +92,7 @@ def _start_supervisor_with_test_heartbeat(
             "--grace-seconds",
             str(grace_seconds),
             "--attachment-timeout-seconds",
-            "5",
+            str(2 * hang_guard_s()),
             "--",
             *command,
         ],
@@ -119,7 +122,7 @@ def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None)
             *command,
         ],
         env=env,
-        timeout=10,
+        timeout=2 * hang_guard_s(),
     )
     return result, read_json(paths.record)
 
@@ -285,7 +288,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
         )
         assert cancel.returncode == 0, cancel.stderr
 
-        assert supervisor.wait(timeout=5) == 130
+        assert supervisor.wait(timeout=hang_guard_s()) == 130
         wait_for(
             lambda: descendant_pid is not None and not _non_zombie_alive(descendant_pid),
             failure="detached descendant did not stop",
@@ -297,7 +300,8 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
-        supervisor.communicate(timeout=5)
+        # Kept on Popen: reaps the supervisor the test drives itself.
+        supervisor.communicate(timeout=hang_guard_s())
         if descendant_pid is not None and _non_zombie_alive(descendant_pid):
             os.killpg(descendant_pid, signal.SIGKILL)
 
@@ -320,7 +324,7 @@ def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path)
             lambda: len(_heartbeat_generations(heartbeat_path)) >= 2,
             failure="supervisor did not refresh its reaper heartbeat",
         )
-        assert supervisor.wait(timeout=5) == 7
+        assert supervisor.wait(timeout=hang_guard_s()) == 7
         payload = read_json(paths.record)
         assert payload["state"] == "terminal"
         assert payload["exit_code"] == 7
@@ -328,7 +332,7 @@ def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path)
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=hang_guard_s())
 
 
 def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Path) -> None:
@@ -364,7 +368,7 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
         wait_for(child_ready.exists, failure="child did not finish startup")
         before_cancel = len(_heartbeat_generations(heartbeat_path))
         request_cancellation(paths, signum=signal.SIGINT)
-        assert supervisor.wait(timeout=5) == 130
+        assert supervisor.wait(timeout=hang_guard_s()) == 130
         after_cancel = len(_heartbeat_generations(heartbeat_path))
         assert after_cancel > before_cancel
         payload = read_json(paths.record)
@@ -373,7 +377,7 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=hang_guard_s())
 
 
 def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
@@ -394,7 +398,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
             "--grace-seconds",
             "0.1",
             "--attachment-timeout-seconds",
-            "0.1",
+            str(scaled(0.1)),
             "--",
             "sleep",
             "120",
@@ -402,7 +406,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
         env=runtime_env(booley_dir),
     )
     try:
-        assert supervisor.wait(timeout=5) == 130
+        assert supervisor.wait(timeout=hang_guard_s()) == 130
         payload = json.loads(paths.record.read_text(encoding="utf-8"))
         assert payload["state"] == "terminal"
         assert payload["terminal_cause"] == "attachment_expired"
@@ -410,7 +414,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=hang_guard_s())
 
 
 def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
@@ -448,3 +452,206 @@ def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
     assert os.waitstatus_to_exitcode(status) == 0
     payload = json.loads(paths.record.read_text(encoding="utf-8"))
     assert payload["tree_terminal"] is True
+
+
+def test_process_set_lists_registered_pids_not_yet_reaped(tmp_path: Path) -> None:
+    class FakePopen:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+            self.returncode: int | None = None
+
+    processes = SupervisedProcessSet(None, tmp_path, lambda: False)
+    first, second = FakePopen(4101), FakePopen(4102)
+    assert processes.pids() == ()
+
+    processes.register(first)  # type: ignore[arg-type]
+    processes.register(second)  # type: ignore[arg-type]
+    assert sorted(processes.pids()) == [4101, 4102]
+
+    processes.unregister(first)  # type: ignore[arg-type]
+    assert processes.pids() == (4102,)
+
+    second.returncode = 0  # reaped, not yet unregistered: its PID may be reused
+    assert processes.pids() == ()
+
+
+# Forks a middle process that forks a short-lived grandchild and exits, so the
+# grandchild is adopted by the supervisor; then waits for its /proc entry to go.
+_ORPHAN_THEN_WAIT_PREFIX = """
+import os, sys, time
+read_fd, write_fd = os.pipe()
+middle = os.fork()
+if middle == 0:
+    grandchild = os.fork()
+    if grandchild == 0:
+        time.sleep({orphan_lifetime})
+        os._exit(0)
+    os.write(write_fd, str(grandchild).encode())
+    os._exit(0)
+grandchild = int(os.read(read_fd, 32))
+os.waitpid(middle, 0)
+deadline = time.monotonic() + {deadline_s}
+while os.path.exists(f"/proc/{{grandchild}}"):
+    if time.monotonic() > deadline:
+        sys.exit(9)
+    time.sleep(0.01)
+"""
+
+
+def test_running_command_sees_orphaned_grandchild_reaped(tmp_path: Path) -> None:
+    """An adopted orphan is reaped while the command runs, not only after it ends."""
+    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0.2, deadline_s=hang_guard_s())
+
+    result, payload = _run_command(tmp_path, [sys.executable, "-c", script])
+
+    assert result.returncode == 0
+    assert payload["exit_code"] == 0
+    assert payload["tree_terminal"] is True
+
+
+def test_signal_exit_status_survives_orphan_reaping(tmp_path: Path) -> None:
+    """In-loop reaping of orphans never collects the direct child behind Popen."""
+    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0, deadline_s=hang_guard_s()) + (
+        "import signal\nos.kill(os.getpid(), signal.SIGTERM)\n"
+    )
+
+    result, payload = _run_command(tmp_path, [sys.executable, "-c", script])
+
+    assert result.returncode == 143
+    assert payload["exit_code"] == 143
+    assert payload["tree_terminal"] is True
+
+
+def test_orphan_reaping_leaves_uncollected_direct_child(tmp_path: Path) -> None:
+    """The peek stops at an exited-but-uncollected direct child instead of reaping it."""
+    bootstrap = (
+        "import os, subprocess, sys, time\n"
+        "from booley.runtime import execution_supervisor as supervisor\n"
+        "proc = subprocess.Popen([sys.executable, '-c', 'import os; os._exit(3)'])\n"
+        "def state():\n"
+        "    stat = open(f'/proc/{proc.pid}/stat').read()\n"
+        "    return stat.rsplit(')', 1)[1].split()[0]\n"
+        f"deadline = time.monotonic() + {hang_guard_s()}\n"
+        "while state() != 'Z' and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "class Racing:\n"
+        "    pid = proc.pid\n"
+        "    returncode = None\n"
+        "    def poll(self):\n"
+        "        return None\n"
+        "supervisor._reap_adopted(Racing())\n"
+        "print(state())\n"
+        "print(os.waitpid(proc.pid, 0)[1] >> 8)\n"
+    )
+
+    result = run_bounded_child(
+        [sys.executable, "-c", bootstrap],
+        env=runtime_env(tmp_path),
+        timeout=2 * hang_guard_s(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["Z", "3"]
+
+
+def test_orphan_exiting_after_direct_child_is_reaped_by_end(tmp_path: Path) -> None:
+    """An orphan that is still a zombie when the direct child is collected is reaped."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    execution_id = _unique_execution_id()
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
+    write_attachment_heartbeat(paths, generation=1)
+    grandchild_file = tmp_path / "grandchild.pid"
+    marker = tmp_path / "ordered"
+    # A middle process forks the grandchild and exits, so the supervisor adopts it.
+    command_script = (
+        "import os, time\n"
+        "middle = os.fork()\n"
+        "if middle == 0:\n"
+        "    if os.fork() == 0:\n"
+        f"        open({str(grandchild_file)!r}, 'w').write(str(os.getpid()))\n"
+        "        os._exit(0)\n"
+        "    os._exit(0)\n"
+        "os.waitpid(middle, 0)\n"
+    )
+    bootstrap = (
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "import booley.runtime.execution_supervisor as supervisor\n"
+        f"grandchild_file = Path({str(grandchild_file)!r})\n"
+        f"marker = Path({str(marker)!r})\n"
+        "original = supervisor._wait_until_stop\n"
+        "def zombie(pid):\n"
+        "    try:\n"
+        "        stat = Path(f'/proc/{pid}/stat').read_text()\n"
+        "    except OSError:\n"
+        "        return False\n"
+        "    return stat.rsplit(')', 1)[1].split()[0] == 'Z'\n"
+        "def wait_until_stop(child, *args):\n"
+        f"    deadline = time.monotonic() + {hang_guard_s()}\n"
+        "    while time.monotonic() < deadline:\n"
+        "        if grandchild_file.exists() and grandchild_file.read_text():\n"
+        "            grandchild = int(grandchild_file.read_text())\n"
+        "            adopted = Path(f'/proc/{grandchild}/stat').read_text().rsplit(')', 1)[1].split()[1]\n"
+        "            if zombie(child.pid) and zombie(grandchild) and int(adopted) == os.getpid():\n"
+        "                marker.write_text('ordered')\n"
+        "                break\n"
+        "        time.sleep(0.005)\n"
+        "    return original(child, *args)\n"
+        "supervisor._wait_until_stop = wait_until_stop\n"
+        "raise SystemExit(supervisor.main())\n"
+    )
+    result = run_bounded_child(
+        [
+            sys.executable,
+            "-c",
+            bootstrap,
+            "run",
+            "--execution-id",
+            execution_id,
+            "--grace-seconds",
+            "0.25",
+            "--",
+            sys.executable,
+            "-c",
+            command_script,
+        ],
+        env=runtime_env(booley_dir),
+        timeout=2 * hang_guard_s(),
+    )
+
+    payload = read_json(paths.record)
+    assert marker.exists(), "never reached direct child and orphan both zombie"
+    assert result.returncode == 0, result.stderr
+    assert payload["exit_code"] == 0
+    assert payload["state"] == "terminal"
+    assert payload["tree_terminal"] is True
+    assert not Path(f"/proc/{int(grandchild_file.read_text())}").exists()
+
+
+def test_register_on_a_terminal_record_keeps_it_and_kills_the_process(tmp_path: Path) -> None:
+    execution_id = ExecutionId(uuid.uuid4().hex)
+    paths = execution_paths(execution_id, booley_dir=tmp_path)
+    terminal = {
+        "schema_version": 1,
+        "state": "terminal",
+        "runtime_identity": None,
+        "supervisor": None,
+        "leader": None,
+        "exit_code": 125,
+        "tree_terminal": True,
+        "terminal_cause": "orphan_recovered",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    atomic_write_json(paths.record, terminal)
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], **new_group_kwargs()
+    )
+    try:
+        SupervisedProcessSet(execution_id, tmp_path, lambda: False).register(child)
+
+        assert read_json(paths.record) == terminal
+        assert child.wait(timeout=hang_guard_s()) != 0
+    finally:
+        child.kill()
+        child.wait()

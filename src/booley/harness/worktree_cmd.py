@@ -5,8 +5,8 @@ The command wraps the packaged ``worktree_create.sh`` with its default
 holding someone's work) is never deleted. The worktree lands at
 ``<Booley Directory>/worktrees/<name>`` (``.booley`` unless ``[project].dir`` relocates
 it inside the checkout), on a new branch
-``booley/<name>`` at the workspace's current commit (an existing branch of that
-name is refused), unless the name uses the ``<branch>--<description>`` convention
+``booley/<name>`` (``wt/<name>`` in Stealth Mode) at the workspace's current commit
+(a branch occupying that name is refused), unless the name uses the ``<branch>--<description>`` convention
 to check out an existing branch instead. ``booley worktree list`` reports each
 worktree's state, ``booley worktree rm`` removes one, keeping its evidence, and
 ``booley worktree gc`` removes the idle ones the same way.
@@ -54,7 +54,7 @@ from booley.runtime.submodule_materialization import (
 )
 from booley.runtime.worktree_paths import BooleyDirMismatchError, worktree_booley_dir
 from booley.runtime.worktree_snapshot import SKIPPED_PREFIX
-from booley.runtime.worktree_usage import WORKTREE_NAME, stamp_worktree
+from booley.runtime.worktree_usage import WORKTREE_NAME, stamp_worktree, worktree_branch
 
 # Bounds the script so a wedged Git call cannot hang the CLI.
 _CREATE_TIMEOUT_S = 300
@@ -91,8 +91,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Paired Checkout on booley-worktree/<name> for a Versioned Booley Directory, "
             "or a Snapshot for a non-versioned Booley Directory "
             "(live run and session state stays behind). The outer worktree starts on a "
-            "new branch booley/<name> at the current commit; an existing "
-            "booley/<name> branch is refused. A "
+            "new branch booley/<name> (wt/<name> in Stealth Mode) at the current "
+            "commit; a branch that occupies that name is refused. A "
             "<branch>--<description> name checks out that existing branch instead. "
             "The Paired Checkout comes from the Booley Directory repository's last "
             "commit: uncommitted and untracked files there are named in a warning and "
@@ -112,11 +112,11 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     commands.add_parser(
         "list",
-        help="Show every worktree's branch, changes, Session, Goal Mode, and last use",
+        help="Show every worktree's branch, changes, Session, and last use",
         description=(
             "List the worktrees under .booley/worktrees with their branch (or "
-            "detached), uncommitted and unmerged work, live Sessions, active Goal "
-            "Mode, and last use. Read-only."
+            "detached), uncommitted and unmerged work, live Sessions, "
+            "and last use. Read-only."
         ),
     )
     remove = commands.add_parser(
@@ -127,7 +127,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Checkout first, then the outer worktree. Common Booley State and Flow "
             "reports in the worktree move to .booley/worktrees/.evidence/<name>-<time>/ "
             "first, and the branches stay. Refuses, naming every reason, while the "
-            "worktree has a live Session, an active Goal Mode, uncommitted or unmerged "
+            "worktree has a live Session, uncommitted or unmerged "
             "work, a populated submodule commit that main lacks, a Git lock, or a "
             "damaged checkout; another worktree registered inside it is always "
             "refused. Re-run after an interruption to finish."
@@ -138,7 +138,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--force",
         action="store_true",
         help=(
-            "remove even with a live Session, active Goal Mode, uncommitted or "
+            "remove even with a live Session, uncommitted or "
             "unmerged work, or a Git lock; evidence is still kept"
         ),
     )
@@ -149,7 +149,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Remove every worktree whose last use is older than AGE (default 7d, or "
             "[worktree].gc_older_than in the main checkout's .booley/booley.toml) with "
             "the same checks as `booley worktree rm`, never forced: a worktree with a "
-            "live Session, an active Goal Mode, or unsaved work is kept, as is one "
+            "live Session or unsaved work is kept, as is one "
             "with no last-used record or that you are inside. Prints each worktree "
             "removed or kept and why."
         ),
@@ -179,8 +179,35 @@ class WorktreeCreationError(Exception):
     """The outer worktree script could not create the requested checkout."""
 
 
+class WorktreeMountRepairError(Exception):
+    """A worktree registration naming a former mount point cannot be repaired."""
+
+
 # Failures reported as one ERROR line; anything else is a defect and propagates.
-_REPORTED_FAILURES = (WorktreeCreationError, ProjectPairingError, OSError)
+_REPORTED_FAILURES = (
+    WorktreeCreationError,
+    WorktreeMountRepairError,
+    ProjectPairingError,
+    OSError,
+)
+
+
+def _repair_mount_registrations(project_root: Path) -> None:
+    """Repair registrations naming a former mount before the script's prune can delete them."""
+    from booley.runtime.mount_history import MountHistoryError
+    from booley.runtime.worktree_mount_repair import repair_mount_registrations
+
+    try:
+        result = repair_mount_registrations(project_root)
+    except MountHistoryError as exc:
+        raise WorktreeMountRepairError(
+            f"cannot check worktree registrations after a Sandbox mount point change: {exc}"
+        ) from exc
+    if result.problems:
+        raise WorktreeMountRepairError(
+            "worktree registrations name a former Sandbox mount point and cannot be repaired; "
+            "nothing was created:\n" + "\n".join(p.message() for p in result.problems)
+        )
 
 
 @dataclass(frozen=True)
@@ -200,7 +227,7 @@ def _new_branch_start(project_root: Path, name: str) -> NewBranch | None:
     """
     if "--" in name:
         return None
-    branch = f"booley/{name}"
+    branch = worktree_branch(project_root, name)
     if run_git(project_root, "check-ref-format", "--branch", branch).returncode != 0:
         raise WorktreeCreationError(f"invalid branch name {branch!r}; choose another name")
     head = run_git(project_root, "rev-parse", "--verify", "HEAD^{commit}")
@@ -321,6 +348,7 @@ def _run_current(name: str, project_root: Path) -> _Created | int:
     source = None
     new_branch: NewBranch | None = None
     try:
+        _repair_mount_registrations(project_root)
         source = project_pairing_source(project_root)
         validate_project_pairing(source, name)
         new_branch = _new_branch_start(project_root, name)
@@ -343,7 +371,7 @@ def _run_current(name: str, project_root: Path) -> _Created | int:
             )
         if not isinstance(exc, _REPORTED_FAILURES):
             raise
-        return _report_failure(project_root, worktree, name, exc, source)
+        return _report_failure(project_root, worktree, name, exc, source, new_branch)
     return _Created(worktree, source, paired=pairing is not None, new_branch=new_branch)
 
 
@@ -363,7 +391,9 @@ def _finish_setup(name: str, project_root: Path, created: _Created) -> int:
         )
         if not isinstance(exc, _REPORTED_FAILURES):
             raise
-        return _report_failure(project_root, created.worktree, name, exc, created.source)
+        return _report_failure(
+            project_root, created.worktree, name, exc, created.source, created.new_branch
+        )
     # The stamp is bookkeeping: a failure must not hide a worktree that exists.
     try:
         stamp_worktree(resolve_common_booley_dir(project_root), name)
@@ -373,12 +403,26 @@ def _finish_setup(name: str, project_root: Path, created: _Created) -> int:
 
 
 def _report_failure(
-    project_root: Path, worktree: Path, name: str, failure: BaseException, source: Path | None
+    project_root: Path,
+    worktree: Path,
+    name: str,
+    failure: BaseException,
+    source: Path | None,
+    new_branch: NewBranch | None,
 ) -> int:
     """Print a rolled-back creation's error, plus removal steps if a rollback left the pair."""
     print(f"ERROR: {failure}", file=sys.stderr)
     if source is not None and _is_named_pair(worktree, name):
-        print(worktree_removal_instructions(project_root, worktree, name), file=sys.stderr)
+        # A <branch>--<description> name checks out an existing branch and creates none.
+        # A refusal before the branch was chosen (an existing pair) names the current setting's.
+        if new_branch is not None:
+            branch: str | None = new_branch.name
+        else:
+            branch = None if "--" in name else worktree_branch(project_root, name)
+        print(
+            worktree_removal_instructions(project_root, worktree, name, branch=branch),
+            file=sys.stderr,
+        )
     return 1
 
 
@@ -421,7 +465,7 @@ def _ready_notice(name: str, *, paired: bool) -> str:
     return (
         f"Created worktree {name!r} with a {kind}. "
         f"Remove it later with: booley worktree rm {name} "
-        f"(see {docs_url('CLI-REFERENCE.md', 'worktrees')})"
+        f"(see {docs_url('WORKTREES.md', 'removing-a-worktree')})"
     )
 
 

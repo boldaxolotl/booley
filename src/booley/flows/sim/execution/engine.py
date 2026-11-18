@@ -28,6 +28,7 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
+from booley.flows.job_resources import resolved_source_bytes
 from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -43,7 +44,9 @@ from booley.flows.sim.build import (
     SimulationBuildPreparationError,
     build_failure_report,
     classify_build_outcome,
+    measured_setup_runner,
     prepare_simulation_build,
+    setup_timeout_s,
     simulation_build_script,
     simulation_setup_command,
 )
@@ -58,7 +61,6 @@ from booley.flows.sim.build_session import (
     snapshot_generation_files,
     verify_existing_build_inputs,
 )
-from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
     resolve_cycle_sentinels,
@@ -72,13 +74,18 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
-from booley.flows.sim.live_progress import attempt_scope, observe_stage, prepare_attempt_log
+from booley.flows.sim.live_progress import (
+    attempt_scope,
+    end_phase,
+    observe_stage,
+    prepare_attempt_log,
+)
+from booley.flows.sim.record_reports import simulation_booley_dir
 from booley.flows.sim.runtime_inputs import (
     declared_runtime_inputs,
     preview_runtime_inputs,
 )
 from booley.flows.sim.trace_recipe import TraceMode
-from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
 from booley.flows.simulator_family import normalize_eda_tool
 from booley.flows.target_test_plan import (
     TargetTestPlan,
@@ -94,7 +101,7 @@ from booley.flows.target_test_plan_loading import (
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -117,6 +124,7 @@ from .contract import (
     SimulationSelection,
     SimulationTargetOutcome,
     SimulationTestOutcome,
+    SimulationVerdict,
 )
 from .freshness import (
     ArtifactValidationError,
@@ -247,7 +255,6 @@ class _Attempt:
     pre_sim_commands: tuple[str, ...]
     simulator_environment: tuple[tuple[str, str], ...]
     cycle_sentinels: tuple[str, ...]
-    workload_inputs: tuple[Mapping[str, Any], ...]
     setup_s: float
     log: RunLogIdentity | None = None
     build_inputs: Mapping[str, str] = field(default_factory=dict)
@@ -256,6 +263,10 @@ class _Attempt:
     cache_decision: str = ""
     #: Concrete Test Runs the caller resolved; ``None`` means the defaults.
     test_runs: tuple[TestRun, ...] | None = None
+    #: Resource History Test names: Test Variants, never seeds (``test_names`` stay bare).
+    history_tests: tuple[str, ...] = ()
+    #: Size of the Target's resolved source files; ``None`` when unknown.
+    source_bytes: int | None = None
 
 
 def _require_attempt_log(handle: TargetHandle, attempt: _Attempt) -> None:
@@ -307,8 +318,8 @@ class PreparedOrdinaryGroup:
     Instances are yielded by :meth:`SimulationExecution.ordinary_group`.  The
     caller may inspect ``build_root`` and run a legacy build-aware hook before
     :meth:`compile`.  Compilation must happen while the context is active so
-    the Target build lease protects preparation and authentication.  Snapshot
-    creation and :meth:`launch_snapshot` happen after leaving the context; the
+    the Target build lease protects preparation and authentication.
+    :meth:`launch_bundle` happens after leaving the context; the
     simulator therefore never needs the broad Target lease.
     """
 
@@ -375,7 +386,7 @@ class PreparedOrdinaryGroup:
         if not selftest_overlay.bad_selftest_requested(os.environ):
             yield run_cwd
             return
-        booley_dir = resolve_booley_dir(self._handle.project_root)
+        booley_dir = resolve_checkout_booley_dir(self._handle.project_root)
         with selftest_overlay.managed_runtime_view(
             self._handle.project_root,
             booley_dir,
@@ -447,7 +458,7 @@ class PreparedOrdinaryGroup:
         self._session.discard_candidate(self._attempt.prepared.work_root)
 
     def planning_disclosure(self) -> dict[str, object]:
-        """Describe this preparation using the campaign planning contract."""
+        """Describe this preparation using the record planning contract."""
         return _planning_disclosure(self.prepared_source_entries())
 
     def compile(self) -> BuildOutcome:
@@ -472,7 +483,6 @@ class PreparedOrdinaryGroup:
         attempt = self._execution._select_generation_for_group(
             self._handle, attempt, self._generation_before
         )
-        attempt = _with_workload_inputs(self._handle, attempt)
         self._attempt = attempt
         if attempt.reused:
             return self._adopt_retained_image(attempt)
@@ -497,6 +507,7 @@ class PreparedOrdinaryGroup:
             "building",
             evidence_root=attempt.prepared.build_root,
             attempt_token=attempt.identity.attempt_token,
+            source_bytes=attempt.source_bytes,
         )
         process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
         build = _fresh_build_outcome(attempt, process, timeout_s)
@@ -512,7 +523,7 @@ class PreparedOrdinaryGroup:
         """Normalize a failed build without launching a simulator."""
         process, build = self._compiled()
         if build.passed:
-            raise SimulationBuildSlotError("successful build requires a snapshot launch")
+            raise SimulationBuildSlotError("successful build requires a bundle launch")
         executed = AdapterAttemptOutcome(process, None, None)
         early = _adapter_failure_outcome(
             self._handle, self._attempt, executed, build, self._started
@@ -563,7 +574,7 @@ class PreparedOrdinaryGroup:
         }
 
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None:
-        """Mark preparation ready to launch a campaign-authenticated bundle.
+        """Mark preparation ready to launch a record-authenticated bundle.
 
         The durable Build Result has already authenticated the compiler outcome,
         so only the test-specific adapter preparation is reconstructed.
@@ -586,25 +597,32 @@ class PreparedOrdinaryGroup:
         self._build_process = recovered_process
         self._build = recovered_build
 
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome:
-        """Observe one isolated launch until all evidence processing returns."""
+    def launch_bundle(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path
+    ) -> SimulationTargetOutcome:
+        """Observe one launch from *bundle_root* until all evidence processing returns.
+
+        Every file the attempt writes goes under *evidence_root*, never into the bundle.
+        """
         with attempt_scope(
             self._handle.selector,
             identity=self._handle.identity,
             tests=self._attempt.test_names,
         ):
-            return self._launch_snapshot(snapshot_root, run_cwd)
+            return self._launch_bundle(bundle_root, evidence_root, run_cwd)
 
-    def _launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome:
-        """Launch only the supplied snapshot and normalize the resulting evidence."""
+    def _launch_bundle(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path
+    ) -> SimulationTargetOutcome:
+        """Launch only the supplied bundle and normalize the resulting evidence."""
         if self._lease_active:
             raise SimulationBuildSlotError(
-                "leave ordinary_group before launching its executable snapshot"
+                "leave ordinary_group before launching its simulator bundle"
             )
         build_process, build = self._compiled()
         if not build.passed:
             raise SimulationBuildSlotError("cannot launch a failed Simulation build")
-        attempt = self._snapshot_attempt(snapshot_root, run_cwd)
+        attempt = self._bundle_attempt(bundle_root, evidence_root, run_cwd)
         trace_policy, compatibility_policy = _artifact_policies(self._handle, attempt)
         executed = self._launch(attempt)
         process = replace(
@@ -640,10 +658,11 @@ class PreparedOrdinaryGroup:
             raise SimulationBuildSlotError("ordinary Simulation group is not compiled")
         return self._build_process, self._build
 
-    def _snapshot_attempt(self, snapshot_root: Path, run_cwd: Path) -> _Attempt:
-        if not snapshot_root.is_absolute() or not run_cwd.is_absolute():
-            raise SimulationBuildSlotError("snapshot and run cwd must be absolute paths")
-        evidence_root = snapshot_root.parent / "execution-evidence"
+    def _bundle_attempt(self, bundle_root: Path, evidence_root: Path, run_cwd: Path) -> _Attempt:
+        if not (
+            bundle_root.is_absolute() and evidence_root.is_absolute() and run_cwd.is_absolute()
+        ):
+            raise SimulationBuildSlotError("bundle, evidence and run cwd must be absolute paths")
         evidence_root.mkdir(mode=0o700, exist_ok=True)
         identity = replace(
             self._attempt.identity,
@@ -651,7 +670,7 @@ class PreparedOrdinaryGroup:
         )
         work = replace(
             self._attempt.work,
-            build_dir=str(snapshot_root),
+            build_dir=str(bundle_root),
             run_cwd=str(run_cwd),
             work_dir=str(evidence_root),
             adapter_result_path=str(identity.result_path),
@@ -776,8 +795,8 @@ class SimulationExecution:
 
         The yielded group owns a freshly allocated private generation.  Its
         ``compile()`` method must be called before this context exits.  Exiting
-        releases the Target build lease; only then may ``launch_snapshot()``
-        run a caller-supplied attempt-local copy of the authenticated artifacts.
+        releases the Target build lease; only then may ``launch_bundle()``
+        run the caller-supplied authenticated bundle in place.
         Project Pre-Sim policy intentionally remains with the caller.
         """
         if self._build_session is not None:
@@ -911,16 +930,21 @@ class SimulationExecution:
             evidence_root=attempt.prepared.build_root,
             attempt_token=attempt.identity.attempt_token,
             tests=attempt.test_names,
+            history_tests=attempt.history_tests,
+            source_bytes=attempt.source_bytes,
         )
         try:
             return execute_adapter_attempt(self._invoke, request)
         finally:
+            end_phase(handle.selector, "sim_run", tests=attempt.history_tests)
             observe_stage(
                 handle.selector,
                 "postprocessing",
                 evidence_root=attempt.prepared.build_root,
                 attempt_token=attempt.identity.attempt_token,
                 tests=attempt.test_names,
+                history_tests=attempt.history_tests,
+                source_bytes=attempt.source_bytes,
             )
 
     def _prepare_attempt(
@@ -979,9 +1003,10 @@ class SimulationExecution:
             pre_sim_commands=tuple(resolve_pre_sim_commands(handle.project_root)),
             simulator_environment=tuple(simulation_target_environment(handle).items()),
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
-            workload_inputs=(),
             setup_s=time.monotonic() - started,
             test_runs=test_runs,
+            history_tests=history_test_names(handle, prepared, work.test_runs),
+            source_bytes=resolved_source_bytes(prepared.resolved),
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
@@ -996,6 +1021,11 @@ class SimulationExecution:
                 build_root=build_root,
                 resolution_vlnv=overlay.vlnv if overlay is not None else None,
                 environment=simulation_target_environment(handle),
+                setup_runner=measured_setup_runner(
+                    self._invoke,
+                    target=handle.selector,
+                    timeout_s=setup_timeout_s(self._build_timeout_s()),
+                ),
             )
             if overlay is not None and prepared.resolved.cocotb_module:
                 trace_overlay.validate_cocotb_trace_mode(
@@ -1150,6 +1180,22 @@ def _trace_overlay(handle: TargetHandle) -> Any:
     return trace_overlay.write_trace_overlay(handle)
 
 
+def history_test_names(
+    handle: TargetHandle, prepared: PreparedSimulationBuild, runs: tuple[TestRun, ...]
+) -> tuple[str, ...]:
+    """Resource History Test names of *runs*: ``test`` or ``test+variant``, no seed.
+
+    A default Variant (or a Test without Variants) keeps the bare Test name, so
+    keys written before Variants were told apart still match.
+    """
+    plan = target_test_plan(
+        handle,
+        "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool,
+        prepared.resolved.parameters,
+    )
+    return tuple(plan.history_test_name(run) for run in runs if run.test is not None)
+
+
 def _group_names(runs: tuple[TestRun, ...]) -> tuple[str, ...]:
     """Bare Test names of one simulator process; empty for the unnamed invocation."""
     return tuple(run.test for run in runs if run.test is not None)
@@ -1268,16 +1314,10 @@ def _artifact_group(plan: TargetTestPlan, runs: tuple[TestRun, ...], cocotb: boo
     if not cocotb:
         return first.name if first.test is not None else ""
     plain = first.seed == plan.default_seed and not first.env
-    if plain and all(_runs_default_variant(plan, run) for run in runs):
+    if plain and all(plan.runs_default_variant(run) for run in runs):
         return "batch"
     names = "\n".join(run.name for run in runs)
     return "batch-" + hashlib.sha256(names.encode("utf-8")).hexdigest()[:12]
-
-
-def _runs_default_variant(plan: TargetTestPlan, run: TestRun) -> bool:
-    """Whether *run* is its Test's default Test Variant (or the Test declares none)."""
-    table = plan.variants_of(run.test) if run.test is not None else None
-    return run.variant is None if table is None else run.variant == table.default
 
 
 def _parameter_plusargs(parameters: Mapping[str, Any]) -> list[str]:
@@ -1488,7 +1528,14 @@ def _artifact_policies(
     attempt: _Attempt,
 ) -> tuple[TraceArtifactPolicy | None, CompatibilityArtifactPolicy]:
     trace = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
-    compatibility = CompatibilityArtifactPolicy.capture(Path(attempt.work.build_dir))
+    # Cocotb writes its compatibility files to its work directory when a record
+    # attempt separates it from the read-only bundle.
+    watched = (
+        attempt.work.work_dir
+        if attempt.work.adapter == "cocotb" and attempt.work.work_dir
+        else attempt.work.build_dir
+    )
+    compatibility = CompatibilityArtifactPolicy.capture(Path(watched))
     return trace, compatibility
 
 
@@ -1728,7 +1775,7 @@ def _outcome_names(
     return attempt.test_names or (fallback,)
 
 
-def _adapter_verdict(adapter: AdapterResult | None) -> str:
+def _adapter_verdict(adapter: AdapterResult | None) -> SimulationVerdict:
     if adapter is None:
         return "fail"
     if adapter.passed:
@@ -1744,7 +1791,7 @@ def _test_outcome(
     adapter: AdapterResult | None,
     item: Any,
     name: str,
-    verdict: str,
+    verdict: SimulationVerdict,
     cycle_status: str,
     cycles: int | None,
     log: SimulationArtifactEvidence | None,
@@ -1786,7 +1833,6 @@ def _test_outcome(
         build=build,
         artifacts=tuple(item for item in (log, trace) if item is not None),
         run_log_path=log.path if log is not None else "",
-        workload_snapshot=_workload_snapshot(handle, attempt, name),
     )
 
 
@@ -1863,33 +1909,6 @@ def _build_failure_test(
         build=build,
         artifacts=(log,) if log is not None else (),
         run_log_path=log.path if log is not None else "",
-        workload_snapshot=_workload_snapshot(handle, attempt, name),
-    )
-
-
-def _with_workload_inputs(handle: TargetHandle, attempt: _Attempt) -> _Attempt:
-    inputs = capture_workload_inputs(handle.project_root, attempt.prepared.resolved)
-    return replace(attempt, workload_inputs=inputs)
-
-
-def _workload_snapshot(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    name: str,
-) -> Mapping[str, Any]:
-    controls = {
-        "cycle_sentinels": list(attempt.cycle_sentinels),
-        "pre_run_commands": list(attempt.pre_sim_commands),
-        "run_cwd": attempt.work.run_cwd,
-        "environment": dict(_launch_environment(attempt.simulator_environment, attempt.work)),
-    }
-    return build_workload_snapshot(
-        handle.project_root,
-        handle.selector,
-        name,
-        attempt.prepared.resolved,
-        controls=controls,
-        inputs=attempt.workload_inputs,
     )
 
 

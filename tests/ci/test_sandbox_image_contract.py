@@ -1,627 +1,303 @@
-"""Mutation-backed tests for the parsed Sandbox Image graph contract."""
+"""Supply-chain properties of the workflows that publish Sandbox Images.
+
+Each test states one property over every pushing build or promotion step, never
+a step name, job layout or text. Dockerfile properties live in
+``tests/docker/test_sandbox_dockerfile.py``.
+"""
 
 from __future__ import annotations
 
-import copy
+import json
 import os
 import re
-import subprocess
 import sys
-from dataclasses import replace
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.sandbox_image_contract import (
-    ContractSources,
-    find_step,
-    load_sources,
-    validate_sources,
-)
+import yaml
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import dockerfile_syntax
-from booley.runtime.dockerfile_syntax import logical_instructions
 
 _ROOT = Path(__file__).parents[2]
+_WORKFLOWS = _ROOT / ".github/workflows"
+# The only workflows that push an image or run `imagetools create`.
+_PUBLISH_WORKFLOWS = ("docker-publish.yml", "docker-base-publish.yml", "riscv-tooling-publish.yml")
+# The command that checks the built image before its tag is promoted.
+# Each entry is (verifier command, text showing the verdict is executed, not only generated).
+_VERIFIERS = {
+    "docker-base-publish.yml": ("docker_base_contract.py", "docker_base_contract.py"),
+    "riscv-tooling-publish.yml": ("riscv_tooling.py checks", 'bash < "${checks}"'),
+}
+_OUTPUT = r"\$\{\{ (?:steps|needs)\.([\w-]+)\.outputs\.([\w-]+) \}\}"
+
+
+def _workflow(name: str) -> dict[str, Any]:
+    loaded: dict[str, Any] = yaml.safe_load((_WORKFLOWS / name).read_text(encoding="utf-8"))
+    return loaded
+
+
+def _steps(workflow: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    for job, body in workflow["jobs"].items():
+        for step in body.get("steps") or []:
+            yield job, step
+
+
+def _pushes_image(step: dict[str, Any]) -> bool:
+    inputs = step.get("with") or {}
+    if not str(step.get("uses", "")).startswith("docker/build-push-action@"):
+        return False
+    pushes = str(inputs.get("push", "false")).lower() != "false"
+    return pushes or "push=true" in str(inputs.get("outputs", ""))
+
+
+def _promotes(step: dict[str, Any]) -> bool:
+    return "imagetools create" in str(step.get("run", ""))
+
+
+def _pushing_builds() -> Iterator[tuple[str, dict[str, Any], str, dict[str, Any]]]:
+    """Yield (workflow name, workflow, job, step) for every build that pushes an image."""
+    for name in _PUBLISH_WORKFLOWS:
+        workflow = _workflow(name)
+        for job, step in _steps(workflow):
+            if _pushes_image(step):
+                yield name, workflow, job, step
+
+
+def _lines(value: object) -> list[str]:
+    return [line.strip() for line in str(value or "").splitlines() if line.strip()]
+
+
+def _step_by_id(workflow: dict[str, Any], job: str, step_id: str) -> dict[str, Any]:
+    steps = workflow["jobs"][job].get("steps") or []
+    return next((step for step in steps if step.get("id") == step_id), {})
+
+
+def _named_step(workflow_name: str, job: str, name: str) -> dict[str, Any]:
+    steps = _workflow(workflow_name)["jobs"][job]["steps"]
+    return next(step for step in steps if step.get("name") == name)
+
+
+def _is_resolver_image(workflow: dict[str, Any], job: str, value: object) -> bool:
+    """True when ``value`` is the ``image`` output of a digest-resolving step."""
+    match = re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.image \}\}", str(value))
+    if match is None:
+        return False
+    run = str(_step_by_id(workflow, job, match[1]).get("run", ""))
+    return "docker_base_contract.py" in run and "--resolve-image" in run
+
+
+def _traces_to_resolver(workflow: dict[str, Any], reference: str) -> bool:
+    """Follow ``needs.<job>.outputs.<name>`` to a step whose images the resolver returned."""
+    needed = re.fullmatch(r"\$\{\{ needs\.([\w-]+)\.outputs\.([\w-]+) \}\}", reference)
+    if needed is None:
+        return False
+    job, output = needed.groups()
+    produced = re.fullmatch(_OUTPUT, str(workflow["jobs"][job].get("outputs", {}).get(output)))
+    if produced is None:
+        return False
+    env = _step_by_id(workflow, job, produced[1]).get("env") or {}
+    images = [value for key, value in env.items() if key.endswith("_IMAGE")]
+    return bool(images) and all(_is_resolver_image(workflow, job, value) for value in images)
+
+
+def test_release_build_parents_are_pinned_by_digest() -> None:
+    """A published build takes each parent image by digest, never by a movable tag."""
+    seen = 0
+    for name, workflow, _job, step in _pushing_builds():
+        contexts = _lines(step["with"].get("build-contexts"))
+        recipe = (_ROOT / step["with"]["file"]).read_text(encoding="utf-8")
+        refs = dockerfile_syntax.from_references(recipe)
+        target = step["with"].get("target")
+        stop = next((ref.stage for ref in refs if ref.alias == target), len(refs))
+        parents = {ref.image for ref in refs if ref.stage <= stop and "@sha256:" not in ref.image}
+        parents -= {ref.alias for ref in refs}
+        for parent in parents:
+            assert any(line.startswith(f"{parent}=") for line in contexts), f"{name}: {parent}"
+        for line in contexts:
+            seen += 1
+            reference = line.partition("=docker-image://")[2]
+            pinned = re.search(r"@\$\{\{ [\w.-]+digest \}\}$", reference)
+            assert pinned or _traces_to_resolver(workflow, reference), f"{name}: {line}"
+    assert seen
+
 
-
-def _sources() -> ContractSources:
-    return copy.deepcopy(load_sources(_ROOT))
-
-
-def _errors(sources: ContractSources, role: str) -> str:
-    errors = "\n".join(validate_sources(sources))
-    assert role in errors, errors
-    return errors
-
-
-def _step(
-    sources: ContractSources,
-    workflow_field: str,
-    workflow_name: str,
-    job: str,
-    name: str | None = None,
-    step_id: str | None = None,
-) -> dict[str, Any]:
-    workflow = getattr(sources, workflow_field)
-    return find_step(workflow_name, workflow, job, name=name, step_id=step_id).value
-
-
-def _remove_named_context(step: dict[str, Any], mapping: str) -> None:
-    inputs = step.get("with")
-    if isinstance(inputs, dict):
-        inputs["build-contexts"] = str(inputs["build-contexts"]).replace(mapping, "")
-        return
-    step["run"] = str(step["run"]).replace(f"--build-context {mapping}", "")
-
-
-def _sub_once(pattern: str, replacement: str, value: str) -> str:
-    changed, count = re.subn(pattern, replacement, value, count=1)
-    assert count == 1, pattern
-    return changed
-
-
-def test_repository_image_graph_and_runtime_roles_are_consistent() -> None:
-    assert validate_sources(_sources()) == ()
-
-
-def test_dockerfile_parser_uses_logical_lines_and_arg_substituted_from() -> None:
-    dockerfile = """\
-ARG PARENT=example.invalid/base:local
-FROM ${PARENT}
-RUN command --one \\
-    && command --two
-"""
-
-    instructions = logical_instructions(dockerfile)
-
-    references = dockerfile_syntax.from_references(dockerfile)
-    assert tuple(reference.image for reference in references) == ("example.invalid/base:local",)
-    assert instructions[-1].keyword == "RUN"
-    assert instructions[-1].value == "command --one && command --two"
-
-
-def test_dockerfile_parser_rejects_unresolved_from_arg() -> None:
-    with pytest.raises(ValueError, match="unresolved FROM"):
-        dockerfile_syntax.from_references("FROM ${MISSING}\n")
-
-
-@pytest.mark.parametrize(
-    ("role", "workflow_field", "workflow_name", "job", "name", "step_id", "mapping"),
-    [
-        (
-            "local-base candidate",
-            "test_workflow",
-            "test.yml",
-            "bwave-smoke",
-            "Build candidate from changed stable base",
-            None,
-            "booley-runtime-base=docker-image://booley-runtime-base:ci",
-        ),
-        (
-            "published-base test candidate",
-            "test_workflow",
-            "test.yml",
-            "bwave-smoke",
-            "Build candidate from published stable base",
-            None,
-            "booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}",
-        ),
-        (
-            "release candidate",
-            "release_workflow",
-            "docker-publish.yml",
-            "build-and-push",
-            None,
-            "build",
-            "booley-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
-            "${{ steps.substrate.outputs.digest }}",
-        ),
-        (
-            "published-base test candidate",
-            "test_workflow",
-            "test.yml",
-            "riscv-image",
-            "Build candidate from published stable base",
-            None,
-            "booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}",
-        ),
-        (
-            "local-base candidate",
-            "test_workflow",
-            "test.yml",
-            "riscv-image",
-            "Build candidate from changed stable base",
-            None,
-            "booley-runtime-base=docker-image://booley-runtime-base:ci",
-        ),
-        (
-            "local RISC-V candidate",
-            "test_workflow",
-            "test.yml",
-            "riscv-image",
-            "Run RISC-V candidate image contract",
-            None,
-            "booley-standard-substrate=docker-image://booley-standard-substrate:ci",
-        ),
-        (
-            "release RISC-V image",
-            "release_workflow",
-            "docker-publish.yml",
-            "build-and-push-riscv",
-            None,
-            "build",
-            "booley-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
-            "${{ steps.substrate.outputs.digest }}",
-        ),
-    ],
-)
-def test_each_symbolic_parent_requires_its_named_context(
-    role: str,
-    workflow_field: str,
-    workflow_name: str,
-    job: str,
-    name: str | None,
-    step_id: str | None,
-    mapping: str,
-) -> None:
-    sources = _sources()
-    step = _step(sources, workflow_field, workflow_name, job, name, step_id)
-    _remove_named_context(step, mapping)
-
-    errors = _errors(sources, role)
-
-    assert "named contexts" in errors
-
-
-@pytest.mark.parametrize("target", ["standard", "riscv"])
-def test_release_derivations_reject_mutable_parent_tags(target: str) -> None:
-    sources = _sources()
-    job = "build-and-push" if target == "standard" else "build-and-push-riscv"
-    step = _step(sources, "release_workflow", "docker-publish.yml", job, step_id="build")
-    context = "booley-substrate"
-    step["with"]["build-contexts"] = f"{context}=docker-image://ghcr.io/acme/image:latest"
-
-    role = "release candidate" if target == "standard" else "release RISC-V image"
-    assert "named contexts" in _errors(sources, role)
-
-
-@pytest.mark.parametrize("kind", ["action", "shell"])
-def test_represented_builds_reject_intermediate_targets(kind: str) -> None:
-    sources = _sources()
-    if kind == "action":
-        step = _step(
-            sources, "release_workflow", "docker-publish.yml", "build-and-push", step_id="build"
-        )
-        step["with"]["target"] = "bwave-builder"
-        role = "release candidate"
-    else:
-        step = _step(
-            sources,
-            "test_workflow",
-            "test.yml",
-            "bwave-smoke",
-            "Build candidate from changed stable base",
-        )
-        step["run"] = str(step["run"]).replace(
-            "docker buildx build", "docker buildx build --target bwave-builder", 1
-        )
-        role = "local-base candidate"
-
-    assert "intermediate stage" in _errors(sources, role)
-
-
-@pytest.mark.parametrize(
-    ("step_name", "condition"),
-    [
-        ("Build changed stable runtime base locally", ""),
-        (
-            "Build candidate from published stable base",
-            "steps.runtime-base.outputs.build == 'true'",
-        ),
-        ("Build candidate from changed stable base", "other.outputs.build == 'true'"),
-        (
-            "Build candidate from published stable base",
-            "steps.runtime-base.outputs.build != 'false'",
-        ),
-    ],
-)
-def test_candidate_alternatives_reject_missing_or_overlapping_conditions(
-    step_name: str, condition: str
-) -> None:
-    sources = _sources()
-    step = _step(sources, "test_workflow", "test.yml", "bwave-smoke", step_name)
-    step["if"] = condition
-
-    assert "test candidate alternatives" in _errors(sources, "test candidate alternatives")
-
-
-def test_candidate_alternatives_require_the_runtime_base_selector() -> None:
-    sources = _sources()
-    for name in (
-        "Build changed stable runtime base locally",
-        "Build candidate from changed stable base",
-    ):
-        step = _step(sources, "test_workflow", "test.yml", "bwave-smoke", name)
-        step["if"] = "steps.other.outputs.build == 'true'"
-    remote = _step(
-        sources,
-        "test_workflow",
-        "test.yml",
-        "bwave-smoke",
-        "Build candidate from published stable base",
-    )
-    remote["if"] = "steps.other.outputs.build != 'true'"
-
-    assert "runtime-base build selector" in _errors(sources, "test candidate alternatives")
-
-
-def test_local_stable_base_must_precede_its_candidate() -> None:
-    sources = _sources()
-    steps = sources.test_workflow["jobs"]["bwave-smoke"]["steps"]
-    base = next(
-        step for step in steps if step.get("name") == "Build changed stable runtime base locally"
-    )
-    steps.remove(base)
-    candidate_index = next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Build candidate from changed stable base"
-    )
-    steps.insert(candidate_index + 1, base)
-
-    assert "must precede" in _errors(sources, "test candidate alternatives")
-
-
-@pytest.mark.parametrize("job", ["bwave-smoke", "riscv-image"])
-def test_published_base_resolver_must_precede_its_candidate(job: str) -> None:
-    sources = _sources()
-    steps = sources.test_workflow["jobs"][job]["steps"]
-    resolver = next(
-        step for step in steps if step.get("name") == "Select compatible stable runtime base"
-    )
-    steps.remove(resolver)
-    candidate_index = next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Build candidate from published stable base"
-    )
-    steps.insert(candidate_index + 1, resolver)
-
-    assert "must precede" in _errors(sources, "published-base test candidate")
-
-
-def test_stable_base_publication_enforces_build_verify_promote_order() -> None:
-    sources = _sources()
-    steps = sources.base_workflow["jobs"]["build-publish-smoke"]["steps"]
-    verify_index = next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Verify exact published base compatibility and tools"
-    )
-    promote_index = next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Promote verified base to main consumption tag"
-    )
-    steps[verify_index], steps[promote_index] = steps[promote_index], steps[verify_index]
-
-    assert "out of order" in _errors(sources, "stable-base publish")
-
-
-def test_stable_base_verification_requires_the_build_digest() -> None:
-    sources = _sources()
-    verify = _step(
-        sources,
-        "base_workflow",
-        "docker-base-publish.yml",
-        "build-publish-smoke",
-        "Verify exact published base compatibility and tools",
-    )
-    verify["env"]["BASE_IMAGE"] = "ghcr.io/acme/base:latest"
-
-    assert "build digest" in _errors(sources, "stable-base publish")
-
-
-@pytest.mark.parametrize("job", ["build-and-push", "build-and-push-riscv"])
-def test_release_jobs_must_export_their_build_digest(job: str) -> None:
-    sources = _sources()
-    sources.release_workflow["jobs"][job]["outputs"]["image-digest"] = (
-        "${{ steps.version.outputs.version }}"
-    )
-
-    role = "release candidate" if job == "build-and-push" else "release RISC-V image"
-    assert "image-digest" in _errors(sources, role)
-
-
-def test_release_riscv_job_must_depend_on_candidate_producer() -> None:
-    sources = _sources()
-    sources.release_workflow["jobs"]["build-and-push-riscv"]["needs"] = []
-
-    assert "must depend" in _errors(sources, "release RISC-V image")
-
-
-@pytest.mark.parametrize("job", ["build-and-push", "build-and-push-riscv"])
-def test_release_parent_provenance_must_declare_a_registry_digest(job: str) -> None:
-    sources = _sources()
-    step = _step(sources, "release_workflow", "docker-publish.yml", job, step_id="build")
-    step["with"]["labels"] = str(step["with"]["labels"]).replace(
-        "io.booley.build.parent-artifact-kind=registry-digest",
-        "io.booley.build.parent-artifact-kind=registry-tag",
-    )
-
-    role = "release candidate" if job == "build-and-push" else "release RISC-V image"
-    assert "parent artifact kind" in _errors(sources, role)
-
-
-@pytest.mark.parametrize(
-    ("workflow_field", "workflow_name", "job", "name", "role"),
-    [
-        (
-            "test_workflow",
-            "test.yml",
-            "bwave-smoke",
-            "Select compatible stable runtime base",
-            "published-base test candidate",
-        ),
-        (
-            "release_workflow",
-            "docker-publish.yml",
-            "build-and-push",
-            "Resolve compatible stable runtime base",
-            "release candidate",
-        ),
-        (
-            "base_workflow",
-            "docker-base-publish.yml",
-            "build-publish-smoke",
-            "Verify exact published base compatibility and tools",
-            "stable-base publish",
-        ),
-    ],
-)
-def test_current_workflow_callers_require_remote_resolution(
-    workflow_field: str, workflow_name: str, job: str, name: str, role: str
-) -> None:
-    sources = _sources()
-    step = _step(sources, workflow_field, workflow_name, job, name)
-    step["run"] = str(step["run"]).replace("--resolver remote", "--resolver shadow")
-
-    assert "remote stable-base resolver" in _errors(sources, role)
-
-
-def test_resolver_contract_ignores_dead_comment_text() -> None:
-    sources = _sources()
-    step = _step(
-        sources,
-        "release_workflow",
-        "docker-publish.yml",
-        "build-and-push",
-        "Resolve compatible stable runtime base",
-    )
-    step["run"] = str(step["run"]).replace("--resolver remote", "--resolver shadow")
-    step["run"] += "\n# --resolver remote"
-
-    assert "remote stable-base resolver" in _errors(sources, "release candidate")
-
-
-@pytest.mark.parametrize(
-    ("mutation", "role", "left", "right"),
-    [
-        ("node-probe", "Node", "agent_policy_probe.py", "booley-test"),
-        ("cocotb-authority", "Cocotb", "base-python-requirements.txt", "session-runtime.toml"),
-        ("cocotb-build-probe", "Cocotb", "Dockerfile.base", "base-python-requirements.txt"),
-        ("cocotb-production-probe", "Cocotb", "base-python-requirements.txt", "test.yml"),
-        (
-            "cocotb-session-contract",
-            "Cocotb",
-            "base-python-requirements.txt",
-            "session-runtime.toml",
-        ),
-    ],
-    ids=[
-        "node-probe",
-        "cocotb-authority",
-        "cocotb-build-probe",
-        "cocotb-production-probe",
-        "cocotb-session-contract",
-    ],
-)
-def test_runtime_role_mutations_name_both_disagreeing_sources(
-    mutation: str, role: str, left: str, right: str
-) -> None:
-    sources = _mutate_runtime_role(_sources(), mutation)
-
-    errors = _errors(sources, role)
-
-    assert left in errors
-    assert right in errors
-
-
-def _mutate_runtime_role(sources: ContractSources, mutation: str) -> ContractSources:
-    if mutation.startswith("node-"):
-        return _mutate_node_role(sources, mutation)
-    return _mutate_cocotb_role(sources, mutation)
-
-
-def _mutate_node_role(sources: ContractSources, mutation: str) -> ContractSources:
-    step = _step(
-        sources,
-        "test_workflow",
-        "test.yml",
-        "bwave-smoke",
-        "Run installed agent CLI policy probe",
-    )
-    step["run"] = str(step["run"]).replace("booley-test python", "other-image python")
-    return sources
-
-
-def _mutate_cocotb_role(sources: ContractSources, mutation: str) -> ContractSources:
-    if mutation == "cocotb-authority":
-        return replace(
-            sources,
-            base_python_requirements=_sub_once(
-                r"(?m)^cocotb==.*$", "cocotb==99.0.0", sources.base_python_requirements
-            ),
-        )
-    if mutation == "cocotb-build-probe":
-        # A literal version instead of the derivation from the requirements file.
-        return replace(
-            sources,
-            base_dockerfile=_sub_once(
-                r'(cocotb-config --version\)"\s*=\s*)"\$\(sed[^"]*\)"',
-                r'\g<1>"2.1.0"',
-                sources.base_dockerfile,
-            ),
-        )
-    if mutation == "cocotb-session-contract":
-        return replace(
-            sources,
-            session_runtime_contract=_sub_once(
-                r'(cocotb-config --version\)" = ")[^"]+',
-                r"\g<1>99.0.0",
-                sources.session_runtime_contract,
-            ),
-        )
-    step = _step(
-        sources,
-        "test_workflow",
-        "test.yml",
-        "bwave-smoke",
-        "Run cocotb Icarus/Verilator production-image flows",
-    )
-    step["run"] = _sub_once(
-        r"(cocotb-config --version\)\\?\"\s*=\s*)\\\"\\\$\(sed[^)]*\)\\\"",
-        r"\g<1>2.1.0",
-        str(step["run"]),
-    )
-    return sources
-
-
-def test_verilator_identity_must_match_the_dockerfile_pin() -> None:
-    sources = _sources()
-    pinned = replace(
-        sources,
-        base_dockerfile=_sub_once(
-            r"ARG VERILATOR_VERSION=[^\s]+",
-            "ARG VERILATOR_VERSION=v9.999",
-            sources.base_dockerfile,
-        ),
-    )
-
-    errors = _errors(pinned, "Verilator")
-
-    assert "Dockerfile.base" in errors
-    assert "verilator_identity.py" in errors
-    assert "session-runtime.toml" in errors
-    live = replace(sources, verilator_identity=(sources.verilator_identity[0], "0" * 40))
-    assert "verilator_identity.py" in _errors(live, "Verilator")
-
-
-def test_session_runtime_verilator_probe_must_match_the_dockerfile_pin() -> None:
-    sources = _sources()
-    probe = next(
-        item
-        for item in sources.session_runtime["common"]["probe"]
-        if item["name"] == "EDA command diagnostics"
-    )
-    probe["command"] = probe["command"].replace(
-        "Verilator source revision: ", "Verilator source revision: 0"
-    )
-
-    errors = _errors(sources, "Verilator")
-
-    assert "Dockerfile.base" in errors
-    assert "session-runtime.toml" in errors
-
-
-def test_node_and_npm_authorities_are_dockerfile_arguments() -> None:
-    sources = _sources()
-    missing_npm = replace(
-        sources,
-        base_dockerfile=_sub_once(r"ARG NPM_VERSION=[^\s]+\n", "", sources.base_dockerfile),
-    )
-
-    assert "expected one exact version" in _errors(missing_npm, "npm authority")
-
-
-def test_cocotb_production_probe_requires_candidate_image() -> None:
-    sources = _sources()
-    step = _step(
-        sources,
-        "test_workflow",
-        "test.yml",
-        "bwave-smoke",
-        "Run cocotb Icarus/Verilator production-image flows",
-    )
-    step["run"] = str(step["run"]).replace("booley-test bash -c", "other-image bash -c")
-
-    assert "production probe image" in _errors(sources, "Cocotb")
-
-
-@pytest.mark.parametrize("target", ["sim_icarus", "sim_verilator"])
-def test_cocotb_production_probe_requires_both_simulation_flows(target: str) -> None:
-    sources = _sources()
-    step = _step(
-        sources,
-        "test_workflow",
-        "test.yml",
-        "bwave-smoke",
-        "Run cocotb Icarus/Verilator production-image flows",
-    )
-    command = f"python3 -m booley.flows.sim --project /validation-tmp/project --target {target}"
-    step["run"] = str(step["run"]).replace(command, "true")
-
-    assert f"missing {target} Simulation" in _errors(sources, "Cocotb")
-
-
-def test_runtime_authorities_reject_ranges_and_duplicates() -> None:
-    sources = _sources()
-    ranged = replace(
-        sources,
-        base_python_requirements=_sub_once(
-            r"cocotb==", "cocotb>=", sources.base_python_requirements
-        ),
-    )
-    node_line = re.search(r"^ARG NODE_VERSION=[^\s]+$", sources.base_dockerfile, re.MULTILINE)
-    assert node_line is not None
-    duplicated = replace(
-        sources,
-        base_dockerfile=sources.base_dockerfile.replace(
-            node_line.group(0), f"{node_line.group(0)}\n{node_line.group(0)}", 1
-        ),
-    )
-
-    assert "cocotb>=" in _errors(ranged, "exact version")
-    assert "expected one exact version" in _errors(duplicated, "Node authority")
-
-
-# --- #829 runtime-base package inventory --------------------------------------
-
-_INVENTORY_LABEL_LINE = (
-    "io.booley.runtime-base.package-inventory=/usr/local/share/booley/base-package-inventory.json"
-)
-
-
-def test_base_must_label_its_package_inventory() -> None:
-    sources = replace(
-        _sources(),
-        base_dockerfile=_sources().base_dockerfile.replace(_INVENTORY_LABEL_LINE, ""),
-    )
-
-    assert "must label" in _errors(sources, "package inventory")
-
-
-@pytest.mark.parametrize(
-    "field", ["candidate_dockerfile", "overlay_dockerfile", "riscv_dockerfile"]
-)
-def test_derived_recipes_must_not_relabel_the_inventory(field: str) -> None:
-    sources = _sources()
-    sources = replace(
-        sources, **{field: getattr(sources, field) + f"\nLABEL {_INVENTORY_LABEL_LINE}\n"}
-    )
-
-    assert "must inherit" in _errors(sources, "package inventory")
+def test_published_builds_push_no_shared_tag() -> None:
+    """Shared tags move only through promotion, never from a build."""
+    for name, _wf, _job, step in _pushing_builds():
+        for tag in _lines(step["with"].get("tags")):
+            assert not re.search(r":(latest|main)(?![\w.-])", tag), f"{name}: {tag}"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="workflow steps run under Linux bash")
+def test_computed_candidate_tags_are_run_scoped(tmp_path: Path) -> None:
+    """A tag computed by an earlier step names this run, so it cannot be a shared tag."""
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "python").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', newline="\n")
+    (shim / "python").chmod(0o755)
+    fake = {"GITHUB_SHA": "sha-111", "GITHUB_RUN_ID": "run-222", "GITHUB_RUN_ATTEMPT": "try-3"}
+    ran = 0
+    for name, workflow, job, step in _pushing_builds():
+        for line in _lines(step["with"].get("tags")):
+            computed = re.search(r":\$\{\{ steps\.([\w-]+)\.outputs\.([\w-]+) \}\}$", line)
+            if computed is None:
+                continue
+            script = tmp_path / f"producer-{ran}.sh"
+            script.write_text(
+                str(_step_by_id(workflow, job, computed[1])["run"]), encoding="utf-8", newline="\n"
+            )
+            output = tmp_path / f"output-{ran}"
+            env = {
+                **os.environ,
+                **fake,
+                "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}",
+                "GITHUB_OUTPUT": str(output),
+            }
+            result = run_bounded_child(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+                cwd=_ROOT,
+                env=env,
+                check=False,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            values = dict(
+                entry.partition("=")[::2]
+                for entry in output.read_text(encoding="utf-8").splitlines()
+            )
+            for token in fake.values():
+                assert token in values[computed[2]], f"{name}: {line} lacks {token}"
+            ran += 1
+    assert ran
+
+
+def _digest_flow(steps: list[dict[str, Any]], build: int, end: int) -> tuple[list[int], list[str]]:
+    """Return the steps between ``build`` and ``end`` that consume the build's digest.
+
+    A step consumes it directly or through the output of an earlier consumer.
+    The second value lists every reference that counts as the digest by ``end``.
+    """
+    references = [f"steps.{steps[build].get('id')}.outputs.digest"]
+    consumers: list[int] = []
+    for index in range(build + 1, end):
+        if any(reference in json.dumps(steps[index]) for reference in references):
+            consumers.append(index)
+            if steps[index].get("id"):
+                references.append(f"steps.{steps[index]['id']}.outputs.")
+    return consumers, references
+
+
+def test_promotion_follows_verification_of_the_built_digest() -> None:
+    """A job that builds and then promotes verifies the built digest in between."""
+    checked = 0
+    for name, (verifier, executed) in _VERIFIERS.items():
+        workflow = _workflow(name)
+        for job, body in workflow["jobs"].items():
+            steps: list[dict[str, Any]] = body.get("steps") or []
+            builds = [i for i, step in enumerate(steps) if _pushes_image(step)]
+            promotions = [i for i, step in enumerate(steps) if _promotes(step)]
+            if not builds or not promotions:
+                continue
+            checked += 1
+            promotion = steps[promotions[0]]
+            consumers, references = _digest_flow(steps, builds[0], promotions[0])
+            verified = [
+                index
+                for index in consumers
+                if verifier in str(steps[index].get("run", ""))
+                and executed in str(steps[index].get("run", ""))
+                and steps[index].get("if") == promotion.get("if")
+            ]
+            where = f"{name}:{job}"
+            assert verified, f"{where}: no {verifier} step on the built digest before promotion"
+            assert any(reference in json.dumps(promotion) for reference in references), where
+    assert checked == len(_VERIFIERS)
+
+
+def _needed(workflow: dict[str, Any], job: str) -> set[str]:
+    """Return every job that ``job`` transitively needs."""
+    found: set[str] = set()
+    pending = [job]
+    while pending:
+        needs = workflow["jobs"][pending.pop()].get("needs") or []
+        for needed in [needs] if isinstance(needs, str) else needs:
+            if needed not in found:
+                found.add(needed)
+                pending.append(needed)
+    return found
+
+
+def test_release_promotion_needs_every_other_job() -> None:
+    """A job that promotes without building waits for every other job and uses digests."""
+    promoting = 0
+    for name in _PUBLISH_WORKFLOWS:
+        workflow = _workflow(name)
+        for job, body in workflow["jobs"].items():
+            steps: list[dict[str, Any]] = body.get("steps") or []
+            if any(_pushes_image(step) for step in steps):
+                continue
+            for step in filter(_promotes, steps):
+                promoting += 1
+                assert set(workflow["jobs"]) - {job} <= _needed(workflow, job), f"{name}:{job}"
+                env = step.get("env") or {}
+                for source in str(step["run"]).split("imagetools create")[1:]:
+                    names = re.findall(r"@\$\{(\w+)\}", source)
+                    assert names, f"{name}:{job} promotes a source that is not a digest"
+                    assert all("digest" in str(env.get(item, "")) for item in names)
+    assert promoting
+
+
+def test_published_builds_carry_an_sbom() -> None:
+    for name, _wf, job, step in _pushing_builds():
+        assert step["with"].get("sbom") is True, f"{name}:{job}"
+
+
+def _pull_request_workflows() -> Iterator[tuple[str, dict[str, Any]]]:
+    for path in sorted(_WORKFLOWS.glob("*.yml")):
+        workflow = _workflow(path.name)
+        triggers = workflow.get("on", workflow.get(True)) or {}
+        if {"pull_request", "pull_request_target"} & set(triggers):
+            yield path.name, workflow
+
+
+def test_pull_request_workflows_hold_no_package_write_token() -> None:
+    """Code from a pull request never holds a token that can write a registry package."""
+    seen = 0
+    for name, workflow in _pull_request_workflows():
+        seen += 1
+        grants = [workflow.get("permissions")]
+        grants += [job.get("permissions") for job in workflow["jobs"].values()]
+        # A missing block would leave the token at the repository default.
+        assert isinstance(grants[0], dict) or all(grants[1:]), f"{name}: permissions not explicit"
+        for grant in grants:
+            assert grant != "write-all", name
+            assert not (isinstance(grant, dict) and grant.get("packages") == "write"), name
+        for _job, step in _steps(workflow):
+            assert not _pushes_image(step) and not _promotes(step), name
+    assert seen
+    for path in sorted(_WORKFLOWS.glob("*.yml")):
+        if path.name not in _PUBLISH_WORKFLOWS:
+            for _job, step in _steps(_workflow(path.name)):
+                assert not _pushes_image(step) and not _promotes(step), path.name
+
+
+def test_shared_docker_cache_is_written_only_from_main() -> None:
+    """Pull-request runs and dispatched release runs never write a shared cache scope."""
+    writers = 0
+    for name, workflow in _pull_request_workflows():
+        for _job, step in _steps(workflow):
+            if "cache-to" in (step.get("with") or {}):
+                writers += 1
+                expression = str(step["with"]["cache-to"])
+                condition = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+                assert condition in expression, name
+                # The expression yields nothing on any other run.
+                assert re.search(r"\|\| ''\s*\}\}$", expression), name
+    assert writers
+    for _job, step in _steps(_workflow("docker-publish.yml")):
+        assert "cache-to" not in (step.get("with") or {})
 
 
 # Fake Docker: an image's inventory is its own name; other extraction forms fail.
@@ -640,14 +316,13 @@ esac
     ("step", "env"),
     [
         pytest.param(
-            ("test_workflow", "test.yml", "bwave-smoke", "Export standard package inventory"),
+            ("test.yml", "bwave-smoke", "Export standard package inventory"),
             {"BUILD_STABLE_BASE": "true"},
             id="local-base-standard",
         ),
         pytest.param(None, {}, id="test-standard-riscv"),
         pytest.param(
             (
-                "release_workflow",
                 "docker-publish.yml",
                 "standard-image-contract",
                 "Export standard and runtime-base package inventories",
@@ -656,45 +331,37 @@ esac
             id="release-base-standard",
         ),
         pytest.param(
-            (
-                "release_workflow",
-                "docker-publish.yml",
-                "riscv-image-contract",
-                "Validate exact RISC-V candidate",
-            ),
+            ("docker-publish.yml", "riscv-image-contract", "Validate exact RISC-V candidate"),
             {"BASE_IMAGE": "standard", "RISCV_IMAGE": "riscv"},
             id="release-standard-riscv",
         ),
     ],
 )
 def test_parent_inventory_mismatch_fails_the_step(
-    tmp_path: Path, step: tuple[str, str, str, str] | None, env: dict[str, str]
+    tmp_path: Path, step: tuple[str, str, str] | None, env: dict[str, str]
 ) -> None:
     docker = tmp_path / "bin" / "docker"
     docker.parent.mkdir()
-    docker.write_text(_FAKE_DOCKER)
+    docker.write_text(_FAKE_DOCKER, newline="\n")
     docker.chmod(0o755)
     parent = tmp_path / "docker-build-evidence" / "base-package-inventory.json"
     parent.parent.mkdir()
-    parent.write_text("parent\n")
+    parent.write_text("parent\n", newline="\n")
     if step is None:
         script = _ROOT / ".github/scripts/verify_riscv_image_contract.sh"
         argv = [str(script), str(tmp_path), "riscv", "substrate", str(parent)]
     else:
-        value = _step(_sources(), *step)
+        value = _named_step(*step)
         script = tmp_path / "step.sh"
-        script.write_text(value["run"])
+        script.write_text(value["run"], encoding="utf-8", newline="\n")
         # GitHub's bash shell adds pipefail; a step without `shell:` runs `bash -e`.
         shell = ["--noprofile", "--norc", "-eo", "pipefail"] if value.get("shell") else ["-e"]
         argv = ["bash", *shell, str(script)]
     path = f"{docker.parent}{os.pathsep}{os.environ['PATH']}"
-    result = subprocess.run(
+    result = run_bounded_child(
         argv,
         cwd=_ROOT,
         env={**os.environ, "PATH": path, "RUNNER_TEMP": str(tmp_path), **env},
-        capture_output=True,
-        text=True,
-        timeout=30,
         check=False,
     )
 
@@ -702,72 +369,50 @@ def test_parent_inventory_mismatch_fails_the_step(
     assert " differ: " in result.stdout, result.stdout + result.stderr
 
 
-def test_release_riscv_layers_must_prefix_match_the_standard_substrate() -> None:
-    """Dockerfile.riscv derives from the substrate; the overlaid image can never match."""
-    sources = _sources()
-    step = _step(
-        sources,
-        "release_workflow",
-        "docker-publish.yml",
-        "riscv-image-contract",
-        "Validate exact RISC-V candidate",
-    )
-    step["run"] = step["run"].replace(
-        '--base-image "${STANDARD_SUBSTRATE}"', '--base-image "${BASE_IMAGE}"'
-    )
-
-    assert "--base-image" in _errors(sources, "riscv layer contract")
-
-
-def test_release_riscv_substrate_must_be_the_standard_build_digest() -> None:
-    sources = _sources()
-    step = _step(
-        sources,
-        "release_workflow",
-        "docker-publish.yml",
-        "riscv-image-contract",
-        "Validate exact RISC-V candidate",
-    )
-    step["env"]["STANDARD_SUBSTRATE"] = step["env"]["STANDARD_SUBSTRATE"].replace(
-        "build-and-push.outputs", "build-and-push-riscv.outputs"
-    )
-
-    assert "STANDARD_SUBSTRATE" in _errors(sources, "riscv layer contract")
-
-
-def test_release_riscv_substrate_must_be_pulled_before_inspection() -> None:
-    sources = _sources()
-    step = _step(
-        sources,
-        "release_workflow",
-        "docker-publish.yml",
-        "riscv-image-contract",
-        "Validate exact RISC-V candidate",
-    )
-    step["run"] = step["run"].replace('docker pull "${STANDARD_SUBSTRATE}"\n', "")
-
-    assert "docker pull" in _errors(sources, "riscv layer contract")
-
-
+@pytest.mark.skipif(sys.platform == "win32", reason="workflow steps run under Linux bash")
 @pytest.mark.parametrize(
-    ("output", "problem"),
+    ("env", "expected"),
     [
-        ("type=image,name=booley-riscv-substrate:ci,push=true", "must load its image"),
-        ("type=image,name=booley-other:ci", "tags"),
-        ("type=registry,name=booley-riscv-substrate:ci", "must load its image"),
+        pytest.param(
+            {"PUBLISHED_IMAGE": "ghcr.io/acme/base@sha256:aaa", "CANDIDATE_IMAGE": ""},
+            ("image=ghcr.io/acme/base@sha256:aaa", "source=published", "candidate-tag="),
+            id="published",
+        ),
+        pytest.param(
+            {
+                "PUBLISHED_IMAGE": "",
+                "CANDIDATE_IMAGE": "ghcr.io/acme/base@sha256:bbb",
+                "CANDIDATE_TAG": "candidate-abc-1-1",
+            },
+            (
+                "image=ghcr.io/acme/base@sha256:bbb",
+                "source=candidate",
+                "candidate-tag=candidate-abc-1-1",
+            ),
+            id="candidate",
+        ),
     ],
-    ids=["pushed", "renamed", "registry"],
 )
-def test_riscv_candidate_must_stay_in_the_local_image_store(output: str, problem: str) -> None:
-    """The zstd export is the RISC-V candidate only while it lands under its tag locally."""
-    sources = _sources()
-    step = _step(
-        sources, "test_workflow", "test.yml", "riscv-image", "Run RISC-V candidate image contract"
-    )
-    step["run"] = _sub_once(
-        r"--output \S+",
-        f"--output {output}",
-        str(step["run"]),
+def test_selected_base_report(
+    tmp_path: Path, env: dict[str, str], expected: tuple[str, ...]
+) -> None:
+    """The report step names the base it selected, with its digest, in its outputs."""
+    step = _step_by_id(_workflow("docker-publish.yml"), "runtime-base", "selected")
+    script = tmp_path / "step.sh"
+    script.write_text(step["run"], encoding="utf-8", newline="\n")
+    output = tmp_path / "output"
+    result = run_bounded_child(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "CANDIDATE_TAG": "",
+            **env,
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        },
+        check=False,
     )
 
-    assert problem in _errors(sources, "local RISC-V candidate")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == list(expected)

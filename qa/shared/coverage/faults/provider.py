@@ -156,9 +156,9 @@ def query_fault(evidence: Evidence, case: str) -> None:
         evidence.query(view="points", cursor="bad", limit=1)
     elif case == "undelivered":
         evidence.query(view="source", point_refs=["point:999999999"])
-    elif case == "cross-campaign":
-        foreign = Path(os.environ["QA_FOREIGN_CAMPAIGN"]).resolve(strict=True)
-        evidence.query(view="overview", campaign=str(foreign))
+    elif case == "cross-record":
+        foreign = Path(os.environ["QA_FOREIGN_RECORD"]).resolve(strict=True)
+        evidence.query(view="overview", coverage_record=str(foreign))
     elif case == "cursor-filter":
         page = evidence.query(view="points", metric="toggle", limit=1)
         evidence.query(view="points", metric="line", cursor=page["next_cursor"], limit=1)
@@ -177,7 +177,7 @@ def model_result(spec: dict, inherited: bool, root: Path, case: str) -> dict:
         if case in {
             "bad-cursor",
             "undelivered",
-            "cross-campaign",
+            "cross-record",
             "cursor-filter",
             "invalid-limit",
             "total-budget",

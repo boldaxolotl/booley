@@ -1,8 +1,8 @@
 """SimulateFlow Cocotb Target tests (ADR 0034 — G3, G4, B2, B3, B4, G6).
 
-Host-runnable: the Cocotb Target is simulated through the real campaign path
+Host-runnable: the Cocotb Target is simulated through the real record path
 (``SimulateFlow.execute``) with only the process edge faked
-(``campaign_boundary``). The fake process prints canned run-half output
+(``simulation_record_boundary``). The fake process prints canned run-half output
 ([COCOTB_RESULTS] + [SIM_SUMMARY] lines built with the real formatters) and the
 production Cocotb adapter's verdict logic turns it into the adapter result. The
 real icarus/verilator cocotb runs are the Sandbox e2e's job (G8-G15).
@@ -13,17 +13,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
-from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from tests.flows.sim.campaign_boundary import CampaignSimRun, run_campaign_sim
-from tests.flows.sim.launched_work import launched_work
+from tests.flows.sim.simulation_record_boundary import (
+    SimulationRecordSimRun,
+    run_simulation_record_sim,
+)
 from tests.flows.sim.test_flow import SimulateFlow
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).
@@ -76,7 +77,7 @@ def _cocotb_output(
 ) -> str:
     """Canned run-half stdout: sim noise + [COCOTB_RESULTS] + [SIM_SUMMARY].
 
-    *sva_errors* rides the [SIM_SUMMARY] line; the campaign adapter ignores it
+    *sva_errors* rides the [SIM_SUMMARY] line; the record adapter ignores it
     and recounts SVA error lines over the run output itself.
     """
     results = cr.CocotbResults(
@@ -106,10 +107,10 @@ def _run_cocotb(
     build: SubprocessResult | None = None,
     skip: dict[str, list[str]] | None = None,
     **request: Any,
-) -> CampaignSimRun:
-    """Run the Cocotb Target ``ccfg`` through the campaign with *stdout* as the run-half output."""
+) -> SimulationRecordSimRun:
+    """Run the Cocotb Target ``ccfg`` through the record with *stdout* as the run-half output."""
     process = SubprocessResult(returncode=returncode, stdout=stdout, duration_s=2.0)
-    return run_campaign_sim(
+    return run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         _TESTS,
@@ -289,7 +290,7 @@ _ZERO_MATCH_RESULTS = cr.CocotbResults(
         ),
     ],
 )
-def test_cocotb_campaign_verdicts(
+def test_cocotb_simulation_record_verdicts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stdout: str,
@@ -425,7 +426,7 @@ def test_select_template_rejected_only_on_cocotb(
     assert cocotb.launched == []
 
     # The rejection keys off cocotb-ness, not the mere presence of select.
-    native = run_campaign_sim(
+    native = run_simulation_record_sim(
         tmp_path / "native",
         monkeypatch,
         {"lite": ["t0"]},
@@ -446,7 +447,7 @@ def test_cocotb_build_failure_blocks_every_test(
 ) -> None:
     """When the BUILD half breaks, not one selected test runs.
 
-    The campaign records every selected test as blocked by the build and rides
+    The record records every selected test as blocked by the build and rides
     the compile error on each (taxi: an icarus Target whose SV interface ports
     don't parse in iverilog gave 14 phantom FAILs). Nothing is launched, so the
     build failure can never read as a pass (ADR 0034 dec 6).
@@ -478,24 +479,6 @@ def test_cocotb_build_failure_blocks_every_test(
 
 
 class TestCocotbDryRun:
-    def test_dry_run_emits_one_batched_command(self, tmp_path: Path) -> None:
-        """The engine preview is one command whose document carries every Test."""
-        from tests.flows.sim.test_execution_engine import _handle, _inspection
-
-        engine = execution_engine
-        build = patch.object(engine.TargetCatalog, "build", return_value=_inspection(cocotb=True))
-        setup = patch.object(engine.fusesoc_registry, "setup_command_for_handle", return_value=[])
-        execution = engine.SimulationExecution(
-            invoke=MagicMock(), options=engine.SimulationOptions()
-        )
-        with build, setup:
-            preview = execution.preview(_handle(tmp_path), engine.NamedTests(("a", "b", "c")))
-
-        (command,) = preview.commands
-        work = launched_work(command[2])
-        assert (work.adapter, work.cocotb_module) == ("cocotb", "test_demo")
-        assert work.tests == ("a", "b", "c")
-
     def test_dry_run_batches_the_selected_cocotb_tests_into_one_work_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -526,6 +509,6 @@ class TestCocotbDryRun:
         )
 
         assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
-        (preview,) = result.outcome.detail["campaign_preview"]
+        (preview,) = result.outcome.detail["record_preview"]
         # Naming tests needs the registry, so success shows it was read; two tests, one batch.
         assert preview["work_items"] == 1

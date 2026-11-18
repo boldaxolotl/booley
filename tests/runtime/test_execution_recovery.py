@@ -15,10 +15,12 @@ from types import SimpleNamespace
 
 import pytest
 from tests.execution_test_support import (
+    run_with_recovery_between_read_and_write,
     start_supervisor_with_detached_descendant,
     wait_for,
     wait_for_value,
 )
+from tests.time_budget import hang_guard_s
 
 from booley.runtime import execution_recovery
 from booley.runtime.booley_dir import reset_cache
@@ -44,9 +46,10 @@ from booley.runtime.pid import (
     capture_process_identity,
     observe_process,
 )
+from booley.runtime.supervised_execution import SupervisedProcessSet
 
-_PROCESS_TIMEOUT_SECONDS = 5.0
-_RECOVERY_TIMEOUT_SECONDS = 12.0
+_PROCESS_TIMEOUT_SECONDS = hang_guard_s()
+_RECOVERY_TIMEOUT_SECONDS = hang_guard_s()
 
 
 def _marked_execution_identities(execution_id: ExecutionId) -> set[ProcessIdentity]:
@@ -221,10 +224,10 @@ def _publish_waiting_lane(booley_dir: Path, *, context_execution_id: str | None 
     atomic_write_json(
         paths.context,
         {
-            "$schema": "booley.supervised-child-context/v1",
+            "$schema": "booley.supervised-child-context/v2",
             "child_execution_id": context_execution_id or str(execution_id),
             "parent_execution_id": "a" * 32,
-            "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            "simulation_record_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
             "manifest_sha256": "sha256:" + "1" * 64,
             "work_item_id": "item:0000:0123456789abcdef",
             "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
@@ -249,7 +252,7 @@ def _publish_waiting_lane(booley_dir: Path, *, context_execution_id: str | None 
 
 
 def test_recovery_accepts_lane_context_without_child_entry(tmp_path: Path) -> None:
-    """A parallel Campaign lane has a context sidecar and no Project child entry."""
+    """A parallel Simulation Record lane has a context sidecar and no Project child entry."""
     booley_dir = tmp_path / ".booley"
     execution_id, paths = _publish_waiting_lane(booley_dir)
 
@@ -383,3 +386,49 @@ def test_unreadable_proc_entry_with_malformed_stat_does_not_match(
     (proc / "stat").write_text("malformed\n", encoding="utf-8")
 
     assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
+
+
+def test_unregister_keeps_the_terminal_record_recovery_writes_between_its_read_and_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    execution_id = ExecutionId(uuid.uuid4().hex)
+    paths = execution_paths(execution_id, booley_dir=tmp_path)
+    atomic_write_json(paths.record, _waiting_record())
+    process = _FakePopen(os.getpid())
+    processes = SupervisedProcessSet(execution_id, tmp_path, lambda: False)
+    processes.register(process)  # type: ignore[arg-type]
+    assert read_json(paths.record)["state"] == "running"  # type: ignore[index]
+
+    replaced = run_with_recovery_between_read_and_write(
+        monkeypatch,
+        execution_id,
+        tmp_path,
+        lambda: processes.unregister(process),  # type: ignore[arg-type]
+    )
+
+    assert "terminal" not in replaced
+    final = read_json(paths.record)
+    assert final is not None
+    assert final["state"] == "terminal"
+    assert final["terminal_cause"] == "orphan_recovered"
+    assert final["tree_terminal"] is True
+
+
+class _FakePopen:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+
+
+def _waiting_record() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "state": "waiting",
+        "runtime_identity": None,
+        "supervisor": None,
+        "leader": None,
+        "exit_code": None,
+        "tree_terminal": False,
+        "terminal_cause": None,
+        "updated_at": "2026-01-01T00:00:00Z",
+    }

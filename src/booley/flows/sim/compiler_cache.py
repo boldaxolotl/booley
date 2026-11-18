@@ -1,22 +1,31 @@
-"""Project-scoped Verilator compiler cache policy and execution preparation."""
+"""Project-scoped Verilator compiler cache policy and execution preparation.
+
+The cache root lives outside every mutable build generation and setup cleanup
+never touches it, so objects survive generation rewrites. Booley's cache
+variables win over the Target's and the ambient environment.
+"""
 
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
 from booley.flows.sim.config import resolve_compiler_cache_settings
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 logger = logging.getLogger(__name__)
 # Build variables Booley manages; Verilator build reuse keeps them out of its key.
 _CCACHE = ("CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_COMPILERCHECK", "CCACHE_BASEDIR")
 RESERVED = frozenset({"OBJCACHE", "USER_CPPFLAGS", COMPILER_CACHE_ROOT_ENV, *_CCACHE})
+# Make command-line assignments that override a value this module manages.
+_MAKE_OVERRIDE = re.compile(r"(OBJCACHE|USER_CPPFLAGS)\s*[:?+]?=")
 
 
 class CompilerCacheConfigurationError(ValueError):
@@ -80,10 +89,35 @@ def compose_environment(
     return {**target, **managed}
 
 
+def warn_make_option_overrides(target: str, tokens: Sequence[str], *, cache_active: bool) -> None:
+    """Warn once per authored Make assignment that defeats the cache or build reuse."""
+    for token in tokens:
+        found = _MAKE_OVERRIDE.match(token)
+        if found is None:
+            continue
+        if found.group(1) == "OBJCACHE":
+            logger.warning(
+                "Simulation Target %r: make_options assignment %s means build reuse is off, "
+                "so every run rebuilds the simulation model; to stop using the compiler "
+                "cache, set enabled = false under [flows.sim.compiler_cache]",
+                target,
+                token,
+            )
+        elif cache_active:
+            logger.warning(
+                "Simulation Target %r: make_options assignment %s replaces the "
+                "USER_CPPFLAGS that carries Booley's compiler-cache debug-prefix map, "
+                "so builds with -g miss the cache; set the flags in the Target env's "
+                "USER_CPPFLAGS, which Booley keeps, or pass them with Verilator's -CFLAGS",
+                target,
+                token,
+            )
+
+
 def _cache_blocker(policy: CompilerCachePolicy, search_path: str | None) -> str:
     """Return why an enabled cache cannot serve this build, creating its root if it can."""
     if policy.root is None:
-        return f"{COMPILER_CACHE_ROOT_ENV} is unset; run booley session refresh on the host"
+        return f"{COMPILER_CACHE_ROOT_ENV} is unset; recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
     if shutil.which("ccache", path=search_path) is None:
         return "ccache is missing from the build PATH"
     try:

@@ -28,7 +28,7 @@ from booley.targets.flow_names import (
 )
 
 SELECTIVE_FLOW_KNOBS = {
-    "timeout_ms": frozenset({"sim", "lint", "synth", "fpga"}),
+    "timeout_ms": frozenset({"sim", "lint", "synth", "fpga", "mutation"}),
     "build_timeout_ms": frozenset({"sim"}),
     "trace_convert_timeout_ms": frozenset({"sim"}),
     "pre_run_commands": frozenset({"sim"}),
@@ -39,7 +39,8 @@ SELECTIVE_FLOW_KNOBS = {
     "trace_args": frozenset({"sim"}),
     "trace_files": frozenset({"sim"}),
     "output_dir": frozenset({"synth"}),
-    "expected_latches": frozenset({"synth"}),
+    "expected_latches": frozenset({"synth", "fpga"}),
+    "expected_comb_loops": frozenset({"synth", "fpga"}),
     "timing_report_paths": frozenset({"synth"}),
 }
 

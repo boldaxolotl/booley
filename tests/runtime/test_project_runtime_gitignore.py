@@ -32,18 +32,15 @@ RUNTIME_PATHS = (
     ".runtime/traces/results.json",
     ".runtime/compiler-cache/cache-tag",
     ".runtime/sessions/log.json",
-    ".runtime/mutation_tester/mutant.sv",
+    ".runtime/mutation/mutant.sv",
     ".runtime/executions/id/.record.json.tmp",
     ".runtime/campaign-child-executions/entries/id.json",
     ".managed/project-git-hooks.pyz",
     ".managed/.project-git-hooks.pyz.interrupted.tmp",
     "runtime/doctor_stamp.json",
     "runtime/sessions/thread.json",
-    "runtime/jobs/slots/heavy/token.json",
+    "runtime/jobs/slots/memory/token.json",
     ".interactive_logs/session.log",
-    "goals/g1/record.json",
-    "goals/g1/.record.json.tmp",
-    "goals/locks/work.lock",
     "tickets/board/ticket.md",
     "tickets/state/state.json",
     "tickets/waiver-candidates/candidate.json",
@@ -66,9 +63,7 @@ AUTHORED_PATHS = (
     "doctor-waivers.toml",
     "cores/top.core",
     "selftest/sim/fixture.sv",
-    "goalsets/default.md",
     "hooks/check.py",
-    "goals/history/g1.md",
     "tickets/history/ticket.md",
     "cores/logs/result.log",
     "custom-output/report.json",
@@ -106,7 +101,7 @@ def test_authored_inputs_remain_trackable(versioned_project, path):
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("authored input\n")
     result = run_bounded_child(
-        ["git", "-C", str(data), "check-ignore", "--no-index", "--quiet", path], timeout=10
+        ["git", "-C", str(data), "check-ignore", "--no-index", "--quiet", path]
     )
     assert result.returncode == 1, (path, result.stderr)
 
@@ -181,32 +176,17 @@ def _publish_bookkeeping(root, data, repo):
     return (stamp, *sessions, jobs / "run.json", execution)
 
 
-def _publish_goal_and_ticket(root, data, repo):
-    """Goal records/locks and retained Ticket state: separate local owners."""
-    from tests.goals.test_store import _enter
-
-    from booley.criteria.state import DevelopmentState
-    from booley.goals.paths import record_paths
-    from booley.goals.store import GoalStore
-
-    store = GoalStore(data)
-    record = _enter(store, repo, "audit-20261010T000000Z")
-    paths = record_paths(data, record.id)
-    assert paths.record_file.is_file()
-    assert_clean(repo)
-    with store.record_lock(record.id):
-        assert paths.lock_file.is_file()
-        assert_clean(repo)
+def _publish_ticket(root, data, repo):
+    """Retained Ticket state: a local owner."""
     ticket = data / "tickets/state/audit.json"
-    state = DevelopmentState.load(ticket)
-    state.init_criteria({"lint_clean": True})
-    state.save()
-    return (paths.record_file, paths.lock_file, ticket)
+    ticket.parent.mkdir(parents=True, exist_ok=True)
+    ticket.write_bytes(b'{"schema_version": 1}\n')
+    return (ticket,)
 
 
 def _publish_logs_and_cache(root, data, repo):
     """Build/trace logs, mutation proposals, diagnostics, MCP transcripts."""
-    from booley.dev_support.mutation_lock import LockMeta, lock_json_path, save_lock
+    from booley.flows.mutation import workspace as mutation_workspace
     from booley.flows.run_log import write_run_log
     from booley.flows.sim.trace_session import TraceSession
     from booley.runtime.booley_dir import runtime_dir
@@ -223,8 +203,10 @@ def _publish_logs_and_cache(root, data, repo):
         outputs.append(write_run_log(directory, "actual diagnostic publication\n"))
         assert outputs[-1].is_file()
         assert_clean(repo)
-    save_lock(LockMeta(), runtime)
-    outputs.append(lock_json_path(runtime))
+    mutant_log = mutation_workspace.mutant_logs_dir(runtime) / "mutant_1.log"
+    mutant_log.parent.mkdir(parents=True, exist_ok=True)
+    mutant_log.write_bytes(b"mutant simulator output\n")
+    outputs.append(mutant_log)
     assert outputs[-1].is_file()
     assert_clean(repo)
     trace = TraceSession(runtime / "traces", backend="verilator", target="sim", test="smoke")
@@ -264,7 +246,7 @@ def test_audited_storage_families_keep_project_clean(versioned_project):
         assert outputs, publish.__name__
         assert all(path.is_file() for path in outputs), outputs
         assert_clean(repo)
-    outputs = _publish_goal_and_ticket(root, data, repo)
+    outputs = _publish_ticket(root, data, repo)
     assert all(path.is_file() for path in outputs), outputs
     assert_clean(repo)
     # Git worktrees are themselves a runtime storage family. The real Git
@@ -342,36 +324,36 @@ def test_compiler_cache_preparation_keeps_project_clean(versioned_project, monke
     assert_clean(repo)
 
 
-def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project):
-    from tests.flows.sim.test_campaign_manifest_codec import _manifest
+def test_simulation_record_publications_and_run_lock_keep_project_clean(versioned_project):
+    from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 
-    from booley.flows.sim.campaign.codec import (
+    from booley.flows.sim.record.codec import (
         canonical_json_bytes,
-        decode_simulation_campaign_manifest,
+        decode_simulation_record_manifest,
     )
-    from booley.flows.sim.campaign.run_directory import (
+    from booley.flows.sim.record.run_directory import (
         claimed_run_directory,
         expand_run_directory,
     )
-    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
 
     root, data, repo = versioned_project
-    store = CampaignStore(data / ".runtime/campaigns/audit")
-    store.publish_manifest(decode_simulation_campaign_manifest(canonical_json_bytes(_manifest())))
+    store = SimulationRecordStore(data / ".runtime/records/audit")
+    store.publish_manifest(decode_simulation_record_manifest(canonical_json_bytes(_manifest())))
     assert store.manifest_path.is_file()
     assert_clean(repo)
     store.regenerate_summary()
     assert store.summary_path.is_file()
     assert_clean(repo)
     run = expand_run_directory(
-        str(data / ".runtime/campaign-runs/{attempt}"),
+        str(data / ".runtime/record-runs/{attempt}"),
         project_root=root,
-        campaign_id="audit",
+        simulation_record_id="audit",
         target_key="sim",
         work_item_key="smoke",
         attempt_key="first",
     )
-    identity = {"campaign_id": "audit", "work_item_id": "smoke", "attempt_id": "first"}
+    identity = {"simulation_record_id": "audit", "work_item_id": "smoke", "attempt_id": "first"}
     with claimed_run_directory(run, identity=identity) as directory:
         assert (directory / ".booley-simulation-attempt.json").is_file()
         assert run.lock_path.is_file()
@@ -381,27 +363,23 @@ def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project
     assert_clean(repo)
 
 
-def test_doctor_probe_and_upgrade_publications_keep_project_clean(versioned_project):
-    from booley.harness import developer_probe, synth_probe, upgrade_review
+def test_upgrade_publication_keeps_project_clean(versioned_project):
+    from booley.harness import upgrade_review
 
     _root, data, repo = versioned_project
-    for path in (
-        developer_probe.record_measurement(data, 1024),
-        synth_probe.record_measurement(data, "synth", 1.0),
-    ):
-        assert path.is_file()
-        assert_clean(repo)
     upgrade_review.observe(data, current_version="0.3.0", now="2026-10-10T00:00:00Z")
     assert upgrade_review.state_path(data).is_file()
     assert_clean(repo)
 
 
 def test_job_slot_publication_keeps_project_clean(versioned_project):
-    from booley.runtime.job_slots import SlotStore
+    from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
 
     _root, data, repo = versioned_project
     store = SlotStore(data / "runtime/jobs/slots", now=lambda: 100.0)
-    token = store.submit("light", pid=1, argv=["fixture"])
+    token = store.submit(
+        CLASS_MEMORY, pid=1, argv=["fixture"], memory=MemoryClaim(budget_mb=1024, run_alone=True)
+    )
     try:
         assert token.path.is_file()
         assert_clean(repo)
@@ -425,11 +403,10 @@ def test_ignored_evidence_is_omitted_from_specialist_visible_inputs(versioned_pr
     assert all((data / name).relative_to(repo) not in visible for name in NEW_RUNTIME_PATHS)
 
 
-def test_specialist_session_and_mutation_round_storage_keep_project_clean(
+def test_specialist_session_and_mutation_log_storage_keep_project_clean(
     versioned_project, monkeypatch
 ):
-    from booley.dev_support.mutation_lock import verification_rounds_dir
-    from booley.specialists.mutation_tester import MutationTesterSpecialist, VerificationOutcome
+    from booley.flows.mutation import workspace as mutation_workspace
     from booley.specialists.reviewer import ReviewerSpecialist
 
     root, data, repo = versioned_project
@@ -441,8 +418,10 @@ def test_specialist_session_and_mutation_round_storage_keep_project_clean(
     endpoint._persist_session_id("reviewer")
     assert (data / ".runtime/sessions/reviewer.session_id").is_file()
     assert_clean(repo)
-    MutationTesterSpecialist()._write_round_log(1, VerificationOutcome(True, True, True))
-    assert (verification_rounds_dir() / "round_1.log").is_file()
+    mutant_log = mutation_workspace.mutant_logs_dir() / "mutant_1.log"
+    mutant_log.parent.mkdir(parents=True, exist_ok=True)
+    mutant_log.write_bytes(b"mutant simulator output\n")
+    assert mutant_log.is_file()
     assert_clean(repo)
 
 
@@ -472,12 +451,6 @@ def test_dashboard_task_runtime_ownership_keeps_project_clean(versioned_project)
 
 
 def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
-    from tests.flows.sim.test_waiver_candidates import _record
-
-    from booley.flows.sim.waiver_candidates import (
-        waiver_candidates_lock_path,
-        waiver_candidates_path,
-    )
     from booley.runtime.atomic_files import atomic_write_once
 
     _root, data, repo = versioned_project
@@ -487,7 +460,30 @@ def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
     assert board.is_file()
     assert_clean(repo)
     record_dir = data / "tickets/waiver-candidates/audit"
-    assert _record(record_dir).recorded == 1
-    assert waiver_candidates_path(record_dir).is_file()
-    assert waiver_candidates_lock_path(record_dir).is_file()
+    record_dir.mkdir(parents=True)
+    for name in ("candidates.json", "candidates.lock"):
+        assert atomic_write_once(record_dir / name, b"{}\n", mode=0o644)
+        assert (record_dir / name).is_file()
     assert_clean(repo)
+
+
+def test_stealth_exclude_names_cover_default_and_relocated(tmp_path):
+    from booley.runtime.booley_dir import reset_cache
+    from booley.runtime.git import stealth_exclude_names
+
+    # Default Project: exactly the default spelling, no duplicate.
+    reset_cache()
+    assert stealth_exclude_names(tmp_path) == (".booley",)
+
+    # Relocated Project: `.booley` (full init still works there) plus the own directory.
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    (tmp_path / "tools/booley").mkdir(parents=True)
+    reset_cache()
+    assert stealth_exclude_names(tmp_path) == (".booley", "tools/booley")
+
+    # Project-authored text that a gitignore pattern would read differently is not excluded.
+    for unsafe in ("*", "x[1]", "trailing ", "a\\nb"):
+        (tmp_path / "booley.toml").write_text(f'[project]\ndir = "{unsafe}"\n', encoding="utf-8")
+        reset_cache()
+        assert stealth_exclude_names(tmp_path) == (".booley",), unsafe
+    reset_cache()

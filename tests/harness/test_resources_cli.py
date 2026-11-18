@@ -10,6 +10,7 @@ import pytest
 from booley.flows import job_resources
 from booley.harness import resources_cli
 from booley.runtime import resource_history
+from booley.runtime.timefmt import utc_now_rfc3339
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 
 SAMPLE = {
@@ -18,6 +19,7 @@ SAMPLE = {
     "container_peak_delta_mb": None,
     "peak_memory_mb": 10.0,
     "wall_s": 1.0,
+    "finished_at": utc_now_rfc3339(),
 }
 
 

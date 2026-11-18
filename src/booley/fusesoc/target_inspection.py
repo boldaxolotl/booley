@@ -32,14 +32,6 @@ class _InspectionConfig:
     allow_additional_properties: bool = False
 
 
-def _new_library_manager() -> LibraryManager:
-    """Create a LibraryManager across FuseSoC 2.4.x constructor APIs."""
-    try:
-        return LibraryManager()
-    except TypeError:
-        return LibraryManager("")
-
-
 def _target_flags(name: str, flow: str | None, eda_tool: str | None) -> dict[str, Any]:
     """Build fresh FuseSoC condition flags for one Target."""
     flags: dict[str, Any] = {"is_toplevel": True, "target": name}
@@ -150,8 +142,8 @@ class _TargetSourceInspector:
             return self._prepared_state
         try:
             plan = fusesoc_registry.prepare_core_library_plan(self.root)
-            manager = CoreManager(_InspectionConfig(), library_manager=_new_library_manager())
-            manager.core2parser = fusesoc_registry.PortableCoreParser(manager.core2parser)
+            manager = CoreManager(_InspectionConfig(), library_manager=LibraryManager())
+            manager.core2parser = fusesoc_registry.fusesoc_core_parser()
             for index, (library_root, ignored_dirs) in enumerate(
                 zip(plan.roots, plan.ignored_dirs, strict=True)
             ):
@@ -227,8 +219,12 @@ class _TargetSourceInspector:
         except fusesoc_registry.FuseSocError:
             raise
         except (DependencyError, OSError, SyntaxError, RuntimeError, ValueError) as exc:
+            seed = TargetRef(name=str(flags["target"]), vlnv=vlnv, core_file=core_file.resolve())
+            hint = fusesoc_registry.unprovided_dependency_suffix(
+                self.root, [seed], documents=self._documents
+            )
             raise fusesoc_registry.FuseSocError(
-                f"could not inspect Target {identity!r}: {exc}"
+                f"could not inspect Target {identity!r}: {exc}{hint}"
             ) from exc
 
     @staticmethod

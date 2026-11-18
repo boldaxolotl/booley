@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from .coverage_invocation import CoverageTargetPlan
 
-from booley.flows.sim.coverage_json import CAMPAIGN_FINGERPRINT_JSON, content_digest
+from booley.flows.sim.coverage_json import COVERAGE_RECORD_FINGERPRINT_JSON, content_digest
 from booley.targets.domain import TargetInspection
 
 
 def coverage_digest(value: object) -> str:
     """Fingerprint canonical JSON data independently of mapping order."""
-    return content_digest(CAMPAIGN_FINGERPRINT_JSON.encode(value))
+    return content_digest(COVERAGE_RECORD_FINGERPRINT_JSON.encode(value))
 
 
 def coverage_source_closure(inspection: TargetInspection) -> dict[str, list[dict[str, str]]]:
@@ -33,7 +33,7 @@ def coverage_source_closure(inspection: TargetInspection) -> dict[str, list[dict
 
 
 def validate_coverage_sources(plan: CoverageTargetPlan) -> None:
-    """Reject source/Target drift rather than publish a Campaign under stale fingerprints."""
+    """Reject source/Target drift rather than publish a Coverage Record under stale fingerprints."""
     for category in ("rtl", "testbench"):
         for record in cast(tuple[Mapping[str, str], ...], plan.source_closure[category]):
             path = plan.handle.project_root / str(record["path"])

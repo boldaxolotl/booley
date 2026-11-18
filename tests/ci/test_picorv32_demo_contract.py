@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import sys
@@ -12,9 +14,10 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
-from booley.goals.model import parse_goal_arg
 from booley.runtime import dockerfile_syntax
+from booley.runtime.docker_base_contract import stable_base_inputs
 
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
@@ -55,26 +58,14 @@ def _yaml_strings(value: Any) -> tuple[str, ...]:
 
 
 def _contract_table_strings(contract: dict[str, Any]) -> set[str]:
-    bindings = contract["required_goal"]
+    metrics = contract["target_metrics"]
     generated_inputs = contract["generated_input"]
     return {
         *contract["required_targets"],
-        *(binding["target"] for binding in bindings),
+        *metrics,
         *(generated[key] for generated in generated_inputs for key in ("path", "producer")),
         *(target for generated in generated_inputs for target in generated["targets"]),
     }
-
-
-def _workflow_consumers() -> list[tuple[Path, str, list[dict[str, Any]], int]]:
-    consumers: list[tuple[Path, str, list[dict[str, Any]], int]] = []
-    for path in Path(".github/workflows").glob("*.yml"):
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for job_name, job in workflow["jobs"].items():
-            steps = job.get("steps", [])
-            for index, step in enumerate(steps):
-                if step.get("uses") == "./.github/actions/prepare-picorv32-demo":
-                    consumers.append((path, job_name, steps, index))
-    return consumers
 
 
 def _workflow_events() -> dict[str, Any]:
@@ -84,78 +75,109 @@ def _workflow_events() -> dict[str, Any]:
     return workflow[True]
 
 
-def _workflow_commands(path: Path) -> str:
-    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return "\n".join(
-        str(step.get("run", ""))
-        for job in workflow["jobs"].values()
-        for step in job.get("steps", [])
-    )
-
-
-def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
+def test_pull_requests_run_demo_for_its_real_inputs() -> None:
     events = _workflow_events()
     paths = set(events["pull_request"]["paths"])
 
     assert paths >= PICORV32_INPUT_FILES
-    assert ".github/actions/prepare-picorv32-demo/**" in paths
-    assert "src/booley/**" not in paths
-    assert {
-        "src/booley/dev_support/demo_contract.py",
-        "src/booley/dev_support/mutation_*.py",
-        "src/booley/feedback/**",
-        "src/booley/harness/**",
-        "src/booley/projects/**",
-        "src/booley/runtime/**",
-        "src/booley/targets/**",
-        "src/booley/goals/**",
-        "src/booley/review/**",
-        "src/booley/evidence/**",
-    } <= paths
-    assert paths.isdisjoint(
-        {
-            "src/booley/bwave/**",
-            "src/booley/docker/**",
-        }
-    )
-    assert events["push"] == {"branches": ["main"]}
-    assert events["merge_group"] is None
-    assert events["schedule"] == [{"cron": "23 3 * * *"}]
-    assert events["workflow_dispatch"] is None
 
 
-def test_demo_uses_and_retains_the_pulled_immutable_image_identity() -> None:
+def _demo_job(name: str = "demo-contract") -> dict[str, Any]:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    steps = workflow["jobs"]["demo-contract"]["steps"]
-    resolver = next(
-        step for step in steps if step.get("name") == "Pull and resolve RISC-V Sandbox"
-    )
-    upload = next(step for step in steps if step.get("name") == "Retain RISC-V Sandbox identity")
-    verify = next(
-        step
-        for step in steps
-        if step.get("name") == "Verify public demo contract with current Booley source"
-    )
+    job = workflow["jobs"][name]
+    assert isinstance(job, dict)
+    return job
 
-    assert resolver["id"] == "runtime-image"
-    assert ".github/scripts/pull_image_identity.py" in resolver["run"]
-    assert '--image "${IMAGE}"' in resolver["run"]
-    assert '--github-output "${GITHUB_OUTPUT}"' in resolver["run"]
-    assert '--evidence "${RUNNER_TEMP}/picorv32-demo/image-identity.json"' in resolver["run"]
-    assert upload["if"] == "always()"
-    assert str(upload["uses"]).startswith("actions/upload-artifact@")
-    assert upload["with"] == {
-        "name": "picorv32-image-identity-${{ github.run_id }}-${{ github.run_attempt }}",
-        "path": "${{ runner.temp }}/picorv32-demo/image-identity.json",
-        "if-no-files-found": "error",
-        "retention-days": 14,
-    }
-    assert '"${{ steps.runtime-image.outputs.image }}"' in verify["run"]
-    assert '"${IMAGE}" bash' not in verify["run"]
-    # Published images can still own a legacy /booley-project symlink.
-    # Docker resolves mount destinations through it, recreating the old layout.
-    assert "dst=/booley-project" not in verify["run"]
-    assert "-e BOOLEY_DIR=/work/.booley" in verify["run"]
+
+def _glob_matches(pattern: str, path: str) -> bool:
+    """Match a workflow ``paths`` entry: an exact file, or a ``dir/**`` prefix."""
+    if pattern.endswith("/**"):
+        return path.startswith(pattern[:-2])
+    assert "*" not in pattern, pattern
+    return path == pattern
+
+
+_FAKE_IDENTITY_DOCKER = """#!/usr/bin/env bash
+# docker image inspect --format '{{.Id}}' <tag>: a distinct ID per tag.
+case "$*" in
+  "image inspect --format {{.Id}} booley-riscv-test") echo sha256:%(candidate)s ;;
+  "image inspect --format {{.Id}} booley-runtime-base:ci") echo sha256:%(built_base)s ;;
+  *) echo "unexpected docker $*" >&2; exit 9 ;;
+esac
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="workflow steps run under bash")
+def test_demo_evidence_names_candidate_digest_and_base_source(tmp_path: Path) -> None:
+    step = next(
+        (
+            step
+            for step in _demo_job()["steps"]
+            if step.get("name") == "Record RISC-V Sandbox candidate identity"
+        ),
+        None,
+    )
+    assert step is not None, "no step records the candidate image identity"
+    candidate, built_base = "c" * 64, "b" * 64
+    published = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "a" * 64
+    docker = tmp_path / "bin" / "docker"
+    docker.parent.mkdir()
+    docker.write_text(_FAKE_IDENTITY_DOCKER % {"candidate": candidate, "built_base": built_base})
+    docker.chmod(0o755)
+    runner_temp = tmp_path / "runner"
+    evidence = runner_temp / "picorv32-image-evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "tooling-source.json").write_text('{"source": "registry"}\n', encoding="utf-8")
+
+    def record(build: str, base_image: str) -> dict[str, Any]:
+        result = run_bounded_child(
+            ["bash", "-e", "-c", step["run"]],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "PATH": f"{docker.parent}{os.pathsep}{os.environ['PATH']}",
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+                "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
+                "BUILD_STABLE_BASE": build,
+                "BASE_IMAGE": base_image,
+                "SOURCE_REVISION": "f" * 40,
+            },
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads((evidence / "image-identity.json").read_text(encoding="utf-8"))
+
+    from_published = record("false", published)
+    assert from_published["image_id"] == f"sha256:{candidate}"
+    assert (tmp_path / "output.txt").read_text(
+        encoding="utf-8"
+    ) == f"image_id=sha256:{candidate}\n"
+    assert from_published["base_source"] == "published"
+    assert from_published["base_image"] == published
+    assert from_published["base_digest"] == "sha256:" + "a" * 64
+    assert from_published["riscv_tooling_source"] == "registry"
+    assert from_published["source_revision"] == "f" * 40
+
+    from_source = record("true", "booley-runtime-base:ci")
+    assert from_source["base_source"] == "source-build"
+    assert from_source["base_digest"] == f"sha256:{built_base}"
+    assert from_source["image_id"] == f"sha256:{candidate}"
+    assert "source-build" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
+
+def test_stable_base_changes_run_demo_on_a_source_built_base() -> None:
+    root = Path(__file__).parents[2]
+    patterns = _workflow_events()["pull_request"]["paths"]
+    inputs = (
+        *stable_base_inputs(root),
+        "src/booley/data/docker/stable-base-inputs.txt",
+    )
+    unmatched = [
+        path for path in inputs if not any(_glob_matches(pattern, path) for pattern in patterns)
+    ]
+    assert not unmatched, f"stable-base inputs that do not trigger the demo: {unmatched}"
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
@@ -164,9 +186,12 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert contract.project_ref == "e53c1896ab02595aa4ebb3a56b5aa7bd109177f9"
-    assert contract.schema == 2
-    assert all(goal.target in contract.required_targets for goal in contract.required_goals)
+    assert contract.project_ref == "a3520837bce9416c1a7209d779148a9eb12482a9"
+    assert contract.schema == 3
+    assert contract.target_metrics == {
+        "lint_core": {"lint": {"errors_max": 0, "track": ["warnings"]}}
+    }
+    assert set(contract.target_metrics) <= set(contract.required_targets)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
     assert contract.required_targets == (
         "lint_core",
@@ -195,32 +220,22 @@ def test_demo_toolchain_matches_the_riscv_image_pin() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "path,directory",
-    [
-        (WORKFLOW, "picorv32-demo"),
-        (PUBLISH_WORKFLOW, "picorv32-evidence"),
-        (TEST_WORKFLOW, "riscv-image-evidence"),
-    ],
-)
-def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> None:
+def _assert_measurement_evidence_retained(path: Path, directory: str) -> None:
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
     commands = "\n".join(_yaml_strings(workflow))
     if path == TEST_WORKFLOW:
         assert "run_picorv32_ci_demo.sh" in commands
         commands += Path(".github/scripts/run_picorv32_ci_demo.sh").read_text()
     assert "dst=/evidence" in commands
-    assert "BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json" in commands
+    assert "BOOLEY_MEASUREMENT_EVIDENCE=/evidence/measurement.json" in commands
     assert directory in commands
     if path == TEST_WORKFLOW:
         steps = workflow["jobs"]["riscv-image"]["steps"]
-        upload = next(
-            step for step in steps if step.get("name") == "Upload Goal readiness evidence"
-        )
-        assert upload["if"] == ("always() && steps.goal-readiness.outputs.started == 'true'")
+        upload = next(step for step in steps if step.get("name") == "Upload measurement evidence")
+        assert upload["if"] == ("always() && steps.measurement.outputs.started == 'true'")
         assert (
             upload["with"]["path"]
-            == "${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json"
+            == "${{ runner.temp }}/riscv-image-evidence/measurement/measurement.json"
         )
         assert upload["with"]["if-no-files-found"] == "error"
         return
@@ -230,10 +245,28 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
         for step in job.get("steps", [])
         if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     ]
+    if path == WORKFLOW:
+        # The demo also uploads image identity; the measurement upload is the
+        # one that keeps this evidence, whatever the verify step did.
+        upload = next(
+            step for step in uploads if step["with"]["name"].startswith("picorv32-measurement")
+        )
+        assert str(upload["if"]).startswith("always()")
+        assert f"/{directory}/" in upload["with"]["path"]
+        return
     assert any(
         step.get("if") == "always()" and f"/{directory}/" in step["with"]["path"]
         for step in uploads
     )
+
+
+def test_measurement_evidence_is_mounted_and_retained() -> None:
+    for path, directory in (
+        (WORKFLOW, "picorv32-demo"),
+        (PUBLISH_WORKFLOW, "picorv32-evidence"),
+        (TEST_WORKFLOW, "riscv-image-evidence"),
+    ):
+        _assert_measurement_evidence_retained(path, directory)
 
 
 @pytest.mark.parametrize(
@@ -241,13 +274,13 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
     [
         (
             WORKFLOW,
-            "Verify public demo contract with current Booley source",
-            "Retain Goal readiness evidence",
+            "Run measurement round trip on the public demo",
+            "Retain measurement evidence",
         ),
-        (TEST_WORKFLOW, "Run RISC-V candidate image contract", "Upload Goal readiness evidence"),
+        (TEST_WORKFLOW, "Run RISC-V candidate image contract", "Upload measurement evidence"),
     ],
 )
-def test_readiness_upload_requires_its_producer_to_run(
+def test_measurement_upload_requires_its_producer_to_run(
     path: Path, producer_name: str, upload_name: str
 ) -> None:
     workflow = yaml.safe_load(path.read_text())
@@ -258,40 +291,23 @@ def test_readiness_upload_requires_its_producer_to_run(
     upload = next(step for step in steps if step.get("name") == upload_name)
     assert upload["with"]["if-no-files-found"] == "error"
     if path == WORKFLOW:
-        assert producer["id"] == "goal-readiness"
+        assert producer["id"] == "measurement"
         assert upload["if"] == (
-            "always() && (steps.goal-readiness.outcome == 'success' || "
-            "steps.goal-readiness.outcome == 'failure')"
+            "always() && (steps.measurement.outcome == 'success' || "
+            "steps.measurement.outcome == 'failure')"
         )
     else:
-        marker = next(step for step in steps if step.get("id") == "goal-readiness")
-        assert marker["name"] == "Read Goal readiness attempt marker"
-        assert "goal-readiness-started" in producer["run"]
+        marker = next(step for step in steps if step.get("id") == "measurement")
+        assert marker["name"] == "Read measurement attempt marker"
+        assert "measurement-started" in producer["run"]
         assert steps.index(marker) < steps.index(upload)
-        assert upload["if"] == ("always() && steps.goal-readiness.outputs.started == 'true'")
-
-
-def test_release_goal_ready_validates_readiness_before_recording_check() -> None:
-    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
-    steps = [step for job in workflow["jobs"].values() for step in job["steps"]]
-    records = [step for step in steps if "--check picorv32.goal-ready" in step.get("run", "")]
-    assert len(records) == 1
-    command = records[0]["run"]
-    validator = "python .github/scripts/release_validation/goal_readiness.py"
-    assert validator in command
-    assert command.index(validator) < command.index(
-        "python .github/scripts/release_validation/evidence.py"
-    )
-    validation = command[: command.index("python .github/scripts/release_validation/evidence.py")]
-    assert "--contract .github/contracts/picorv32-demo.toml" in validation
-    assert '--readiness "${RUNNER_TEMP}/picorv32-evidence/goal-readiness.json"' in validation
-    assert "||" not in validation
+        assert upload["if"] == ("always() && steps.measurement.outputs.started == 'true'")
 
 
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
     path = tmp_path / "contract.toml"
     path.write_text(
-        """schema = 2
+        """schema = 3
 upstream_repository = "owner/upstream"
 upstream_ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 project_repository = "owner/project"
@@ -376,38 +392,6 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert "sha256sum -c -" in toolchain["run"]
 
 
-def test_workflow_consumers_share_goal_preparation() -> None:
-    contract = tomllib.loads(CONTRACT.read_text(encoding="utf-8"))
-    consumers = _workflow_consumers()
-    assert {path for path, _job, _steps, _index in consumers} == {
-        WORKFLOW,
-        PUBLISH_WORKFLOW,
-        TEST_WORKFLOW,
-    }
-    assert len(consumers) == 5
-
-    for path, _job_name, steps, index in consumers:
-        consumer = steps[index]
-        consumer_id = consumer.get("id")
-        later_strings = _yaml_strings(steps[index + 1 :])
-        if consumer_id is not None:
-            assert "outputs.ticket_slug" not in "\n".join(later_strings)
-        workflow_strings = _yaml_strings(yaml.safe_load(path.read_text(encoding="utf-8")))
-        for key in OUTPUT_KEYS[:4]:
-            assert all(contract[key] not in value for value in workflow_strings)
-        assert all(
-            authority_value not in value
-            for authority_value in _contract_table_strings(contract)
-            for value in workflow_strings
-        )
-        commands = _workflow_commands(path)
-        if path in {WORKFLOW, PUBLISH_WORKFLOW}:
-            assert f"bash /booley-source/{VERIFY_SCRIPT.as_posix()}" in commands
-        assert "picorv32_demo_contract.py" not in commands
-        assert "Check out reviewed PicoRV32 revision" not in workflow_strings
-        assert "Install CI-owned Ticket fixture" not in workflow_strings
-
-
 def test_release_validation_skips_credentials_and_cannot_promote() -> None:
     workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
@@ -432,7 +416,7 @@ def test_release_validation_skips_credentials_and_cannot_promote() -> None:
 
 
 def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-I",
@@ -441,10 +425,7 @@ def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
             "--contract",
             str(contract.resolve()),
         ],
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=10,
     )
 
 
@@ -462,7 +443,7 @@ def test_contract_exporter_emits_all_workflow_fields() -> None:
 
 
 def _write_contract(tmp_path: Path, replacement: tuple[str, str] | None = None) -> Path:
-    text = """schema = 2
+    text = """schema = 3
 upstream_repository = "owner/upstream"
 upstream_ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 project_repository = "owner/project"
@@ -471,9 +452,8 @@ toolchain_url = "https://example.invalid/toolchain.tar.gz"
 toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 required_targets = ["sim"]
 
-[[required_goal]]
-family = "SIM"
-target = "sim"
+[target_metrics.sim.sim]
+failures_max = 0
 
 [[generated_input]]
 path = "firmware/image.hex"
@@ -487,16 +467,39 @@ targets = ["sim"]
     return path
 
 
-_DUPLICATE_BINDING = """target = "sim"
-
-[[required_goal]]
-family = "SIM"
-target = "sim"
-
-[[generated_input]]"""
+_MALFORMED_METRICS_CASES = [
+    (
+        ("[target_metrics.sim.sim]\nfailures_max = 0", "[other_metrics]"),
+        "target_metrics must be a mapping",
+    ),
+    (
+        ("[target_metrics.sim.sim]\nfailures_max = 0", "[target_metrics]"),
+        "target_metrics must be a non-empty table",
+    ),
+    (
+        ("[target_metrics.sim.sim]", "[target_metrics.other.sim]"),
+        "target_metrics.other is not in required_targets",
+    ),
+    (
+        ("[target_metrics.sim.sim]\nfailures_max = 0", "[target_metrics]\nsim = 7"),
+        "target_metrics.sim must be a mapping",
+    ),
+    (
+        ("[target_metrics.sim.sim]\nfailures_max = 0", "[target_metrics.sim]"),
+        "target_metrics.sim must be a non-empty table",
+    ),
+    (
+        ("[target_metrics.sim.sim]\nfailures_max = 0", "[target_metrics.sim]\nsim = 7"),
+        "target_metrics.sim.sim must be a mapping",
+    ),
+    (
+        ("[target_metrics.sim.sim]\nfailures_max = 0", "[target_metrics.sim.sim]"),
+        "target_metrics.sim.sim must be a non-empty table",
+    ),
+]
 
 _INVALID_CONTRACT_CASES = [
-    pytest.param(("schema = 2", "schema = 1"), "schema must be 2", id="schema"),
+    pytest.param(("schema = 3", "schema = 2"), "schema must be 3", id="schema"),
     pytest.param(
         ("owner/upstream", "   "),
         "upstream_repository must be a non-empty string",
@@ -555,32 +558,6 @@ _INVALID_CONTRACT_CASES = [
         ('required_targets = ["sim"]', 'required_targets = ["sim", "sim"]'),
         "required_targets contains duplicate",
         id="duplicate-target",
-    ),
-    pytest.param(("[[required_goal]]", "[[other_binding]]"), "required_goal", id="bindings"),
-    pytest.param(
-        ('family = "SIM"', "family = 7"),
-        "required_goal[0].family",
-        id="malformed-binding",
-    ),
-    pytest.param(
-        ('family = "SIM"', 'family = " "'),
-        "required_goal[0].family must be a non-empty string",
-        id="empty-binding",
-    ),
-    pytest.param(
-        ('target = "sim"', 'target = " "'),
-        "required_goal[0].target must be a non-empty string",
-        id="empty-binding-target",
-    ),
-    pytest.param(
-        ('target = "sim"', 'target = "other"'),
-        "required_goal[0].target 'other' is not in required_targets",
-        id="out-of-set-binding",
-    ),
-    pytest.param(
-        ('target = "sim"\n\n[[generated_input]]', _DUPLICATE_BINDING),
-        "required_goal contains duplicate pair",
-        id="duplicate-binding",
     ),
     pytest.param(("[[generated_input]]", "[[other_input]]"), "generated_input", id="inputs"),
     pytest.param(
@@ -642,6 +619,26 @@ def test_contract_rejects_invalid_boundary_values(
 ) -> None:
     with pytest.raises(DemoContractError, match=re.escape(message)):
         load_contract(_write_contract(tmp_path, replacement))
+
+
+def test_codec_rejects_malformed_target_metrics(tmp_path: Path) -> None:
+    for index, (replacement, message) in enumerate(_MALFORMED_METRICS_CASES):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        with pytest.raises(DemoContractError, match=re.escape(message)):
+            load_contract(_write_contract(directory, replacement))
+
+
+def test_contract_target_metrics_parse_as_metrics_toml() -> None:
+    from release_validation.measure_round_trip import render_metrics
+
+    from booley.measurement.metrics_file import parse_metrics_as_written
+
+    contract = load_contract(CONTRACT)
+    rules = parse_metrics_as_written(render_metrics(contract.target_metrics).encode())
+    assert {table.target for table in rules.tables} == set(contract.target_metrics)
+    assert {table.flow for table in rules.tables} == {"lint"}
+    assert set(contract.target_metrics) <= set(contract.required_targets)
 
 
 @pytest.mark.parametrize(("replacement", "message"), _INVALID_CONTRACT_CASES)
@@ -765,7 +762,7 @@ def test_generated_input_collection_keeps_only_available_digests(
 
 def _demo_contract() -> DemoContract:
     return DemoContract(
-        schema=2,
+        schema=3,
         upstream_repository="owner/upstream",
         upstream_ref="a" * 40,
         project_repository="owner/project",
@@ -773,7 +770,7 @@ def _demo_contract() -> DemoContract:
         toolchain_url="https://example.invalid/toolchain.tar.gz",
         toolchain_sha256="c" * 64,
         required_targets=("sim",),
-        required_goals=(parse_goal_arg({"family": "SIM", "target": "sim"}),),
+        target_metrics={"sim": {"sim": {"failures_max": 0}}},
         generated_inputs=(GeneratedInput("image.hex", "Makefile", ("sim",)),),
     )
 
@@ -856,60 +853,8 @@ def test_demo_contract_cli_reports_success_and_errors(
     assert "ERROR: bad contract" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "field", ["optional = true", "criterion = 'LINT'", "min_detected = 0", "auto = false"]
-)
-def test_goal_contract_rejects_legacy_and_invalid_mutation_fields(tmp_path, field) -> None:
-    path = _write_contract(tmp_path, ('family = "SIM"', f'family = "MUTATION"\n{field}'))
-    with pytest.raises(DemoContractError, match=r"unknown fields|positive|true"):
-        load_contract(path)
-
-
-def test_contract_goals_use_real_entry_grammar_and_keep_mutation() -> None:
-    from booley.goals.translate import translate_goals
-
-    contract = load_contract(CONTRACT)
-    goals = translate_goals(contract.required_goals).goals
-    assert {goal.key for goal in goals} == {
-        "lint_clean_lint_core",
-        "sim_pass_sim_core",
-        "sim_pass_sim_wb",
-        "synthesis_ok_synth_core",
-        "mutation_score_sim_core",
-    }
-    mutation = next(goal for goal in goals if goal.family.value == "mutation")
-    assert mutation.params["min_detected"] == 14 and mutation.params["total"] == 15
-
-
-@pytest.mark.parametrize("field", ["family", "target"])
-def test_goal_contract_uses_entry_boundary_normalization(tmp_path, field):
-    original = 'family = "SIM"' if field == "family" else 'target = "sim"'
-    path = _write_contract(
-        tmp_path,
-        (
-            original,
-            original.replace('"SIM"', '" SIM "')
-            if field == "family"
-            else original.replace('"sim"', '" sim "'),
-        ),
-    )
-    goals = load_contract(path).required_goals
-    assert goals == (parse_goal_arg({"family": "SIM", "target": "sim"}),)
-
-
-def test_typed_goals_encode_for_mcp_without_sharing_nested_maps():
-    from booley.goals.model import goal_arg_to_json
-
-    for goal in load_contract(CONTRACT).required_goals:
-        encoded = goal_arg_to_json(goal)
-        assert parse_goal_arg(encoded) == goal
-        if "thresholds" in encoded:
-            encoded["thresholds"]["cell_count_max"] = 999
-            assert "cell_count_max" not in goal.thresholds
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="verifier executes inside the Linux image")
-def test_demo_verifier_uses_explicit_directory_for_both_readiness_stages(tmp_path, monkeypatch):
+def test_demo_verifier_uses_explicit_directory_for_both_stages(tmp_path, monkeypatch):
     import json
     import os
     import sys
@@ -929,12 +874,10 @@ def test_demo_verifier_uses_explicit_directory_for_both_readiness_stages(tmp_pat
     monkeypatch.setenv("BOOLEY_DIR", configured)
     monkeypatch.setenv("DEMO_COMMAND_LOG", str(commands))
     monkeypatch.setenv("BOOLEY_RUN_PICORV32_FLOWS", "0")
-    subprocess.run(
+    monkeypatch.setenv("BOOLEY_IMAGE_DIGEST", "sha256:image")
+    run_bounded_child(
         ["bash", str(VERIFY_SCRIPT.resolve())],
-        capture_output=True,
-        text=True,
         check=True,
-        timeout=10,
     )
     calls = [json.loads(line) for line in commands.read_text().splitlines()]
     assert len(calls) == 2

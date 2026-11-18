@@ -7,14 +7,17 @@ project-relative, and it is absent rather than wrong.
 
 from __future__ import annotations
 
+import copy
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from booley.flows import artifacts
-from booley.flows.artifact_durability import durable_copy
+from booley.flows.artifact_durability import durable_copy, durable_in_place
 
 
 def _assert_host_readable(path: Path) -> None:
@@ -91,136 +94,151 @@ class TestDurablePublication:
         assert not destination.exists()
 
 
-class TestRelative:
-    def test_absolute_path_becomes_project_relative(self, tmp_path: Path):
-        log = tmp_path / "build" / "run.log"
-        log.parent.mkdir(parents=True)
-        log.write_text("output\n", encoding="utf-8")
-
-        assert artifacts.relative(log, tmp_path) == "build/run.log"
-
-    def test_relative_input_is_anchored_on_work_dir_not_cwd(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-    ):
-        """A caller may pass a path already in the form this function returns.
-
-        Anchoring the existence check on the process cwd would drop every such
-        pointer whenever the Flow does not happen to run from the work dir —
-        which is the normal case under MCP dispatch.
-        """
-        log = tmp_path / "build" / "run.log"
-        log.parent.mkdir(parents=True)
-        log.write_text("output\n", encoding="utf-8")
-        elsewhere = tmp_path / "somewhere-else"
-        elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
-
-        assert artifacts.relative("build/run.log", tmp_path) == "build/run.log"
-
-    def test_missing_file_yields_none(self, tmp_path: Path):
-        assert artifacts.relative(tmp_path / "nope.log", tmp_path) is None
-
-    def test_empty_and_none_inputs_yield_none(self, tmp_path: Path):
-        assert artifacts.relative(None, tmp_path) is None
-        assert artifacts.relative("", tmp_path) is None
-
-    def test_path_outside_work_dir_still_resolves(self, tmp_path: Path):
-        """A ``..`` form is legitimate — a baseline worktree lives beside the
-        work dir — so it must not be dropped."""
-        outside = tmp_path / "outside.log"
-        outside.write_text("x", encoding="utf-8")
-        inner = tmp_path / "project"
-        inner.mkdir()
-
-        assert artifacts.relative(outside, inner) == "../outside.log"
+def _touch(root: Path, *names: str) -> None:
+    """Create each file under *root*; a name ending in ``/`` is a directory."""
+    for name in names:
+        path = root / name
+        if name.endswith("/"):
+            path.mkdir(parents=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x", encoding="utf-8")
 
 
-class TestArtifactsBlock:
-    def test_drops_absent_keys_keeps_present_ones(self, tmp_path: Path):
-        present = tmp_path / "run.log"
-        present.write_text("x", encoding="utf-8")
+@pytest.mark.parametrize(
+    ("files", "given", "base", "expected"),
+    [
+        # Absolute path becomes project-relative.
+        (("build/run.log",), lambda r: r / "build" / "run.log", ".", "build/run.log"),
+        # A caller may pass a path already in the returned form; anchoring the
+        # existence check on the cwd would drop it whenever the Flow does not
+        # run from the work dir, the normal case under MCP dispatch.
+        (("build/run.log",), lambda _r: "build/run.log", ".", "build/run.log"),
+        ((), lambda r: r / "nope.log", ".", None),
+        ((), lambda _r: None, ".", None),
+        ((), lambda _r: "", ".", None),
+        # A ``..`` form is legitimate (a baseline worktree lives beside the
+        # work dir), so it must not be dropped.
+        (("outside.log", "project/"), lambda r: r / "outside.log", "project", "../outside.log"),
+    ],
+    ids=["absolute", "relative-from-elsewhere", "missing", "none", "empty", "outside-work-dir"],
+)
+def test_relative_pointer_is_project_relative_or_absent(
+    files: tuple[str, ...],
+    given: Callable[[Path], object],
+    base: str,
+    expected: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _touch(tmp_path, *files)
+    (tmp_path / "somewhere-else").mkdir()
+    monkeypatch.chdir(tmp_path / "somewhere-else")
 
-        block = artifacts.artifacts_block(
-            tmp_path,
-            log=present,
-            trace=tmp_path / "trace.fst",
-            result=None,
-        )
-
-        assert block == {"log": "run.log"}
-
-    def test_empty_when_nothing_landed(self, tmp_path: Path):
-        assert artifacts.artifacts_block(tmp_path, log=tmp_path / "gone.log") == {}
-
-    def test_dirs_are_nested_under_their_own_key(self, tmp_path: Path):
-        log = tmp_path / "run.log"
-        log.write_text("x", encoding="utf-8")
-        build = tmp_path / "build"
-        build.mkdir()
-
-        block = artifacts.artifacts_block(tmp_path, log=log, dirs={"build": build})
-
-        assert block == {"log": "run.log", "dirs": {"build": "build"}}
-
-    def test_absent_dirs_are_dropped_like_files(self, tmp_path: Path):
-        """The drop-what-is-absent rule applies to directories too — an agent
-        must never be sent to list a path that is not there."""
-        build = tmp_path / "build"
-        build.mkdir()
-
-        block = artifacts.artifacts_block(
-            tmp_path,
-            dirs={"build": build, "timing": tmp_path / "build" / "reports" / "timing"},
-        )
-
-        assert block == {"dirs": {"build": "build"}}
-
-    def test_dirs_key_omitted_when_none_resolved(self, tmp_path: Path):
-        block = artifacts.artifacts_block(tmp_path, dirs={"build": tmp_path / "gone"})
-        assert block == {}
-
-    def test_a_file_passed_as_a_dir_still_resolves(self, tmp_path: Path):
-        """``relative`` checks existence, not kind — callers decide semantics,
-        so this is documented behaviour rather than a silent trap."""
-        f = tmp_path / "run.log"
-        f.write_text("x", encoding="utf-8")
-
-        assert artifacts.artifacts_block(tmp_path, dirs={"build": f}) == {
-            "dirs": {"build": "run.log"}
-        }
+    assert artifacts.relative(given(tmp_path), tmp_path / base) == expected
 
 
-class TestMergeArtifacts:
-    def test_merges_into_existing_key(self):
-        detail: dict = {"artifacts": {"log": "a/run.log"}}
+@pytest.mark.parametrize(
+    ("files", "build", "expected"),
+    [
+        (
+            ("run.log",),
+            lambda r: artifacts.artifacts_block(
+                r, log=r / "run.log", trace=r / "trace.fst", result=None
+            ),
+            {"log": "run.log"},
+        ),
+        ((), lambda r: artifacts.artifacts_block(r, log=r / "gone.log"), {}),
+        (
+            ("run.log", "build/"),
+            lambda r: artifacts.artifacts_block(r, log=r / "run.log", dirs={"build": r / "build"}),
+            {"log": "run.log", "dirs": {"build": "build"}},
+        ),
+        # The drop-what-is-absent rule applies to directories too: an agent
+        # must never be sent to list a path that is not there.
+        (
+            ("build/",),
+            lambda r: artifacts.artifacts_block(
+                r, dirs={"build": r / "build", "timing": r / "build" / "reports" / "timing"}
+            ),
+            {"dirs": {"build": "build"}},
+        ),
+        ((), lambda r: artifacts.artifacts_block(r, dirs={"build": r / "gone"}), {}),
+        # ``relative`` checks existence, not kind: callers decide semantics.
+        (
+            ("run.log",),
+            lambda r: artifacts.artifacts_block(r, dirs={"build": r / "run.log"}),
+            {"dirs": {"build": "run.log"}},
+        ),
+    ],
+    ids=["drops-absent-keys", "empty", "nested-dirs", "absent-dirs", "no-dirs", "file-as-dir"],
+)
+def test_artifacts_block_keeps_only_what_landed(
+    files: tuple[str, ...],
+    build: Callable[[Path], dict[str, object]],
+    expected: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    _touch(tmp_path, *files)
 
-        artifacts.merge_artifacts(detail, {"report": "b/report.json"})
+    assert build(tmp_path) == expected
 
-        assert detail["artifacts"] == {"log": "a/run.log", "report": "b/report.json"}
 
-    def test_creates_the_key_when_absent(self):
-        detail: dict = {}
+@pytest.mark.parametrize(
+    ("detail", "block", "expected"),
+    [
+        (
+            {"artifacts": {"log": "a/run.log"}},
+            {"report": "b/report.json"},
+            {"artifacts": {"log": "a/run.log", "report": "b/report.json"}},
+        ),
+        ({}, {"log": "a/run.log"}, {"artifacts": {"log": "a/run.log"}}),
+        # An empty mapping would read as "checked, found nothing", a different
+        # claim from "not applicable".
+        ({}, {}, {}),
+        # A caller adding directories in two passes must not lose the first.
+        (
+            {"artifacts": {"dirs": {"build": "a"}}},
+            {"dirs": {"timing": "b"}},
+            {"artifacts": {"dirs": {"build": "a", "timing": "b"}}},
+        ),
+    ],
+    ids=["existing-key", "absent-key", "empty-block", "dirs-merge-by-key"],
+)
+def test_merge_artifacts(
+    detail: dict[str, Any], block: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    merged = copy.deepcopy(detail)
 
-        artifacts.merge_artifacts(detail, {"log": "a/run.log"})
+    artifacts.merge_artifacts(merged, block)
 
-        assert detail["artifacts"] == {"log": "a/run.log"}
+    assert merged == expected
 
-    def test_empty_block_adds_nothing(self):
-        """A run that produced no durable file carries no empty ``artifacts``
-        key — an empty mapping reads as "checked, found nothing", which is a
-        different claim from "not applicable"."""
-        detail: dict = {}
 
-        artifacts.merge_artifacts(detail, {})
+class TestDurableInPlace:
+    def test_keeps_the_bytes_and_gives_the_copy_mode(self, tmp_path: Path):
+        path = tmp_path / "run.log"
+        path.write_bytes(b"evidence")
+        path.chmod(0o644)
 
-        assert detail == {}
+        durable_in_place(path)
 
-    def test_dirs_merge_key_by_key_rather_than_replacing(self):
-        """A caller adding directories in two passes must not lose the first."""
-        detail: dict = {"artifacts": {"dirs": {"build": "a"}}}
+        assert path.read_bytes() == b"evidence"
+        if os.name != "nt":
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
-        artifacts.merge_artifacts(detail, {"dirs": {"timing": "b"}})
+    def test_refuses_a_directory_and_a_missing_file(self, tmp_path: Path):
+        with pytest.raises(OSError):
+            durable_in_place(tmp_path)
+        with pytest.raises(OSError):
+            durable_in_place(tmp_path / "absent")
 
-        assert detail["artifacts"]["dirs"] == {"build": "a", "timing": "b"}
+    @pytest.mark.skipif(os.name == "nt", reason="needs a symlink")
+    def test_refuses_a_symlink(self, tmp_path: Path):
+        target = tmp_path / "real.log"
+        target.write_bytes(b"x")
+        link = tmp_path / "link.log"
+        link.symlink_to(target)
+
+        with pytest.raises(OSError):
+            durable_in_place(link)

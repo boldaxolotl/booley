@@ -10,7 +10,7 @@ defaults.
 
 Project Initialization is the location-neutral part: :func:`initialize_project`
 reconciles every Project file (Booley Directory, ``[agent]``, core projections,
-Goalsets, Git integration, line endings, guidance links) with no Docker, host
+Git integration, line endings, guidance links) with no Docker, host
 credentials or Sandbox Issuance (ADR 0085). Host ``booley init`` runs it and then
 the host-only steps; ``booley session refresh`` runs it through
 :func:`reinitialize_project` without rewriting tracked files.
@@ -22,7 +22,6 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
     - Booley Directory (.booley/ with config skeletons)
-    - Project Goalsets
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
     - Pinned Nangate45 download into the per-user cache
@@ -30,7 +29,7 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Project sandbox image (bakes repo Python deps) — ADR 0018
     - Git hooks: repo hooks, project commit-msg, worktree prune guard,
       line endings, guidance links
-    - Interactive Mode: untracked devcontainer + egress/reaper objects — ADR 0018
+    - Sandbox: untracked devcontainer + egress/reaper objects — ADR 0018
     - Post-setup advisories
 
 Historical steps, since handled by ``pip install`` or eliminated: venv
@@ -57,14 +56,24 @@ from pathlib import Path
 import tomlkit
 
 from booley import __version__
+from booley.audit.resource_policy import memory_swap_limit
 from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
-from booley.config.agent import AGENT_CLIS
+from booley.config.agent import (
+    AGENT_CLIS,
+    DEFAULT_AUTH,
+    RETIRED_AUTH,
+    DeclaredAgent,
+    SandboxConfig,
+    encode_cli_policies,
+    parse_agent_section,
+)
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
-from booley.core.boundary import as_dict, as_str, require_dict
+from booley.core.boundary import as_dict, as_str, as_str_list, require_dict
 from booley.core.config_paths import resolve_toml
+from booley.core.host_shell import quote_arg
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
     CoreProjectionError,
@@ -73,7 +82,6 @@ from booley.fusesoc.core_projection import (
     projection_issues,
     reconcile_projected_cores,
 )
-from booley.goals.goalsets import seed_goalsets
 
 # --- Re-exported for backward compatibility (Single Responsibility split) ---
 # These symbols were relocated into sibling init_* modules so this file is just
@@ -134,6 +142,7 @@ from booley.harness.setup.guidance_links import (
     detach_guidance_hardlinks,
     ensure_guidance_links,
     plan_guidance_links,
+    remaining_guidance_hardlinks,
 )
 from booley.harness.setup.line_endings import (
     pending_normalization_paths,
@@ -157,7 +166,7 @@ from booley.runtime import (
     runtime_context,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import (
     booley_dir_for_init,
@@ -223,7 +232,7 @@ BOOLEY_TOML_SKELETON = f"""\
 # it has inspected the repository's docs, manifests, filelists, scripts, and CI.
 #
 # Does a test need a non-RTL build step before it can run (e.g. cross-compile
-# the selected test's firmware)? Declare it as Pre-Sim Commands (ADR 0039) —
+# the selected test's firmware)? Declare it as Pre-Sim Commands —
 # shell lines run inside the Sandbox immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
@@ -250,6 +259,22 @@ TESTS_TOML_SKELETON = """\
 # reads the annotated TESTS_TEMPLATE.toml shipped with the skill.
 """
 
+# Default bounds only, no `[<target>.<flow>]` table: nothing is measured until a
+# Project adds one, and the file already passes `booley measure --validate`.
+METRICS_TOML_SKELETON = """\
+# metrics.toml - the Target Metrics that `booley measure` checks.
+#
+# Written by `booley init` with the default bounds only: they apply to a
+# `[<target>.sim]` or `[<target>.coverage]` table, and there is none yet, so
+# nothing is measured. `booley cheat --metrics` explains the file.
+
+[defaults.sim]
+tests_failed_max = 0
+
+[defaults.coverage]
+tests_failed_max = 0
+"""
+
 
 # ---------------------------------------------------------------------------
 # Init step: Booley Directory (record key: booley_dir)
@@ -264,6 +289,7 @@ def _backfill_config_skeletons(
     skeletons = {
         "booley.toml": content,
         "tests.toml": TESTS_TOML_SKELETON,
+        "metrics.toml": METRICS_TOML_SKELETON,
     }
     added = [
         name
@@ -339,8 +365,8 @@ FUSESOC_IGNORE_BODY = (
     "# marker FuseSoC's recursive --cores-root scan would let a stale worktree\n"
     "# core shadow the source at the Project Root and silently build the wrong RTL.\n"
     "#\n"
-    "# One subtree is exempt BY DESIGN: cores/ (stealth authored cores, ADR\n"
-    "# 0036). Booley scans it as a second root, so this marker never applies\n"
+    "# One subtree is exempt BY DESIGN: cores/ (stealth authored cores).\n"
+    "# Booley scans it as a second root, so this marker never applies\n"
     "# to it — do not drop a FUSESOC_IGNORE inside cores/ unless you mean to\n"
     "# hide those cores from Booley too.\n"
 )
@@ -423,7 +449,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
     gitignore = target / ".gitignore"
     guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
 
-    # booley.toml + tests.toml skeletons (idempotent, never overwrites).
+    # booley.toml + tests.toml + metrics.toml skeletons (idempotent, never overwrites).
     _backfill_config_skeletons(target, ctx, "# booley-init-origin: port\n" + BOOLEY_TOML_SKELETON)
     _backfill_fusesoc_ignore(target, ctx)
     _init_project_git_repo(target, ctx)
@@ -472,7 +498,7 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
         return
     if ctx.check_only:
         ctx.record("booley_dir", "warn", "would initialize inner git repository")
-        warn(f"would `git init -b {branch.branch}` {target} (stealth persistence, ADR 0036)")
+        warn(f"would `git init -b {branch.branch}` {target} (stealth persistence)")
         return
     try:
         result = subprocess.run(
@@ -538,27 +564,6 @@ def _step_core_projections(ctx: InitContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Init step: Goalsets (record key: goalsets)
-# ---------------------------------------------------------------------------
-
-
-def _step_goalsets(ctx: InitContext) -> None:
-    """Reconcile the four create-only Project Goalsets."""
-    ctx.step_banner("Goalsets")
-    outcomes = seed_goalsets(booley_dir_for_init(ctx.project_root), dry_run=ctx.check_only)
-    added = sum(outcome is WriteOutcome.WRITTEN for _, outcome in outcomes)
-    if not added:
-        current("Goalsets already present")
-        ctx.record("goalsets", "current", "already present")
-    elif ctx.check_only:
-        warn(f"{added} missing Goalsets (would create)")
-        ctx.record("goalsets", "warn", f"{added} files missing")
-    else:
-        ok(f"created {added} Goalsets")
-        ctx.record("goalsets", "ok", "created")
-
-
-# ---------------------------------------------------------------------------
 # Init step: agent authentication (record key: auth)
 # ---------------------------------------------------------------------------
 
@@ -568,9 +573,11 @@ class AgentSelection:
     """The provider and billing policy that initialization must persist."""
 
     provider: str
+    #: The default Agent CLI's policy; ``auth_record`` below is the value to write.
     auth: str
-    write_provider: bool = False
-    write_auth: bool = False
+    write_default: bool = False
+    #: One policy for every CLI, an ``[agent.auth]`` table, or ``None`` to leave it as recorded.
+    auth_record: str | dict[str, str] | None = None
 
 
 def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
@@ -584,38 +591,34 @@ def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
     return booley_dir / "booley.toml"
 
 
-def _read_agent_selection(path: Path) -> tuple[str | None, str | None]:
+def _read_agent_selection(path: Path) -> DeclaredAgent:
     """Read declared selection fields, failing loud on malformed configuration."""
     if not path.is_file():
-        return None, None
+        return DeclaredAgent()
     with path.open("rb") as config_file:
         data = tomllib.load(config_file)
     agent = require_dict(data.get("agent", {}), field="booley.toml [agent]")
-    from booley.config.agent import parse_agent_section
-
-    declared = parse_agent_section(agent)
-    auth = declared.auth
-    if isinstance(auth, dict):  # an [agent.auth] table counts as declared; init never rewrites it
-        auth = auth.get(declared.default or "claude", "auto")
-    return declared.default, auth
+    # A retired ``auth = "auto"`` is read, not refused: init replaces it.
+    return parse_agent_section(agent, keep_retired_auth=True)
 
 
 def _prompt_agent_choice(
     label: str,
     choices: tuple[str, ...],
     *,
-    default: str | None = None,
+    default: str,
 ) -> str | None:
-    """Prompt for one choice, accepting the documented default when provided."""
+    """Prompt for one choice; an empty answer takes the documented default."""
     options = "/".join(choice.replace("_", "-") for choice in choices)
     for _attempt in range(3):
         try:
-            suffix = f" [{default.replace('_', '-')}]" if default else ""
-            value = input(f"  Select agent {label} ({options}){suffix}: ").strip()
+            value = input(
+                f"  Select agent {label} ({options}) [{default.replace('_', '-')}]: "
+            ).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
-        if not value and default:
+        if not value:
             return default
         value = value.lower().replace("-", "_")
         if value in choices:
@@ -629,17 +632,21 @@ def _resolve_selection_value(
     ctx: InitContext,
     *,
     name: str,
+    key: str,
     configured: str | None,
     requested: str | None,
     choices: tuple[str, ...],
     default: str,
 ) -> tuple[str | None, bool]:
-    """Resolve one field and whether it must be added to booley.toml."""
+    """Resolve one field and whether it must be added to booley.toml.
+
+    ``name`` is the flag and prompt label; ``key`` is the ``[agent]`` config key.
+    """
     if configured is not None:
         if requested is not None and requested != configured:
             err(
                 f"--{name}={requested} conflicts with booley.toml [agent] "
-                f"{name}={configured!r}; edit the project config to change it"
+                f"{key}={configured!r}; edit the project config to change it"
             )
             return None, False
         return configured, False
@@ -650,22 +657,110 @@ def _resolve_selection_value(
     return default, True
 
 
+def _detected_auth(cli: str) -> tuple[bool, bool]:
+    """Whether *cli* has a subscription login and whether it has an API key, locally.
+
+    Reads local files and the environment only; the credential resolver supplies the
+    precedence (a Claude OAuth token is a subscription, a Codex ``booley auth`` token
+    is an API key).
+    """
+    return (
+        auth_token.login_credential(cli, "subscription") is not None,
+        auth_token.effective_credential(cli, "api_key") is not None,
+    )
+
+
+def detected_auth_policy(cli: str) -> str:
+    """The policy init records for *cli* without asking.
+
+    ``api_key`` when only an API key is found, else ``subscription`` (including when
+    both credentials or neither are found).
+    """
+    has_subscription, has_key = _detected_auth(cli)
+    return "api_key" if has_key and not has_subscription else "subscription"
+
+
+def _choose_auth(ctx: InitContext, cli: str) -> str | None:
+    """The policy to record for *cli* from its credentials; ``None`` when a prompt aborts."""
+    has_subscription, has_key = _detected_auth(cli)
+    if has_subscription and has_key:
+        if ctx.interactive:
+            return _prompt_agent_choice(
+                f"auth for {cli}", ("subscription", "api_key"), default="subscription"
+            )
+        info(f"{cli}: found a subscription login and an API key; recording subscription")
+        hint(
+            f'to bill the {cli} API key instead, set {cli} = "api_key" under [agent.auth] in booley.toml'
+        )
+    elif not has_subscription and not has_key:
+        hint(
+            f"{cli}: no credential found; sign in: "
+            f"{auth_token.missing_credential_fix(cli, 'subscription')}"
+        )
+    return detected_auth_policy(cli)
+
+
+def _recorded_auth(
+    declared: str | Mapping[str, str] | None, clis: tuple[str, ...]
+) -> dict[str, str]:
+    """The ``{cli: policy}`` entries ``[agent] auth`` records for *clis*."""
+    if isinstance(declared, str):
+        return dict.fromkeys(clis, declared)
+    return {cli: declared[cli] for cli in clis if declared and cli in declared}
+
+
+def _resolve_auth(
+    ctx: InitContext,
+    clis: tuple[str, ...],
+    declared: str | Mapping[str, str] | None,
+    requested: str | None,
+) -> tuple[dict[str, str], str | dict[str, str] | None] | None:
+    """Resolve each CLI's policy and the ``[agent] auth`` value to write, if any.
+
+    A recorded value other than the retired ``auto`` is kept; ``auto`` or a missing entry takes the
+    ``--auth`` flag, else the policy detected from the CLI's credentials. The record is
+    one string when every CLI agrees, else an ``[agent.auth]`` table in ``clis`` order;
+    it is ``None`` when nothing changes. ``None`` overall: a conflict or aborted prompt.
+    """
+    recorded = _recorded_auth(declared, clis)
+    kept = {cli: policy for cli, policy in recorded.items() if policy != RETIRED_AUTH}
+    if requested is not None and any(policy != requested for policy in kept.values()):
+        err(
+            f"--auth={requested} conflicts with booley.toml [agent] "
+            f"auth={declared!r}; edit the project config to change it"
+        )
+        return None
+    policies = dict(kept)
+    for cli in clis:
+        if cli not in policies:
+            chosen = requested or _choose_auth(ctx, cli)
+            if chosen is None:
+                return None
+            policies[cli] = chosen
+    policies = {cli: policies[cli] for cli in clis}
+    if policies == recorded:
+        return policies, None
+    values = set(policies.values())
+    return policies, next(iter(values)) if len(values) == 1 else policies
+
+
 def _resolve_agent_selection(
     ctx: InitContext,
     args: argparse.Namespace,
     config_path: Path,
 ) -> AgentSelection | None:
-    """Resolve flags, config, prompts, and documented agent defaults."""
+    """Resolve flags, config, prompts, detected credentials, and documented defaults."""
     try:
-        provider, auth = _read_agent_selection(config_path)
+        declared = _read_agent_selection(config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         err(f"cannot select an agent from {config_path}: {exc}")
         ctx.record("agent_config", "err", "invalid booley.toml")
         return None
-    provider, write_provider = _resolve_selection_value(
+    provider, write_default = _resolve_selection_value(
         ctx,
         name="provider",
-        configured=provider,
+        key="default",
+        configured=declared.default,
         requested=getattr(args, "provider", None),
         choices=("claude", "codex"),
         default="claude",
@@ -673,52 +768,67 @@ def _resolve_agent_selection(
     if provider is None:
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
-    auth, write_auth = _resolve_selection_value(
-        ctx,
-        name="auth",
-        configured=auth,
-        requested=getattr(args, "auth", None),
-        choices=("auto", "subscription", "api_key"),
-        default="auto",
+    resolved = _resolve_auth(
+        ctx, declared.clis or (provider,), declared.auth, getattr(args, "auth", None)
     )
-    if auth is None:
+    if resolved is None:
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
-    return AgentSelection(provider, auth, write_provider, write_auth)
+    policies, record = resolved
+    return AgentSelection(provider, policies.get(provider, DEFAULT_AUTH), write_default, record)
 
 
-def _insert_agent_fields(content: str, fields: dict[str, str]) -> str:
+def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]]) -> str:
     """Record ``fields`` in ``[agent]``, leaving the rest of the file byte-identical.
 
     With an existing ``agent`` table each missing key lands directly after the
     table's last non-blank line: after a multi-line value's closing line and
     after a whole-line comment in the table body, but before the blank lines
     that separate the table from the next header. Without one, an ``[agent]``
-    table is appended at the end of the file.
+    table of string fields is appended at the end of the file. A ``dict`` value
+    is an ``[agent.auth]`` table: a recorded table keeps its lines and only has
+    the changed entries set. A recorded string is replaced in place, keeping its
+    comment; a string turned into a table moves to the end of the table.
     """
     document = tomlkit.parse(content)
     if "agent" not in document:
         prefix = "" if not content or content.endswith("\n") else "\n"
         separator = "" if not content else "\n"
-        rendered = "".join(f'{key} = "{value}"\n' for key, value in fields.items())
+        rendered = "".join(
+            f'{key} = "{value}"\n' for key, value in fields.items() if isinstance(value, str)
+        )
         return content + prefix + separator + "[agent]\n" + rendered
     table = document["agent"]
     for key, value in fields.items():
+        current = table.get(key)
+        if isinstance(value, dict) and isinstance(current, dict):
+            for cli, policy in value.items():
+                current[cli] = policy
+            continue
+        if current is not None and not (isinstance(value, str) and isinstance(current, str)):
+            del table[key]
         table[key] = value
     return document.as_string()
+
+
+def _auth_label(selection: AgentSelection) -> str:
+    """The ``provider/auth`` text for results; a per-CLI table lists every CLI's policy."""
+    auth = selection.auth_record
+    return f"{selection.provider}/{encode_cli_policies(auth) if isinstance(auth, dict) else selection.auth}"
 
 
 def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) -> bool:
     """Persist a complete [agent] choice before auth checks and Session seeding."""
     ctx.step_banner("agent provider and authentication policy")
-    fields: dict[str, str] = {}
-    if selection.write_provider:
-        fields["provider"] = selection.provider
-    if selection.write_auth:
-        fields["auth"] = selection.auth
+    label = _auth_label(selection)
+    fields: dict[str, str | dict[str, str]] = {}
+    if selection.write_default:
+        fields["default"] = selection.provider
+    if selection.auth_record is not None:
+        fields["auth"] = selection.auth_record
     if not fields:
-        skip(f"using existing [agent] {selection.provider}/{selection.auth}")
-        ctx.record("agent_config", "skip", f"{selection.provider}/{selection.auth}")
+        skip(f"using existing [agent] {label}")
+        ctx.record("agent_config", "skip", label)
         return True
     if path.is_symlink():
         # Same verdict for a dry run and a real run: a link is never written through.
@@ -726,8 +836,8 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         ctx.record("agent_config", "err", "symlinked booley.toml")
         return False
     if ctx.check_only or (ctx.preserve_tracked_content and path.is_file()):
-        warn(f"would record [agent] {selection.provider}/{selection.auth} in {path}")
-        ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
+        warn(f"would record [agent] {label} in {path}")
+        ctx.record("agent_config", "warn", label)
         return True
     if not path.parent.is_dir():
         err(f"cannot persist agent selection: Booley Directory is missing at {path.parent}")
@@ -741,12 +851,12 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         err(f"cannot persist agent selection: refusing symlinked {path}")
         ctx.record("agent_config", "err", "symlinked booley.toml")
         return False
-    ok(f"recorded [agent] {selection.provider}/{selection.auth} in {path}")
-    ctx.record("agent_config", "ok", f"{selection.provider}/{selection.auth}")
+    ok(f"recorded [agent] {label} in {path}")
+    ctx.record("agent_config", "ok", label)
     return True
 
 
-def _detect_auth_mode(provider: str, policy: str = "auto") -> str | None:
+def _detect_auth_mode(provider: str, policy: str) -> str | None:
     """The auth mode *provider*'s agents would actually run (and bill) under.
 
     Resolved with the agent CLI's own precedence (env API key first, then the
@@ -759,7 +869,7 @@ def _detect_auth_mode(provider: str, policy: str = "auto") -> str | None:
     return effective.mode if effective else None
 
 
-def _check_provider_creds(provider: str, auth_mode: str, policy: str = "auto") -> None:
+def _check_provider_creds(provider: str, auth_mode: str, policy: str) -> None:
     """Name the winning credential's source, and anything it silently outranks."""
     effective = auth_token.effective_credential(provider, policy)
     if effective is None or effective.mode != auth_mode:
@@ -882,9 +992,7 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
         warn(
             f"the running Sandbox '{name}' was created from the previous "
             f"{image} image and keeps serving it — this rebuild is invisible inside "
-            "it. Run `booley session down && booley session up` to restart the "
-            "session on the image just built (in VS Code: Reopen in Container / "
-            "Rebuild Container)."
+            f"it. To restart it on the image just built, {sr.stale_image_advice(ctx.project_root, name)}."
         )
 
 
@@ -962,7 +1070,7 @@ def _step_image_lifecycle(
 
 
 # ---------------------------------------------------------------------------
-# Sandbox image resolution for the Interactive Mode devcontainer.
+# Sandbox image resolution for the Sandbox devcontainer.
 # ---------------------------------------------------------------------------
 
 
@@ -970,56 +1078,20 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
+        # Deferred import: session_runtime imports back into init_cmd.
+        from booley.runtime import session_runtime as sr
+
         raise RuntimeError(
-            "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
-            "Rebuild/pull it explicitly, then on the host run `booley session down`, "
-            "`booley init --seed`, and `booley session up`."
+            "the selected Sandbox Image cannot use managed refresh: it is externally managed; "
+            + sr.sandbox_remedy(project_root)
         )
-
-
-def prepare_runtime_image(
-    project_root: Path,
-    *,
-    verbose: bool = False,
-) -> PreparedConvergence:
-    """Build and verify refresh candidates without changing managed tags."""
-    _report_project_requirements(project_root, query_base_image=True)
-    lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
-    info("Refresh plan:")
-    for step in lifecycle_plan.steps:
-        identity = next(
-            node.effective_inputs or ""
-            for node in lifecycle_plan.nodes
-            if node.reference == step.reference
-        )
-        info(f"  {step.action.value:<5} {step.role.value:<20} {step.reason.code} {identity[:12]}")
-    return image_lifecycle.prepare(lifecycle_plan, verbose=verbose)
-
-
-def commit_runtime_image(
-    prepared: PreparedConvergence,
-) -> LifecycleResult:
-    """Adopt prepared image candidates after refresh state is journaled."""
-    return image_lifecycle.commit(prepared)
-
-
-def validate_runtime_image(
-    prepared: PreparedConvergence,
-) -> None:
-    """Revalidate prepared image inputs before parking the live Sandbox."""
-    image_lifecycle.validate(prepared)
-
-
-def abort_runtime_image(prepared: PreparedConvergence) -> None:
-    """Discard prepared refresh candidates."""
-    image_lifecycle.abort(prepared)
 
 
 def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = False) -> None:
     """Regenerate, pin, and stamp the Session spec after an image refresh."""
     ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
     pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
-    _step_interactive(ctx, nangate_pdk_root=pdk_root, runtime_image_id=image_id)
+    _step_sandbox(ctx, nangate_pdk_root=pdk_root, runtime_image_id=image_id)
     failures = [result.detail for result in ctx.results if result.status == "err"]
     if failures:
         raise RuntimeError("Sandbox spec reissuance failed: " + "; ".join(failures))
@@ -1031,23 +1103,25 @@ def _dashboard_enabled(booley_dir: Path) -> bool:
     return enabled(booley_dir)
 
 
-def _project_sandbox_memory(project_root: Path, project_data_source: Path | None = None) -> str:
-    """Return the project's single container memory limit (ADR 0028), or ''.
+def _project_sandbox_config(
+    project_root: Path, project_data_source: Path | None = None
+) -> SandboxConfig:
+    """Return the project's parsed ``[sandbox]`` table (defaults when absent).
 
     Parsed through ``_parse_sandbox_config`` so legacy tier tables /
     ``memory_tiers`` keys get their retirement warning here too.
     """
+    from booley.config.agent import _parse_sandbox_config
+
     toml_path = resolve_toml(project_data_source or authorized_project_data_source(project_root))
     if not toml_path.is_file():
-        return ""
+        return SandboxConfig()
     try:
         with toml_path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
-        return ""
-    from booley.config.agent import _parse_sandbox_config
-
-    return _parse_sandbox_config(data).memory
+        return SandboxConfig()
+    return _parse_sandbox_config(data)
 
 
 def _project_mask_paths(project_root: Path, project_data_source: Path | None = None) -> list[str]:
@@ -1076,20 +1150,18 @@ def _mask_source_dir() -> Path:
 
     Lives under Booley's per-user config dir (beside the ``booley auth``
     store) so it is host-global, never inside a workspace, and can never
-    accumulate content of its own. Pure path math — ``_step_interactive``
+    accumulate content of its own. Pure path math — ``_step_sandbox``
     mkdirs it right before writing the spec, because docker's ``--mount``
     (unlike ``-v``) refuses a missing bind source at container create.
     """
     return auth_token.config_dir() / "empty-mask"
 
 
-def _select_interactive_app(
+def _select_agent_app(
     project_root: Path | None = None, project_data_source: Path | None = None
 ) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
-        from booley.config.agent import parse_agent_section
-
         config_path = resolve_toml(
             project_data_source or authorized_project_data_source(project_root)
         )
@@ -1128,7 +1200,7 @@ def _report_seeded_mounts(
         ok(
             f"masking {len(mask_paths)} path(s) from the container: "
             f"{', '.join(mask_paths)} (read-only empty binds over /work — and "
-            "over /booley-project for .booley subtrees)"
+            f"over {dc.BOOLEY_DIR_TARGET} for .booley subtrees)"
         )
 
 
@@ -1209,7 +1281,7 @@ _NANGATE_PDK_NOT_REQUESTED = object()
 
 
 @dataclass(frozen=True, slots=True)
-class _InteractiveSpecSources:
+class _SandboxSpecSources:
     project_root: Path
     app: str
     nangate_pdk_root: Path | object
@@ -1219,8 +1291,10 @@ class _InteractiveSpecSources:
     mask_paths: tuple[str, ...]
     project_data_source: Path
     memory: str
+    memory_swap: str
     dashboard: bool
     timezone: str
+    legacy_subscription_clis: frozenset[str] = frozenset()
 
     def build(self, inputs: SessionSpecInputs) -> dict:
         if inputs.project_data_source != self.project_data_source:
@@ -1240,6 +1314,7 @@ class _InteractiveSpecSources:
             project_id=dc.canonical_project_id(self.project_root),
             mcp_start_command=dc.mcp_post_start_command(),
             memory=self.memory,
+            memory_swap=self.memory_swap,
             dashboard=self.dashboard,
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
@@ -1251,7 +1326,21 @@ class _InteractiveSpecSources:
             mask_source=docker_mount_path(_mask_source_dir()) if self.mask_paths else "",
             local_timezone=self.timezone,
             egress=inputs.egress,
+            legacy_clis=self.legacy_subscription_clis,
         )
+
+
+def _legacy_subscription_clis(project_root: Path) -> frozenset[str]:
+    """The CLIs whose on-disk spec mounts the pre-shared ``-subscription`` state volume.
+
+    A missing, unreadable or non-JSON spec has none.
+    """
+    try:
+        spec = json.loads(dc.devcontainer_path(project_root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    mounts = as_str_list((as_dict(spec, default={}) or {}).get("mounts"))
+    return dc.legacy_subscription_clis(mounts, dc.canonical_project_id(project_root))
 
 
 def _cli_seeds(plan: auth_token.CredentialPlan) -> dc.CliSeeds:
@@ -1306,21 +1395,30 @@ def _credential_plans(
             plans.append(auth_token.credential_plan(cli, policy))
         except ValueError as exc:
             raise RuntimeSpecError(
-                f"{cli} credentials conflict with auth = '{policy}': {exc}; "
-                f"remove the conflict or set {cli} to 'auto' in [agent.auth]"
+                f"{cli} credentials conflict with auth = '{policy}': {exc}; remove the conflict"
             ) from exc
     return tuple(plans)
 
 
-def _interactive_spec_sources(
+def _sandbox_spec_sources(
     ctx: InitContext,
     nangate_pdk_root: Path | object,
     agent_app: str | None,
     runtime_image_id: str | None,
-) -> _InteractiveSpecSources:
+) -> _SandboxSpecSources:
     source = authorized_project_data_source(ctx.project_root)
-    app = agent_app or _select_interactive_app(ctx.project_root, source)
-    return _InteractiveSpecSources(
+    app = agent_app or _select_agent_app(ctx.project_root, source)
+    sandbox = _project_sandbox_config(ctx.project_root, source)
+    memory_swap = ""
+    if sandbox.memory:
+        try:
+            host = pi.probe_docker_host_memory(
+                runtime_image_id or pi.project_sandbox_image(ctx.project_root)
+            )
+        except pi.DockerImageError as exc:
+            raise RuntimeSpecError(str(exc)) from exc
+        memory_swap = memory_swap_limit(sandbox.memory, sandbox.swap, host.swap_bytes)
+    return _SandboxSpecSources(
         credential_plans=_credential_plans(app, ctx.project_root, source),
         project_root=ctx.project_root,
         app=app,
@@ -1329,22 +1427,22 @@ def _interactive_spec_sources(
         host_skills=tuple(_resolve_host_skills_sources(ctx.project_root, source)),
         mask_paths=tuple(_project_mask_paths(ctx.project_root, source)),
         project_data_source=source,
-        memory=_project_sandbox_memory(ctx.project_root, source),
+        memory=sandbox.memory,
+        memory_swap=memory_swap,
         dashboard=_dashboard_enabled(source),
         timezone=detect_host_timezone(),
+        legacy_subscription_clis=_legacy_subscription_clis(ctx.project_root),
     )
 
 
-def _current_interactive_spec_sources(
-    project_root: Path, image_id: str | None
-) -> _InteractiveSpecSources:
+def _current_sandbox_spec_sources(project_root: Path, image_id: str | None) -> _SandboxSpecSources:
     """The sources ``booley init`` and Sandbox refresh build the spec from today.
 
     Nangate is mounted exactly when its cache is ready, and the agent app is the
     ``[agent]`` default (``agent_app=None``), as in both callers.
     """
     root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else _NANGATE_PDK_NOT_REQUESTED
-    return _interactive_spec_sources(
+    return _sandbox_spec_sources(
         InitContext(project_root=project_root, force=False, verbose=False),
         root,
         None,
@@ -1362,7 +1460,7 @@ def current_interactive_spec(project_root: Path, image_id: str | None) -> dict:
     from booley.runtime import session_issuance
 
     try:
-        sources = _current_interactive_spec_sources(project_root, image_id)
+        sources = _current_sandbox_spec_sources(project_root, image_id)
         prepared = session_issuance.preview(
             project_root, sources.build, expected_image_id=image_id
         )
@@ -1373,25 +1471,23 @@ def current_interactive_spec(project_root: Path, image_id: str | None) -> dict:
     return prepared.spec
 
 
-def _report_interactive_state(
-    ctx: InitContext, plan: interactive_init.InteractiveInitPlan
-) -> None:
+def _report_sandbox_state(ctx: InitContext, plan: interactive_init.InteractiveInitPlan) -> None:
     if plan.pending_details:
         detail = "would reconcile " + ", ".join(plan.pending_details)
         warn(detail)
         ctx.record("interactive", "warn", detail)
         return
-    current("Interactive Mode specification, issuance, and exclusions are current")
+    current("Sandbox specification, issuance, and exclusions are current")
     ctx.record("interactive", "current", "current")
 
 
-def _report_interactive_changes(
+def _report_sandbox_changes(
     ctx: InitContext,
-    sources: _InteractiveSpecSources,
+    sources: _SandboxSpecSources,
     changes: interactive_init.InteractiveInitChanges,
 ) -> None:
     if not changes.changed:
-        current("Interactive Mode specification, issuance, and exclusions are current")
+        current("Sandbox specification, issuance, and exclusions are current")
         ctx.record("interactive", "current", "current")
         return
     if changes.issued:
@@ -1408,16 +1504,14 @@ def _report_interactive_changes(
     if changes.runtime_reconciled:
         ok("reconciled stopped Sandbox resources from their prior issuance")
     if changes.exclusions_changed:
-        ok(
-            "reconciled Interactive Mode git exclusions (info/exclude); existing exclusions retained"
-        )
+        ok("reconciled Sandbox git exclusions (info/exclude); existing exclusions retained")
     notes = [f"app={sources.app}"]
     if changes.issuance.license_profile is not None:
         notes.append("license-relay-image:present")
     ctx.record("interactive", "ok", ", ".join(notes))
 
 
-def _interactive_precondition_failed(
+def _sandbox_precondition_failed(
     ctx: InitContext,
     nangate_pdk_root: Path | object | None,
     *,
@@ -1425,7 +1519,7 @@ def _interactive_precondition_failed(
 ) -> bool:
     if _devcontainer_is_tracked(ctx.project_root):
         err(".devcontainer/ is tracked by git — refusing to clobber it")
-        info("  Interactive Mode is unavailable for this repo until it is removed")
+        info("  the Sandbox is unavailable for this repo until it is removed")
         ctx.record("interactive", "err", "tracked .devcontainer")
         return True
     if _init_owned_booley_dir_missing(
@@ -1464,7 +1558,7 @@ def _init_owned_booley_dir_missing(
     return False
 
 
-def _inspect_interactive_plan(
+def _inspect_sandbox_plan(
     ctx: InitContext,
     request: interactive_init.InteractiveInitRequest,
 ) -> interactive_init.InteractiveInitPlan | None:
@@ -1483,7 +1577,7 @@ def _inspect_interactive_plan(
     return None
 
 
-def _apply_interactive_plan(
+def _apply_sandbox_plan(
     ctx: InitContext,
     plan: interactive_init.InteractiveInitPlan,
 ) -> interactive_init.InteractiveInitChanges | None:
@@ -1501,7 +1595,7 @@ def _apply_interactive_plan(
     return None
 
 
-def _step_interactive(
+def _step_sandbox(
     ctx: InitContext,
     *,
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
@@ -1510,8 +1604,8 @@ def _step_interactive(
     init_will_create_booley_dir: bool = False,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
-    ctx.step_banner("Interactive Mode (Reopen in Container)")
-    if _interactive_precondition_failed(
+    ctx.step_banner("Sandbox (Reopen in Container)")
+    if _sandbox_precondition_failed(
         ctx,
         nangate_pdk_root,
         init_will_create_booley_dir=init_will_create_booley_dir,
@@ -1519,7 +1613,7 @@ def _step_interactive(
         return
 
     try:
-        sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
+        sources = _sandbox_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
     except RuntimeSpecError as exc:
         detail = str(exc)
         err(f"Sandbox authorization failed closed: {detail}")
@@ -1531,24 +1625,24 @@ def _step_interactive(
         expected_image_id=runtime_image_id,
         mask_source=_mask_source_dir() if sources.mask_paths else None,
     )
-    plan = _inspect_interactive_plan(ctx, request)
+    plan = _inspect_sandbox_plan(ctx, request)
     if plan is None:
         return
     for notice in plan.dashboard_tasks.notices:
         info(notice)
     if ctx.check_only or (not plan.pending_details and not ctx.force):
-        _report_interactive_state(ctx, plan)
+        _report_sandbox_state(ctx, plan)
         return
-    changes = _apply_interactive_plan(ctx, plan)
+    changes = _apply_sandbox_plan(ctx, plan)
     if changes is None:
         return
-    _report_interactive_changes(ctx, sources, changes)
+    _report_sandbox_changes(ctx, sources, changes)
 
 
-def _step_interactive_files(ctx: InitContext) -> None:
+def _step_sandbox_files(ctx: InitContext) -> None:
     """Reconcile the Dashboard task and Interactive excludes without a Sandbox.
 
-    These are the Project-file parts of Interactive Mode: no Docker, no Sandbox
+    These are the Project-file parts of the Sandbox: no Docker, no Sandbox
     Issuance. Records nothing when everything is current, and nothing in check-only.
     """
     if ctx.check_only:
@@ -1558,13 +1652,11 @@ def _step_interactive_files(ctx: InitContext) -> None:
         excludes_changed = add_git_excludes(root, interactive_init.exclude_names(root))
         transaction = dashboard_tasks.reconcile(root, authorized_project_data_source(root))
     except (OSError, RuntimeError, RuntimeSpecError) as exc:
-        err(f"could not reconcile Interactive Mode files: {exc}")
+        err(f"could not reconcile Sandbox files: {exc}")
         ctx.record("interactive_files", "err", str(exc))
         return
     if excludes_changed:
-        ok(
-            "reconciled Interactive Mode git exclusions (info/exclude); existing exclusions retained"
-        )
+        ok("reconciled Sandbox git exclusions (info/exclude); existing exclusions retained")
     for notice in transaction.plan.notices:
         info(notice)
     for diagnostic in transaction.plan.diagnostics:
@@ -1632,7 +1724,8 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
         return bool(str(name).strip())
     if key == "agents":
         return (project_root / ".booley" / "AGENTS.md").is_file()
-    flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
+    raw_flows = data.get("flows")
+    flows = raw_flows if isinstance(raw_flows, dict) else {}
     from booley.targets.flow_names import LEGACY_TO_CANONICAL, config_section
 
     section = config_section(flows, key)
@@ -1708,8 +1801,8 @@ _PUBLISHED_PROJECT_ORIGIN_PREFIX = "github.com/boldaxolotl/booley-prj-"
 
 #: Paths (relative to the Booley Directory) where a new untracked file changes
 #: the published setup — an added core is a new Target. Untracked files
-#: elsewhere are ignored on purpose: init writes its own (``.managed/``,
-#: ``goalsets/``) and ordinary use leaves reports and notes behind, so counting
+#: elsewhere are ignored on purpose: init writes its own (``.managed/``)
+#: and ordinary use leaves reports and notes behind, so counting
 #: them would flip the send-off on the first re-run.
 _PUBLISHED_PROJECT_SETUP_PATHS = ("tests.toml", "AGENTS.md", "cores")
 
@@ -2007,7 +2100,7 @@ def _step_project_inventory(ctx: InitContext) -> None:
         ctx.record(
             "project_inventory",
             "err",
-            f"retry with `booley projects discover {ctx.project_root}`",
+            f"retry with `booley projects discover {quote_arg(str(ctx.project_root))}`",
         )
         return
     ok(f"remembered Project path {project_root}")
@@ -2118,7 +2211,7 @@ BOOLEY_MASCOT = r"""
 def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> None:
     """Create/repair the root AGENTS.md & CLAUDE.md links, host-side (F-13).
 
-    The Booley Directory lives at ``/booley-project`` inside the Sandbox, so
+    The Booley Directory lives at ``/booley`` inside the Sandbox, so
     a link written relative to that mount dangles on the host. A host-side
     editor or agent then reads no guidance at all. ``ensure_guidance_links``
     targets a repo-local path valid on both host and runtime and falls back to a
@@ -2175,7 +2268,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
 
 
 def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
-    """Seed only the Interactive Mode devcontainer for this folder/worktree.
+    """Seed only the Sandbox devcontainer for this folder/worktree.
 
     Used for each worktree: the long-lived
     Docker objects are global (re-ensured idempotently here), but each session
@@ -2192,13 +2285,13 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
             )
         return _print_summary(ctx)
     if not ctx.check_only and sys.stdout.isatty():
-        print(section_header(f"Seeding Interactive Mode for {ctx.project_root}"))
+        print(section_header(f"Seeding the Sandbox for {ctx.project_root}"))
         print()
     if "BOOLEY_DIR" not in os.environ and not own_booley_dir(ctx.project_root).is_dir():
-        _step_interactive(ctx, agent_app=selection.provider)
+        _step_sandbox(ctx, agent_app=selection.provider)
         return _print_summary(ctx)
     pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
-    _step_interactive(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
+    _step_sandbox(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
     return _print_summary(ctx)
 
 
@@ -2233,31 +2326,44 @@ def _line_ending_booley_dir(project_root: Path) -> Path | None:
         return None
 
 
-def _release_guidance_for_line_endings(ctx: InitContext, booley_dir: Path | None) -> bool:
+@dataclass(frozen=True)
+class _GuidanceRelease:
+    """What releasing Booley's guidance hardlinks did before a line-ending repair."""
+
+    detached: bool
+    stuck: tuple[Path, ...] = ()
+
+
+def _release_guidance_for_line_endings(
+    ctx: InitContext, booley_dir: Path | None
+) -> _GuidanceRelease:
     """Detach Booley's own guidance hardlinks when the canonical file needs LF.
 
     The Windows guidance fallback hardlinks the root ``AGENTS.md``/``CLAUDE.md``
-    to the canonical file, and line-ending repair rightly refuses to rewrite a
-    hardlinked path. Those links are Booley's, so release them first; the
-    guidance step right after line endings recreates them against the
-    normalized file. Other hardlinks still block the repair.
+    to the canonical file. Git's re-checkout replaces the canonical file's inode,
+    which would leave those links on the old CRLF bytes. They are Booley's, so
+    release them first; the guidance step right after line endings recreates them
+    against the normalized file. Other hardlinks do not block the repair; they keep
+    their bytes. A Booley link that could not be released is returned as ``stuck``:
+    the repair must wait for it, or the link would stay on stale bytes.
     """
     if ctx.check_only or booley_dir is None:
-        return False
+        return _GuidanceRelease(False)
     canon = booley_dir / "AGENTS.md"
     try:
         if not canon.is_file() or canon.stat().st_nlink < 2:
-            return False
+            return _GuidanceRelease(False)
         pending = pending_normalization_paths(ctx.project_root, booley_dir)
         if not any(path.is_file() and path.samefile(canon) for path in pending):
-            return False
+            return _GuidanceRelease(False)
         detached = detach_guidance_hardlinks(ctx.project_root, canon.parent)
+        stuck = remaining_guidance_hardlinks(ctx.project_root, canon.parent)
     except OSError as exc:
         warn(f"could not release guidance hardlinks for line-ending repair: {exc}")
-        return False
+        return _GuidanceRelease(False)
     for link in detached:
         info(f"released guidance hardlink {link.name} for line-ending repair")
-    return bool(detached)
+    return _GuidanceRelease(bool(detached), stuck)
 
 
 def _sample_line_ending_baseline(ctx: InitContext) -> dict[Path, bool | None] | None:
@@ -2286,8 +2392,21 @@ def _step_line_endings_and_guidance(
     """
     booley_dir = _line_ending_booley_dir(ctx.project_root)
     # Detaching hardlinks only serves a normalization, which this mode never runs.
-    if not ctx.preserve_tracked_content and _release_guidance_for_line_endings(ctx, booley_dir):
-        guidance_plan = None  # the preflight plan observed the detached links
+    if not ctx.preserve_tracked_content:
+        release = _release_guidance_for_line_endings(ctx, booley_dir)
+        if release.detached:
+            guidance_plan = None  # the preflight plan observed the detached links
+        if release.stuck:
+            ctx.step_banner("line endings")
+            names = ", ".join(link.name for link in release.stuck)
+            err(
+                f"refusing the line-ending repair: could not release guidance hardlink(s) {names} "
+                "(held open by another program, or their Git tracking could not be read); "
+                f"fix that, then re-run {runtime_context.booley_init_hint(code=True)}"
+            )
+            ctx.record("line_endings", "err", "guidance hardlink not released")
+            _step_guidance_links(ctx, guidance_plan)
+            return
     _step_line_endings(ctx, booley_dir, clean_baseline=clean_baseline)
     _step_guidance_links(ctx, guidance_plan)
 
@@ -2464,14 +2583,13 @@ def initialize_project(ctx: InitContext, request: ProjectInitialization) -> bool
     if not _initialize_project_configuration(ctx, request.agent, request.agent_config_path):
         return False
     _step_core_projections(ctx)
-    _step_goalsets(ctx)
     facts = request.host_facts()
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_policies(ctx, facts.sandbox_git_version)
     _step_line_endings_and_guidance(ctx, request.guidance_plan, request.line_ending_baseline)
     if request.reconcile_interactive_files:
-        _step_interactive_files(ctx)
+        _step_sandbox_files(ctx)
     return True
 
 
@@ -2549,7 +2667,7 @@ def _run_project_init_steps(
     )
     if not initialize_project(ctx, request):
         return _print_summary(ctx)
-    _step_interactive(
+    _step_sandbox(
         ctx,
         nangate_pdk_root=host.pdk_root,
         agent_app=selection.provider,
@@ -2680,9 +2798,11 @@ def _write_pin_with_consent(
     if not has_pin:
         ok(f"pinned {BOOLEY_DIR_NAME} -> {current.target}")
     else:
+        from booley.runtime import session_runtime as sr
+
         ok(
             f"re-pinned {BOOLEY_DIR_NAME}: {old_target} -> {current.target}; "
-            "restart a running Sandbox with `booley session refresh`"
+            f"to recreate a running Sandbox, {sr.sandbox_remedy(root)}"
         )
     ctx.record("booley_dir_pin", "ok", current.target)
     return True
@@ -2754,7 +2874,7 @@ def _check_init_layout(args: argparse.Namespace, project_root: Path):
 
 
 def _check_init_only(args: argparse.Namespace, project_root: Path, migration) -> int:
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     pending = shared_recovery_blocks_command(read_only=True)
     if migration is not None:
@@ -2774,7 +2894,7 @@ def _check_init_only(args: argparse.Namespace, project_root: Path, migration) ->
 
 def _init_with_migration(args: argparse.Namespace, project_root: Path, migration) -> int:
     from booley.runtime.booley_dir_migration import apply_migration
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     if migration is not None:
         apply_migration(migration)
@@ -2801,23 +2921,30 @@ _SANDBOX_REFUSED_OPTIONS = (
 )
 
 
-def _sandbox_agent_selection(config_path: Path) -> AgentSelection | None:
-    """Pick the Agent CLI selection inside a Sandbox; ``None`` leaves the default unset.
+def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelection | None:
+    """Pick the Agent CLI selection inside a Sandbox; ``None`` leaves ``[agent]`` unset.
 
     A default declared in ``booley.toml`` is kept and never written. Otherwise
     ``BOOLEY_AGENT_APP`` of ``claude`` or ``codex`` is recorded as the default.
     ``auto`` is not resolved here: the registrar publishes its choice per start,
     after ``onCreateCommand``, and pinning one start's choice would defeat ``auto``.
-    A missing ``auth`` is never written; unset already means ``auto``.
+    A missing or retired ``auto`` ``auth`` is recorded from the credentials this Sandbox holds.
     Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
     """
-    provider, auth = _read_agent_selection(config_path)
-    if provider is not None:
-        return AgentSelection(provider, auth or "auto")
-    app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
-    if app in AGENT_CLIS:
-        return AgentSelection(app, auth or "auto", write_provider=True)
-    return None
+    declared = _read_agent_selection(config_path)
+    provider = declared.default
+    if provider is None:
+        app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
+        if app not in AGENT_CLIS:
+            return None
+        provider = app
+    resolved = _resolve_auth(ctx, declared.clis or (provider,), declared.auth, None)
+    if resolved is None:
+        return None
+    policies, record = resolved
+    return AgentSelection(
+        provider, policies.get(provider, DEFAULT_AUTH), declared.default is None, record
+    )
 
 
 def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
@@ -2862,7 +2989,7 @@ def _initialize_sandbox_project(ctx: InitContext) -> int:
     if not _project_config_migration_preflight(ctx, config_path):
         return _print_summary(ctx)
     try:
-        selection = _sandbox_agent_selection(config_path)
+        selection = _sandbox_agent_selection(ctx, config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         err(f"cannot select an agent from {config_path}: {exc}")
         ctx.record("agent_config", "err", "invalid booley.toml")
@@ -2950,7 +3077,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
 def preflight_auth_reseed(project_root: Path) -> None:
     """Validate existing Project/recovery storage before a credential mutation."""
     from booley.runtime import session_issuance
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     _check_init_layout(argparse.Namespace(seed=True), project_root)
     shared_recovery_blocks_command(read_only=True)
@@ -2985,7 +3112,7 @@ def _auth_reseed_dependencies(project_root: Path) -> bool:
 
 
 def _reseed_auth_unlocked(project_root: Path) -> int:
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     if shared_recovery_blocks_command(read_only=False):
         err("Recovered interrupted Sandbox host state; retry `booley init --seed`.")

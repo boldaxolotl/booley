@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+
 
 def windows_pipe_readable(fd: int) -> bool:
     """Poll anonymous pipes without the Python 3.12 nonblocking prerequisite."""
+    if sys.platform != "win32":
+        raise OSError("windows_pipe_readable is Windows-only")
     import ctypes
     import msvcrt
     from ctypes import wintypes

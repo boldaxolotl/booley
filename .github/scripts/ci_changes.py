@@ -18,7 +18,6 @@ from ci_flake_stress import (
     plan_stress,
     stress_enabled,
 )
-from ci_goal_tests import GOAL_TESTS_PREFIX, is_shared_goal_path, shared_goal_modules
 from docker_base_contract import PROJECT_METADATA, contract_contents, stable_base_inputs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES, RISCV_IMAGE_PREFIXES
 
@@ -28,7 +27,6 @@ CATEGORIES = (
     "site",
     "python_source",
     "python_tests",
-    "goal_tests",
     "image_tests",
     "release_sensitive",
     "standard_image",
@@ -113,8 +111,8 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
 DEFAULT_WINDOWS_SHARD_COUNT = 4
 # Ubuntu Python 3.11 legs: two duration-balanced shards, adopted from the
-# controlled comparison in .github/ci/linux-shard-experiment.md. A manual run may
-# still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite
+# controlled comparison in issue #1792 (see .github/ci/README.md, "Shard counts
+# and benchmarks"). A manual run may still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite
 # under coverage in the fixed six-shard `coverage-shards` job instead.
 LINUX_SHARD_COUNTS = (1, 2, 3)
 DEFAULT_LINUX_SHARD_COUNT = 2
@@ -158,20 +156,9 @@ _RELEASE_SENSITIVE_PREFIXES = (
     "src/booley/harness/",
     "src/booley/mcp/",
     "src/booley/runtime/",
-    "src/booley/goals/",
     "src/booley/review/",
-    "src/booley/criteria/unbound_ledger.py",
-    "src/booley/mcp/unbound_recorder.py",
-    "src/booley/mcp/project_flow_loader.py",
     "src/booley/runtime/agent_execution.py",
-    "src/booley/specialists/verification_freshness.py",
-    "src/booley/flows/sim/waiver_candidates.py",
-    "tests/criteria/test_evidence_ledger",
-    "tests/criteria/ledger_support.py",
-    "tests/golden/test_golden_acceptance_ledger.py",
-    "tests/mcp_tools/test_unbound",
     "tests/runtime/test_agent_execution.py",
-    "tests/flows/sim/test_waiver_candidates.py",
     "tests/eda/provisioning/",
     "tests/docker/",
     "tests/flows/sim/",
@@ -280,7 +267,7 @@ def _documentation_categories(path: str) -> set[str]:
         return {"docs", "site", "readme"}
     if path.startswith(("website/", "docs/user/")):
         # The project site shares pinned facts with the README (install
-        # commands, demo revision, Goal notation) and publishes docs/user/.
+        # commands, demo revision) and publishes docs/user/.
         # The content tests that guard those facts run in `docs-check`
         # (ci_docs_tests.py) and the strict site build checks the rendered
         # links and anchors, so these edits need no Python test lane.
@@ -313,13 +300,9 @@ def _path_categories(
     path: str,
     *,
     contract_neutral: bool = False,
-    shared_goal_modules: frozenset[str] | None = None,
 ) -> set[str]:
     if path in _RENOVATE_FILES:
         return {"renovate"}
-    if path.startswith(GOAL_TESTS_PREFIX) and not _is_shared_goal_test(path, shared_goal_modules):
-        # CI never runs Goal Mode unit tests (#3329); Ruff in `lint` still checks them.
-        return {"goal_tests"}
     categories = _documentation_categories(path)
     if path in _PACKAGING_FILES:
         categories.add("packaging")
@@ -358,35 +341,22 @@ def _path_categories(
     return categories
 
 
-def _is_shared_goal_test(path: str, shared_goal_modules: frozenset[str] | None) -> bool:
-    """Return whether a test outside ``tests/goals/`` depends on this Goal test path.
-
-    ``None`` means the caller has no import facts, so every Goal path counts as shared
-    and keeps selecting the test lane (fail safe).
-    """
-    return shared_goal_modules is None or is_shared_goal_path(path, shared_goal_modules)
-
-
 def classify(
     paths: Iterable[str],
     *,
     force_all: bool = False,
     riscv_measurement: str = "automatic",
     contract_neutral: frozenset[str] = frozenset(),
-    shared_goal_modules: frozenset[str] | None = None,
 ) -> set[str]:
     """Classify changed paths.
 
-    ``contract_neutral`` paths never select the stable base. ``shared_goal_modules`` names
-    the ``tests.goals`` modules that tests outside ``tests/goals/`` import: only those
-    Goal test paths select the test lane (``None``: all of them do).
+    ``contract_neutral`` paths never select the stable base.
     """
     categories: set[str] = set()
     for path in paths:
         path_categories = _path_categories(
             path,
             contract_neutral=path in contract_neutral,
-            shared_goal_modules=shared_goal_modules,
         )
         if not path_categories:
             categories.add("full")
@@ -451,8 +421,6 @@ def _path_category_jobs(categories: set[str]) -> set[str]:
     jobs = set(ALWAYS_JOBS) | _documentation_jobs(categories)
     if categories & {"python_source", "python_tests"}:
         jobs.update({"lint", "test", "test-verify", "coverage-shards", "coverage"})
-    if "goal_tests" in categories:
-        jobs.add("lint")
     if "rust" in categories:
         jobs.update({"rust-test", "bwave-integration", "package-artifacts", "bwave-smoke"})
     if "native_bwave" in categories:
@@ -732,13 +700,6 @@ def _stress_plan(
     return plan
 
 
-def _shared_goal_modules(repo: Path, paths: Iterable[str]) -> frozenset[str]:
-    """Return the Goal test modules outside tests import, computed only for Goal test diffs."""
-    if any(path.startswith(GOAL_TESTS_PREFIX) for path in paths):
-        return shared_goal_modules(repo)
-    return frozenset()
-
-
 def main() -> int:
     args = _parse_args()
     try:
@@ -756,7 +717,6 @@ def main() -> int:
                 force_all=args.force_all,
                 riscv_measurement=args.riscv_measurement,
                 contract_neutral=_contract_neutral_paths(args.repo, base, args.head, entries),
-                shared_goal_modules=_shared_goal_modules(args.repo, paths),
             )
         _write_outputs(
             args.github_output,

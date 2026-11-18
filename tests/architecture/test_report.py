@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.subprocess_budget import run_bounded_child
 
 _REPORT = Path(__file__).parent / "report.py"
 
@@ -20,12 +21,8 @@ def test_report_prints_deterministic_graph_diagnostics(tmp_path: Path) -> None:
     (harness / "__init__.py").write_text("", encoding="utf-8")
     (harness / "doctor.py").write_text("import booley.beta\n", encoding="utf-8")
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(_REPORT), "--source-root", str(package), "--top", "1"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
@@ -45,7 +42,7 @@ def test_report_prints_deterministic_graph_diagnostics(tmp_path: Path) -> None:
         "- booley.flows.synth.flow: 0\n"
         "- booley.mcp.server: 0\n"
         "- booley.flows.fpga.flow: 0\n"
-        "- booley.specialists.mutation_tester: 0\n"
+        "- booley.flows.mutation.flow: 0\n"
         "- booley.specialists.coverage_analyst: 0\n"
     )
 
@@ -55,12 +52,8 @@ def test_report_rejects_non_positive_top_count(tmp_path: Path) -> None:
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(_REPORT), "--source-root", str(package), "--top", "0"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
     )
 
     assert result.returncode == 2

@@ -9,6 +9,10 @@ from booley.audit import eda_environment, host_environment
 _ROOT = Path(__file__).resolve().parents[2]
 
 
+def _unused_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    raise AssertionError("a non-RISC-V image must not start a probe")
+
+
 def test_environment_audits_share_one_command_runner_contract() -> None:
     assert eda_environment.CommandRunner is host_environment.CommandRunner
 
@@ -18,6 +22,7 @@ def test_non_riscv_image_has_no_riscv_probe_surface() -> None:
         "docker",
         "booley-sandbox",
         None,
+        run=_unused_run,
     )
 
     assert findings == ()

@@ -11,6 +11,7 @@ import sys
 import pytest
 from tests.docker import verilator_acceptance
 from tests.docker.verilator_acceptance import terminate_and_reap
+from tests.time_budget import hang_guard_s, scaled
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the image acceptance gate uses POSIX signals")
@@ -27,15 +28,18 @@ def test_ignored_sigterm_is_killed_and_timeout_remains_a_failure() -> None:
     )
     try:
         assert child.stdout is not None
-        assert select.select([child.stdout], [], [], 5)[0], "child did not become ready"
+        assert select.select([child.stdout], [], [], hang_guard_s())[0], (
+            "child did not become ready"
+        )
         assert child.stdout.readline().strip() == "ready"
         with pytest.raises(subprocess.TimeoutExpired):
-            terminate_and_reap(child, timeout=0.05)
+            terminate_and_reap(child, timeout=scaled(0.05))
         assert child.poll() == -signal.SIGKILL
     finally:
         if child.poll() is None:
             child.kill()
-            child.wait(timeout=5)
+            # Unbounded child: the test drives this Popen itself
+            child.wait(timeout=hang_guard_s())
         if child.stdout is not None:
             child.stdout.close()
 

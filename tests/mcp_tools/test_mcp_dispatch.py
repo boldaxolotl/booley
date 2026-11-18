@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import os
 import re
 import sys
@@ -19,10 +21,17 @@ from booley.mcp import (
     report_encoding,
 )
 from booley.runtime.session_paths import session_jobs_dir
-from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
+from tests.time_budget import hang_guard_s, scaled
 
 __all__ = ["flow_project", "project_alias"]
+
+# Poll window the blocked fake job must not beat (the poll answers RUNNING / queued).
+_SHORT_POLL_S = scaled(0.05)
+# Queue-credit budget; queued ticks must outlast it at any time scale.
+_QUEUE_BUDGET_S = scaled(0.03)
+_QUEUE_TICK_S = 0.01
 
 # mcp_server.py lives at src/ root, outside the endpoints package
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -253,6 +262,21 @@ class TestFormatMcpToolResult:
         result = _format_mcp_tool_result(0, "", "")
         assert result == "EXIT_CODE: 0"
 
+    def test_requeued_job_result_shows_only_the_final_attempts_output(self):
+        # A Job requeued after an OOM kill prints a marker line between the killed
+        # attempt's output and the final attempt's; the agent reads from the marker on.
+        marker = (
+            "[requeue] requeued after out-of-memory; the output above is from the killed attempt"
+        )
+        stdout = f"attempt 1 verdict\n{marker}\nattempt 2 verdict\n"
+        result = _format_mcp_tool_result(0, stdout, "")
+        assert marker in result
+        assert "attempt 2 verdict" in result
+        assert "attempt 1 verdict" not in result
+        # Contrast: without the marker all of the stdout is shown.
+        plain = _format_mcp_tool_result(0, "attempt 1 verdict\nattempt 2 verdict\n", "")
+        assert "attempt 1 verdict" in plain and "attempt 2 verdict" in plain
+
     def test_report_text_duplicated_in_stdout_is_deduped(self):
         # Heavy endpoints print report_text to stdout AND return it in report.json;
         # when the stdout copy survives truncation, the report copy is skipped.
@@ -290,7 +314,7 @@ class TestFormatMcpToolResult:
         headline = (
             "sim_custom: simulation PASS · coverage collection COMPLETE · "
             "evaluation FAIL (branch: observed 1/2 points; displayed 50%; minimum 80%) "
-            "(Simulation Campaign campaign-123)"
+            "(Simulation Record record-123)"
         )
         report = {"status": "fail", "report_text": headline}
 
@@ -306,7 +330,7 @@ class TestOutputCapEnvKnobs:
     def test_stdout_cap_override_applies(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "100")
         result = _format_mcp_tool_result(0, "x" * 300, "")
-        assert "truncated, showing last 100 bytes" in result
+        assert "truncated: at least 200 earlier bytes dropped, showing last 100 bytes" in result
 
     def test_stderr_cap_override_applies(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "100")
@@ -982,7 +1006,7 @@ class TestStructuredContent:
             return (0, "SIM OK", "", False)
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1013,7 +1037,7 @@ class TestStructuredContent:
             return (0, "SIM OK", "", False)
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1037,7 +1061,7 @@ class TestStructuredContent:
             return exit_code, "specialist failed", "", False
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1112,7 +1136,7 @@ class TestAsyncJobDispatch:
         # A run that completes within the inline window behaves exactly like the
         # old synchronous path: full EXIT_CODE + stdout, no run_id handoff.
         monkeypatch.setattr(mcp_server, "_run_subprocess", self._fast_subprocess())
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -1144,7 +1168,7 @@ class TestAsyncJobDispatch:
         _seed_report(_report_env, "sim", {"flow": "sim", "report_text": "RESULT: PASS"})
         monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
-        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: 0.05)
+        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: _SHORT_POLL_S)
 
         async def scenario():
             life = _FakeLifetime()
@@ -1200,7 +1224,7 @@ class TestAsyncJobDispatch:
         )
         monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
-        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: 0.05)
+        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: _SHORT_POLL_S)
 
         async def scenario():
             life = _FakeLifetime()
@@ -1255,8 +1279,8 @@ class TestAsyncJobDispatch:
             second = await _dispatch_async_job("fpga", ["c"], 60, jobs, context=_call_ctx())
             release.set()
             # Drain both jobs so the manager releases its lifetime holds.
-            await jobs.wait(_run_id_from(_text(first)), 1.0)
-            await jobs.wait(_run_id_from(_text(second)), 1.0)
+            await jobs.wait(_run_id_from(_text(first)), hang_guard_s())
+            await jobs.wait(_run_id_from(_text(second)), hang_guard_s())
             return _text(first), _text(second)
 
         first_text, second_text = asyncio.run(scenario())
@@ -1306,7 +1330,7 @@ class TestAsyncJobDispatch:
             assert run_id in text  # same job, no fresh run_id
 
             release.set()
-            await jobs.wait(run_id, 1.0)
+            await jobs.wait(run_id, hang_guard_s())
             return text
 
         asyncio.run(scenario())
@@ -1337,8 +1361,8 @@ class TestAsyncJobDispatch:
             first = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             second = await _dispatch_async_job("sim", ["--other"], 60, jobs, context=_call_ctx())
             release.set()
-            await jobs.wait(_run_id_from(_text(first)), 1.0)
-            await jobs.wait(_run_id_from(_text(second)), 1.0)
+            await jobs.wait(_run_id_from(_text(first)), hang_guard_s())
+            await jobs.wait(_run_id_from(_text(second)), hang_guard_s())
             return _text(first), _text(second)
 
         first_text, second_text = asyncio.run(scenario())
@@ -1376,7 +1400,7 @@ class TestAsyncJobDispatch:
             run_id = _run_id_from(_text(submit_out))
             # Job finishes shortly after the long-poll starts waiting.
             asyncio.get_running_loop().call_later(0.05, release.set)
-            out = await _dispatch_poll({"run_id": run_id, "wait_seconds": 10}, jobs)
+            out = await _dispatch_poll({"run_id": run_id, "wait_seconds": hang_guard_s()}, jobs)
             return _text(out)
 
         text = asyncio.run(scenario())
@@ -1404,18 +1428,18 @@ class TestAsyncJobDispatch:
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
-        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", hang_guard_s)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
             submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             run_id = _run_id_from(_text(submit_out))
-            asyncio.get_running_loop().call_later(0.2, release.set)
+            asyncio.get_running_loop().call_later(scaled(0.2), release.set)
             out = await _dispatch_poll({"run_id": run_id, "wait_seconds": 0}, jobs)
             text = _text(out)
             # Let the job drain so the JobManager releases its lifetime hold.
             release.set()
-            await jobs.wait(run_id, 1.0)
+            await jobs.wait(run_id, hang_guard_s())
             return text
 
         text = asyncio.run(scenario())
@@ -1775,11 +1799,15 @@ class TestAttachSurvivesRestart:
             return (0, "FRESH RUN", "", False)
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", _fast)
-        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
         jobs = _JobManager(_FakeLifetime())
         text = _text(asyncio.run(_dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())))
         assert "FRESH RUN" in text  # a new run really executed
         assert "simulate-y-4" not in text  # not attached to the finished job
+
+
+# A run-alone claim: fits an empty store, so a submitted entry is promoted on refresh.
+_RUN_ALONE = job_slots.MemoryClaim(budget_mb=1024.0, run_alone=True)
 
 
 class TestCancel:
@@ -1847,7 +1875,7 @@ class TestCancel:
             )
             out = self._cancel({"run_id": "simulate-c-2"})
             assert "CANCELLED: running job" in _text(out)
-            child.wait(timeout=10)
+            child.wait(timeout=hang_guard_s())
             got = jobrec.read_record("simulate-c-2", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
             assert got.exit_code == 130
@@ -1859,7 +1887,7 @@ class TestCancel:
         finally:
             if child.poll() is None:
                 child.kill()
-                child.wait(timeout=10)
+                child.wait(timeout=hang_guard_s())
 
     def test_slot_holder_is_cancelled(self, _report_env):
         import subprocess
@@ -1883,17 +1911,17 @@ class TestCancel:
             root = job_slots.slots_dir()
             assert root is not None
             store = job_slots.SlotStore(root)
-            token = store.submit(job_slots.CLASS_HEAVY, pid=child.pid, argv=[])
+            token = store.submit(job_slots.CLASS_MEMORY, pid=child.pid, argv=[], memory=_RUN_ALONE)
             assert store.refresh(token).state == job_slots.HOLDING
             out = self._cancel({"run_id": "simulate-c-4"})
             assert "CANCELLED: running job" in _text(out)
-            child.wait(timeout=10)
+            child.wait(timeout=hang_guard_s())
             got = jobrec.read_record("simulate-c-4", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
         finally:
             if child.poll() is None:
                 child.kill()
-                child.wait(timeout=10)
+                child.wait(timeout=hang_guard_s())
 
     def test_queued_job_is_cancelled(self, _report_env):
         # A real queued child: a live sleeping process holding a waiter entry
@@ -1924,9 +1952,10 @@ class TestCancel:
             # Waiter entry, never refreshed → stays queued at position 0.
             # argv=[] skips the /proc identity check for the fake claim.
             job_slots.SlotStore(root).submit(
-                job_slots.CLASS_HEAVY,
+                job_slots.CLASS_MEMORY,
                 pid=child.pid,
                 argv=[],
+                memory=_RUN_ALONE,
             )
             out = self._cancel({"run_id": "simulate-c-3"})
             text = _text(out)
@@ -1934,7 +1963,7 @@ class TestCancel:
             assert "withdrawn" in text
             # The queued child really stopped. POSIX exposes the terminating
             # signal; Windows taskkill uses its own non-zero exit status.
-            returncode = child.wait(timeout=10)
+            returncode = child.wait(timeout=hang_guard_s())
             if sys.platform == "win32":
                 assert returncode != 0
             else:
@@ -1946,7 +1975,7 @@ class TestCancel:
         finally:
             if child.poll() is None:
                 child.kill()
-                child.wait(timeout=10)
+                child.wait(timeout=hang_guard_s())
 
     def test_in_process_running_job_cancels_supervisor_and_persists_outcome(
         self,
@@ -2041,7 +2070,7 @@ class TestCancel:
         jobrec.write_record(rec, root=session_jobs_dir())
         jobs = _JobManager(_FakeLifetime())
 
-        async def stop(_pid):
+        async def stop(_pid, _grace=None):
             current = jobrec.read_record(rec.run_id, root=session_jobs_dir())
             assert current is not None and current.status == jobrec.STATUS_RUNNING
 
@@ -2081,7 +2110,7 @@ class TestCancel:
             jobs._record_terminal(current, 0, timed_out=False)
             return True
 
-        async def stop(_pid):
+        async def stop(_pid, _grace=None):
             return None
 
         monkeypatch.setattr(jobs, "_adopt_report_outcome", adopt)
@@ -2126,11 +2155,50 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         job_slots.SlotStore(root).submit(
-            job_slots.CLASS_HEAVY,
+            job_slots.CLASS_MEMORY,
             pid=os.getpid(),
             argv=[],
+            memory=_RUN_ALONE,
         )
-        assert _job_phase("simulate-p-1") == "QUEUED (position 1)"
+        assert _job_phase("simulate-p-1") == (
+            "QUEUED (position 1): waits to run alone (memory estimate unknown or above the Memory Budget)"
+        )
+
+    def test_memory_waiter_phase_reports_need_free_memory_and_holders(self, _report_env):
+        import os
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-p-4",
+                endpoint="sim",
+                started_at=_utc_stamp(-5),
+                timeout_s=600,
+                pid=os.getpid(),
+                status=jobrec.STATUS_RUNNING,
+            ),
+            root=session_jobs_dir(),
+        )
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        for run_id, mib in (("run-1", 200.0), ("run-2", 500.0)):
+            holder = store.submit(
+                job_slots.CLASS_MEMORY,
+                pid=os.getppid(),  # another live process: this one is the queued Job
+                memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=mib),
+                job=job_slots.JobLabel(run_id, "synth", "a"),
+            )
+            assert store.refresh(holder).state == job_slots.HOLDING
+        store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=400.0),
+        )
+
+        assert _job_phase("simulate-p-4") == (
+            "QUEUED (position 1): needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+            "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
+        )
 
     def test_no_slot_entry_reads_running(self, _report_env):
         import os
@@ -2165,40 +2233,164 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         store = job_slots.SlotStore(root)
-        token = store.submit(job_slots.CLASS_HEAVY, pid=os.getpid(), argv=[])
+        token = store.submit(job_slots.CLASS_MEMORY, pid=os.getpid(), argv=[], memory=_RUN_ALONE)
         assert store.refresh(token).state == job_slots.HOLDING
         assert _job_phase("simulate-p-3") == "RUNNING"
 
+    def test_requeued_waiter_reads_queued_with_its_reason(self, _report_env):
+        import os
 
-class TestAsyncJobToolMembership:
-    """Which endpoints route through the submit/poll model (ADR 0027).
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-p-4",
+                endpoint="sim",
+                started_at=_utc_stamp(-5),
+                timeout_s=600,
+                pid=os.getpid(),
+                status=jobrec.STATUS_RUNNING,
+            ),
+            root=session_jobs_dir(),
+        )
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        holder = store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getppid(),  # another live process: this one is the queued Job
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=200.0),
+            job=job_slots.JobLabel("run-1", "synth", "a"),
+        )
+        assert store.refresh(holder).state == job_slots.HOLDING
+        token = store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
+            queue_reason="requeued after out-of-memory",
+        )
+        # The queue detail and the requeue reason read together.
+        assert _job_phase("simulate-p-4") == (
+            "QUEUED (position 1): waits to run alone (memory estimate unknown or above the "
+            "Memory Budget); largest holders: run-1 (synth, a) 200 MiB; "
+            "requeued after out-of-memory"
+        )
+        # Contrast: the same waiter without a reason reads without it.
+        store.release(token)
+        store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
+        )
+        assert "requeued" not in _job_phase("simulate-p-4")
 
-    Membership in ``_ASYNC_JOB_MCP_TOOLS`` is the *only* thing that makes a heavy
-    endpoint detach instead of blocking the MCP client. Dropping a endpoint here
-    silently reintroduces the client-budget timeout the model was built to fix
-    (booley_asic_synthesize_issues #2), with no other test failing — so pin the
-    set explicitly.
-    """
 
-    def test_heavy_tools_route_async(self):
-        assert "synth" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "fpga" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "sim" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "elab" not in mcp_server._ASYNC_JOB_MCP_TOOLS
-        # Added 2026-07-06: the LLM specialists each drive a 20-30 min sub-agent
-        # loop, so an interactive call came back as a bare client-side timeout
-        # (no run_id, no poll) — recoverable only via booley_report.
-        assert "reviewer" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "mutation_tester" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "coverage_analyst" in mcp_server._ASYNC_JOB_MCP_TOOLS
+def _catalog_definition(kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """The definition the catalog itself builds for a lint or a Project Custom Flow."""
+    from booley.mcp import catalog_worker
 
-    def test_poll_endpoint_advertises_the_async_tools(self):
-        # The booley_poll description names the endpoints it redeems; keep it and the
-        # routing set from drifting apart. Read the constant directly so this
-        # doesn't hinge on the endpoint's ambient visibility.
-        desc = catalog._POLL_MCP_TOOL_DESCRIPTION
-        for endpoint in mcp_server._ASYNC_JOB_MCP_TOOLS:
-            assert endpoint in desc
+    if kind == "lint":
+        definition, error = catalog._import_and_extract("flow", import_prefix="booley.flows.lint")
+    else:
+        monkeypatch.syspath_prepend(str(tmp_path))
+        definition, error = catalog_worker._import_and_extract_file(
+            _write_direct_custom_flow(tmp_path)
+        )
+    assert error is None and definition is not None
+    return definition
+
+
+@pytest.mark.parametrize("kind", ["lint", "custom_flow"])
+class TestMemoryAdmittedEndpointsRunAsJobs:
+    """A Job memory admission can queue hands back a run_id (ADR 0087, ADR 0027)."""
+
+    @staticmethod
+    def _stand_in_child(monkeypatch, pid: int, release: asyncio.Event | None):
+        async def run(_cmd, *, timeout, on_spawn=None, **_kwargs):
+            on_spawn(pid)
+            if release is not None:
+                await release.wait()
+            return 0, "CHILD DONE", "", False
+
+        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: _SHORT_POLL_S)
+
+    def test_queued_call_hands_back_run_id_and_poll_follows_the_job(
+        self, kind, _report_env, monkeypatch
+    ):
+        definition = _catalog_definition(kind, _report_env, monkeypatch)
+        name = definition["name"]
+        release = asyncio.Event()
+        self._stand_in_child(monkeypatch, os.getpid(), release)
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        waiter = store.submit(job_slots.CLASS_MEMORY, pid=os.getpid(), argv=[], memory=_RUN_ALONE)
+        queued = "QUEUED (position 1): waits to run alone"
+
+        async def scenario():
+            jobs = _JobManager(_FakeLifetime())
+            handoff = _text(
+                await _bounded(
+                    mcp_server._dispatch_booley_mcp_tool(name, {}, definition, {}, jobs)
+                )
+            )
+            assert handoff.startswith(queued)
+            run_id = _run_id_from(handoff)
+            poll = {"run_id": run_id, "wait_seconds": 0}
+            assert _text(await _dispatch_poll(poll, jobs)).startswith(queued)
+            assert store.refresh(waiter).state == job_slots.HOLDING
+            assert _text(await _dispatch_poll(poll, jobs)).startswith("RUNNING: job ")
+            release.set()
+            done = {"run_id": run_id, "wait_seconds": hang_guard_s()}
+            return _text(await _bounded(_dispatch_poll(done, jobs)))
+
+        text = asyncio.run(scenario())
+        assert "EXIT_CODE: 0" in text and "CHILD DONE" in text
+
+    def test_call_finishing_within_the_inline_wait_returns_its_result(
+        self, kind, _report_env, monkeypatch
+    ):
+        definition = _catalog_definition(kind, _report_env, monkeypatch)
+        self._stand_in_child(monkeypatch, 4_194_305, None)
+
+        async def scenario():
+            jobs = _JobManager(_FakeLifetime())
+            return _text(
+                await _bounded(
+                    mcp_server._dispatch_booley_mcp_tool(
+                        definition["name"], {}, definition, {}, jobs
+                    )
+                )
+            )
+
+        text = asyncio.run(scenario())
+        assert "EXIT_CODE: 0" in text and "CHILD DONE" in text
+        assert "run_id=" not in text
+
+
+async def _bounded(awaitable):
+    return await asyncio.wait_for(awaitable, hang_guard_s())
+
+
+def test_every_builtin_endpoint_is_memory_admitted():
+    """The audit: each built-in endpoint memory admission can queue runs as a Job."""
+    from booley.mcp.registry import discover_mcp_tools
+
+    definitions, errors = catalog.discover_builtin_definitions(
+        discover_mcp_tools(), catalog.Exposure()
+    )
+    assert not errors
+    admitted = {d["name"] for d in definitions if d["memory_admitted"]}
+    assert admitted == {
+        "sim",
+        "lint",
+        "synth",
+        "fpga",
+        "mutation",
+        "reviewer",
+        "coverage_analyst",
+    }
+    for name in admitted:
+        assert name in catalog._POLL_MCP_TOOL_DESCRIPTION
 
 
 class TestReconcileOrphanedJobs:
@@ -2336,21 +2528,22 @@ class TestQueueCreditWatchdog:
         # soon as it goes active: must be True (exited), never a timeout.
         import asyncio
 
-        monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", 0.01)
+        monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", _QUEUE_TICK_S)
         proc = self._NeverExits()
+        queued_ticks = math.ceil(3 * _QUEUE_BUDGET_S / _QUEUE_TICK_S)
         state = {"calls": 0}
         first_active = []
 
         def is_queued() -> bool:
             state["calls"] += 1
-            if state["calls"] > 10:  # ~0.1s queued vs a 0.03s budget
+            if state["calls"] > queued_ticks:  # ~3x the queue budget
                 proc.exit_now()
                 return False
             return True
 
         exited = asyncio.run(
             mcp_server._wait_with_queue_credit(
-                proc, 0.03, is_queued, lambda: first_active.append(1)
+                proc, _QUEUE_BUDGET_S, is_queued, lambda: first_active.append(1)
             )
         )
         assert exited is True
@@ -2361,7 +2554,9 @@ class TestQueueCreditWatchdog:
 
         monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", 0.01)
         proc = self._NeverExits()
-        exited = asyncio.run(mcp_server._wait_with_queue_credit(proc, 0.03, lambda: False, None))
+        exited = asyncio.run(
+            mcp_server._wait_with_queue_credit(proc, _QUEUE_BUDGET_S, lambda: False, None)
+        )
         assert exited is False
 
 
@@ -2616,7 +2811,9 @@ class TestDiskLongPoll:
             lambda r, alive, **kw: next(statuses),
         )
         jobs = _JobManager(_FakeLifetime())
-        result = asyncio.run(mcp_server._poll_from_disk("simulate-d-1", jobs, wait_seconds=5.0))
+        result = asyncio.run(
+            mcp_server._poll_from_disk("simulate-d-1", jobs, wait_seconds=hang_guard_s())
+        )
         text = _text(result)
         assert "still in progress" not in text
         assert "EXIT_CODE" in text
@@ -2664,7 +2861,7 @@ class TestSubmitEnvStamp:
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
             run_id = jobs.submit("sim", ["c"], 60, context=_call_ctx())
-            await jobs.wait(run_id, 5.0)
+            await jobs.wait(run_id, hang_guard_s())
             return run_id
 
         run_id = asyncio.run(scenario())
@@ -2763,7 +2960,7 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
         "is_flow": True,
         "is_specialist": False,
     }
-    command = mcp_server._endpoint_command("project_probe", {}, definition, {}, _call_ctx())
+    command = mcp_server._endpoint_command("project_probe", {}, definition, {})
     command[0] = sys.executable
     environment = endpoint_process._endpoint_subprocess_env(_call_ctx())
     source_root = Path(mcp_server.__file__).resolve().parents[2]
@@ -2825,14 +3022,19 @@ def test_mcp_simulation_dispatch_reaches_alias_normalization(
                 "target": "sim",
                 "test": ["first"],
             },
-            {"module": "sim", "module_path": "booley.flows.sim", "is_flow": True},
+            {
+                "module": "sim",
+                "module_path": "booley.flows.sim",
+                "is_flow": True,
+                "memory_admitted": True,
+            },
             {},
             MagicMock(),
         )
     )
     assert len(results) == 1
     assert results[0].exit_code == 0, results[0].outcome.report_text
-    assert (data / "reports/sim/1/targets/sim/campaign/manifest.json").is_file()
+    assert (data / "reports/sim/1/targets/sim/record/manifest.json").is_file()
 
 
 def _seeded_report_files(reports: Path, endpoint: str) -> list[Path]:
@@ -2960,6 +3162,55 @@ def test_running_handoff_notes_unreadable_progress(monkeypatch):
     assert "Progress unavailable: Job progress for run-1 unreadable: held" in blocks[0].text
 
 
+def _handoff_text(monkeypatch, phase):
+    import asyncio
+    from types import SimpleNamespace
+
+    from booley.mcp.job_lifecycle import JobPoll
+
+    submission = SimpleNamespace(poll=JobPoll("run-1", "running", True), attached=False)
+    jobs = SimpleNamespace(submit_and_wait=AsyncMock(return_value=submission))
+    monkeypatch.setattr(mcp_server, "_job_phase", lambda _run_id: phase)
+    monkeypatch.setattr(mcp_server, "_running_progress", lambda _run_id: None)
+    result = asyncio.run(
+        _dispatch_async_job("sim", [], 60, jobs, context=_call_ctx())  # type: ignore[arg-type]
+    )
+    assert not isinstance(result, tuple)
+    return result[0].text
+
+
+def test_queued_handoff_says_queued_for_memory_not_started(monkeypatch):
+    phase = "QUEUED (position 1): needs 807 MiB; 266 MiB free of the 14,016 MiB Memory Budget"
+    text = _handoff_text(monkeypatch, phase)
+    assert text.startswith(
+        f"{phase}: 'sim' is queued for memory and has not started yet (run_id=run-1)."
+    )
+    assert "the run has not started" in text
+    assert "call 'booley_poll' with no run_id" in text
+    assert "running in the background" not in text
+    assert "slot" not in text
+
+
+def test_requeued_handoff_says_the_retry_has_not_started(monkeypatch):
+    phase = "QUEUED (position 1): waits to run alone; requeued after out-of-memory"
+    text = _handoff_text(monkeypatch, phase)
+    assert "is queued for memory and has not started yet (run_id=run-1)" in text
+    assert "the retry has not started" in text
+    assert "the run has not started" not in text
+
+
+def test_running_handoff_text_is_unchanged(monkeypatch):
+    text = _handoff_text(monkeypatch, "RUNNING")
+    assert text == (
+        "RUNNING: 'sim' is taking longer than the inline wait and is now running in the "
+        "background (run_id=run-1). This is NOT the result \u2014 the run has not finished. "
+        "With several Jobs running, call 'booley_poll' with no run_id to get whichever of "
+        "your Jobs finishes first; pass run_id=run-1 only to wait for this Job alone. Keep "
+        "polling until you have its EXIT_CODE. Pass/fail criteria are recorded only when "
+        "the run actually completes, so do not conclude the step until then."
+    )
+
+
 def test_attached_untracked_poll_with_held_progress_is_an_error_result(monkeypatch):
     import asyncio
     from types import SimpleNamespace
@@ -2987,7 +3238,62 @@ def test_server_supervisor_writes_job_log(tmp_path):
     log = tmp_path / "run-1" / "job.log"
     cmd = [sys.executable, "-c", "print('to-agent')"]
     exit_code, stdout, _stderr, timed_out = asyncio.run(
-        mcp_server._run_subprocess(cmd, timeout=30, log_path=log)
+        mcp_server._run_subprocess(cmd, timeout=hang_guard_s(), log_path=log)
     )
     assert (exit_code, stdout.splitlines(), timed_out) == (0, ["to-agent"], False)
     assert log.read_text(encoding="utf-8").splitlines() == ["to-agent"]
+
+
+@pytest.mark.asyncio
+async def test_flow_tool_call_refuses_retired_jobs_keys(tmp_path, monkeypatch):
+    """A Flow call refuses while booley.toml sets a retired [jobs] key; the key's line is named."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 2\n")
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    monkeypatch.setattr(
+        mcp_server, "_dispatch_booley_mcp_tool", AsyncMock(side_effect=AssertionError("ran"))
+    )
+
+    result = await mcp_server._dispatch_application_tool(
+        "sim",
+        {},
+        {"name": "sim", "is_flow": True},
+        jobs=_JobManager(_FakeLifetime()),
+        status_mcp_tool_names=[],
+        mcp_tool_call_counts={},
+    )
+
+    assert result.is_error
+    text = result.value[0].text
+    assert "max_heavy (line 2: memory admission replaced it)" in text
+    assert "booley-heal" in text
+
+
+@pytest.mark.asyncio
+async def test_flow_tool_call_refuses_a_goals_section(tmp_path, monkeypatch):
+    """A Flow call refuses while booley.toml has a [goals] section; its line and fix are named."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_bytes(
+        b'[project]\nname = "unit"\n\n[goals]\nquiet_after = 60\n'
+    )
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    monkeypatch.setattr(
+        mcp_server, "_dispatch_booley_mcp_tool", AsyncMock(side_effect=AssertionError("ran"))
+    )
+
+    result = await mcp_server._dispatch_application_tool(
+        "sim",
+        {},
+        {"name": "sim", "is_flow": True},
+        jobs=_JobManager(_FakeLifetime()),
+        status_mcp_tool_names=[],
+        mcp_tool_call_counts={},
+    )
+
+    assert result.is_error
+    text = result.value[0].text
+    assert "[goals] section (line 4)" in text
+    assert "delete the [goals] tables (lines 4-5)" in text
+    assert "booley-heal" in text

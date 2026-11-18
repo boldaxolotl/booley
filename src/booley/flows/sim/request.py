@@ -25,8 +25,8 @@ class SimRequest(FlowRequest):
     # boundary.  Validation below immediately restores the Target XOR resume
     # invariant before any endpoint side effect.
     target: str = ""
-    # ``None`` is meaningful transport presence.  Campaign preparation chooses
-    # SIMULATE only on the new-campaign path; resume must be able to distinguish
+    # ``None`` is meaningful transport presence.  Simulation Record preparation chooses
+    # SIMULATE only on the new-record path; resume must be able to distinguish
     # an omitted mode from an explicitly supplied one.
     mode: SimulationMode | None = None
     # ``None`` preserves omission across typed and transport boundaries.  An
@@ -54,7 +54,7 @@ class SimRequest(FlowRequest):
             raise ValueError("coverage must be boolean")
         if not isinstance(self.no_waivers, bool):
             raise ValueError("no_waivers must be boolean")
-        self._normalize_campaign_paths()
+        self._normalize_simulation_record_paths()
         self._normalize_test_selection()
         # Rule order decides which message wins when an input breaks several.
         self._validate_mode_and_resume()
@@ -65,7 +65,7 @@ class SimRequest(FlowRequest):
         if self.result_verbosity not in ("compact", "full"):
             raise ValueError("result_verbosity must be compact or full")
 
-    def _normalize_campaign_paths(self) -> None:
+    def _normalize_simulation_record_paths(self) -> None:
         if self.mode is not None:
             self.mode = SimulationMode(self.mode)
         if self.tests_file is not None:

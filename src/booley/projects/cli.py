@@ -10,6 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
 
+from booley.core.host_shell import quote_arg
 from booley.projects import image_keepers, inventory
 
 
@@ -162,8 +163,15 @@ def _render_forgotten(
         return 0
     print("Left behind for this Project:")
     print(leftovers_view(left))
+    if any(item.reason == "unrecorded" for item in left):
+        print(
+            "unrecorded: kept because Booley cannot tell which Project it belongs "
+            "to; remove it with `docker image rm <id>` once no other Project uses it"
+        )
     if purged is None and any(item.reason == "unused" for item in left):
-        print(f"Remove the unused ones with: booley projects forget --purge {forgotten}")
+        print(
+            f"Remove the unused ones with: booley projects forget --purge {quote_arg(str(forgotten))}"
+        )
     return 0
 
 

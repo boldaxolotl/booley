@@ -1,7 +1,10 @@
 # Release smoke list
 
-Ten must-pass items for a release candidate, run against the pinned PicoRV32
-demo Project from the picorv32 mission. Record a table in `log.md`:
+The Release Smoke List: ten must-pass items for a release candidate. The
+operator walks it when `booley-qa-run` is given `smoke`, before the mission,
+against the pinned PicoRV32 demo Project from the picorv32 mission. Unlike a
+mission it is not a bug hunt: each item passes or fails. Record a table in
+`log.md`:
 
 | # | Item | Result | Finding |
 |---|---|---|---|
@@ -20,10 +23,12 @@ first line of the report.
 6. Lint runs and reports its result.
 7. Synthesis runs and reports area and timing.
 8. `bwave` lists signals from a trace the simulation produced.
-9. One Goal Mode round trip succeeds in a clean linked worktree: invoke
-   the booley-goal skill (`$booley-goal` in Codex, `/booley-goal` in Claude
-   Code), enter with a lint Goal, clear the chat with `/clear`, invoke it
-   again with `start`, run lint with `work_dir`, inspect
-   `goal_status`, commit the work, and Finish with a Session Summary. Read the
-   Review Package and committed summary (or explicit local-publication reason).
+9. One Metric-Driven Development round trip succeeds: commit
+   [`missions/picorv32/fixtures/metrics.toml`](missions/picorv32/fixtures/metrics.toml)
+   as `metrics.toml` in the Booley Directory's own repository (`git -C .booley
+   commit`; the demo is Stealth); `booley measure --validate` lists no error;
+   in a new worktree (`booley worktree new <name>`) commit a harmless change
+   and run `booley measure`: exit 0, green header, the commit Measured; read the
+   Measurement Report; run it again: it prints the stored run and starts no
+   Flow.
 10. Booley's cleanup leaves no orphan containers, worktrees, or branches.

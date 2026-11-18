@@ -17,25 +17,31 @@ from tests.diagnostic_helpers import (
     _record_report,
     _runtime_probe_subprocess,
 )
-from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from tests.docker_cli_guard import (
+    route_bounded_captures_through_subprocess_run,
+    route_docker_helper_through_subprocess_run,
+)
 from tests.harness import test_session_runtime as resolution_fixtures
 
+from booley.core.host_shell import quote_arg
 from booley.harness import doctor
 from booley.harness.setup import readiness
-from booley.runtime import devcontainer as dc
 from booley.runtime import (
+    auth_token,
     inspection,
     project_image,
     runtime_context,
     session_runtime,
 )
-from booley.runtime import interactive_docker as idk
+from booley.runtime import devcontainer as dc
+from booley.runtime import host_docker as idk
 
 
 @pytest.fixture(autouse=True)
 def _docker_helper_uses_subprocess_run(monkeypatch):
-    """This module fakes the Docker CLI through ``subprocess.run``."""
+    """This module fakes the Docker CLI and Git through ``subprocess.run``."""
     route_docker_helper_through_subprocess_run(monkeypatch)
+    route_bounded_captures_through_subprocess_run(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
@@ -209,7 +215,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     assert any("state differs from current host issuance" in message for message in rec.fails())
 
 
-def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
+def test_host_doctor_names_rebuild_repair_for_running_old_vscode(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -230,7 +236,7 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
     # Current, pinned Booley Directory mounts: the editor is stale, not outdated.
     state["Mounts"] += [
         {"Destination": target, "Source": str(booley_dir), "Type": "bind", "RW": True}
-        for target in ("/booley-project", "/work/.booley")
+        for target in ("/booley", "/work/.booley")
     ]
     spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
     spec_path.parent.mkdir()
@@ -262,7 +268,12 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
         failed=rec.f,
     )
 
-    assert any("stop" in fix and "runtime-1" in fix for fix in rec.fix_hints)
+    assert any(
+        fix.startswith("for VS Code Sandbox(s) 'runtime-1', on the host run `booley init`, then ")
+        and "Dev Containers: Rebuild Container" in fix
+        and "stop" not in fix
+        for fix in rec.fix_hints
+    )
     inventory = next(argv for argv in calls if argv[1:3] == ["ps", "-aq"])
     assert inventory[-2:] == ["--format", "{{.Names}}"]
 
@@ -273,7 +284,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     issuance, spec, labels, state = _issued_runtime_state(tmp_path)
-    spec["remoteEnv"] = {"BOOLEY_DIR": "/booley-project"}
+    spec["remoteEnv"] = {"BOOLEY_DIR": "/booley"}
     labels["devcontainer.local_folder"] = str(tmp_path)
     state["Config"]["Labels"] = labels
     state["Mounts"].extend(
@@ -427,7 +438,7 @@ def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
 
 
 class TestStateVolumeCheck:
-    """_check_interactive_state_volumes surfaces orphans for pruning."""
+    """_check_sandbox_state_volumes surfaces orphans for pruning."""
 
     @staticmethod
     def _project(root: Path) -> readiness.ProjectAudit:
@@ -442,7 +453,7 @@ class TestStateVolumeCheck:
         )
 
     def _run(self, tmp_path, monkeypatch, vols, *, verbose=False) -> _Rec:
-        from booley.runtime import interactive_docker as idk
+        from booley.runtime import host_docker as idk
 
         monkeypatch.setattr(idk, "state_volumes", lambda: vols)
         monkeypatch.setattr(idk, "issued_image_tags", lambda: [])
@@ -505,6 +516,7 @@ class TestStateVolumeCheck:
         assert "booley-codex-state-someoldproject" in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 class TestDevcontainerSpecStaleness:
     """_check_devcontainer_spec must surface a spec that loses history on rebuild."""
 
@@ -599,7 +611,9 @@ class TestDevcontainerSpecStaleness:
         rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
         assert rec.fails() == []
         assert any(
-            lvl == "warn" and "openc910-booley-sandbox:latest" in m and "--seed" in m
+            lvl == "warn"
+            and "openc910-booley-sandbox:latest" in m
+            and "booley session refresh" in m
             for lvl, m in rec.events
         )
 
@@ -751,12 +765,30 @@ class TestDevcontainerSpecStaleness:
         assert rec.fails() and all("BOOLEY_AGENT_APP" in m for m in rec.fails())
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
+    def test_handwritten_spec_primary_auth_auto_is_not_malformed(self, tmp_path, monkeypatch):
+        # A hand-written spec has no issued record: ``BOOLEY_PRIMARY_AUTH=auto`` is the
+        # env-only visitor mode, rebuilt byte-identically, never a retired record.
+        from booley.runtime import devcontainer as dc
+
+        spec = build_spec(dc.APP_CLAUDE, policy=auth_token.VISITOR_AUTH)
+        spec["remoteEnv"].pop("BOOLEY_AGENT_CLIS", None)
+        assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "auto"
+        assert dc.spec_cli_policies(spec) == {"claude": auth_token.VISITOR_AUTH}
+        rebuilt = dc.sandbox_visible_expectation(spec)
+        assert rebuilt["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "auto"
+        assert dc.sandbox_visible(rebuilt) == dc.sandbox_visible(spec)
+        dc.write_devcontainer(tmp_path, spec)
+
+        rec = self._run(tmp_path, monkeypatch, declared_provider="claude")
+
+        assert not [m for m in rec.fails() if "malformed" in m]
+
     @staticmethod
     def _two_cli_spec(app: str) -> dict:
 
         spec = build_spec(app)
         spec["name"] = "Booley Interactive (claude, codex)"
-        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,codex=auto"
+        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=subscription,codex=subscription"
         return spec
 
     def test_spec_for_allowed_cli_set_raises_no_cli_set_failure(self, tmp_path, monkeypatch):
@@ -794,7 +826,7 @@ class TestDevcontainerSpecStaleness:
         from booley.runtime import devcontainer as dc
 
         spec = build_spec(dc.APP_CLAUDE)
-        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,bogus=auto"
+        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=subscription,bogus=subscription"
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch, declared_provider="claude")
         assert any("record is malformed" in m for m in rec.fails())
@@ -823,6 +855,7 @@ def test_host_inspection_project_sandbox_resolution(
     report = inspection.Findings()
     inspection._inspect_live_runtime(
         inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
+        "docker",
         fixture.spec,
         fixture.issuance,
         report,
@@ -864,6 +897,7 @@ def test_host_inspection_reports_current_issuance_drift(
     report = inspection.Findings()
     inspection._inspect_live_runtime(
         inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
+        "docker",
         fixture.spec,
         fixture.issuance,
         report,
@@ -917,3 +951,69 @@ def test_lasting_spec_sharing_error_fails_issuance_check(tmp_path, monkeypatch):
         "host issuance is invalid" in item.message and "cannot access" in item.message
         for item in report.report().findings
     )
+
+
+class _RelayReport:
+    def __init__(self) -> None:
+        self.failed: list[tuple[str, str]] = []
+
+    def fail(self, message: str, fix: str) -> None:
+        self.failed.append((message, fix))
+
+    def pass_(self, _message: str) -> None:
+        pass
+
+
+_RELAY_HEADLESS = "run `booley session down`, then `booley session up --rebuild` on the host"
+_RELAY_VSCODE = (
+    f"close VS Code, then on the host run `docker stop {quote_arg('box')}` "
+    f"and `docker rm {quote_arg('box')}`, "
+    "run `booley session down` to remove the relay topology, "
+    "and reopen the folder in the container"
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "owner", "expected"),
+    [
+        ("missing", "headless", _RELAY_HEADLESS),
+        ("missing", "vscode", _RELAY_VSCODE),
+        ("missing", None, f"in VS Code, {_RELAY_VSCODE}; headless, {_RELAY_HEADLESS}"),
+        ("differs", "vscode", _RELAY_VSCODE),
+        ("differs", "docker-down", f"in VS Code, {_RELAY_VSCODE}; headless, {_RELAY_HEADLESS}"),
+    ],
+)
+def test_relay_repair_names_owner_workflow(tmp_path, monkeypatch, case, owner, expected) -> None:
+    from types import SimpleNamespace
+
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
+    from booley.runtime import session_issuance as runtime_spec
+    from booley.runtime.sandbox_apply import Attachment
+
+    profile = SimpleNamespace(
+        server_ipv4="10.0.0.1", server_hostid="h", lmgrd_port=1, vendor_port=2
+    )
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _root: profile)
+    monkeypatch.setattr(runtime_spec, "labels", lambda _issuance: {})
+    monkeypatch.setattr(session_runtime, "_relay_objects_exist", lambda _relay: case == "differs")
+
+    def differs(*_args, **_kwargs) -> None:
+        raise RelayDockerError("labels differ")
+
+    monkeypatch.setattr(inspection, "validate_relay", differs)
+
+    def attachment(_root):
+        if owner == "docker-down":
+            raise session_runtime.SessionError("docker unavailable")
+        return {"vscode": Attachment.VSCODE, "headless": Attachment.HEADLESS}.get(owner)
+
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", attachment)
+    request = SimpleNamespace(project_root=tmp_path, remedy="remedy")
+    report = _RelayReport()
+
+    inspection._check_issued_license_relay(
+        request, ["box"], SimpleNamespace(relay_image_id="sha256:relay"), report
+    )
+
+    ((_message, fix),) = report.failed
+    assert fix == expected

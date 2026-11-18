@@ -89,7 +89,7 @@ class CanonicalJsonForm:
         return text.encode("utf-8") + (b"\n" if self.trailing_newline else b"")
 
 
-#: Coverage Point id payload, written by the Campaign codec and the collector.
+#: Coverage Point id payload, written by the Coverage Record codec and the collector.
 POINT_ID_JSON = CanonicalJsonForm(
     ensure_ascii=False, allow_nan=True, indent=None, trailing_newline=False
 )
@@ -97,11 +97,11 @@ POINT_ID_JSON = CanonicalJsonForm(
 POINT_STORE_LINE_JSON = CanonicalJsonForm(
     ensure_ascii=False, allow_nan=False, indent=None, trailing_newline=True
 )
-#: The Campaign manifest, ``coverage.json``.
+#: The Coverage Record manifest, ``coverage.json``.
 MANIFEST_JSON = CanonicalJsonForm(
     ensure_ascii=True, allow_nan=False, indent=2, trailing_newline=True
 )
-#: A Coverage Campaign reference document.
+#: A Coverage Record reference document.
 REFERENCE_JSON = CanonicalJsonForm(
     ensure_ascii=False, allow_nan=False, indent=None, trailing_newline=True
 )
@@ -113,7 +113,7 @@ WAIVER_SET_JSON = CanonicalJsonForm(
 CRITERION_FINGERPRINT_JSON = CanonicalJsonForm(
     ensure_ascii=True, allow_nan=True, indent=None, trailing_newline=False
 )
-#: A value hashed into a Coverage Campaign fingerprint.
-CAMPAIGN_FINGERPRINT_JSON = CanonicalJsonForm(
+#: A value hashed into a Coverage Record fingerprint.
+COVERAGE_RECORD_FINGERPRINT_JSON = CanonicalJsonForm(
     ensure_ascii=True, allow_nan=True, indent=None, trailing_newline=False
 )

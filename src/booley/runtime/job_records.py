@@ -16,7 +16,7 @@ definite answer instead of losing the in-flight wait with its shell.
 
 Pure + stdlib-only: no asyncio, no MCP types.  PID liveness (and the /proc argv
 lookup) are injected so the status derivation stays unit-testable.  The
-concurrency guarantee (only one heavy endpoint at a time) is NOT this module's job —
+concurrency guarantee (memory admission) is NOT this module's job —
 it lives in ``mcp_server._JobManager``'s single-flight admission, with the
 detached child's own run-lock as belt-and-braces where that lock is active.
 Async here means "don't block the MCP call", never "run endpoints concurrently".
@@ -44,6 +44,7 @@ from booley.core.boundary import (
 )
 from booley.runtime.display_identity import DisplayScope
 from booley.runtime.filesystem_utils import read_file_bytes, replace_file
+from booley.runtime.mount_history import translate_stored_path
 from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,6 @@ class JobRecord:
     schema: int = 2
     work_dir: str | None = None
     session_key: str | None = None
-    binding: dict[str, Any] | None = None
     process_identity: dict[str, Any] | None = None
     ended_at: str | None = None
     # The agent that started the Job (see ``booley.mcp.job_ownership``) and when
@@ -117,6 +117,8 @@ class JobRecord:
     # Directory holding this Job's ``flow-reports/`` and ``mcp-tool-reports/`` when it is
     # not the records root's parent (a Standalone Job's records live elsewhere).
     report_root: str | None = None
+    # Flows finished and total of a Job that runs child Flows: ``{"finished": n, "total": m}``.
+    progress: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -132,19 +134,22 @@ class JobRecord:
         known: dict[str, Any] = {f: d.get(f) for f in cls.__dataclass_fields__}
         if known.get("display_scope") is not None:
             known["display_scope"] = DisplayScope.parse(known["display_scope"])
+        for key in ("work_dir", "report_root"):
+            if isinstance(known.get(key), str):
+                known[key] = translate_stored_path(
+                    known[key], record=f"Job record {known.get('run_id')}"
+                )
         return cls(**{k: v for k, v in known.items() if v is not None})
 
 
 def _validate_envelope(data: dict[str, Any]) -> None:
-    """Validate neutral routing fields without interpreting a Goal binding."""
+    """Validate the routing fields of a Job record envelope."""
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
     for key in ("work_dir", "session_key", "report_root"):
         if data.get(key) is not None:
             require_str(data, key)
-    if data.get("binding") is not None:
-        require_dict(data["binding"], field="Job binding")
 
 
 def target_arg(argv: list[str]) -> str | None:

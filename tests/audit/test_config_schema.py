@@ -116,7 +116,6 @@ def test_unknown_tables_have_stable_warning_identity_and_migration_hint() -> Non
         "config.unknown-table",
     ]
     assert [finding.subject for finding in audit.findings] == ["fusesoc", "toolz"]
-    assert "ADR 0030" in audit.findings[0].message
     assert "Target scoping now lives in .core files" in audit.findings[0].message
     assert "default_target" not in audit.findings[0].message
     assert "settings are ignored" in audit.findings[1].message
@@ -242,7 +241,7 @@ def test_retired_structural_controls_have_actionable_failures() -> None:
     assert all(not audit.is_valid for audit in audits)
     assert [audit.findings[0].fix for audit in audits] == [
         "delete [sandbox].mode",
-        "delete it and select the runtime with [agent].provider",
+        "delete it and select the runtime with [agent].default",
     ]
 
 
@@ -271,6 +270,22 @@ def test_agent_audit_uses_authoritative_agent_parser() -> None:
     assert "retired key(s): primary" in retired.findings[0].message
 
 
+@pytest.mark.parametrize(
+    "agent",
+    [{"auth": "auto"}, {"clis": ["codex"], "default": "codex", "auth": {"codex": "auto"}}],
+    ids=["string", "table"],
+)
+def test_retired_auto_auth_fails_the_agent_audit(agent: dict[str, object]) -> None:
+    audit = agent_schema.audit_agent_table({"agent": agent})
+
+    assert not audit.is_valid
+    finding = audit.findings[0]
+    assert "is retired" in finding.message
+    assert '"subscription", "api_key"' in finding.fix
+    assert '"auto"' not in finding.fix
+    assert finding.fix.endswith("or re-run booley init")
+
+
 def test_models_audit_reports_pins() -> None:
     audit = agent_schema.audit_models_table(
         {"agent": {"clis": ["claude", "codex"]}, "models": {"reviewer": "gpt-6-luna"}}
@@ -280,6 +295,13 @@ def test_models_audit_reports_pins() -> None:
     assert [item.message for item in audit.findings] == [
         "booley.toml [models] pins: reviewer=gpt-6-luna"
     ]
+
+
+def test_models_audit_fails_a_models_value_that_is_not_a_table() -> None:
+    audit = agent_schema.audit_models_table({"models": "reviewer"})
+
+    assert not audit.is_valid
+    assert audit.findings[0].message == "booley.toml [models] must be a table"
 
 
 def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:
@@ -486,17 +508,49 @@ def test_jobs_max_tickets_is_ignored_with_warning():
 
 
 @pytest.mark.parametrize("mode", ["auto", "always", "never"])
-def test_chat_worktree_knob_accepts_its_three_modes(mode: str) -> None:
-    assert project_schema.audit_chat_table({"chat": {"worktree": mode}}).is_valid
-    assert project_schema.audit_chat_table({}).is_valid
+def test_worktree_chat_knob_accepts_its_three_modes(mode: str) -> None:
+    assert project_schema.audit_worktree_table({"worktree": {"chat": mode}}).is_valid
+    assert project_schema.audit_worktree_table({}).is_valid
 
 
-@pytest.mark.parametrize(
-    "data", [{"chat": {"worktree": "sometimes"}}, {"chat": {"worktree": 1}}, {"chat": []}]
-)
-def test_chat_worktree_knob_must_be_auto_always_or_never(data: dict) -> None:
+def test_worktree_chat_knob_must_be_auto_always_or_never() -> None:
     # Bug caught: Doctor passing a value that `booley chat` then refuses at launch.
-    audit = project_schema.audit_chat_table(data)
+    for data in ({"worktree": {"chat": "sometimes"}}, {"worktree": {"chat": 1}}):
+        audit = project_schema.audit_worktree_table(data)
+
+        assert not audit.is_valid
+        assert "[worktree].chat" in audit.findings[0].message
+
+
+def test_worktree_table_that_is_not_a_table_reports_once() -> None:
+    assert len(project_schema.audit_worktree_table({"worktree": []}).findings) == 1
+
+
+def test_worktree_table_reports_both_bad_keys() -> None:
+    audit = project_schema.audit_worktree_table(
+        {"worktree": {"chat": "sometimes", "gc_older_than": "soon"}}
+    )
+
+    assert len(audit.findings) == 2
+
+
+def test_chat_table_is_an_unknown_table() -> None:
+    audit = project_schema.audit_known_tables({"chat": {"worktree": "always"}})
+
+    assert "chat" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+    assert audit.is_valid
+    (finding,) = audit.findings
+    assert finding.check_id == "config.unknown-table"
+    assert "chat" in finding.message
+
+
+def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:
+    assert project_schema.audit_jobs_table({}).findings == ()
+    assert project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 2}}}).is_valid
+
+    audit = project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 0}}})
 
     assert not audit.is_valid
-    assert not project_schema.audit_known_tables({"chat": {}}).findings
+    (finding,) = audit.findings
+    assert "[jobs.seats].vivado" in finding.message
+    assert "[jobs.seats]" in finding.fix

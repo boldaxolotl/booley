@@ -11,7 +11,7 @@ missing file, truncated/unparseable XML, empty testsuite — therefore maps to
 
 The run-half (:mod:`booley.flows.sim.backends.cocotb`) parses the XML in-sandbox and
 re-emits it as a single ``[COCOTB_RESULTS]`` JSON line beside the usual
-``[SIM_SUMMARY]``; the Mutation Tester parses that line back, while the
+``[SIM_SUMMARY]``; the Mutation Flow parses that line back, while the
 adapter itself publishes the results it already holds and never reads its own
 line. Both share this module so the shapes cannot drift.
 
@@ -38,7 +38,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import Final, Literal, cast
 from xml.etree import ElementTree
 
 from booley.core.boundary import (
@@ -49,13 +49,15 @@ from booley.core.boundary import (
     require_int,
     require_list,
 )
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
 # per-test verdict enum: "pass" / "fail" map directly, "inconclusive" marks
 # the Test Run inconclusive.
-VERDICT_PASS = "pass"
-VERDICT_FAIL = "fail"
-VERDICT_INCONCLUSIVE = "inconclusive"
+VERDICT_PASS: Final = "pass"
+VERDICT_FAIL: Final = "fail"
+VERDICT_INCONCLUSIVE: Final = "inconclusive"
+ReconciledVerdict = Literal["pass", "fail", "inconclusive"]
 
 TIMEOUT_ACTIVE_DETAIL = "timed out while this test was running"
 TIMEOUT_NOT_RUN_DETAIL = "did not run before the cocotb batch timed out"
@@ -78,7 +80,7 @@ COCOTB_RESULTS_PREFIX = "[COCOTB_RESULTS] "
 # run.log next to result.json).
 _MAX_FAILURE_CHARS = 500
 
-# Keep absent-ID details below the campaign's 1536-character tail and 2048-byte
+# Keep absent-ID details below the record's 1536-character tail and 2048-byte
 # canonical JSON detail limits, including escaping when the detail is serialized.
 _MAX_ABSENT_DETAIL_CHARS = 1200
 _MAX_DISPLAY_NAME_CHARS = 120
@@ -100,6 +102,10 @@ _IMPORT_FAILURE_RE = re.compile(
 _MISSING_MODULE_RE = re.compile(r"No module named ['\"](?P<name>[\w.]+)['\"]")
 
 
+# Opens the reason of a cocotb import failure; metrics detect it by this prefix.
+IMPORT_FAILURE_PREFIX = "cocotb could not import the test module"
+
+
 def find_import_failure(output: str) -> str:
     """Explain a cocotb test-module import failure found in *output*, or ``""``.
 
@@ -112,7 +118,7 @@ def find_import_failure(output: str) -> str:
         return ""
     module = m.group("module")
     error = m.group("error").strip()
-    detail = f"cocotb could not import the test module '{module}': {error}"
+    detail = f"{IMPORT_FAILURE_PREFIX} '{module}': {error}"
 
     missing = _MISSING_MODULE_RE.search(error)
     if missing:
@@ -124,8 +130,8 @@ def find_import_failure(output: str) -> str:
             f" — '{missing.group('name')}' is not installed in the sandbox image. "
             "Bake the project's FULL pinned test stack (not just the imports the "
             "testbench appears to use at run time) via [sandbox].pip_requirements, "
-            "re-run `booley init`, then `booley session down && booley session up` "
-            "so the live session picks up the new image."
+            "then recreate the Sandbox so it runs the new image: "
+            f"{UNKNOWN_SANDBOX_STEPS}."
         )
     return detail
 
@@ -405,7 +411,7 @@ def _absent_test_detail(name: str, results: CocotbResults) -> str:
 def reconcile(
     selected: list[str],
     results: CocotbResults,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, ReconciledVerdict, str]]:
     """Map every *selected* tests.toml name to ``(name, verdict, detail)``.
 
     The selected-set reconciliation of ADR 0034 decision 7: every name Booley
@@ -422,7 +428,7 @@ def reconcile(
     Unexpected extra XML entries are **not** verdict-bearing (the caller may
     log them via :func:`extra_tests`).
     """
-    out: list[tuple[str, str, str]] = []
+    out: list[tuple[str, ReconciledVerdict, str]] = []
     for name in selected:
         if results.state != STATE_OK:
             out.append((name, VERDICT_INCONCLUSIVE, results.detail))

@@ -419,7 +419,8 @@ def test_feedback_shared_parser_rejects_reserved_substrings(tmp_path):
     directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text('[stealth]\nbanned_substrings = ["mod"]\n')
-    with pytest.raises(BoundaryError, match="reserved"):
+    # The refused entry is named and the reason is feedback redaction.
+    with pytest.raises(BoundaryError, match=r"'mod'.*feedback-redaction placeholder"):
         build_plan(tmp_path)
 
 

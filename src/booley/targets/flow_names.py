@@ -11,6 +11,8 @@ LEGACY_TO_CANONICAL: dict[str, str] = {
     "simulate": "sim",
 }
 CANONICAL_TO_LEGACY = {new: old for old, new in LEGACY_TO_CANONICAL.items()}
+# Specialists that became Flows, by the Flow that replaced them.
+RETIRED_SPECIALIST_TO_FLOW: dict[str, str] = {"mutation_tester": "mutation"}
 DEFAULT_TARGET_KEY = "default_target"
 RETIRED_TARGET_KEY = "target"
 

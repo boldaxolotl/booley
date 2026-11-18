@@ -1,15 +1,15 @@
-"""Test Run rows and grades of collected Coverage Campaign runs."""
+"""Test Run rows and grades of collected Coverage Record runs."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from booley.flows.sim.campaign.test_run_report import test_run_grade, test_run_row
+from booley.flows.sim.record.test_run_report import test_run_grade, test_run_row
 from booley.flows.test_runs import TestRun, build_test_run
 
 if TYPE_CHECKING:
-    from .coverage_campaign import CoverageRun
+    from .coverage_record import CoverageRun
 
 
 def coverage_test_run_rows(

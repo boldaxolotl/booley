@@ -222,8 +222,9 @@ class TestProjectRootScoping:
         empty.mkdir()
 
         # Scoped to empty/, which has no .core: the hardcoded .core-era defaults.
-        assert si.get_rtl_source_dirs(empty) == ["rtl", "fw"]
+        assert si.get_rtl_source_dirs(empty) == ["rtl"]
         assert si.get_tb_source_dirs(empty) == ["tb"]
+        assert si.get_rtl_prefixes(empty) == ("rtl/", "rtl\\")
 
     def test_worktree_reads_its_own_tracked_core(self, tmp_path: Path):
         """A git worktree resolves source dirs from its own checked-out ``.core``.
@@ -254,3 +255,15 @@ class TestProjectRootScoping:
 
         assert si.get_rtl_source_dirs(wt) == ["worktree_rtl"]
         assert si.get_tb_source_dirs(wt) == ["worktree_tb"]
+
+
+def test_non_string_synth_output_dir_is_rejected(tmp_path: Path) -> None:
+    """A non-string ``[flows.synth].output_dir`` fails with a message naming the key."""
+    from booley.runtime.shared_infra import get_syn_output_dir
+
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("[flows.synth]\noutput_dir = 5\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"output_dir"):
+        get_syn_output_dir(tmp_path)

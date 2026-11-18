@@ -7,6 +7,7 @@ from booley.runtime import image_keepers, image_lifecycle
 
 
 def test_forget_cleans_images_of_the_forgotten_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # withdrawal stays private
     project = tmp_path / "project"
     forgotten = tmp_path / "canonical-root"  # inventory may canonicalize the requested path
     monkeypatch.setattr(image_keepers, "_require_recovered_host", lambda: None)

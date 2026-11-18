@@ -1,4 +1,4 @@
-"""Exact-path Coverage Analyst wrapper with real Campaign/source files."""
+"""Exact-path Coverage Analyst wrapper with real Coverage Record/source files."""
 
 import copy
 import json
@@ -19,8 +19,8 @@ except ModuleNotFoundError:
 
 
 from booley.core.models import AgentResult
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
-from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
+from booley.flows.sim.coverage_record import DurableTargetIdentity
+from booley.flows.sim.coverage_record_store import publish_coverage_record
 from booley.runtime.agent_errors import (
     AgentProviderError,
     AgentTimeoutError,
@@ -29,11 +29,11 @@ from booley.runtime.agent_errors import (
 )
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
-from tests.flows.sim.coverage_campaign_test_support import (
-    corrupt_campaign_with_duplicate_negative_point,
+from tests.flows.sim.coverage_record_test_support import (
+    corrupt_coverage_record_with_duplicate_negative_point,
     decode_document,
 )
-from tests.flows.sim.test_coverage_campaign import _valid_document
+from tests.flows.sim.test_coverage_record import _valid_document
 
 
 @pytest.fixture(autouse=True)
@@ -43,11 +43,13 @@ def sandbox_execution(monkeypatch):
     )
 
 
-def persist_campaign(root: Path):
+def persist_coverage_record(root: Path):
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     target_dir = root / "reports/sim/12/targets/sim_counter"
-    path = publish_coverage_campaign(target_dir, campaign).campaign
+    path = publish_coverage_record(target_dir, coverage_record).coverage_record
     (target_dir / "simulation.json").write_text(
         json.dumps(
             {
@@ -57,7 +59,7 @@ def persist_campaign(root: Path):
                 "target_identity": document["target"]["identity"],
                 "collection": "complete",
                 "evaluation": "not_requested",
-                "coverage_campaign": "coverage.json",
+                "coverage_record": "coverage.json",
             }
         )
     )
@@ -76,12 +78,12 @@ class Model:
 
 
 def test_cli_reports_invalid_findings_before_calling_model(tmp_path: Path) -> None:
-    path = persist_campaign(tmp_path)
-    corrupt_campaign_with_duplicate_negative_point(path)
+    path = persist_coverage_record(tmp_path)
+    corrupt_coverage_record_with_duplicate_negative_point(path)
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert outcome.exit_code == 2
@@ -95,13 +97,13 @@ def test_cli_reports_invalid_findings_before_calling_model(tmp_path: Path) -> No
 
 
 def test_cli_invalid_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     run_id = "run:bad\n\t\x1b[31m" + "x" * 2_000
-    corrupt_campaign_with_duplicate_negative_point(path, run_id=run_id)
+    corrupt_coverage_record_with_duplicate_negative_point(path, run_id=run_id)
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert outcome.exit_code == 2
@@ -139,12 +141,12 @@ def _successful_claude_query(options_seen):
     return query
 
 
-def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path:
-    from booley.flows.sim.coverage_campaign import (
+def persist_large_current_coverage_record(root: Path, point_count: int = 2_000) -> Path:
+    from booley.flows.sim.coverage_record import (
         DurableTargetIdentity,
         encode_coverage_point_id,
     )
-    from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
+    from booley.flows.sim.coverage_record_store import publish_coverage_record
 
     document = _valid_document()
     template = document["points"][0]
@@ -164,9 +166,11 @@ def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path
         eligible_points=point_count,
         covered_points=point_count,
     )
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     target_dir = root / "reports/sim/12/targets/sim_counter"
-    paths = publish_coverage_campaign(target_dir, campaign)
+    paths = publish_coverage_record(target_dir, coverage_record)
     (target_dir / "simulation.json").write_text(
         json.dumps(
             {
@@ -179,11 +183,13 @@ def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path
             }
         )
     )
-    return paths.campaign
+    return paths.coverage_record
 
 
-def test_large_current_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
-    path = persist_large_current_campaign(tmp_path)
+def test_large_current_coverage_record_uses_scoped_evidence_tool_without_oversized_prompt(
+    tmp_path,
+):
+    path = persist_large_current_coverage_record(tmp_path)
     calls = []
 
     def bounded_model(params):
@@ -198,30 +204,32 @@ def test_large_current_campaign_uses_scoped_evidence_tool_without_oversized_prom
         )
 
     result = CoverageAnalystSpecialist(model=bounded_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 0
     assert len(calls[0].prompt) < 16_384
     assert calls[0].nested_mcp_tools == ["coverage_evidence"]
-    assert calls[0].nested_mcp_env["BOOLEY_COVERAGE_CAMPAIGN"] == str(path)
+    assert calls[0].nested_mcp_env["BOOLEY_COVERAGE_RECORD"] == str(path)
     assert "coverage-points.jsonl.gz" in calls[0].prompt
     assert "points" not in result.outcome.detail["observed_evidence"]
     assert result.outcome.detail["observed_evidence"]["point_store_sha256"].startswith("sha256:")
 
 
-def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_path, monkeypatch):
+def test_persisted_current_analysis_does_not_encode_the_complete_coverage_record(
+    tmp_path, monkeypatch
+):
     from booley.specialists import coverage_analysis
 
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
-    def reject_full_encode(campaign):
+    def reject_full_encode(coverage_record):
         raise AssertionError("persisted analysis must reuse validated summary evidence")
 
-    monkeypatch.setattr(coverage_analysis, "encode_coverage_campaign", reject_full_encode)
+    monkeypatch.setattr(coverage_analysis, "encode_coverage_record", reject_full_encode)
 
     result = CoverageAnalystSpecialist(model=Model()).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 0
@@ -234,13 +242,15 @@ def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
     document["collection"]["status"] = "collector_error"
     document["normalization"]["status"] = "partial"
     document["rollups"] = []
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     target_dir = tmp_path / "reports/sim/12/targets/sim_counter"
-    path = publish_coverage_campaign(target_dir, campaign).campaign
+    path = publish_coverage_record(target_dir, coverage_record).coverage_record
     model = Model()
 
     result = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -248,15 +258,14 @@ def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
     assert "collector_error" in result.outcome.report_text
 
 
-def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
+def test_report_records_exact_evidence_scope(tmp_path, monkeypatch, fresh_evidence_session):
     from booley.mcp import coverage_evidence
 
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
     def querying_model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         coverage_evidence.query_active_coverage_evidence(
             {"view": "points", "disposition": "eligible", "limit": 1}
         )
@@ -265,7 +274,7 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
         )
 
     analyst = CoverageAnalystSpecialist(model=querying_model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     report = analyst.coverage_analyst(path).to_dict()
 
     assert report["analysis_scope"]["points_retrieved"] == 1
@@ -273,10 +282,12 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
     assert "point_references" not in report["analysis_scope"]
 
 
-def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monkeypatch):
+def test_model_short_references_resolve_to_exact_report_point_ids(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     canonical_id = _valid_document()["points"][0]["id"]
 
     def referencing_model(params):
@@ -285,7 +296,6 @@ def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monk
         )
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         result = coverage_evidence.query_active_coverage_evidence(
             {"view": "points", "disposition": "eligible", "limit": 1}
         )
@@ -300,7 +310,7 @@ def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monk
 
     report = (
         CoverageAnalystSpecialist(model=referencing_model)
-        .execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+        .execute_cli(["--work-dir", str(tmp_path), "--record", str(path)])
         .outcome.detail
     )
 
@@ -310,7 +320,7 @@ def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monk
 
 
 def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
     def invalid_model(_params):
         return AgentResult(
@@ -329,7 +339,7 @@ def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=invalid_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -337,16 +347,17 @@ def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
     assert "/waiver_candidates/0/point_ref: unknown_point_ref" in result.outcome.report_text
 
 
-def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatch):
+def test_delivered_legacy_exact_model_ids_remain_compatible(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     canonical_id = _valid_document()["points"][0]["id"]
 
     def legacy_model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
         return AgentResult(
             structured={
@@ -359,7 +370,7 @@ def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatc
         )
 
     result = CoverageAnalystSpecialist(model=legacy_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 0
@@ -367,7 +378,7 @@ def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatc
 
 
 def test_undelivered_legacy_exact_model_id_is_rejected(tmp_path):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     canonical_id = _valid_document()["points"][0]["id"]
 
     def unsupported_legacy_model(_params):
@@ -380,21 +391,21 @@ def test_undelivered_legacy_exact_model_id_is_rejected(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=unsupported_legacy_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
     assert "/hypotheses/0/point_ids/0: cp1_not_delivered" in result.outcome.report_text
 
 
-def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state(tmp_path):
-    path = persist_campaign(tmp_path)
+def test_exact_coverage_record_wrapper_analyzes_without_native_payload_or_project_state(tmp_path):
+    path = persist_coverage_record(tmp_path)
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = analyst.coverage_analyst(path, "Explain the gaps").to_dict()
-    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert report["$schema"] == "booley.coverage-analysis/v4"
     assert report["source_access"] == "report_only"
     assert len(model.calls) == 1
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
@@ -404,7 +415,7 @@ def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state
     "defect", ["filename", "invocation", "target", "nonterminal", "projection", "missing"]
 )
 def test_wrapper_rejects_noncanonical_or_unfinished_report_before_model(tmp_path, defect):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     if defect == "filename":
         other = path.with_name("latest.json")
         path.rename(other)
@@ -425,7 +436,7 @@ def test_wrapper_rejects_noncanonical_or_unfinished_report_before_model(tmp_path
         projection.write_text(json.dumps(document))
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     with pytest.raises(CoverageAnalysisError):
         analyst.coverage_analyst(path)
     assert model.calls == []
@@ -435,7 +446,7 @@ def source_project(root):
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
 
-    path = persist_campaign(root)
+    path = persist_coverage_record(root)
     (root / "rtl").mkdir()
     (root / "tb").mkdir()
     (root / "rtl/counter.sv").write_bytes(b"module counter; endmodule\n")
@@ -445,10 +456,10 @@ def source_project(root):
         "CAPI=2:\nname: acme:demo:counter:1.0\nfilesets:\n  rtl:\n    files: [rtl/counter.sv]\n    file_type: systemVerilogSource\n  tb:\n    files: [tb/counter_tb.sv]\n    file_type: systemVerilogSource\n    tags: [tb]\ntargets:\n  sim_counter:\n    flow: sim\n    filesets: [rtl, tb]\n    toplevel: counter_tb\n    flow_options:\n      tool: verilator\n"
     )
     document = json.loads(path.read_text())
-    for category in ("rtl", "testbench"):
+    for category, fingerprint in (("rtl", "rtl_sources"), ("testbench", "testbench_sources")):
         for item in document["source_closure"][category]:
             item["sha256"] = content_digest((root / item["path"]).read_bytes())
-        document["fingerprints"][category + "_sources"] = coverage_digest(
+        document["fingerprints"][fingerprint] = coverage_digest(
             document["source_closure"][category]
         )
     document["fingerprints"]["target_definition"] = coverage_digest(
@@ -462,13 +473,30 @@ def test_verified_sources_are_available_only_through_scoped_tool(tmp_path):
     path = source_project(tmp_path)
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     report = analyst.coverage_analyst(path).to_dict()
     assert report["source_access"] == "verified"
     prompt = json.loads(model.calls[0].prompt)
     assert prompt["source_access"] == "verified"
     assert "module counter" not in model.calls[0].prompt
     assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
+
+
+# The persisted report format (booley.coverage-analysis/v4) fixes these keys.
+_REPORT_KEYS = {
+    "$schema",
+    "analysis_scope",
+    "closure_recommendation",
+    "coverage_record_id",
+    "eligibility",
+    "hypotheses",
+    "limitations",
+    "observed_evidence",
+    "recommendations",
+    "source_access",
+    "target",
+    "waiver_candidates",
+}
 
 
 @pytest.mark.parametrize("ignore_native", [False, True])
@@ -482,7 +510,7 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     )
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
     report = analyst.coverage_analyst(path).to_dict()
@@ -490,6 +518,28 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
+    assert report["limitations"] == [
+        "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
+        "report evidence only and no Waiver Candidate is ready for human review."
+    ]
+    assert report["$schema"] == "booley.coverage-analysis/v4"
+    assert set(report) == _REPORT_KEYS
+    assert report["eligibility"] == "eligible"
+
+
+def test_undecodable_configuration_keeps_generic_report_only_limitation(tmp_path):
+    path = source_project(tmp_path)
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley/booley.toml").write_bytes(b"\xff\xfe")
+    analyst = CoverageAnalystSpecialist(model=Model())
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
+
+    report = analyst.coverage_analyst(path).to_dict()
+
+    assert report["source_access"] == "report_only"
+    assert report["limitations"] == [
+        "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+    ]
 
 
 @pytest.mark.parametrize("defect", ["stale", "missing", "core", "closure", "symlink"])
@@ -513,14 +563,21 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
         symlink_or_skip(source, tmp_path / "rtl/counter.sv")
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     report = analyst.coverage_analyst(path).to_dict()
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
     assert "SECRET" not in model.calls[0].prompt
+    assert report["limitations"] == [
+        "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+    ]
+    assert set(report) == _REPORT_KEYS
+    assert report["eligibility"] == "eligible"
 
 
-def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch):
+def test_verified_candidate_is_ready_only_for_human_review(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
     path = source_project(tmp_path)
@@ -529,7 +586,6 @@ def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch
     def model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         result = coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
         return AgentResult(
             structured={
@@ -547,7 +603,7 @@ def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch
         )
 
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     candidate = analyst.coverage_analyst(path).to_dict()["waiver_candidates"][0]
     assert candidate["screening"] == "ready_for_human_review"
     assert candidate["point_identity"] == point["identity"]
@@ -556,7 +612,7 @@ def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch
 
 def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     state = tmp_path / "state.json"
     state.write_text("intentionally not a Harness state")
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
@@ -564,7 +620,7 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
         [
             "--work-dir",
             str(tmp_path),
-            "--campaign",
+            "--record",
             str(path),
             "--report-dir",
             str(tmp_path / "analysis-reports"),
@@ -572,14 +628,33 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
     )
     assert result.exit_code == 0
     assert state.read_text() == "intentionally not a Harness state"
-    assert result.outcome.criterion_key == ""
+
+
+def test_cli_analysis_writes_no_development_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    path = persist_coverage_record(tmp_path)
+    result = CoverageAnalystSpecialist(model=Model()).execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--record",
+            str(path),
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+        ]
+    )
+    assert result.exit_code == 0
+    assert list(tmp_path.rglob("state.json")) == []
+    assert not (tmp_path / "reviewer-state").exists()
+    assert not (tmp_path / ".interactive_logs").exists()
 
 
 @pytest.mark.parametrize("failure", ["timed_out", "max_turns_exhausted"])
 def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     analyst = CoverageAnalystSpecialist(model=lambda params: AgentResult(**{failure: True}))
-    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--record", str(path)])
     assert result.exit_code == 2
     assert "model did not finish" in result.outcome.report_text
 
@@ -594,12 +669,12 @@ def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
 def test_cli_distinguishes_empty_and_malformed_model_output(
     tmp_path, output, expected, unexpected
 ):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     analyst = CoverageAnalystSpecialist(
         model=lambda _params: AgentResult(output=output, structured=None)
     )
 
-    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--record", str(path)])
 
     assert result.exit_code == 2
     assert expected in result.outcome.report_text
@@ -621,7 +696,7 @@ def test_cli_distinguishes_empty_and_malformed_model_output(
 def test_cli_reports_terminal_provider_failures_without_mutating_state(
     tmp_path, monkeypatch, capsys, provider_error
 ):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     report_dir = tmp_path / "analysis-reports"
     state = tmp_path / "state.json"
     state.write_bytes(b"seeded state must remain byte-for-byte unchanged")
@@ -634,7 +709,7 @@ def test_cli_reports_terminal_provider_failures_without_mutating_state(
         [
             "--work-dir",
             str(tmp_path),
-            "--campaign",
+            "--record",
             str(path),
             "--report-dir",
             str(report_dir),
@@ -655,7 +730,7 @@ def test_cli_reports_terminal_provider_failures_without_mutating_state(
 
 
 def test_cli_reports_result_error_terminal_text(tmp_path):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     provider_error = ResultError("Command failed with exit code 1")
     provider_error.result = "API Error: overloaded"
     provider_error.errors = []
@@ -664,7 +739,7 @@ def test_cli_reports_result_error_terminal_text(tmp_path):
         raise provider_error
 
     result = CoverageAnalystSpecialist(model=fail).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -674,13 +749,13 @@ def test_cli_reports_result_error_terminal_text(tmp_path):
 
 
 def test_cli_does_not_misclassify_internal_runtime_error_as_provider_failure(tmp_path):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
     def fail(_params):
         raise RuntimeError("internal bug")
 
     result = CoverageAnalystSpecialist(model=fail).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -693,7 +768,7 @@ def test_cli_does_not_misclassify_internal_runtime_error_as_provider_failure(tmp
 def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):
     from booley.runtime.agent_errors import ContextExhaustedError
 
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
     def oversized(_params):
         raise ContextExhaustedError(
@@ -702,7 +777,7 @@ def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=oversized).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -711,7 +786,7 @@ def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):
 
 
 def test_cli_rejects_partial_report_after_evidence_budget_exhaustion(tmp_path):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
     def exhausted_model(params):
         Path(params.nested_mcp_env["BOOLEY_COVERAGE_AUDIT"]).write_text(
@@ -722,7 +797,7 @@ def test_cli_rejects_partial_report_after_evidence_budget_exhaustion(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=exhausted_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -731,7 +806,7 @@ def test_cli_rejects_partial_report_after_evidence_budget_exhaustion(tmp_path):
 
 
 def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
     def failed_evidence_model(params):
         Path(params.nested_mcp_env["BOOLEY_COVERAGE_AUDIT"]).write_text(
@@ -743,7 +818,7 @@ def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=failed_evidence_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -751,15 +826,16 @@ def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
     assert "Narrow the analysis instruction" in result.outcome.report_text
 
 
-def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
+def test_cli_rejects_malformed_persisted_evidence_audit(
+    tmp_path, monkeypatch, fresh_evidence_session
+):
     from booley.mcp import coverage_evidence
 
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
 
     def corrupting_model(params):
         for key, value in params.nested_mcp_env.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
         coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
         audit_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_AUDIT"])
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -770,35 +846,18 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
         )
 
     result = CoverageAnalystSpecialist(model=corrupting_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
     assert "point_ids must contain canonical Coverage Point IDs" in result.outcome.report_text
 
 
-def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
-    from tests.flows.sim.campaign_test_support import coverage_invocation
-
-    run = coverage_invocation(tmp_path, monkeypatch)
-    analyst = CoverageAnalystSpecialist(model=Model())
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(run.public)])
-    before = analyst.coverage_analyst(run.public).to_dict()
-    prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    after = analyst.coverage_analyst(run.public).to_dict()
-    assert after == before
-    assert after["source_access"] == "verified"
-    prune_invocation(tmp_path / "reports", 1)
-    with pytest.raises(CoverageAnalysisError, match="fully pruned"):
-        analyst.coverage_analyst(run.public)
-
-
-def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
-    path = persist_campaign(tmp_path)
+def test_relative_coverage_record_resolves_against_selected_work_dir(tmp_path):
+    path = persist_coverage_record(tmp_path)
     analyst = CoverageAnalystSpecialist(model=Model())
     result = analyst.execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
+        ["--work-dir", str(tmp_path), "--record", str(path.relative_to(tmp_path))]
     )
     assert result.exit_code == 0
 
@@ -809,7 +868,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     from booley.runtime.agent_backend import ClaudeSDKBackend
     from booley.runtime.agent_config import BackendConfig, set_backend_config
 
-    path = persist_campaign(tmp_path)
+    path = persist_coverage_record(tmp_path)
     options_seen = []
 
     monkeypatch.setattr(_claude_backend, "query", _successful_claude_query(options_seen))
@@ -819,7 +878,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
                 default_cli="claude",
                 specialist_models={"coverage_analyst": "claude-chosen-model"},
             ),
-            active_backend=ClaudeSDKBackend(),
+            active_backend=ClaudeSDKBackend(auth_mode="visitor"),
         )
     )
     try:
@@ -827,7 +886,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
             [
                 "--work-dir",
                 str(tmp_path),
-                "--campaign",
+                "--record",
                 str(path),
                 "--transcript-dir",
                 str(tmp_path / "transcripts"),
@@ -843,54 +902,53 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     assert set(options_seen[0].mcp_servers) == {"booley"}
     server_env = options_seen[0].mcp_servers["booley"]["env"]
     assert server_env["BOOLEY_NESTED_MCP_TOOLS"] == "coverage_evidence"
-    assert server_env["BOOLEY_COVERAGE_CAMPAIGN"] == str(path)
+    assert server_env["BOOLEY_COVERAGE_RECORD"] == str(path)
     assert not Path(options_seen[0].cwd).exists()
     assert list((tmp_path / "transcripts").rglob("*.jsonl"))
 
 
 def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatch):
-    from booley.flows.sim.coverage_campaign import DurableTargetIdentity
-    from booley.specialists.coverage_analyst import analyze_coverage_campaign
+    from booley.flows.sim.coverage_record import DurableTargetIdentity
+    from booley.specialists.coverage_analyst import analyze_coverage_record
 
-    campaign = decode_document(
+    coverage_record = decode_document(
         _valid_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
     )
     staged_paths = []
 
     def invoke(_self, params):
-        campaign_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_CAMPAIGN"])
-        staged_paths.append(campaign_path)
-        assert campaign_path.is_file()
-        assert campaign_path.with_name("coverage-points.jsonl.gz").is_file()
+        coverage_record_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_RECORD"])
+        staged_paths.append(coverage_record_path)
+        assert coverage_record_path.is_file()
+        assert coverage_record_path.with_name("coverage-points.jsonl.gz").is_file()
         return AgentResult(
             structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
 
+    # The model call is the seam that shows which evidence files the scoped tool was given.
     monkeypatch.setattr(CoverageAnalystSpecialist, "_invoke_agent", invoke)
 
-    report = analyze_coverage_campaign(campaign, None, "Explain gaps").to_dict()
+    report = analyze_coverage_record(coverage_record, None, "Explain gaps").to_dict()
 
-    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert report["$schema"] == "booley.coverage-analysis/v4"
     assert staged_paths and not staged_paths[0].exists()
 
 
-def test_image_alias_analyst_binds_canonical_campaign(project_alias, monkeypatch):
+def test_image_alias_analyst_binds_canonical_coverage_record(project_alias):
     alias, root = project_alias
-    path = persist_campaign(root)
-    specialist = CoverageAnalystSpecialist(model=Model())
-    specialist._args = specialist.parse_args(["--work-dir", str(root), "--campaign", str(path)])
-    seen = []
-    monkeypatch.setattr(
-        specialist,
-        "_analyze_bound",
-        lambda _campaign, _sources, _instruction, bound, **_kwargs: seen.append(bound),
-    )
-    _report, loaded, bound = specialist._analyze_path(alias / path.relative_to(root), "explain")
-    assert bound == path and seen == [path]
-    assert loaded.campaign.target.selector == "sim_counter"
+    path = persist_coverage_record(root)
+    model = Model()
+    specialist = CoverageAnalystSpecialist(model=model)
+    specialist.parse_args(["--work-dir", str(root), "--record", str(path)])
+
+    specialist.coverage_analyst(alias / path.relative_to(root), "explain")
+
+    # The scoped evidence tool is bound to the canonical path, not the image alias.
+    assert [call.nested_mcp_env["BOOLEY_COVERAGE_RECORD"] for call in model.calls] == [str(path)]
     (root / "linked").symlink_to(root, target_is_directory=True)
     with pytest.raises(ValueError, match=r"link|traversal"):
-        specialist._analyze_path(alias / "linked" / path.relative_to(root), "explain")
+        specialist.coverage_analyst(alias / "linked" / path.relative_to(root), "explain")
+    assert len(model.calls) == 1
 
 
 def test_image_alias_analyst_traversal_uses_domain_error(project_alias) -> None:
@@ -923,7 +981,7 @@ def test_analysis_follows_only_the_booley_dir_entry(tmp_path, monkeypatch, linke
     worktree = project / ".booley/worktrees/goal-x"
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--project", str(worktree), "--campaign", str(path)])
+    analyst.parse_args(["--project", str(worktree), "--record", str(path)])
 
     if linked == "below":
         with pytest.raises(CoverageAnalysisError, match="links or traversal"):
@@ -939,7 +997,7 @@ def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeyp
     Only the exact entry is followed: a link below it, or a link above the
     Project Root, still degrades to report-only analysis.
     """
-    from booley.flows.sim.coverage_analysis_input import coverage_sources, read_coverage_campaign
+    from booley.flows.sim.coverage_analysis_input import coverage_sources, read_coverage_record
     from booley.runtime.booley_dir import reset_cache
     from tests.conftest import symlink_or_skip
     from tests.fusesoc_test_support import symlinked_booley_dir
@@ -966,7 +1024,7 @@ def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeyp
         work_dir = tmp_path / "alias"
         symlink_or_skip(work_dir, project, target_is_directory=True)
 
-    sources = coverage_sources(read_coverage_campaign(path).campaign, work_dir)
+    sources = coverage_sources(read_coverage_record(path).coverage_record, work_dir)
 
     if linked != "entry":
         assert sources is None
@@ -976,7 +1034,7 @@ def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeyp
 
 
 def _rebind_source_digests(path: Path, root: Path) -> None:
-    """Rewrite the Campaign closure for a testbench moved under ``.booley``."""
+    """Rewrite the Coverage Record closure for a testbench moved under ``.booley``."""
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
 

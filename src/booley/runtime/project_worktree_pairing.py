@@ -97,7 +97,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
             raise ProjectPairingError(
                 f"the Booley Directory's repository already registers a checkout at {nested}; "
                 "in the same Sandbox, preserve needed work and evidence first "
-                "as described in CLI-REFERENCE.md (host doc, not shipped), then remove it with "
+                "as described in WORKTREES.md (host doc, not shipped), then remove it with "
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
                 f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
@@ -289,9 +289,13 @@ def validate_project_pairing(source: Path | None, name: str) -> None:
 
 
 def worktree_removal_instructions(
-    project_root: Path, worktree: Path, name: str, *, paired: bool = True
+    project_root: Path, worktree: Path, name: str, *, branch: str | None, paired: bool = True
 ) -> str:
     """Format removal in the Sandbox namespace available to this command.
+
+    *branch* is the outer branch the failed creation was making (``None`` for a
+    ``<branch>--<description>`` name, which creates none); it depends on Stealth
+    Mode, so the caller names it.
 
     Paths stay as the caller named them (absolute, symlinks kept) so they match
     the worktree path ``booley worktree new`` prints; Git resolves them itself.
@@ -307,7 +311,7 @@ def worktree_removal_instructions(
         f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
         "These are Sandbox paths; do not paste them into a host terminal.",
         "First preserve needed evidence and other ignored/untracked files outside "
-        "this worktree, as described in CLI-REFERENCE.md (host doc, not shipped).",
+        "this worktree, as described in WORKTREES.md (host doc, not shipped).",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "
         "inspect locks before unlocking or forcing removal.",
         "Git refuses to remove a worktree that holds populated submodules without "
@@ -328,11 +332,10 @@ def worktree_removal_instructions(
             "Optional, to reuse the name, delete the Project branch after preserving its commits: "
             f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
         )
-    if "--" not in name:
-        # A <branch>--<description> name checks out an existing branch and creates none.
+    if branch is not None:
         steps.append(
             "Optional, to reuse the name, delete the worktree's branch after preserving its "
-            f"commits: git -C {quote(root)} branch -D {shlex.quote(f'booley/{name}')}"
+            f"commits: git -C {quote(root)} branch -D {shlex.quote(branch)}"
         )
     return "\n".join(steps)
 

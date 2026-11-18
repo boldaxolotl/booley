@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/watch_pr.py"
 SPEC = importlib.util.spec_from_file_location("watch_pr", SCRIPT)
@@ -59,14 +60,14 @@ def write_fake_gh(tmp_path: Path, source: str) -> Path:
     return launcher
 
 
-def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def run_script(
+    *args: str, env: dict[str, str] | None = None, timeout: float = SUBPROCESS_TIMEOUT_S
+) -> subprocess.CompletedProcess[str]:
+    return run_bounded_child(
         ["python3", str(SCRIPT), *args],
+        timeout=timeout,
         env=env,
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -869,7 +870,7 @@ def test_checks_accept_empty_stdout_for_no_check_exits(tmp_path: Path, exit_code
     executable = write_fake_gh(tmp_path, f"raise SystemExit({exit_code})\n")
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
-    assert transport._checks("example/repo", 7, 10) == []
+    assert transport._checks("example/repo", 7, hang_guard_s()) == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
@@ -878,7 +879,7 @@ def test_checks_reject_empty_stdout_for_success(tmp_path: Path) -> None:
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
     with pytest.raises(watch_pr.WatchError, match="empty JSON"):
-        transport._checks("example/repo", 7, 10)
+        transport._checks("example/repo", 7, hang_guard_s())
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
@@ -890,7 +891,7 @@ def test_checks_reject_generic_exit_one_error(tmp_path: Path) -> None:
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
     with pytest.raises(watch_pr.WatchError, match="gh read failed"):
-        transport._checks("example/repo", 7, 10)
+        transport._checks("example/repo", 7, hang_guard_s())
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
@@ -911,7 +912,7 @@ def test_checks_accept_documented_no_checks_message(
     )
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
-    assert transport._checks("example/repo", 7, 10) == []
+    assert transport._checks("example/repo", 7, hang_guard_s()) == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
@@ -920,7 +921,7 @@ def test_checks_reject_malformed_nonempty_stdout(tmp_path: Path) -> None:
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
     with pytest.raises(watch_pr.WatchError, match="invalid JSON"):
-        transport._checks("example/repo", 7, 10)
+        transport._checks("example/repo", 7, hang_guard_s())
 
 
 def test_every_outcome_has_an_explicit_exit_mapping() -> None:
@@ -944,10 +945,11 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
         "--expected-head",
         HEAD,
         "--timeout-seconds",
-        "5",
+        str(hang_guard_s()),
         "--producer-registration-grace-seconds",
-        "5",
+        str(hang_guard_s()),
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        timeout=2 * hang_guard_s(),
     )
 
     lines = result.stdout.splitlines()
@@ -1002,10 +1004,11 @@ def test_cli_reports_bounded_missing_check_evidence(tmp_path: Path) -> None:
         "--expected-head",
         HEAD,
         "--timeout-seconds",
-        "5",
+        str(hang_guard_s()),
         "--producer-registration-grace-seconds",
-        "5",
+        str(hang_guard_s()),
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        timeout=2 * hang_guard_s(),
     )
 
     lines = result.stdout.splitlines()
@@ -1115,18 +1118,21 @@ def test_cancel_terminates_active_child_process() -> None:
 
     def run_child() -> None:
         try:
-            transport._run(["-c", "import time; time.sleep(30)"], 20, accepted={0})
+            transport._run(
+                ["-c", f"import time; time.sleep({4 * hang_guard_s()})"],
+                2 * hang_guard_s(),
+                accepted={0},
+            )
         except watch_pr.CancelledWatchError as error:
             errors.append(error)
 
     worker = threading.Thread(target=run_child)
     worker.start()
-    for _ in range(100):
-        if transport._active is not None:
-            break
+    poll_deadline = time.monotonic() + hang_guard_s()
+    while transport._active is None and time.monotonic() < poll_deadline:
         time.sleep(0.01)
     transport.cancel()
-    worker.join(timeout=2)
+    worker.join(timeout=hang_guard_s())
 
     assert not worker.is_alive()
     assert errors and isinstance(errors[0], watch_pr.CancelledWatchError)
@@ -1146,6 +1152,7 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
         "elif sys.argv[1] == 'api':\n"
         "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n",
     )
+    # The test drives this Popen itself (SIGTERM, communicate).
     process = subprocess.Popen(
         [
             "python3",
@@ -1159,9 +1166,9 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
             "--expected-head",
             HEAD,
             "--timeout-seconds",
-            "120",
+            str(4 * hang_guard_s()),
             "--producer-registration-grace-seconds",
-            "60",
+            str(2 * hang_guard_s()),
         ],
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
         stdout=subprocess.PIPE,
@@ -1173,7 +1180,7 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
     time.sleep(0.2)
 
     process.send_signal(signal.SIGTERM)
-    stdout, stderr = process.communicate(timeout=2)
+    stdout, stderr = process.communicate(timeout=hang_guard_s())
 
     assert stderr == ""
     assert process.returncode == 143

@@ -41,7 +41,7 @@ import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, NamedTuple
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
@@ -71,29 +71,20 @@ class WorkRootLeaseError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# CAPI2 file-type mapping
+# File entries
 # ---------------------------------------------------------------------------
 
-# Suffix → CAPI2 file_type. Mirrors the file kinds Booley's built-ins handle;
-# unknown suffixes fall through to ``user`` (carried but untyped by Edalize).
-_FILE_TYPE_BY_SUFFIX: dict[str, str] = {
-    ".sv": "systemVerilogSource",
-    ".svh": "systemVerilogSource",
-    ".v": "verilogSource",
-    ".vh": "verilogSource",
-    ".vlt": "vlt",  # Verilator waiver/config file
-    ".c": "cSource",
-    ".cc": "cppSource",
-    ".cpp": "cppSource",
-    ".sdc": "SDC",
-    ".xdc": "xdc",
-    ".tcl": "tclSource",
-}
 
+class EdamFile(NamedTuple):
+    """One EDAM file entry: a path and the CAPI2 ``file_type`` its ``.core`` declares.
 
-def file_type_for(path: Path | str) -> str:
-    """Return the CAPI2 ``file_type`` for *path* by suffix."""
-    return _FILE_TYPE_BY_SUFFIX.get(Path(path).suffix.lower(), "user")
+    The type comes from the Target, never from the file name, so a
+    ``systemVerilogSource`` file named ``*.v`` still reaches the EDA tool as
+    SystemVerilog.
+    """
+
+    path: Path
+    file_type: str
 
 
 # ---------------------------------------------------------------------------
@@ -155,10 +146,6 @@ def _validate_flow_options(flow: str, flow_options: dict[str, Any]) -> dict[str,
         raise EdamSecurityError(
             f"flow_options keys {sorted(bad)} not permitted for flow {flow!r}; "
             f"allowed: {sorted(allowed)}"
-        )
-    if "tool" not in flow_options:
-        raise EdamSecurityError(
-            f"flow_options for flow {flow!r} must name the upstream Edalize 'tool' field"
         )
     return dict(flow_options)
 
@@ -277,7 +264,7 @@ def _sanitize_name(name: str) -> str:
 def build_edam(
     *,
     name: str,
-    files: list[Path | str],
+    files: list[EdamFile],
     toplevel: str,
     eda_tool: str,
     workspace_root: Path | str,
@@ -293,8 +280,8 @@ def build_edam(
 
     Args:
         name: Design/EDAM name (sanitized to an identifier).
-        files: Source files (``.sv``/``.v``/...); each is confined to the
-            workspace and typed by suffix.
+        files: Source and constraint files with their declared CAPI2 types;
+            each is confined to the workspace.
         toplevel: Top module name.
         eda_tool: EDA tool selected through Edalize
             (``verilator``/``icarus``/``yosys``/``vivado``).
@@ -327,8 +314,8 @@ def build_edam(
     for f in files:
         file_entries.append(
             {
-                "name": _confined_path(Path(f), root, rel),
-                "file_type": file_type_for(f),
+                "name": _confined_path(f.path, root, rel),
+                "file_type": f.file_type,
             }
         )
     for inc in include_dirs or []:
@@ -496,21 +483,11 @@ def relpath_for_make(work_root: Path | str, work_dir: Path | str) -> str:
     return posix_relpath(Path(work_root).resolve(), Path(work_dir).resolve())
 
 
-def make_command(
-    work_root: Path | str,
-    *,
-    target: str | None = None,
-    make_vars: dict[str, str] | None = None,
-) -> list[str]:
+def make_command(work_root: Path | str) -> list[str]:
     """Build the ``make`` command that drives an Edalize work dir.
 
     Edalize's ``configure()`` emits a Makefile whose default target builds and
     whose ``run`` target runs. Booley executes this command locally inside the
     Sandbox.
     """
-    cmd = ["make", "-C", str(work_root)]
-    if target:
-        cmd.append(target)
-    for key, value in (make_vars or {}).items():
-        cmd.append(f"{key}={value}")
-    return cmd
+    return ["make", "-C", str(work_root)]

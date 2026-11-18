@@ -10,7 +10,6 @@ from tests.subprocess_budget import run_bounded_child
 from booley.runtime.project_gitignore import (
     PROJECT_GITIGNORE,
     PROJECT_GITIGNORE_PATTERNS,
-    REINCLUDES,
     missing_gitignore_patterns,
 )
 
@@ -38,11 +37,7 @@ def test_fixture_project_gitignore_is_reconciled_by_init(gitignore: Path, tmp_pa
     assert missing_gitignore_patterns(copied.read_text(encoding="utf-8")) == []
 
 
-def test_every_reinclude_follows_the_pattern_it_overrides() -> None:
-    for reinclude, overridden in REINCLUDES.items():
-        assert PROJECT_GITIGNORE_PATTERNS.index(overridden) < PROJECT_GITIGNORE_PATTERNS.index(
-            reinclude
-        )
+def test_the_policy_reports_nothing_missing_from_itself() -> None:
     assert missing_gitignore_patterns(PROJECT_GITIGNORE) == []
 
 
@@ -82,9 +77,6 @@ def verbose_ignore(tmp_path, isolated_git_attributes):
     [
         ("logs/authored.txt", "/logs/"),
         ("cores/logs/authored.txt", None),
-        ("goals/g1/record.json", "goals/*/"),
-        ("goals/history/kept.md", None),
-        ("goals/history/tmp/state.json", "tmp/"),
         ("foo/__pycache__/a.pyc", "__pycache__/"),
         ("foo/a.pyc", "*.pyc"),
         ("cores/runtime/state.json", "runtime/"),
@@ -126,7 +118,7 @@ def test_responsible_order_matches_verbose_git(
 
 
 def _old_policy_checkouts(tmp_path, paired):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = tmp_path / "rtl"
     root.mkdir()
@@ -167,7 +159,7 @@ def _old_policy_checkouts(tmp_path, paired):
 
 @pytest.mark.parametrize("paired", [False, True])
 def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypatch, paired):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     from booley.core.models import AgentResult
     from booley.harness import init_cmd
@@ -205,7 +197,6 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
     )
     assert result.exit_code == 0, result.outcome.report_text
     assert list(selected_dir.glob("mcp-tool-reports/**/report.json"))
-    # Reviewer state is Common Booley State: it lives in the main checkout's directory (#2603).
-    assert list(directory.glob("reviewer-state/**/*"))
+    assert not (directory / "reviewer-state").exists()
     assert git(worktree, "status", "--porcelain") == ""
     assert git(policy_owner, "status", "--porcelain") == ""

@@ -16,8 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import tomlkit
-
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_int, require_list
 from booley.core.egress_modes import EGRESS_MODES
 from booley.core.user_paths import config_dir
@@ -123,6 +121,10 @@ def plan_host_egress(mode: str, path: Path | None = None) -> HostEgressChange:
         return HostEgressChange(resolved, mode, mode, None)
     if resolved.is_symlink():
         raise HostConfigError(resolved, "", "refusing to edit symlinked host config")
+    # Lazy: only this rare edit needs tomlkit, and importing it here keeps it off the
+    # import graph of the Sandbox registrar and MCP server (see booley.runtime.mcp_config).
+    import tomlkit
+
     edited = tomlkit.parse(text)
     if "sandbox" in edited:
         edited["sandbox"]["egress"] = mode  # type: ignore[index]

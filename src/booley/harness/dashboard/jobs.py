@@ -1,29 +1,31 @@
-"""Dashboard Job history, Goal metadata validation and Target display enrichment."""
+"""Dashboard Job history and Target display enrichment."""
 
 from __future__ import annotations
 
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
+from typing import NamedTuple
 
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
 from booley.core.boundary import as_dict, as_float
-from booley.goals.binding import GoalBindingError, GoalRunBinding
-from booley.goals.model import GoalRecord
-from booley.goals.paths import record_paths
-from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
+from booley.harness.standalone_job import (
+    standalone_jobs_dir,
+    standalone_log_path,
+    standalone_transcript_dir,
+)
 from booley.runtime import job_records
 from booley.runtime.handles import HandleStore, job_handle_expired
 from booley.runtime.job_observation import JobObservation, JobObserver
+from booley.runtime.timefmt import parse_timestamp
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 MAX_INTERACTIVE_ROOTS = 64
-# History selection has its own enumeration bound, independent of record projection.
-MAX_SCANNED_INTERACTIVE_ROOTS = 4096
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
+# An orphaned process is known dead even though its Job record never finalized.
+FINISHED_JOB_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ class JobView(JobObservation):
     owner_handle: str = ""
     # ``job.log`` of a Standalone or MCP Job, when it is a regular file.
     log_path: str = ""
+    # A detached Specialist's transcript directory, when it is a real directory.
+    transcript_dir: str = ""
 
     @property
     def recorded_resources(self) -> tuple[float, float] | None:
@@ -76,46 +80,31 @@ class JobSnapshot:
     diagnostics: tuple[str, ...] = ()
 
 
-def retained_job_roots(
-    booley_dir: Path, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
-) -> tuple[Path, ...]:
-    """Interactive roots and every retained Goal, including finished/abandoned records.
+class RetainedRoots(NamedTuple):
+    """Job roots split by what is read from them."""
 
-    Ordered by what a bounded scan must not lose: the caller's interactive
-    root, then every Goal Record, then older interactive sessions newest first.
+    # Finished-Job history is read from these: the caller's root, then the newest sessions.
+    history: tuple[Path, ...]
+    # Every other session root, newest first: only its unfinished Jobs are read.
+    older: tuple[Path, ...]
+
+
+def retained_job_roots(booley_dir: Path, *, interactive_root: Path | None = None) -> RetainedRoots:
+    """Interactive roots: the caller's own root and the newest sessions, then the rest.
+
+    Ordered by what a bounded scan must not lose. Every session root is statted once.
     """
     roots = [] if interactive_root is None else [interactive_root]
-    from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
-
-    roots.extend(record_paths(booley_dir, rec.id).jobs_dir for rec in records)
-    for family in BASELINE_FAMILIES:
-        baseline = baseline_jobs_dir(booley_dir, family)
-        if baseline.is_dir():
-            roots.append(baseline)
-    history = []
-    for path in islice(
-        booley_dir.glob(f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs"),
-        MAX_SCANNED_INTERACTIVE_ROOTS,
-    ):
+    sessions = []
+    for path in booley_dir.glob(f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs"):
         try:
-            history.append((path.stat().st_mtime_ns, path))
+            sessions.append((path.stat().st_mtime_ns, path))
         except OSError:
             continue
-    roots.extend(
-        path
-        for _, path in sorted(history, key=lambda item: item[0], reverse=True)[
-            :MAX_INTERACTIVE_ROOTS
-        ]
-    )
-    return tuple(dict.fromkeys(roots))
-
-
-def _validate_goal_binding(record: job_records.JobRecord) -> None:
-    if record.binding is not None:
-        try:
-            GoalRunBinding.from_json(record.binding)
-        except GoalBindingError as exc:
-            raise ValueError(str(exc)) from exc
+    newest_first = [path for _, path in sorted(sessions, key=lambda item: item[0], reverse=True)]
+    history = dict.fromkeys((*roots, *newest_first[:MAX_INTERACTIVE_ROOTS]))
+    older = (path for path in newest_first[MAX_INTERACTIVE_ROOTS:] if path not in history)
+    return RetainedRoots(tuple(history), tuple(older))
 
 
 class JobReader:
@@ -133,20 +122,25 @@ class JobReader:
             booley_dir,
             slots_root=slots_root,
             proc_root=proc_root,
-            validate_record=_validate_goal_binding,
         )
 
     def read(
         self,
-        records: Sequence[GoalRecord],
         *,
         interactive_root: Path | None = None,
         session_handles: dict[str, str] | None = None,
         now: float | None = None,
+        artifact_roots: Sequence[Path] = (),
     ) -> JobSnapshot:
-        """Reuse the Goal enumeration that supplied this Dashboard refresh."""
-        roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
-        observed = self._observer.read(roots)
+        """Read the retained Job history and every unfinished Job into one display snapshot.
+
+        Reports are also found under *artifact_roots* (a checkout's own Booley
+        Directory outside the Main Booley Directory).
+        """
+        roots = retained_job_roots(self._booley_dir, interactive_root=interactive_root)
+        observed = self._observer.read(
+            roots.history, unfinished_roots=roots.older, artifact_roots=artifact_roots
+        )
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
         owners, owner_diagnostics = (
@@ -175,11 +169,13 @@ def _job_view(
     record = job.record
     state = job.state
     log_path = job_records.job_log_path(record.run_id, job.root)
+    transcript_dir: Path | None = None
     if job.root == standalone:
         # A Standalone Job has no supervisor: its dead process is a failed run,
         # and its log lives under the human-facing standalone log root.
         state = "failed" if state == "orphaned" else state
         log_path = standalone_log_path(booley_dir, record.run_id)
+        transcript_dir = standalone_transcript_dir(booley_dir, record.run_id)
     handle = handles.get(record.run_id, "")
     owner_handle = owners.get(record.session_key or "", "")
     if not handle and job_handle_expired(record, now):
@@ -195,19 +191,43 @@ def _job_view(
         stage=job.stage,
         diagnostic=job.diagnostic,
         artifacts=job.artifacts,
+        queue=job.queue,
+        queue_position=job.queue_position,
         eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
         owner_handle=owner_handle,
-        log_path=_job_log(log_path),
+        log_path=_linkable(log_path, directory=False),
+        transcript_dir=_linkable(transcript_dir, directory=True),
     )
 
 
-def _job_log(path: Path | None) -> str:
-    """Absolute ``job.log`` path when it is a regular file outside any symlink, else ``""``."""
+def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
+    """Extract an interval, freezing terminal Jobs even without an end stamp."""
+    if job.state in TERMINAL_JOB_STATES and not job.record.ended_at:
+        reported = as_float((job.report or {}).get("elapsed_s"))
+        return reported if reported is not None and reported >= 0 else None
+    try:
+        start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
+        end = (
+            parse_timestamp(job.record.ended_at).timestamp()
+            if job.record.ended_at
+            else (time.time() if now is None else now)
+        )
+        return max(0, end - start)
+    except ValueError:
+        return None
+
+
+def _linkable(path: Path | None, *, directory: bool) -> str:
+    """Absolute *path* when a regular file (or a directory) that is no symlink, else ``""``.
+
+    Neither *path* nor its parent may be a symlink.
+    """
     if path is None:
         return ""
     try:
-        if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+        exists = path.is_dir() if directory else path.is_file()
+        if path.parent.is_symlink() or path.is_symlink() or not exists:
             return ""
     except OSError:
         return ""

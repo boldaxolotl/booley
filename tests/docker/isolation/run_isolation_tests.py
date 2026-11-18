@@ -6,6 +6,13 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+# The CI step runs this on the runner's bare Python, where ``booley`` is not installed;
+# the shared time-budget policy imports it, so put the source tree on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
+
+from tests.time_budget import hang_guard_s
 
 from .container_names import next_ci_container_name
 
@@ -14,6 +21,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 IMAGE = "booley-sandbox"
+# Hang guard for one command: a timeout makes assert_ok fail, nothing asserts it expires.
+_HANG_S = hang_guard_s()
 BASE_FLAGS = [
     "docker",
     "run",
@@ -44,13 +53,14 @@ def red(msg: str) -> None:
     print(f"\033[31m✗ {msg}\033[0m")
 
 
-def run(cmd_str: str, timeout: int = 30) -> tuple[int, str]:
+def run(cmd_str: str, timeout: int = _HANG_S) -> tuple[int, str]:
     command = list(BASE_FLAGS)
     container_name = next_ci_container_name()
     if container_name:
         command += ["--name", container_name]
     command += [IMAGE, "bash", "-c", cmd_str]
     try:
+        # Unbounded child: standalone script outside pytest; it maps the timeout to a TIMED OUT result itself
         r = subprocess.run(
             command,
             capture_output=True,

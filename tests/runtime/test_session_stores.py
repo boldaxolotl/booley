@@ -7,19 +7,21 @@ import json
 import ntpath
 import os
 import posixpath
+import re
+import shlex
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
-from booley.core import private_store
+from booley.core import host_shell, private_store
 from booley.runtime import (
     issuance_invalidation,
     session_admission,
     session_issuance,
-    session_refresh,
 )
+from booley.runtime.private_store import session_store_repair
 
 if TYPE_CHECKING:
     from booley.core.private_store import ProjectStore
@@ -29,7 +31,6 @@ if TYPE_CHECKING:
 _FACTORIES = {
     "issuance": (session_issuance, "stamp_store"),
     "admission": (session_admission, "claim_store"),
-    "refresh": (session_refresh, "journal_store"),
     "invalidation": (issuance_invalidation, "journal_store"),
 }
 STORE_NAMES = list(_FACTORIES)
@@ -57,7 +58,6 @@ def _scan_through_entry_point(name: str, project: Path) -> Callable[[], object]:
     entry_points: dict[str, Callable[[], object]] = {
         "issuance": lambda: _store("issuance").scan(),
         "admission": lambda: session_admission.has_pending_claim(project),
-        "refresh": session_refresh.pending_refresh_projects,
         "invalidation": issuance_invalidation.pending_invalidations,
     }
     return entry_points[name]
@@ -104,6 +104,22 @@ def test_store_scan_rejects_symlinked_entry(project: Path, tmp_path: Path) -> No
         link.unlink()
 
 
+def test_session_store_repair_command_parses_back_to_the_project_root(tmp_path: Path) -> None:
+    root = str(tmp_path / "My Project's root")
+
+    message = session_store_repair(tmp_path / "store.json", root)
+
+    command = re.search(r"`([^`]+)`", message)
+    assert command is not None
+    if os.name == "nt":  # PowerShell: single-quoted literals, '' for a quote
+        words = [
+            a.replace("''", "'") or b for a, b in re.findall(r"'((?:[^']|'')*)'|(\S+)", command[1])
+        ]
+    else:
+        words = shlex.split(command[1])
+    assert words == ["booley", "init", "--seed", "--project", root]
+
+
 def test_store_names_project_root_by_platform_case_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     upper, mixed = "C:\\Work\\Project", "c:\\work\\PROJECT"
     # Capture first: on POSIX the patch target is posixpath itself.
@@ -125,8 +141,7 @@ def test_old_windows_rule_file_fails_closed_naming_file_and_repair(
     monkeypatch.setattr(private_store.os.path, "normcase", ntpath.normcase)
     root = str(project)
     reads: dict[str, Callable[[], object]] = {
-        "issuance": lambda: session_issuance.recovery_stamp_path(project),
-        "refresh": lambda: session_refresh.has_pending_refresh(project),
+        "issuance": lambda: session_issuance.stamp_store().locate(root),
         "invalidation": lambda: issuance_invalidation.has_pending(project),
     }
     for name, read in reads.items():
@@ -139,7 +154,7 @@ def test_old_windows_rule_file_fails_closed_naming_file_and_repair(
 
         message = str(caught.value)
         assert str(old) in message
-        assert f"booley init --seed --project {root}" in message
+        assert f"booley init --seed --project {host_shell.quote_arg(root)}" in message
         assert old.exists()
 
 

@@ -283,7 +283,7 @@ def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -
 
     Argument order is significant (it is the simulator's argument order);
     environment key order is not. The encoding is the canonical JSON the
-    Simulation Campaign uses (``document_digest``), reproduced here because this
+    Simulation Record uses (``document_digest``), reproduced here because this
     module is pure domain policy and imports no Flow module; a test pins that
     both produce the same digest.
     """
@@ -414,7 +414,7 @@ def _record_args(value: object) -> tuple[str, ...]:
     items = list(cast("tuple[object, ...]", value)) if isinstance(value, tuple) else value
     if not is_str_list(items):
         raise TestRunNameError("Test Run record args must be a list of strings")
-    return tuple(cast("list[str]", items))
+    return tuple(items)
 
 
 def _record_env(value: object) -> dict[str, str]:

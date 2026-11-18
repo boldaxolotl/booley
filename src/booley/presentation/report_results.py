@@ -1,7 +1,6 @@
 """Pure, bounded human projections of Flow reports and approval evidence.
 
-Execution success is independent of Criterion satisfaction. The same immutable
-presentation can be consumed by detail panes and other observational surfaces.
+The same immutable presentation can be consumed by detail panes and other observational surfaces.
 """
 
 from __future__ import annotations
@@ -19,8 +18,10 @@ from booley.core.exit_codes import (
 
 _ROW_LIMIT = 24
 _ITEM_LIMIT = 5
+# Headline for a Simulation report an older Booley wrote; matches the Flow's refusal in wording only.
+_OLDER_SIMULATION_REPORT = "written by an older Booley; no longer supported"
 # Endpoints whose reports are Flow reports; any other endpoint is an MCP tool.
-_FLOW_ENDPOINTS = frozenset({"sim", "lint", "synth", "fpga"})
+_FLOW_ENDPOINTS = frozenset({"sim", "lint", "synth", "fpga", "mutation"})
 
 
 @dataclass(frozen=True)
@@ -34,11 +35,10 @@ class ResultLine:
 
 @dataclass(frozen=True)
 class ReportPresentation:
-    """Independent execution and acceptance results plus compact report facts."""
+    """The execution result plus compact report facts."""
 
     flow_result: ResultLine
     flow_word: ResultLine
-    criterion: ResultLine | None
     execution: ResultLine
     result_rows: tuple[ResultLine, ...]
 
@@ -132,8 +132,8 @@ _BAD_EXECUTION = {
 }
 
 
-def _campaign_failure_count(campaign: Mapping[str, object], preview: int) -> int:
-    counts = _mapping(campaign.get("observation_counts"))
+def _simulation_record_failure_count(simulation_record: Mapping[str, object], preview: int) -> int:
+    counts = _mapping(simulation_record.get("observation_counts"))
     # Axes overlap; the largest marginal count is a lower bound, never their sum.
     bad = {
         "functional": ("fail", "inconclusive", "not_observed"),
@@ -149,8 +149,8 @@ def _campaign_failure_count(campaign: Mapping[str, object], preview: int) -> int
     )
 
 
-def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
-    observations = [_mapping(item) for item in _sequence(campaign.get("observations"))]
+def _simulation_record_failures(simulation_record: Mapping[str, object]) -> list[ResultLine]:
+    observations = [_mapping(item) for item in _sequence(simulation_record.get("observations"))]
     failures = [
         row
         for row in observations
@@ -169,10 +169,10 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
                 "fail",
             )
         )
-    total = _campaign_failure_count(campaign, len(failures))
+    total = _simulation_record_failure_count(simulation_record, len(failures))
     if total > len(rows):
         rows.append(_row("  Failures", f"at least {total - len(rows)} more failures in report"))
-    if campaign.get("observations_truncated") or total > len(failures):
+    if simulation_record.get("observations_truncated") or total > len(failures):
         rows.append(
             _row("  Observations", "truncated preview; full report has remaining observations")
         )
@@ -184,8 +184,8 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
     return rows
 
 
-def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
-    targets = _targets(detail.get("campaigns"))
+def _simulation_records(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
+    targets = _targets(detail.get("records"))
     counts = [_counts(_functional(row)) for _, row in targets]
     known = [count for count in counts if count is not None]
     total = (
@@ -203,7 +203,7 @@ def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         )
     rows.extend(_more_targets(targets))
     for name, row in targets[:_ITEM_LIMIT]:
-        for fact in _campaign_failures(row):
+        for fact in _simulation_record_failures(row):
             label = f"  {name} · {fact.label.strip()}" if len(targets) > 1 else fact.label
             rows.append(ResultLine(label, fact.value, fact.semantic))
     grades = [literal(row.get("grade")) for _, row in targets]
@@ -241,17 +241,26 @@ def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         )
         rows.append(_row(f"  {name}", " · ".join(facts), semantic))
     rows.extend(_more_targets(targets))
-    if _mapping(detail.get("campaigns")):
-        headline, supplementary = _campaigns(detail)
-        rows.extend([_row("Campaign simulation", headline), *supplementary])
+    if _mapping(detail.get("records")):
+        headline, supplementary = _simulation_records(detail)
+        rows.extend([_row("Simulation Record", headline), *supplementary])
     return f"Coverage: {met}/{len(targets)} Targets met", rows
 
 
 def _simulation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
+    if not _mapping(detail.get("records")) and _mapping(detail.get("campaigns")):
+        # Booley 0.4.0 wrote ``detail.campaigns``; say so rather than render it as a result.
+        return _OLDER_SIMULATION_REPORT, [
+            _row(
+                "Result",
+                "delete its Simulation invocation directory and start a fresh run",
+                "attention",
+            )
+        ]
     if detail.get("coverage") is True and _targets(detail.get("targets")):
         return _coverage(detail)
-    if _mapping(detail.get("campaigns")):
-        return _campaigns(detail)
+    if _mapping(detail.get("records")):
+        return _simulation_records(detail)
     if literal(detail.get("mode")).replace("_", "-").startswith("elab-only"):
         targets = _targets(detail.get("targets"))
         passed = sum(row.get("passed") is True for _, row in targets)
@@ -295,6 +304,8 @@ def _legacy_simulation(detail: Mapping[str, object]) -> tuple[str, list[ResultLi
 _METRICS = {
     "area_kge": "Area",
     "area_um2": "Area µm²",
+    "cell_count": "Cells",
+    # Synth reports written by v0.4.0 and earlier name the field `cells`.
     "cells": "Cells",
     "wns_ns": "WNS",
     "whs_ns": "Hold slack",
@@ -303,6 +314,7 @@ _METRICS = {
     "reg2reg_fmax_mhz": "Register Fmax",
     "latches": "Latches",
     "unexpected_latches": "Unexpected latches",
+    "unexpected_comb_loops": "Unexpected combinational loops",
     "lut_count": "LUTs",
     "ff_count": "FFs",
     "bram_count": "BRAMs",
@@ -417,7 +429,7 @@ def _mutation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     )
     rows = _fields(
         detail,
-        {"not_detected": "Not detected", "invalid": "Invalid", "min_detected": "Minimum detected"},
+        {"not_detected": "Not detected", "min_detected": "Minimum detected"},
     )
     survivors = _sequence(detail.get("survivors"))
     classified = [_mapping(item) for item in _sequence(detail.get("classified"))]
@@ -491,8 +503,8 @@ def _report_rows(report: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         return _lint(detail)
     if endpoint == "reviewer":
         return _review(detail, mode)
-    specialist = {"mutation_tester": _mutation, "coverage_analyst": _analysis}.get(str(endpoint))
-    return specialist(detail) if specialist is not None else ("", [])
+    renderer = {"mutation": _mutation, "coverage_analyst": _analysis}.get(str(endpoint))
+    return renderer(detail) if renderer is not None else ("", [])
 
 
 def _fallback(report: Mapping[str, object]) -> list[ResultLine]:
@@ -554,22 +566,19 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
     """Project producer-owned report fields without IO, UI objects, or inference."""
     headline, rows = _report_rows(report)
     code = as_int(report.get("exit_code"))
-    word, semantic = {
-        EXIT_SUCCESS: ("PASSED", "pass"),
-        EXIT_FAILURE: ("FAILED", "fail"),
-        EXIT_ERROR: ("ERROR", "attention"),
-        EXIT_CANCELLED: ("CANCELLED", "unknown"),
-    }.get(code, ("unavailable", "unknown"))
+    unavailable = ("unavailable", "unknown")
+    word, semantic = (
+        {
+            EXIT_SUCCESS: ("PASSED", "pass"),
+            EXIT_FAILURE: ("FAILED", "fail"),
+            EXIT_ERROR: ("ERROR", "attention"),
+            EXIT_CANCELLED: ("CANCELLED", "unknown"),
+        }.get(code, unavailable)
+        if code is not None
+        else unavailable
+    )
     if code == EXIT_SUCCESS:
         word, semantic = _success_result(report)
-    raw_key = report.get("criterion_key")
-    key = literal(raw_key).strip() if isinstance(raw_key, str) else ""
-    met = report.get("criterion_met")
-    criterion = (
-        _row("Criterion", f"{key} · {'met' if met else 'not met'}", "met" if met else "fail")
-        if key and isinstance(met, bool)
-        else None
-    )
     rows.extend(_fields(report, {**_METRICS, "failure_reason": "Failure reason"}))
     if not headline and not rows:
         rows = _fallback(report)
@@ -577,7 +586,6 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
     return ReportPresentation(
         flow_result,
         _row("Flow result", word, semantic),
-        criterion,
         _row("Execution", f"exit {code if code is not None else 'unavailable'}"),
         _cap(rows),
     )
@@ -603,7 +611,7 @@ _FACT_LABELS = {
     "at": "At",
     "target_selector": "Target selector",
     "target_identity": "Target identity",
-    "campaign_path": "Campaign path",
+    "campaign_path": "Coverage Record path",
     "point_id": "Point",
     "justification": "Justification",
     "proof_reference": "Proof reference",
@@ -652,7 +660,7 @@ _CONTAINERS = {
     "policy",
     "decision",
     "targets",
-    "campaigns",
+    "records",
     "metrics",
     "conditions",
     "scope",
@@ -703,7 +711,7 @@ def _fact_rows(data: Mapping[str, object], rows: list[ResultLine], *, depth: int
 
 def _container_facts(key: str, value: object, rows: list[ResultLine], *, depth: int) -> None:
     if isinstance(value, Mapping):
-        if key in {"targets", "campaigns", "per_clock"}:
+        if key in {"targets", "records", "per_clock"}:
             for name, target in list(value.items())[:_ITEM_LIMIT]:
                 rows.append(_row("Clock" if key in {"per_clock"} else "Target", name))
                 _fact_rows(_mapping(target), rows, depth=depth + 1)

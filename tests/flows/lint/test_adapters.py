@@ -35,7 +35,7 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[3] / "src"))
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
 
-    cli_result = LintFlow().execute_cli(["--target", "missing", "--diagnostic"])
+    cli_result = LintFlow().execute_cli(["--target", "missing"])
 
     diagnostic = "lint Target selection failed: Unknown target 'missing'; selectable Targets: (none authored)"
     assert cli_result.outcome.report_text == diagnostic
@@ -52,7 +52,6 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
             "type": "object",
             "properties": {
                 "target": {"type": "string"},
-                "diagnostic": {"type": "boolean"},
             },
             "required": ["target"],
             "additionalProperties": False,
@@ -63,12 +62,14 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
         "is_specialist": False,
         "default_timeout": 60,
     }
+    # No public function builds the MCP application without starting the stdio
+    # server, so this reaches the same in-process application `main()` serves.
     application = mcp_server._build_mcp_application(
         [definition],
         [],
         mcp_server._McpLifetime(None, None),
     )
-    mcp_result = await application.call_tool("lint", {"target": "missing", "diagnostic": True})
+    mcp_result = await application.call_tool("lint", {"target": "missing"})
 
     assert cli_result.exit_code == EXIT_ERROR
     assert mcp_result.structured_content is not None

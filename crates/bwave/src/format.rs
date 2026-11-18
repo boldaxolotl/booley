@@ -201,65 +201,195 @@ pub fn parse_radix_suffix(s: &str) -> Result<(String, Radix), String> {
 }
 
 /// Parse a Verilog-style literal: "'d255" → "FF", "'b11111111" → "FF", "'hFF" → "FF".
-/// Optional width prefix: "8'd255" also accepted.
+/// Optional decimal width prefix: "8'd255" also accepted.
 /// Also accepts a bare decimal integer: "0", "1", "255" → "0", "1", "FF".
 /// Bare hex-looking strings (e.g. "FF", "C1C") are rejected with a hint.
-/// Returns normalized uppercase hex.
-pub fn parse_verilog_literal(s: &str) -> Result<String, String> {
-    let tick_pos = match s.find('\'') {
-        Some(p) => p,
-        None => {
-            // No tick: accept bare decimal integer (digits only).
-            if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
-                return Ok(decimal_to_hex(s));
-            }
-            return Err(format!(
-                "bare value '{}' is decimal-only; use 'hXX for hex, 'bNN for binary, or 'dNNN for decimal",
-                s
+/// Digits per base: hex `0-9 a-f x z`, binary `0 1 x z`, decimal `0-9` or a
+/// single `x`/`z`. `_` may follow the first digit and is ignored. Any other
+/// character is an error naming the literal as typed.
+/// Returns the literal as typed, its normalized uppercase hex (X/Z kept as
+/// `X`/`Z`) and its width prefix.
+pub fn parse_verilog_literal(s: &str) -> Result<VerilogLiteral, String> {
+    let hex = parse_literal_hex(s)?;
+    let width = s
+        .find('\'')
+        .and_then(|tick_pos| s[..tick_pos].parse::<u32>().ok());
+    Ok(VerilogLiteral {
+        text: s.to_string(),
+        hex,
+        width,
+    })
+}
+
+/// A parsed Verilog value literal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerilogLiteral {
+    /// The literal as the user typed it.
+    pub text: String,
+    /// Normalized uppercase hex (X/Z kept as `X`/`Z`).
+    pub hex: String,
+    /// The width prefix; `None` when absent or not a `u32`.
+    pub width: Option<u32>,
+}
+
+fn plural_bits(n: u32) -> String {
+    format!("{n} bit{}", if n == 1 { "" } else { "s" })
+}
+
+impl VerilogLiteral {
+    /// Bits the value needs, without leading zeros (0 needs none). `None`
+    /// when the literal has X or Z digits.
+    pub fn bits(&self) -> Option<u32> {
+        if contains_xz(&self.hex) {
+            return None;
+        }
+        let digits = self.hex.trim_start_matches('0');
+        let Some(first) = digits.bytes().next() else {
+            return Some(0);
+        };
+        let top = (first as char).to_digit(16)?;
+        let rest = u32::try_from(digits.len() - 1).unwrap_or(u32::MAX);
+        Some(
+            rest.saturating_mul(4)
+                .saturating_add(32 - top.leading_zeros()),
+        )
+    }
+
+    /// Bits and width when the value needs more bits than its own width prefix.
+    pub fn overflow(&self) -> Option<(u32, u32)> {
+        let (bits, width) = (self.bits()?, self.width?);
+        (bits > width).then_some((bits, width))
+    }
+
+    /// `needs <n> bits, more than its <w>-bit width` when the value overflows
+    /// its width prefix.
+    pub fn overflow_clause(&self) -> Option<String> {
+        let (bits, width) = self.overflow()?;
+        Some(format!(
+            "needs {}, more than its {width}-bit width",
+            plural_bits(bits)
+        ))
+    }
+
+    /// `needs <n> bits` clause, with the width-prefix overflow when present.
+    pub fn needs_clause(&self) -> Option<String> {
+        self.overflow_clause().or_else(|| {
+            self.bits()
+                .map(|bits| format!("needs {}", plural_bits(bits)))
+        })
+    }
+
+    /// `needs ...` clause followed by `and <tail>`.
+    pub fn needs_and(&self, tail: &str) -> Option<String> {
+        let joiner = if self.overflow().is_some() {
+            ", and"
+        } else {
+            " and"
+        };
+        Some(format!("{}{joiner} {tail}", self.needs_clause()?))
+    }
+
+    /// Warning for an event literal: it overflows its width prefix, or never
+    /// matches the `too_narrow` signals (name, width).
+    pub fn fit_warning(&self, too_narrow: &[(&str, u32)]) -> Option<String> {
+        if too_narrow.is_empty() {
+            let clause = self.overflow_clause()?;
+            return Some(format!(
+                "{} {clause}; it is compared untruncated",
+                self.text
             ));
         }
+        let names: Vec<String> = too_narrow
+            .iter()
+            .map(|(name, width)| format!("{name} ({width}-bit)"))
+            .collect();
+        let tail = format!("never matches {}", names.join(", "));
+        Some(format!("{} {}", self.text, self.needs_and(&tail)?))
+    }
+}
+
+fn parse_literal_hex(s: &str) -> Result<String, String> {
+    let Some(tick_pos) = s.find('\'') else {
+        // No tick: accept bare decimal integer (digits only).
+        if s.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            if let Ok(digits) = literal_digits(s, s) {
+                if digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Ok(decimal_to_hex(&digits));
+                }
+            }
+        }
+        return Err(format!(
+            "bare value '{}' is decimal-only; use 'hXX for hex, 'bNN for binary, or 'dNNN for decimal",
+            s
+        ));
     };
+    let invalid = |reason: String| format!("invalid Verilog literal '{s}': {reason}");
 
     let width_prefix = &s[..tick_pos];
-    if !width_prefix.is_empty() && !width_prefix.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("invalid width prefix in literal: {}", s));
+    if !width_prefix.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid("invalid width prefix".into()));
     }
-
-    if tick_pos + 1 >= s.len() {
-        return Err(format!("missing radix character after ': {}", s));
-    }
-
-    let radix = s.as_bytes()[tick_pos + 1];
-    let digits = &s[tick_pos + 2..];
-
-    if digits.is_empty() {
-        return Err(format!("missing value digits in literal: {}", s));
-    }
-
+    let mut after_tick = s[tick_pos + 1..].chars();
+    let Some(radix) = after_tick.next() else {
+        return Err(invalid("missing radix character after '".into()));
+    };
+    let digits = literal_digits(s, after_tick.as_str())?;
     match radix {
-        b'd' | b'D' => Ok(decimal_to_hex(digits)),
-        b'h' | b'H' => {
-            if digits.eq_ignore_ascii_case("x") {
-                return Ok("X".into());
-            }
-            if digits.eq_ignore_ascii_case("z") {
-                return Ok("Z".into());
-            }
-            Ok(digits.to_uppercase())
-        }
-        b'b' | b'B' => {
-            if digits.eq_ignore_ascii_case("x") {
-                return Ok("X".into());
-            }
-            if digits.eq_ignore_ascii_case("z") {
-                return Ok("Z".into());
-            }
-            bin_to_hex(digits).ok_or_else(|| format!("invalid binary value: {}", digits))
-        }
-        _ => Err(format!(
-            "invalid radix '{}' in literal: must be 'd, 'h, or 'b",
-            radix as char
-        )),
+        'd' | 'D' => decimal_digits_to_hex(&digits).map_err(invalid),
+        'h' | 'H' => match digits.bytes().find(|b| !is_hex_or_xz(*b)) {
+            Some(b) => Err(invalid(format!("'{}' is not a hex digit", b as char))),
+            None => Ok(digits.to_uppercase()),
+        },
+        'b' | 'B' => binary_digits_to_hex(&digits).map_err(invalid),
+        _ => Err(invalid(format!(
+            "invalid radix '{radix}' (use 'd, 'h or 'b)"
+        ))),
+    }
+}
+
+fn is_hex_or_xz(b: u8) -> bool {
+    b.is_ascii_hexdigit() || matches!(b, b'x' | b'X' | b'z' | b'Z')
+}
+
+/// Digits of a literal with `_` removed. Errors when there are none or when
+/// `_` comes first. `literal` is the whole literal, for the message.
+fn literal_digits(literal: &str, raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err(format!(
+            "invalid Verilog literal '{literal}': missing digits"
+        ));
+    }
+    if raw.starts_with('_') {
+        return Err(format!(
+            "invalid Verilog literal '{literal}': '_' cannot come first"
+        ));
+    }
+    Ok(raw.replace('_', ""))
+}
+
+/// Decimal digits (`0-9`), or exactly one `x`/`z`, as normalized hex.
+fn decimal_digits_to_hex(digits: &str) -> Result<String, String> {
+    if digits.eq_ignore_ascii_case("x") || digits.eq_ignore_ascii_case("z") {
+        return Ok(digits.to_uppercase());
+    }
+    if digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(decimal_to_hex(digits));
+    }
+    Err("decimal digits are 0-9 or a single x or z".into())
+}
+
+/// Binary digits (`0 1 x z`) as normalized hex. A value with X/Z digits is
+/// reduced like a stored value (`minimal_xz`), so `8'b0000001x` is `1X`.
+fn binary_digits_to_hex(digits: &str) -> Result<String, String> {
+    if let Some(b) = digits
+        .bytes()
+        .find(|b| !matches!(b, b'0' | b'1' | b'x' | b'X' | b'z' | b'Z'))
+    {
+        return Err(format!("'{}' is not a binary digit", b as char));
+    }
+    match bin_to_hex(digits) {
+        Some(hex) => Ok(hex),
+        None => Ok(crate::cache::minimal_xz(digits.to_lowercase()).to_uppercase()),
     }
 }
 
@@ -338,9 +468,6 @@ fn decimal_to_hex(dec: &str) -> String {
     let dec = dec.trim_start_matches('0');
     if dec.is_empty() {
         return "0".to_string();
-    }
-    if !dec.bytes().all(|b| b.is_ascii_digit()) {
-        return dec.to_string(); // not valid decimal
     }
     // Build big-integer as Vec<u8> of hex nibbles (LSB first).
     let mut nibbles: Vec<u8> = vec![0];
@@ -529,6 +656,9 @@ pub fn slice_bits(val: u128, msb: u32, lsb: u32) -> u128 {
     let width = msb - lsb + 1;
     if width >= 128 {
         return val;
+    }
+    if lsb >= 128 {
+        return 0;
     }
     let mask = (1u128 << width) - 1;
     (val >> lsb) & mask
@@ -828,13 +958,8 @@ impl TriggerMode {
 }
 
 /// Compare two values for equality (safe for x/z).
-/// Handles case-insensitive hex, leading zeros, binary targets, x/z containment.
-///
-/// **Precedence**: when the target is all 0s/1s and >1 char, it is tried as
-/// *binary first*, then hex. So `values_match("A", "10")` is true because
-/// binary 10 == decimal 2 != hex A... wait, no: A=10, bin "10"=2, so false.
-/// But `values_match("2", "10")` is true (binary "10" = 2). If you need hex
-/// interpretation, prefix with "0x" or use uppercase letters in the target.
+/// Handles case-insensitive hex, leading zeros and x/z containment. Both sides
+/// are hex strings; a target is never read as binary.
 fn contains_xz(s: &str) -> bool {
     s.bytes()
         .any(|b| b == b'x' || b == b'X' || b == b'z' || b == b'Z')
@@ -860,19 +985,17 @@ pub fn values_match(actual: &str, target: &str) -> bool {
     // String-based canonical comparison — safe for arbitrarily wide values.
     // Never parse into fixed-width integers (u64 silently truncates >64-bit signals).
 
-    // If target looks like binary (all 0/1, len>1), convert to hex and compare canonically
-    if target.len() > 1 && target.bytes().all(|b| b == b'0' || b == b'1') {
-        if let Some(target_hex) = bin_to_hex(target) {
-            return canonical_hex_eq(actual, &target_hex);
-        }
-    }
-
     // Both sides as hex: strip leading zeros, case-fold
     canonical_hex_eq(actual, target)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn issue_4698_slice_above_bit_127_of_a_small_value_is_zero() {
+        assert_eq!(super::slice_bits(0, 255, 248), 0);
+    }
+
     #[test]
     fn issue_1100_trigger_classification_and_observation() {
         use super::TriggerMode;
@@ -929,12 +1052,40 @@ mod tests {
     }
 
     #[test]
+    fn literal_bits_width_and_fit_warning() {
+        let lit = |s: &str| parse_verilog_literal(s).unwrap();
+        assert_eq!(lit("8'd300").bits(), Some(9));
+        assert_eq!(lit("'h1FF").width, None);
+        assert_eq!(lit("8'd300").width, Some(8));
+        assert_eq!(lit("'d0").bits(), Some(0));
+        assert_eq!(lit("'h0C1C").bits(), Some(12));
+        assert_eq!(lit("'h1").bits(), Some(1));
+        assert_eq!(lit("'hx").bits(), None);
+        assert_eq!(lit("'hx").fit_warning(&[("a", 1)]), None);
+        assert_eq!(lit("8'd1").fit_warning(&[]), None);
+        assert_eq!(lit("0'd1").overflow(), Some((1, 0)));
+        assert_eq!(
+            lit("0'd1").fit_warning(&[]).unwrap(),
+            "0'd1 needs 1 bit, more than its 0-bit width; it is compared untruncated"
+        );
+        assert_eq!(
+            lit("8'd300").fit_warning(&[("a", 8), ("b", 1)]).unwrap(),
+            "8'd300 needs 9 bits, more than its 8-bit width, and never matches a (8-bit), b (1-bit)"
+        );
+        assert_eq!(
+            lit("'h1FF").fit_warning(&[("a", 8)]).unwrap(),
+            "'h1FF needs 9 bits and never matches a (8-bit)"
+        );
+    }
+
+    #[test]
     fn test_values_match() {
         assert!(values_match("FF", "ff"));
         assert!(values_match("0A", "A"));
         assert!(!values_match("xxxx", "A"));
         assert!(values_match("X", "X"));
-        assert!(values_match("A", "00001010"));
+        assert!(!values_match("2", "10"));
+        assert!(values_match("10", "010"));
         assert!(values_match("ff", "FF"));
         assert!(values_match("aB", "ab"));
         assert!(values_match("0a", "0A"));
@@ -959,11 +1110,6 @@ mod tests {
     fn test_values_match_256bit_hex() {
         // 256-bit value: exceeds u64 range. Old code silently truncated.
         let hex256 = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
-        let bin256 = "1".repeat(256);
-        assert!(
-            values_match(hex256, &bin256),
-            "256-bit all-ones: hex vs binary should match"
-        );
         assert!(values_match(hex256, hex256), "256-bit hex self-match");
         // Leading zeros
         let hex256_padded = format!("0000{}", hex256);
@@ -971,31 +1117,6 @@ mod tests {
             values_match(&hex256_padded, hex256),
             "256-bit with leading zeros should match"
         );
-    }
-
-    #[test]
-    fn test_values_match_256bit_specific() {
-        // A specific 256-bit value that would be wrong with u64 truncation
-        let hex = "DEADBEEFCAFEBABE0123456789ABCDEF0011223344556677AABBCCDDEEFF0099";
-        let bin = format!(
-            "{}{}{}{}{}{}{}{}",
-            "11011110101011011011111011101111", // DEADBEEF
-            "11001010111111101011101010111110", // CAFEBABE
-            "00000001001000110100010101100111", // 01234567
-            "10001001101010111100110111101111", // 89ABCDEF
-            "00000000000100010010001000110011", // 00112233
-            "01000100010101010110011001110111", // 44556677
-            "10101010101110111100110011011101", // AABBCCDD
-            "11101110111111110000000010011001", // EEFF0099
-        );
-        assert!(values_match(hex, &bin), "specific 256-bit: hex vs binary");
-    }
-
-    #[test]
-    fn test_values_match_512bit() {
-        let hex512 = "A".repeat(128); // 512-bit value
-        let bin512 = "1010".repeat(128); // same value in binary
-        assert!(values_match(&hex512, &bin512), "512-bit match");
     }
 
     // ---- Regression: bin_to_hex wide values ----
@@ -1135,31 +1256,38 @@ mod tests {
 
     #[test]
     fn test_parse_verilog_literal() {
-        assert_eq!(parse_verilog_literal("'d255").unwrap(), "FF");
-        assert_eq!(parse_verilog_literal("'d0").unwrap(), "0");
-        assert_eq!(parse_verilog_literal("'b11111111").unwrap(), "FF");
-        assert_eq!(parse_verilog_literal("'hFF").unwrap(), "FF");
-        assert_eq!(parse_verilog_literal("'b10").unwrap(), "2");
-        assert_eq!(parse_verilog_literal("'d256").unwrap(), "100");
-        assert_eq!(parse_verilog_literal("8'd255").unwrap(), "FF");
-        assert_eq!(parse_verilog_literal("'hx").unwrap(), "X");
-        assert_eq!(parse_verilog_literal("'hz").unwrap(), "Z");
+        assert_eq!(parse_verilog_literal("'d255").unwrap().hex, "FF");
+        assert_eq!(parse_verilog_literal("'d0").unwrap().hex, "0");
+        assert_eq!(parse_verilog_literal("'b11111111").unwrap().hex, "FF");
+        assert_eq!(parse_verilog_literal("'hFF").unwrap().hex, "FF");
+        assert_eq!(parse_verilog_literal("'b10").unwrap().hex, "2");
+        assert_eq!(parse_verilog_literal("'d256").unwrap().hex, "100");
+        assert_eq!(parse_verilog_literal("8'd255").unwrap().hex, "FF");
+        assert_eq!(parse_verilog_literal("'hx").unwrap().hex, "X");
+        assert_eq!(parse_verilog_literal("'hz").unwrap().hex, "Z");
+        for bad in ["'h_F", "'dxx", "'é1"] {
+            let err = parse_verilog_literal(bad).unwrap_err();
+            assert!(
+                err.contains(&format!("invalid Verilog literal '{bad}'")),
+                "{err}"
+            );
+        }
     }
 
     // ---- Bare-literal grammar (issue 2) ----
 
     #[test]
     fn parse_bare_decimal() {
-        assert_eq!(parse_verilog_literal("0").unwrap(), "0");
-        assert_eq!(parse_verilog_literal("1").unwrap(), "1");
-        assert_eq!(parse_verilog_literal("255").unwrap(), "FF");
+        assert_eq!(parse_verilog_literal("0").unwrap().hex, "0");
+        assert_eq!(parse_verilog_literal("1").unwrap().hex, "1");
+        assert_eq!(parse_verilog_literal("255").unwrap().hex, "FF");
     }
 
     #[test]
     fn parse_width_prefixed() {
-        assert_eq!(parse_verilog_literal("1'b1").unwrap(), "1");
-        assert_eq!(parse_verilog_literal("13'h0C1C").unwrap(), "0C1C");
-        assert_eq!(parse_verilog_literal("8'd255").unwrap(), "FF");
+        assert_eq!(parse_verilog_literal("1'b1").unwrap().hex, "1");
+        assert_eq!(parse_verilog_literal("13'h0C1C").unwrap().hex, "0C1C");
+        assert_eq!(parse_verilog_literal("8'd255").unwrap().hex, "FF");
     }
 
     #[test]
@@ -1262,7 +1390,7 @@ mod tests {
         fn prop_radix_roundtrip_dec(val in 0u64..=u64::MAX) {
             let hex = format!("{:X}", val);
             let dec = format_value_with_radix(&hex, 64, Radix::Dec);
-            let back = parse_verilog_literal(&format!("'d{}", dec)).unwrap();
+            let back = parse_verilog_literal(&format!("'d{}", dec)).unwrap().hex;
             prop_assert!(
                 canonical_hex_eq(&hex, &back),
                 "roundtrip failed: {} -> {} -> {}", hex, dec, back
@@ -1273,7 +1401,7 @@ mod tests {
         fn prop_radix_roundtrip_bin(val in 0u64..=u64::MAX) {
             let hex = format!("{:X}", val);
             let bin = format_value_with_radix(&hex, 64, Radix::Bin);
-            let back = parse_verilog_literal(&format!("'b{}", bin)).unwrap();
+            let back = parse_verilog_literal(&format!("'b{}", bin)).unwrap().hex;
             prop_assert!(
                 canonical_hex_eq(&hex, &back),
                 "roundtrip failed: {} -> {} -> {}", hex, bin, back

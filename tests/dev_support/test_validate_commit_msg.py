@@ -1,22 +1,26 @@
-"""Tests for validate_commit_msg — message format validation and diff scanning."""
+"""Tests for validate_commit_msg — Stealth message policy and diff scanning."""
 
 from __future__ import annotations
 
-import subprocess
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.validate_commit_msg import (
-    ALLOWED_TYPES,
-    MAX_SUMMARY_LEN,
-    SUBJECT_RE,
     _has_project_config,
     validate_diff,
     validate_message,
 )
+
+
+def _run_checked(argv: list[str]) -> None:
+    """Run a fixture command under the shared bound; a failure shows its stderr."""
+    result = run_bounded_child(argv)
+    assert result.returncode == 0, result.stderr
 
 
 def test_bundled_commit_msg_hook_honors_relocated_booley_dir(tmp_path: Path) -> None:
@@ -25,34 +29,24 @@ def test_bundled_commit_msg_hook_honors_relocated_booley_dir(tmp_path: Path) -> 
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=60)
+    _run_checked(["git", "init", "-q", str(repo)])
     (repo / "booley.toml").write_bytes(b'[project]\ndir = "state"\n')
     (repo / "state").mkdir()
     (repo / "state" / "booley.toml").write_bytes(
-        b"[stealth]\nenabled = true\nenforce_convention = true\n"
+        b"[stealth]\nenabled = true\nmax_body_lines = 0\n"
     )
     bundle = repo / "state" / ".managed" / "project-git-hooks.pyz"
     bundle.parent.mkdir()
     bundle.write_bytes(build_project_git_hook_bundle().content)
     message = tmp_path / "message.txt"
-    message.write_bytes(b"not a conventional subject\n")
+    message.write_bytes(b"Update ALU\n\nA body line over the cap.\n")
 
-    result = subprocess.run(
-        [sys.executable, "-I", "-S", str(bundle), "commit-msg", str(message)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
+    result = run_bounded_child(
+        [sys.executable, "-I", "-S", str(bundle), "commit-msg", str(message)], cwd=repo
     )
 
     assert result.returncode == 1, result.stderr
     assert "Commit message validation FAILED" in result.stderr
-
-
-def _convention(enabled: bool = True):
-    """Patch the [stealth] enforce_convention knob the validator reads."""
-    return patch("booley.commit_policy.validation.enforce_convention", return_value=enabled)
 
 
 def _stealth():
@@ -61,106 +55,8 @@ def _stealth():
 
 
 def test_stealth_disabled_skips_banned_phrase_validation():
-    with (
-        _convention(False),
-        patch("booley.commit_policy.validation.stealth_enabled", return_value=False),
-    ):
+    with patch("booley.commit_policy.validation.stealth_enabled", return_value=False):
         assert validate_message("mention Booley intentionally") == []
-
-
-# ---------------------------------------------------------------------------
-# SUBJECT_RE pattern
-# ---------------------------------------------------------------------------
-
-
-class TestSubjectRegex:
-    """Verify the conventional-commit regex accepts/rejects expected formats."""
-
-    def test_feat_with_scope(self):
-        assert SUBJECT_RE.match("feat(core): add widget")
-
-    def test_fix_no_scope(self):
-        assert SUBJECT_RE.match("fix: repair the thing")
-
-    def test_refactor_with_scope(self):
-        assert SUBJECT_RE.match("refactor(parser): simplify AST walk")
-
-    def test_test_type(self):
-        assert SUBJECT_RE.match("test(sim): add coverage for edge case")
-
-    def test_review_type(self):
-        assert SUBJECT_RE.match("review(lint): address findings")
-
-    def test_wip_type(self):
-        assert SUBJECT_RE.match("wip: checkpoint")
-
-    def test_docs_type(self):
-        assert SUBJECT_RE.match("docs: update readme")
-
-    def test_chore_type(self):
-        """Housekeeping commits are first-class (F-15) — no more masquerading
-        as fix/docs for gitignore tweaks and dep bumps."""
-        assert SUBJECT_RE.match("chore(ci): update pipeline")
-
-    def test_hyphenated_scope(self):
-        assert SUBJECT_RE.match("feat(my-ticket-123): implement feature")
-
-    def test_underscore_scope(self):
-        assert SUBJECT_RE.match("fix(my_module): fix bug")
-
-    def test_numeric_scope(self):
-        assert SUBJECT_RE.match("feat(42): version bump")
-
-    def test_rejects_unknown_type(self):
-        assert SUBJECT_RE.match("perf(ci): speed up pipeline") is None
-
-    def test_rejects_missing_colon_space(self):
-        assert SUBJECT_RE.match("feat(core):missing space") is None
-
-    def test_rejects_empty_summary(self):
-        # "feat(core): " has an empty capture group for summary — regex
-        # requires .+ so this should fail
-        assert SUBJECT_RE.match("feat(core): ") is None
-
-    def test_rejects_plain_text(self):
-        assert SUBJECT_RE.match("just a random message") is None
-
-    def test_rejects_uppercase_type(self):
-        assert SUBJECT_RE.match("Fix(core): repair") is None
-
-
-# ---------------------------------------------------------------------------
-# Cross-module type-list consistency
-# ---------------------------------------------------------------------------
-
-
-class TestAllowedTypesConsistency:
-    """ALLOWED_TYPES is the single source of truth for commit types. The
-    auto-formatter once carried a hardcoded copy that drifted (missed `chore`),
-    silently rewriting valid subjects — pin every consumer to the tuple."""
-
-    def test_formatter_accepts_every_allowed_type(self):
-        from booley.dev_support.commit_message_format import _CONVENTIONAL_RE
-
-        for t in ALLOWED_TYPES:
-            msg = f"{t}(scope): do the thing"
-            assert _CONVENTIONAL_RE.match(msg), f"formatter rejects allowed type '{t}'"
-
-    def test_formatter_preserves_valid_chore_message(self):
-        """A valid `chore` subject must pass through the auto-formatter
-        unchanged, not get rewritten as feat/fix."""
-        from booley.dev_support.commit_message_format import _auto_format_commit_message
-
-        msg = "chore(ci): update pipeline"
-        assert _auto_format_commit_message(msg) == msg
-
-    def test_specialist_guidance_lists_every_allowed_type(self):
-        from booley.specialists.specialist import Specialist
-
-        for t in ALLOWED_TYPES:
-            assert t in Specialist.COMMIT_MSG_GUIDANCE, (
-                f"agent prompt guidance omits allowed type '{t}'"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -169,78 +65,42 @@ class TestAllowedTypesConsistency:
 
 
 class TestValidateMessage:
-    """Format/length assertions here run with the convention **enabled**. The
-    opt-in default (off — a non-conforming subject is accepted) lives in
-    TestConventionOptIn below."""
+    """Booley enforces no subject convention; only Stealth policy applies."""
 
     @pytest.fixture(autouse=True)
-    def _enable_convention(self):
-        with _convention(True):
+    def _no_body_cap(self):
+        with _cap(None):
             yield
 
-    def test_valid_message(self):
-        assert validate_message("fix(core): handle edge case\n") == []
-
-    def test_valid_no_scope(self):
-        assert validate_message("feat: add new feature\n") == []
-
-    def test_bad_format(self):
-        errors = validate_message("bad message\n")
-        assert len(errors) >= 1
-        assert any("doesn't match" in e for e in errors)
-
-    def test_bad_format_lists_allowed_types(self):
-        """The format error must enumerate every allowed commit type so the
-        user immediately sees what's valid (e.g. after typing 'perf')."""
-        errors = validate_message("perf(ci): speed up pipeline\n")
-        format_errors = [e for e in errors if "doesn't match" in e]
-        assert format_errors, "expected a format error for unknown type 'perf'"
-        err = format_errors[0]
-        for t in ALLOWED_TYPES:
-            assert t in err, f"allowed type '{t}' missing from error: {err!r}"
-
-    def test_summary_too_long(self):
-        long_summary = "x" * (MAX_SUMMARY_LEN + 1)
-        msg = f"fix(a): {long_summary}\n"
-        errors = validate_message(msg)
-        assert any("chars" in e for e in errors)
-
-    def test_summary_exactly_at_limit(self):
-        summary = "x" * MAX_SUMMARY_LEN
-        msg = f"fix(a): {summary}\n"
-        errors = validate_message(msg)
-        # Should pass — exactly at limit, not over
-        assert not any("chars" in e for e in errors)
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "Update ALU\n",
+            "fix(core): handle edge case\n",
+            "just a random message\n",
+            "x" * 200 + "\n",
+            "",
+        ],
+    )
+    def test_any_subject_is_accepted(self, msg):
+        """No ``type(scope): summary`` format and no summary-length limit."""
+        assert validate_message(msg) == []
 
     def test_body_is_allowed(self):
-        """F-11: a body is legitimate. The sanitizer redacts it, so the old
-        "single line only" rule bought no safety and cost authored rationale."""
-        msg = "fix(a): do thing\n\nBody text here.\nWith a second line."
+        """F-11: a body is legitimate. The hook rejects banned terms in it, so the
+        old "single line only" rule bought no safety and cost authored rationale."""
+        msg = "Do thing\n\nBody text here.\nWith a second line."
         assert validate_message(msg) == []
 
     def test_banned_phrase_in_body_still_rejected(self):
         """Allowing a body must not open a leak path around the banned list."""
-        msg = "fix(a): do thing\n\nPaired with claude on this one."
+        msg = "Do thing\n\nPaired with claude on this one."
         with _stealth():
             errors = validate_message(msg)
         assert any("claude" in e for e in errors)
 
-    def test_merge_commit_exempt_from_format(self):
-        """Merge commits bypass format and body checks."""
-        msg = "Merge branch 'feature'\n\nMerge body."
-        errors = validate_message(msg)
-        # No format or body errors for merge commits
-        format_errors = [e for e in errors if "doesn't match" in e or "single line" in e]
-        assert format_errors == []
-
-    def test_merge_scope_syntax_exempt(self):
-        msg = "merge(main): reconcile\n\nBody."
-        errors = validate_message(msg)
-        format_errors = [e for e in errors if "doesn't match" in e or "single line" in e]
-        assert format_errors == []
-
     def test_banned_word_in_message(self):
-        msg = "fix(core): claude-assisted repair\n"
+        msg = "Repair core, claude-assisted\n"
         with _stealth():
             errors = validate_message(msg)
         assert any("Banned phrase" in e for e in errors)
@@ -251,51 +111,6 @@ class TestValidateMessage:
         with _stealth():
             errors = validate_message(msg)
         assert any("Banned phrase" in e for e in errors)
-
-    def test_empty_message(self):
-        errors = validate_message("")
-        # Empty subject fails format check
-        assert len(errors) >= 1
-
-
-class TestConventionOptIn:
-    """[stealth] enforce_convention — the type(scope): summary check is off by
-    default (SETUP-10) and only rejects non-conforming subjects when a project
-    opts in. Sanitization/banned-word checks are independent and always run."""
-
-    def test_bad_subject_accepted_by_default(self):
-        """Default (knob absent) → a non-conforming subject raises no format
-        error. This is the opt-in behavior: upstream/human commits land as-is."""
-        with _convention(False):
-            assert validate_message("just a random message\n") == []
-
-    def test_bad_subject_rejected_when_enabled(self):
-        with _convention(True):
-            errors = validate_message("just a random message\n")
-            assert any("doesn't match" in e for e in errors)
-
-    def test_summary_length_unchecked_by_default(self):
-        """Summary length is part of the convention — skipped when off."""
-        long_summary = "x" * (MAX_SUMMARY_LEN + 1)
-        with _convention(False):
-            assert validate_message(f"fix(a): {long_summary}\n") == []
-
-    def test_empty_subject_accepted_by_default(self):
-        with _convention(False):
-            assert validate_message("") == []
-
-    def test_banned_word_still_rejected_when_convention_off(self):
-        """Turning the convention off must not open a leak path: the banned-word
-        scrub is independent and always runs."""
-        with _convention(False), _stealth():
-            errors = validate_message("literally anything with claude in it\n")
-            assert any("Banned phrase" in e for e in errors)
-
-    def test_body_cap_still_enforced_when_convention_off(self):
-        """max_body_lines is its own knob, unaffected by the convention toggle."""
-        with _convention(False), _cap(0):
-            errors = validate_message("whatever subject\n\nA line of body.")
-            assert any("max_body_lines" in e for e in errors)
 
 
 def _cap(value: int | None):
@@ -465,13 +280,13 @@ class TestMainEntryPoint:
 
     def test_invalid_message_exits_one(self):
         with (
-            patch("sys.argv", ["validate_commit_msg.py", "bad message"]),
+            patch("sys.argv", ["validate_commit_msg.py", "Update ALU\n\nA body line."]),
             patch(
                 "booley.dev_support.validate_commit_msg._configured_project_repo",
                 return_value=True,
             ),
             patch("booley.dev_support.validate_commit_msg.validate_diff", return_value=[]),
-            _convention(True),  # convention is opt-in; enable it to reject the bad subject
+            _cap(0),
         ):
             from booley.dev_support.validate_commit_msg import main
 
@@ -510,9 +325,7 @@ class TestMainEntryPoint:
             diff_check.assert_not_called()
 
     def test_module_cli_honors_current_checkout_stealth_setting(self, tmp_path, monkeypatch):
-        import subprocess
-
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        _run_checked(["git", "init", "-q", str(tmp_path)])
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = false\n", encoding="utf-8")
@@ -556,25 +369,20 @@ def test_project_state_repository_config_detection(tmp_path):
 
 
 def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_path):
-    import subprocess
     import sys
 
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+    _run_checked(["git", "init", "-q", str(tmp_path)])
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nenforce_convention = true\n",
+        "[stealth]\nenabled = true\n",
         encoding="utf-8",
     )
     script = Path(__file__).resolve().parents[2] / "src/booley/dev_support/validate_commit_msg.py"
 
-    result = subprocess.run(
-        [sys.executable, "-I", "-S", str(script), "fix(core): valid message"],
+    result = run_bounded_child(
+        [sys.executable, "-I", "-S", str(script), "Update ALU"],
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
@@ -608,24 +416,21 @@ class TestVendoredStandaloneImport:
             shutil.copy2(core / "run_command.py", dst / "run_command.py")
 
     @staticmethod
-    def _run(dst, msg: str):
-        import subprocess
+    def _run(dst, msg: str, *, isolated: bool = False):
         import sys
 
-        subprocess.run(
-            ["git", "init", "-q", str(dst)], capture_output=True, check=True, timeout=30
-        )
+        run_bounded_child(["git", "init", "-q", str(dst)], check=True)
         booley_dir = dst / ".booley"
         booley_dir.mkdir(exist_ok=True)
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        return subprocess.run(
-            [sys.executable, str(dst / "validate_commit_msg.py"), msg],
-            cwd=str(dst),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
+        argv = [sys.executable, str(dst / "validate_commit_msg.py"), msg]
+        env = None
+        if isolated:
+            # No installed Booley and no checkout on PYTHONPATH (the conftest sets it):
+            # only the vendored files beside the script can resolve imports.
+            argv.insert(1, "-S")
+            env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        return run_bounded_child(argv, cwd=str(dst), env=env)
 
     def test_flat_run_tool_resolves(self, tmp_path):
         """init vendors run_command.py flat → imported by bare name, no crash."""
@@ -633,42 +438,31 @@ class TestVendoredStandaloneImport:
         proc = self._run(tmp_path, "feat(x): ok")
         assert proc.returncode == 0, proc.stderr
 
-    def test_shim_fallback_when_runner_absent(self, tmp_path):
-        """Stale vendored dir (no run_command.py) → subprocess shim, still no crash
-        (the original SETUP-9 symptom was ModuleNotFoundError here)."""
+    def test_missing_runner_fails_loudly(self, tmp_path):
+        """A vendored dir without run_command.py has no fallback: the hook stops with an
+        ImportError naming the modules it tried, not a silent half-working validation."""
         self._vendor(tmp_path, include_runner=False)
-        proc = self._run(tmp_path, "feat(x): ok")
-        assert proc.returncode == 0, proc.stderr
+        proc = self._run(tmp_path, "feat(x): ok", isolated=True)
+        assert proc.returncode != 0
+        assert "cannot import run_command" in proc.stderr
 
     def test_flat_run_tool_actually_scans_staged_diff(self, tmp_path):
         """Prove the resolved run_command runs the git-diff scan (not just that the
         import succeeded): a banned term staged in the diff must be rejected."""
-        import subprocess
         import sys
 
         self._vendor(tmp_path, include_runner=True)
-        subprocess.run(
-            ["git", "init", "-q", str(tmp_path)], capture_output=True, check=True, timeout=30
-        )
+        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         # A Co-Authored-By trailer is a banned attribution term the diff scan
         # flags. Stage it so `git diff --cached` (run via run_command) sees it.
         (tmp_path / "note.txt").write_text("Co-Authored-By: somebody <x@y.z>\n", encoding="utf-8")
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "add", "note.txt"],
-            capture_output=True,
-            check=True,
-            timeout=30,
-        )
-        proc = subprocess.run(
+        run_bounded_child(["git", "-C", str(tmp_path), "add", "note.txt"], check=True)
+        proc = run_bounded_child(
             [sys.executable, str(tmp_path / "validate_commit_msg.py"), "feat(x): ok"],
             cwd=str(tmp_path),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
         )
         assert proc.returncode == 1, proc.stdout + proc.stderr
         assert "co-authored-by" in proc.stderr.lower()
@@ -677,11 +471,9 @@ class TestVendoredStandaloneImport:
 def test_default_staged_engineering_prose_is_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import subprocess
-
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    _run_checked(["git", "init", "-q", str(tmp_path)])
     (tmp_path / "generated.txt").write_text("generated docker verification agent\nautomated fix\n")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "generated.txt"], check=True, timeout=10)
+    _run_checked(["git", "-C", str(tmp_path), "add", "generated.txt"])
     monkeypatch.chdir(tmp_path)
     assert validate_diff(tmp_path) == []
 

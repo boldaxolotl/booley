@@ -1,7 +1,13 @@
 # Make the Review Goal the whole review contract
 
-Status: accepted; the Goal-owned review contract is superseded by ADR 0087
-when Goal Mode is removed. `--verify` and `--waive` stay.
+Status: accepted; the Goal-owned review contract is superseded by
+[ADR 0091](0091-review-commits-outside-measurement.md) when Goal Mode is
+removed, and a review then stops being part of the acceptance gate
+([ADR 0092](0092-measure-commits-against-target-metrics.md)). `--verify` and
+stored waivers were removed from the hand-run Reviewer with its review history
+(its `--recheck` accepts `--waive` proposals again, without stored state); the
+verification and waiver rules below apply to `booley review --verify`
+([ADR 0091](0091-review-commits-outside-measurement.md)).
 
 A Reviewer should judge the Developer Agent's work independently. Caller-selected
 scope, specification and steering made Goal Mode reviews depend on the Developer
@@ -21,7 +27,7 @@ category and focus and refuses caller `scope`, `spec` and `steer`. Interactive
 Mode retains those controls. The decisions file is no longer Reviewer input or
 part of receipt identity in either mode.
 
-`reviewer --verify` checks only the latest review call's open findings against
+Verification checks only the latest review call's open findings against
 current source. It performs no discovery and adds no findings. Fixed, waived,
 excluded and superseded findings are outside its input set. Every checked finding
 is reported as fixed, waived or still present; verification passes when none
@@ -41,10 +47,7 @@ its completion source evidence. Open `done` findings never block another review.
 Goal Mode resolves each open `clean` review before starting discovery for another
 focus; otherwise a later review would make older open findings
 unreachable through the latest-review-only verify command. Refusals point to
-verify and waiver proposals. Interactive discovery replaces the previous
-review's findings. Interactive history is isolated per checkout, including when
-checkouts share a Booley Directory. Review calls sharing a state file are
-serialized; an overlapping call is refused and can be retried.
+verify and waiver proposals.
 
 The restart flag, contract invalidation, finding carry-over and automatic
 verification/rediscovery dispatch are removed. Existing verify budgets remain:

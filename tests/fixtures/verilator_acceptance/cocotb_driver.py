@@ -15,6 +15,7 @@ runner.build(
         "--timing",
         "-Wno-fatal",
         "--coverage-line",
+        "--coverage-branch",
         "--coverage-toggle",
         "--coverage-expr",
         "--coverage-user",

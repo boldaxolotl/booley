@@ -2,6 +2,13 @@
 
 This capability reads and stores diagnostics; it never executes Doctor. Consumers
 render a single typed HealthSnapshot without acquiring command/SDK dependencies.
+
+Two records, two purposes: `runtime/doctor/last.json` is the last observation (automatic and
+complete manual in-Sandbox runs publish it, healthy or not; a partial manual profile never
+replaces it), while `runtime/doctor_stamp.json` (`runtime.doctor_stamp`) is the last clean run.
+Deep status is metadata beside the findings: it changes neither the active counts nor the
+announcement identity, because a design that correctly fails lint or simulation is a healthy
+machine reporting an unhealthy design.
 """
 
 from __future__ import annotations

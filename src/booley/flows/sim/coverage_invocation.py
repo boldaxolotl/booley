@@ -1,4 +1,4 @@
-"""Read-only all-Target preparation for an explicit Coverage Campaign invocation."""
+"""Read-only all-Target preparation for an explicit Coverage Record invocation."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, immutable_mapping
 
-from .coverage_campaign import CoverageFinding, DurableTargetIdentity
 from .coverage_json import FrozenJson, freeze_coverage_mapping
 from .coverage_policy import CoverageCriterion
 from .coverage_provenance import coverage_digest, coverage_source_closure
+from .coverage_record import CoverageFinding, DurableTargetIdentity
 from .coverage_source_gaps import rtl_module_candidates
 from .coverage_waivers import CoverageRepositoryRoots, CoverageWaiverConfig
 from .verilator_coverage import CoverageCollectionRequest, coverage_request_finding
@@ -39,8 +39,6 @@ class CoverageInvocationRequest:
     trace: bool = False
     # Raw coverage: evaluate with no approved waivers.
     no_waivers: bool = False
-    # The caller records no Criteria (a non-acceptance run).
-    diagnostic: bool = False
 
 
 def _keep_keys(fields, copy):
@@ -61,12 +59,10 @@ class CoverageProjectContext:
     waiver_config: CoverageWaiverConfig | None = None
 
     skipped_tests: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-    criterion_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "test_names", _keep_keys(self.test_names, immutable_mapping))
         object.__setattr__(self, "criteria", MappingProxyType(dict(self.criteria)))
-        object.__setattr__(self, "criterion_names", MappingProxyType(dict(self.criterion_names)))
         object.__setattr__(
             self,
             "skipped_tests",
@@ -82,7 +78,7 @@ class CoverageTargetPlan:
     declared_tests: tuple[str, ...]
     selected_tests: tuple[str, ...]
     trace: bool
-    #: Every Test Run the campaign collects, grouped in ``selected_tests`` order.
+    #: Every Test Run the Coverage Record collects, grouped in ``selected_tests`` order.
     test_runs: tuple[TestRun, ...] = ()
     criterion: CoverageCriterion | None = None
     criterion_key: str = ""
@@ -132,7 +128,7 @@ def _suite(
     required = criterion.tests if criterion and criterion.tests is not None else declared
     skipped = set(lookup_target_section(context.skipped_tests, handle.identity) or ())
     # Selection never consults the Coverage Criterion: its test list is required
-    # evidence, compared with what ran by evaluate_coverage_campaign (suite mismatch).
+    # evidence, compared with what ran by evaluate_coverage_record (suite mismatch).
     if runs is not None:
         selected = tuple(dict.fromkeys(str(run.test) for run in runs))
     elif request.tests is not None:
@@ -171,15 +167,6 @@ def _prepare_target(
         declared, selected, key, criterion = _suite(handle, request, context, runs)
     except ValueError as exc:
         return None, _finding("COV_SUITE_INVALID", f"{handle.selector}: {exc}")
-    if request.no_waivers and criterion is not None and not request.diagnostic:
-        return None, _finding(
-            "COV_NO_WAIVERS_CRITERION",
-            f"{handle.selector}: --no-waivers skips the approved waivers that "
-            f"{context.criterion_names.get(key, 'Coverage Criterion ' + key)} is evaluated with; "
-            "add --diagnostic for a "
-            "non-acceptance run with raw numbers, or drop --no-waivers",
-            "/no_waivers",
-        )
     inspection = catalog.inspect(handle)
     collection = prepare_coverage_collection(
         handle,
@@ -222,7 +209,15 @@ def prepare_coverage_invocation(
     *,
     selection: PreparedTargetSelection | None = None,
 ) -> CoveragePreflightResult:
-    """Resolve the complete invocation without EDA or artifact/build mutations."""
+    """Resolve the complete invocation without EDA or artifact/build mutations.
+
+    Every selected Target resolves before any EDA work, so a bad selection fails
+    as one aggregated error. Collection is on only when the caller asks (a
+    Coverage Criterion never turns it on: a Criterion says what evidence must
+    show, not what a run collects). A Criterion's ``tests`` list is required
+    evidence, not a selector: a run whose suite differs, including by configured
+    skips, is a suite mismatch at evaluation.
+    """
     if selection is None:
         try:
             catalog = TargetCatalog.build(project_context.rtl_repository)

@@ -1,6 +1,6 @@
-"""Generate the untracked ``.devcontainer/devcontainer.json`` for Interactive Mode.
+"""Generate the untracked ``.devcontainer/devcontainer.json`` for the Sandbox.
 
-ADR 0018: Interactive Mode is entered by opening the repo folder in VS Code and
+ADR 0018: the Sandbox is entered by opening the repo folder in VS Code and
 accepting "Reopen in Container". The runtime is described by a single,
 Booley-generated ``.devcontainer/devcontainer.json`` that lives in the repo but
 is never tracked by git (hidden via ``.git/info/exclude``, not ``.gitignore``).
@@ -22,10 +22,14 @@ from pathlib import Path, PurePosixPath
 
 from booley.config.agent import (
     AGENT_CLIS_ENV,
+    DEFAULT_AUTH,
     SANDBOX_IMAGE,
     decode_cli_policies,
     encode_cli_policies,
+    env_auth_mode,
+    wire_auth,
 )
+from booley.config.gateway import VISITOR_AUTH
 from booley.core.project_identity import project_name_id
 from booley.runtime import auth_token
 from booley.runtime import vaporview as _vaporview
@@ -82,7 +86,7 @@ AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfil
 # the whole workspace binds at /work (so ``.booley/x`` shows up at
 # ``/work/.booley/x``) AND the Booley Directory itself binds again at
 # BOOLEY_DIR_TARGET — masking only the /work view would leave the same bytes
-# readable at ``/booley-project/x``.
+# readable at ``/booley/x``.
 BOOLEY_DIR_BASENAME = ".booley"
 
 # Default mount source for ``.booley``: the co-located common case.
@@ -121,6 +125,19 @@ HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 # by path, like the HDL extension above.
 _LIVE_PREVIEW_VERSION = "0.4.20"
 LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
+
+# The bundled extensions besides VaporView, as Doctor checks them in the
+# attached window: built from the same pins the spec installs.
+BUNDLED_EXTENSIONS = (
+    _vaporview.BundledExtension("Verilog-HDL", "mshr-h.veriloghdl", _HDL_VERSION, HDL_VSIX),
+    _vaporview.BundledExtension(
+        "Live Preview",
+        "ms-vscode.live-server",
+        _LIVE_PREVIEW_VERSION,
+        LIVE_PREVIEW_VSIX,
+        requirement="Live Preview needs VS Code 1.109 or newer",
+    ),
+)
 
 # Live Preview exposes its in-container HTTP/WebSocket servers through VS
 # Code's remote-port tunnel. VS Code's long-lived local process can retain a
@@ -242,8 +259,9 @@ def mcp_post_start_command() -> str:
     container-side config (ADR 0023). Because the hook re-runs on every
     container start — including a plain stop→start resume — the endpoint is
     always back before the agent app needs it; the app holds only the URL, so
-    it reconnects instead of being stranded with a dead stdio child. The app
-    to register comes from ``BOOLEY_AGENT_APP``.
+    it reconnects instead of being stranded with a dead stdio child. The CLIs
+    to register are the default one (``BOOLEY_AGENT_APP``) plus every CLI in
+    ``BOOLEY_AGENT_CLIS``.
     """
     return "python -m booley.harness.incontainer_register"
 
@@ -302,29 +320,41 @@ def canonical_project_id(project_root: Path) -> str:
     return project_name_id(str(project_root.resolve(strict=True)))
 
 
-def state_volume_name(app: str, project_id: str, policy: str = "auto") -> str | None:
+def state_volume_name(
+    app: str, project_id: str, policy: str = DEFAULT_AUTH, *, legacy: bool = False
+) -> str | None:
     """Name of the persistent home-state volume for *app* and *project_id*.
 
     Returns ``None`` for apps without a persisted state dir. The single format
-    source so the spec builder and ``booley doctor`` agree on names.
+    source so the spec builder and ``booley doctor`` agree on names. ``subscription`` (and
+    the env-only ``visitor`` of a hand-written spec) uses the unsuffixed login volume;
+    *legacy* selects the ``-subscription`` name a ``subscription`` Sandbox used before.
     """
     if app not in _APP_STATE_DIR:
         return None
-    suffix = "" if policy == "auto" else f"-{policy}"
+    return _state_volume_name(app, project_id, policy, legacy=legacy)
+
+
+def _state_volume_name(app: str, project_id: str, policy: str, *, legacy: bool = False) -> str:
+    """Format the state-volume name; the caller has checked that *app* persists state."""
+    shared = policy == VISITOR_AUTH or (policy == "subscription" and not legacy)
+    suffix = "" if shared else f"-{policy}"
     return f"booley-{app}-state-{project_id}{suffix}"
 
 
 def state_volume_names(project_id: str) -> frozenset[str]:
     """Every state-volume name one Project can own across agent apps and auth policies."""
     return frozenset(
-        name
+        f"{base}{suffix}"
         for app in _APP_STATE_DIR
-        for policy in ("auto", "subscription", "api_key", "gateway")
-        if (name := state_volume_name(app, project_id, policy)) is not None
+        if (base := state_volume_name(app, project_id)) is not None
+        for suffix in ("", "-subscription", "-api_key", "-gateway")
     )
 
 
-def state_volume_mount(app: str, project_id: str, policy: str = "auto") -> str | None:
+def state_volume_mount(
+    app: str, project_id: str, policy: str = DEFAULT_AUTH, *, legacy: bool = False
+) -> str | None:
     """Return the persistent home-state volume mount for *app*, or ``None``.
 
     Per-project + per-app naming keeps projects isolated: every interactive
@@ -334,8 +364,16 @@ def state_volume_mount(app: str, project_id: str, policy: str = "auto") -> str |
     target = _APP_STATE_DIR.get(app)
     if target is None:
         return None
-    name = state_volume_name(app, project_id, policy)
-    return _volume_mount(name, target)
+    return _volume_mount(_state_volume_name(app, project_id, policy, legacy=legacy), target)
+
+
+def legacy_subscription_clis(mounts: Sequence[str], project_id: str) -> frozenset[str]:
+    """The CLIs whose state volume in *mounts* is this Project's pre-shared ``-subscription`` one."""
+    return frozenset(
+        app
+        for app in _APP_STATE_DIR
+        if state_volume_mount(app, project_id, "subscription", legacy=True) in mounts
+    )
 
 
 def _parse_mount(mount: object) -> dict[str, str]:
@@ -356,9 +394,9 @@ def spec_agent_app(spec: dict) -> str | None:
     """The agent app *spec* configures, from ``remoteEnv.BOOLEY_AGENT_APP``.
 
     :func:`build_devcontainer_spec` always exports this, and it is what the
-    in-container registrar reads to decide which app's config gets the Booley
-    MCP entry — so every "which app is this spec for?" question below routes
-    through here. ``None`` when absent or malformed.
+    in-container registrar reads as the default app (it also registers the other
+    CLIs of ``BOOLEY_AGENT_CLIS``) — so every "which app is this spec for?"
+    question below routes through here. ``None`` when absent or malformed.
     """
     remote_env = spec.get("remoteEnv")
     app = remote_env.get("BOOLEY_AGENT_APP") if isinstance(remote_env, dict) else None
@@ -369,8 +407,9 @@ def spec_cli_policies(spec: dict) -> dict[str, str]:
     """The Agent CLIs *spec* allows, each with its recorded auth policy.
 
     Reads ``remoteEnv.BOOLEY_AGENT_CLIS``. A spec issued before that record existed
-    allows its single ``BOOLEY_AGENT_APP`` under ``BOOLEY_PRIMARY_AUTH``; ``none`` and
-    ``auto`` allow no CLI. Raises ``ValueError`` when the record is malformed.
+    allows its single ``BOOLEY_AGENT_APP`` under ``BOOLEY_PRIMARY_AUTH`` (``auto`` reads
+    as the env-only ``visitor``); ``none`` allows no CLI. Raises ``ValueError`` when the
+    record is malformed or records the retired ``auto`` policy.
     """
     remote = spec.get("remoteEnv")
     remote = remote if isinstance(remote, dict) else {}
@@ -379,7 +418,8 @@ def spec_cli_policies(spec: dict) -> dict[str, str]:
         return decode_cli_policies(raw)
     app = spec_agent_app(spec)
     if app in _APP_STATE_DIR:
-        return {app: str(remote.get("BOOLEY_PRIMARY_AUTH") or "auto")}
+        hand_off = env_auth_mode(str(remote.get("BOOLEY_PRIMARY_AUTH") or ""))
+        return {app: hand_off or VISITOR_AUTH}
     return {}
 
 
@@ -413,7 +453,7 @@ def sandbox_visible_expectation(spec: dict) -> dict:
     ]
     app = spec_agent_app(spec) or APP_NONE
     if not plans:
-        plans = [auth_token.CredentialPlan(app, "auto", None, frozenset(), ())]
+        plans = [auth_token.CredentialPlan(app, DEFAULT_AUTH, None, frozenset(), ())]
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     settings = vscode.get("settings") if isinstance(vscode, dict) else None
@@ -472,8 +512,8 @@ def mask_paths_error(value: object) -> str | None:
     subpaths are accepted: an absolute path would mask an arbitrary container
     path and a ``..`` segment would walk the mask outside the workspace mount —
     either turns a privacy knob into a container-layout editor. Masking
-    ``.booley`` itself is rejected too: the session reads its config,
-    Goal Records, and worktrees through that mount (``BOOLEY_DIR``), so
+    ``.booley`` itself is rejected too: the session reads its config
+    and worktrees through that mount (``BOOLEY_DIR``), so
     hiding the whole dir bricks the runtime — mask *subtrees* of it instead.
     """
     if value is None:
@@ -526,7 +566,7 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
       a masked subtree would otherwise scribble into the shared empty dir.
 
     An entry under ``.booley/`` is masked a SECOND time under
-    ``/booley-project/<rest>``: the Booley Directory is bind-mounted twice (the
+    ``/booley/<rest>``: the Booley Directory is bind-mounted twice (the
     workspace mount at /work plus its own mount at BOOLEY_DIR_TARGET), and
     masking only one view leaves the same bytes readable through the other.
 
@@ -598,7 +638,9 @@ def _planned_seeds(app: str, cli_seeds: Sequence[CliSeeds]) -> list[_Seed]:
     ]
 
 
-def _cli_seed_mounts(seeds: Sequence[_Seed], project_id: str) -> list[str]:
+def _cli_seed_mounts(
+    seeds: Sequence[_Seed], project_id: str, legacy_clis: frozenset[str]
+) -> list[str]:
     """Per CLI, in order: token seed, login seed, Claude config seed, state volume."""
     mounts: list[str] = []
     for seed in seeds:
@@ -627,7 +669,8 @@ def _cli_seed_mounts(seeds: Sequence[_Seed], project_id: str) -> list[str]:
         # Persist the CLI's home-state dir (plans, transcripts, todos) across
         # rebuilds. The creds bind is a sidecar OUTSIDE this dir, so the volume owns
         # the real credentials file and the seeded copy lands on it writably.
-        state_mount = state_volume_mount(seed.app, project_id, seed.policy)
+        legacy = seed.app in legacy_clis and seed.policy == "subscription"
+        state_mount = state_volume_mount(seed.app, project_id, seed.policy, legacy=legacy)
         if state_mount:
             mounts.append(state_mount)
     return mounts
@@ -684,7 +727,7 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
         else {}
     )
     remote_env |= {
-        # Container-side MCP runs in interactive mode and finds config here.
+        # The in-Sandbox MCP server reads BOOLEY_MCP_MODE and finds config here.
         "BOOLEY_MCP_MODE": "interactive",
         "BOOLEY_DIR": BOOLEY_DIR_TARGET,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
@@ -696,7 +739,7 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
     return remote_env
 
 
-def _build_run_args(memory: str, egress: str) -> list[str]:
+def _build_run_args(memory: str, memory_swap: str, egress: str) -> list[str]:
     """Build the ``runArgs`` list for :func:`build_devcontainer_spec`."""
     # --network wires egress; the label lets the reaper own this container.
     # --cap-drop ALL + no-new-privileges + a pids ceiling harden the runtime where
@@ -718,8 +761,10 @@ def _build_run_args(memory: str, egress: str) -> list[str]:
         str(SESSION_PIDS_LIMIT),
     ]
     if memory:
-        # The single Sandbox memory limit (ADR 0028 Decision 12).
+        # The single Sandbox memory limit and its explicit swap limit (ADR 0087).
         run_args += ["--memory", memory]
+        if memory_swap:
+            run_args += ["--memory-swap", memory_swap]
     return run_args
 
 
@@ -826,7 +871,9 @@ def _git_environment(project_source: str | None, fixed: dict[str, str] | None) -
 
 def _policy_remote_environment(remote: dict[str, str], app: str, seeds: Sequence[_Seed]) -> None:
     """Record the default CLI's policy, the allowed CLI set, and the forwarded keys."""
-    remote["BOOLEY_PRIMARY_AUTH"] = next(seed.policy for seed in seeds if seed.app == app)
+    remote["BOOLEY_PRIMARY_AUTH"] = wire_auth(
+        next(seed.policy for seed in seeds if seed.app == app)
+    )
     remote["BOOLEY_CREDENTIAL_SCHEMA"] = auth_token.CREDENTIAL_SCHEMA
     clis = {seed.app: seed.policy for seed in seeds if seed.app in _APP_STATE_DIR}
     if app in clis:
@@ -848,6 +895,7 @@ def build_devcontainer_spec(
     project_id: str = "${localWorkspaceFolderBasename}",
     mcp_start_command: str | None = None,
     memory: str = "",
+    memory_swap: str = "",
     host_skills: Sequence[tuple[str, str]] = (),
     trusted_eda_mounts: Sequence[tuple[str, str]] = (),
     protected_devcontainer_source: str = "",
@@ -857,8 +905,9 @@ def build_devcontainer_spec(
     local_timezone: str = "",
     dashboard: bool = False,
     egress: str = "proxy",
+    legacy_clis: frozenset[str] = frozenset(),
 ) -> dict:
-    """Build the ``devcontainer.json`` dict for an Interactive Mode session.
+    """Build the ``devcontainer.json`` dict for a Sandbox.
 
     Args:
         app: one of :data:`SUPPORTED_APPS`: the default Agent CLI, which the in-container
@@ -874,10 +923,8 @@ def build_devcontainer_spec(
             container state. Production callers pass :func:`canonical_project_id`.
         mcp_start_command: the shell command for ``postStartCommand`` that starts
             the in-container MCP server (WS4). ``None`` omits the hook.
-        memory: the ONE container memory limit (ADR 0028 Decision 12), e.g.
-            ``"8g"``, from ``[sandbox] memory`` in booley.toml. Rendered as a
-            ``--memory`` run arg; the empty default sets no limit — matching
-            the pre-ADR-0028 devcontainer, so existing installs are unchanged.
+        memory: the ONE container memory limit (ADR 0087), e.g. ``"8g"``, as ``--memory``; empty: none.
+        memory_swap: ``--memory-swap`` (memory plus swap) from ``memory_swap_limit``; empty: none.
         host_skills: ``(name, host_source)`` pairs for the user's HOST agent
             skills, from ``[sandbox] mount_host_skills`` (init resolves the
             real skill dirs behind ``~/.claude/skills`` / ``~/.agents/skills``,
@@ -890,7 +937,7 @@ def build_devcontainer_spec(
             ``[sandbox] mask_paths`` to HIDE from the Sandbox. Each is
             rendered as a read-only bind of *mask_source* over
             ``/work/<rel>`` — and, for a path under ``.booley/``, a
-            second bind over ``/booley-project/<rest>``, because that tree is
+            second bind over ``/booley/<rest>``, because that tree is
             visible through both mounts (see :func:`_mask_mounts`). Callers
             validate via :func:`mask_paths_error` first. Empty (the default)
             masks nothing and leaves the spec byte-identical to before the
@@ -909,6 +956,10 @@ def build_devcontainer_spec(
             ``"unproxied"`` joins :data:`UNPROXIED_NETWORK`, sets no proxy
             environment, and declares ``BOOLEY_EGRESS=unproxied`` in
             ``containerEnv`` so bare ``docker exec`` calls see it too.
+        legacy_clis: the CLIs whose current spec still mounts the
+            pre-shared ``-subscription`` state volume (see
+            :func:`legacy_subscription_clis`); a CLI listed here and still on
+            ``subscription`` keeps that volume.
 
     The spec uses only Booley's fixed ``initializeCommand``.  It validates the
     host-issued spec and, when licensed EDA is granted, prepares the fixed relay
@@ -925,7 +976,7 @@ def build_devcontainer_spec(
     seeds = _planned_seeds(app, cli_seeds)
 
     mounts = _build_mounts(
-        _cli_seed_mounts(seeds, project_id),
+        _cli_seed_mounts(seeds, project_id, legacy_clis),
         booley_dir_source,
         host_skills,
         trusted_eda_mounts,
@@ -937,7 +988,6 @@ def build_devcontainer_spec(
     remote_env = _build_remote_env(app, local_timezone, egress)
     _policy_remote_environment(remote_env, app, seeds)
     remote_env.update(identity_env)
-    run_args = _build_run_args(memory, egress)
 
     spec: dict = {
         "name": spec_name([seed.app for seed in seeds], app),
@@ -945,7 +995,7 @@ def build_devcontainer_spec(
         "workspaceMount": _bind_mount("${localWorkspaceFolder}", WORK_DIR),
         "workspaceFolder": WORK_DIR,
         "remoteUser": "agent",
-        "runArgs": run_args,
+        "runArgs": _build_run_args(memory, memory_swap, egress),
         "mounts": mounts,
         "remoteEnv": remote_env,
         "initializeCommand": [

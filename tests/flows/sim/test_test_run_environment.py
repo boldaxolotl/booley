@@ -11,18 +11,22 @@ import pytest
 from booley.flows import artifacts as flow_artifacts
 from booley.flows.sim.execution import SimulationOptions
 from booley.flows.sim.execution.artifacts import artifact_path_component
+
+# Private seam: the adapter identity is built inside a real build; run-time inputs are compared on it.
 from booley.flows.sim.execution.engine import (
     _adapter_identity,
     prepare_simulation_work,
     simulation_target_environment,
     target_test_plan,
 )
+
+# Private seam: the hook environment is visible only inside a real pre-run shell.
 from booley.flows.sim.execution.pre_sim import (
     TEST_RUN_VARIABLES,
     _pre_sim_environment,
     test_run_environment,
 )
-from booley.flows.sim.flow import _resolve_sim_campaign_work_units
+from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.flows.test_runs import build_test_run
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.test_execution_engine import _handle, _prepared
@@ -62,6 +66,7 @@ class TestPreSimVariables:
         assert test_run_environment(()) == {}
 
     def _environment(self, tmp_path: Path, monkeypatch, names, runs):
+        # inside a real build.
         for name in TEST_RUN_VARIABLES:
             monkeypatch.setenv(name, "stale")
         return _pre_sim_environment(
@@ -108,9 +113,14 @@ class TestEvidencePaths:
         assert artifact_path_component(name) == name
         assert flow_artifacts.path_component(name) == name
 
-    @pytest.mark.parametrize("name", ["<default>@1", "a/b@1", "..", "+lead", "@lead", "a b"])
+    @pytest.mark.parametrize(
+        "name", ["<default>@1", "a/b@1", "..", "+lead", "@lead", "a b", "../../outside/reports"]
+    )
     def test_other_names_are_still_hashed(self, name: str):
-        assert artifact_path_component(name).startswith("~sha256-")
+        encoded = artifact_path_component(name)
+        assert encoded.startswith("~sha256-")
+        assert "/" not in encoded
+        assert encoded != artifact_path_component(name + "x")
 
     def test_published_evidence_lands_in_the_run_directory(self, tmp_path: Path):
         relative = flow_artifacts.publish_bytes(
@@ -121,6 +131,7 @@ class TestEvidencePaths:
 
 
 def _work(root: Path, run):
+    # a real build.
     handle = _handle(root, eda_tool="verilator")
     prepared = dataclasses.replace(_prepared(handle, cocotb=False), eda_tool="verilator")
     identity = _adapter_identity(handle, prepared, ("stress",), "verilator")
@@ -172,6 +183,8 @@ class TestRunTimeInputsAreNotBuildInputs:
         Test Variant with its own environment and other seeds, and it does
         change with the Target's own environment, so equality is not vacuous.
         """
+        # Private seam: Cocotb identity, the build session key and the prepared build exist only
+        # inside a real build.
         from booley.flows.sim import build_session
         from booley.flows.sim.build_session import SimulationBuildSession
 
@@ -226,6 +239,8 @@ class TestRunTimeInputsAreNotBuildInputs:
 
     def test_the_build_is_prepared_before_any_test_run_is_known(self, tmp_path: Path):
         """``prepare_simulation_build`` gets the Target's environment, never a Variant's."""
+        # Private seam: Cocotb identity, the build session key and the prepared build exist only
+        # inside a real build.
         from booley.flows.sim.execution import SimulationExecution, engine
 
         root = _project(
@@ -259,8 +274,10 @@ class TestWatchdogSizing:
         ],
     )
     def test_hdl_target_counts_one_process_per_test_run(self, project, selectors, units):
-        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=False):
-            assert _resolve_sim_campaign_work_units(project, "sim", selectors) == units
+        # Private seam: Cocotb identity, the build session key and the prepared build exist only
+        # inside a real build.
+        with patch("booley.flows.sim.watchdog_sizing._target_is_cocotb", return_value=False):
+            assert resolve_simulation_record_work_units(project, "sim", selectors) == units
 
     @pytest.fixture
     def cocotb_project(self, tmp_path: Path) -> Path:
@@ -290,34 +307,46 @@ class TestWatchdogSizing:
     def test_cocotb_target_counts_its_resolved_batches(
         self, cocotb_project, selectors, seed, units
     ):
-        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
-            counted = _resolve_sim_campaign_work_units(cocotb_project, "sim", selectors, seed=seed)
+        # Private seam: Cocotb identity, the build session key and the prepared build exist only
+        # inside a real build.
+        with patch("booley.flows.sim.watchdog_sizing._target_is_cocotb", return_value=True):
+            counted = resolve_simulation_record_work_units(
+                cocotb_project, "sim", selectors, seed=seed
+            )
         assert counted == units
 
     def test_cocotb_default_suite_whose_default_variants_differ_in_env_needs_several(
         self, tmp_path: Path
     ):
         """No selector at all: the default suite already splits by environment."""
+        # Private seam: Cocotb identity, the build session key and the prepared build exist only
+        # inside a real build.
         project = _project(
             tmp_path,
             '[sim]\ntests = ["a", "b", "c"]\n'
             '[sim.variants.a]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
             '[sim.variants.b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
         )
-        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
-            assert _resolve_sim_campaign_work_units(project, "sim") == 3
-            assert _resolve_sim_campaign_work_units(project, "sim", ["a", "b"]) == 2
-            assert _resolve_sim_campaign_work_units(project, "sim", ["c"]) == 1
+        with patch("booley.flows.sim.watchdog_sizing._target_is_cocotb", return_value=True):
+            assert resolve_simulation_record_work_units(project, "sim") == 3
+            assert resolve_simulation_record_work_units(project, "sim", ["a", "b"]) == 2
+            assert resolve_simulation_record_work_units(project, "sim", ["c"]) == 1
 
     @pytest.mark.parametrize(("seed", "units"), [("random", 2), (9, 2), ("bogus", 2), (0, 2)])
     def test_hdl_target_counts_do_not_depend_on_the_seed(self, project, seed, units):
-        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=False):
-            assert _resolve_sim_campaign_work_units(project, "sim", seed=seed) == units
+        # Private seam: Cocotb identity, the build session key and the prepared build exist only
+        # inside a real build.
+        with patch("booley.flows.sim.watchdog_sizing._target_is_cocotb", return_value=False):
+            assert resolve_simulation_record_work_units(project, "sim", seed=seed) == units
 
     def test_a_request_the_flow_refuses_is_counted_from_the_registry(self, cocotb_project):
-        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
-            assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["nope+x@x3"]) == 1
-            assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["stress+nope"]) == 1
+        # Private seam: Cocotb identity, the build session key and the prepared build exist only
+        # inside a real build.
+        with patch("booley.flows.sim.watchdog_sizing._target_is_cocotb", return_value=True):
+            assert resolve_simulation_record_work_units(cocotb_project, "sim", ["nope+x@x3"]) == 1
+            assert (
+                resolve_simulation_record_work_units(cocotb_project, "sim", ["stress+nope"]) == 1
+            )
 
 
 def test_target_environment_is_never_another_cores_env(tmp_path):
