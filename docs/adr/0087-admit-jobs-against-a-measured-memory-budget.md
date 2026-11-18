@@ -51,9 +51,13 @@ read-only, and delegating it would loosen the hardening.
   `--memory-swap` limit: `[sandbox].swap` beyond the memory, else a quarter of
   `memory`, capped at the swap the Docker host has (read from the host, or the
   Docker Desktop VM on Windows). Docker's default (swap equal to memory) never
-  applies. Admission ignores swap, so the budget stays memory-only; the OOM
-  kill, and so the single requeue, happens at memory plus swap. Doctor warns
-  when the host cannot back the setting.
+  applies. The OOM kill, and so the single requeue, happens at memory plus
+  swap. Doctor warns when the host cannot back the setting. With a swap
+  allowance (read from the cgroup, capped at the host's swap) swap absorbs a
+  short overshoot, so the budget holds back nothing beyond the reserve and
+  memory estimates use a margin of 1.10. Without one the budget holds back a
+  quarter of the memory instead, the room the default swap gives, and
+  estimates keep 1.25, so a Sandbox without swap runs fewer Jobs.
 - Queue priority by requester role: `interactive` first; background work last.
   Standalone Jobs (ADR 0086) are admitted like any Job at their priorities.
 - A Project that uses a licensed EDA tool must declare its Seat Cap in
@@ -68,10 +72,12 @@ read-only, and delegating it would loosen the hardening.
 
 ### Estimates
 
-- A phase's memory estimate is the maximum over retained records of its key,
-  with headroom. The maximum covers cold and warm compiler-cache builds without
-  tracking cache state; too high an estimate costs only parallelism.
-  Wall-clock estimates, used only for jump-ahead, follow the same rule.
+- A phase's memory estimate is the maximum over retained records of its key
+  (resident memory plus what the Job swapped out, as a Job that swapped records
+  a resident peak below what it needed), times the swap-dependent margin. The
+  maximum covers cold and warm compiler-cache builds without tracking cache
+  state; too high an estimate costs only parallelism. Wall-clock estimates,
+  used only for jump-ahead, use their own values and the no-swap margin.
 - RTL changes are ignored: keys carry no input fingerprint. The agent edits
   RTL before nearly every run, so treating a changed input as unknown would
   serialize it. A large jump is caught by the OOM guard and requeue.
@@ -87,6 +93,14 @@ read-only, and delegating it would loosen the hardening.
   block's estimate admits a chip's first run far too low and leaves the
   catch to the OOM guard after a wasted run. A Target's first such
   run runs alone and says it has no measurement yet.
+- Pre-Sim Commands are a measured phase of their own, `sim_pre_run`, keyed per
+  Target like preparation and build and recorded for every firing. A Job or
+  Simulation Record item that runs them reserves the larger of their estimate
+  and its simulation's. They never borrow across Targets: with no record for
+  the Target, their estimate is the Target's build estimate, the safe side,
+  since they may build as much as the build does. The build phase ends once
+  the build settles, with or without Pre-Sim Commands, so the reservation
+  drops to the pending phases.
 - A Job estimated over the whole budget waits until nothing else runs, then
   runs alone with a warning. It is never refused: estimates are padded and
   RSS double-counts shared pages, so such Jobs often fit.
@@ -189,14 +203,18 @@ read-only, and delegating it would loosen the hardening.
   Detection is deliberately conservative: a kill hidden behind a wrapper that
   reports none of these (a FuseSoC generator names no signal) is a plain
   failure and is not requeued, as is a kill in a Pre-Sim Command or a
-  mutation run, which are not measured commands.
+  mutation run. A Pre-Sim Command is measured but not blamed for a kill: its
+  failure stays the hook's result, as the Simulation's tests see it.
 
 ### Simulation Records
 
 Every work item of a simulation or coverage record is admitted on its own,
 with its own key. The Flow's reservation covers preparation and build, then
-drops to zero, and admission decides how many items run at once. Each item
-ranks for the OOM killer as a Job newer than its Flow, so the newest item's
+drops to zero, and admission decides how many items run at once. An item
+reserves the larger of its Pre-Sim Commands and simulation estimates, and its
+build too when it builds inside itself (a private build, a coverage aggregate
+or a shared build not yet settled). Each item ranks for the OOM killer as a
+Job newer than its Flow, so the newest item's
 simulator ranks first, within the bounds of the Out-of-memory guard. An item's
 own OOM kill at the Sandbox's limit stops only that item: it is requeued once,
 to run alone after the running items finish, and its second failure is its

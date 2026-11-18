@@ -140,6 +140,7 @@ def test_booley_commands_from_checkout_hooks_reach_main_common_state(
             build_root=tmp_path / "build",
             eda_tool="verilator",
             timeout_s=hang_guard_s(),
+            resource_flags=(),
             commands=(f'"{sys.executable}" "{script}" "{report}"',),
         )
         assert evidence is not None and evidence.status == "passed", evidence

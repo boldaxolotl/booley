@@ -88,11 +88,11 @@ def test_limit_minus_measured_reserve_and_headroom() -> None:
         ),
     )
 
-    assert result.bytes == 30601641984  # 32 GiB - (1.5 GiB measured + 2 GiB headroom)
+    assert result.bytes == 24159191040  # 32 GiB - (1.5 GiB measured + 8 GiB headroom)
     assert result.rule is memory_budget.BudgetRule.LIMIT
     assert result.limit_bytes == 32 * GIB
     assert result.installed_bytes is None
-    assert result.reserve_bytes == 3 * GIB + GIB // 2
+    assert result.reserve_bytes == 9 * GIB + GIB // 2
     assert [p.role for p in result.reserve] == [
         memory_budget.ReserveRole.DEVELOPER_AGENT,
         memory_budget.ReserveRole.MCP_SERVER,
@@ -100,6 +100,7 @@ def test_limit_minus_measured_reserve_and_headroom() -> None:
         memory_budget.ReserveRole.HEADROOM,
     ]
     assert result.reserve[-1].source is memory_budget.ReserveSource.FIXED
+    assert result.reserve[-1].bytes == 8 * GIB  # a quarter of the 32 GiB limit
 
 
 def test_reserve_above_the_base_clamps_to_zero_and_stays_visible() -> None:
@@ -110,7 +111,7 @@ def test_reserve_above_the_base_clamps_to_zero_and_stays_visible() -> None:
     )
 
     assert result.bytes == 0
-    assert result.reserve_bytes == 3 * GIB
+    assert result.reserve_bytes == GIB + GIB // 4
 
 
 def test_resolve_needs_a_limit_or_installed_memory() -> None:
@@ -125,7 +126,7 @@ def test_no_container_limit_uses_installed_memory_and_says_so() -> None:
         processes=(part(memory_budget.ReserveRole.MCP_SERVER, GIB),),
     )
 
-    assert result.bytes == 13 * GIB
+    assert result.bytes == 11 * GIB  # 16 GiB - 1 GiB measured - 4 GiB headroom
     assert result.rule is memory_budget.BudgetRule.NO_LIMIT
     assert result.limit_bytes is None
     assert result.installed_bytes == 16 * GIB
@@ -210,10 +211,10 @@ def test_compute_measures_agent_mcp_server_and_dashboard(
             16384 * kib,
             memory_budget.ReserveSource.MEASURED,
         ),
-        (memory_budget.ReserveRole.HEADROOM, None, 2 * GIB, memory_budget.ReserveSource.FIXED),
+        (memory_budget.ReserveRole.HEADROOM, None, 8 * GIB, memory_budget.ReserveSource.FIXED),
     ]
     assert result.rule is memory_budget.BudgetRule.LIMIT
-    assert result.bytes == 32 * GIB - 2 * GIB - (1024 + 2048 + 4096 + 8192 + 16384) * kib
+    assert result.bytes == 32 * GIB - 8 * GIB - (1024 + 2048 + 4096 + 8192 + 16384) * kib
 
 
 def test_compute_without_cgroup_limit_reads_memtotal(
@@ -229,7 +230,55 @@ def test_compute_without_cgroup_limit_reads_memtotal(
     assert result.installed_bytes == 16 * GIB
     # No process is running: every role is absent, only the headroom is held back.
     assert {p.source for p in result.reserve[:-1]} == {memory_budget.ReserveSource.ABSENT}
-    assert result.bytes == 14 * GIB
+    assert result.bytes == 12 * GIB
+
+
+@pytest.mark.parametrize(
+    ("limit", "cgroup_swap", "host_swap", "headroom", "swap_bytes"),
+    [
+        pytest.param(32 * GIB, 8 * GIB, 4 * GIB, False, 4 * GIB, id="swap"),
+        pytest.param(32 * GIB, 0, 4 * GIB, True, 0, id="no-swap"),
+        pytest.param(32 * GIB, 1 << 60, 0, True, 0, id="no-host-swap"),
+        pytest.param(32 * GIB, None, 4 * GIB, True, 0, id="no-swap-accounting"),
+        pytest.param(None, 8 * GIB, 16 * GIB, True, 0, id="no-limit"),
+    ],
+)
+def test_compute_drops_headroom_only_with_a_swap_allowance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int | None,
+    cgroup_swap: int | None,
+    host_swap: int,
+    headroom: bool,
+    swap_bytes: int,
+) -> None:
+    monkeypatch.setattr(f"{MODULE}.cgroup_memory_limit_bytes", lambda: limit)
+    monkeypatch.setattr(f"{MODULE}.cgroup_swap_limit_bytes", lambda _limit: cgroup_swap)
+    proc = make_proc(tmp_path)
+    (proc / "meminfo").write_text(
+        f"MemTotal: {16 * GIB // 1024} kB\nSwapTotal: {host_swap // 1024} kB\n", encoding="utf-8"
+    )
+
+    result = memory_budget.compute_memory_budget(proc_root=proc)
+
+    roles = [p.role for p in result.reserve]
+    assert (memory_budget.ReserveRole.HEADROOM in roles) is headroom
+    assert result.swap_bytes == swap_bytes
+    base = limit or 16 * GIB
+    assert result.bytes == base - (base // 4 if headroom else 0)
+
+
+def test_unreadable_meminfo_gives_no_swap_allowance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(f"{MODULE}.cgroup_memory_limit_bytes", lambda: 32 * GIB)
+    monkeypatch.setattr(f"{MODULE}.cgroup_swap_limit_bytes", lambda _limit: 8 * GIB)
+    proc = make_proc(tmp_path)  # no meminfo file
+
+    result = memory_budget.compute_memory_budget(proc_root=proc)
+
+    assert result.swap_bytes == 0
+    assert result.bytes == 24 * GIB
 
 
 def test_compute_without_readable_memtotal_names_the_file(

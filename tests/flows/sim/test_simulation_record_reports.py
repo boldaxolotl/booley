@@ -558,6 +558,7 @@ def _observed_hook_request(tmp_path, observer):
         build_root=tmp_path / "build",
         eda_tool="icarus",
         timeout_s=hang_guard_s(),
+        resource_flags=(),
         commands=commands,
         run_cwd=".",
     )

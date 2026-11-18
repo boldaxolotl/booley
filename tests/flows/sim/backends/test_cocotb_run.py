@@ -618,7 +618,9 @@ _MISSING_ID = (
     "missing",
     "inconclusive",
     'no matching test ID "missing" in cocotb results. cocotb reported test IDs: '
-    '"done", "boom", "skip_me". Check tests.toml against the rendered IDs in results.xml.',
+    '"done", "boom", "skip_me". tests.toml must list each test by its cocotb test ID: '
+    "a plain test's function name, or a parametrized or generated test's rendered ID, "
+    'such as "name/param=value".',
 )
 _DIAGNOSTIC = "results.xml reports extra non-selected test(s): {} — logged, not verdict-bearing"
 _UNFOCUSED_TESTS = (

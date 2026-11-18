@@ -5,15 +5,21 @@ Read-only and in memory: the caller reads the records with
 its phase keys (the keys the Flow's recorder writes), and each phase is
 estimated from the retained records:
 
-* **own**: the largest value over all records of the phase's key, times
-  :data:`ESTIMATE_MARGIN`;
+* **own**: the largest value over all records of the phase's key, times the
+  margin (:func:`memory_margin` for memory, :data:`ESTIMATE_MARGIN` for
+  wall-clock time);
 * **borrowed**: with no own record, the largest estimate for the same Target
   and phase (any Test Run or flags), else for that phase anywhere in the
   Project (ASIC synthesis and FPGA implementation never borrow from another
   Target: their memory grows with the design);
 * **unknown**: with neither, the phase has no estimate.
 
-Memory and wall-clock time follow the same rules, each on its own values. Every
+Pre-Sim Commands (``sim_pre_run``) are the exception to the Project borrowing:
+they run per Target, so with no record of their own and none for the Target they
+take the Target's ``sim_build`` estimate instead.
+
+Memory and wall-clock time follow the same rules, each on its own values; a
+record's memory value counts what the Job swapped out. Every
 outcome counts: an OOM-killed or timed-out run is a lower bound, so it can
 raise an estimate but never lower it.
 """
@@ -21,7 +27,7 @@ raise an estimate but never lower it.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, TypeVar
@@ -30,13 +36,24 @@ from booley.flows.target_test_plan import TargetTestPlan, batch_test_runs
 from booley.flows.test_runs import TestRun
 from booley.runtime.resource_history import HistoryKey, history_key, specialist_name
 
-#: Headroom over the largest value seen (ADR 0087).
+#: Headroom over the largest value seen (ADR 0087); also the memory margin
+#: without a swap allowance.
 ESTIMATE_MARGIN = 1.25
+#: The memory margin when the Sandbox has a swap allowance, which absorbs a short overshoot.
+SWAP_MEMORY_MARGIN = 1.10
+
+
+def memory_margin(swap_bytes: int) -> float:
+    """The memory estimate margin for a Sandbox with *swap_bytes* of swap allowance."""
+    return SWAP_MEMORY_MARGIN if swap_bytes > 0 else ESTIMATE_MARGIN
+
 
 #: Flow names with their own phase keys; any other name is a Custom Flow.
 _SIM_FLOW = "sim"
 _SINGLE_PHASE_FLOWS = {"lint": "lint", "fpga": "fpga_impl", "synth": "synth"}
 _COVERAGE_FLAG = "coverage"
+_PRE_SIM_PHASE = "sim_pre_run"
+_BUILD_PHASE = "sim_build"
 
 #: Phases that borrow only within a Target: their memory grows with the design, so
 #: another Target's peak can be an order of magnitude off (ADR 0087). The split
@@ -44,6 +61,13 @@ _COVERAGE_FLAG = "coverage"
 _TARGET_ONLY_PHASES = frozenset({"synth", "fpga_impl"})
 
 _K = TypeVar("_K")
+
+
+def sim_resource_flags(*, coverage: bool, trace: bool) -> tuple[str, ...]:
+    """Coverage and tracing change a simulation's footprint; history keys carry them."""
+    return tuple(
+        flag for flag, enabled in ((_COVERAGE_FLAG, coverage), ("trace", trace)) if enabled
+    )
 
 
 @dataclass(frozen=True)
@@ -60,10 +84,16 @@ class JobRequest:
     test_runs: tuple[str, ...] = ("",)
     #: Instrumentation flags (``coverage``, ``trace``); order does not matter.
     flags: tuple[str, ...] = ()
+    #: Sim only: the Target runs Pre-Sim Commands before its Test Runs.
+    pre_sim_commands: bool = False
 
 
 def sim_job_request(
-    plan: TargetTestPlan, runs: Sequence[TestRun], *, flags: tuple[str, ...] = ()
+    plan: TargetTestPlan,
+    runs: Sequence[TestRun],
+    *,
+    flags: tuple[str, ...] = (),
+    pre_sim_commands: bool = False,
 ) -> JobRequest:
     """The sim request that runs *runs* (resolved by ``plan.resolve``) on *plan*'s Target.
 
@@ -75,7 +105,8 @@ def sim_job_request(
 
     The request always lists simulator processes; a ``--mode elab-only`` Job
     runs none (only its FuseSoC setup and build), so its caller builds
-    ``JobRequest(..., test_runs=())`` itself.
+    ``JobRequest(..., test_runs=())`` itself. *pre_sim_commands* is true when the
+    Project configures Pre-Sim Commands.
     """
     one_process_per_run = plan.adapter != "cocotb" or _COVERAGE_FLAG in flags
     groups = batch_test_runs(runs, one_process_per_run=one_process_per_run)
@@ -83,7 +114,9 @@ def sim_job_request(
         ",".join(plan.history_test_name(run) for run in group if run.test is not None)
         for group in groups
     )
-    return JobRequest(_SIM_FLOW, plan.target, test_runs=names, flags=flags)
+    return JobRequest(
+        _SIM_FLOW, plan.target, test_runs=names, flags=flags, pre_sim_commands=pre_sim_commands
+    )
 
 
 def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
@@ -98,8 +131,7 @@ def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
     Synthesis lists its whole-command ``synth`` key only: the split ``sv2v``,
     ``yosys`` and ``openroad`` keys depend on the synthesis mode and frontend,
     and a listed phase that never runs would leave the Job unknown forever.
-    ``sim_pre_run`` is never listed (nothing records it), nor are the
-    per-module probe keys of ``--mode elab-only-standalone``.
+    The per-module probe keys of ``--mode elab-only-standalone`` are never listed.
     """
     return tuple(dict.fromkeys(phase_occurrences(request)))
 
@@ -118,7 +150,10 @@ def phase_occurrences(request: JobRequest) -> tuple[HistoryKey, ...]:
     if request.flow == _SIM_FLOW:
         coverage = _COVERAGE_FLAG in request.flags
         # FuseSoC setup runs once per prepared build, coverage or not.
-        keys = [key("sim_prepare"), key("sim_build")]
+        keys = [key("sim_prepare"), key(_BUILD_PHASE)]
+        if request.pre_sim_commands and request.test_runs:
+            # Listed once, whatever the number of firings, and never reported ended.
+            keys.append(key(_PRE_SIM_PHASE))
         keys.extend(key("sim_run", name) for name in request.test_runs)
         if coverage:
             keys.append(key("sim_postprocess"))
@@ -220,15 +255,31 @@ class JobEstimate:
         return Fit.FITS
 
 
-class _Maxima:
-    """The largest value of one record field, by key, by Target and phase, and by phase."""
+def _memory_mb(record: dict[str, Any]) -> Any:
+    """A record's memory value: resident plus swap, else the resident peak older records hold."""
+    with_swap = record.get("peak_memory_with_swap_mb")
+    return record["peak_memory_mb"] if with_swap is None else with_swap
 
-    def __init__(self, records: Iterable[dict[str, Any]], field: str) -> None:
+
+def _wall_s(record: dict[str, Any]) -> Any:
+    return record["wall_s"]
+
+
+class _Maxima:
+    """The largest value of one record measure, by key, by Target and phase, and by phase."""
+
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        value_of: Callable[[dict[str, Any]], Any],
+        margin: float,
+    ) -> None:
+        self._margin = margin
         self._own: dict[HistoryKey, float] = {}
         self._target: dict[tuple[str, str], float] = {}
         self._project: dict[str, float] = {}
         for record in records:
-            raw = record[field]
+            raw = value_of(record)
             # Unmeasured says nothing; a Specialist's run is no Target's.
             if raw is None or specialist_name(record) is not None:
                 continue
@@ -241,16 +292,22 @@ class _Maxima:
     def estimate(self, key: HistoryKey) -> Estimate:
         """Own, else the Target's, else the Project's largest for *key*'s phase, with margin.
 
-        A phase in :data:`_TARGET_ONLY_PHASES` skips the Project step.
+        A phase in :data:`_TARGET_ONLY_PHASES` skips the Project step. Pre-Sim
+        Commands skip it too: with no record of their own or the Target's, the
+        Target's ``sim_build`` estimate stands in.
         """
-        project = None if key.phase in _TARGET_ONLY_PHASES else self._project.get(key.phase)
+        pre_sim = key.phase == _PRE_SIM_PHASE
+        skip_project = pre_sim or key.phase in _TARGET_ONLY_PHASES
+        project = None if skip_project else self._project.get(key.phase)
         for source, found in (
             (Source.OWN, self._own.get(key)),
             (Source.TARGET, self._target.get((key.target, key.phase))),
             (Source.PROJECT, project),
         ):
             if found is not None:
-                return Estimate(found * ESTIMATE_MARGIN, source)
+                return Estimate(found * self._margin, source)
+        if pre_sim:
+            return self.estimate(key._replace(phase=_BUILD_PHASE))
         return Estimate(None, Source.UNKNOWN)
 
 
@@ -263,9 +320,11 @@ def _raise_to(largest: dict[_K, float], key: _K, value: float) -> None:
 class ResourceEstimator:
     """Estimates Jobs from a snapshot of Resource History records."""
 
-    def __init__(self, records: Sequence[dict[str, Any]]) -> None:
-        self._memory = _Maxima(records, "peak_memory_mb")
-        self._wall = _Maxima(records, "wall_s")
+    def __init__(
+        self, records: Sequence[dict[str, Any]], *, memory_margin: float = ESTIMATE_MARGIN
+    ) -> None:
+        self._memory = _Maxima(records, _memory_mb, memory_margin)
+        self._wall = _Maxima(records, _wall_s, ESTIMATE_MARGIN)
 
     def estimate(self, requests: Sequence[JobRequest]) -> JobEstimate:
         """Estimate a Job: one request per Target, phases concatenated in order."""
@@ -281,16 +340,18 @@ class ResourceEstimator:
         )
 
 
-def specialist_memory_mb(records: Iterable[dict[str, Any]], name: str) -> float | None:
+def specialist_memory_mb(
+    records: Iterable[dict[str, Any]], name: str, *, margin: float = ESTIMATE_MARGIN
+) -> float | None:
     """The reservation in MiB a Specialist's own history asks for, or ``None``.
 
-    The largest measured peak among the records of Specialist *name*, times
-    :data:`ESTIMATE_MARGIN`, as a Flow phase's estimate does. ``None`` when the
-    history holds no measured peak for it.
+    The largest measured peak among the records of Specialist *name* (resident
+    plus swap), times *margin*, as a Flow phase's estimate does. ``None`` when
+    the history holds no measured peak for it.
     """
     peaks = [
-        float(record["peak_memory_mb"])
+        float(value)
         for record in records
-        if specialist_name(record) == name and record["peak_memory_mb"] is not None
+        if specialist_name(record) == name and (value := _memory_mb(record)) is not None
     ]
-    return max(peaks) * ESTIMATE_MARGIN if peaks else None
+    return max(peaks) * margin if peaks else None

@@ -27,7 +27,7 @@ from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.endpoint_session import _attach_memory_warning
 from booley.flows.job_estimates import JobRequest
-from booley.flows.memory_admission import job_thread_count
+from booley.flows.memory_admission import MemorySizing, job_thread_count
 from booley.flows.sim.record import capacity
 from booley.flows.sim.record.capacity import LeaseLostError, SimulationRecordCapacity
 from booley.flows.sim.record.codec import canonical_json_bytes
@@ -698,7 +698,6 @@ def _under_coverage_and_trace(
 @pytest.mark.parametrize(
     ("variant", "reservation", "run_alone"),
     [
-        pytest.param(_with_pre_sim_commands, 500.0, False, id="pre-sim-commands-rebuild"),
         pytest.param(_as_coverage_aggregate, 500.0, False, id="coverage-aggregate-builds"),
         # No history under the coverage and trace flags: the item runs alone.
         pytest.param(_under_coverage_and_trace, None, True, id="no-history-runs-alone"),
@@ -724,6 +723,48 @@ def test_item_reserves_its_build_when_the_shared_build_does_not_cover_it(
     assert varied is not None and varied.run_alone is run_alone
     if reservation is not None:
         assert varied.reservation_mb == reservation
+
+
+@pytest.mark.parametrize(
+    ("pre_sim_peak", "reservation"),
+    [
+        # Unmeasured Pre-Sim Commands reserve the Target's build estimate.
+        pytest.param(None, 500.0, id="unmeasured"),
+        pytest.param(240.0, 300.0, id="pre-sim-larger"),
+        pytest.param(80.0, 125.0, id="run-larger"),
+    ],
+)
+def test_item_with_pre_sim_commands_reserves_their_estimate_not_the_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pre_sim_peak: float | None,
+    reservation: float,
+) -> None:
+    sized: list[tuple[JobRequest, bool]] = []
+    original = MemorySizing.plan_work_item
+
+    def spy(self: MemorySizing, request: JobRequest | None, *, build: bool) -> MemoryClaim:
+        assert request is not None
+        sized.append((request, build))
+        return original(self, request, build=build)
+
+    monkeypatch.setattr(MemorySizing, "plan_work_item", spy)
+    manifest = _manifest_for(NAMES)
+    (item, *_) = manifest.document["work_items"]
+    history = _history("sim")
+    if pre_sim_peak is not None:
+        history.append(_record("sim", "sim_pre_run", pre_sim_peak))
+    with _scenario(tmp_path, monkeypatch, history=history) as scenario:
+        claim = _flow_claim(scenario)
+        claim.settle(tmp_path, item)  # the shared build is settled
+        with_hook_manifest, with_hook_item = _with_pre_sim_commands(manifest, item)
+        claimed = claim.item_claim(tmp_path, with_hook_manifest, with_hook_item)  # type: ignore[arg-type]
+
+    assert claimed is not None and not claimed.run_alone
+    assert claimed.reservation_mb == reservation
+    # The settled build is not the item's; its Pre-Sim Commands are.
+    ((request, build),) = sized
+    assert request.pre_sim_commands and not build
 
 
 # --- One lane per core, items admitted by their own claims (#3773) ---

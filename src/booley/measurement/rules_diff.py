@@ -59,6 +59,7 @@ class ChangeKind(StrEnum):
 
     BOUND_ADDED = "bound added"
     TABLE_ADDED = "table added"
+    TRACKED_TABLE_ADDED = "table added with tracked metrics only"
     MAX_LOWERED = "maximum lowered"
     MIN_RAISED = "minimum raised"
     MAX_RAISED = "maximum raised"
@@ -74,6 +75,7 @@ class ChangeKind(StrEnum):
 _DIRECTION: dict[ChangeKind, Direction] = {
     ChangeKind.BOUND_ADDED: Direction.TIGHTENED,
     ChangeKind.TABLE_ADDED: Direction.TIGHTENED,
+    ChangeKind.TRACKED_TABLE_ADDED: Direction.NEUTRAL,
     ChangeKind.MAX_LOWERED: Direction.TIGHTENED,
     ChangeKind.MIN_RAISED: Direction.TIGHTENED,
     ChangeKind.MAX_RAISED: Direction.LOOSENED,
@@ -227,7 +229,8 @@ def _classify(before: WrittenRules, after: WrittenRules) -> tuple[RuleChange, ..
         key = (table.target, table.flow)
         previous = old.get(key)
         if previous is None:
-            changes.append(_row(table, ChangeKind.TABLE_ADDED))
+            kind = ChangeKind.TABLE_ADDED if table.bounds else ChangeKind.TRACKED_TABLE_ADDED
+            changes.append(_row(table, kind))
             continue
         off = after.switched_off.get(key, frozenset())
         changes.extend(_bound_changes(previous, table, off))

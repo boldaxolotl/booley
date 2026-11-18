@@ -10,11 +10,17 @@ from pathlib import Path
 from booley.core.boundary import as_dict, as_str
 
 GIB_BYTES = 1024**3
-MEMORY_HEADROOM_BYTES = 2 * GIB_BYTES
+# The default swap beyond memory, and the headroom a Sandbox without swap holds
+# back: a quarter of memory.
+SWAP_SHARE_DIVISOR = 4
 
 CGROUP_MEMORY_LIMIT_PATHS = (
     Path("/sys/fs/cgroup/memory.max"),
     Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+)
+CGROUP_SWAP_LIMIT_PATHS = (
+    Path("/sys/fs/cgroup/memory.swap.max"),
+    Path("/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes"),
 )
 _CGROUP_UNLIMITED_FLOOR = 1 << 60
 _MEMORY_SUFFIXES = {"b": 1, "k": 1024, "m": 1024**2, "g": GIB_BYTES}
@@ -50,6 +56,32 @@ def cgroup_memory_limit_bytes() -> int | None:
         except ValueError:
             continue
         return None if value >= _CGROUP_UNLIMITED_FLOOR else value
+    return None
+
+
+def cgroup_swap_limit_bytes(memory_limit_bytes: int) -> int | None:
+    """Return the swap the cgroup allows beyond its memory limit.
+
+    cgroup v2 states the swap itself; cgroup v1 states memory plus swap, so the
+    memory limit comes off. An unlimited value returns the unbounded floor (the
+    caller caps it at the host's swap). ``None`` means neither file is readable,
+    as on a Docker host without swap accounting.
+    """
+    v2_path, v1_path = CGROUP_SWAP_LIMIT_PATHS
+    for path in (v2_path, v1_path):
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text == "max":
+            return _CGROUP_UNLIMITED_FLOOR
+        try:
+            value = int(text)
+        except ValueError:
+            continue
+        if value >= _CGROUP_UNLIMITED_FLOOR:
+            return _CGROUP_UNLIMITED_FLOOR
+        return max(0, value - memory_limit_bytes) if path == v1_path else value
     return None
 
 
@@ -114,7 +146,7 @@ def sandbox_swap_bytes(memory: str, swap: str, host_swap_bytes: int) -> int | No
     swap_limit = parse_memory_limit(swap)
     if swap_limit is not None:
         return swap_limit
-    return min(memory_bytes // 4, host_swap_bytes)
+    return min(memory_bytes // SWAP_SHARE_DIVISOR, host_swap_bytes)
 
 
 def memory_swap_limit(memory: str, swap: str, host_swap_bytes: int) -> str:

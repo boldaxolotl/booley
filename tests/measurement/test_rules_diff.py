@@ -84,6 +84,16 @@ ROWS = {
         None,
         None,
     ),
+    "track-only-table-added": (
+        SYNTH + AREA,
+        SYNTH + AREA + '[synth_core.fpga]\ntrack = ["lut_count"]\n',
+        "table added with tracked metrics only",
+        "neutral",
+        None,
+        None,
+        None,
+        None,
+    ),
     "max-lowered": (
         SYNTH + AREA,
         SYNTH + "area_kge_max = 50\n",

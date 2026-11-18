@@ -237,6 +237,10 @@ the work is accepted:
 
 Failing rows come first, and the metric table follows.
 
+Tracked metrics that errored or were not evaluated are counted after the
+enforced total, not in it, as in
+`3 of 3 enforced met; 3 tracked not evaluated`.
+
 The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer
 sees it.

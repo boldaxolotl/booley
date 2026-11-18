@@ -129,6 +129,7 @@ def test_timeout_progress_keeps_dots_inside_captured_parametrized_names(filtered
 
 # Captured from the pinned producer; provenance and reproduction live beside it.
 _RESULTS_XML = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/results.xml"
+_NO_MATCH_XML = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/results-no-match.xml"
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -139,6 +140,12 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 def _parse(tmp_path: Path, text: str) -> cr.CocotbResults:
     return cr.parse_results_xml(_write(tmp_path, text))
+
+
+_RULE = (
+    "tests.toml must list each test by its cocotb test ID: a plain test's function name, "
+    'or a parametrized or generated test\'s rendered ID, such as "name/param=value".'
+)
 
 
 class TestParseResultsXml:
@@ -159,14 +166,9 @@ class TestParseResultsXml:
             (None, cr.STATE_MISSING),
             # A SIGKILL mid-write leaves a torn file (S4).
             ('<testsuites><testsuite><testcase name="interrupted"', cr.STATE_UNPARSEABLE),
-            (
-                '<testsuites name="results"><testsuite name="all" package="all">'
-                "</testsuite></testsuites>",
-                cr.STATE_EMPTY,
-            ),
             ("DIRECTORY", cr.STATE_MISSING),
         ],
-        ids=["missing-file", "truncated", "empty-suite", "not-a-file"],
+        ids=["missing-file", "truncated", "not-a-file"],
     )
     def test_unusable_results_file_never_passes(self, tmp_path: Path, content, state):
         if content is None:
@@ -236,6 +238,44 @@ class TestReconcile:
         assert "no matching test ID" in detail
         assert "test_typo" in detail
         assert all(name in detail for name in ("test_reset", "test_fail", "test_skipped"))
+
+    @pytest.mark.parametrize(
+        ("xml", "selected", "expected"),
+        [
+            pytest.param(
+                None,
+                ["test_param", "test_other"],
+                [
+                    'no matching test ID "test_param" in cocotb results: no cocotb test ID '
+                    "matched the selected tests, so cocotb ran none. " + _RULE,
+                    'no matching test ID "test_other" in cocotb results: no cocotb test ID '
+                    "matched the selected tests, so cocotb ran none. " + _RULE,
+                ],
+                id="cocotb-2.1.0",
+            ),
+            pytest.param(
+                # The cocotb 2.0.1 shape: excluded tests are listed as skipped.
+                '<testsuites><testsuite name="all">'
+                '<testcase name="test_param/width=1" classname="m"><skipped/></testcase>'
+                '<testcase name="test_param/width=2" classname="m"><skipped/></testcase>'
+                "</testsuite></testsuites>",
+                ["test_param"],
+                [
+                    'no matching test ID "test_param" in cocotb results. cocotb reported '
+                    'test IDs: "test_param/width=1", "test_param/width=2". ' + _RULE
+                ],
+                id="cocotb-2.0.1",
+            ),
+        ],
+    )
+    def test_selected_ids_matching_no_test_are_inconclusive_with_the_rendered_id_rule(
+        self, tmp_path: Path, xml: str | None, selected: list[str], expected: list[str]
+    ):
+        res = cr.parse_results_xml(_NO_MATCH_XML) if xml is None else _parse(tmp_path, xml)
+        assert res.state == (cr.STATE_EMPTY if xml is None else cr.STATE_OK)
+        verdicts = cr.reconcile(selected, res)
+        assert [(n, v) for n, v, _ in verdicts] == [(n, cr.VERDICT_INCONCLUSIVE) for n in selected]
+        assert [d for _, _, d in verdicts] == expected
 
     def test_non_ok_state_maps_every_test_inconclusive(self, tmp_path: Path):
         res = cr.parse_results_xml(tmp_path / "gone.xml")

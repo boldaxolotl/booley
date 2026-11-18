@@ -355,8 +355,12 @@ def _resolve(
     monkeypatch.setattr(flow, "_resolve_test_runs", resolve)
     monkeypatch.setattr(
         "booley.flows.sim.flow.sim_job_request",
-        lambda plan, runs, *, flags: JobRequest(
-            "sim", plan.target, test_runs=("smoke",), flags=flags
+        lambda plan, runs, *, flags, pre_sim_commands=False: JobRequest(
+            "sim",
+            plan.target,
+            test_runs=("smoke",),
+            flags=flags,
+            pre_sim_commands=pre_sim_commands,
         ),
     )
     return asked
@@ -545,6 +549,40 @@ def test_specialist_claim_without_history_reserves_the_default() -> None:
         assert plan.claim == job_slots.MemoryClaim(
             budget_mb=4000.0, reservation_mb=452.5, companion=True
         )
+
+
+@pytest.mark.parametrize(
+    ("swap_bytes", "synth_mib", "specialist_mib"),
+    [
+        pytest.param(4 * 1024**3, 1100.0, 440.0, id="swap"),
+        pytest.param(0, 1250.0, 500.0, id="no-swap"),
+    ],
+)
+def test_estimate_margin_follows_the_sandbox_swap_allowance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    swap_bytes: int,
+    synth_mib: float,
+    specialist_mib: float,
+) -> None:
+    from tests.memory_budget_support import budget_of
+
+    monkeypatch.setattr(
+        admission,
+        "compute_memory_budget",
+        lambda **_: budget_of(8000 * 1024**2, swap_bytes=swap_bytes),
+    )
+    booley_dir = _booley_dir(tmp_path)
+    specialist = _specialist_record("reviewer", 346)
+    specialist["peak_memory_with_swap_mb"] = 400.0  # swapped 54 MiB out
+    records = [*_history(("a", 1000)), _record("", "sim_build", 1000), specialist]
+    _write_history(booley_dir, {"$schema": SCHEMA, "records": records})
+
+    assert _measure(booley_dir, _synth("a")).claim.reservation_mb == pytest.approx(synth_mib)
+    sized = admission.MemorySizing(booley_dir).plan_work_item(JobRequest("synth", "a"), build=True)
+    assert sized.reservation_mb == pytest.approx(synth_mib)
+    specialist_claim = admission.measure_specialist_claim(booley_dir, "reviewer").claim
+    assert specialist_claim.reservation_mb == pytest.approx(specialist_mib)
 
 
 def test_specialist_and_coordinator_claims_stay_bounded() -> None:

@@ -81,13 +81,23 @@ Try:
   order, no cross-Target merge.
 - Suite choice: no selection → registered suite minus default-skipped; explicit
   skipped test runs.
-- Rejections before any build/report dir: `sim_icarus` with coverage; Verilator + Icarus together (valid
-  Target rejected too); elab-only and elab-only-standalone; a process-local `verilator` wrapper reporting
-  5.050 on `--version` (`../../shared/coverage/faults/native_tool.py`).
-- Build cache: plain → coverage, trace → trace+coverage, coverage-only vs trace+coverage must have distinct
-  build identities; a repeat reuses the build but runs fresh simulator processes and new native files.
+- Rejections before any build/report dir: `sim_icarus` with coverage; Verilator
+  + Icarus together (valid Target rejected too).
+- Rejections before any build: elab-only and elab-only-standalone → rc 2
+  "Coverage requires simulation mode" (a numbered report dir holding the
+  refusal is allowed, as for other elab-mode refusals); a process-local
+  `verilator` wrapper reporting 5.050 on `--version`
+  (`../../shared/coverage/faults/native_tool.py`) → rc 2 naming the pinned
+  collector before any compile (a Simulation and Coverage Record ending
+  `COLLECTOR_ERROR` is allowed).
+- Build cache (trace cases on `sim_cocotb`, where Booley drives the dump): plain
+  → coverage, trace → trace+coverage, coverage-only vs trace+coverage must have
+  distinct build identities; a repeat reuses the build but runs fresh
+  simulator processes and new native files.
 - Pre-sim staging: merge `project-data/staging.toml`, collect `sim_staged` tests `half upper` (per test 4/8,
-  union 8/8) and `sim_cocotb_staged` tests `gap full` (one batch stage, each test reads its own vector);
+  union 8/8) and `sim_cocotb_staged` tests `gap full` (one stage per test,
+  since coverage runs each cocotb Test Run in its own process; each test reads
+  its own vector);
   then drop the `full` vector from the staged file → that test must fail loading it. Restore.
 Look for: uninstrumented cache reuse, merged per-test databases, partial side effects after a rejection,
 cocotb batch verdicts reused as coverage truth.
@@ -179,8 +189,12 @@ Try:
   another.
 - In separate copies, keep one valid approval and break the other: invalid anchor, absolute or `../`
   directory, symlink, bad schema, duplicate table, zeroed source/proof digest, point from another source,
-  wrong Target, TB point, missing proof file, proof path escape, proof on `excluded`, missing `approved_by`,
+  unknown Target identity (`COV_WAIVER_TARGET_UNKNOWN`), TB point, missing
+  proof file, proof path escape, proof on `excluded`, missing `approved_by`,
   Analyst `waiver_candidates` pasted in → blocked, neither applied.
+- An approval retargeted to another known Target belongs to that Target's set
+  (#727): collecting the other Target blocks it (`COV_WAIVER_POINT_STALE`),
+  while the original Target alone applies its remaining valid approval.
 - Ungated run with an unreadable malformed approval dir → `blocked`, rc2, waiver diagnostics, and a `--no-waivers` hint. The same run with `--no-waivers` → no reads, `not_requested`, dir unchanged.
 Look for: partial application, symlink/path escapes, hardcoded Booley Directory path.
 Depends on: baseline.waiver.
@@ -224,9 +238,12 @@ Try:
 - Follow `../../shared/coverage/simulation-record/RUNBOOK.md`: interrupt
   `sim_toggle half --coverage` mid-collection; resume and `--dry-run` from the
   Manifest → rc2 before any EDA launch naming a new `--coverage` run, attempt
-  inventory unchanged; the fresh run is the control; flip one byte in a terminal
-  `result.json` → rc2 before any EDA launch, restore → `booley flow sim
-  --resume-from <manifest>` without rerun. Cross-check with
+  inventory unchanged; the fresh run is the control; break a field resume
+  validates in a terminal `result.json` (the grade, `attempt_id` or
+  `manifest_sha256`; a well-formed edit to an unvalidated field such as a
+  stored digest is accepted by design, ADR 0064) → rc2 before any EDA launch,
+  restore → `booley flow sim --resume-from <manifest>` without rerun.
+  Cross-check with
   `../../shared/coverage/simulation-record/validate_aggregate.py`.
 Look for: number reuse, a restored work item that reruns.
 Depends on: baseline.retention.
@@ -285,12 +302,18 @@ Try:
   `coverage_report.json`, wrong Target/invocation path, per-call waiver dir,
   missing/incomplete/other-Target `simulation.json`. Completed Target analyzable while sibling still runs.
 - Isolation: Codex/Claude sessions expose only `coverage_evidence`, empty cwd, no Project skills; missing
-  Codex model metadata fails early, refresh fixes; interrupted Claude Analyst leaves no nested server.
+  a model missing from the Codex models cache → one warning and Booley's
+  generated tool-free catalog entry, analysis proceeds (ADR 0080); an
+  unreadable, malformed or ambiguous `models_cache.json` fails early;
+  interrupted Claude Analyst leaves no nested server.
 - Via `../../shared/coverage/faults/provider.py` shim: queries (overview, metric, source, covered/uncovered, dispositions, pages
   of 2, changed filter, exact reference, scope on `sim_scale`); rejects (another
   Coverage Record, bad cursor,
   cursor+new filter, undelivered ref, limit 100000, 64 KiB response, total budget); candidates
-  (excluded/unreachable → `not_approved`; missing proof/evidence, observed hit, report-only → investigate;
+  (excluded/unreachable → `not_approved`; an unhit `unreachable` with
+  evidence but no proof reference → `ready_for_human_review`, still
+  `not_approved` (ADR 0066); missing evidence, observed hit, report-only →
+  investigate;
   TB, unscored, waived, duplicate, bad reason, `point:999999999` → forbidden); model faults (malformed JSON,
   missing fields, incomplete, invented ref, context exhausted) → failed report, state unchanged. Restore the
   real executable and do one real call.
@@ -305,6 +328,8 @@ redirection env, altered permissions, approval-dir copies; undo `tests.toml`/con
 fixture Project, child worktrees and branches in `resources.md`.
 
 ## Known traps
+- `sim_toggle` and the `--main` HDL TBs write no waveform, so `--trace` on them
+  ends INCONCLUSIVE rc 1 by design; trace cases use `sim_cocotb`.
 - Only `sim_toggle` has the clean 8-point toggle denominator; other Targets include clock/reset/helper
   points that must still be counted.
 - `sim_generated` has no HDL `tb` tag on purpose; check classification and resolved source closure, not the
