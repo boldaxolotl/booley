@@ -33,6 +33,7 @@ _MAX_COMPLETION_MESSAGE_CHARS = 500
 OOM_REQUEUE_REASON = "requeued after out-of-memory"
 #: Opens the note a requeued Job's final result ends with.
 OOM_REQUEUE_NOTE = "Requeued after out-of-memory"
+#: Opens each line a Job's final result adds for an OOM kill that is not retried.
 OOM_KILL_NOTE = "Killed for out-of-memory"
 #: Printed to stdout between the killed attempt's output and the final attempt's.
 OOM_REQUEUE_MARKER = f"[requeue] {OOM_REQUEUE_REASON}; the output above is from the killed attempt"
@@ -245,18 +246,19 @@ def note_job_oom_kill() -> None:
         attempt.oom_killed.set()
 
 
-def note_final_work_item_oom_kill(name: str, *, passed: bool) -> None:
+def note_final_work_item_oom_kill(name: str, *, passed: bool, raised: bool = False) -> None:
     """Record that work item *name*'s last attempt died of its own OOM kill, on its Job's attempt.
 
     Only an unarmed work item attempt that was killed and failed counts: an
-    armed one is requeued, and a passed one keeps its result. Nothing outside
-    a work item attempt.
+    armed one is requeued, and a passed one keeps its result, unless *raised*:
+    the attempt's execution failed after the kill, so nothing requeues it.
+    Nothing outside a work item attempt.
     """
     attempt = _JOB_ATTEMPT.get()
     if (
         attempt is None
         or not attempt.work_item
-        or attempt.stop_on_oom
+        or (attempt.stop_on_oom and not raised)
         or not attempt.oom_killed.is_set()
         or passed
         or attempt.parent is None
@@ -324,7 +326,7 @@ def _name_final_oom_kills(
             else f"{OOM_KILL_NOTE}: this Job may not be requeued after an OOM kill, so it is not retried."
         )
     lines.extend(
-        f"{OOM_KILL_NOTE}: work item {name}'s second attempt was OOM-killed too, so it is not retried again."
+        f"{OOM_KILL_NOTE}: work item {name}'s last attempt was OOM-killed, so it is not retried again."
         for name in attempt.final_item_kills
     )
     outcome.report_text = "\n".join(filter(None, (outcome.report_text, *lines)))

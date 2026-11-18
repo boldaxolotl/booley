@@ -727,7 +727,7 @@ class SimulationRecord:
         except PreSimScopeStoppedError as signal:
             raise SimulationRecordCapacityError(str(signal)) from signal
         except BaseException:
-            note_final_work_item_oom_kill(work_item_label(attempt.item), passed=False)
+            note_final_work_item_oom_kill(work_item_label(attempt.item), passed=False, raised=True)
             raise
 
     def _execute_scheduled(

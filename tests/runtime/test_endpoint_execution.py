@@ -403,7 +403,7 @@ def test_final_work_item_oom_kill_is_named_in_the_job_result() -> None:
     result = execute_endpoint(endpoint, "prepared")
 
     assert result.outcome.report_text == (
-        "verdict\nKilled for out-of-memory: work item gamma's second attempt was OOM-killed too, "
+        "verdict\nKilled for out-of-memory: work item gamma's last attempt was OOM-killed, "
         "so it is not retried again."
     )
 
