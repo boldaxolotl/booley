@@ -29,6 +29,7 @@ from booley.evidence.timing import make_clock_timing
 from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
+from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
     AsicSynthesizeFlow,
@@ -4485,7 +4486,8 @@ class TestIncompleteResourceResults:
 
         assert result is failure
 
-    def test_completed_target_survives_later_matrix_crash(self, tmp_path: Path):
+    @pytest.mark.parametrize("signalled", [False, True])
+    def test_completed_target_survives_later_matrix_crash(self, tmp_path: Path, signalled: bool):
         flow = AsicSynthesizeFlow()
         report_dir = tmp_path / "reports"
         flow.parse_args(
@@ -4500,12 +4502,18 @@ class TestIncompleteResourceResults:
         )
         first = SynthMetrics(area_um2=500.0, area_kge=1.0, cells=100)
         calls = 0
+        published: list[dict[str, object]] = []
 
         def run_one(_target: str):
             nonlocal calls
             calls += 1
             if calls == 1:
                 return first, "ok"
+            if signalled:  # a signal ends the process here, without unwinding
+                abort_open_progress()
+                published.append(
+                    json.loads(next(report_dir.glob("synth/*/progress.json")).read_text())
+                )
             raise RuntimeError("simulated outer interruption")
 
         with (
@@ -4523,6 +4531,9 @@ class TestIncompleteResourceResults:
         assert progress["completed_targets"] == ["asic_a"]
         assert progress["pending_targets"] == ["asic_b"]
         assert (invocation_dirs[-1] / "targets" / "asic_a.json").is_file()
+        if signalled:
+            (snapshot,) = published
+            assert (snapshot["phase"], snapshot["pending_targets"]) == ("aborted", ["asic_b"])
 
 
 @pytest.mark.parametrize("executable", ["sv2v", "yosys", "openroad"])

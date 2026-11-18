@@ -12,6 +12,7 @@ import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable
+from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.sim.build import SimulationBuildPreparationError
 from booley.flows.sim.execution import SimulationExecution
 from booley.flows.sim.execution.engine import TRACE_CLEANUP_MARGIN_S
@@ -611,11 +612,21 @@ def test_consecutive_simulation_records_preserve_first_evidence(tmp_path: Path, 
     assert b"SECOND_ONLY" in second_bytes
 
 
-def test_simulation_record_crash_keeps_completed_target_in_progress(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("signalled", [False, True])
+def test_simulation_record_crash_keeps_completed_target_in_progress(
+    tmp_path: Path, monkeypatch, signalled: bool
+):
+    published: list[dict[str, object]] = []
+
     def process(launch: Launch) -> SubprocessResult:
         if launch.target == "full":
+            if signalled:  # a signal ends the process here, without unwinding
+                abort_open_progress()
+                published.append(json.loads(progress_path.read_text(encoding="utf-8")))
             raise RuntimeError("simulated outer interruption")
         return PASS_PROCESS
+
+    progress_path = tmp_path / "reports/sim/1/progress.json"
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "sim-checkpoint-1")
     run = run_simulation_record_sim(
@@ -624,12 +635,15 @@ def test_simulation_record_crash_keeps_completed_target_in_progress(tmp_path: Pa
 
     assert run.result.exit_code == EXIT_ERROR
     assert "simulated outer interruption" in run.result.outcome.report_text
-    progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text(encoding="utf-8"))
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
     assert progress["run_id"] == "sim-checkpoint-1"
     assert progress["complete"] is True
     assert progress["phase"] == "aborted"
     assert progress["completed_targets"] == ["lite"]
     assert progress["pending_targets"] == ["full"]
+    if signalled:
+        (snapshot,) = published
+        assert (snapshot["phase"], snapshot["pending_targets"]) == ("aborted", ["full"])
 
 
 def test_default_report_root_uses_project_data(tmp_path: Path, monkeypatch):
