@@ -588,29 +588,36 @@ _CONFLICTING_DRIVERS = (
 
 
 @pytest.mark.parametrize(
-    ("target", "files", "openroad_never_starts", "outcomes"),
+    ("target", "files", "openroad_exit", "outcomes"),
     [
-        (LOGICAL_TARGET, {"yosys.log": "ERROR: boom\n"}, False, ["exit_nonzero"]),
-        (TARGET, {"yosys.log": "ERROR: boom\n"}, False, ["exit_nonzero", "exit_zero"]),
-        (TARGET, {"check_dut.txt": _CONFLICTING_DRIVERS}, False, ["exit_nonzero", "exit_zero"]),
-        (TARGET, {}, True, ["exit_zero"]),
+        (LOGICAL_TARGET, {"yosys.log": "ERROR: boom\n"}, None, ["exit_nonzero"]),
+        (TARGET, {"yosys.log": "ERROR: boom\n"}, None, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {"check_dut.txt": _CONFLICTING_DRIVERS}, None, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {}, -1, ["exit_zero"]),
+        (TARGET, {}, 1, ["exit_zero", "exit_nonzero"]),
     ],
-    ids=["logical", "physical-yosys-log", "physical-structural", "physical-openroad-not-started"],
+    ids=[
+        "logical",
+        "physical-yosys-log",
+        "physical-structural",
+        "physical-openroad-not-started",
+        "physical-openroad-fails",
+    ],
 )
 def test_synth_record_outcome_follows_the_failing_stage(
     bench: Bench,
     tmp_path: Path,
     target: str,
     files: dict[str, str],
-    openroad_never_starts: bool,
+    openroad_exit: int | None,
     outcomes: list[str],
 ) -> None:
     from booley.runtime import resource_history
 
     bench.measured = True
     _fail_yosys(bench, **files)
-    if openroad_never_starts:
-        bench.on_openroad = lambda _build: SubprocessResult(returncode=-1)
+    if openroad_exit is not None:  # -1: it never starts
+        bench.on_openroad = lambda _build: SubprocessResult(returncode=openroad_exit)
 
     bench.run(target=target)
 
