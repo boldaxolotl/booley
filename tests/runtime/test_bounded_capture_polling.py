@@ -49,7 +49,9 @@ def test_interrupt_in_a_later_slice_stops_the_child(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(subprocess.Popen, "communicate", interrupt_second_slice)
 
     with pytest.raises(KeyboardInterrupt):
-        platform_paths.run_captured_bounded(_sleep_argv(60), timeout=hang_guard_s())
+        platform_paths.run_captured_bounded(
+            _sleep_argv(2 * hang_guard_s()), timeout=hang_guard_s()
+        )
 
     assert started[0] is started[1]
     assert started[0].wait(timeout=hang_guard_s()) is not None, "the child outlived the interrupt"

@@ -175,8 +175,8 @@ def test_captured_hook_timeout_stops_the_hook_tree(tmp_path: Path) -> None:
             root, root, slug="s", sim_flow_enabled=False, timeout_s=_CAPTURED_HOOK_TIMEOUT_S
         )
 
-        # The timeout plus the helper's 32 s Windows margin (scaled), below the
-        # grandchild's self-exit
+        # The timeout plus the helper's fixed 32 s Windows margin, under a scaled
+        # bound below the grandchild's self-exit
         assert time.monotonic() - started < scaled(38)
         assert not result.ok
         assert result.error == f"post-setup hook timed out ({_CAPTURED_HOOK_TIMEOUT_S}s)"

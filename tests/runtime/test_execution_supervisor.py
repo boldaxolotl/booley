@@ -122,6 +122,7 @@ def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None)
             *command,
         ],
         env=env,
+        timeout=2 * hang_guard_s(),
     )
     return result, read_json(paths.record)
 

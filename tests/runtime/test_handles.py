@@ -606,7 +606,7 @@ def test_dropping_a_handle_drops_its_name(tmp_path):
     store = handles.HandleStore(tmp_path)
     store.reserve("pid:one", "S", name="uart-fix")
     store.reserve("pid:two", "S")
-    store.prune(lambda _map: {"pid:one"}, wait_s=1)
+    store.prune(lambda _map: {"pid:one"}, wait_s=hang_guard_s())
     assert store.load().names == {}
     assert json.loads(store.path.read_bytes())["names"] == {}
     store.reserve("pid:three", "S")
@@ -644,7 +644,7 @@ def test_non_string_names_are_diagnosed_and_never_reset(tmp_path):
     with pytest.raises(ValueError, match="strings"):
         store.reserve("pid:two", "S", name="x")
     with pytest.raises(ValueError, match="strings"):
-        store.prune(lambda _map: {"pid:one"}, wait_s=1)
+        store.prune(lambda _map: {"pid:one"}, wait_s=hang_guard_s())
     assert store.path.read_bytes() == before
     store.path.write_text(json.dumps({**data, "names": ["not", "a", "dict"]}))
     assert store.titled_snapshot()[2]
