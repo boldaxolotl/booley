@@ -248,7 +248,11 @@ def test_job_outcome_records_only_its_own_oom_kill(
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
     # The container's OOM-kill counter moves during both Jobs' commands.
     counts = iter([0, 1, 1, 2])
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
+    monkeypatch.setattr(
+        job_resources,
+        "cgroup_memory_events",
+        lambda: job_resources.MemoryEvents(*[next(counts)] * 2),
+    )
     killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
 
     own_kill = execute_endpoint(_CommandEndpoint(flow, killed), "prepared")
@@ -406,6 +410,130 @@ def test_final_work_item_oom_kill_is_named_in_the_job_result() -> None:
         "verdict\nKilled for out-of-memory: work item gamma's last attempt was OOM-killed, "
         "so it is not retried again."
     )
+
+
+_HOST_JOB_LINE = (
+    "Killed for host out-of-memory: the host ran out of memory while the Sandbox stayed within "
+    "its [sandbox].memory limit, so the Job is not retried. Free memory on the host, "
+    "or lower [sandbox].memory and recreate the Sandbox, then run it again."
+)
+
+
+def _host_oom_failure() -> EndpointOutcome:
+    """An attempt whose command the host's OOM killer took and which failed."""
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    note_job_oom_kill(host=True)
+    return EndpointOutcome(exit_code=EXIT_ERROR, report_text="attempt 1 verdict")
+
+
+def test_host_oom_kill_is_not_requeued_and_names_host_memory() -> None:
+    endpoint = _RequeueEndpoint(_host_oom_failure, _final_success)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    # Armed for a requeue, yet nothing runs again: the host's pressure stays.
+    assert endpoint.events.count("invoke") == 1
+    assert endpoint.armed == [True]
+    assert result.exit_code == EXIT_ERROR
+    # The host line leads; the Flow's own error stays visible below it.
+    assert result.outcome.report_text == f"{_HOST_JOB_LINE}\nattempt 1 verdict"
+    assert "oom_requeue" not in result.outcome.detail
+    assert result.outcome.oom_killed is True
+
+
+def test_host_oom_kill_of_a_work_item_is_named_and_not_requeued() -> None:
+    from booley.runtime.endpoint_execution import (
+        job_attempt,
+        note_final_work_item_oom_kill,
+        note_job_oom_kill,
+        work_item_attempt_requeues,
+    )
+
+    def run_items() -> EndpointOutcome:
+        with job_attempt(stop_on_oom=True, work_item=True):
+            note_job_oom_kill(host=True)
+            # Armed, yet a host kill never requeues the item.
+            assert not work_item_attempt_requeues(passed=False)
+            note_final_work_item_oom_kill("alpha", passed=False)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill(host=True)
+            note_final_work_item_oom_kill("beta", passed=False, raised=True)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill(host=True)
+            note_final_work_item_oom_kill("passed", passed=True)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text="verdict")
+
+    result = execute_endpoint(_RequeueEndpoint(run_items), "prepared")
+
+    assert result.outcome.report_text == (
+        "Killed for host out-of-memory: the host ran out of memory while the Sandbox stayed "
+        "within its [sandbox].memory limit, so work item alpha, work item beta is not retried. "
+        "Free memory on the host, or lower [sandbox].memory and recreate the Sandbox, "
+        "then run it again.\nverdict"
+    )
+
+
+def test_a_host_kill_the_job_survived_adds_no_line() -> None:
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    def survived() -> EndpointOutcome:
+        note_job_oom_kill(host=True)
+        return _final_success()
+
+    result = execute_endpoint(_RequeueEndpoint(survived), "prepared")
+
+    assert result.outcome.report_text == "attempt 2 verdict"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+@pytest.mark.parametrize(
+    ("limit_events", "requeued"),
+    [([0, 1, 1, 1], True), ([0, 0], False)],
+    ids=["sandbox-limit", "host"],
+)
+def test_sandbox_limit_kill_requeues_and_host_kill_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit_events: list[int], requeued: bool
+) -> None:
+    import itertools
+
+    from tests.flows.test_flow_base import EchoFlow, _flow_env
+
+    flow = EchoFlow()
+    with patch.dict(os.environ, _flow_env()):
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+    kills = itertools.chain([0, 1], itertools.repeat(1))
+    limits = iter(limit_events)
+    monkeypatch.setattr(
+        job_resources,
+        "cgroup_memory_events",
+        lambda: job_resources.MemoryEvents(next(kills), next(limits)),
+    )
+    runs: list[str] = []
+    killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+
+    def command(code: str) -> Callable[[], EndpointOutcome]:
+        def attempt() -> EndpointOutcome:
+            runs.append(code)
+            result = flow._execute_local([sys.executable, "-c", code])
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR if result.returncode else EXIT_SUCCESS,
+                report_text="verdict",
+            )
+
+        return attempt
+
+    endpoint = _RequeueEndpoint(command(killed), command("raise SystemExit(0)"))
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert (len(runs) == 2) is requeued
+    if requeued:
+        assert result.exit_code == EXIT_SUCCESS
+        assert result.outcome.detail["oom_requeue"]["attempts"] == 2
+    else:
+        assert result.exit_code == EXIT_ERROR
+        assert result.outcome.report_text.startswith("Killed for host out-of-memory")
 
 
 def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> None:

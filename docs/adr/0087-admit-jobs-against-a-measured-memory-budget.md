@@ -129,18 +129,37 @@ read-only, and delegating it would loosen the hardening.
 - Booley does not add a memory-pressure watcher: it is new always-on
   machinery, and the kernel's priority already gives "newest first, never the
   agent". It would be added only if OOM kills turn out to be common.
-- A Job killed by the OOM killer is requeued once, to run alone, with its
-  estimate raised to at least its observed peak; a second kill while alone
-  fails it. Results and evidence come only from the final attempt. A Job
-  bound to a Goal is never requeued as a whole, so its evidence comes from its
-  only attempt.
+- A Job killed by the OOM killer at the Sandbox's limit is requeued once, to
+  run alone, with its estimate raised to at least its observed peak; a second
+  kill while alone fails it. Results and evidence come only from the final
+  attempt. A Job bound to a Goal is never requeued as a whole, so its
+  evidence comes from its only attempt.
+- The two kinds of kill are told apart by the cgroup's `oom` event count,
+  read in one snapshot with `oom_kill`: `oom` counts the times the Sandbox
+  reached its own limit, `oom_kill` every process an OOM killer took, the
+  host's too. An own kill while `oom` did not rise is a host kill: the host
+  ran out of memory while the Sandbox stayed within its limit. Running alone
+  cannot relieve pressure from outside the Sandbox, so a host kill is never
+  requeued; the result leads with a line naming host memory, the Sandbox
+  limit, and the remedy (free host memory or lower `[sandbox].memory`), and
+  the Flow's own error follows it. The Resource History records outcome
+  `host_oom_kill`, a lower bound like `oom_kill`. A Sandbox with no memory
+  limit never reaches one, so every own kill in it is a host kill. An
+  unreadable `oom` count proves nothing: the kill is handled as a Sandbox
+  limit kill.
 - The OOM-kill counter is container-wide, so a rise alone cannot say which
   Job was hit. A command counts as OOM-killed only when the counter rose while
   it ran, it exited nonzero, and a process of its own tree died by a SIGKILL
   Booley did not send. A timeout, a cancellation or an unreadable counter
-  never marks a kill. Detection is deliberately conservative: a kill hidden
-  behind a wrapper that reports none of the known signs is a plain failure
-  and is not requeued.
+  never marks a kill. The signs are the root's SIGKILL, a Booley launcher's
+  report, and a kill line in the command's output: GNU make, the compilers,
+  Verilator, and bash's `line N: <pid> Killed` or dash's `Killed` for a
+  script's child. A Flow that runs Vivado also reads the run scripts' own
+  logs (`runme.log`), written since the command started. Detection is
+  deliberately conservative: a kill hidden behind a wrapper that reports none
+  of these signs (a FuseSoC generator names no signal) is a plain failure and
+  is not requeued, as is a kill in a Pre-Sim Command or a mutation run,
+  which are not measured commands.
 
 ### Simulation Records
 

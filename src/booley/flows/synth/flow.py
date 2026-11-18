@@ -1872,7 +1872,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                     )
         metrics.dirs = self._artifact_dirs(target, metrics.synth_mode)
         if metrics.termination == "oom":
-            logger.warning("Synth %s was killed by the cgroup OOM killer", target)
+            logger.warning("Synth %s was killed by the OOM killer", target)
         elif metrics.termination == "resource_killed":
             logger.warning("Synth %s was resource-killed", target)
         elif result.timed_out:

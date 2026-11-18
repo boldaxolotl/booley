@@ -86,6 +86,20 @@ def test_timeout_and_oom_are_named_in_stderr(
     assert other.stderr == "boom"
 
 
+def test_host_oom_setup_names_host_memory(tmp_path: Path) -> None:
+    killed = _run(
+        _Invoker(
+            SubprocessResult(returncode=-9, oom_killed=True, host_oom_kill=True, peak_rss_mb=812.4)
+        ),
+        tmp_path,
+    )
+
+    assert (
+        killed.stderr
+        == "FuseSoC setup failed: the host ran out of memory and killed it (peak RSS 812 MB)"
+    )
+
+
 def test_setup_is_bounded_by_the_build_timeout_but_never_below_an_hour() -> None:
     hour = DEFAULT_SIM_BUILD_TIMEOUT_MS // 1000
     assert setup_timeout_s(60) == hour
