@@ -321,6 +321,6 @@ document: Booley product datasheet
 
   <h2 class="sec" id="how-it-is-built"><span class="n">6</span>How it is built</h2>
   <div class="detail">
-    <p>Booley was designed and is maintained by a hardware engineer, not a career software engineer. Its first-party code was written by Claude and Codex, but this is not vibe-coding: I define the architecture and specifications, weigh tradeoffs, review plans and code, and make the final engineering decisions.</p>
+    <p>I designed Booley and maintain it as a hardware engineer, not a career software engineer. Claude and Codex wrote its first-party code, but this is not vibe-coding: I define the architecture and specifications, weigh tradeoffs, review plans and code, and make the final engineering decisions.</p>
     <p>Every change goes through separate agent and human reviews, with isolated branches, type checking, linting, automated tests, coverage requirements, and CI (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CODING_PRINCIPLES.md">coding principles</a>). Reviews from experienced software engineers are especially welcome.</p>
   </div>
