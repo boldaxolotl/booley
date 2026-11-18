@@ -117,6 +117,8 @@ pub struct ColumnCache {
     pub timescale_str: String,
     pub clock_id: String,
     pub clock_before_reset_at_deassert: bool,
+    /// True once `--clock` replaced the auto-detected clock.
+    clock_by_option: bool,
     /// The reset all queries use: auto-detected at load, or chosen by `--reset`.
     pub reset: Option<crate::reset::Reset>,
     pub clock_table: Vec<ClockEntry>,
@@ -234,6 +236,7 @@ impl ColumnCache {
             timescale_str,
             clock_id,
             clock_before_reset_at_deassert: false,
+            clock_by_option: false,
             reset: None,
             clock_table,
             stored: signals.len(),
@@ -312,6 +315,7 @@ impl ColumnCache {
         self.clock_period_ticks = period;
         self.first_rise_tick = first_rise;
         self.clock_id = clock_name.to_string();
+        self.clock_by_option = true;
         // VCD event ordering between clock and reset is unknown for the new clock;
         // false (>=) is the conservative default — includes the boundary edge.
         self.clock_before_reset_at_deassert = false;
@@ -377,6 +381,7 @@ impl ColumnCache {
                 .map_or(Vec::new(), |i| self.read_transitions(i));
             let mut analysis = crate::clock::analyze(&self.clock_id, self.clock_period_ticks,
                 self.first_rise_tick, &transitions);
+            analysis.verdict.chosen_by_option = self.clock_by_option;
             if self.clock_table.iter().any(|c| c.period != self.clock_period_ticks) {
                 analysis.verdict.findings.push(crate::clock::ClockFinding {
                     reason: "multiple_clock_periods".into(), tick: None,
@@ -805,6 +810,22 @@ fn query_config(cache: &ColumnCache, original: &ExtractConfig) -> ExtractConfig 
             eprintln!("# WARNING: {text}");
         }
         cfg.warnings = crate::output::merge_warnings(cfg.warnings, &[text]);
+    }
+    if !cfg.async_mode && cache.clock_period_ticks == 0 {
+        // The finding's detail names the next step; `clock_query_config`
+        // skips it so this is the only warning for it.
+        let detail = cfg
+            .clock_regularity
+            .iter()
+            .flat_map(|v| &v.findings)
+            .find(|f| f.reason == "insufficient_edges");
+        if let Some(detail) = detail {
+            let text = format!("no usable clock: {}", detail.detail);
+            if !cfg.json_format {
+                eprintln!("# WARNING: {text}");
+            }
+            cfg.warnings = crate::output::merge_warnings(cfg.warnings, &[text]);
+        }
     }
     if !cfg.async_mode {
         let report = reset_report(cache, cfg.with_reset);
@@ -2804,18 +2825,6 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             // scope_prefix is published in data; no need to mirror to warnings.
         } else {
             let _ = writeln!(err, "# scope: {}", &prefix[..prefix.len() - 1]);
-        }
-    }
-
-    // No clock → fall back to async: treat at_time as raw timestamp
-    if cfg.at_time_is_cycle && cache.clock_period_ticks == 0 {
-        if cfg.json_format {
-            json_warnings.push("no clock signal found, falling back to async mode".to_string());
-        } else {
-            let _ = writeln!(
-                err,
-                "# WARNING: no clock signal found, falling back to async mode"
-            );
         }
     }
 
@@ -4885,15 +4894,6 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     if !prefix.is_empty() {
         let _ = writeln!(err, "# scope: {}", &prefix[..prefix.len() - 1]);
-    }
-
-    if cfg.async_mode && cache.clock_period_ticks == 0 {
-        // async is expected, no warning
-    } else if !cfg.async_mode && cache.clock_period_ticks == 0 {
-        let _ = writeln!(
-            err,
-            "# WARNING: no clock signal found, falling back to async mode"
-        );
     }
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {

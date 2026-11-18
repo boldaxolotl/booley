@@ -156,6 +156,16 @@ fn stopped_rendering_preserves_inside_stop_changes() {
     }
 }
 
+fn assert_next_step(p: &serde_json::Value) {
+    for finding in p["clock_regularity"]["findings"].as_array().unwrap() {
+        let detail = finding["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("--async") || detail.contains("--clock"),
+            "{finding}"
+        );
+    }
+}
+
 #[test]
 fn regularity_reasons_and_overrides() {
     for (rises, status, reason) in [
@@ -178,6 +188,7 @@ fn regularity_reasons_and_overrides() {
             let p = json("overview", &path, &args);
             assert_eq!(p["clock_regularity"]["status"], status, "{p}");
             assert_eq!(p["clock_regularity"]["reason"], reason, "{p}");
+            assert_next_step(&p);
         }
     }
     for unknown in ['x', 'z'] {
@@ -185,6 +196,7 @@ fn regularity_reasons_and_overrides() {
         let (_dir, path, _) = store(&body, "");
         let p = json("overview", &path, &[]);
         assert_eq!(p["clock_regularity"]["status"], "warning");
+        assert_next_step(&p);
         assert!(p["clock_regularity"]["findings"]
             .as_array()
             .unwrap()
@@ -203,8 +215,26 @@ fn regularity_reasons_and_overrides() {
         .unwrap()
         .iter()
         .any(|f| f["reason"] == "multiple_clock_periods"));
+    assert_next_step(&p);
     let p = json("overview", &path, &["--clock", "slow_clk"]);
     assert_eq!(p["data"]["period_ticks"], 20);
+}
+
+#[test]
+fn clock_header_says_how_the_clock_was_chosen() {
+    let (_dir, path, build_err) = store(&clock(&[5, 15, 25, 35], 50), "");
+    assert!(
+        build_err.contains("# clock: tb.clk (auto-detected; --clock PATTERN to override)\n"),
+        "{build_err}"
+    );
+    let (out, err, code) = run(&["overview", &path, "--clock", "clk"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("# clock: tb.clk (--clock)\n"), "{out}");
+    let line = "# clock override: tb.clk (period=10 ticks, first_rise=5)";
+    assert_eq!(err.matches(line).count(), 1, "{err}");
+    let (_, err, code) = run(&["overview", &path, "--clock", "clk", "--format", "json"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("clock override"), "{err}");
 }
 
 #[test]
