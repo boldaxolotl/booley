@@ -2383,9 +2383,10 @@ def test_validation_errors_end_with_a_result_error_line(
 
 def test_validation_refusals_without_a_public_path(tmp_path: Path, monkeypatch) -> None:
     # Private seam: argparse refuses a non-positive ``--count`` before the run
-    # (``test_count_rejects_text_that_is_not_auto_or_an_integer``), campaign resolution refuses
-    # ``a,b`` as an unknown Target first, and ``--target`` is required by the parser, so only a
-    # direct call reaches these three refusals.
+    # (``test_count_rejects_text_that_is_not_auto_or_an_integer``), and ``--target`` is required
+    # by the parser. With ``--scope``, campaign resolution refuses an undeclared ``a,b`` as an
+    # unknown Target first, so only a comma-named Target reaches the one-Target refusal; a
+    # direct call reaches these three.
     message = "--count must be positive"
     outcome = MutationFlow._validate_count(0, 0, 0)
     assert outcome is not None
