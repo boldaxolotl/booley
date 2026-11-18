@@ -321,7 +321,6 @@ def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, cas
     result = run_bounded_child(
         ["sh", "-c", curl + body],
         env=environment,
-        timeout=20,
     )
     installed = list((root / "usr/local/libexec/booley").glob("*.vsix"))
     assert (result.returncode == 0) == (case == "good"), result.stderr
@@ -362,7 +361,6 @@ def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
         pattern = rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)"
         result = run_bounded_child(
             ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
-            timeout=20,
         )
         assert result.returncode in (0, 1), result.stderr
         found = result.stdout.splitlines()
@@ -406,7 +404,6 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
         return run_bounded_child(
             ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
             env=env,
-            timeout=20,
         ).returncode
 
     assert exit_code("9.9.9", "8.8.8") == 0
@@ -544,7 +541,6 @@ def test_riscv_document_install_rejects_wrong_checksums(
     result = run_bounded_child(
         ["sh", "-c", curl + install],
         env=environment,
-        timeout=10,
     )
     assert (result.returncode != 0) == (bad_hash is not None), result.stderr
     assert (tmp_path / "docs" / "INDEX.md").exists() == (bad_hash is None)

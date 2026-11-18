@@ -19,6 +19,7 @@ from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.mcp_tools.test_mcp_dispatch import _FakeLifetime, _run_id_from
+from tests.time_budget import hang_guard_s, scaled
 
 SERVER = "mcp-stdio:developer:pid:test:1:1"
 
@@ -27,6 +28,9 @@ SERVER = "mcp-stdio:developer:pid:test:1:1"
 # the real /proc/<pid>/cmdline and finds nothing, instead of judging the fake
 # child "recycled" because an unrelated host process holds the PID (#3295).
 _FAKE_CHILD_PID = 4_194_305
+
+# Poll window for tests that only need the poll to return once a gate opens.
+_POLL_WAIT_S = hang_guard_s()
 
 
 @pytest.fixture(autouse=True)
@@ -105,9 +109,10 @@ async def _submit(jobs, tag: str, caller) -> str:
     return _run_id_from(_all_text(out))
 
 
-async def _poll(jobs, caller, wait: float = 30, **arguments):
+async def _poll(jobs, caller, wait: float = _POLL_WAIT_S, **arguments):
     return await asyncio.wait_for(
-        _dispatch_poll({"wait_seconds": wait, **arguments}, jobs, caller), timeout=5
+        _dispatch_poll({"wait_seconds": wait, **arguments}, jobs, caller),
+        timeout=2 * hang_guard_s(),
     )
 
 
@@ -156,7 +161,7 @@ def test_owned_poll_times_out_with_running_list(monkeypatch):
     async def scenario():
         jobs, me = _JobManager(_FakeLifetime()), _caller()
         run_a = await _submit(jobs, "a", me)
-        text = _all_text(await _poll(jobs, me, wait=0.2))
+        text = _all_text(await _poll(jobs, me, wait=scaled(0.2)))
         gates["a"].set()
         return run_a, text
 
@@ -195,7 +200,7 @@ def test_inline_completion_counts_as_read(monkeypatch):
         return (0, "FAST", "", False)
 
     monkeypatch.setattr(mcp_server, "_run_subprocess", run)
-    monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+    monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
     async def scenario():
         jobs, me = _JobManager(_FakeLifetime()), _caller()
@@ -283,7 +288,7 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch):
     #  2. the fake child is alive for the first poll and dead for the second.
     async def scenario():
         run_id = await _submit(_JobManager(_FakeLifetime()), "a", caller_after_restart())
-        await asyncio.wait_for(spawned.wait(), timeout=5)
+        await asyncio.wait_for(spawned.wait(), timeout=hang_guard_s())
         before_restart = _read(run_id)
         restarted = _JobManager(_FakeLifetime())
         listed = _all_text(await _poll(restarted, caller_after_restart(), wait=0))
