@@ -86,6 +86,14 @@ def test_uart_review_contract_contains_frozen_spec_text() -> None:
     assert len(contract) <= 30_000
 
 
+def test_taxi_setup_prompt_carries_the_sdc_fixture() -> None:
+    """The verbatim setup prompt hands the Setup agent the fixture's exact SDC text."""
+    taxi = QA_ROOT / "missions/taxi"
+    prompt = (taxi / "prompts/setup.md").read_text(encoding="utf-8")
+    sdc = (taxi / "fixtures/taxi_mac_10g.sdc").read_text(encoding="utf-8")
+    assert f"```tcl\n{sdc}```\n" in prompt
+
+
 def test_capability_map_links_resolve_to_mission_areas() -> None:
     document = QA_ROOT / "AREAS.md"
     links = re.findall(

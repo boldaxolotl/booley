@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[2]
 _OLD_RECORD_FIXTURE_ROOTS = (
     "tests/flows/fixtures/booley_0_3_0",
     "tests/flows/fixtures/booley_0_4_0",
-    "tests/runtime/fixtures/directory_migration/taxi_simulation_record",
 )
 
 _ALLOWED_PATHS = frozenset(

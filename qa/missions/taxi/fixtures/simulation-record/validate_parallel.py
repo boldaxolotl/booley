@@ -1,4 +1,4 @@
-"""Validate retained Taxi bounded-parallel Simulation Campaign evidence.
+"""Validate retained Taxi bounded-parallel Simulation Record evidence.
 
 The timeline document is the operator's own measurement of one parallel run:
 
@@ -28,6 +28,10 @@ _EVIDENCE_FIELDS = {"path", "bytes", "sha256", "kind", "owner"}
 _SHARED_OUTPUT = "qa-shared-name.txt"
 _EXPECTED_TESTS = ["slow-first", "slow-fail", "slow-last"]
 _EXPECTED_GRADES = ["pass", "fail", "pass"]
+# Schemas of the durable documents the Simulation Record writes (record/codec.py, store.py).
+_ATTEMPT_SCHEMA = "booley.simulation-attempt/v2"
+_RESULT_SCHEMA = "booley.simulation-result/v5"
+_SUMMARY_SCHEMA = "booley.simulation-record-summary/v1"
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -94,8 +98,8 @@ def _intervals(document: dict[str, object]) -> list[dict[str, object]]:
 def validate_attempt_isolation(timeline_path: Path, simulation_record_path: Path) -> None:
     """Require one common relative output name with distinct attempt-owned content.
 
-    ``campaign_path`` is the Campaign directory holding ``manifest.json`` and
-    ``work-items/``.
+    ``simulation_record_path`` is the Simulation Record directory holding
+    ``manifest.json`` and ``work-items/``.
     """
     intervals = _intervals(_load(timeline_path))
     _need(len(intervals) >= 3, "attempt-isolation case requires at least three attempts")
@@ -125,7 +129,7 @@ def validate_attempt_isolation(timeline_path: Path, simulation_record_path: Path
 
 
 def _attempt_directories(simulation_record_path: Path) -> dict[str, Path]:
-    """Index the Campaign's Simulation Attempt directories by attempt id."""
+    """Index the Simulation Record's Simulation Attempt directories by attempt id."""
     attempts: dict[str, Path] = {}
     for path in sorted(simulation_record_path.glob("work-items/*/attempts/*/attempt.json")):
         attempt_id = _load(path).get("attempt_id")
@@ -135,14 +139,14 @@ def _attempt_directories(simulation_record_path: Path) -> dict[str, Path]:
         )
         _need(attempt_id not in attempts, "Simulation Attempt identity repeats")
         attempts[attempt_id] = path.parent
-    _need(bool(attempts), "Campaign has no Simulation Attempts")
+    _need(bool(attempts), "Simulation Record has no Simulation Attempts")
     return attempts
 
 
 def _validate_owned_run_directory(item: dict[str, object], attempt_directory: Path) -> None:
     attempt = _load(attempt_directory / "attempt.json")
     _need(
-        attempt.get("$schema") == "booley.simulation-attempt/v1",
+        attempt.get("$schema") == _ATTEMPT_SCHEMA,
         "Simulation Attempt schema differs",
     )
     _need(attempt.get("work_item_id") == item["work_item_id"], "attempt work item differs")
@@ -241,11 +245,14 @@ def validate_continue_after_failure(
     # Durable records bind the manifest by its bytes without the trailing newline.
     manifest_digest = _file_digest(manifest_raw.rstrip(b"\n"))
     identity = {
-        "campaign_id": manifest.get("campaign_id"),
+        "simulation_record_id": manifest.get("simulation_record_id"),
         "manifest_sha256": manifest_digest,
         "workload_sha256": _workload_digest(manifest),
     }
-    _need(_is_name(identity["campaign_id"]), "manifest Campaign identity is missing")
+    _need(
+        _is_name(identity["simulation_record_id"]),
+        "manifest Simulation Record identity is missing",
+    )
     for result, work_item_id in zip(results, expected_ids, strict=True):
         _validate_result_identity(result, work_item_id, identity)
     attempt_ids = [result["attempt_id"] for result in results]
@@ -288,9 +295,7 @@ def _single_observation(result: dict[str, object]) -> dict[str, object]:
 def _validate_result_identity(
     result: dict[str, object], work_item_id: object, identity: dict[str, object]
 ) -> None:
-    _need(
-        result.get("$schema") == "booley.simulation-result/v2", "Simulation Result schema differs"
-    )
+    _need(result.get("$schema") == _RESULT_SCHEMA, "Simulation Result schema differs")
     _need(result.get("state") == "completed", "Simulation Result is not a completed terminal")
     attempt_id = result.get("attempt_id")
     evidence = result.get("evidence")
@@ -310,7 +315,7 @@ def _validate_summary(
     summary: dict[str, object], expected_ids: list[object], identity: dict[str, object]
 ) -> None:
     _need(
-        summary.get("$schema") == "booley.simulation-campaign-summary/v1",
+        summary.get("$schema") == _SUMMARY_SCHEMA,
         "summary schema differs",
     )
     _need(summary.get("aggregate_grade") == "fail", "summary is not a strict failure")
@@ -319,9 +324,9 @@ def _validate_summary(
         "summary manifest digest differs",
     )
     _need(
-        summary.get("campaign_id") == identity["campaign_id"]
+        summary.get("simulation_record_id") == identity["simulation_record_id"]
         and summary.get("workload_sha256") == identity["workload_sha256"],
-        "summary identifies a different Simulation Campaign",
+        "summary identifies a different Simulation Record",
     )
     # ``completed`` lists work items in manifest order; it is the summary's ordering.
     _need(summary.get("completed") == expected_ids, "summary completion identities differ")

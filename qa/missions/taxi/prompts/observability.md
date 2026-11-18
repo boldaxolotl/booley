@@ -9,8 +9,10 @@ wrapper top and Cocotb module. Keep the Target selectable after integration.
 Implement five deterministic registered tests:
 - Bad RX FCS: corrupted FCS with unchanged payload; require RX error `tuser`,
   discrete bad-FCS indication and counter ID 34.
-- Exact PFC: all 8 classes, quanta [10,20,30,40,50,60,70,80], exact TX/RX
-  bitmap and every quanta value, counters including IDs 25 and 57.
+- Exact PFC: quanta [10,20,30,40,50,60,70,80]. Request each of the 8 classes
+  alone (one-hot `tx_pfc_req`) and check the exact TX/RX bitmap and that
+  class's quanta; then request all 8 together and check the exact bitmap and
+  every quanta value. Check counters including IDs 25 and 57.
 - Four-cycle underrun: XGMII error termination and counter ID 3.
 - TX completion: unique 16-bit tags and timestamp relationship to observed SFD.
 - Statistics: distinguish `tuser=0` counters from `tuser=1` string records and
