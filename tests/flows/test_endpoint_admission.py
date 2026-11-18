@@ -8,6 +8,7 @@ non-Simulation Flow, and must not depend on the endpoint's name.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from collections.abc import Callable, Iterator
@@ -27,6 +28,7 @@ from booley.flows.endpoint_admission import (
 )
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.endpoint_state import EndpointState
+from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.runtime import job_slots
@@ -44,7 +46,7 @@ from tests.oom_priority_support import (
     oom_priority,
 )
 
-FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow}
+FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
 
 
 @pytest.fixture
@@ -69,7 +71,7 @@ def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 class _Harness:
     """One real Flow wired so its invocation body and admission are observable."""
 
-    flow: SimulateFlow | AsicSynthesizeFlow
+    flow: SimulateFlow | AsicSynthesizeFlow | FpgaImplFlow
     request: Any
     invocations: list[object] = field(default_factory=list[object])
     admissions: list[AdmissionContext | None] = field(
@@ -865,8 +867,6 @@ def test_lint_and_custom_flow_jobs_queue_behind_a_run_alone_job(
 
 def _fpga_prepared(work_dir: Path) -> tuple[Any, PreparedExecution]:
     """An FPGA Job over Target ``a`` (its Vivado Job needs one seat), as Target selection."""
-    from booley.flows.fpga.flow import FpgaImplFlow
-
     flow = FpgaImplFlow()
     return flow, _target_selection(flow, work_dir, "a", drivable_by="fpga")
 
@@ -878,6 +878,50 @@ def _write_jobs(booley_dir: Path, seats: str | None, *, fpga_enabled: bool = Tru
     (booley_dir / "booley.toml").write_text(
         f"[jobs]\n{seats_table}{flows_table}", encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "refuse", "fix"),
+    (
+        pytest.param("fpga", lambda _patch: None, "add [jobs.seats] vivado", id="seat_cap"),
+        pytest.param(
+            "synth",
+            lambda patch: _refuse_slot(patch, job_slots.ClaimLostError("vanished")),
+            "withdrawn (booley_cancel)",
+            id="claim_lost",
+        ),
+        pytest.param(
+            "synth",
+            lambda patch: patch.setenv(RUNTIME_EXECUTION_ENV, "not-an-execution-id"),
+            f"invalid {RUNTIME_EXECUTION_ENV}",
+            id="invalid_runtime_env",
+        ),
+    ),
+)
+def test_cli_prints_an_admission_refusal_once(
+    kind: str,
+    refuse: Callable[[pytest.MonkeyPatch], None],
+    fix: str,
+    memory_runtime: Path,
+    runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    harness = _build_harness(kind, runtime, monkeypatch)
+    _write_jobs(memory_runtime, None)  # [jobs] without [jobs.seats]: Vivado has no Seat Cap
+    refuse(monkeypatch)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))  # no live progress region
+    harness.prepare()
+
+    result = harness.flow.execute_cli(["--target", "demo"])
+
+    assert result.exit_code == EXIT_ERROR
+    assert fix in result.outcome.report_text
+    assert capsys.readouterr().err == f"{result.outcome.report_text}\n"
+    # A built-in Flow's CLI configures no logging, so logging's last-resort handler
+    # would print any WARNING record on stderr too; under pytest it lands in caplog.
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(

@@ -280,16 +280,16 @@ def _admission_rejection(
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
     if isinstance(exc, job_slots.ClaimLostError):
-        logger.error("Queued %s run was cancelled before it started", endpoint.name)
+        logger.debug("Queued %s run was cancelled before it started", endpoint.name)
         text = (
             f"CANCELLED: this queued '{endpoint.name}' run was "
             f"withdrawn (booley_cancel) before it started."
         )
     elif isinstance(exc, SeatCapError):
-        logger.error("%s admission refused: %s", endpoint.name, exc)
+        logger.debug("%s admission refused: %s", endpoint.name, exc)
         text = f"{endpoint.name}: {exc}"
     else:
-        logger.error(
+        logger.debug(
             "%s admission refused: invalid %s: %s", endpoint.name, RUNTIME_EXECUTION_ENV, exc
         )
         text = f"{endpoint.name}: invalid {RUNTIME_EXECUTION_ENV}: {exc}"
