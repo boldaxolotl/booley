@@ -25,6 +25,7 @@ from typing import BinaryIO, TextIO
 
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+from booley.flows.progress_lifecycle import abort_open_progress, after_progress_publication
 from booley.presentation.job_log_stream import JobLogStream
 from booley.runtime import job_records
 from booley.runtime.handles import register_job
@@ -292,6 +293,8 @@ class StandaloneJob:
     def _install_signal_handlers(self) -> Callable[[], None]:
         """Record SIGTERM and SIGHUP as ``cancelled`` and still die by the signal.
 
+        The handler also aborts the progress of every open Flow lifecycle.
+
         Only a default disposition is replaced, and only from the main thread.
         Installed before the first record write so no signal can land between a
         written ``running`` record and its handler.
@@ -311,7 +314,12 @@ class StandaloneJob:
         return restore
 
     def _on_signal(self, signum: int, _frame: FrameType | None) -> None:
-        """Lock-free: write the terminal record, restore the default and re-send the signal."""
+        """Die by the signal once an in-flight progress publication has ended."""
+        after_progress_publication(lambda: self._die_by(signum))
+
+    def _die_by(self, signum: int) -> None:
+        """Abort open Flow progress, write the terminal record, restore the default, re-send."""
+        abort_open_progress()
         if not self._finished:
             self._end(job_records.STATUS_CANCELLED, 128 + signum)
         signal.signal(signum, signal.SIG_DFL)

@@ -31,6 +31,7 @@ from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand
 from booley.flows.fpga.profiles import VIVADO_PROFILES
 from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.job_estimates import JobRequest
+from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.target_parameters import ParameterValue
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
@@ -1263,7 +1264,10 @@ class TestFailureCapture:
         assert "default: log:" in result.report_text
 
 
-def test_completed_target_survives_later_matrix_crash(tmp_path: Path, state_file: Path) -> None:
+@pytest.mark.parametrize("signalled", [False, True])
+def test_completed_target_survives_later_matrix_crash(
+    tmp_path: Path, state_file: Path, signalled: bool
+) -> None:
     flow = FpgaImplFlow()
     flow.parse_args(
         [
@@ -1278,12 +1282,17 @@ def test_completed_target_survives_later_matrix_crash(tmp_path: Path, state_file
     flow._target_pairs = ()
     metrics = FpgaMetrics(lut_count=10, ff_count=5)
     calls = 0
+    published: list[dict[str, object]] = []
 
     def run_one(_target: str) -> FpgaMetrics:
         nonlocal calls
         calls += 1
         if calls == 1:
             return metrics
+        if signalled:  # a signal ends the process here, without unwinding
+            abort_open_progress()
+            path = next((tmp_path / "reports/fpga").glob("*/progress.json"))
+            published.append(json.loads(path.read_text(encoding="utf-8")))
         raise RuntimeError("simulated outer interruption")
 
     with (
@@ -1307,6 +1316,9 @@ def test_completed_target_survives_later_matrix_crash(tmp_path: Path, state_file
     assert progress["phase"] == "aborted"
     assert progress["completed_targets"] == ["fpga_a"]
     assert progress["pending_targets"] == ["fpga_b"]
+    if signalled:
+        (snapshot,) = published
+        assert (snapshot["phase"], snapshot["pending_targets"]) == ("aborted", ["fpga_b"])
 
 
 class TestArtifactPointers:
