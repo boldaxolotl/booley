@@ -49,6 +49,10 @@ place of the value. `stuck` and `--virtual` definitions do not.
 | `falling` | a high-to-low transition |
 | `change` | any transition |
 
+`rising` and `falling` fire only on 1-bit signals. On multi-bit signals only,
+`find`, `sample` and `distance` print a note and match nothing: use a value
+(`'hN`) instead.
+
 A value and an edge ask different questions: `find sig 'h1` matches every
 cycle where `sig` *holds* 1, while `find sig rising` matches only the
 cycles where it *became* 1.

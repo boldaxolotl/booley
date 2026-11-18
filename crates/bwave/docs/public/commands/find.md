@@ -34,6 +34,12 @@ With `--count`:
 1
 ```
 
+With no match, stderr says `# No matches found` (with the reset cycles
+skipped, if any), and at most one note follows: the value was never held in
+the window, the value was held but no sampled cycle matched (`--async` sees
+raw transitions), or `rising`/`falling` met multi-bit signals only. JSON
+carries the note in `warnings[]`.
+
 JSON mode emits a `findData` envelope:
 
 ```json
@@ -65,12 +71,6 @@ Note `value` in `matches[]` is the **raw store value**
 (`"1"`, `"DEAD"`), not the Verilog literal the user typed.
 The top-level `data.value` is normalized hex or an edge
 keyword.
-
-## Common errors
-
-- **Zero matches when you expected some**: the reset
-  phase may hide them. When cycles were skipped, the no-match line says how
-  many; try `--with-reset` (`reference/sync-vs-async`).
 
 ## Examples
 

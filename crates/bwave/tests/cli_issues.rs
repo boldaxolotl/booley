@@ -2391,11 +2391,18 @@ fn issue_1100_change_commands_agree_and_preserve_literals() {
             } else {
                 vec!["--async", "--count"]
             };
-            assert_eq!(
-                issue_1100_query(&store, command, "bus", "rising", &extra),
-                "0"
-            );
+            let mut args = vec![command, store.as_str(), "bus", "rising"];
+            args.extend(extra);
+            let (out, error, _) = issue_1100_run(&args);
+            assert_eq!(out.trim(), "0");
+            let note = format!("# {command}: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.");
+            assert!(error.lines().any(|l| l == note), "{command}: {error}");
         }
+        let (out, _, _) = issue_1100_run(&["find", &store, "bus", "rising", "--format", "json"]);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let warnings = json["warnings"].as_array().unwrap();
+        let note = "find: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.";
+        assert!(warnings.iter().any(|w| w == note), "{warnings:?}");
         let (_, error, _) = issue_1100_run(&["distance", &store, "bus", "rising", "--async"]);
         assert!(error.contains("only fires on 1-bit signals"));
     }
@@ -5474,6 +5481,7 @@ fn issue_4698_oversized_literals_warn_in_every_command() {
         assert!(dist.contains(&expected), "{dist:?}");
         let def = format!("v = *data == {lit}");
         let (_, virt) = issue_4698_json(&["find", p, "v", "'h1", "--virtual", &def, "--async"]);
+        let virt = without_never_held_notes(virt);
         assert_eq!(virt.len(), 1, "{virt:?}");
         assert!(
             virt[0].starts_with(&format!(
@@ -5508,13 +5516,19 @@ fn issue_4698_literal_over_its_own_prefix_warns_and_still_matches() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The literal-width warnings are asserted here, not the #4748 no-match note.
+fn without_never_held_notes(warnings: Vec<String>) -> Vec<String> {
+    let note = |w: &String| w.ends_with(" was never held in this window");
+    warnings.into_iter().filter(|w| !note(w)).collect()
+}
+
 #[test]
 fn issue_4698_one_warning_lists_only_signals_the_literal_cannot_fit() {
     let fst = build_bwave("small_clocked.vcd", "4698_multi");
     let p = fst.to_str().unwrap();
     let (_, warnings) = issue_4698_json(&["find", p, "*a*", "'h1F"]);
     assert_eq!(
-        warnings,
+        without_never_held_notes(warnings),
         vec!["'h1F needs 5 bits and never matches tb.dut.enable (1-bit), tb.dut.flag (1-bit), tb.dut.state[3:0] (4-bit)".to_string()]
     );
     let _ = std::fs::remove_file(fst);
@@ -5566,6 +5580,7 @@ fn issue_4698_virtual_comparison_with_oversized_literal_states_its_result() {
                 "--async",
                 "--count",
             ]);
+            let warnings = without_never_held_notes(warnings);
             assert_eq!(warnings, vec![expected.clone()], "{op}");
             assert_eq!(json["data"]["count"], count, "{op} {value}: {json}");
         }
