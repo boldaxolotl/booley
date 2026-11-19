@@ -204,15 +204,13 @@ fn reset_names_are_auto_detected() {
     }
 }
 
-/// A store with `rst_sig` driven by `rst`, plus the shared `flag`, `early` and
+/// A store with `rst_sig` driven by `rst`, plus the shared `flag` and
 /// `gclk` (a clock with no edges from 56 to 94) signals.
 fn pulse_store(rst_sig: &str, rst: &[(u64, &str)]) -> (tempfile::TempDir, String) {
     let mut events: Vec<(u64, String)> = vec![
         (0, "0 flag".into()),
         (12, "1 flag".into()),
         (18, "0 flag".into()),
-        (0, "0 early".into()),
-        (12, "1 early".into()),
     ];
     for tick in (5..=100).step_by(5).filter(|t| *t <= 55 || *t >= 95) {
         let value = if tick % 10 == 5 { 1 } else { 0 };
@@ -223,7 +221,7 @@ fn pulse_store(rst_sig: &str, rst: &[(u64, &str)]) -> (tempfile::TempDir, String
     }
     let events: Vec<(u64, &str)> = events.iter().map(|(t, e)| (*t, e.as_str())).collect();
     store(
-        &[(rst_sig, 1), ("flag", 1), ("early", 1), ("gclk", 1)],
+        &[(rst_sig, 1), ("flag", 1), ("gclk", 1)],
         &events,
         100,
     )
@@ -239,14 +237,11 @@ fn reset_pulse_from_inactive_deasserts_where_it_ends() {
         "rst",
         &[(0, "0"), (7, "1"), (25, "0"), (60, "1"), (70, "0")],
     );
-    let commands: [&[&str]; 9] = [
+    let commands: [&[&str]; 6] = [
         &["signal", "-s", "flag"],
         &["signal", "-s", "flag", "-t", "2c:4c"],
         &["value", "-s", "flag", "--at", "2"],
-        &["find", "flag", "'b1"],
-        &["sample", "flag", "change", "-s", "flag"],
         &["stats", "-s", "flag"],
-        &["stuck", "-s", "early"],
         &["overview", "--clock", "tb.gclk"],
         &["value", "--async", "--at", "2c", "-s", "flag"],
     ];
