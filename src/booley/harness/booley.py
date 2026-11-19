@@ -1888,10 +1888,13 @@ def _target_detail_payload(
     project_root: Path, selector: str, *, as_json: bool
 ) -> TargetDetailPayload:
     """Resolve Target detail in-Sandbox, or return actionable host metadata."""
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.targets import target_surface
 
     inside_runtime = runtime_context.inside_session_runtime()
-    payload = target_surface.detail_payload(project_root, selector, resolve=inside_runtime)
+    payload = target_surface.detail_payload(
+        project_root, selector, resolve=inside_runtime, synth_tools=synth_target_tools
+    )
     if inside_runtime:
         return payload
     command = ["booley", "session", "enter", "--", "booley", "targets", selector]
@@ -1911,6 +1914,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     """
     import json as _json
 
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.fusesoc import fusesoc_registry
     from booley.harness import targets_view
     from booley.targets import target_surface
@@ -1952,12 +1956,13 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    payload = target_surface.surface_payload(surface, project_root, synth_tools=synth_target_tools)
     if as_json:
-        print(_json.dumps(target_surface.surface_payload(surface, project_root), indent=2))
+        print(_json.dumps(payload, indent=2))
     elif nothing_authored:
         print("no .core Targets authored yet")
     else:
-        print(targets_view.render_listing(target_surface.surface_payload(surface, project_root)))
+        print(targets_view.render_listing(payload))
     return 0
 
 

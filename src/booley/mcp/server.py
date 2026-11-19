@@ -742,6 +742,7 @@ def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     """
     import json as _json
 
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.fusesoc import fusesoc_registry
     from booley.targets import target_surface
 
@@ -760,7 +761,7 @@ def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     except (fusesoc_registry.FuseSocError, ValueError) as exc:
         return [TextContent(type="text", text=f"ERROR: {exc}")]
 
-    payload = target_surface.surface_payload(surface, project_root)
+    payload = target_surface.surface_payload(surface, project_root, synth_tools=synth_target_tools)
     return [TextContent(type="text", text=_json.dumps(payload, indent=2))]
 
 
