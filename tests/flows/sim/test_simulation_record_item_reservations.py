@@ -1267,12 +1267,16 @@ def test_item_thread_count_stays_fixed_while_holders_change(
         tmp_path, monkeypatch, **_sized(names, 100.0, EIGHT_CORES), held_at_admission=1
     ) as scenario:
         counts: list[int | None] = []
+        released = threading.Event()
 
         def release_the_early_holder() -> None:
             for token in scenario.early_holders:
                 scenario.store.release(token)
+            released.set()
 
         def watch_the_count() -> None:
+            # The items run in parallel: count only once the early holder is gone.
+            assert released.wait(_PARALLEL_SYNC_TIMEOUT_S)
             counts.append(job_thread_count())
             foreign = scenario.store.acquire(
                 CLASS_MEMORY,
@@ -1291,10 +1295,11 @@ def test_item_thread_count_stays_fixed_while_holders_change(
     assert outcome.complete is True
     # Under the Flow's claim the early holder was counted: half the cores.
     assert scenario.threads["t00"] == EIGHT_CORES // 2
-    # On its own claim, with the Flow at zero and the holder gone, the item is alone on 8 cores
-    # and the foreign holder never shrinks it.
+    # The items run in parallel, so t01 may share the cores with t00's claim; whatever it was
+    # given at its start, the foreign holder neither shrinks nor grows it.
     assert scenario.holds_own["t01"]
-    assert counts == [EIGHT_CORES] * 3
+    assert counts == [scenario.threads["t01"]] * 3
+    assert scenario.threads["t01"] in (EIGHT_CORES // 2, EIGHT_CORES)
 
 
 def test_failed_item_thread_count_releases_the_item_claim(
