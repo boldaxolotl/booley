@@ -143,7 +143,7 @@ class Bench:
         dispatched = time.time() - 1
         self.commands.append(cmd)
         build = self.root / cmd[2]
-        stage = cmd[3] if len(cmd) > 3 else "all"
+        stage = next((arg for arg in cmd[3:] if "=" not in arg), "all")
         stdout = ""
         if stage in {"yosys", "all"}:
             for name, text in {
@@ -284,7 +284,9 @@ def test_openroad_gets_the_job_thread_share_without_changing_the_reuse_key(bench
     assert stage_commands("openroad") == [
         ["make", "-C", rel, "openroad", "BOOLEY_OPENROAD_THREAD_OPTION=-threads 2"]
     ]
-    assert stage_commands("yosys") == [["make", "-C", rel, "yosys"]]
+    yosys = stage_commands("yosys")
+    assert [cmd[:4] for cmd in yosys] == [["make", "-C", rel, "yosys"]]
+    assert yosys[0][4].startswith("BOOLEY_YOSYS_TMPDIR=")
 
     # The slot stored at 2 threads (and the none before) matches at 8: same key.
     with fixed_job_threads(8):

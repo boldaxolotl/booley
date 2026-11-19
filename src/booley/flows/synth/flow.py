@@ -88,7 +88,12 @@ from booley.flows.result_table import (
     status_cell,
 )
 from booley.flows.synth import openroad_reuse
-from booley.flows.synth.backends.pipeline import BoundaryOutcome, openroad_thread_assignment
+from booley.flows.synth.backends.pipeline import (
+    BoundaryOutcome,
+    openroad_thread_assignment,
+    yosys_tmpdir,
+    yosys_tmpdir_assignment,
+)
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
@@ -106,6 +111,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_FAILURE,
     EXIT_SUCCESS,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import (
     format_clock,
@@ -1623,18 +1629,21 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
     def _run_synth_make(self, target: str, plan: Any, source_bytes: int | None) -> _SynthRun:
         """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
-        with resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes):
+        with (
+            resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes),
+            yosys_tmpdir() as yosys_tmp,
+        ):
             if not runs_openroad(plan.spec.timing.mode):
-                cmd = self._synth_boundary_cmd(plan)
+                cmd = [*self._synth_boundary_cmd(plan), yosys_tmpdir_assignment(yosys_tmp)]
                 return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))
-            return self._run_physical_stages(target, plan)
+            return self._run_physical_stages(target, plan, yosys_tmp)
 
     def _openroad_slot(self, target: str) -> openroad_reuse.ReuseSlot:
         """The Target's reuse slot, beside its work root (which every run wipes)."""
         root = work_root_for(self.args.work_dir, self.name, target, variant="openroad_reuse")
         return openroad_reuse.ReuseSlot(root)
 
-    def _run_physical_stages(self, target: str, plan: Any) -> _SynthRun:
+    def _run_physical_stages(self, target: str, plan: Any, yosys_tmp: Path) -> _SynthRun:
         """Run Yosys, then OpenROAD unless the Target's reuse slot matches every input.
 
         A baseline runs in a throwaway worktree, so it neither reads nor
@@ -1643,7 +1652,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         """
         timeout = self._get_timeout()
         start = time.monotonic()
-        yosys = self._execute_boundary(self._synth_boundary_cmd(plan, "yosys"), timeout=timeout)
+        yosys_cmd = [*self._synth_boundary_cmd(plan, "yosys"), yosys_tmpdir_assignment(yosys_tmp)]
+        yosys = self._execute_boundary(yosys_cmd, timeout=timeout)
         if yosys.returncode != 0 or yosys.timed_out:
             return _SynthRun(yosys)
         if getattr(self, "_execution_role", "candidate") != "candidate":
@@ -2029,7 +2039,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
         log_dir = self._synth_work_root(target)
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, output)
         except OSError:
             logger.debug(
@@ -2057,7 +2067,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
         log_dir = work_root_for(project_root, self.name, target, variant="baseline")
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, output)
         except OSError:
             logger.debug(

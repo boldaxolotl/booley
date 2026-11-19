@@ -38,6 +38,7 @@ from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
 from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
@@ -671,7 +672,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
     def __enter__(self) -> SimulationBuildSession:
         try:
-            self.slot.mkdir(parents=True, exist_ok=True)
+            make_directories(self.slot)
             lock = (self.slot / "lease.lock").open("a+", encoding="utf-8")
             try:
                 self._wait_for_lease(lock)

@@ -47,7 +47,7 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     normalize_completion_error,
 )
-from booley.runtime.filesystem_utils import replace_file
+from booley.runtime.filesystem_utils import make_directories, replace_file
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -121,7 +121,7 @@ class ElabOnlyTargetResult:
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Replace *path* atomically so a poll never observes partial JSON."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     replace_file(tmp, path)
@@ -656,7 +656,7 @@ class ElabOnlyMixin:
             token = new_attempt_token()[:12]
             log_dir = work_root_for(self.args.work_dir, "sim", target) / f"elab-only-{token}"
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             path = write_run_log(log_dir, output, max_bytes=None)
         except OSError:
             logger.debug("could not persist elab-only log for %s", target, exc_info=True)
@@ -712,7 +712,7 @@ class ElabOnlyMixin:
             "timestamp": utc_now_rfc3339(),
             **self._elab_only_detail(result),
         }
-        report_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(report_dir)
         invocation_dir = self.reserve_invocation_dir()
         assert invocation_dir is not None
         path = target_report_directory(invocation_dir, result.target) / "simulation.json"

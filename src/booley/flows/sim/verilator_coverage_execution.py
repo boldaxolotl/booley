@@ -85,6 +85,7 @@ from booley.fusesoc.fusesoc_registry import (
     mirrored_export_name,
     native_cores_ignored,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -509,7 +510,7 @@ class VerilatorCoverageExecution:
         """Run one collector utility in its requested artifact directory."""
         observe_stage(self._handle.selector, "postprocessing", source_bytes=self._source_bytes)
         announce_unit(f"coverage: {request.argv[0]}", target=self._handle.selector)
-        request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(request.output_path.parent)
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"
         result = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
         return SimulationCommandResult(result.returncode, result.stdout, result.stderr)
@@ -771,9 +772,9 @@ def _in_directory_script(directory: Path, script: str) -> str:
 
 
 def _prepare_artifact_directories(request: SimulationRunRequest) -> None:
-    request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(request.raw_path.parent)
     if request.hook_evidence_path is not None:
-        request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(request.hook_evidence_path.parent)
 
 
 def _snapshot_pre_sim_state(

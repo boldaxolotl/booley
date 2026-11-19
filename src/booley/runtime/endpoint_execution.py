@@ -111,6 +111,9 @@ def normalize_completion_error(
     outcome.exit_code = EXIT_ERROR
     outcome.detail = dict(outcome.detail)
     primary = outcome.detail.get("completion_error")
+    known = [primary, *outcome.detail.get("completion_errors", [])]
+    if completion_error in known:
+        return outcome
     if isinstance(primary, dict):
         secondary = list(outcome.detail.get("completion_errors", []))
         secondary.append(completion_error)
