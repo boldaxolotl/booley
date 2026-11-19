@@ -25,6 +25,7 @@ from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
 from booley.flows.sim.build import (
+    BuildOutcome,
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     build_failure_report,
@@ -76,6 +77,7 @@ from booley.flows.sim.execution.engine import (
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import observe_stage, prepare_attempt_log
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun
 from booley.fusesoc.fusesoc_registry import (
@@ -303,18 +305,30 @@ class VerilatorCoverageExecution:
         announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
         outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
+        if not outcome.passed:
+            return self._failed_build_result(prepared, outcome, identity)
+        self._prepared = prepared
+        return SimulationBuildResult(True, outcome.output, identity)
+
+    def _failed_build_result(
+        self,
+        prepared: PreparedSimulationBuild,
+        outcome: BuildOutcome,
+        identity: VerilatorCollectorIdentity,
+    ) -> SimulationBuildResult:
+        """A failed build's result, quoting its compiler text by Project path."""
+        paths = ProjectSourcePaths.for_target(self._handle, prepared.resolved)
         if outcome.failure_kind == "infrastructure":
             return SimulationBuildResult(
                 False,
-                build_failure_report(outcome),
+                build_failure_report(outcome, paths),
                 identity,
                 infrastructure_error=True,
                 reason=outcome.reason,
             )
-        if not outcome.passed:
-            return SimulationBuildResult(False, outcome.output or outcome.reason, identity)
-        self._prepared = prepared
-        return SimulationBuildResult(True, outcome.output, identity)
+        return SimulationBuildResult(
+            False, paths.project_text(outcome.output) or outcome.reason, identity
+        )
 
     def run(self, request: SimulationRunRequest) -> SimulationRunResult:
         """Run one selected test in one process through the authenticated adapter."""
