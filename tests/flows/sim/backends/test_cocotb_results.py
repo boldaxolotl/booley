@@ -399,8 +399,7 @@ class TestFindImportFailure:
     def test_cocotb_2_discovery_traceback_is_an_import_failure(
         self, case: str, prefix: str, extra: str
     ):
-        """cocotb 2.x prints no `Failed to import module` line: the cause is the
-        traceback its test discovery lets escape (real 2.1.0 captures)."""
+        """cocotb 2.x has no `Failed to import module` line; real 2.1.0 captures."""
         logs = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0"
         detail = cr.find_import_failure((logs / f"{case}.log").read_text(encoding="utf-8"))
         assert detail.startswith(prefix)
