@@ -282,6 +282,7 @@ class FlowMechanics:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="No command to execute",
+                refused=True,
             )
         proc_result = self._execute(cmd)
         return self._interpret_result(proc_result)

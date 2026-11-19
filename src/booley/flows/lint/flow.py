@@ -1349,6 +1349,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="lint is disabled ([flows.lint].enabled = false).",
+                refused=True,
             )
         plan = self._plan_lint(targets)
         self._flow_plan = plan

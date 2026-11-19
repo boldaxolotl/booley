@@ -224,7 +224,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
             message = self._run_policy_error()
         if message is None:
             return None
-        return EndpointOutcome(exit_code=EXIT_ERROR, report_text=message)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text=message, refused=True)
 
     def _planning_error(self, targets: list[str], plan: FlowPlan) -> EndpointOutcome:
         """Refuse the run, listing each failing candidate Target's error."""

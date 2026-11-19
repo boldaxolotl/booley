@@ -295,6 +295,7 @@ class ElabOnlyMixin:
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
                 detail={"mode": self._mode.value},
+                refused=True,
             )
         targets_or_error = self._resolve_requested_targets()
         if isinstance(targets_or_error, EndpointOutcome):
