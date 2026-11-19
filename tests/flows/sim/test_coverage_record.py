@@ -176,6 +176,7 @@ def _valid_outcomes() -> dict[str, object]:
 def _valid_document() -> dict[str, object]:
     return {
         "$schema": "booley.coverage-record-document/v1",
+        # A current-schema record whose id has the "campaign:" prefix written before #5143.
         "coverage_record_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
         **_valid_provenance(),
         "tests": _valid_tests(),

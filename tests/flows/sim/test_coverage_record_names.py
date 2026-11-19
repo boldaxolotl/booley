@@ -142,6 +142,7 @@ def test_a_coverage_run_writes_coverage_record_names(
     reference = _current_reference(run)
     assert reference["simulation_record_id"] == simulation_record_id
     record = _json(run.coverage_record_path)
+    assert record["coverage_record_id"].split(":", 1)[0] == "coverage-record"
     assert reference["coverage_record"]["coverage_record_id"] == record["coverage_record_id"]
     assert reference["coverage_record"]["schema"] == _RECORD
     for old in ("simulation_campaign_id", "coverage_campaign"):
