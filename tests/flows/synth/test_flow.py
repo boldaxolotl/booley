@@ -2360,13 +2360,15 @@ class TestIoBoundCritical:
         assert _is_io_bound_critical(SynthMetrics(wns_ns=-2.0)) is False
         assert _is_io_bound_critical(SynthMetrics(reg2reg_slack_ns=-0.25)) is False
 
-    def test_note_line_names_the_sdc_knob(self):
-        cur = SynthMetrics(wns_ns=-2.0, reg2reg_slack_ns=-0.25)
-        line = AsicSynthesizeFlow._format_io_bound_line("lite", cur)
-        assert "I/O-bound" in line
-        assert "period_ps won't move it" in line
-        assert "sdc" in line
-        assert "-2.000 ns" in line and "-0.250 ns" in line
+    def test_io_bound_note_points_at_target_sdc(self, flow_and_state):
+        flow, _ = flow_and_state
+        cur = SynthMetrics(area_um2=500.0, cells=10, wns_ns=-2.0, reg2reg_slack_ns=-0.25)
+        result = flow._aggregate_results(["lite"], {"lite": cur}, {}, None)
+        note = next(line for line in result.report_text.splitlines() if "I/O-bound" in line)
+        assert "-2.000 ns" in note and "-0.250 ns" in note
+        for text in ("file_type: SDC", "set_input_delay", "set_output_delay", "set_false_path"):
+            assert text in note
+        assert "period_ps" not in note and "[flows.synth.timing]" not in note
 
     def test_report_dict_sets_flag(self):
         cur = SynthMetrics(
