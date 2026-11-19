@@ -386,13 +386,11 @@ then rerun it with the `--confirm <digest>` it prints. Images marked
 `unrecorded` are kept; remove one with `docker image rm <id>` once no other
 Project uses it.
 
-A deleted Project that Booley no longer remembers can leave behind the host
-record that lets its Sandbox start (its Sandbox issuance stamp). `booley doctor`
-shows these as a note. `booley projects prune-stamps` lists them; name the
-deleted folders, `booley projects prune-stamps <project>...`, to remove those
-records and the Projects' pending start claims. It keeps the images and state
-volumes (`forget --purge` is the choice that removes them too) and keeps any
-named folder that still exists or that Booley still remembers.
+A deleted Project that Booley no longer remembers can leave a Sandbox record
+on this machine; `booley doctor` shows it as a note. `booley projects
+prune-stamps` lists them; add the deleted folders, `booley projects
+prune-stamps <root>...`, to remove them. The images and state volumes stay
+(`forget --purge` is the choice that removes them too).
 
 ## Project files
 

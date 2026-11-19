@@ -296,7 +296,7 @@ class ProjectStore:
         """Validate every per-Project file read-only and collect each file's own error.
 
         A problem that belongs to no Project (the directory itself, or an entry that
-        is not a per-Project file) still raises.
+        is not named like a per-Project file) still raises.
         """
         if not self.private.validate_existing_directory():
             return (), ()
@@ -305,8 +305,14 @@ class ProjectStore:
         for path in sorted(self.private.root.iterdir()):
             if path.name.startswith("."):  # temporary and lock files
                 continue
-            if path.is_symlink() or not path.is_file() or not path.name.endswith(_PROJECT_SUFFIX):
-                raise self.private.error_type(f"unexpected {self.private.subject} entry: {path}")
+            unexpected = self.private.error_type(
+                f"unexpected {self.private.subject} entry: {path}"
+            )
+            if not path.name.endswith(_PROJECT_SUFFIX):
+                raise unexpected
+            if path.is_symlink() or not path.is_file():
+                errors.append((path, unexpected))  # a per-Project name: one Project's error
+                continue
             try:
                 entries.append(self._identity(path, self._load(path)))
             except self.private.error_type as exc:

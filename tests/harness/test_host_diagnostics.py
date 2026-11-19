@@ -361,6 +361,40 @@ def test_host_doctor_fails_for_this_projects_unusable_stamp_only(monkeypatch, tm
     assert len(notes) == 1 and other_name in notes[0].message
 
 
+def test_host_doctor_notes_another_projects_stamp_symlink_and_fails_for_its_own(
+    monkeypatch, tmp_path: Path
+):
+    """A stamp symlink is one Project's problem: a NOTE for another Project, FAIL for this one."""
+    from tests.conftest import symlink_or_skip
+
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    own_root = tmp_path / "own"
+    own_root.mkdir()
+    stamps = session_issuance.stamp_store()
+    stamps.private.ensure_directory()
+    target = tmp_path / "outside.json"
+    target.write_text("{}", encoding="utf-8")
+    other_name = hashlib.sha256(b"unrelated").hexdigest() + ".json"
+    symlink_or_skip(stamps.private.root / other_name, target, target_is_directory=False)
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host(own_root).report.findings
+
+    assert not [f for f in findings if f.severity is Severity.FAIL]
+    notes = [f for f in findings if f.severity is Severity.NOTE]
+    assert len(notes) == 1 and other_name in notes[0].message
+
+    own_name = stamps.filename(str(own_root.resolve()))
+    symlink_or_skip(stamps.private.root / own_name, target, target_is_directory=False)
+
+    findings = host_diagnostics.inspect_host(own_root).report.findings
+
+    failures = [f for f in findings if f.severity is Severity.FAIL]
+    assert len(failures) == 1 and own_name in failures[0].message
+
+
 def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
     """Doctor counts per-Project Session store files named for their Project Roots."""
     xdg_home = tmp_path / "config"

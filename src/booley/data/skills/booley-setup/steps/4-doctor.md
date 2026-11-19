@@ -58,8 +58,8 @@ over that severity bug with a project waiver.
    Project's waiver file and do not run its remedy. Another Project's leftovers
    show as notes: they do not block setup, so list each with its `→` remedy for
    the final report. A host-wide warning or failure (Host Bootstrap, the host
-   clock) keeps its severity: hand it to the user with its remedy; setup stays
-   incomplete until the user resolves it and the host run is clean.
+   clock) and another Project's unusable claim or journal file keep their
+   severity: hand each to the user with its remedy.
 7. Run plain `booley doctor` **once more** in the container after the footprint
    and host findings are settled. Host-side waiver changes must land before this
    point.
@@ -314,7 +314,7 @@ Once all three final invocations are green:
   changed.
 - Report every waiver with its check ID, subject (if any), reason, and expiry or
   permanent status. There must be no warning merely "left for later."
-- List every host finding handed to the user in step 6, with its `→` remedy.
+- List each host finding left for the user in step 6, with its `→` remedy.
 - Set `status: complete` in `SETUP-PLAN.md`, and include the plan's §3
   deviation log plus (unattended mode) any `review`-flagged decision rows the
   user should audit.

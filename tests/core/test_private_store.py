@@ -299,3 +299,20 @@ def test_scan_each_collects_each_files_error_and_scan_raises_the_first(store) ->
     store.root.joinpath("stray.txt").write_text("x", encoding="utf-8")
     with pytest.raises(store.error_type, match="unexpected"):
         project_store.scan_each()
+
+
+def test_scan_each_collects_a_symlink_named_for_a_project(store, tmp_path) -> None:
+    from tests.conftest import symlink_or_skip
+
+    project_store = private_store.ProjectStore(store, lambda path, root: "repair")
+    store.ensure_directory()
+    target = tmp_path / "outside.json"
+    target.write_text("{}", encoding="utf-8")
+    link_name = "1" * 64 + ".json"
+    symlink_or_skip(store.root / link_name, target, target_is_directory=False)
+
+    entries, errors = project_store.scan_each()
+
+    assert entries == ()
+    assert [path.name for path, _ in errors] == [link_name]
+    assert "unexpected" in str(errors[0][1])
