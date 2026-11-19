@@ -29,7 +29,11 @@ from booley.flows import edam as edam_layer
 from booley.flows import source_paths
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
-from booley.flows.job_resources import repeated_commands, resolved_source_bytes
+from booley.flows.job_resources import (
+    judged_commands_failing_on_error,
+    repeated_commands,
+    resolved_source_bytes,
+)
 from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -577,14 +581,16 @@ class PreparedOrdinaryGroup:
             attempt_token=attempt.identity.attempt_token,
             source_bytes=attempt.source_bytes,
         )
-        process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
-        build = _fresh_build_outcome(attempt, process, timeout_s)
-        self._build_process = process
-        self._build = build
-        if build.passed and process.returncode == 0 and not process.timed_out:
-            self._artifact_paths = self._session.authorize_fresh_image(
-                attempt.prepared, inputs, attempt.cache_key
-            )
+        with judged_commands_failing_on_error() as commands:
+            process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
+            build = _fresh_build_outcome(attempt, process, timeout_s)
+            self._build_process = process
+            self._build = build
+            if build.passed and process.returncode == 0 and not process.timed_out:
+                self._artifact_paths = self._session.authorize_fresh_image(
+                    attempt.prepared, inputs, attempt.cache_key
+                )
+            commands.judge(build.passed)
         return build
 
     def finish_build_failure(self) -> SimulationTargetOutcome:
@@ -672,12 +678,17 @@ class PreparedOrdinaryGroup:
 
         Every file the attempt writes goes under *evidence_root*, never into the bundle.
         """
-        with attempt_scope(
-            self._handle.selector,
-            identity=self._handle.identity,
-            tests=self._attempt.test_names,
+        with (
+            attempt_scope(
+                self._handle.selector,
+                identity=self._handle.identity,
+                tests=self._attempt.test_names,
+            ),
+            judged_commands_failing_on_error() as commands,
         ):
-            return self._launch_bundle(bundle_root, evidence_root, run_cwd)
+            outcome = self._launch_bundle(bundle_root, evidence_root, run_cwd)
+            commands.judge(_published_pass(outcome))
+            return outcome
 
     def _launch_bundle(
         self, bundle_root: Path, evidence_root: Path, run_cwd: Path
@@ -1701,6 +1712,20 @@ def _adapter_invocation(work: PreparedSimulationWork) -> tuple[str, ...]:
         return tuple(prepare_adapter_invocation(work))
     except UnsupportedSimulationAdapterError as exc:
         raise SimulationBuildPreparationError(str(exc)) from exc
+
+
+def _published_pass(outcome: SimulationTargetOutcome) -> bool:
+    """Whether the Simulation Record publishes every Test Run of *outcome* as passed.
+
+    Not ``outcome.passed``: that also needs the adapter aggregate to pass, which
+    a cocotb batch can miss after every test passed (a disk budget tripped at the
+    end), while the Test Runs are still published as passed.
+    """
+    return (
+        outcome.infrastructure_failure is None
+        and bool(outcome.tests)
+        and all(test.passed for test in outcome.tests)
+    )
 
 
 def _group_outcome(

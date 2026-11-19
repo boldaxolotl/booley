@@ -16,7 +16,7 @@ from booley.config.project_config import (
 )
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
-from booley.flows.job_resources import resolved_source_bytes
+from booley.flows.job_resources import judged_commands_failing_on_error, resolved_source_bytes
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -560,9 +560,11 @@ class ElabOnlyMixin:
                     )
                 self._register_prepared_build(target, prepared)
                 inputs = session.capture_inputs(prepared)
-                result = self._execute_elab_only_build(target, prepared)
-                if result.outcome.passed:
-                    session.authorize_fresh_image(prepared, inputs)
+                with judged_commands_failing_on_error() as commands:
+                    result = self._execute_elab_only_build(target, prepared)
+                    if result.outcome.passed:
+                        session.authorize_fresh_image(prepared, inputs)
+                    commands.judge(result.outcome.passed)
                 return result
         except SimulationBuildSlotError as exc:
             outcome = setup_failure_outcome(
