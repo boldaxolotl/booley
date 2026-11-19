@@ -57,6 +57,7 @@ from booley.flows.plan import (
 from booley.flows.run_log import write_run_log
 from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.terminal_progress import ProgressText
+from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -737,6 +738,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             target,
             build_root=build_root,
             library_plan=fusesoc_registry.build_library_plan(target.project_root, build_root),
+            runner=setup_runner(self.name, target.selector, "lint_prepare"),
         )
         declared_family = _lint_eda_tool_family(target.eda_tool)
         configured_family = _lint_eda_tool_family(resolved.configured_eda_tool)

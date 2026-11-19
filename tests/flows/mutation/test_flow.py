@@ -591,10 +591,10 @@ def _patch_fake_simulation(
         """The canned answer, or with *measured* a real child that replays it through the boundary."""
         if not measured:
             return answer
-        from booley.flows.mutation.tool_runs import run_tool as real_run_tool
+        from booley.flows.tool_runs import run_tool as real_run_tool
 
         replay = SubprocessResult(answer.returncode, answer.stdout or "", answer.stderr or "")
-        return real_run_tool(canned_command(replay), **kwargs)
+        return real_run_tool(canned_command(replay), flow="mutation", **kwargs)
 
     def _fake(cmd, *args, **kwargs):
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
