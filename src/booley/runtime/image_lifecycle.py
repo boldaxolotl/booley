@@ -40,6 +40,7 @@ from booley.runtime.image_build_contracts import (
 )
 from booley.runtime.image_identity import ImageMetadata, logical_selection_fingerprint_for_chain
 from booley.runtime.image_provenance import (
+    ENV_SANDBOX_FLAVOR,
     LABEL_ARTIFACT_ROLE,
     LABEL_BUILD_ORIGIN,
     LABEL_EFFECTIVE_INPUTS,
@@ -70,6 +71,8 @@ STABLE_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
 STANDARD_SUBSTRATE_IMAGE = "booley-sandbox-standard-substrate:local"
 RISCV_SUBSTRATE_IMAGE = "booley-sandbox-riscv-substrate:local"
 FLAVOR_RECIPES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
+# Published images mark only the RISC-V flavor; the standard image sets no marker.
+FLAVOR_MARKERS = {"booley-sandbox-riscv": "riscv"}
 PUBLISHED_REGISTRY = "ghcr.io/boldaxolotl"
 # Docker prints this for an absent repository or tag (digest-only and dangling
 # images). Reference grammar forbids "<" and ">", so it is never a real name.
@@ -1117,7 +1120,27 @@ def _node_identity_reason(node: ImageNode, metadata: ImageMetadata) -> Diagnosti
         and recorded_selection != node.logical_selection_fingerprint
     ):
         return Diagnostic("inputs-changed", "logical Sandbox Image selection changed")
+    flavor_mismatch = _release_flavor_mismatch(node, metadata)
+    if flavor_mismatch is not None:
+        return Diagnostic("inputs-changed", flavor_mismatch)
     return None
+
+
+def _release_flavor_mismatch(node: ImageNode, metadata: ImageMetadata) -> str | None:
+    """Describe a published release image whose flavor is not the configured one."""
+    if node.acquisition_policy is not ArtifactPolicy.VERIFIED_RELEASE_ONLY:
+        return None
+    configured = node.published_reference or node.reference
+    found = metadata.environment.get(ENV_SANDBOX_FLAVOR)
+    if found == FLAVOR_MARKERS.get(configured):
+        return None
+    image = next((name for name, marker in FLAVOR_MARKERS.items() if marker == found), None)
+    if found is None:
+        image = BASE_IMAGE
+    return (
+        f"configured Sandbox Image is {configured} but the image is "
+        f"{image or f'{ENV_SANDBOX_FLAVOR}={found}'}"
+    )
 
 
 def _node_ancestry_reason(
@@ -1324,6 +1347,11 @@ def _verify_prepared_image(
     if mismatched:
         raise ImageLifecycleError(
             f"prepared candidate {reference!r} has invalid provenance: " + ", ".join(mismatched)
+        )
+    flavor_mismatch = _release_flavor_mismatch(node, metadata)
+    if flavor_mismatch is not None:
+        raise ImageLifecycleError(
+            f"prepared candidate {reference!r} is the wrong image: {flavor_mismatch}"
         )
     if (
         parent_artifact is not None
