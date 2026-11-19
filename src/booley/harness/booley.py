@@ -2026,6 +2026,13 @@ def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
                 f"  {table_header(table.target, table.flow)} {len(table.bounds)} bounds, "
                 f"{len(table.tracked)} tracked"
             )
+        from booley.core.booley_dir import main_booley_dir_of
+        from booley.measurement.clock_prefixes import unreported_clock_warnings
+        from booley.measurement.run_store import MeasurementStore
+
+        store = MeasurementStore(main_booley_dir_of(project_root))
+        for warning in unreported_clock_warnings(rules.tables, store):
+            print(f"warning: {warning}", file=sys.stderr)
     return 0
 
 

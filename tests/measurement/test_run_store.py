@@ -74,6 +74,7 @@ def make_run(
     verdict: str = "met",
     toolchain: ToolchainFingerprint | None = None,
     per_clock: dict[str, dict[str, float]] | None = None,
+    clocks: tuple[str, ...] = (),
     omit_results: bool = False,
     identity: str = IDENTITY,
     flow: str = "syn",
@@ -89,7 +90,7 @@ def make_run(
     results = (
         () if omit_results else (MetricResult("cell_count_max", 100, 90, Verdict(verdict), None),)
     )
-    values = FlowMetricValues({}, per_clock or {})
+    values = FlowMetricValues({}, per_clock or {}, clocks=clocks)
     table = TableRun(identity, flow, 1.5, values, results)
     finished = EPOCH + timedelta(minutes=minute)
     started = finished - timedelta(seconds=30)

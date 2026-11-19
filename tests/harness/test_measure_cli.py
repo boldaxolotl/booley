@@ -112,6 +112,58 @@ def test_validate_refuses_an_automatic_mutation_count(
     assert "[sim_core.mutation] count: count must be an integer, got 'auto'" in err
 
 
+@pytest.mark.parametrize(
+    ("entry", "key"),
+    [
+        pytest.param('"rx_clkk.wns_ns_min" = 0', "rx_clkk.wns_ns_min", id="bound"),
+        pytest.param('track = ["rx_clkk.wns_ns"]', "rx_clkk.wns_ns", id="tracked"),
+    ],
+)
+def test_validate_warns_on_a_clock_no_stored_run_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entry: str,
+    key: str,
+) -> None:
+    """AC1-AC5: an unreported clock prefix warns and exits 0; reported clocks and no store stay quiet."""
+    from booley.measurement.run_key import KeyedCommit, MeasurementKey
+    from tests.measurement.test_run_store import make_run
+
+    metrics = (
+        '[synth_core.synth]\n"rx_clk.wns_ns_min" = 0\n"tx_clk.fmax_mhz_min" = 100\n' + entry + "\n"
+    )
+    write_metrics_project(tmp_path, metrics)
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 0
+    captured = capsys.readouterr()
+    assert "metrics.toml is valid: 1 table" in captured.out
+    assert captured.err == ""
+
+    keyed = KeyedCommit(MeasurementKey("0" * 40, None), "1" * 40, "m", (), None)
+    identity = "::synth_core:0#synth_core"
+    store = MeasurementStore(tmp_path / ".booley")
+    first = make_run(
+        keyed,
+        "r1",
+        minute=1,
+        identity=identity,
+        flow="synth",
+        per_clock={"wns_ns": {"rx_clk": 0.5}},
+    )
+    second = make_run(keyed, "r2", minute=2, identity=identity, flow="synth", clocks=("tx_clk",))
+    store.write(first, [])
+    store.write(second, [])
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 0
+    captured = capsys.readouterr()
+    assert "metrics.toml is valid: 1 table" in captured.out
+    assert captured.err == (
+        f"warning: [synth_core.synth] {key}: clock rx_clkk was never reported; "
+        "reported clocks: rx_clk, tx_clk\n"
+    )
+
+
 # ---------------------------------------------------------------- measuring a commit
 
 TWO_LINT_TABLES = "[sim_core.lint]\nwarnings_max = 0\n[sim_two.lint]\nwarnings_max = 0\n"
