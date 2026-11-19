@@ -5706,5 +5706,24 @@ fn issue_4764_stats_cycle_window_matches_wave() {
         signal["time_in_state_clocked_cycles"],
         serde_json::json!({"'h0": 5})
     );
+    // Cycle 0 reads the reset tick (wave's column 0 for clk is 0, cycle 1 is 1).
+    let args = [
+        "stats",
+        p,
+        "-s",
+        "clk",
+        "--with-reset",
+        "-t",
+        "0:4",
+        "--format",
+        "json",
+    ];
+    let (out, err, code) = run(&args);
+    assert_eq!(code, 0, "{err}");
+    let stats: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        stats["data"]["signals"][0]["time_in_state_clocked_cycles"],
+        serde_json::json!({"'h0": 1, "'h1": 4})
+    );
     let _ = std::fs::remove_file(fst);
 }

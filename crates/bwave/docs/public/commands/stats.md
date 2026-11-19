@@ -42,6 +42,8 @@ the same key in both modes. The duration map is named
 a parallel `time_in_state_ns` is emitted whenever the
 trace has a timescale.
 
+Example for `-t 1:10000` on a 10-tick clock:
+
 ```json
 {
   "$schema": "...",
@@ -92,8 +94,8 @@ bwave stats sim.fst -s "*data_out*" --format json \
   a clock. Text output shows the same clocked/stopped split.
 - In sync mode the window is the cycles `wave` shows for the same `-t`: `A`
   through `B`, with cycle 0 included when `A` is 0. `total_cycles`, the text
-  header's cycle count, and the clocked plus stopped counts (and the sync text
-  percentages) all equal that number of cycles.
+  header's cycle count, and the clocked plus stopped counts (JSON and text) all
+  equal that number of cycles.
 - In async mode `total_cycles` counts whole clock periods in the tick window.
 - Tick/ns occupancy stays a physical duration.
 

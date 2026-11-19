@@ -1599,7 +1599,7 @@ fn sampled_occupancy(
     let base = cycle_base(cache, reset_start);
     let (first, end) = shown_cycle_window(cache, cfg, base);
     let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
-    if first == 0 && first <= end {
+    if first == 0 {
         *clocked
             .entry(sampled_value(cfg, transitions, reset_start))
             .or_insert(0) += 1;
