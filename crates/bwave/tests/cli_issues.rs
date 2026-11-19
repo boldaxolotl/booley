@@ -2480,8 +2480,67 @@ fn issue_1100_change_commands_agree_and_preserve_literals() {
                 "0"
             );
         }
-        let (_, error, _) = issue_1100_run(&["distance", &store, "bus", "rising", "--async"]);
-        assert!(error.contains("only fires on 1-bit signals"));
+    }
+}
+
+/// `issue_1100_store` signals with `clk` toggling, so sync runs have a grid.
+const ISSUE_4903_CLOCKED: &str = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n1!\nb0001 #\n#15\n1$\n#20\n0$\n0!\nb0011 #\n#25\n1$\n#30\n0$\n1!\n#35\n1$\n#40\n0$\n";
+
+#[test]
+fn issue_4903_distance_multi_bit_edge_note_names_either_operand() {
+    let (_dir, store) = issue_1100_store(ISSUE_4903_CLOCKED, "serial");
+    let note = "distance: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.";
+    let distance = |query: &[&str], mode: &[&str], json: bool| {
+        let mut args = vec!["distance", store.as_str()];
+        args.extend(query);
+        args.extend(mode);
+        if json {
+            args.extend(["--format", "json"]);
+        }
+        let (out, err, code) = issue_1100_run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        (out, err)
+    };
+    let warnings = |out: &str| {
+        let json: serde_json::Value = serde_json::from_str(out).unwrap();
+        assert_eq!(json["data"]["count"], 0, "{json}");
+        assert_eq!(json["data"]["pairs"], serde_json::json!([]), "{json}");
+        json["warnings"].clone()
+    };
+    for mode in [&[][..], &["--async"]] {
+        for query in [
+            &["bus", "rising"][..],
+            &["scalar", "rising", "--to", "bus", "rising"],
+        ] {
+            let (out, err) = distance(query, mode, false);
+            let line = format!("# {note}");
+            assert!(
+                out.is_empty() && err.lines().any(|l| l == line),
+                "{query:?} {mode:?}: {err}"
+            );
+            let (out, _) = distance(query, mode, true);
+            assert_eq!(
+                warnings(&out),
+                serde_json::json!([note]),
+                "{query:?} {mode:?}"
+            );
+        }
+        // A literal that never occurs keeps today's text, and JSON stays silent.
+        let literal = ["scalar", "rising", "--to", "bus", "'hF"];
+        let today = if mode.is_empty() {
+            "# distance: no events found for bus F"
+        } else {
+            "# distance: pattern 'bus' matched but value 'F' never occurred"
+        };
+        let (out, err) = distance(&literal, mode, false);
+        assert!(
+            out.is_empty() && err.lines().any(|l| l == today),
+            "{mode:?}: {err}"
+        );
+        assert_eq!(
+            warnings(&distance(&literal, mode, true).0),
+            serde_json::json!([])
+        );
     }
 }
 
