@@ -11,7 +11,8 @@ Specialist window, for the children this process reaped alone in it. Per-phase
 records stay sampled. Measurement only observes:
 it never changes a Job's verdict, scheduling or exit code, and a value that
 could not be measured is recorded as absent (``None``), never as zero. A Flow may
-hold its commands' records until it has judged them (``judged_commands``).
+hold its commands' records until it has judged them (``judged_commands``, or
+``judged_commands_failing_on_error`` when an exception means it refused them).
 """
 
 from __future__ import annotations
@@ -150,6 +151,21 @@ def judged_commands() -> Iterator[JudgedCommands]:
         _judged.reset(token)
         if held._builders:
             _append_to_history(held.records)
+
+
+@contextlib.contextmanager
+def judged_commands_failing_on_error() -> Iterator[JudgedCommands]:
+    """Like :func:`judged_commands`, but a block that raises judges its commands failed.
+
+    For a block where an exception after a command is the Flow refusing that
+    command's result.
+    """
+    with judged_commands() as commands:
+        try:
+            yield commands
+        except BaseException:
+            commands.judge(False)
+            raise
 
 
 def label_commands(
