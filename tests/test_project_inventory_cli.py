@@ -712,13 +712,11 @@ def test_prune_protects_missing_uninitialized_and_grant_only_roots(
     assert len(keeper_host.tags) == 4
 
 
-@pytest.mark.parametrize("operation", ["forget", "prune-keepers", "prune-stamps"])
 def test_lifecycle_contention_becomes_cli_error(
     tmp_path: Path,
     keeper_host: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    operation: str,
 ) -> None:
     from contextlib import contextmanager
 
@@ -732,13 +730,14 @@ def test_lifecycle_contention_becomes_cli_error(
         yield
 
     monkeypatch.setattr(runtime_image_keepers, "host_lifecycle_lock", busy)
-    flags = (
-        ["projects", operation, str(project)]
-        if operation != "prune-keepers"
-        else ["projects", operation, "--confirm", "digest"]
-    )
-    assert _run(_parser().parse_args(flags)) == 2
-    assert "lifecycle busy" in capsys.readouterr().err and keeper_host.calls == []
+    for operation in ("forget", "prune-keepers", "prune-stamps"):
+        flags = (
+            ["projects", operation, str(project)]
+            if operation != "prune-keepers"
+            else ["projects", operation, "--confirm", "digest"]
+        )
+        assert _run(_parser().parse_args(flags)) == 2
+        assert "lifecycle busy" in capsys.readouterr().err and keeper_host.calls == []
 
 
 @pytest.mark.parametrize("mutation", ["retag", "container", "grant"])
@@ -1004,13 +1003,11 @@ def test_forget_incomplete_observation_preserves_inventory(
     assert _session_files_remain(str(project.resolve()))
 
 
-@pytest.mark.parametrize("operation", ["forget", "prune-keepers", "prune-stamps"])
 def test_keeper_release_refuses_pending_recovery(
     tmp_path: Path,
     keeper_host: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    operation: str,
 ) -> None:
     project = _remember(tmp_path)
     tag = keeper_image(project)
@@ -1018,15 +1015,16 @@ def test_keeper_release_refuses_pending_recovery(
     monkeypatch.setattr(
         runtime_image_keepers, "shared_recovery_blocks_command", lambda **kwargs: True
     )
-    flags = (
-        ["projects", "prune-keepers", "--confirm", "digest"]
-        if operation == "prune-keepers"
-        else ["projects", operation, str(project)]
-    )
-    assert _run(_parser().parse_args(flags)) == 2
-    assert "requires recovery" in capsys.readouterr().err
-    assert keeper_host.calls == [] and tag in keeper_host.tags
-    assert project_inventory.project_inventory()[0].remembered
+    for operation in ("forget", "prune-keepers", "prune-stamps"):
+        flags = (
+            ["projects", "prune-keepers", "--confirm", "digest"]
+            if operation == "prune-keepers"
+            else ["projects", operation, str(project)]
+        )
+        assert _run(_parser().parse_args(flags)) == 2
+        assert "requires recovery" in capsys.readouterr().err
+        assert keeper_host.calls == [] and tag in keeper_host.tags
+        assert project_inventory.project_inventory()[0].remembered
 
 
 def test_prune_stamps_withdraws_only_orphan_session_files(

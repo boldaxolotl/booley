@@ -159,68 +159,60 @@ def test_host_doctor_reports_host_egress_mode(egress, tmp_path, monkeypatch):
     assert inventory_calls == [_INVENTORY_ARGV]
 
 
-@pytest.mark.parametrize("owner", ["other", "this"])
-@pytest.mark.parametrize(
-    ("host", "editor", "stale", "fix_commands"),
-    [
-        pytest.param(
-            "unproxied",
-            False,
-            None,
-            (["booley", "session", "refresh", "--project"],),
-            id="host-unproxied-headless-proxy",
-        ),
-        pytest.param(
-            "proxy",
-            True,
-            "unproxied",
-            (["booley", "init", "--project"],),
-            id="host-proxy-editor-unproxied",
-        ),
-    ],
-)
-def test_host_doctor_reports_each_mismatched_running_sandbox(
-    owner, host, editor, stale, fix_commands, tmp_path, monkeypatch
-):
+_MISMATCH_CASES = [
+    # (host egress, editor Sandbox, stale Sandbox egress, recreate commands)
+    ("unproxied", False, None, (["booley", "session", "refresh", "--project"],)),
+    ("proxy", True, "unproxied", (["booley", "init", "--project"],)),
+]
+
+
+def test_host_doctor_reports_each_mismatched_running_sandbox(tmp_path, monkeypatch):
     """Another Project's mismatched Sandbox is a NOTE; this Project's own stays a WARN."""
-    stale_root = tmp_path if owner == "this" else tmp_path / "stale-project"
-    stale_root.mkdir(exist_ok=True)
-    current_root = tmp_path / "current-project"
-    current_egress = "unproxied" if host == "unproxied" else None
-    sandboxes = {
-        "stale-sandbox": _sandbox_document(
-            "stale-sandbox", stale_root, editor=editor, egress=stale
-        ),
-        "current-sandbox": _sandbox_document(
-            "current-sandbox", current_root, editor=not editor, egress=current_egress
-        ),
-    }
-    result, inventory_calls = _run_host_doctor(
-        monkeypatch, tmp_path, egress=host, sandboxes=sandboxes
-    )
-    sandbox_mode = "proxy" if stale is None else stale
-    message = (
-        f"Sandbox stale-sandbox (Project {stale_root.resolve()}) runs with egress "
-        f"'{sandbox_mode}' but host [sandbox] egress = '{host}'"
-    )
-    mismatches = [f for f in result.findings if "stale-sandbox" in f.message]
-    assert len(mismatches) == 1, result.findings
-    finding = mismatches[0]
-    assert finding.message == message
-    if owner == "this":
-        assert (finding.severity, finding.check_id) == ("warn", "host.sandbox-egress-mismatch")
-        assert finding.subject == str(stale_root.resolve())
-    else:
-        assert (finding.severity, finding.check_id) == ("note", None)
-        assert not [f for f in result.findings if f.check_id == "host.sandbox-egress-mismatch"]
-    # Each recreate command names the stale Project, quoted for the host shell
-    # (POSIX shells or PowerShell on Windows).
-    for command in fix_commands:
-        words = " ".join(command)
-        assert f"`{words} {quote_arg(str(stale_root.resolve()))}`" in finding.fix
-    assert ("Rebuild Container" in finding.fix) is editor
-    assert "--seed" not in finding.fix
-    assert inventory_calls == [_INVENTORY_ARGV]
+    for number, (owner, case) in enumerate(
+        (owner, case) for owner in ("other", "this") for case in _MISMATCH_CASES
+    ):
+        host, editor, stale, fix_commands = case
+        doctor_root = tmp_path / f"doctor-{number}"
+        doctor_root.mkdir()
+        stale_root = doctor_root if owner == "this" else tmp_path / f"stale-{number}"
+        stale_root.mkdir(exist_ok=True)
+        current_root = tmp_path / f"current-{number}"
+        current_egress = "unproxied" if host == "unproxied" else None
+        sandboxes = {
+            "stale-sandbox": _sandbox_document(
+                "stale-sandbox", stale_root, editor=editor, egress=stale
+            ),
+            "current-sandbox": _sandbox_document(
+                "current-sandbox", current_root, editor=not editor, egress=current_egress
+            ),
+        }
+        with monkeypatch.context() as case_patch:
+            result, inventory_calls = _run_host_doctor(
+                case_patch, doctor_root, egress=host, sandboxes=sandboxes
+            )
+        sandbox_mode = "proxy" if stale is None else stale
+        message = (
+            f"Sandbox stale-sandbox (Project {stale_root.resolve()}) runs with egress "
+            f"'{sandbox_mode}' but host [sandbox] egress = '{host}'"
+        )
+        mismatches = [f for f in result.findings if "stale-sandbox" in f.message]
+        assert len(mismatches) == 1, result.findings
+        finding = mismatches[0]
+        assert finding.message == message
+        if owner == "this":
+            assert (finding.severity, finding.check_id) == ("warn", "host.sandbox-egress-mismatch")
+            assert finding.subject == str(stale_root.resolve())
+        else:
+            assert (finding.severity, finding.check_id) == ("note", None)
+            assert not [f for f in result.findings if f.check_id == "host.sandbox-egress-mismatch"]
+        # Each recreate command names the stale Project, quoted for the host shell
+        # (POSIX shells or PowerShell on Windows).
+        for command in fix_commands:
+            words = " ".join(command)
+            assert f"`{words} {quote_arg(str(stale_root.resolve()))}`" in finding.fix
+        assert ("Rebuild Container" in finding.fix) is editor
+        assert "--seed" not in finding.fix
+        assert inventory_calls == [_INVENTORY_ARGV]
 
 
 def test_host_doctor_notes_orphan_stamps_until_prune_stamps(tmp_path, monkeypatch, capsys):
