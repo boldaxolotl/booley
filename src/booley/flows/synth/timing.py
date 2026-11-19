@@ -132,9 +132,10 @@ def parse_unconstrained_timing(text: str) -> UnconstrainedTiming | None:
         if not raw.startswith(_CHECK_PREFIX):
             continue
         body = raw[len(_CHECK_PREFIX) :].rstrip()
-        if body.strip() == "begin":
+        # Delimiters are matched unindented: a port named ``end`` is a name line.
+        if body == " begin":
             in_block = True
-        elif body.strip() == "end":
+        elif body == " end":
             complete = in_block
             break
         elif in_block and (header := _CHECK_HEADER_RE.search(body)):

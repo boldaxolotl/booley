@@ -2902,13 +2902,13 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     ) -> str:
         """Advisory: timing numbers cover only the paths the SDC constrains."""
 
-        def ports(count_names: tuple[str, ...], noun: str, command: str) -> str:
-            shown = ", ".join(count_names[:3])
-            more = len(count_names) - 3
+        def ports(names: tuple[str, ...], noun: str, command: str) -> str:
+            shown = ", ".join(names[:3])
+            more = len(names) - 3
             if more > 0:
                 shown += f", +{more} more"
-            plural = noun if len(count_names) == 1 else f"{noun}s"
-            return f"{len(count_names)} {plural} without {command} ({shown})"
+            plural = noun if len(names) == 1 else f"{noun}s"
+            return f"{len(names)} {plural} without {command} ({shown})"
 
         parts: list[str] = []
         if unconstrained.endpoints:

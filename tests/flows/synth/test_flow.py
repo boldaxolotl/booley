@@ -3240,9 +3240,11 @@ class TestFileBasedInterpretation:
     def _constraint_check_block(scenario: str) -> str:
         """The block run_openroad.tcl prints: every captured check_setup line
         carries the prefix so OpenSTA's "Warning:" text is not an EDA warning."""
+        if scenario == "unchecked":
+            return ""
         check_lines: list[str] = []
         if scenario == "clock_only":
-            inputs = [f"in{i}" for i in range(11)] + ["data[3]"]
+            inputs = [f"in{i}" for i in range(10)] + ["data[3]", "end"]
             endpoints = [f"out{i}" for i in range(13)] + ["r1/D"]
             check_lines = [
                 "Warning: There are 12 input ports missing set_input_delay.",
@@ -3256,7 +3258,7 @@ class TestFileBasedInterpretation:
             f"STA_CONSTRAINT_CHECK: {line}\n" for line in ["begin", *check_lines, "end"]
         )
 
-    @pytest.mark.parametrize("scenario", ["clock_only", "constrained"])
+    @pytest.mark.parametrize("scenario", ["clock_only", "constrained", "unchecked"])
     def test_timing_markers_rederived_from_openroad_log(
         self, flow_and_state, tmp_path: Path, scenario: str
     ):
@@ -3310,7 +3312,18 @@ class TestFileBasedInterpretation:
         # The check never changes the verdict or exit code (the raw OpenSTA
         # "Warning:" form would have turned this PASS into WARN).
         assert "RESULT: PASS" in result.report_text
+        self._assert_constraint_outcome(result, tmp_path, scenario)
+
+    @staticmethod
+    def _assert_constraint_outcome(result, tmp_path: Path, scenario: str) -> None:
         report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))
+        if scenario == "unchecked":
+            # No block means no check ran (logical mode, or OpenROAD died first):
+            # no key and no NOTE, not zero counts.
+            assert "unconstrained" not in report
+            assert "unconstrained" not in result.detail["lite"]
+            assert "constrained paths" not in result.report_text
+            return
         detail = report["unconstrained"]
         assert result.detail["lite"]["unconstrained"] == detail
         if scenario == "constrained":
