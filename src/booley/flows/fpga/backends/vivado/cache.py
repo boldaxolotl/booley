@@ -15,6 +15,7 @@ from typing import Any
 from booley.core.boundary import as_dict, as_positive_int, as_str
 from booley.eda.provisioning.policies.vivado import POLICY_REVISION, SUPPORTED_VERSION
 from booley.flows.fpga.recipe import normalized_fpga_flow_options
+from booley.runtime.filesystem_utils import make_directories
 
 CACHE_SCHEMA = 3
 CACHE_FILE = ".booley-fpga-cache.json"
@@ -259,7 +260,7 @@ def store(
         "producer_evidence": producer_evidence,
         "artifacts": artifacts,
     }
-    work_root.mkdir(parents=True, exist_ok=True)
+    make_directories(work_root)
     descriptor, temporary = tempfile.mkstemp(prefix=".fpga-cache.", dir=work_root)
     temp_path = Path(temporary)
     try:

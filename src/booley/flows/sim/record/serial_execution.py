@@ -62,6 +62,7 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.flows.test_runs import TestRun
 from booley.runtime.endpoint_execution import work_item_attempt_requeues
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -1770,7 +1771,8 @@ def capture_private_image(
     """Copy the build artifacts into *destination* and return their evidence records."""
     if not paths:
         raise SimulationRecordIntegrityError("successful build has no authenticated image")
-    destination.mkdir(parents=True, mode=0o700, exist_ok=True)
+    make_directories(destination.parent)
+    destination.mkdir(mode=0o700, exist_ok=True)
     sources: list[tuple[Path, str]] = []
     executable_assigned = False
     for source in paths:
@@ -1798,7 +1800,7 @@ def capture_private_image(
     for source, kind in sources:
         authenticated = _regular_child(source_root, source.relative_to(source_root).as_posix())
         target = destination / authenticated.relative_to(source_root)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(target.parent)
         durable_copy(authenticated, target, mode=_ARTIFACT_MODES[kind])
         raw = target.read_bytes()
         records.append(

@@ -1305,6 +1305,7 @@ class TestGhostReaping:
         record_project = (
             tmp_path / "foreign" / ".booley" if unverified_reason == "foreign_project" else project
         )
+        record_project.parent.mkdir(exist_ok=True)
         spawn(world, 50, ["supervisor"])
         spawn(world, 100, ["owner"])
         spawn(world, 200, ["waiter"])

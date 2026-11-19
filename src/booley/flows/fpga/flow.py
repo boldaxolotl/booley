@@ -68,6 +68,7 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.presentation import colors
 from booley.presentation.terminal_table import render_table
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.parameter_integrity import validate_top_parameter_intent
@@ -877,7 +878,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
 
         log_dir = work_root_for(self.args.work_dir, self.name, target)
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, text)
         except OSError:
             logger.debug(
