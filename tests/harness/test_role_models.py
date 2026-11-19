@@ -239,12 +239,11 @@ def test_model_settings_maps_each_model_to_its_keys(model_pin, expected):
     assert settings.model_settings() == expected
 
 
-def test_project_credential_policy_accepts_codex_gateway(tmp_path):
+def test_project_cli_policies_accept_codex_gateway(tmp_path):
     """A Booley-issued Sandbox may route Codex through the gateway; Claude never."""
     _write_toml(tmp_path, '[agent]\nprovider = "codex"\nauth = "gateway"\n')
-    assert bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley") == (
-        "codex",
-        "gateway",
+    assert bc.project_cli_policies(tmp_path, booley_dir=tmp_path / ".booley") == (
+        ("codex", "gateway"),
     )
 
     _write_toml(
@@ -252,9 +251,9 @@ def test_project_credential_policy_accepts_codex_gateway(tmp_path):
         '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
         '[agent.auth]\nclaude = "subscription"\ncodex = "gateway"\n',
     )
-    assert bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley") == (
-        "claude",
-        "subscription",
+    assert bc.project_cli_policies(tmp_path, booley_dir=tmp_path / ".booley") == (
+        ("claude", "subscription"),
+        ("codex", "gateway"),
     )
     assert bc.project_credential_policies(tmp_path, booley_dir=tmp_path / ".booley").policies == {
         "claude": "subscription",
@@ -263,16 +262,20 @@ def test_project_credential_policy_accepts_codex_gateway(tmp_path):
 
     _write_toml(tmp_path, '[agent]\nclis = ["claude"]\n\n[agent.auth]\nclaude = "gateway"\n')
     with pytest.raises(BackendConfigError, match="gateway"):
-        bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley")
+        bc.project_cli_policies(tmp_path, booley_dir=tmp_path / ".booley")
 
     _write_toml(
         tmp_path,
         '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n\n'
         '[agent.auth]\nclaude = "api_key"\ncodex = "subscription"\n',
     )
-    assert bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley") == (
-        "codex",
-        "subscription",
+    booley_dir = tmp_path / ".booley"
+    assert bc.project_cli_policies(tmp_path, booley_dir=booley_dir) == (
+        ("codex", "subscription"),
+        ("claude", "api_key"),
+    )
+    assert bc.project_cli_policies(tmp_path, booley_dir=booley_dir, cli="claude") == (
+        ("claude", "api_key"),
     )
 
 
