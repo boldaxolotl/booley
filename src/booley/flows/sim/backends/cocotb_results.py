@@ -137,7 +137,7 @@ _DISCOVERY_FRAME_RE = re.compile(
 )
 _MODULE_FRAME_RE = re.compile(r'^\s*File "(?P<path>[^"]+)", line \d+, in <module>$', re.MULTILINE)
 _IMPORT_ERROR_LINE_RE = re.compile(
-    r"^(?P<error>(?:ModuleNotFoundError|ImportError)(?:: .+?)?)\s*$", re.MULTILINE
+    r"^(?P<error>(?:ModuleNotFoundError|ImportError)(?::(?: .+?)?)?)\s*$", re.MULTILINE
 )
 
 # The specific import error worth a remedy, rather than just an echo: a

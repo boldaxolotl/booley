@@ -401,6 +401,11 @@ class TestFindImportFailure:
                 "cocotb could not import the test module 'import_error_cases': ImportError",
                 id="no-message",
             ),
+            pytest.param(
+                "empty-first-line",
+                "cocotb could not import the test module 'import_error_cases': ImportError:",
+                id="empty-first-line",
+            ),
             pytest.param("no-discovery-frame", "", id="no-discovery-frame"),
         ],
     )
@@ -408,11 +413,11 @@ class TestFindImportFailure:
         """cocotb 2.x prints no `Failed to import module` line: the cause is the
         traceback its test discovery lets escape (real 2.1.0 captures)."""
         logs = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0"
-        if case == "no-message":
+        if case in ("no-message", "empty-first-line"):
             text = (logs / "import-error.log").read_text(encoding="utf-8")
             lines = text.splitlines()
             (index,) = [i for i, line in enumerate(lines) if line.startswith("ImportError: ")]
-            lines[index] = "ImportError"
+            lines[index] = "ImportError" if case == "no-message" else "ImportError: \nmissing dep"
             output = "\n".join(lines)
         elif case == "no-discovery-frame":
             text = (logs / "import-missing.log").read_text(encoding="utf-8")
