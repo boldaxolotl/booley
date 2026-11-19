@@ -178,7 +178,7 @@ def _validate_resolved_ppa(
     }
     for name, value in numeric.items():
         if value is not None and not math.isfinite(value):
-            raise SystemExit(f"ERROR: {name} must be a finite number")
+            raise BoundaryError(f"{name} must be a finite number")
     if not 0 < openroad.utilization_pct < 100:
         raise BoundaryError("utilization_pct must be between 0 and 100")
     if not 0 < openroad.placement_density <= 1:
