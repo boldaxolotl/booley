@@ -133,7 +133,7 @@ _BASELINE: tuple[str, ...] = (
     'warn agent.credential-policy harness/doctor.py::_warn_ignored_gateway_handoff "BOOLEY_PRIMARY_AUTH=gateway is honored o"',
     'warn agent.model-fallback harness/doctor.py::_probe_model_list "Specialist model list for [models]"',
     'warn agent.rotation-risk harness/doctor.py::_check_oauth_token "f\'{label}: stored credential is readable"',
-    'warn agent.rotation-risk harness/doctor.py::_check_oauth_token "message"',
+    'warn agent.rotation-risk harness/doctor.py::_report_refreshing_login "message"',
     'warn agent.subscription-credential-expired harness/doctor.py::_check_subscription_creds_health "subscription login at"',
     'warn cocotb.module-file-missing flows/sim/backends/cocotb_target_checks.py::_inspect_target "cocotb Target \'"',
     'warn cocotb.tb-tag-missing flows/sim/backends/cocotb_target_checks.py::_inspect_target "cocotb Target \'"',
