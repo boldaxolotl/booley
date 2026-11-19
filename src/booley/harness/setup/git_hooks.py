@@ -439,16 +439,33 @@ def _worktree_policy_capable(
     )
 
 
+def _report_unknown_sandbox_git(
+    ctx: InitContext, host_version: tuple[int, int, int] | None
+) -> bool:
+    """Report the link policy as unknown when only the pending Sandbox Git decides it."""
+    if host_version is None or host_version < RELATIVE_WORKTREE_MIN_GIT_VERSION:
+        return False  # the host Git alone makes init choose the absolute-link fallback
+    warn(
+        f"cannot predict {WORKTREE_RELATIVE_KEY} until the Sandbox Image is "
+        "reconciled: its Git version is unknown"
+    )
+    ctx.record("worktree_link_policy", "warn", "unknown until the Sandbox Image is reconciled")
+    return True
+
+
 def _step_worktree_link_policy(
     ctx: InitContext,
     *,
     sandbox_git_version: tuple[int, int, int] | None,
+    sandbox_image_pending: bool = False,
     host_git_version: tuple[int, int, int] | None = None,
     booley_dir: Path | None = None,
 ) -> None:
     """Reconcile portable worktree creation after two-sided capability proof."""
     ctx.step_banner("worktree link policy")
     host_version = host_git_version if host_git_version is not None else _host_git_version()
+    if sandbox_image_pending and _report_unknown_sandbox_git(ctx, host_version):
+        return
     capable = _worktree_policy_capable(host_version, sandbox_git_version)
     repositories = worktree_policy_repositories(ctx.project_root, booley_dir=booley_dir)
     incompatible = [repo for repo in repositories if _repository_uses_relative_extension(repo)]

@@ -56,6 +56,7 @@ from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.core.host_shell import quote_arg
 from booley.runtime.atomic_files import keep_unreadable
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.project_discovery import session_store_checkout
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
 
@@ -171,7 +172,7 @@ def _save_sessions(data: dict, store: SessionStore | None = None) -> bool:
     import time as _time
 
     session_file = (store or current_session_store()).path
-    session_file.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(session_file.parent)
     pending = session_file.with_name(f"{session_file.name}.{os.getpid()}.tmp")
     try:
         for attempt in range(3):
@@ -207,7 +208,7 @@ def register_trace(
     """
     store = store or current_session_store()
     session_file = store.path
-    session_file.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(session_file.parent)
     lock_path = session_file.with_name(f"{session_file.name}.lock")
     with lock_path.open("a+") as lock:
         wait_for_file_lock(lock, timeout_s=_LOCK_TIMEOUT_S)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 import booley.flows.sim.build as build_module
+from booley.core.file_lock import acquire_file_lock
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.progress_lifecycle import abort_open_progress
@@ -23,13 +25,16 @@ from booley.flows.sim.build import (
     build_stage_script,
     classify_build_outcome,
 )
+from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.booley_dir import reset_cache
+from booley.targets.catalog import TargetCatalog
 from tests.subprocess_budget import run_bounded_child
 
 _DEPRECATION = "--elab-only, --build-only, and --standalone are deprecated; use --mode"
@@ -462,7 +467,10 @@ def test_timeout_before_terminal_record_names_the_budget() -> None:
 
     assert outcome.reason == "build timed out after 7 s (raise [flows.sim].build_timeout_ms)"
     assert outcome.output == "still compiling"
-    assert build_module.build_failure_report(outcome).splitlines()[0] == outcome.reason
+    assert (
+        build_module.build_failure_report(outcome, ProjectSourcePaths()).splitlines()[0]
+        == outcome.reason
+    )
 
 
 def test_simulation_record_runs_every_target_and_reports_the_worst_class(
@@ -833,3 +841,27 @@ def test_elab_only_dry_run_writes_flow_plan(
     plan = json.loads((tmp_path / "reports/sim/flow_plan.json").read_text(encoding="utf-8"))
     assert plan["mode"] == "elab_only"
     assert [unit["selector"] for unit in plan["work_units"]] == ["sim_a"]
+
+
+def test_elab_only_lease_wait_is_bounded_by_the_build_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A busy slot ends the elaboration after the build timeout, not 60 s (#4843)."""
+    files = {".booley/booley.toml": "[flows.sim]\nbuild_timeout_ms = 1000\n"}
+    _write_project(tmp_path, monkeypatch, ["sim_dut"], files)
+    handle = TargetCatalog.build(tmp_path).select("sim_dut", for_flow="sim")
+    slot = simulation_build_slot(handle)
+    slot.mkdir(parents=True)
+
+    with (slot / "lease.lock").open("a+", encoding="utf-8") as holder:
+        acquire_file_lock(holder)
+        started = time.monotonic()
+        result, seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, files=files)
+        waited = time.monotonic() - started
+
+    assert result.exit_code == EXIT_ERROR
+    assert "Simulation build slot failed" in result.outcome.report_text
+    assert "busy for 1s" in result.outcome.report_text
+    assert seen == []
+    # A loose upper bound on a real 1 s wait; the old fixed wait was 60 s.
+    assert waited < 30

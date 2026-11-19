@@ -142,6 +142,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
@@ -1173,7 +1174,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if validation_error := self._validate_run_inputs(target, work_dir, scope_files):
             return validation_error
         try:
-            tb_top = tb_top_for_target(target, work_dir, resolved=None)
+            tb_top = tb_top_for_target(target, work_dir)
         except (OSError, fusesoc_registry.FuseSocError) as exc:
             message = f"could not derive Target toplevel: {exc}"
             return _error_outcome("target", message, report_text=f"mutation: {message}")
@@ -1538,7 +1539,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return run_cwd_error
         build_path = workspace.baseline_build_dir()
         shutil.rmtree(build_path, ignore_errors=True)
-        build_path.mkdir(parents=True, exist_ok=True)
+        make_directories(build_path)
         elab = self._run_elab(plan.target, plan.work_dir, build_path)
         elab_output = (elab.stdout or "") + (elab.stderr or "")
         if elab.returncode != 0:
@@ -2419,7 +2420,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         from booley.flows.run_log import cap_log_bytes
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(path.parent)
             path.write_bytes(
                 cap_log_bytes(
                     output.encode("utf-8", errors="replace"),
@@ -2504,7 +2505,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """
         build_path = workspace.variant_build_dir(spec.index)
         shutil.rmtree(build_path, ignore_errors=True)
-        build_path.mkdir(parents=True, exist_ok=True)
+        make_directories(build_path)
         elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
         if elab.returncode != 0:
             shutil.rmtree(build_path, ignore_errors=True)
@@ -2765,7 +2766,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _copy_campaign_file(source: Path, destination: Path) -> Path | None:
         if not source.is_file():
             return None
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(destination.parent)
         shutil.copy2(source, destination)
         return destination
 
@@ -2773,6 +2774,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _copy_campaign_dir(source: Path, destination: Path) -> Path | None:
         if not source.is_dir():
             return None
+        make_directories(destination.parent)
         shutil.copytree(source, destination)
         return destination
 

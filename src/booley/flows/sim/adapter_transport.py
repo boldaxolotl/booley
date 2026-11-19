@@ -41,6 +41,7 @@ from booley.flows.sim.result import (
     parse_sim_verdict,
     write_result_json,
 )
+from booley.runtime.filesystem_utils import make_directories
 
 ADAPTER_RESULT_SCHEMA = 1
 AdapterVerdict = Literal["pass", "fail", "timeout", "inconclusive"]
@@ -180,7 +181,7 @@ def _payload(identity: AdapterTransportIdentity, result: AdapterResult) -> dict[
 def write_adapter_result(identity: AdapterTransportIdentity, result: AdapterResult) -> None:
     """Atomically publish one adapter's terminal evidence."""
     path = identity.result_path
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         temporary.write_text(json.dumps(_payload(identity, result)), encoding="utf-8")
