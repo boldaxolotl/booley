@@ -240,6 +240,16 @@ def test_build_failure_names_project_paths(
         assert line in shown
 
 
+def test_project_text_leaves_longer_unmapped_filenames_alone() -> None:
+    paths = ProjectSourcePaths({"src/core/top.sv": "rtl/top.sv"})
+
+    text = "src/core/top.sv:4: bad; src/core/top.sv.generated:4: note; see src/core/top.sv."
+
+    assert paths.project_text(text) == (
+        "rtl/top.sv:4: bad; src/core/top.sv.generated:4: note; see rtl/top.sv."
+    )
+
+
 def _engine_timeout_outcome(tmp_path: Path):
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)

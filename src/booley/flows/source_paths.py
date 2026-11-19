@@ -48,7 +48,7 @@ class ProjectSourcePaths:
     def for_target(
         cls, handle: TargetHandle, resolved: fusesoc_registry.ResolvedTarget
     ) -> ProjectSourcePaths:
-        """Map each resolved file, including an overlay of the Target's core, named ``src/<core>/<name>`` to its Project path.
+        """Map each resolved file named ``src/<core>/<name>`` to its Project path.
 
         A file without a core, outside the Target's cores, or whose source lies
         outside the Project Root has no Project path. When a core cannot be
@@ -90,7 +90,7 @@ class ProjectSourcePaths:
         if not names:
             return None
         alternation = "|".join(re.escape(name) for name in names)
-        return re.compile(rf"(?<![\w./-])(?:{alternation})(?![\w/-])")
+        return re.compile(rf"(?<![\w./-])(?:{alternation})(?![\w/-]|\.\w)")
 
     def project_text(self, text: str) -> str:
         """``text`` with each mapped build-tree name replaced by its Project path."""
