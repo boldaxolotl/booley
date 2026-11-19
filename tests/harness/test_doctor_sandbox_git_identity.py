@@ -206,29 +206,30 @@ def test_gitconfig_identity_warns(sandbox_git, scope):
     assert not _warns(reporter, OVERRIDE_ID)
 
 
-@pytest.mark.parametrize(
-    ("scope", "url", "helper", "shown"),
-    [
-        ("system", None, "store", "store"),
-        (
-            "global",
-            "https://github.com",
-            "!f() {\n /usr/bin/gh auth git-credential; }; f",
-            "/usr/bin/gh auth git-credential",
-        ),
-    ],
-    ids=["system-plain", "global-url-multiline"],
-)
-def test_credential_helper_warns(sandbox_git, scope, url, helper, shown):
-    sandbox_git.add_credential_helper(scope, helper, url)
+_HELPER_CASES = [
+    ("system", None, "store", "store"),
+    (
+        "global",
+        "https://github.com",
+        "!f() {\n /usr/bin/gh auth git-credential; }; f",
+        "/usr/bin/gh auth git-credential",
+    ),
+]
+
+
+def test_credential_helper_warns(sandbox_git):
     sandbox_git.set_full_override()
-    reporter = doctor._Reporter.create()
-    _run_checks(sandbox_git, reporter)
-    finding = _single_warn(reporter, CREDENTIAL_ID)
-    assert shown in finding.message
-    assert str(sandbox_git.config_files[scope]) in finding.message
-    assert "editor attach" in finding.message
-    assert "dev.containers.gitCredentialHelperConfigLocation" in finding.fix
+    for scope, url, helper, shown in _HELPER_CASES:
+        for path in sandbox_git.config_files.values():
+            path.write_bytes(b"")
+        sandbox_git.add_credential_helper(scope, helper, url)
+        reporter = doctor._Reporter.create()
+        _run_checks(sandbox_git, reporter)
+        finding = _single_warn(reporter, CREDENTIAL_ID)
+        assert shown in finding.message
+        assert str(sandbox_git.config_files[scope]) in finding.message
+        assert "editor attach" in finding.message
+        assert "dev.containers.gitCredentialHelperConfigLocation" in finding.fix
 
 
 def test_empty_credential_helper_reset_does_not_warn(sandbox_git, capsys):
@@ -310,16 +311,17 @@ def test_unrunnable_git_warns_for_every_check(sandbox_git):
     assert "could not be inspected" in _single_warn(reporter, CREDENTIAL_ID).message
 
 
-@pytest.mark.parametrize("check_id", [OVERRIDE_ID, GITCONFIG_ID, CREDENTIAL_ID])
-def test_gitconfig_warnings_are_waivable(sandbox_git, check_id):
+def test_gitconfig_warnings_are_waivable(sandbox_git):
     sandbox_git.write_identity("global", "Visitor", "v@example.com")
     sandbox_git.add_credential_helper("global", "store")
-    (sandbox_git.booley_dir / "doctor-waivers.toml").write_text(
-        "version = 1\n[[waiver]]\n"
-        f'check = "{check_id}"\n'
-        'reason = "Accepted for the #2122 regression test."\npermanent = true\n'
-    )
-    reporter = doctor._Reporter.create(load_doctor_waivers(sandbox_git.booley_dir))
-    _run_checks(sandbox_git, reporter)
-    assert [f.check_id for f in reporter.findings if f.severity is Severity.WAIVED] == [check_id]
-    assert not _warns(reporter, check_id)
+    for check_id in (OVERRIDE_ID, GITCONFIG_ID, CREDENTIAL_ID):
+        (sandbox_git.booley_dir / "doctor-waivers.toml").write_text(
+            "version = 1\n[[waiver]]\n"
+            f'check = "{check_id}"\n'
+            'reason = "Accepted for the #2122 regression test."\npermanent = true\n'
+        )
+        reporter = doctor._Reporter.create(load_doctor_waivers(sandbox_git.booley_dir))
+        _run_checks(sandbox_git, reporter)
+        waived = [f.check_id for f in reporter.findings if f.severity is Severity.WAIVED]
+        assert waived == [check_id]
+        assert not _warns(reporter, check_id)
