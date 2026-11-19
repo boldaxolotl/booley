@@ -575,7 +575,7 @@ def _is_io_bound_critical(metrics: SynthMetrics) -> bool:
     in->out feedthrough).
 
     That matters because an I/O path's slack depends on the external delays the
-    Target's SDC declares for that port, so those are checked first: a realistic
+    Target's SDC declares for that port, so the fix is there: a realistic
     ``set_input_delay`` / ``set_output_delay``, or ``set_false_path`` for a port
     that should not be timed. (SETUP-28)
     """
