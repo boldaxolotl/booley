@@ -1346,11 +1346,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
             )
         # Resolve enablement before running any target.
         if not self._flow_enabled():
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text="lint is disabled ([flows.lint].enabled = false).",
-                refused=True,
-            )
+            message = "lint is disabled ([flows.lint].enabled = false)."
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=message, refused=True)
         plan = self._plan_lint(targets)
         self._flow_plan = plan
         if self.args.dry_run:
