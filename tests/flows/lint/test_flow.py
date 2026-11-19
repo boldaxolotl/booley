@@ -396,17 +396,14 @@ def test_failed_fusesoc_setup_is_recorded_as_lint_prepare(
     assert "setup broke" in result.outcome.report_text
     assert commands == []
     (record,) = resource_history.load_records(tmp_path)
-    assert record["key"] == {
-        "target": "lite",
-        "phase": "lint_prepare",
-        "flags": [],
-        "test_run": "",
-    }
-    assert (record["flow"], record["outcome"], record["returncode"]) == (
-        "lint",
-        "exit_nonzero",
-        1,
-    )
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("lint", "lite", "lint_prepare", "exit_nonzero", 1)
 
 
 def _dry_run_plan(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:

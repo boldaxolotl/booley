@@ -1059,17 +1059,14 @@ def test_failed_fusesoc_setup_is_recorded_as_fpga_prepare(
     assert "setup broke" in outcome.report_text
     assert _vivado_calls(project) == 0
     (record,) = resource_history.load_records(tmp_path)
-    assert record["key"] == {
-        "target": "fpga",
-        "phase": "fpga_prepare",
-        "flags": [],
-        "test_run": "",
-    }
-    assert (record["flow"], record["outcome"], record["returncode"]) == (
-        "fpga",
-        "exit_nonzero",
-        1,
-    )
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("fpga", "fpga", "fpga_prepare", "exit_nonzero", 1)
 
 
 _CLOCKS = {

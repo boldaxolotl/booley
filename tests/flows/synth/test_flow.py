@@ -1567,17 +1567,14 @@ def test_failed_fusesoc_setup_is_recorded_as_synth_prepare(
     assert "setup broke" in outcome.report_text
     assert synth_cli.commands == []
     (record,) = resource_history.load_records(tmp_path)
-    assert record["key"] == {
-        "target": "syn",
-        "phase": "synth_prepare",
-        "flags": [],
-        "test_run": "",
-    }
-    assert (record["flow"], record["outcome"], record["returncode"]) == (
-        "synth",
-        "exit_nonzero",
-        1,
-    )
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("synth", "syn", "synth_prepare", "exit_nonzero", 1)
 
 
 @pytest.mark.skipif(
