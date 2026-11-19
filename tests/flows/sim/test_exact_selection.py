@@ -93,9 +93,16 @@ def test_no_waivers_requires_coverage_and_is_recorded_on_request() -> None:
         SimRequest(target="sim", coverage=True, no_waivers="yes")
 
 
-def test_cli_skip_is_not_an_option() -> None:
-    with pytest.raises(SystemExit):
-        parse_request(SimulateFlow(), ["--target", "sim", "--skip", "a"])
+@pytest.mark.parametrize(
+    "argv",
+    [["--skip", "a"], ["--result-verbosity", "full"]],
+    ids=["skip", "result-verbosity"],
+)
+def test_absent_cli_options_are_rejected(argv, capsys) -> None:
+    with pytest.raises(SystemExit) as raised:
+        parse_request(SimulateFlow(), ["--target", "sim", *argv])
+    assert raised.value.code == 2
+    assert f"unrecognized arguments: {' '.join(argv)}" in capsys.readouterr().err
 
 
 def test_duplicate_test_names_share_one_message(tmp_path, capsys) -> None:

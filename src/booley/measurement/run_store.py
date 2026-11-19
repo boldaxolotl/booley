@@ -101,6 +101,19 @@ def _clock_names_of(document: dict[str, Any], identity: str, flow: str) -> tuple
     return ()
 
 
+def _reported_clocks_of(document: dict[str, Any], identity: str, flow: str) -> set[str]:
+    """Every clock *document* reports for the table, valued or not."""
+    found: set[str] = set()
+    for table in document["tables"]:
+        if (table["identity"], table["flow"]) == (identity, flow):
+            values = table["values"] or {}
+            clocks, per_clock = values.get("clocks"), values.get("per_clock")
+            found.update(clocks if isinstance(clocks, list) else ())
+            for by_clock in per_clock.values() if isinstance(per_clock, dict) else ():
+                found.update(by_clock if isinstance(by_clock, dict) else ())
+    return {clock for clock in found if isinstance(clock, str)}
+
+
 def _order(run: StoredRun) -> tuple[datetime, datetime, str]:
     return run.finished_at, run.started_at, run.run_id
 
@@ -236,6 +249,16 @@ class MeasurementStore:
             if names:
                 return names
         return ()
+
+    def reported_clocks(self, identity: str, flow: str) -> frozenset[str]:
+        """Clocks any readable stored run reported for the table, with or without a value."""
+        found: set[str] = set()
+        for run in self._readable_runs():
+            try:
+                found |= _reported_clocks_of(run.document, identity, flow)
+            except (KeyError, TypeError, AttributeError):
+                continue  # a document with a damaged table body reports no usable clocks
+        return frozenset(found)
 
     def _readable_runs(self) -> Iterator[StoredRun]:
         for path in sorted(self._root.glob("*/*.json")):

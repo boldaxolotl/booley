@@ -95,8 +95,8 @@ clk2   -0.100   0.500    3                      200                  0.050    0.
 _SYNTH_OUTPUT = (
     "Chip area for top module '\\t': 52480.0\n"
     "Number of cells: 12345\n"
-    "STA_PERCLOCK: name=clk_core period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000\n"
-    "STA_PERCLOCK: name=clk_io period_ns=5.000000 wns_ns=-1.000000 whs_ns=0.200000\n"
+    "STA_PERCLOCK: name=clk_core period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000 setup_same_clock=1\n"
+    "STA_PERCLOCK: name=clk_io period_ns=5.000000 wns_ns=-1.000000 whs_ns=0.200000 setup_same_clock=1\n"
 )
 
 
@@ -229,7 +229,8 @@ def test_synth_report_yields_declared_metric_values() -> None:
 
     # ``jtag`` reports a period but no slack (NA), so no fmax can be derived for it.
     metrics = _synth_metrics(
-        _SYNTH_OUTPUT + "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+        _SYNTH_OUTPUT
+        + "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
     )
     metrics.area_kge = 65.8
     detail = _synth_detail(metrics)

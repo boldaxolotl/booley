@@ -177,7 +177,7 @@ class Bench:
         slack = 2.0 + self.openroad_calls / 1000
         (build / "openroad.log").write_text(
             f"STA_WORST_SLACK_NS: {slack:.6f}\n"
-            f"STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns={slack:.6f} whs_ns=0.1\n"
+            f"STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns={slack:.6f} whs_ns=0.1 setup_same_clock=1\n"
             "Design area 7000 u^2 50% utilization.\n"
         )
         (build / "openroad_dut.v").write_text(self.netlist)

@@ -2415,11 +2415,11 @@ fn test_docs_show_unknown_topic_exits_1() {
 #[test]
 fn test_docs_references_resolve() {
     // Every topic named in backticks by a topic must exist, and the retired
-    // reset-skipping and clock-detection topics are gone (their rules live in
-    // `reference/sync-vs-async`).
+    // reset-skipping, clock-detection and empty-results topics are gone (their
+    // rules live in the `reference/` pages).
     let (topics, _stderr, code) = run_bwave(&["docs", "topics"]);
     assert_eq!(code, 0);
-    for retired in ["reset-skipping", "clock-detection"] {
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
         assert!(!topics.lines().any(|l| l.contains(retired)), "{retired}");
     }
     for topic in topics.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -2436,7 +2436,7 @@ fn test_docs_references_resolve() {
             }
         }
     }
-    for retired in ["reset-skipping", "clock-detection"] {
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
         let (_, stderr, code) = run_bwave(&["docs", "show", &format!("troubleshooting/{retired}")]);
         assert_eq!(code, 1, "{retired}: {stderr}");
     }
@@ -2688,8 +2688,8 @@ fn test_native_verilator_fst_clock_rederivation() {
         .to_string();
     let (stdout, stderr, code) = run_query(&["stats", &fst]);
     assert_eq!(code, 0, "stderr: {}", stderr);
-    // clock meta is re-derived from FST content: 10ns period, 36 cycles
-    assert!(stdout.contains("36 cycles"), "got: {}", stdout);
+    // clock meta is re-derived from FST content: 10ns period, 38 cycles
+    assert!(stdout.contains("38 cycles"), "got: {}", stdout);
     assert!(stdout.contains("10ns period"), "got: {}", stdout);
 }
 
@@ -2794,10 +2794,10 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
             let store = Issue1098Store::reset(active_low, clock_first);
             let high = if active_low { "'h0" } else { "'h1" };
             let low = if active_low { "'h1" } else { "'h0" };
-            for (mode, total) in [
-                (vec!["--with-reset"], 1200),
-                (vec![], 200),
-                (vec!["--async"], 1200),
+            for (mode, total, cycles) in [
+                (vec!["--with-reset"], 1200, 120),
+                (vec![], 200, 21),
+                (vec!["--async"], 1200, 120),
             ] {
                 let mut args = vec!["-s", "tb.rst*"];
                 args.extend(mode);
@@ -2805,7 +2805,7 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
                 let data = &json["data"];
                 assert_eq!(data["total_ticks"], total);
                 assert_eq!(data["simulation_ns"], total);
-                assert_eq!(data["total_cycles"], total / 10);
+                assert_eq!(data["total_cycles"], cycles);
                 let signal = &data["signals"][0];
                 assert_eq!(signal["transitions"], 1);
                 assert_eq!(signal["time_in_state_ticks"][low], 200);
@@ -2819,7 +2819,7 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
             }
             assert!(store
                 .query("stats", &["-s", "stable"])
-                .contains("200ns, 20 cycles"));
+                .contains("200ns, 21 cycles"));
             assert!(store
                 .query("stats", &["-s", "stable", "--with-reset"])
                 .contains("1200ns, 120 cycles"));

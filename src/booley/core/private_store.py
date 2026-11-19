@@ -285,16 +285,39 @@ class ProjectStore:
 
     def scan(self) -> tuple[ProjectStoreEntry, ...]:
         """Validate every file without changing host state; raise on the first bad one."""
+        entries, errors = self.scan_each()
+        if errors:
+            raise errors[0][1]
+        return entries
+
+    def scan_each(
+        self,
+    ) -> tuple[tuple[ProjectStoreEntry, ...], tuple[tuple[Path, RuntimeError], ...]]:
+        """Validate every per-Project file read-only and collect each file's own error.
+
+        A problem that belongs to no Project (the directory itself, or an entry that
+        is not named like a per-Project file) still raises.
+        """
         if not self.private.validate_existing_directory():
-            return ()
-        entries = []
+            return (), ()
+        entries: list[ProjectStoreEntry] = []
+        errors: list[tuple[Path, RuntimeError]] = []
         for path in sorted(self.private.root.iterdir()):
             if path.name.startswith("."):  # temporary and lock files
                 continue
-            if path.is_symlink() or not path.is_file() or not path.name.endswith(_PROJECT_SUFFIX):
-                raise self.private.error_type(f"unexpected {self.private.subject} entry: {path}")
-            entries.append(self._identity(path, self._load(path)))
-        return tuple(entries)
+            unexpected = self.private.error_type(
+                f"unexpected {self.private.subject} entry: {path}"
+            )
+            if not path.name.endswith(_PROJECT_SUFFIX):
+                raise unexpected
+            if path.is_symlink() or not path.is_file():
+                errors.append((path, unexpected))  # a per-Project name: one Project's error
+                continue
+            try:
+                entries.append(self._identity(path, self._load(path)))
+            except self.private.error_type as exc:
+                errors.append((path, exc))
+        return tuple(entries), tuple(errors)
 
     def _load(self, path: Path) -> object:
         try:
