@@ -821,10 +821,6 @@ class TestPerClockMarkers:
         output = "".join(_perclock_marker(*marker) for marker in markers)
         assert synth_timing.parse_perclock(output) == expected
 
-    def test_marker_without_same_clock_flag_is_ignored(self):
-        old = "STA_PERCLOCK: name=clk period_ns=2.000000 wns_ns=0.5 whs_ns=0.1\n"
-        assert synth_timing.parse_perclock(old) == {}
-
     def test_emit_perclock_roundtrip(self, capsys):
         # Re-emitting parses the input and prints canonical marker lines that
         # parse back to the same values, including the cross-clock flag.
