@@ -5,7 +5,7 @@ The same immutable presentation can be consumed by detail panes and other observ
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from booley.core.boundary import as_float, as_int
@@ -18,6 +18,8 @@ from booley.core.exit_codes import (
 
 _ROW_LIMIT = 24
 _ITEM_LIMIT = 5
+# Non-passing grades of the implementation and Simulation Record producers.
+_FAILED_GRADES = frozenset({"inconclusive", "fail", "error"})
 # Headline for a Simulation report an older Booley wrote; matches the Flow's refusal in wording only.
 _OLDER_SIMULATION_REPORT = "written by an older Booley; no longer supported"
 # Endpoints whose reports are Flow reports; any other endpoint is an MCP tool.
@@ -94,15 +96,29 @@ def _targets(value: object) -> list[tuple[str, Mapping[str, object]]]:
 def _cap(rows: list[ResultLine]) -> tuple[ResultLine, ...]:
     if len(rows) <= _ROW_LIMIT:
         return tuple(rows)
-    return (*rows[: _ROW_LIMIT - 1], _row("More", f"{len(rows) - _ROW_LIMIT + 1} facts in report"))
+    # Failure rows are never trimmed (#5173), so the result can exceed _ROW_LIMIT.
+    room = max(_ROW_LIMIT - 1 - sum(row.semantic == "fail" for row in rows), 0)
+    kept: list[ResultLine] = []
+    for row in rows:
+        if row.semantic == "fail" or room > 0:
+            kept.append(row)
+            room -= row.semantic != "fail"
+    return (*kept, _row("More", f"{len(rows) - len(kept)} facts in report"))
 
 
-def _more_targets(targets: list[tuple[str, Mapping[str, object]]]) -> list[ResultLine]:
-    return (
-        [_row("Targets", f"{len(targets) - _ITEM_LIMIT} more Targets in report")]
-        if len(targets) > _ITEM_LIMIT
-        else []
-    )
+_Targets = list[tuple[str, Mapping[str, object]]]
+
+
+def _listed(targets: _Targets, failed: Callable[[Mapping[str, object]], bool]) -> _Targets:
+    """The first Targets up to the item limit, plus every later failed Target."""
+    return [
+        target for index, target in enumerate(targets) if index < _ITEM_LIMIT or failed(target[1])
+    ]
+
+
+def _more_targets(targets: _Targets, listed: _Targets) -> list[ResultLine]:
+    hidden = len(targets) - len(listed)
+    return [_row("Targets", f"{hidden} more Targets in report")] if hidden > 0 else []
 
 
 def _functional(row: Mapping[str, object]) -> Mapping[str, object]:
@@ -184,6 +200,10 @@ def _simulation_record_failures(simulation_record: Mapping[str, object]) -> list
     return rows
 
 
+def _grade_failed(row: Mapping[str, object]) -> bool:
+    return literal(row.get("grade")) in _FAILED_GRADES
+
+
 def _simulation_records(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     targets = _targets(detail.get("records"))
     counts = [_counts(_functional(row)) for _, row in targets]
@@ -193,16 +213,18 @@ def _simulation_records(detail: Mapping[str, object]) -> tuple[str, list[ResultL
         if len(known) == len(targets) and targets
         else None
     )
+    listed = _listed(targets, _grade_failed)
     rows = []
-    for name, row in targets[:_ITEM_LIMIT]:
+    for name, row in listed:
         rows.append(
             _row(
                 f"  {name}",
                 _ratio(_counts(_functional(row))) + f" · grade {_value(row.get('grade'))}",
+                "fail" if _grade_failed(row) else "",
             )
         )
-    rows.extend(_more_targets(targets))
-    for name, row in targets[:_ITEM_LIMIT]:
+    rows.extend(_more_targets(targets, listed))
+    for name, row in listed:
         for fact in _simulation_record_failures(row):
             label = f"  {name} · {fact.label.strip()}" if len(targets) > 1 else fact.label
             rows.append(ResultLine(label, fact.value, fact.semantic))
@@ -216,6 +238,10 @@ def _simulation_records(detail: Mapping[str, object]) -> tuple[str, list[ResultL
     return _ratio(total) + f" · grade {grade}", rows
 
 
+def _coverage_failed(row: Mapping[str, object]) -> bool:
+    return row.get("evaluation") == "fail" or bool(literal(row.get("error")))
+
+
 def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     targets = _targets(detail.get("targets"))
     if not any(literal(row.get("evaluation")) for _, row in targets):
@@ -224,27 +250,32 @@ def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
                 _row(f"  {name}", "evaluation unavailable", "unknown")
                 for name, _ in targets[:_ITEM_LIMIT]
             ],
-            *_more_targets(targets),
+            *_more_targets(targets, targets[:_ITEM_LIMIT]),
         ]
     met = sum(row.get("evaluation") == "pass" for _, row in targets)
+    listed = _listed(targets, _coverage_failed)
     rows = []
-    for name, row in targets[:_ITEM_LIMIT]:
+    for name, row in listed:
         facts = [
             f"{key} {_value(row.get(key))}" for key in ("simulation", "collection", "evaluation")
         ]
         semantic = (
-            "pass"
+            "fail"
+            if _coverage_failed(row)
+            else "pass"
             if row.get("evaluation") == "pass"
-            else "fail"
-            if row.get("evaluation") == "fail"
             else "unknown"
         )
         rows.append(_row(f"  {name}", " · ".join(facts), semantic))
-    rows.extend(_more_targets(targets))
+    rows.extend(_more_targets(targets, listed))
     if _mapping(detail.get("records")):
         headline, supplementary = _simulation_records(detail)
         rows.extend([_row("Simulation Record", headline), *supplementary])
     return f"Coverage: {met}/{len(targets)} Targets met", rows
+
+
+def _elab_failed(row: Mapping[str, object]) -> bool:
+    return row.get("passed") is False
 
 
 def _simulation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
@@ -264,17 +295,19 @@ def _simulation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     if literal(detail.get("mode")).replace("_", "-").startswith("elab-only"):
         targets = _targets(detail.get("targets"))
         passed = sum(row.get("passed") is True for _, row in targets)
+        listed = _listed(targets, _elab_failed)
         rows = []
-        for name, row in targets[:_ITEM_LIMIT]:
+        for name, row in listed:
             verdict = "elaborated" if row.get("passed") is True else _value(row.get("verdict"))
             facts = _fields(row, {"failure_class": "Failure class", "reason": "Reason"})
             rows.append(
                 _row(
                     f"  {name}",
                     " · ".join([verdict, *[f"{fact.label}: {fact.value}" for fact in facts]]),
+                    "fail" if _elab_failed(row) else "",
                 )
             )
-        return f"{passed}/{len(targets)} Targets elaborated", rows + _more_targets(targets)
+        return f"{passed}/{len(targets)} Targets elaborated", rows + _more_targets(targets, listed)
     return _legacy_simulation(detail)
 
 
@@ -339,25 +372,37 @@ def _implementation_target(name: str, data: Mapping[str, object]) -> list[Result
             rows.append(
                 _row(f"  Clock {clock}", " · ".join(f"{row.label}: {row.value}" for row in facts))
             )
-    for key, label in (("failure_reasons", "  Failure reason"), ("warning_reasons", "  Warning")):
+    for key, label, semantic in (
+        ("failure_reasons", "  Failure reason", "fail"),
+        ("warning_reasons", "  Warning", ""),
+    ):
         rows.extend(
-            _row(label, reason)
+            _row(label, reason, semantic)
             for reason in _sequence(status.get(key))[:_ITEM_LIMIT]
             if literal(reason)
         )
     return rows
 
 
+def _implementation_failed(data: Mapping[str, object]) -> bool:
+    return literal(_mapping(data.get("status")).get("grade")) in _FAILED_GRADES
+
+
 def _implementation(endpoint: str, detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     targets = _targets(_mapping(detail.get("implementation")).get("results"))
     if not targets:
         return "", []
+    listed = _listed(targets, _implementation_failed)
     rows = [
-        _row(f"  {name}", _mapping(data.get("status")).get("grade"))
-        for name, data in targets[:_ITEM_LIMIT]
+        _row(
+            f"  {name}",
+            _mapping(data.get("status")).get("grade"),
+            "fail" if _implementation_failed(data) else "",
+        )
+        for name, data in listed
     ]
-    rows.extend(_more_targets(targets))
-    for name, data in targets[:_ITEM_LIMIT]:
+    rows.extend(_more_targets(targets, listed))
+    for name, data in listed:
         for row in _implementation_target(name, data)[1:]:
             label = f"  {name} · {row.label.strip()}" if len(targets) > 1 else row.label
             rows.append(ResultLine(label, row.value, row.semantic))
@@ -579,7 +624,9 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
     )
     if code == EXIT_SUCCESS:
         word, semantic = _success_result(report)
-    rows.extend(_fields(report, {**_METRICS, "failure_reason": "Failure reason"}))
+    rows.extend(_fields(report, _METRICS))
+    if literal(report.get("failure_reason")):
+        rows.append(_row("Failure reason", report["failure_reason"], "fail"))
     if not headline and not rows:
         rows = _fallback(report)
     flow_result = _row("Flow result", word + (f" · {headline}" if headline else ""), semantic)
