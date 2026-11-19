@@ -418,11 +418,21 @@ def _replayed_record_deletes_nothing(tmp_path: Path, destination: Path) -> None:
     """The record of an already-swept run, replayed against a new file, deletes nothing."""
     record = _records(tmp_path)[0]
     stale = record.read_bytes()
+    swept = destination.stat().st_ino
     with _staging(tmp_path, "attempt-2"):
         pass
     assert not destination.parent.exists()
     destination.parent.mkdir()
-    destination.write_bytes(b"runtime input")
+    holders = tmp_path / "holders"
+    holders.mkdir()
+    # A filesystem may hand the swept inode number to the next file; hold it so the
+    # replacement is a different file, as the record's identity check assumes.
+    for index in range(1000):
+        destination.write_bytes(b"runtime input")
+        if destination.stat().st_ino != swept:
+            break
+        destination.rename(holders / str(index))
+    assert destination.stat().st_ino != swept
     record.write_bytes(stale)
     _fails_with(tmp_path, "attempt-3", "cancelled Booley run left it there")
     assert destination.read_bytes() == b"runtime input"
