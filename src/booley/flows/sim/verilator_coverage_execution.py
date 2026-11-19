@@ -20,7 +20,7 @@ from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.job_estimates import sim_resource_flags
-from booley.flows.job_resources import resolved_source_bytes
+from booley.flows.job_resources import judged_commands_failing_on_error, resolved_source_bytes
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
@@ -212,9 +212,11 @@ class VerilatorCoverageExecution:
         key = session.reusable_key(candidate, inputs, hooks=False)
         retained = session.try_reuse(candidate, key)
         if retained is None:
-            result = self._execute_build(candidate, identity)
-            if result.success:
-                self._artifact_paths = session.authorize_fresh_image(candidate, inputs, key)
+            with judged_commands_failing_on_error() as commands:
+                result = self._execute_build(candidate, identity)
+                if result.success:
+                    self._artifact_paths = session.authorize_fresh_image(candidate, inputs, key)
+                commands.judge(result.success)
             return candidate, result
         session.discard_candidate(candidate.work_root)
         self._prepared = retained
@@ -449,28 +451,31 @@ class VerilatorCoverageExecution:
         }
         script = _environment_script(environment, invocation)
         script = _in_directory_script(self._handle.project_root, script)
-        self._observe_executing(request, prepared, transport, work)
-        try:
-            executed = execute_adapter_attempt(
-                self._invoke,
-                AdapterAttemptRequest(
-                    ("sh", "-c", script),
-                    work.timeout_s
-                    + (work.trace_convert_timeout_s if work.trace else 0)
-                    + _ADAPTER_CLEANUP_MARGIN_S,
-                    transport,
-                    evidence_root,
-                ),
-            )
-        finally:
-            observe_stage(
-                self._handle.selector,
-                "postprocessing",
-                evidence_root=evidence_root,
-                attempt_token=transport.attempt_token,
-                source_bytes=self._source_bytes,
-            )
-        return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
+        with judged_commands_failing_on_error() as commands:
+            self._observe_executing(request, prepared, transport, work)
+            try:
+                executed = execute_adapter_attempt(
+                    self._invoke,
+                    AdapterAttemptRequest(
+                        ("sh", "-c", script),
+                        work.timeout_s
+                        + (work.trace_convert_timeout_s if work.trace else 0)
+                        + _ADAPTER_CLEANUP_MARGIN_S,
+                        transport,
+                        evidence_root,
+                    ),
+                )
+            finally:
+                observe_stage(
+                    self._handle.selector,
+                    "postprocessing",
+                    evidence_root=evidence_root,
+                    attempt_token=transport.attempt_token,
+                    source_bytes=self._source_bytes,
+                )
+            result = _simulation_run_result(executed, request.test.name)
+            commands.judge(result.verdict == "pass")
+        return replace(result, pre_sim=pre_sim)
 
     def _observe_executing(
         self,
