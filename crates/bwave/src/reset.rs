@@ -63,7 +63,7 @@ pub fn active_low(name: &str) -> bool {
 /// Where a reset's first assertion ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deassertion {
-    /// The tick of the first inactive value after any other value.
+    /// The tick of the first inactive value after the first assertion.
     At(u64),
     /// Every value is inactive.
     NeverAsserts,
@@ -71,20 +71,25 @@ pub enum Deassertion {
     NeverDeasserts,
 }
 
-/// The reset's deassertion: the first inactive value after its first other
-/// value. X and Z count as asserted, so a reset that starts X or asserted
-/// deasserts at its first inactive value; one that starts inactive deasserts
-/// at the end of its first pulse, and later pulses do not move it.
+/// The reset's deassertion: the first inactive value after its first
+/// assertion. A reset that starts X or Z counts as asserted from the start, so
+/// it deasserts at its first inactive value; one that starts inactive asserts
+/// at its first asserted value, X or Z in between do not count, and later
+/// pulses do not move the deassertion.
 pub fn deassertion(transitions: &[(u64, String)], active_low: bool) -> Deassertion {
-    let inactive = if active_low { "1" } else { "0" };
-    let mut rest = transitions
-        .iter()
-        .skip_while(|(_, v)| v == inactive)
-        .peekable();
-    if rest.peek().is_none() {
+    let (inactive, asserted) = if active_low { ("1", "0") } else { ("0", "1") };
+    let starts_inactive = transitions.first().is_some_and(|(_, v)| v == inactive);
+    let start = if starts_inactive {
+        transitions.iter().position(|(_, v)| v == asserted)
+    } else {
+        (!transitions.is_empty()).then_some(0)
+    };
+    let Some(start) = start else {
         return Deassertion::NeverAsserts;
-    }
-    rest.find(|(_, v)| v == inactive)
+    };
+    transitions[start..]
+        .iter()
+        .find(|(_, v)| v == inactive)
         .map_or(Deassertion::NeverDeasserts, |(t, _)| Deassertion::At(*t))
 }
 
@@ -100,17 +105,13 @@ pub struct ResetReport {
     /// Whether detection or `--reset` picked the signal.
     #[schemars(extend("enum" = ["auto", "--reset"]), transform = crate::output::without_type)]
     pub chosen_by: &'static str,
-    /// Tick where the reset's first assertion ends: its first inactive value
-    /// after any other value. A reset that starts X or Z counts as asserted;
-    /// one that starts inactive deasserts at the end of its first pulse, and
-    /// later pulses do not move it. Null when the reset never asserts or never
-    /// deasserts.
+    /// Tick where the reset's first assertion ends; null when it never asserts
+    /// or never deasserts.
     pub deassert_tick: Option<u64>,
     /// deassert_tick in the store's timescale, such as `25ns`.
     pub deassert_time: Option<String>,
     /// Clock cycles before the deassert that sync queries skip; 0 with
-    /// --with-reset, without a clock, without a deassert or when the reset
-    /// never asserts.
+    /// --with-reset, without a clock or without a deassert.
     pub skipped_cycles: u64,
     /// Whether --with-reset kept the reset phase.
     pub with_reset: bool,
@@ -157,7 +158,39 @@ impl ResetReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{active_low, leaf};
+    use super::{active_low, deassertion, leaf, Deassertion};
+
+    fn steps(values: &[(u64, &str)]) -> Vec<(u64, String)> {
+        values.iter().map(|(t, v)| (*t, (*v).to_string())).collect()
+    }
+
+    #[test]
+    fn deassertion_is_where_the_first_assertion_ends() {
+        use Deassertion::{At, NeverAsserts, NeverDeasserts};
+        let cases = [
+            (steps(&[]), NeverAsserts),
+            (steps(&[(0, "0"), (9, "0")]), NeverAsserts),
+            (steps(&[(0, "1"), (9, "0")]), At(9)),
+            (steps(&[(0, "x"), (9, "0")]), At(9)),
+            (
+                steps(&[(0, "0"), (5, "1"), (9, "0"), (20, "1"), (30, "0")]),
+                At(9),
+            ),
+            (steps(&[(0, "0"), (5, "x"), (9, "0")]), NeverAsserts),
+            (steps(&[(0, "0"), (5, "z"), (7, "1"), (9, "0")]), At(9)),
+            (steps(&[(0, "0"), (5, "1")]), NeverDeasserts),
+            (steps(&[(0, "x"), (5, "1")]), NeverDeasserts),
+        ];
+        for (transitions, expected) in cases {
+            assert_eq!(
+                deassertion(&transitions, false),
+                expected,
+                "{transitions:?}"
+            );
+        }
+        let low = steps(&[(0, "1"), (5, "0"), (9, "1")]);
+        assert_eq!(deassertion(&low, true), At(9));
+    }
 
     #[test]
     fn leaf_is_the_last_scope_part_without_its_bit_select() {

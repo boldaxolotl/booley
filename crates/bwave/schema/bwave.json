@@ -346,7 +346,7 @@
           ]
         },
         "deassert_tick": {
-          "description": "Tick where the reset's first assertion ends: its first inactive value after any other value. A reset that starts X or Z counts as asserted; one that starts inactive deasserts at the end of its first pulse, and later pulses do not move it. Null when the reset never asserts or never deasserts.",
+          "description": "Tick where the reset's first assertion ends; null when it never asserts or never deasserts.",
           "minimum": 0,
           "type": [
             "integer",
@@ -376,7 +376,7 @@
           ]
         },
         "skipped_cycles": {
-          "description": "Clock cycles before the deassert that sync queries skip; 0 with --with-reset, without a clock, without a deassert or when the reset never asserts.",
+          "description": "Clock cycles before the deassert that sync queries skip; 0 with --with-reset, without a clock or without a deassert.",
           "minimum": 0,
           "type": "integer"
         },

@@ -264,10 +264,17 @@ fn reset_pulse_from_inactive_deasserts_where_it_ends() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let sources: [(&str, &str, &[&str], &str, &str); 4] = [
+    let sources: [(&str, &str, &[&str], &str, &str); 5] = [
         ("pulse", &pulse, &[], "tb.rst", "active-high"),
         ("pulse_n", &pulse_n, &[], "tb.rst_n", "active-low"),
         ("twice", &twice, &[], "tb.rst", "active-high"),
+        (
+            "pulse_n --reset",
+            &pulse_n,
+            &["--reset", "tb.rst*"],
+            "tb.rst_n",
+            "active-low",
+        ),
         (
             "pulse --reset",
             &pulse,

@@ -157,13 +157,12 @@ rather than initialisation.
   `rst_n_sync`; `rst`, `reset`, `rst_gen`, `rst_in` and `reset_en`
   are active-high.
 - **Deassertion**: the end of the reset's first
-  assertion: its first inactive value after any other
-  value. A reset that starts at X or Z stays asserted
-  until then. One that starts inactive and pulses
-  deasserts where that first pulse ends, so cycle 1
-  follows the pulse, and later pulses do not move it.
-  One that never asserts or never deasserts skips
-  nothing.
+  assertion, its first inactive value after it asserted.
+  A reset that starts at X or Z counts as asserted until
+  then. One that starts inactive and pulses deasserts
+  where that first pulse ends, and later pulses do not
+  move it. One that never asserts or never deasserts
+  skips nothing.
 - **Header**: every sync query prints one line on stderr
   and `overview` prints it on stdout. Async output has
   none.
@@ -179,8 +178,9 @@ rather than initialisation.
 - **JSON**: `--format json` adds a `reset` object with the
   same facts; `deassert_tick` is null when the reset
   never asserts or never deasserts.
-- **`--with-reset`** keeps the reset phase; the header
-  then says so and `skipped_cycles` is 0.
+- **`--with-reset`** keeps the reset phase; when one
+  would have been skipped, the header then says so and
+  `skipped_cycles` is 0.
 - **Bad `--reset`**: a glob that does not compile or
   matches no 1-bit signal exits 2 naming the pattern.
 
