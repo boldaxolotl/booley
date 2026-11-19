@@ -24,6 +24,7 @@ from booley.core.booley_dir import (
     resolve_common_booley_dir,
     resolve_main_checkout_root,
 )
+from booley.runtime.filesystem_utils import make_directories
 
 __all__ = [
     "BOOLEY_DIR_NAME",
@@ -51,14 +52,14 @@ __all__ = [
 def checkout_runtime_dir(project_root: Path) -> Path:
     """Return the runtime tree anchored to one explicitly selected checkout."""
     directory = resolve_checkout_booley_dir(project_root) / ".runtime"
-    directory.mkdir(parents=True, exist_ok=True)
+    make_directories(directory)
     return directory
 
 
 def runtime_dir(start: Path | None = None) -> Path:
     """Return and create the active Project's transient ``.runtime`` tree."""
     directory = resolve_booley_dir(start) / ".runtime"
-    directory.mkdir(parents=True, exist_ok=True)
+    make_directories(directory)
     return directory
 
 

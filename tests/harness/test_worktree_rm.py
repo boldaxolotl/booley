@@ -510,6 +510,44 @@ def test_rm_reports_the_commit_of_a_detached_head(
     assert f"detached HEAD was {git(repo, 'rev-parse', 'HEAD')}" in capsys.readouterr().out
 
 
+_DETACHED = {"outer": "detached HEAD", "paired": "the Paired Checkout's detached HEAD"}
+
+
+@pytest.mark.parametrize(
+    ("moved", "switch", "kept"),
+    [
+        (None, (), "booley-worktree/old, booley/old"),
+        ("outer", ("--detach",), "booley-worktree/old, booley/old"),
+        ("paired", ("--detach",), "booley-worktree/old, booley/old"),
+        ("outer", ("-c", "topic"), "booley-worktree/old, topic"),
+        ("paired", ("-c", "other"), "other, booley-worktree/old, booley/old"),
+    ],
+    ids=["intact", "outer-detached", "paired-detached", "outer-switched", "paired-switched"],
+)
+def test_rm_reports_every_kept_branch_and_detached_head(
+    repo: Path,
+    capsys: pytest.CaptureFixture[str],
+    moved: str | None,
+    switch: tuple[str, ...],
+    kept: str,
+) -> None:
+    # Bug caught: a detached Paired Checkout's commit and its surviving
+    # booley-worktree/<name> branch went unreported.
+    _versioned(repo)
+    path = _add(repo, "old", paired=True)
+    expected = ["Removed worktree old.", f"Branches kept: {kept}"]
+    if moved is not None:
+        checkout = path / ".booley" if moved == "paired" else path
+        git(checkout, "switch", "-q", *switch)
+        _commit(checkout, "moved.txt")
+        if switch == ("--detach",):
+            expected.append(f"{_DETACHED[moved]} was {git(checkout, 'rev-parse', 'HEAD')}")
+            assert _rm(repo, "old") == 1
+            assert f"1 commit(s) on {_DETACHED[moved]} not in main" in capsys.readouterr().err
+    assert _rm(repo, "old", "--force") == 0
+    assert capsys.readouterr().out == "\n".join(expected) + "\n"
+
+
 def _start_interrupted_removal(
     repo: Path, monkeypatch: pytest.MonkeyPatch, path: Path, name: str
 ) -> None:
@@ -533,20 +571,24 @@ def _start_interrupted_removal(
 
 
 def test_interrupted_outer_removal_completes_on_rerun(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.runtime.worktree_usage import stamp_worktree
 
     _versioned(repo)
     path = _add(repo, "cut", paired=True)
     other = _add(repo, "other")
+    git(path / ".booley", "switch", "-q", "--detach")
+    commit = git(path / ".booley", "rev-parse", "HEAD")
     stamp_worktree(repo / ".booley", "cut")
     _start_interrupted_removal(repo, monkeypatch, path, "cut")
     record = repo / ".booley" / "worktrees" / ".removing" / "cut.json"
     assert record.is_file()
 
+    capsys.readouterr()
     assert _rm(repo, "cut") == 0
 
+    assert f"the Paired Checkout's detached HEAD was {commit}" in capsys.readouterr().out
     assert not path.exists() and str(path) not in _registered(repo)
     assert not record.exists()
     assert not (repo / ".booley" / "worktrees" / ".last-used" / "cut").exists()

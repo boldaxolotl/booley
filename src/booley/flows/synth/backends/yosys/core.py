@@ -602,7 +602,7 @@ def scan_synth_logs(work_dir: Path) -> str | None:
     return None
 
 
-def _echoed_source_lines(lines: list[str]) -> set[int]:
+def echoed_source_lines(lines: list[str]) -> set[int]:
     """Return indexes of echoed source snippets: each caret line and the line above it.
 
     Yosys 0.70+ (``read_slang``) prints a located diagnostic as
@@ -624,10 +624,10 @@ def scan_synth_text(text: str) -> str | None:
     """Scan already authenticated fresh frontend text for false-pass evidence.
 
     Only lines whose own prefix is an error marker count; echoed source
-    snippets (see :func:`_echoed_source_lines`) are skipped.
+    snippets (see :func:`echoed_source_lines`) are skipped.
     """
     lines = text.splitlines()
-    echoed = _echoed_source_lines(lines)
+    echoed = echoed_source_lines(lines)
     for index, line in enumerate(lines):
         if index in echoed:
             continue

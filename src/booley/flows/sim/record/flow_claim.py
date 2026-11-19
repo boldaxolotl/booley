@@ -34,7 +34,8 @@ class FlowClaim:
     """One Flow's claim and the shared builds (Simulation Record store, build variant) it waits for.
 
     A build is *expected* once its Simulation Record is published or about to run, and
-    *settled* when an item of it has returned (built, reused, recovered or failed).
+    *settled* once an item's build of it is ready, or the item returned
+    (built, reused, recovered or failed).
 
     It takes no lock. ``item_claim`` runs only under the scheduler's start turn,
     and before the drop only the turn holder runs an item, so only it calls

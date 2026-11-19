@@ -276,7 +276,7 @@ markers = [
 filterwarnings = [
     "error",
     # CPython 3.14's tomllib raises this from its own parser on malformed input;
-    # our code only *catches* TOMLDecodeError, it never constructs one. Not ours to fix.
+    # our code only *catches* TOMLDecodeError (one test builds a stand-in). Not ours to fix.
     "ignore:Free-form arguments for TOMLDecodeError are deprecated:DeprecationWarning",
     # Boundary tests deliberately exercise an explicit-but-not-yet-created
     # BOOLEY_DIR. The warning is the behavior under test, not test debt.

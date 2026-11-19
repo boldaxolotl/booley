@@ -6,12 +6,14 @@ import re
 import shlex
 import shutil
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from booley.core.file_lock import acquire_file_lock
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.sim import verilator_coverage_execution
@@ -22,6 +24,7 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.record.coverage_execution import _coverage_observation
@@ -42,8 +45,10 @@ from booley.flows.sim.verilator_coverage_execution import (
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.fusesoc.fusesoc_registry import ResolvedFile, core_target_coverage_errors
+from booley.runtime import resource_history
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog
+from tests.canned_process_support import canned_command, measured_flow
 
 
 def _pre_sim_config(root: Path, text: str) -> None:
@@ -842,8 +847,9 @@ def _fake_invoke(captured, raw_path: Path):
             image = captured["prepare"]["build_root"] / (
                 "Vtop" if captured.get("cocotb") else "Vcounter_tb"
             )
-            image.write_text("compiled image", encoding="utf-8")
-            image.chmod(0o755)
+            if not captured.get("no_image"):
+                image.write_text("compiled image", encoding="utf-8")
+                image.chmod(0o755)
             return SubprocessResult(
                 returncode=0,
                 stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0 duration_ms=1\n",
@@ -882,6 +888,42 @@ def _fake_invoke(captured, raw_path: Path):
         )
 
     return fake_invoke
+
+
+@pytest.mark.parametrize("case", ["pass", "failed-run", "missing-image"])
+def test_coverage_record_outcomes_follow_the_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A coverage build or Test Run records the Flow's verdict, not the exit alone (#4964)."""
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    flow = measured_flow(tmp_path)
+    replayed = execution._invoke
+
+    def measured(command, *, timeout):
+        return flow._execute_boundary(
+            canned_command(replayed(command, timeout=timeout)), timeout=timeout
+        )
+
+    execution._invoke = measured
+    captured["no_image"] = case == "missing-image"
+    if case == "failed-run":
+        captured["result"] = AdapterResult(
+            False, False, 0, ("wrap",), test_results=(AdapterTestResult("wrap", "fail"),)
+        )
+
+    build = _build_coverage(execution, target)
+    run = execution.run(_run_request(target, raw_path)) if build.success else None
+
+    assert build.success == (case != "missing-image")
+    records = resource_history.load_records(tmp_path / ".booley")
+    by_phase = {r["key"]["phase"]: (r["outcome"], r["returncode"]) for r in records}
+    assert by_phase.get("sim_build") == (
+        "exit_nonzero" if case == "missing-image" else "exit_zero",
+        0,
+    )
+    if run is not None:
+        assert by_phase["sim_run"] == ("exit_nonzero" if case == "failed-run" else "exit_zero", 0)
 
 
 def test_coverage_build_run_and_identity_keep_distinct_budgets(
@@ -1148,3 +1190,28 @@ def test_coverage_log_failure_remains_advisory(tmp_path, monkeypatch, observed, 
     assert captured["timeouts"]
     if observed:
         assert sink.error == "OSError: full"
+
+
+def test_coverage_lease_wait_is_bounded_by_the_build_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A busy slot ends the coverage build after the build timeout, not 60 s (#4843)."""
+    execution, target, _raw_path, _captured = _execution_fixture(
+        tmp_path, monkeypatch, options=SimulationOptions(build_timeout_ms=1000)
+    )
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+    slot = simulation_build_slot(handle, SimulationBuildVariant(trace=False, coverage=True).name)
+    slot.mkdir(parents=True)
+
+    with (slot / "lease.lock").open("a+", encoding="utf-8") as holder:
+        acquire_file_lock(holder)
+        started = time.monotonic()
+        result = _build_coverage(execution, target)
+        waited = time.monotonic() - started
+
+    assert result.success is False
+    assert result.infrastructure_error is True
+    assert "busy for 1s" in result.output
+    # A loose upper bound on a real 1 s wait; the old fixed wait was 60 s.
+    assert waited < 30

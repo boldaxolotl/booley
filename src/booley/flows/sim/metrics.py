@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from booley.core.boundary import as_dict, as_int
+from booley.flows.eda_failures import first_tool_diagnostic
 from booley.flows.metric_declarations import (
+    COUNTED_ITEM_CHARS,
+    COUNTED_ITEMS_CAP,
     Better,
     CostTier,
     FlowMetricValues,
@@ -126,26 +129,21 @@ def _observation_reason(row: Mapping[str, object], limit: int | None = 500) -> s
     return reason if limit is None else reason[:limit]
 
 
-# Bounds on the stored map of failing Test Runs, so a Measurement Run stays small.
-_FAILING_TESTS_CAP = 20
-_FAILURE_LINE_CHARS = 200
+def _failing_tests(grades: Sequence[tuple[Mapping[str, object], str]]) -> list[str]:
+    """The non-passing Test Runs by name, each with one reason line (the Flow caps them).
 
-
-def _failing_tests(grades: Sequence[tuple[Mapping[str, object], str]]) -> dict[str, str]:
-    """The first ``_FAILING_TESTS_CAP`` non-passing Test Runs by name, each with its first reason line."""
+    The line is the reason's first tool error line, else its first line: a build's
+    output tail starts wherever the tail was cut.
+    """
     failing = [(str(row["test_run"]), row) for row, grade in grades if grade != "pass"]
     failing.sort(key=lambda item: item[0])
-    return {
-        name: next(
-            (
-                line.strip()
-                for line in _observation_reason(row, limit=None).splitlines()
-                if line.strip()
-            ),
-            "",
-        )[:_FAILURE_LINE_CHARS]
-        for name, row in failing[:_FAILING_TESTS_CAP]
-    }
+    lines: list[str] = []
+    for name, row in failing[:COUNTED_ITEMS_CAP]:
+        text = _observation_reason(row, limit=None)
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        reason = first_tool_diagnostic(text, default=first_line)[:COUNTED_ITEM_CHARS]
+        lines.append(f"{name}: {reason}" if reason else name)
+    return lines
 
 
 def simulation_report_metric_values(
@@ -171,8 +169,8 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     ``cycle_count`` is keyed by Test Run name and only for a Test Run that passed with
     a count. A coverage run adds the five coverage percentages, omitted when the
     coverage collection did not complete (a failing test is still a value).
-    A collector failure or a blocked coverage evaluation raises instead. ``failing_tests``
-    names the first failing Test Runs with the first line of each reason.
+    A collector failure or a blocked coverage evaluation raises instead. ``counted_items``
+    names the first failing Test Runs, each with one line of its reason.
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
     Test Run: the Simulation Record did not finish, a Test Run ended in infrastructure error, or
@@ -208,4 +206,5 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     values = metric_values(
         declarations, plain, per_test={} if is_coverage_run else {"cycle_count": cycles}
     )
-    return dataclasses.replace(values, failing_tests=_failing_tests(grades))
+    failing = _failing_tests(grades)
+    return dataclasses.replace(values, counted_items={"tests_failed": failing} if failing else {})

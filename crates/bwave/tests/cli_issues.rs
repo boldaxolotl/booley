@@ -99,12 +99,96 @@ fn build_default_uses_parallel_engine() {
 
     assert_eq!(default_code, 0, "default build failed: {default_stderr}");
     assert_eq!(parallel_code, 0, "parallel build failed: {parallel_stderr}");
+    for stderr in [&default_stderr, &parallel_stderr] {
+        assert!(!stderr.contains("WARNING:"), "clean trace warned: {stderr}");
+    }
     assert_eq!(
         std::fs::read(&default_store).unwrap(),
         std::fs::read(&parallel_store).unwrap()
     );
     for store in [default_store, parallel_store] {
         let _ = std::fs::remove_file(store);
+    }
+}
+
+const UNUSABLE_HEADER: &str = "$timescale 1ns $end\n$scope module tb $end\n\
+$var wire 1 ! clk $end\n$var wire 8 # data $end\n$var wire 1 % out $end\n\
+$upscope $end\n$scope module other $end\n$var wire 1 & o $end\n$upscope $end\n\
+$enddefinitions $end";
+
+/// Body of the unusable-value-change trace. The header is 207 bytes, so the
+/// body starts at byte 207. The text has no final newline.
+const UNUSABLE_BODY: &str = "#0\n0!\nb00000000 #\n0&\n\
+#10\n1!\n1?\nb0101\n1\nr1.5\n\
+$comment\n1?\n1%\n#10\nsee $enddefinitions\nb0101\n$end\n\
+#20\n0!\n$dumpoff\n1?\nb1 \nb11   \n$end\n$dumpon\n\
+#30\n1!\nb0010001";
+
+fn warning_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|line| line.starts_with("WARNING:"))
+        .collect()
+}
+
+#[test]
+fn build_counts_unusable_value_changes_identically_in_both_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("unusable.vcd");
+    std::fs::write(&vcd, format!("{UNUSABLE_HEADER}\n{UNUSABLE_BODY}")).unwrap();
+    let header_only = dir.path().join("header_only.vcd");
+    std::fs::write(&header_only, UNUSABLE_HEADER).unwrap();
+    let expected = [
+        "WARNING: 6 malformed value-change line(s) skipped (first at byte 238)",
+        "WARNING: 2 value change(s) for an identifier the header does not declare skipped \
+         (first at byte 235)",
+        "WARNING: input does not end with a newline; the final line (byte 351) may be a \
+         truncated record",
+    ];
+    let header_only_expected = [
+        "WARNING: input does not end with a newline; the final line (byte 186) may be a \
+          truncated record",
+    ];
+
+    let configs = [
+        ("serial", None),
+        ("parallel", Some("8")),
+        ("parallel", Some("17")),
+        ("parallel", Some("64")),
+        ("parallel", None),
+    ];
+    for (engine, chunk) in configs {
+        for (input, want) in [
+            (&vcd, &expected[..]),
+            (&header_only, &header_only_expected[..]),
+        ] {
+            let store = dir.path().join("out.fst");
+            let _ = std::fs::remove_file(&store);
+            let mut args = vec!["build", "--engine", engine, "--scope", "tb"];
+            if let Some(chunk) = chunk {
+                args.extend(["--chunk-bytes", chunk]);
+            }
+            args.extend([input.to_str().unwrap(), "-o", store.to_str().unwrap()]);
+            let (_, stderr, code) = run(&args);
+            let label = format!("{engine} chunk {chunk:?} {}", input.display());
+            assert_eq!(code, 0, "{label}: {stderr}");
+            assert_eq!(warning_lines(&stderr), want, "{label}: {stderr}");
+            let wrote = stderr.find("# wrote").expect("wrote line");
+            assert!(stderr.rfind("WARNING:").unwrap() < wrote, "{label}");
+            if input == &vcd {
+                let cache = bwave::cache::ColumnCache::load_from_file(&store).unwrap();
+                let out = cache
+                    .signals
+                    .iter()
+                    .position(|signal| signal.name == "tb.out")
+                    .expect("tb.out is stored");
+                assert_eq!(
+                    cache.read_transitions(out),
+                    vec![(0, "x".to_string()), (10, "1".to_string())],
+                    "{label}: a declared id inside a comment is still stored"
+                );
+            }
+        }
     }
 }
 
@@ -5687,4 +5771,79 @@ fn issue_4705_value_past_end_names_at_and_the_typed_time() {
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("# Snapshot at 30"), "{out}");
     let _ = std::fs::remove_file(fst);
+}
+
+fn fractional_clock_store(half_period: u64) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("frac.vcd");
+    let fst = dir.path().join("frac.fst");
+    let mut text = String::from("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$var wire 1 \" d $end\n$var wire 1 # k $end\n$var wire 1 $ rst_n $end\n$upscope $end\n$enddefinitions $end\n");
+    text.push_str("#0\n0!\n0\"\n0#\n0$\n#500\n1$\n");
+    let mut last = 500;
+    for i in 0..40u64 {
+        let t = (i + 1) * half_period;
+        text.push_str(&format!("#{t}\n{}!\n", (i + 1) % 2));
+        if i == 12 {
+            text.push_str("1\"\n");
+        }
+        last = t;
+    }
+    text.push_str(&format!("#{}\n", last + 100));
+    std::fs::write(&vcd, text).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+#[test]
+fn tick_times_keep_fractional_nanoseconds() {
+    let (_dir, fst) = fractional_clock_store(3200);
+    // (args, read stderr, expected substring) on a 1ps store with a 6400-tick clock.
+    let cases: &[(&[&str], bool, &str)] = &[
+        (
+            &["signal", "-s", "tb.d", "--clock", "tb.clk"],
+            true,
+            "# sync: period=6.4ns",
+        ),
+        (
+            &["stats", "-s", "tb.d"],
+            false,
+            "# Simulation: 127.6ns, 19 cycles (6.4ns period)",
+        ),
+        (
+            &["stats", "-s", "tb.d", "--async"],
+            false,
+            "# Simulation: 128.1ns",
+        ),
+        (&["stats", "-s", "tb.d", "--async"], false, "(86.5ns)"),
+        (&["stuck", "--async"], false, "(100%, 128.1ns)"),
+        (
+            &["value", "-s", "tb.d", "--at", "999"],
+            true,
+            "Simulation time range: 0.5ns..128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "-t", "500:600"],
+            true,
+            "the trace ends at 128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "--async", "-t", "999999t:9999999t"],
+            true,
+            "the trace ends at tick 128100 (128.1ns)",
+        ),
+    ];
+    for (args, use_err, expected) in cases {
+        let mut full: Vec<&str> = vec![args[0], &fst];
+        full.extend_from_slice(&args[1..]);
+        let (out, err, _) = run(&full);
+        let text = if *use_err { &err } else { &out };
+        assert!(
+            text.contains(expected),
+            "{args:?}: want {expected:?}\nstdout: {out}\nstderr: {err}"
+        );
+    }
+    let (_dir, fst) = fractional_clock_store(5000);
+    let (_, err, _) = run(&["signal", &fst, "-s", "tb.d"]);
+    assert!(err.lines().any(|l| l == "# sync: period=10ns"), "{err}");
 }

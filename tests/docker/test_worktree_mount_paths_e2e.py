@@ -269,7 +269,8 @@ def test_worktree_new_in_sandbox_refuses_external_booley_dir(tmp_path: Path, doc
         _run(["docker", "image", "rm", plain, parent])
 
     assert result.returncode == 1, result.stderr
-    assert "outside the checkout" in result.stderr and "relative [project].dir" in result.stderr
+    assert "BOOLEY_DIR=/booley is not this checkout's Booley Directory" in result.stderr
+    assert "[project].dir" not in result.stderr
     assert not (root / ".booley").exists()
     assert not (external / "worktrees").exists()
     assert _host_git(root, "worktree", "list", "--porcelain").stdout.count("worktree ") == 1

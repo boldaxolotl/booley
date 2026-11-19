@@ -25,6 +25,7 @@ from booley.bwave.waveform_store import (
     start_streaming_conversion,
     waveform_cache_dir,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 TRACE_STATUS_SCHEMA_VERSION = 1
@@ -173,7 +174,7 @@ class TraceSession:
         }
 
     def _write_status(self) -> None:
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(self._work_dir)
         self._status["updated_at"] = _utc_now()
         self._status["paths"] = self._manifest_paths()
         tmp = self.manifest_path.with_name(
@@ -288,7 +289,7 @@ class TraceSession:
         bwave_proc: StreamingConversion | subprocess.Popen | None = None,
     ) -> Path:
         """Persist trace failure context next to the sim artifacts."""
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(self._work_dir)
         tmp_stderr = self.bwave_path.with_name(self.bwave_path.name + ".stderr")
         stderr_text = ""
         for stderr_path in (self.persisted_stderr_path, tmp_stderr):
@@ -693,7 +694,7 @@ class TraceSession:
 
     def _settle_postprocess_artifacts(self, vcd_path: Path, *, success: bool) -> None:
         """Keep raw fallback artifacts inside the managed simulation directory."""
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(self._work_dir)
         source_stderr = vcd_path.parent / "trace.fst.stderr"
 
         if success:
@@ -728,7 +729,7 @@ class TraceSession:
         except OSError:
             pass
         try:
-            self._work_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(self._work_dir)
             if move:
                 trace_path.replace(dest)
                 with contextlib.suppress(OSError):  # the store is already published

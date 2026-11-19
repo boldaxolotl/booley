@@ -320,6 +320,77 @@ fn test_no_clock_fallback() {
     );
 }
 
+#[test]
+fn test_no_clock_find_honors_window_in_ticks() {
+    let store = build_bwave("test_no_clock.vcd", "no_clock_find_window");
+    let store_arg = store.to_string_lossy().to_string();
+    let virtual_def = "en = tb.enable";
+    let rows: [(&[&str], &str); 11] = [
+        (&["*", "'h1", "--after", "99999"], ""),
+        (&["*", "'h1", "--after", "0"], "10 enable 1\n"),
+        (&["*", "'h1", "-t", "5:20"], "10 enable 1\n"),
+        (&["*", "'h1", "--before", "5"], ""),
+        (&["*", "'h1", "--before", "20"], "10 enable 1\n"),
+        (&["enable", "rising", "-t", "30:200"], "75 enable 1\n"),
+        (&["enable", "falling", "-t", "0:40"], ""),
+        (
+            &["*", "change", "-t", "30:60"],
+            "50 enable 0\n50 count[3:0] 2\n",
+        ),
+        (&["en", "'h1", "-t", "30:60", "--virtual", virtual_def], ""),
+        (
+            &["en", "rising", "-t", "30:200", "--virtual", virtual_def],
+            "75 en 1\n",
+        ),
+        (
+            &[
+                "en",
+                "rising",
+                "-t",
+                "30t:200t",
+                "--async",
+                "--virtual",
+                virtual_def,
+            ],
+            "75 en 1\n",
+        ),
+    ];
+    for (args, expected) in rows {
+        let mut full: Vec<&str> = vec!["find", &store_arg];
+        full.extend_from_slice(args);
+        let (stdout, stderr, code) = run_bwave(&full);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert_eq!(stdout, expected, "{args:?}: {stderr}");
+    }
+    let _ = std::fs::remove_file(store);
+}
+
+#[test]
+fn test_no_clock_find_reports_ticks_past_i64_max() {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("big.vcd");
+    std::fs::write(
+        &vcd,
+        b"$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! en $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#9223372036854775808\n1!\n",
+    )
+    .unwrap();
+    let store = dir.path().join("big.fst");
+    let (_, stderr, code) = run_bwave(&[
+        "build",
+        vcd.to_str().unwrap(),
+        "-o",
+        store.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    for extra in [&[][..], &["--async"][..]] {
+        let mut args = vec!["find", store.to_str().unwrap(), "en", "'h1"];
+        args.extend_from_slice(extra);
+        let (stdout, stderr, code) = run_bwave(&args);
+        assert_eq!(code, 0, "{extra:?}: {stderr}");
+        assert_eq!(stdout, "9223372036854775808 en 1\n", "{extra:?}: {stderr}");
+    }
+}
+
 // -- X/Z handling -----------------------------------------------------
 
 #[test]

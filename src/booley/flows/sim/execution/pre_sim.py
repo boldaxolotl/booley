@@ -11,7 +11,12 @@ from pathlib import Path
 
 from booley.core.file_lock import active_child_lease_fd
 from booley.flows.eda_failures import find_missing_executable
-from booley.flows.job_resources import JobResourceMonitor, ResourceLabel, record_command
+from booley.flows.job_resources import (
+    JobResourceMonitor,
+    MeasuredPopen,
+    ResourceLabel,
+    record_command,
+)
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.test_runs import TestRun
@@ -258,7 +263,7 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, resource, **child_kwargs
     if scope is not None and scope.execution_id is not None:
         supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
     try:
-        process = subprocess.Popen(
+        process = MeasuredPopen(
             command,
             cwd=cwd,
             env=supervised_env,
@@ -310,7 +315,7 @@ def _await_pre_sim(process, command, timeout, monitor, owners):
             assert process.stdout is not None and process.stderr is not None  # spawned with PIPE
             process.stdout.close()
             process.stderr.close()
-        measurement = monitor.finish()
+        measurement = monitor.finish(process.reaped_peak_bytes)
         if settled:
             from booley.flows.base import SubprocessResult
 
