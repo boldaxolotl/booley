@@ -33,6 +33,7 @@ from booley.audit.diagnostic_results import (
 )
 from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import (
     activity_hooks,
@@ -75,7 +76,6 @@ from tests.docker_cli_guard import (
 )
 from tests.docker_host_support import fake_docker_host
 from tests.harness import test_session_runtime as resolution_fixtures
-from tests.harness.test_image_lifecycle import FakeDocker, TransactionBuilder, _wire
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
@@ -122,9 +122,6 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path, monkeypat
 
     # The Icarus-only testbench carries the sentinel; Doctor must read the Verilator-selected one.
     assert list(_warnings(_doctor_run(tmp_path), "sim.pass-sentinel-missing")) == ["sim_cond"]
-
-
-_RECONCILE_PLANNED = harness_lifecycle.reconcile_planned
 
 
 def _write_project(
@@ -294,15 +291,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     _patch_host_environment(monkeypatch, root)
     monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
-    # Private seam: a whole run cannot supply a host Sandbox Image graph; the
-    # provenance tests restore the real CHECK over a fake Docker.
-    monkeypatch.setattr(
-        harness_lifecycle,
-        "reconcile_planned",
-        lambda scope, _intent: lifecycle.LifecycleResult(
-            dc.SANDBOX_IMAGE, dc.SANDBOX_IMAGE, lifecycle.Status.CURRENT
-        ),
-    )
+    # A whole run cannot supply a host Sandbox Image graph; the provenance tests override the CHECK.
+    _check(monkeypatch, lifecycle.Status.CURRENT)
     # The rebuild of the spec `booley init` would write has its own tests; here the
     # seeded fixture spec stands in for it.
     monkeypatch.setattr(
@@ -2514,158 +2504,51 @@ def test_image_stale_names_each_owner_workflow(owner, managed, steps, tmp_path, 
     assert warning.endswith(steps + ".")
 
 
-_STALE_REASON = "node-owned compatibility inputs changed"
-_UNADOPTED_REASON = "the selected image is built but this Project has not adopted it"
-_PROVENANCE_ROWS = {
-    "pin-edit": _STALE_REASON,
-    "file-added": _STALE_REASON,
-    "context-file": _STALE_REASON,
-    "built-elsewhere": _UNADOPTED_REASON,
-}
+def _check(monkeypatch, status=None, *, raises=None, diagnostics=(), selected_id=dc.SANDBOX_IMAGE):
+    """Stand in for the lifecycle CHECK `booley init --check-only` runs."""
+
+    def reconcile(_scope, _intent):
+        if raises:
+            raise raises
+        found = tuple(lifecycle.Diagnostic("stale", m) for m in diagnostics)
+        return lifecycle.LifecycleResult(dc.SANDBOX_IMAGE, selected_id, status, diagnostics=found)
+
+    monkeypatch.setattr(harness_lifecycle, "reconcile_planned", reconcile)
 
 
-def _provenance_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, docker: FakeDocker
-) -> Path:
-    """Set up a Project whose Doctor run asks the real lifecycle CHECK over *docker*."""
-    booley_dir = _write_project(tmp_path)
-    toml = booley_dir / "booley.toml"
-    toml.write_text(
-        toml.read_text(encoding="utf-8").replace(
-            "[sandbox]\n", '[sandbox]\npip_requirements = ["a.txt"]\n'
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "a.txt").write_text("scapy==2.6.1\n", encoding="utf-8")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(harness_lifecycle, "reconcile_planned", _RECONCILE_PLANNED)
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(doctor.idk, "image_id", docker.image_id)
-    # The fake images carry no Booley Directory layout to probe.
-    monkeypatch.setattr(
-        lifecycle.project_image, "project_data_alias_capable", lambda _image: False
-    )
-    # The remedy wording depends on the attachment and ownership, which a tmp
-    # Project has no container or marker to derive.
-    monkeypatch.setattr(
-        doctor.session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE
-    )
-    monkeypatch.setattr(doctor.session_runtime, "image_is_managed", lambda _root: True)
-    return booley_dir
-
-
-def _apply_settings(root: Path, docker: FakeDocker, builder: TransactionBuilder) -> None:
-    """Build and adopt the Project's Sandbox Image, as applying the settings does."""
-    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
-    prepared = lifecycle.prepare(planned, docker=docker, builder=builder)
-    lifecycle.commit(prepared, docker=docker)
-
-
-@pytest.mark.parametrize("change", _PROVENANCE_ROWS)
-def test_doctor_reports_sandbox_image_provenance(change, tmp_path, tmp_path_factory, monkeypatch):
-    docker = FakeDocker({})
-    _provenance_project(tmp_path, monkeypatch, docker)
-
-    builder = TransactionBuilder(docker)
-
-    def apply(root: Path) -> None:
-        _apply_settings(root, docker, builder)
-
-    def warned() -> list[str]:
-        return _messages(_doctor_run(tmp_path), Severity.WARN, check_id="sandbox.image-stale")
-
-    if change == "context-file":
-        docker_dir = tmp_path / ".booley" / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox\nCOPY setup.sh /setup.sh\n", encoding="utf-8"
-        )
-        (docker_dir / "setup.sh").write_text("echo one\n", encoding="utf-8")
-    other = tmp_path_factory.mktemp("other")
-    if change == "built-elsewhere":
-        (other / ".booley").mkdir()
-        (other / ".booley" / "booley.toml").write_text(
-            '[sandbox]\npip_requirements = ["a.txt"]\n', encoding="utf-8"
-        )
-        (other / "a.txt").write_text("scapy==2.6.0\n", encoding="utf-8")
-    apply(tmp_path)
-    assert warned() == []
-
-    if change in {"pin-edit", "built-elsewhere"}:
-        (tmp_path / "a.txt").write_text("scapy==2.6.0\n", encoding="utf-8")
-    elif change == "file-added":
-        (tmp_path / "b.txt").write_text("numpy\n", encoding="utf-8")
-        toml = tmp_path / ".booley" / "booley.toml"
-        toml.write_text(
-            toml.read_text(encoding="utf-8").replace('["a.txt"]', '["a.txt", "b.txt"]'),
-            encoding="utf-8",
-        )
-    else:
-        (tmp_path / ".booley" / "docker" / "setup.sh").write_text("echo two\n", encoding="utf-8")
-    if change == "built-elsewhere":
-        apply(other)
-    warnings = warned()
-    assert len(warnings) == 1
-    assert _PROVENANCE_ROWS[change] in warnings[0]
-    assert warnings[0].endswith(_REBUILD + ".")
-
-    apply(tmp_path)
-    result = _doctor_run(tmp_path)
-    assert _messages(result, Severity.WARN, check_id="sandbox.image-stale") == []
-    assert any(
-        "provenance matches the current settings" in m for m in _messages(result, Severity.PASS)
-    )
-
-
-class _UnreachableDocker(FakeDocker):
-    def inspect(self, image):
-        raise lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
+_UNADOPTED = "the selected image is built but this Project has not adopted it"
+_ERROR = lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
 
 
 @pytest.mark.parametrize(
-    "case",
-    ["no-docker", "lifecycle-error", "unreadable-input", "undecodable-input", "adoption-lookup"],
+    ("kwargs", "reason", "outcome"),
+    [
+        (
+            {"status": lifecycle.Status.STALE, "diagnostics": ("pins changed",) * 2},
+            "pins changed",
+            "warn",
+        ),
+        ({"status": lifecycle.Status.STALE}, _UNADOPTED, "warn"),
+        ({"status": lifecycle.Status.CURRENT, "selected_id": "sha256:other"}, _UNADOPTED, "warn"),
+        ({"status": lifecycle.Status.CURRENT}, None, "pass"),
+        ({"raises": _ERROR}, "Cannot connect", "skip"),
+        ({"raises": OSError("unreadable input")}, "unreadable input", "skip"),
+    ],
 )
-def test_doctor_never_passes_unchecked_image_provenance(case, tmp_path, monkeypatch):
-    docker = _UnreachableDocker({}) if case == "lifecycle-error" else FakeDocker({})
-    _provenance_project(tmp_path, monkeypatch, docker)
-    if case == "no-docker":
-        monkeypatch.setattr(
-            host_diagnostics,
-            "inspect_host",
-            lambda _root: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
-        )
-    if case == "undecodable-input":
-        (tmp_path / "a.txt").write_bytes(b"\xff\xfe not utf-8\n")
-    if case == "adoption-lookup":
-        _apply_settings(tmp_path, docker, TransactionBuilder(docker))
-
-        def refuse(_image: str) -> str:
-            raise doctor.idk.ImageInspectError("docker inspect failed")
-
-        monkeypatch.setattr(doctor.idk, "image_id", refuse)
-    if case == "unreadable-input":
-        docker_dir = tmp_path / ".booley" / "docker"
-        docker_dir.mkdir()
-        symlink_or_skip(docker_dir / "broken", tmp_path / "missing-target")
-
+def test_doctor_reports_sandbox_image_provenance(kwargs, reason, outcome, tmp_path, monkeypatch):
+    _patch_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+    _check(monkeypatch, **kwargs)
     result = _doctor_run(tmp_path)
-
-    assert _messages(result, Severity.WARN, check_id="sandbox.image-stale") == []
-    assert not [m for m in _messages(result, Severity.PASS) if "provenance" in m]
-    skips = [m for m in _messages(result, Severity.SKIP) if "provenance check could not run" in m]
-    expected = {
-        "no-docker": None,
-        "lifecycle-error": "Cannot connect to the Docker daemon",
-        "unreadable-input": "could not inspect provenance input",
-        "undecodable-input": "codec can't decode",
-        "adoption-lookup": "docker inspect failed",
-    }[case]
-    if expected:
-        (skip,) = skips
-        assert expected in skip
-    else:
-        assert skips == []
+    found = {
+        "warn": _messages(result, Severity.WARN, check_id="sandbox.image-stale"),
+        "pass": [m for m in _messages(result, Severity.PASS) if "provenance matches" in m],
+        "skip": [m for m in _messages(result, Severity.SKIP) if "provenance check" in m],
+    }
+    assert {k: len(v) for k, v in found.items()} == {k: int(k == outcome) for k in found}
+    if reason:
+        assert reason in found[outcome][0]
+    if outcome == "warn":
+        assert "Recreate the Sandbox: on the host run `booley init`" in found["warn"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -4422,6 +4305,34 @@ _SYNTH_EVIDENCE_REPORTS: dict[str, dict | str | None] = {
 
 def _incomplete(reason):
     return (Severity.FAIL, f"produced incomplete synthesis evidence: {reason}")
+
+
+@pytest.mark.parametrize(
+    ("utilization", "toml", "message"),
+    [
+        (150, "", "dry-run [synth_dut] failed with exit 2"),
+        (50, '[flows.synth.timing]\nengine = "sta"\n', "build input(s): timing"),
+    ],
+)
+def test_doctor_fails_synth_configure_errors(tmp_path, monkeypatch, utilization, toml, message):
+    options = "tool: yosys, arch: xilinx, synth_mode: physical, booley: {doctor: [synth]}, "
+    options += f"advanced_settings_openroad: {{utilization_pct: {utilization}}}"
+    sets = "  rtl: {files: [rtl/dut.sv]}\n  sdc: {files: [dut.sdc], file_type: SDC}\n"
+    core = _core("synth", _target("synth_dut", "generic", options, "rtl, sdc", "dut"), sets)
+    _core_project(
+        tmp_path, monkeypatch, {"unit.core": None, "synth.core": core, "dut.sdc": ""}, toml=toml
+    )
+    real_run = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        if "booley.flows.synth" not in cmd or "--dry-run" not in cmd:
+            return real_run(cmd, **kwargs)
+        a = [str(tmp_path) if "/" in c else c for c in cmd]
+        out = AsicSynthesizeFlow().execute_cli(a[a.index("booley.flows.synth") + 1 :]).outcome
+        return subprocess.CompletedProcess(cmd, out.exit_code, "", out.report_text)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    assert _rows(_doctor_run(tmp_path), Severity.FAIL, message)
 
 
 def test_deep_synthesis_evidence_is_graded_per_target(tmp_path, monkeypatch, capsys):
