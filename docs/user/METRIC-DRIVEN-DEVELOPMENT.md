@@ -168,10 +168,9 @@ the metrics of its Flow instead.
   write instead: "smoke.cycle_count_max" = 1000
 ```
 
-When a per-clock key or a tracked metric names a clock that no earlier
-measurement of its table reported, `--validate` prints a `warning:` line with
-the clocks that were reported. The warning does not change the exit status, and
-it is skipped before the table's first measurement.
+`--validate` also warns when a per-clock key or a tracked metric names a clock
+that no stored measurement of its table reported, and lists the clocks that
+were reported. The warning does not change the exit status.
 
 `booley cheat --metrics` prints each Target's metrics as `metrics.toml` text,
 with the keys already quoted. Save the blocks you keep in

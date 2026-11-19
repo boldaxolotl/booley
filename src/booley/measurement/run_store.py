@@ -107,9 +107,11 @@ def _reported_clocks_of(document: dict[str, Any], identity: str, flow: str) -> s
     for table in document["tables"]:
         if (table["identity"], table["flow"]) == (identity, flow):
             values = table["values"] or {}
-            found.update(values.get("clocks") or ())
-            found.update(clock for c in (values.get("per_clock") or {}).values() for clock in c)
-    return found
+            clocks, per_clock = values.get("clocks"), values.get("per_clock")
+            found.update(clocks if isinstance(clocks, list) else ())
+            for by_clock in per_clock.values() if isinstance(per_clock, dict) else ():
+                found.update(by_clock if isinstance(by_clock, dict) else ())
+    return {clock for clock in found if isinstance(clock, str)}
 
 
 def _order(run: StoredRun) -> tuple[datetime, datetime, str]:

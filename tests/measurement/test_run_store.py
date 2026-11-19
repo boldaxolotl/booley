@@ -473,6 +473,31 @@ def test_clock_names_come_from_the_latest_run_that_has_them(tmp_path: Path) -> N
     assert store.clock_names(IDENTITY, "sim") == ()
 
 
+def test_reported_clocks_union_every_run_and_skip_damaged_clock_data(tmp_path: Path) -> None:
+    import json
+
+    from booley.measurement.run_store import MeasurementStore
+
+    repo, head = in_tree_repository(tmp_path / "repo")
+    store = MeasurementStore(repo / ".booley")
+    keyed = key_of(repo, head)
+    assert store.reported_clocks(IDENTITY, "syn") == frozenset()
+    store.write(make_run(keyed, "a", minute=1, per_clock={"fmax": {"clk_a": 1.0}}), [])
+    store.write(make_run(keyed, "b", minute=2, clocks=("clk_b",)), [])
+    store.write(make_run(keyed, "c", minute=3), [])
+    store.write(make_run(keyed, "d", minute=4), [])
+    runs = repo / ".booley" / "measurements" / keyed.key.project_tree
+    damaged = json.loads((runs / "c.json").read_text(encoding="utf-8"))
+    damaged["tables"][0]["values"] = {"clocks": [123, "clk_c"], "per_clock": {"m": 5, "n": [1]}}
+    (runs / "c.json").write_bytes(json.dumps(damaged).encode())
+    broken = json.loads((runs / "d.json").read_text(encoding="utf-8"))
+    broken["tables"] = [{}, *broken["tables"]]
+    (runs / "d.json").write_bytes(json.dumps(broken).encode())
+
+    assert store.reported_clocks(IDENTITY, "syn") == {"clk_a", "clk_b", "clk_c"}
+    assert store.reported_clocks(IDENTITY, "sim") == frozenset()
+
+
 def test_tracked_metric_and_empty_results_decide_measured(tmp_path: Path) -> None:
     from dataclasses import replace
 
