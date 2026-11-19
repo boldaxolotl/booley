@@ -1861,16 +1861,35 @@ class TestModeSpecificArea:
             "Chip area for top module '\\top': 500.0\n"
             "STA_CRITICAL_PATH_PS: 1250.0\n"
             "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
         )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
         assert metrics.area_um2 == 640.25
         assert metrics.area_source == "openroad_post_optimization"
+        assert metrics.cells == 112
+        assert metrics.cell_count_source == "openroad_post_optimization"
+        assert metrics.wire_count == 42
 
     def test_logical_uses_yosys_area(self):
-        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        output = (
+            "Number of cells: 100\n"
+            "Chip area for top module '\\top': 500.0\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
+        )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
         assert metrics.area_um2 == 500.0
         assert metrics.area_source == "yosys_mapped"
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
+        assert metrics.wire_count == 42
+
+    def test_physical_without_openroad_count_keeps_labelled_yosys_count(self):
+        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
 
 
 # ===========================================================================
@@ -2657,6 +2676,7 @@ class TestSingleConfigRun:
         assert data["area_kge"] == pytest.approx(8.02005)
         assert data["area_um2"] == 6400.0
         assert data["area_source"] == "yosys_mapped"
+        assert data["cell_count_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
         assert "post_opt_area_um2" not in data
         assert data["cell_count"] == 100
@@ -4874,6 +4894,7 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
                 "STA_WORST_SLACK_NS: 0.000000\n"
                 "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\n"
                 "Design area 63 u^2 50% utilization.\n"
+                "OPENROAD_INSTANCE_COUNT: 23\n"
             ),
             "artifacts": {
                 "yosys.log": yosys,
@@ -4896,6 +4917,8 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
     if expected:
         assert report["timing_complete"] is True
         assert report["ppa_complete"] is True
+        assert report["cell_count"] == 23
+        assert report["cell_count_source"] == "openroad_post_optimization"
 
 
 @pytest.mark.parametrize("expected", [8, 9])

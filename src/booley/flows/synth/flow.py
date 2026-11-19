@@ -269,7 +269,8 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 
 
 # Metrics the synthesis Flow declares; names are the ones ``metrics.toml`` bounds use.
-# area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
+# area_um2/area_kge/cell_count are the mapped netlist in logical mode and the placed netlist
+# after repair in OpenROAD modes.
 _SYNTH_COST_TIER = CostTier.HIGH
 SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
     MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
@@ -293,6 +294,8 @@ class SynthMetrics:
     area_source: str = ""
     area_kge: float | None = None
     cells: int | None = None
+    # Provenance for ``cells``, like ``area_source``.
+    cell_count_source: str = ""
     wire_count: int = 0
     process_count: int = 0
     # Worst setup slack in ns from OpenROAD's embedded STA (negative == timing VIOLATED). The
@@ -399,6 +402,7 @@ class SynthMetrics:
             "area_source": self.area_source,
             "area_kge": self.area_kge,
             "cell_count": self.cells,
+            "cell_count_source": self.cell_count_source,
             "wire_count": self.wire_count,
             "synth_mode": self.synth_mode.value if self.synth_mode else "",
             "per_clock": per_clock_to_json(self.per_clock),
@@ -606,6 +610,27 @@ def _parse_physical_area(output: str) -> float | None:
     return float(matches[-1]) if matches else None
 
 
+def _parse_physical_cell_count(output: str) -> int | None:
+    """Extract OpenROAD's instance count after repair and final placement."""
+    matches = re.findall(r"OPENROAD_INSTANCE_COUNT:\s*(\d+)", output)
+    return int(matches[-1]) if matches else None
+
+
+def _cell_count(output: str, mode: SynthMode, yosys_cells: int | None) -> tuple[int | None, str]:
+    """Return the canonical cell count and its provenance for ``mode``.
+
+    OpenROAD modes use the placed netlist's instance count; a run that never
+    reached the final report, and logical mode, use the mapped Yosys count.
+    """
+    if mode.runs_openroad:
+        placed = _parse_physical_cell_count(output)
+        if placed is not None:
+            return placed, SynthMode.PHYSICAL.area_source
+    if yosys_cells is None:
+        return None, ""
+    return yosys_cells, SynthMode.LOGICAL.area_source
+
+
 def _parse_logical_estimated_fmax(output: str) -> float | None:
     """Convert the final mapped-ABC delay marker in ps to an Fmax estimate."""
     matches = re.findall(r"YOSYS_ABC_LOGIC_DELAY_PS:\s*([0-9]+(?:\.[0-9]+)?)", output)
@@ -722,7 +747,8 @@ def _parse_synth_output(
     """Parse all metrics from combined synthesis stdout/stderr."""
     mode = SynthMode(synth_mode)
     stat = parse_stat(output)
-    mapped_area_um2, cells = stat.area_um2, stat.cells
+    mapped_area_um2 = stat.area_um2
+    cells, cell_count_source = _cell_count(output, mode, stat.cells)
     if mode.runs_openroad:
         area_um2 = _parse_physical_area(output)
         estimated_fmax_mhz = None
@@ -743,6 +769,7 @@ def _parse_synth_output(
         area_source=area_source,
         area_kge=area_kge,
         cells=cells,
+        cell_count_source=cell_count_source,
         wire_count=wire_count,
         process_count=process_count,
         wns_ns=wns_ns,
@@ -863,6 +890,7 @@ _BASELINE_DETAIL_FIELDS = (
     "area_source",
     "area_kge",
     "cell_count",
+    "cell_count_source",
     "wire_count",
     "per_clock",
     "estimated_fmax_mhz",
@@ -872,6 +900,7 @@ _REPORT_QOR_FIELDS = (
     "area_um2",
     "area_source",
     "cell_count",
+    "cell_count_source",
     "synth_mode",
     "per_clock",
     "estimated_fmax_mhz",
@@ -886,6 +915,7 @@ _REPORT_BASELINE_FIELDS = (
     "area_source",
     "synth_mode",
     "cell_count",
+    "cell_count_source",
     "per_clock",
     "estimated_fmax_mhz",
 )

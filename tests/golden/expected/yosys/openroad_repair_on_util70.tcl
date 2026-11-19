@@ -55,6 +55,7 @@ repair_timing -setup -skip_gate_cloning
 detailed_placement ; estimate_parasitics -placement
 puts "BOOLEY_STAGE: sta_report"
 report_design_area
+puts [format "OPENROAD_INSTANCE_COUNT: %d" [llength [[ord::get_db_block] getInsts]]]
 write_verilog {openroad_dut.v}
 set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10]
 set csv_out [open {<WORK>/reports/timing/overall.csv.rpt} w]
