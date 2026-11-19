@@ -61,9 +61,8 @@ def run_tool(
     monitor = JobResourceMonitor()
     process: MeasuredPopen | None = None
     started = time.monotonic()
-    hard_timeout = False
+    hard_timeout = settled = False
     stdout = stderr = ""
-    settled = False
     try:
         with MeasuredPopen(
             list(cmd),
