@@ -88,6 +88,7 @@ from booley.flows.result_table import (
     status_cell,
 )
 from booley.flows.synth import openroad_reuse
+from booley.flows.synth.backends import configure
 from booley.flows.synth.backends.pipeline import (
     BoundaryOutcome,
     openroad_thread_assignment,
@@ -1446,6 +1447,10 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         if self._report_path_count is not None:
             cmd.extend(["--timing-report-paths", str(self._report_path_count)])
         cmd.extend(["-w", target])
+        try:
+            configure.check_options(configure.parse_configure_argv(cmd), project_root=work_dir)
+        except SystemExit as exc:
+            raise BoundaryError(str(exc.code)) from None
         return _PlannedSynthRecipe(tuple(cmd), resolved)
 
     def _build_synth_cmd(self, target: str) -> list[str]:

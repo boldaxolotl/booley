@@ -4207,6 +4207,56 @@ def _incomplete(reason):
     return (Severity.FAIL, f"produced incomplete synthesis evidence: {reason}")
 
 
+def _synth_dry_runs_in_process(monkeypatch: pytest.MonkeyPatch, project: Path) -> None:
+    """Run Doctor's synth dry-run command through the real Flow on *project*, not a Sandbox."""
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+
+    other_commands = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        if "booley.flows.synth" not in argv or "--dry-run" not in argv:
+            return other_commands(cmd, **kwargs)
+        values = argv[argv.index("booley.flows.synth") + 1 :]
+        for flag, value in (("--work-dir", project), ("--report-dir", project / "reports")):
+            values[values.index(flag) + 1] = str(value)
+        with monkeypatch.context() as patch:
+            patch.setenv("BOOLEY_CONTAINER", "1")
+            patch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+            outcome = AsicSynthesizeFlow().execute_cli(values).outcome
+        return subprocess.CompletedProcess(cmd, outcome.exit_code, "", outcome.report_text)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+
+@pytest.mark.parametrize(
+    ("utilization", "toml", "severity", "message"),
+    [
+        pytest.param(50, "", Severity.PASS, "dry-run [synth_dut] passed", id="valid"),
+        pytest.param(150, "", Severity.FAIL, "dry-run [synth_dut] failed", id="out-of-range"),
+        pytest.param(
+            50,
+            "[flows.synth.timing]\nengine = 1\n",
+            Severity.FAIL,
+            "build input(s): timing",
+            id="retired-timing-key",
+        ),
+    ],
+)
+def test_plain_doctor_synth_dry_run_applies_configure_checks(
+    tmp_path, monkeypatch, utilization, toml, severity, message
+):
+    options = "tool: yosys, arch: xilinx, synth_mode: physical, booley: {doctor: [synth]}, "
+    options += f"advanced_settings_openroad: {{utilization_pct: {utilization}}}"
+    filesets = "  rtl: {files: [rtl/dut.sv]}\n  sdc: {files: [dut.sdc], file_type: SDC}\n"
+    core = _core("synth", _target("synth_dut", "generic", options, "rtl, sdc", "dut"), filesets)
+    files = {"unit.core": None, "synth.core": core, "dut.sdc": ""}
+    _core_project(tmp_path, monkeypatch, files, toml=toml)
+    _synth_dry_runs_in_process(monkeypatch, tmp_path)
+
+    assert _rows(_doctor_run(tmp_path), severity, message)
+
+
 def test_deep_synthesis_evidence_is_graded_per_target(tmp_path, monkeypatch, capsys):
     """Deep synth passes only with terminal PPA (and, if physical, timing) evidence."""
     from booley.flows.implementation_publication import target_report_path

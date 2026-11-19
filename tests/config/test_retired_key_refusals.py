@@ -301,7 +301,7 @@ _SANDBOX_PARSE = f"{_AGENT}::_parse_sandbox_config"
 _RETIRED_MODELS = f"{_AGENT}::_retired_models_error"
 _UNKNOWN_MODELS = f"{_AGENT}::unknown_models_key_message"
 _RETIRED_OPTION = f"{_RECIPE}::retired_option_message"
-_YOSYS_TIMING = f"{_YOSYS}::_load_and_validate_timing_config"
+_YOSYS_TIMING = f"{_YOSYS}::load_timing_config"
 _RETIRED_CONFIG = "src/booley/config/retired.py::refuse_retired_config"
 
 # A new member of one of these production mappings gets a case with no edit to the cases

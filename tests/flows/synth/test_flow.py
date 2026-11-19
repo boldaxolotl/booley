@@ -809,12 +809,16 @@ def test_dry_run_plans_every_selected_target(synth_cli: SynthCli) -> None:
     assert list(synth_cli.project.glob(".booley-synth-plan-*")) == []
 
 
-def test_dry_and_real_runs_plan_the_same_work(synth_cli: SynthCli) -> None:
+def test_dry_and_real_runs_plan_the_same_work(
+    synth_cli: SynthCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    synth_cli.config("[flows.synth.timing]\nreepair_timing = true\n")
     dry = synth_cli.plan()
     outcome = synth_cli.run()
 
     assert outcome.exit_code == EXIT_SUCCESS, outcome.report_text
     assert dry["semantic_plan_fingerprint"] == synth_cli.run_plan.semantic_plan_fingerprint
+    assert "unknown key" not in capsys.readouterr().out
 
 
 def test_physical_dry_run_discloses_runtime_clock_validation(
@@ -1097,15 +1101,25 @@ def test_configure_argv_carries_the_recipe(
         pytest.param(
             "timing_report_paths = 0\n", r"^synth: .*timing_report_paths", id="report-paths"
         ),
+        pytest.param(
+            '[flows.synth.timing]\nengine = "sta"\n',
+            r"ERROR: \[flows\.synth\.timing\] 'engine' is retired\. Select flow_options",
+            id="retired-timing-key",
+        ),
+        pytest.param(
+            'synth_mode = "physical"\n'
+            "[flows.synth.advanced_settings_openroad]\nutilization_pct = 150\n",
+            r"ERROR: utilization_pct must be between 0 and 100",
+            id="out-of-range-utilization",
+        ),
     ],
 )
-def test_invalid_recipe_fails_the_dry_run(synth_cli: SynthCli, config: str, message: str) -> None:
+def test_invalid_recipe_fails_planning(synth_cli: SynthCli, config: str, message: str) -> None:
     synth_cli.config(config)
 
-    outcome = synth_cli.run("--dry-run")
-
-    assert outcome.exit_code == EXIT_ERROR
-    assert re.search(message, outcome.report_text), outcome.report_text
+    for outcome in (synth_cli.run("--dry-run"), synth_cli.run()):
+        assert outcome.exit_code == EXIT_ERROR
+        assert re.search(message, outcome.report_text), outcome.report_text
     assert list(synth_cli.project.glob(".booley-synth-plan-*")) == []
 
 

@@ -21,6 +21,7 @@ from booley.flows.synth.backends.openroad import ppa as openroad_ppa_options
 from booley.flows.synth.backends.yosys import ppa as yosys_ppa_options
 from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
     FRONTEND_CHOICES,
+    load_timing_config,
     parse_params,
     resolve_liberty,
     synth_timing_config,
@@ -284,6 +285,17 @@ def resolve_spec(
         abc_delay_ps=yosys_ppa.abc_delay_ps,
         target=args.workdir or args.top,
     )
+
+
+def check_options(args: argparse.Namespace, *, project_root: Path) -> None:
+    """Run the configure checks that read only the options and ``booley.toml``.
+
+    Planning runs them on its argv so a dry run refuses what configure would.
+    Sources and Liberty stay configure-time checks. Exits with an ``ERROR:``
+    message on failure.
+    """
+    _resolve_ppa_settings(args)
+    load_timing_config(project_root)
 
 
 def parse_configure_argv(cmd: list[str]) -> argparse.Namespace:
