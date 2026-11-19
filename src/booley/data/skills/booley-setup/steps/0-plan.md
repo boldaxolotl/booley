@@ -1050,9 +1050,10 @@ compile-flag probe.
    (`booley/build_firmware.sh`) rather than holding the build recipe itself,
    so the recipe lives with the sources it builds. The hook is Project
    configuration: commit `.booley/hooks/` with the rest of the Booley
-   Directory. A hook file Git does not track yet still reaches a new worktree
-   through its Snapshot, where Git shows it as untracked in the open
-   footprint; a Paired Checkout leaves it out. Under a hidden footprint
+   Directory (under Hybrid, add it to the tracked allowlist). A hook file
+   Git does not track yet still reaches a new worktree through its Snapshot,
+   where Git shows it as untracked in the open footprint; a Paired Checkout
+   leaves it out. Under a hidden footprint
    (row 16) with no inner repository, `.booley/` is excluded from the RTL repo
    and versioned nowhere, so a fresh clone has no hook and builds no firmware.
 
