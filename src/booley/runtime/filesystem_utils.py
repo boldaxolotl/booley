@@ -27,6 +27,7 @@ __all__ = [
     "is_transient_read_error",
     "is_transient_sharing_error",
     "make_directories",
+    "missing_directories",
     "open_with_sharing_retry",
     "read_file_bytes",
     "replace_file",
@@ -55,7 +56,8 @@ class RemovedDirectoryError(FileNotFoundError):
 def run_roots(*roots: Path) -> Iterator[None]:
     """Refuse recreating *roots* in :func:`make_directories` while the block runs.
 
-    The roots are process-wide, not per thread: Flows write from worker threads.
+    The roots are process-wide, not per thread: Flows write from worker threads. A
+    process runs one endpoint invocation at a time, so nested blocks only add roots.
     """
     global _run_roots
     previous = _run_roots
@@ -66,13 +68,12 @@ def run_roots(*roots: Path) -> Iterator[None]:
         _run_roots = previous
 
 
-def make_directories(path: Path) -> None:
-    """``mkdir -p`` that never recreates a run root or a removed checkout.
+def missing_directories(path: Path) -> list[Path]:
+    """The directories ``mkdir -p path`` would create, outermost first.
 
-    A missing run root, or a missing ``.booley`` under a missing parent, raises
-    :class:`RemovedDirectoryError` before anything is created. Directories are
-    created one level at a time, so a root removed meanwhile fails the next
-    ``mkdir`` instead of coming back.
+    Raises :class:`RemovedDirectoryError` when that would recreate a run root, or a
+    ``.booley`` whose parent is gone: someone removed it, so recreating it would
+    leave an orphan that no worktree owns.
     """
     missing: list[Path] = []
     current = path.absolute()
@@ -85,9 +86,19 @@ def make_directories(path: Path) -> None:
     for index, directory in enumerate(missing):
         if directory in _run_roots:
             raise RemovedDirectoryError(directory)
+        # Outside a run (a child process has no run roots) the name is the only signal.
         if directory.name == BOOLEY_DIR_NAME and index > 0:
             raise RemovedDirectoryError(missing[index - 1])
-    for directory in missing:
+    return missing
+
+
+def make_directories(path: Path) -> None:
+    """``mkdir -p`` that never recreates a run root or a removed checkout.
+
+    Directories are created one level at a time, so a root removed meanwhile fails
+    the next ``mkdir`` instead of coming back.
+    """
+    for directory in missing_directories(path):
         directory.mkdir(exist_ok=True)
 
 

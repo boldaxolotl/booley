@@ -12,7 +12,7 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
-from booley.flows.endpoint_reporting import _StdoutWitness, removed_root
+from booley.flows.endpoint_reporting import _StdoutWitness, removed_root, report_root_removed
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
@@ -21,6 +21,7 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.runtime.exception_diagnostics import (
     exception_report_text,
+    print_exception_diagnostic,
     write_exception_diagnostic,
 )
 from booley.runtime.filesystem_utils import run_roots
@@ -114,6 +115,11 @@ def _record_run_roots(endpoint: EndpointState) -> None:
     endpoint._run_roots = (checkout, booley_dir)
 
 
+def _live_roots(endpoint: EndpointState) -> list[Path]:
+    """The recorded checkout and Booley Directory, which the run must not recreate."""
+    return [root for root in endpoint._run_roots or () if root is not None]
+
+
 def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
@@ -197,6 +203,9 @@ def _exception_outcome(
         transcript_path=transcript_path,
         persist=persist,
     )
+    if removed_root(endpoint) is not None and (diagnostic_path is not None or not persist):
+        # The final text names the removed root, so the traceback goes to the terminal.
+        print_exception_diagnostic(exc)
     return EndpointOutcome(
         exit_code=EXIT_ERROR,
         report_text=exception_report_text(endpoint.name, exc, diagnostic_path),
@@ -217,8 +226,7 @@ def invoke_endpoint(
     endpoint._stdout_witness = witness
     sys.stdout = witness  # type: ignore[assignment]
     try:
-        roots = [root for root in endpoint._run_roots or () if root is not None]
-        with run_roots(*roots):
+        with run_roots(*_live_roots(endpoint)):
             try:
                 invocation = prepared.invocation
                 result = invocation.run(admission if invocation.borrows_admission else None)
@@ -262,12 +270,14 @@ def finish_execution(
     if removed is not None:
         outcome.exit_code = EXIT_ERROR
         outcome.report_text = f"{endpoint.name} failed: {removed} was removed during the run"
-    exit_code = endpoint._finish_main(
-        outcome,
-        prepared.display_target,
-        outcome.display_label or prepared.display_label,
-        started=started,
-        dry_run=prepared.dry_run,
-        persist_report=not prepared.non_persisting_dry_run and removed is None,
-    )
+    persist_report = not prepared.non_persisting_dry_run and not report_root_removed(endpoint)
+    with run_roots(*_live_roots(endpoint)):
+        exit_code = endpoint._finish_main(
+            outcome,
+            prepared.display_target,
+            outcome.display_label or prepared.display_label,
+            started=started,
+            dry_run=prepared.dry_run,
+            persist_report=persist_report,
+        )
     return ExecutionResult(exit_code=exit_code, outcome=outcome)

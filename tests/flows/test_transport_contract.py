@@ -139,6 +139,69 @@ def test_flow_fails_naming_its_removed_root(
         assert "RemovedDirectoryError" in err
 
 
+def _flow_removing(monkeypatch, removed, *, raises):
+    """A lint Flow whose run deletes *removed* and then raises or returns."""
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.runtime.filesystem_utils import safe_rmtree
+    from booley.targets.selection import UnknownTargetError
+
+    flow = LintFlow()
+
+    def run():
+        safe_rmtree(removed)
+        if raises:
+            raise UnknownTargetError("Unknown target 'demo'")
+        return EndpointOutcome()
+
+    replace_run(monkeypatch, flow, run)
+    return flow
+
+
+def test_booley_directory_removed_before_the_display_event_stays_removed(runtime, monkeypatch):
+    checkout = runtime / "checkout"
+    booley_dir = checkout / ".booley"
+    booley_dir.mkdir(parents=True)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(booley_dir / ".runtime"))
+    flow = _flow_removing(monkeypatch, booley_dir, raises=False)
+
+    result = flow.execute(
+        flow.request_type(target="demo", work_dir=checkout, report_dir=booley_dir / "flow-reports")
+    )
+
+    assert result.outcome.report_text == (
+        f"lint failed: Booley Directory {booley_dir} was removed during the run"
+    )
+    assert checkout.is_dir()
+    assert not booley_dir.exists()
+
+
+def test_dry_run_failure_in_a_removed_checkout_prints_its_traceback(runtime, monkeypatch, capsys):
+    checkout = runtime / "checkout"
+    checkout.mkdir()
+    flow = _flow_removing(monkeypatch, checkout, raises=True)
+
+    result = flow.execute(flow.request_type(target="demo", work_dir=checkout, dry_run=True))
+
+    assert result.exit_code == 2
+    assert "UnknownTargetError" in capsys.readouterr().err
+    assert not checkout.exists()
+
+
+def test_report_outside_a_removed_checkout_is_still_written(runtime, monkeypatch, capsys):
+    checkout = runtime / "checkout"
+    checkout.mkdir()
+    outside = runtime / "outside"
+    flow = _flow_removing(monkeypatch, checkout, raises=True)
+
+    result = flow.execute(flow.request_type(target="demo", work_dir=checkout, report_dir=outside))
+
+    expected = f"lint failed: checkout {checkout} was removed during the run"
+    assert result.outcome.report_text == expected
+    assert json.loads((outside / "lint.json").read_text())["report_text"] == expected
+    assert "UnknownTargetError" in capsys.readouterr().err
+    assert not checkout.exists()
+
+
 def test_flow_report_root_precedence(runtime, monkeypatch):
     from booley.runtime.endpoint_execution import EndpointOutcome
 

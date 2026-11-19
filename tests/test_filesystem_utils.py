@@ -157,6 +157,16 @@ class TestMakeDirectories:
         make_directories(booley_dir / "flow-reports")
         assert (booley_dir / "flow-reports").is_dir()
 
+    def test_durable_publication_refuses_to_recreate_a_removed_checkout(self, tmp_path):
+        from booley.flows.artifact_durability import durable_create
+
+        checkout = tmp_path / "checkout"
+
+        with pytest.raises(RemovedDirectoryError):
+            durable_create(checkout / ".booley" / "flow-reports" / "run.log", b"x")
+
+        assert not checkout.exists()
+
     def test_a_file_in_the_way_still_fails(self, tmp_path):
         (tmp_path / "taken").write_bytes(b"")
 

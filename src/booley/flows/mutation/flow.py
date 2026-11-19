@@ -2772,6 +2772,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _copy_campaign_dir(source: Path, destination: Path) -> Path | None:
         if not source.is_dir():
             return None
+        make_directories(destination.parent)
         shutil.copytree(source, destination)
         return destination
 

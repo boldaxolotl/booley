@@ -22,6 +22,7 @@ import yaml
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
 from booley.core.booley_dir_links import resolve_through_entry
+from booley.runtime.filesystem_utils import make_directories
 
 PROJECTED_CORE_PREFIX = ".booley-projected-"
 PROJECTED_CORE_GLOB = f"{PROJECTED_CORE_PREFIX}*.core"
@@ -172,7 +173,7 @@ def reconcile_isolated_registry(project_root: Path | str) -> ProjectionResult:
     """Materialize only stealth-authored cores in a private FuseSoC registry."""
     root = Path(project_root)
     registry = isolated_registry_root(root)
-    registry.mkdir(parents=True, exist_ok=True)
+    make_directories(registry)
     expected = _expected_isolated_cores(root) if native_cores_ignored(root) else {}
     written = [path for path, content in expected.items() if _write_projection(path, content)]
     removed: list[Path] = []
@@ -388,7 +389,7 @@ def _copy_into_mirror(source: Path, destination: Path, core_file: Path, *, copy:
         raise CoreProjectionError(f"mirrored fileset entry is not a regular file: {source}")
     if not copy:
         return
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(destination.parent)
     try:
         shutil.copyfile(source, destination)
     except OSError as exc:

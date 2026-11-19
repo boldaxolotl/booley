@@ -526,6 +526,18 @@ def removed_root(endpoint: EndpointState) -> str | None:
     return None
 
 
+def report_root_removed(endpoint: EndpointState) -> bool:
+    """Whether the report directory lies under a checkout or Booley Directory that vanished."""
+    report_dir = endpoint.args.report_dir
+    if report_dir is None or endpoint._run_roots is None:
+        return False
+    report_dir = Path(report_dir).absolute()
+    return any(
+        root is not None and not root.is_dir() and report_dir.is_relative_to(root)
+        for root in endpoint._run_roots
+    )
+
+
 def _finish_main(
     endpoint: EndpointState,
     result: EndpointOutcome,
