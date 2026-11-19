@@ -112,6 +112,77 @@ def test_validate_refuses_an_automatic_mutation_count(
     assert "[sim_core.mutation] count: count must be an integer, got 'auto'" in err
 
 
+def test_validate_percentage_bound_says_bounds_are_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A percentage bound value says bounds are absolute; another string keeps its error."""
+    write_metrics_project(
+        tmp_path,
+        '[sim_core.sim]\ntests_total_min = "+10%"\ntests_failed_max = "10%"\n'
+        'tests_total_max = "zero"\n',
+    )
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 2
+
+    err = capsys.readouterr().err
+    assert err.count("a bound is an absolute number, not a percentage") == 2
+    assert "tests_total_min must be a finite number, got '+10%'; a bound" in err
+    assert "tests_failed_max must be a finite number, got '10%'; a bound" in err
+    assert "got 'zero'\n" in err
+
+
+@pytest.mark.parametrize(
+    ("entry", "key"),
+    [
+        pytest.param('"rx_clkk.wns_ns_min" = 0', "rx_clkk.wns_ns_min", id="bound"),
+        pytest.param('track = ["rx_clkk.wns_ns"]', "rx_clkk.wns_ns", id="tracked"),
+    ],
+)
+def test_validate_warns_on_a_clock_no_stored_run_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entry: str,
+    key: str,
+) -> None:
+    """AC1-AC5: an unreported clock prefix warns and exits 0; reported clocks and no store stay quiet."""
+    from booley.measurement.run_key import KeyedCommit, MeasurementKey
+    from tests.measurement.test_run_store import make_run
+
+    metrics = (
+        '[synth_core.synth]\n"rx_clk.wns_ns_min" = 0\n"tx_clk.fmax_mhz_min" = 100\n' + entry + "\n"
+    )
+    write_metrics_project(tmp_path, metrics)
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 0
+    captured = capsys.readouterr()
+    assert "metrics.toml is valid: 1 table" in captured.out
+    assert captured.err == ""
+
+    keyed = KeyedCommit(MeasurementKey("0" * 40, None), "1" * 40, "m", (), None)
+    identity = "::synth_core:0#synth_core"
+    store = MeasurementStore(tmp_path / ".booley")
+    first = make_run(
+        keyed,
+        "r1",
+        minute=1,
+        identity=identity,
+        flow="synth",
+        per_clock={"wns_ns": {"rx_clk": 0.5}},
+    )
+    second = make_run(keyed, "r2", minute=2, identity=identity, flow="synth", clocks=("tx_clk",))
+    store.write(first, [])
+    store.write(second, [])
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 0
+    captured = capsys.readouterr()
+    assert "metrics.toml is valid: 1 table" in captured.out
+    assert captured.err == (
+        f"warning: [synth_core.synth] {key}: clock rx_clkk was never reported; "
+        "reported clocks: rx_clk, tx_clk\n"
+    )
+
+
 # ---------------------------------------------------------------- measuring a commit
 
 TWO_LINT_TABLES = "[sim_core.lint]\nwarnings_max = 0\n[sim_two.lint]\nwarnings_max = 0\n"
@@ -619,7 +690,7 @@ def project_with_live_changes(tmp_path: Path) -> Path:
     return project
 
 
-@pytest.mark.parametrize("revision", ["head", "head-sha", "other-commit"])
+@pytest.mark.parametrize("revision", ["head", "head-sha", "other-commit", "stored"])
 def test_live_tree_notices(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -632,22 +703,97 @@ def test_live_tree_notices(
         "head": [],
         "head-sha": [git(project, "rev-parse", "HEAD")],
         "other-commit": ["HEAD~1"],
+        "stored": [],
     }[revision]
     changes = "uncommitted changes in the working tree are not measured"
     drift = "submodule working-tree differences are not measured: ip"
-    if revision == "other-commit":
+    if revision in ("other-commit", "stored"):
         # The same live state does warn for HEAD: only the other commit goes without notices.
         assert run_command(monkeypatch, project) == 0
-        assert changes in capsys.readouterr().err
+        first = capsys.readouterr()
+        assert changes in first.err
 
     assert run_command(monkeypatch, project, *asked) == 0
 
-    err = capsys.readouterr().err
-    if revision == "other-commit":
+    captured = capsys.readouterr()
+    err = captured.err
+    if revision == "stored":
+        assert captured.out == first.out
+        assert changes in err and "working-tree differences" not in err
+        assert err.index(changes) < err.index("is already Measured by run")
+    elif revision == "other-commit":
         assert changes not in err and "working-tree differences" not in err
     else:
         assert changes in err and drift in err
         assert "untracked" not in err
+
+
+def stealth_project(tmp_path: Path, metrics: str) -> Path:
+    """A project whose ``.booley/`` is its own Git repository, excluded from the RTL one."""
+    project = write_metrics_project(tmp_path / "proj", metrics)
+    git(project, "init", "-q", "-b", "main")
+    exclude = project / ".git" / "info" / "exclude"
+    exclude.write_bytes(exclude.read_bytes() + b"/.booley/\n")
+    git(project, "add", "-A")
+    git(project, "commit", "-q", "-m", "rtl")
+    data = project / ".booley"
+    git(data, "init", "-q", "-b", "main")
+    git(data, "add", "-A")
+    git(data, "commit", "-q", "-m", "booley directory")
+    return project
+
+
+@pytest.mark.parametrize("edited", ["tests.toml", "metrics.toml"])
+def test_stealth_notes_uncommitted_booley_directory_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    edited: str,
+) -> None:
+    project = stealth_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    capsys.readouterr()
+    assert run_command(monkeypatch, project) == 0
+    clean = capsys.readouterr()
+    assert "note:" not in clean.err
+    before = {path: path.read_bytes() for path in stored_runs(project)}
+    with (project / ".booley" / edited).open("ab") as handle:
+        handle.write(b"# edited\n")
+    marker = "uncommitted changes in the Booley Directory's repository"
+
+    for arguments in ((), ("--again",)):
+        assert run_command(monkeypatch, project, *arguments) == 0
+        captured = capsys.readouterr()
+        lines = [text for text in captured.err.splitlines() if marker in text]
+        assert len(lines) == 1, captured.err
+        line = lines[0]
+        assert ("metrics.toml" in line) is (edited == "metrics.toml")
+        assert "working tree" not in captured.err
+        assert "note:" not in captured.out
+        if not arguments:
+            assert captured.out == clean.out
+            assert {path: path.read_bytes() for path in stored_runs(project)} == before
+
+    git(project, "commit", "-q", "--allow-empty", "-m", "same tree")
+    for arguments in (("HEAD~1",), ("--again", "HEAD~1")):
+        assert run_command(monkeypatch, project, *arguments) == 0
+        assert "note:" not in capsys.readouterr().err
+
+
+def test_an_unreadable_status_does_not_hide_the_stored_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    clean = capsys.readouterr()
+    (project / ".git" / "index").write_bytes(b"not an index")
+
+    assert run_command(monkeypatch, project) == 0
+    captured = capsys.readouterr()
+    assert captured.out == clean.out
+    assert "note:" not in captured.err
 
 
 def test_a_clean_live_tree_prints_no_notice(
@@ -1130,8 +1276,22 @@ def test_a_target_run_exits_like_a_full_run(
     assert stored_runs(project) == []
 
 
-def test_a_target_on_a_measured_commit_shows_the_stored_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("arguments", "code", "said", "runs"),
+    [
+        (["--target", "nope"], 2, "Unknown target 'nope'", 1),
+        (["--target", "sim_fifo"], 2, NOTHING_IN_SCOPE, 1),
+        (["--all", "--target", "sim_core"], 0, ": not stored", 2),
+    ],
+)
+def test_a_target_on_a_measured_commit_is_validated_and_measured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    code: int,
+    said: str,
+    runs: int,
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
     steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
@@ -1139,11 +1299,14 @@ def test_a_target_on_a_measured_commit_shows_the_stored_run(
     (first,) = stored_runs(project)
     capsys.readouterr()
 
-    assert run_command(monkeypatch, project, "--target", "sim_core") == 0
+    assert run_command(monkeypatch, project, *arguments) == code
 
-    assert "is already Measured by run" in capsys.readouterr().err
-    assert steps == ["prepare", "run"]
+    captured = capsys.readouterr()
+    assert said in captured.out + captured.err
+    assert "is already Measured" not in captured.err
+    assert steps == ["prepare", "run"] * runs
     assert stored_runs(project) == [first]
+    assert MeasurementStore(project / ".booley").measured(key_of(project)).path == first
 
 
 def test_validate_init_defaults_bound_listed_sim_headers(

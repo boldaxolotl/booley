@@ -144,6 +144,10 @@ targets:
     synth = AsicSynthesizeFlow()
     synth.parse_args(["--project", str(tmp_path), "--target", "synth"])
     plan = synth._configure_synth("synth", synth._build_synth_cmd("synth"))
-    _run(synth._synth_boundary_cmd(plan), tmp_path)
+    with pipeline.yosys_tmpdir() as yosys_tmp:
+        _run(
+            [*synth._synth_boundary_cmd(plan), pipeline.yosys_tmpdir_assignment(yosys_tmp)],
+            tmp_path,
+        )
     _run(["yosys", "-Q", "-p", "read_verilog synth_dut.v; write_json s.json"], plan.build_dir)
     assert _ok_bit(plan.build_dir / "s.json", "dut") == ["1"]

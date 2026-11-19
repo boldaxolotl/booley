@@ -80,7 +80,7 @@ def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeyp
 
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     # Private seam: the card and sim.json projection are built only inside
     # run_prepared_simulation, which needs a real admission and reservation; this test
     # hands the projection two already-published records.

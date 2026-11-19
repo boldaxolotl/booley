@@ -56,6 +56,7 @@ SHIPPED_DOCS: tuple[str, ...] = (
     "docs/user/TROUBLESHOOTING.md",
     "docs/user/SANDBOX.md",
     "docs/user/FLOW_REFERENCE.md",
+    "docs/user/WORKTREES.md",
     "docs/internals/FLOW_REPORTS.md",
 )
 
@@ -69,7 +70,6 @@ PLAIN_TEXT_TARGETS: frozenset[str] = frozenset(
         "docs/user/SPECIALISTS.md",
         "docs/user/REVIEWER.md",
         "docs/user/CLI-REFERENCE.md",
-        "docs/user/WORKTREES.md",
         "docs/user/INSTALL.md",
         "docs/internals/GATEWAY.md",
         "docs/internals/MCP-TOOLS.md",

@@ -17,6 +17,7 @@ from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 from booley.flows.synth.timing import StaTimingConfig
 
 from .reporting import (
+    constraint_check_tcl,
     perclock_timing_tcl,
     reg2reg_timing_tcl,
     top_paths_report_tcl,
@@ -29,6 +30,9 @@ _SIGNAL_LAYER = "metal3"
 _CLOCK_LAYER = "metal6"
 _PIN_HOR_LAYER = "metal3"
 _PIN_VER_LAYER = "metal2"
+_INSTANCE_COUNT_LINE = (
+    'puts [format "OPENROAD_INSTANCE_COUNT: %d" [llength [[ord::get_db_block] getInsts]]]\n'
+)
 _DONT_USE = "CLKBUF_* AOI211_X1 OAI211_X1"
 # Per-cell global-placement padding (sites each side).  Kept at 1 (not the
 # ORFS-typical 2): padding inflates the placed utilization above the floorplan
@@ -238,7 +242,7 @@ detailed_placement
 estimate_parasitics -placement
 {pre_repair_block}{repair_timing_line}puts "BOOLEY_STAGE: sta_report"
 report_design_area
-write_verilog {{{out_verilog}}}
+{_INSTANCE_COUNT_LINE}write_verilog {{{out_verilog}}}
 set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count {count}]
 set csv_out [open {{{csv}}} w]
 set slacks {{}}
@@ -253,7 +257,7 @@ close $csv_out
 if {{[llength $slacks] > 0}} {{
   puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
 }}
-{final_report_block}{perclock_block}{reg2reg_block}""".lstrip()
+{final_report_block}{perclock_block}{reg2reg_block}{constraint_check_tcl(report_dir)}""".lstrip()
     script_path.write_text(script, encoding="utf-8")
     return script_path
 

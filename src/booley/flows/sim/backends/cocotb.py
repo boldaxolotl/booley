@@ -106,6 +106,7 @@ from booley.flows.sim.result import (
 )
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 
 
@@ -612,9 +613,8 @@ def _persist_result_transport(
     work_dir: Path,
     selected: list[str],
     focused: bool,
-    result_verbosity: str,
 ) -> tuple[str, CocotbResults | None, int]:
-    """Write lossless JSON; return the stdout line, what it carries, and the skip count.
+    """Write lossless JSON; return the stdout line, what it carries, and the unselected skip count.
 
     The second value is the line's payload decoded back (``None`` when the
     decoder rejects it, e.g. a non-finite time) so the adapter publishes exactly
@@ -625,15 +625,12 @@ def _persist_result_transport(
         json.dumps(full, indent=2) + "\n",
         encoding="utf-8",
     )
-    compact = compact_results(results, selected) if focused else None
-    carried = compact if compact is not None and result_verbosity == "compact" else results
-    payload = full if carried is results else results_payload(carried)
     try:
-        transported = decode_results_payload(payload)
+        transported = decode_results_payload(full)
     except BoundaryError:
         transported = None
-    skipped_unselected = compact.skipped_unselected if compact is not None else 0
-    return format_results_line(payload), transported, skipped_unselected
+    skipped_unselected = compact_results(results, selected).skipped_unselected if focused else 0
+    return format_results_line(full), transported, skipped_unselected
 
 
 def _selected_verdicts(tests: list[str], results) -> tuple[bool, list[str], list[tuple]]:
@@ -738,7 +735,6 @@ def _evaluate_verdict(
     work_dir: Path,
     results_file: Path,
     tests: list[str],
-    result_verbosity: str = "compact",
     infrastructure_error: str = "",
     termination: RunTermination | None = None,
     skip_log: str = "",
@@ -767,7 +763,6 @@ def _evaluate_verdict(
         work_dir,
         list(assessment.selected),
         focused,
-        result_verbosity,
     )
     output = _persist_cocotb_verdict(
         output,
@@ -928,7 +923,7 @@ def _prepare_cocotb_run(
     build = Path(build_dir).resolve()
     run = Path(run_cwd).resolve() if run_cwd is not None else build
     work = Path(work_dir).resolve() if work_dir is not None else build
-    work.mkdir(parents=True, exist_ok=True)
+    make_directories(work)
     results = _reset_result_transports(work)
     if vcd and not trace_scope.strip():
         detail = (
@@ -1040,7 +1035,6 @@ def _complete_cocotb_run(
     lines,
     proc,
     termination: RunTermination,
-    result_verbosity: str,
     transport: AdapterTransportIdentity | None,
     trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> int:
@@ -1067,7 +1061,6 @@ def _complete_cocotb_run(
         run.work_dir,
         run.results_file,
         run.tests,
-        result_verbosity,
         trace_failure,
         termination=termination,
         skip_log=run.skip_log.text(),
@@ -1099,7 +1092,6 @@ def run_cocotb_sim(
     timeout: int = 600,
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = DEFAULT_SIM_TIME_GRACE_S,
-    result_verbosity: str = "compact",
     expected_trace_scope: str = "",
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
@@ -1134,9 +1126,7 @@ def run_cocotb_sim(
         transport,
         runtime_inputs,
     )
-    return _complete_cocotb_run(
-        run, lines, proc, termination, result_verbosity, transport, trace_convert_timeout
-    )
+    return _complete_cocotb_run(run, lines, proc, termination, transport, trace_convert_timeout)
 
 
 def _run_work(work: PreparedSimulationWork) -> int:
@@ -1154,7 +1144,6 @@ def _run_work(work: PreparedSimulationWork) -> int:
         timeout=work.timeout_s,
         max_rundir_bytes=work.max_rundir_bytes,
         sim_time_grace_s=work.sim_time_grace_s,
-        result_verbosity=work.result_verbosity,
         expected_trace_scope=work.trace_scope if work.trace else "",
         runtime_inputs=work.runtime_inputs,
         transport=work_transport_identity(work),

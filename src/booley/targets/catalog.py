@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -31,6 +31,7 @@ from booley.targets.domain import (
     TargetRef,
     TargetResolutionError,
     flow_can_drive,
+    immutable_mapping,
 )
 from booley.targets.selection import minimal_selector, resolve, split_selector, vlnv_matches
 
@@ -271,6 +272,16 @@ class TargetCatalog:
         )
         self._require_fresh()
         return closure
+
+    def declared_flow_options(self, handle: TargetHandle) -> Mapping[str, object]:
+        """Return the Target's declared ``flow_options`` from the snapshot's parsed ``.core``."""
+        self._require_handle(handle)
+        document = self._state.documents.get(handle.core_file)
+        if document is None:
+            raise RuntimeError(
+                f"Target catalog snapshot omitted declaration document {handle.core_file}"
+            )
+        return immutable_mapping(fusesoc_registry.core_target_flow_options(document, handle.name))
 
     def unprovided_dependencies(self, handle: TargetHandle) -> tuple[str, ...]:
         """Return ``depend:`` entries in the handle's closure that no Project core provides."""

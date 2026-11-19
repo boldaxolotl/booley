@@ -180,7 +180,6 @@ def test_full_init_pins_before_bootstrap_and_stops_on_a_retargeted_link(
     # private: stops `run_init` at the first step that follows the link (host and Docker).
     monkeypatch.setattr(init_cmd, "_project_checkout_ready", lambda _ctx: True)
     monkeypatch.setattr(init_cmd, "_reconcile_init_bootstrap", stop_at_bootstrap)
-    monkeypatch.setattr("sys.stdin", type("NoTty", (), {"isatty": lambda self: False})())
     args = type("Args", (), {})()
 
     # private: `run_init` also takes the host lifecycle lock, which these tests do not need.

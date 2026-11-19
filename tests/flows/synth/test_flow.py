@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,7 @@ from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.progress_lifecycle import abort_open_progress
+from booley.flows.synth.backends import configure
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
     AsicSynthesizeFlow,
@@ -65,6 +67,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command
 from tests.conftest import symlink_or_skip
 from tests.flows.synth.captured_yosys import load_capture
 from tests.fusesoc_test_support import relocated_project
@@ -929,9 +932,8 @@ _ABC_SCRIPT = '[flows.synth.advanced_settings_yosys]\nabc_script = "+strash;map"
 _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
 
 
-@pytest.mark.parametrize(
-    ("config", "args", "present", "absent"),
-    [
+def _recipe_argv_cases() -> list[Any]:
+    return [
         pytest.param(
             "",
             [],
@@ -1012,24 +1014,27 @@ _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
             [],
             id="target-frontend-and-slang-options",
         ),
-    ],
-)
-def test_configure_argv_carries_the_recipe(
-    synth_cli: SynthCli,
-    config: str,
-    args: list[str],
-    present: list[tuple[str, ...]],
-    absent: list[str],
-) -> None:
-    if config:
+    ]
+
+
+def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
+    for case in _recipe_argv_cases():
+        config, args, present, absent = case.values
         synth_cli.config(config)
 
-    argv = synth_cli.plan(*args)["work_units"][0]["commands"][0]["argv"]
+        unit = synth_cli.plan(*args)["work_units"][0]
+        argv = unit["commands"][0]["argv"]
 
-    for tokens in present:
-        assert _has_tokens(argv, *tokens), (tokens, argv)
-    for token in absent:
-        assert token not in argv, (token, argv)
+        for tokens in present:
+            assert _has_tokens(argv, *tokens), (case.id, tokens, argv)
+        for token in absent:
+            assert token not in argv, (case.id, token, argv)
+        parsed = configure.parse_configure_argv(argv)
+        _profile, yosys, openroad = configure.resolve_ppa_settings(parsed)
+        expected = {"yosys": dataclasses.asdict(yosys)}
+        if SynthMode(parsed.synth_mode).runs_openroad:
+            expected["openroad"] = dataclasses.asdict(openroad)
+        assert unit["recipe"]["effective_ppa_settings"] == expected, case.id
 
 
 @pytest.mark.parametrize(
@@ -1110,8 +1115,6 @@ def test_invalid_recipe_fails_the_dry_run(synth_cli: SynthCli, config: str, mess
 
 
 def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli) -> None:
-    from booley.flows.synth.backends import configure
-
     default_recipe = synth_cli.plan()["work_units"][0]["recipe"]
     synth_cli.config("timing_report_paths = 3\n")
     synth_cli.resolution.resolve = _resolving(_fake_synth_resolved)
@@ -1128,7 +1131,7 @@ def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli)
     # reads the working directory's config); no public name reaches that step
     # without also discovering the root.
     args = configure.parse_configure_argv(argv)
-    _profile, _yosys, openroad = configure._resolve_ppa_settings(args)
+    _profile, _yosys, openroad = configure.resolve_ppa_settings(args)
     assert configure._resolve_syn_timing(args, openroad).report_paths == 3
 
 
@@ -1418,11 +1421,54 @@ def test_resolution_failure_is_an_infrastructure_error(synth_cli: SynthCli) -> N
     assert "no such target" in outcome.report_text
 
 
-def test_sandbox_runs_a_bare_make_of_the_target_build_dir(synth_cli: SynthCli) -> None:
-    """The one command crossing into the Sandbox is a checkout-relative ``make -C``."""
-    assert synth_cli.run().exit_code == EXIT_SUCCESS
+@pytest.mark.skipif(os.name != "posix", reason="the short root is the Linux Sandbox's /tmp")
+@pytest.mark.parametrize(
+    ("result", "physical"),
+    [
+        pytest.param(_PASS_OUTPUT, False, id="success"),
+        pytest.param(SubprocessResult(returncode=2), False, id="failure"),
+        pytest.param(SubprocessResult(returncode=-1, timed_out=True), False, id="timeout"),
+        pytest.param(_PASS_OUTPUT, True, id="physical"),
+    ],
+)
+def test_sandbox_make_gives_yosys_a_short_tmpdir_removed_after_the_run(
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result: SubprocessResult,
+    physical: bool,
+) -> None:
+    """Yosys's ABC hangs under a TMPDIR over 35 characters (#4730): it gets its own."""
+    long_tmp = tmp_path / ("j" * 80)
+    long_tmp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(long_tmp))
+    monkeypatch.setattr("tempfile.tempdir", str(long_tmp))
+    live: list[list[str]] = []
 
-    assert synth_cli.commands == [["make", "-C", f"{_SYNTH_ROOT}/synth"]]
+    def record(cmd: list[str]) -> SubprocessResult:
+        live.append(
+            [
+                arg
+                for arg in cmd
+                if arg.startswith("BOOLEY_YOSYS_TMPDIR=") and Path(arg.partition("=")[2]).is_dir()
+            ]
+        )
+        return result
+
+    synth_cli.tool_output = record
+    if physical:
+        synth_cli.resolution.resolve = lambda *_a, **_k: _with_synth_mode(
+            _fake_synth_resolved(synth_cli.project), "physical"
+        )
+    synth_cli.run()
+
+    assert synth_cli.commands[0][:3] == ["make", "-C", f"{_SYNTH_ROOT}/synth"]
+    carried = [args for args in live if args]
+    assert len(carried) == 1, "no make command gave Yosys its own TMPDIR"
+    directory = Path(carried[0][0].partition("=")[2])
+    assert directory.parent == Path("/tmp")
+    assert len(str(directory)) <= 35
+    assert not directory.exists()
 
 
 def test_compatibility_argv_matches_the_planned_configure_argv(synth_cli: SynthCli) -> None:
@@ -1496,6 +1542,39 @@ def test_real_fusesoc_synth_setup(synth_cli: SynthCli, tmp_path: Path) -> None:
     # Resolved build dir lives under the worktree and is relocatable.
     edam = next((work_dir / ".booley" / ".runtime").rglob("*.eda.yml"))
     assert str(work_dir) not in edam.read_text(encoding="utf-8")
+
+
+def test_failed_fusesoc_setup_is_recorded_as_synth_prepare(
+    synth_cli: SynthCli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Synthesis Flow's own setup runner measures the setup, whatever its outcome."""
+    from booley.runtime import resource_history
+
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE)
+    failing_setup = canned_command(SubprocessResult(returncode=1, stderr="setup broke"))
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = lambda handle, **kwargs: _REAL_RESOLVE_HANDLE(
+        handle, **{**kwargs, "fusesoc_cmd": failing_setup}
+    )
+
+    outcome = synth_cli.run(target="syn")
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "failed (exit 1)" in outcome.report_text
+    assert "setup broke" in outcome.report_text
+    assert synth_cli.commands == []
+    (record,) = resource_history.load_records(tmp_path)
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("synth", "syn", "synth_prepare", "exit_nonzero", 1)
 
 
 @pytest.mark.skipif(
@@ -1597,23 +1676,24 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
     ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
 
 
-@pytest.mark.parametrize("mode,schema", [("logical", 4), ("physical", 5)])
-def test_recipe_schema_bumps_without_default_clock(tmp_path: Path, mode, schema):
-    snapshot = synthesis_recipe_snapshot(
-        dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
-        default_recipe_args(),
-        target="lite",
-    )
-    assert snapshot["schema"] == schema
-    assert "default_clock_ps" not in snapshot
+def test_recipe_schema_bumps_without_default_clock(tmp_path: Path):
+    for mode, schema in [("logical", 4), ("physical", 5)]:
+        snapshot = synthesis_recipe_snapshot(
+            dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
+            default_recipe_args(),
+            target="lite",
+        )
+        assert snapshot["schema"] == schema
+        assert "default_clock_ps" not in snapshot
+        assert "ppa_profile_settings" not in snapshot
 
-    previous = {**snapshot, "schema": 3}
-    assert synthesis_recipe_snapshot_fingerprint(previous) != (
-        synthesis_recipe_snapshot_fingerprint(snapshot)
-    )
-    assert synthesis_recipe_changes(previous, snapshot) == [
-        {"path": "schema", "before": 3, "after": schema}
-    ]
+        previous = {**snapshot, "schema": 3}
+        assert synthesis_recipe_snapshot_fingerprint(previous) != (
+            synthesis_recipe_snapshot_fingerprint(snapshot)
+        )
+        assert synthesis_recipe_changes(previous, snapshot) == [
+            {"path": "schema", "before": 3, "after": schema}
+        ]
 
 
 def test_physical_fanout_policy_invalidates_old_recipe(tmp_path):
@@ -1861,16 +1941,35 @@ class TestModeSpecificArea:
             "Chip area for top module '\\top': 500.0\n"
             "STA_CRITICAL_PATH_PS: 1250.0\n"
             "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
         )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
         assert metrics.area_um2 == 640.25
         assert metrics.area_source == "openroad_post_optimization"
+        assert metrics.cells == 112
+        assert metrics.cell_count_source == "openroad_post_optimization"
+        assert metrics.wire_count == 42
 
     def test_logical_uses_yosys_area(self):
-        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        output = (
+            "Number of cells: 100\n"
+            "Chip area for top module '\\top': 500.0\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
+        )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
         assert metrics.area_um2 == 500.0
         assert metrics.area_source == "yosys_mapped"
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
+        assert metrics.wire_count == 42
+
+    def test_physical_without_openroad_count_keeps_labelled_yosys_count(self):
+        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
 
 
 # ===========================================================================
@@ -2317,13 +2416,15 @@ class TestIoBoundCritical:
         assert _is_io_bound_critical(SynthMetrics(wns_ns=-2.0)) is False
         assert _is_io_bound_critical(SynthMetrics(reg2reg_slack_ns=-0.25)) is False
 
-    def test_note_line_names_the_sdc_knob(self):
-        cur = SynthMetrics(wns_ns=-2.0, reg2reg_slack_ns=-0.25)
-        line = AsicSynthesizeFlow._format_io_bound_line("lite", cur)
-        assert "I/O-bound" in line
-        assert "period_ps won't move it" in line
-        assert "sdc" in line
-        assert "-2.000 ns" in line and "-0.250 ns" in line
+    def test_io_bound_note_points_at_target_sdc(self, flow_and_state):
+        flow, _ = flow_and_state
+        cur = SynthMetrics(area_um2=500.0, cells=10, wns_ns=-2.0, reg2reg_slack_ns=-0.25)
+        result = flow._aggregate_results(["lite"], {"lite": cur}, {}, None)
+        note = next(line for line in result.report_text.splitlines() if "I/O-bound" in line)
+        assert "-2.000 ns" in note and "-0.250 ns" in note
+        for text in ("file_type: SDC", "set_input_delay", "set_output_delay", "set_false_path"):
+            assert text in note
+        assert "period_ps" not in note and "[flows.synth.timing]" not in note
 
     def test_report_dict_sets_flag(self):
         cur = SynthMetrics(
@@ -2657,6 +2758,7 @@ class TestSingleConfigRun:
         assert data["area_kge"] == pytest.approx(8.02005)
         assert data["area_um2"] == 6400.0
         assert data["area_source"] == "yosys_mapped"
+        assert data["cell_count_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
         assert "post_opt_area_um2" not in data
         assert data["cell_count"] == 100
@@ -3236,11 +3338,39 @@ class TestFileBasedInterpretation:
         run_log = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
         assert "despite exit 0" in run_log.read_text(encoding="utf-8")
 
-    def test_timing_markers_rederived_from_openroad_log(self, flow_and_state, tmp_path: Path):
+    @staticmethod
+    def _constraint_check_block(scenario: str) -> str:
+        """The block run_openroad.tcl prints: every captured check_setup line
+        carries the prefix so OpenSTA's "Warning:" text is not an EDA warning."""
+        if scenario == "unchecked":
+            return ""
+        check_lines: list[str] = []
+        if scenario == "clock_only":
+            inputs = [f"in{i}" for i in range(10)] + ["data[3]", "end"]
+            endpoints = [f"out{i}" for i in range(13)] + ["r1/D"]
+            check_lines = [
+                "Warning: There are 12 input ports missing set_input_delay.",
+                *(f"  {name}" for name in inputs),
+                "Warning: There is 1 output port missing set_output_delay.",
+                "  y",
+                "Warning: There are 14 unconstrained endpoints.",
+                *(f"  {name}" for name in endpoints),
+            ]
+        return "".join(
+            f"STA_CONSTRAINT_CHECK: {line}\n" for line in ["begin", *check_lines, "end"]
+        )
+
+    @pytest.mark.parametrize("scenario", ["clock_only", "constrained", "unchecked"])
+    def test_timing_markers_rederived_from_openroad_log(
+        self, flow_and_state, tmp_path: Path, scenario: str
+    ):
         """The Python-derived Fmax/critical-path markers (legacy in-process
-        prints) are reconstructed from the STA log file at interpret time."""
+        prints) are reconstructed from the STA log file at interpret time, and
+        the constraint check block becomes a NOTE that never moves the verdict."""
         flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
+
+        check_block = self._constraint_check_block(scenario)
 
         def fake_configure(target, cmd):
             return _stub_plan(tmp_path, target, mode="physical")
@@ -3254,7 +3384,7 @@ class TestFileBasedInterpretation:
             (build_dir / "openroad.log").write_text(
                 "STA_WORST_SLACK_NS: 2.000000\n"
                 "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n"
-                "Design area 7000 u^2 50% utilization.\n",
+                "Design area 7000 u^2 50% utilization.\n" + check_block,
                 encoding="utf-8",
             )
             (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
@@ -3281,6 +3411,48 @@ class TestFileBasedInterpretation:
         assert "2,000 ps" in result.report_text
         assert "500 MHz" in result.report_text
         assert "+2.000 ns" in result.report_text
+        # The check never changes the verdict or exit code (the raw OpenSTA
+        # "Warning:" form would have turned this PASS into WARN).
+        assert "RESULT: PASS" in result.report_text
+        self._assert_constraint_outcome(result, tmp_path, scenario)
+
+    @staticmethod
+    def _assert_constraint_outcome(result, tmp_path: Path, scenario: str) -> None:
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))
+        if scenario == "unchecked":
+            # No block means no check ran (logical mode, or OpenROAD died first):
+            # no key and no NOTE, not zero counts.
+            assert "unconstrained" not in report
+            assert "unconstrained" not in result.detail["lite"]
+            assert "constrained paths" not in result.report_text
+            return
+        detail = report["unconstrained"]
+        assert result.detail["lite"]["unconstrained"] == detail
+        if scenario == "constrained":
+            assert "timing covers only constrained paths" not in result.report_text
+            assert detail == {
+                key: {"count": 0, "sample": []}
+                for key in ("endpoints", "inputs_without_delay", "outputs_without_delay")
+            }
+            return
+        note = next(
+            line for line in result.report_text.splitlines() if "constrained paths" in line
+        )
+        assert "NOTE" in note
+        assert "14 unconstrained endpoints" in note
+        assert "12 inputs without set_input_delay (in0, in1, in2, +9 more)" in note
+        assert "1 output without set_output_delay (y)" in note
+        assert detail["inputs_without_delay"] == {
+            "count": 12,
+            "sample": [f"in{i}" for i in range(10)],
+        }
+        assert detail["endpoints"]["count"] == 14
+        assert len(detail["endpoints"]["sample"]) == 10
+        assert detail["outputs_without_delay"] == {"count": 1, "sample": ["y"]}
+        # The bounded sample drops names the run log keeps.
+        run_log = (tmp_path / report["artifacts"]["log"]).read_text(encoding="utf-8")
+        assert "data[3]" in run_log
+        assert "r1/D" in run_log
 
     def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
         """A clock label without numeric setup/hold evidence cannot complete PPA."""
@@ -4874,6 +5046,7 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
                 "STA_WORST_SLACK_NS: 0.000000\n"
                 "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\n"
                 "Design area 63 u^2 50% utilization.\n"
+                "OPENROAD_INSTANCE_COUNT: 23\n"
             ),
             "artifacts": {
                 "yosys.log": yosys,
@@ -4896,6 +5069,8 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
     if expected:
         assert report["timing_complete"] is True
         assert report["ppa_complete"] is True
+        assert report["cell_count"] == 23
+        assert report["cell_count_source"] == "openroad_post_optimization"
 
 
 @pytest.mark.parametrize("expected", [8, 9])
@@ -5018,16 +5193,39 @@ def test_tool_failure_log_keeps_exit_code_and_timeout_state(
     assert not any("design check failed" in m for m in messages)
 
 
-def test_exit_zero_design_failure_reason_omits_exit_header(flow_and_state, tmp_path, caplog):
-    """The exit-0 forced-failure header is not the design-check reason."""
-    diagnostic = "ERROR: syntax error at rtl.sv:3"
+@pytest.mark.parametrize(
+    ("diagnostic", "log", "process"),
+    [
+        ("ERROR: syntax error at rtl.sv:3", "ERROR: syntax error at rtl.sv:3\n", None),
+        (
+            "sv2v_converted.v:3936: ERROR: syntax error, unexpected '['",
+            (Path(__file__).parent / "fixtures/frontend_error_banner_yosys.txt").read_text(),
+            {"returncode": 2, "stdout": "BOOLEY_STAGE: yosys\n"},
+        ),
+        (
+            "Area for cell type $_DFF_P_ is unknown!",
+            "top.sv:8: Warning: unknown character escape sequence '\\q'\n"
+            'ERROR: assert property (a != 4\'hf) else $display("\\q");\n'
+            "                                                ^\n"
+            "Area for cell type $_DFF_P_ is unknown!\n",
+            None,
+        ),
+    ],
+    ids=["exit-zero-header", "banner-before-error", "echoed-error-before-unknown-area"],
+)
+def test_design_failure_reason_is_the_tool_error_line(
+    flow_and_state, tmp_path, caplog, diagnostic, log, process
+):
+    """The reason is the tool error line: not the exit-0 header, nor (issue #4897) Yosys's
+    banner or an echoed source line."""
     with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
         result, report = _run_latch_case(
             flow_and_state,
             tmp_path,
             {
                 "cell": "$_DFF_P_",
-                "artifacts": {"yosys.log": f"{diagnostic}\n"},
+                "artifacts": {"yosys.log": log},
+                **({"process": process} if process else {}),
             },
         )
     assert report["termination"] == "design_failure"
@@ -5369,6 +5567,8 @@ def test_1095_public_frontend_failure(
         assert f"RESULT: ERROR — lite: {report['infra_error']}" in result.report_text
     else:
         assert not report["infra_error"]
+        # No line is a tool error line: the reason stays the first excerpt line.
+        assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
 
 
 def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):

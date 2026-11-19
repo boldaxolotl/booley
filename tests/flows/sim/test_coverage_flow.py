@@ -113,7 +113,9 @@ class _CustomMainHookExecution(NativeExecution):
         return result
 
 
-def _configure_custom_main_coverage(root: Path) -> None:
+def _configure_custom_main_coverage(
+    root: Path, recipe: str = "custom_main_hooks: [start_hook, write_hook], reset_included: false"
+) -> None:
     (root / "main.cpp").write_text("int main() { return 0; }\n")
     core = root / "counter.core"
     core.write_text(
@@ -124,8 +126,7 @@ def _configure_custom_main_coverage(root: Path) -> None:
         )
         .replace(
             "flow_options: {tool: verilator}",
-            "flow_options: {tool: verilator, booley: {coverage: "
-            "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
+            "flow_options: {tool: verilator, booley: {coverage: {" + recipe + "}}}",
         )
     )
 
@@ -546,20 +547,7 @@ def test_valid_custom_main_coverage_recipe_passes_preflight(
 ) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n")
-    core = tmp_path / "counter.core"
-    core.write_text(
-        core.read_text()
-        .replace(
-            "files: [rtl/counter.sv]",
-            "files: [rtl/counter.sv, {main.cpp: {file_type: cppSource}}]",
-        )
-        .replace(
-            "flow_options: {tool: verilator}",
-            "flow_options: {tool: verilator, booley: {coverage: "
-            "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
-        )
-    )
+    _configure_custom_main_coverage(tmp_path)
     project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
@@ -569,6 +557,29 @@ def test_valid_custom_main_coverage_recipe_passes_preflight(
     assert result.exit_code == 2
     assert "COV_WINDOW_HOOK_MISSING" in result.outcome.report_text
     assert (tmp_path / "reports/sim/1").is_dir()
+
+
+def test_custom_main_without_write_hook_fails_preflight_with_its_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    _configure_custom_main_coverage(tmp_path, "reset_included: true")
+    project_data = tmp_path / ".booley"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    result = _coverage(tmp_path)
+
+    assert result.exit_code == 2
+    assert _finding_codes(result.outcome) == ["COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED"]
+    for expected in (
+        "sim_0: ",
+        "flow_options.booley.coverage.custom_main_hooks",
+        ".core",
+        "booley_coverage_write()",
+    ):
+        assert expected in result.outcome.report_text
 
 
 @pytest.mark.parametrize(

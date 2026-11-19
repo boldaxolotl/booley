@@ -30,6 +30,7 @@ from typing import BinaryIO, NamedTuple, TextIO
 from booley.presentation.colors import accent, amber, dim
 from booley.presentation.job_log_stream import JobLogStream
 from booley.runtime.booley_dir import runtime_dir
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import format_age, format_duration, utc_now_rfc3339
 
 _CURRENT: contextvars.ContextVar[TerminalProgress | None] = contextvars.ContextVar(
@@ -485,7 +486,7 @@ class TerminalProgress:
             return
         try:
             root = runtime_dir(self.work_dir) / "flow-console"
-            root.mkdir(parents=True, exist_ok=True)
+            make_directories(root)
             self.directory = Path(tempfile.mkdtemp(prefix="invocation-", dir=root))
             (self.directory / "active").touch()
             self.log_path = self.directory / "tool-output.log"

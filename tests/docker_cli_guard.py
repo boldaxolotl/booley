@@ -75,6 +75,18 @@ def docker_cli_absent(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return calls
 
 
+def docker_cli_answers(monkeypatch: pytest.MonkeyPatch, stdout: str) -> list[list[str]]:
+    """Make every ``_run_docker`` call succeed with *stdout*; return each call's arguments."""
+    calls: list[list[str]] = []
+
+    def answer(args: list[str], *_args: object, **_kwargs: object):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(["docker", *args], 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(host_docker, "_run_docker", answer)
+    return calls
+
+
 def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the shared Docker helper through ``subprocess.run`` (looked up at call time).
 

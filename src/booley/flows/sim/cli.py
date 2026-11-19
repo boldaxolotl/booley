@@ -28,10 +28,7 @@ class SimArguments(BuiltinArguments):
     help_groups = (
         HelpGroup(
             "Output",
-            (
-                HelpOption("verbose", "Default: off."),
-                HelpOption("result_verbosity", "Default: compact."),
-            ),
+            (HelpOption("verbose", "Default: off."),),
         ),
         HelpGroup(
             "Simulation options",
@@ -197,12 +194,6 @@ class SimArguments(BuiltinArguments):
             "--trace",
             action="store_true",
             help="Enable waveform trace (debugging only — do not use for pass/fail checks)",
-        )
-        parser.add_argument(
-            "--result-verbosity",
-            choices=["compact", "full"],
-            default="compact",
-            help="Cocotb result detail on stdout; full XML/JSON artifacts are always retained",
         )
         # --trace-scope left the surface (ADR 0022, 2026-06-23): the --trace
         # overlay .core traces the full hierarchy at a fixed depth, so there is no

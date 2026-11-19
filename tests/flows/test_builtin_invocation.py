@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ from unittest import mock
 import pytest
 
 from booley.core.boundary import BoundaryError
+from booley.flows import endpoint_cli
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
 from booley.flows.builtin_cli import parse_request
 from booley.flows.endpoint_cli import normalize_target_arg
@@ -19,6 +22,7 @@ from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
+from booley.flows.lint.request import LintRequest
 from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.request import FlowRequest
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
@@ -221,6 +225,81 @@ class _CustomTimeoutFlow(BooleyFlow):
 
 class _OptionalCustomTimeoutFlow(_CustomTimeoutFlow):
     target_required = False
+
+
+def _unusable_report_dir(kind: str, root: Path) -> Path | None:
+    if kind == "unwritable":
+        if sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            return None  # directory permissions are not enforced here
+        locked = root / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        return locked
+    afile = root / "afile"
+    afile.write_bytes(b"")
+    return afile / "sub"
+
+
+def test_unusable_report_dir_is_refused_before_any_job_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+    for flow_type in (LintFlow, _CustomTimeoutFlow):
+        for kind in ("uncreatable", "unwritable"):
+            root = tmp_path / f"{flow_type.__name__}-{kind}"
+            root.mkdir()
+            report_dir = _unusable_report_dir(kind, root)
+            if report_dir is None:
+                continue
+            argv = ["--target", "t", "--work-dir", str(root), "--report-dir", str(report_dir)]
+            refusal: BaseException | None = None
+            try:
+                flow_type().execute_cli(argv)
+            except BaseException as exc:  # noqa: BLE001 - anything but a refusal fails below
+                refusal = exc
+            finally:
+                if kind == "unwritable":
+                    report_dir.chmod(0o700)
+
+            errors = [line for line in capsys.readouterr().err.splitlines() if "error:" in line]
+            assert isinstance(refusal, SystemExit), f"not refused up front: {refusal!r}"
+            assert refusal.code == 2
+            assert len(errors) == 1
+            assert "argument --report-dir:" in errors[0]
+            assert str(report_dir) in errors[0]
+            assert not (runtime / "display.jsonl").exists()
+            assert not (root / "reports").exists()
+
+
+def test_typed_request_with_unusable_report_dir_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "afile").write_bytes(b"")
+    request = LintRequest(
+        target="t", work_dir=str(tmp_path), report_dir=tmp_path / "afile" / "sub"
+    )
+    with pytest.raises(ValueError, match="argument --report-dir:"):
+        LintFlow().execute(request)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="directory permissions are not enforced here",
+)
+def test_report_dir_that_cannot_be_inspected_is_refused(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    report_dir = locked / "reports"
+    locked.chmod(0)
+    try:
+        with pytest.raises(
+            endpoint_cli.ReportDirError, match="argument --report-dir: cannot write reports"
+        ):
+            endpoint_cli.require_usable_report_dir(report_dir)
+    finally:
+        locked.chmod(0o700)
 
 
 def test_custom_flow_keeps_its_own_timeout_and_dry_run_surface() -> None:

@@ -207,6 +207,8 @@ def test_target_help_states_each_rule_once() -> None:
         rendered = " ".join(parsers[0].format_help().split())
         rule = MUTATION_TARGET_RULE if flow.name == "mutation" else TARGET_OMISSION
         assert rendered.count(rule) == 1, flow.name
+        metavar = "TARGET" if flow.name == "mutation" else "TARGET[,TARGET...]"
+        assert f"--target {metavar} " in rendered, flow.name
 
 
 # Private seam: argparse has no public accessor for one option's help text and group.

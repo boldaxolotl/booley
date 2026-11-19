@@ -111,6 +111,9 @@ def normalize_completion_error(
     outcome.exit_code = EXIT_ERROR
     outcome.detail = dict(outcome.detail)
     primary = outcome.detail.get("completion_error")
+    known = [primary, *outcome.detail.get("completion_errors", [])]
+    if completion_error in known:
+        return outcome
     if isinstance(primary, dict):
         secondary = list(outcome.detail.get("completion_errors", []))
         secondary.append(completion_error)
@@ -338,14 +341,19 @@ def _host_killed(outcome: EndpointOutcome, attempt: _JobAttempt) -> list[str]:
     return names
 
 
+def host_oom_kill_explanation(subjects: str, verb: str = "is") -> str:
+    """Why *subjects*, killed by the host's OOM killer, are not retried, and the remedy."""
+    return (
+        "the host ran out of memory while the Sandbox stayed within its [sandbox].memory "
+        f"limit, so {subjects} {verb} not retried. Free memory on the host, or lower "
+        "[sandbox].memory and recreate the Sandbox, then run it again."
+    )
+
+
 def _host_oom_line(names: list[str]) -> str:
     subjects = ", ".join(name if name == "the Job" else f"work item {name}" for name in names)
     verb = "is" if len(names) == 1 else "are"
-    return (
-        f"{HOST_OOM_KILL_NOTE}: the host ran out of memory while the Sandbox stayed within its "
-        f"[sandbox].memory limit, so {subjects} {verb} not retried. Free memory on the host, "
-        "or lower [sandbox].memory and recreate the Sandbox, then run it again."
-    )
+    return f"{HOST_OOM_KILL_NOTE}: {host_oom_kill_explanation(subjects, verb)}"
 
 
 def _killed_for_oom(outcome: EndpointOutcome, attempt: _JobAttempt) -> bool:

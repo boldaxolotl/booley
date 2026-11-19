@@ -877,3 +877,28 @@ def test_mark_terminal_never_replaces_the_terminal_record_recovery_writes_mid_up
     assert final is not None
     assert final["state"] == "terminal"
     assert final["tree_terminal"] is True
+
+
+def test_later_work_item_disclosure_must_match_the_retained_preparation(tmp_path: Path) -> None:
+    """A later item launches from the first item's preparation, so its plan must agree (#4843)."""
+    retained = _packaged_source_disclosure(b"retained wheel bytes")
+    planned_later = _packaged_source_disclosure(b"later item planned different bytes")
+    document = json.loads(canonical_json_bytes(_manifest_for(("alpha", "beta")).document))
+    document.pop("fingerprints")
+    document["planning_disclosures"] = [retained, planned_later]
+    manifest = finalize_manifest(document)
+    store, project, build_root, alpha = _published_request(tmp_path, manifest)
+    beta = _request(store, manifest, manifest.document["work_items"][1], project, invocation=1)
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    executor = _executor(
+        build_root, counters, disclosures={"alpha": retained, "beta": planned_later}
+    )
+
+    executor.execute(alpha)
+    with pytest.raises(
+        SimulationRecordIntegrityError,
+        match="prepared generator source closure disagrees with record plan",
+    ):
+        executor.execute(beta)
+
+    assert counters == {"compile": 1, "durable_reuse": 0, "launch": 1}
