@@ -146,6 +146,13 @@ class TargetInspection:
     parameters: Mapping[str, object]
     inputs: tuple[TargetInput, ...]
     tool_options: Mapping[str, object] = field(default_factory=dict[str, object])
+    setup_inputs: tuple[TargetInput, ...] | None = None
+    """The inputs FuseSoC setup itself lists for this Target.
+
+    Selected with the Target's effective flags, including its authored ``flags``.
+    None when setup can add or retype sources before listing them (a ``generate``
+    or ``filters`` entry the Target or one of its dependency cores reaches).
+    """
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "flow_options", immutable_mapping(self.flow_options))
