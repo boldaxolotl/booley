@@ -387,6 +387,12 @@ then rerun it with the `--confirm <digest>` it prints. Images marked
 `unrecorded` are kept; remove one with `docker image rm <id>` once no other
 Project uses it.
 
+A deleted Project that Booley no longer remembers can leave a Sandbox record
+on this machine; `booley doctor` shows it as a note. `booley projects
+prune-stamps` lists them; add the deleted folders, `booley projects
+prune-stamps <root>...`, to remove them. The images and state volumes stay
+(`forget --purge` is the choice that removes them too).
+
 ## Project files
 
 These files configure a Booley Project. Setup writes `booley.toml`, the
