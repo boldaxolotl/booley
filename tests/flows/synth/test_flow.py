@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -930,88 +931,93 @@ _ABC_SCRIPT = '[flows.synth.advanced_settings_yosys]\nabc_script = "+strash;map"
 _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
 
 
-_RECIPE_ARGV_CASES = [
-    pytest.param(
-        "",
-        [],
-        [
-            ("--ppa-profile", "balanced"),
-            ("--frontend", "sv2v"),
-            ("--flatten",),
-            ("-w", "lite"),
-        ],
-        ["--no-flatten", "--timing-report-paths"],
-        id="defaults",
-    ),
-    pytest.param(
-        'ppa_profile = "compact"\nsynth_mode = "physical"\n'
-        "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
-        "[flows.synth.advanced_settings_openroad]\n"
-        "placement_density = 0.72\nrepair_hold = true\n",
-        [],
-        [
-            ("--synth-mode", "physical"),
-            ("--ppa-profile", "compact"),
-            ("--abc-delay-ps", "3333"),
-            ("--placement-density", "0.72"),
-            ("--repair-hold",),
-        ],
-        [],
-        id="profile-and-backend-settings",
-    ),
-    pytest.param(
-        'ppa_profile = "compact"\n' + _ABC_RECIPE,
-        ["--ppa-profile", "balanced"],
-        [("--ppa-profile", "balanced")],
-        ["--abc-recipe"],
-        id="cli-profile-resets-backend-settings",
-    ),
-    pytest.param(
-        _ABC_SCRIPT,
-        ["--abc-recipe", "fast"],
-        [("--abc-recipe", "fast")],
-        ["--abc-script"],
-        id="cli-abc-recipe-replaces-script",
-    ),
-    pytest.param(
-        _ABC_RECIPE,
-        ["--abc-script", "+strash;map"],
-        [("--abc-script", "+strash;map")],
-        ["--abc-recipe"],
-        id="cli-abc-script-replaces-recipe",
-    ),
-    pytest.param(
-        "flatten = true\nsdc = true\n",
-        [],
-        [("--flatten",)],
-        ["--sdc", "--no-flatten"],
-        id="flatten-true-and-retired-sdc-flag",
-    ),
-    pytest.param(
-        "flatten = true\n",
-        ["--no-flatten"],
-        [("--no-flatten",)],
-        ["--flatten"],
-        id="cli-no-flatten-beats-config",
-    ),
-    pytest.param("flatten = false\n", [], [("--no-flatten",)], ["--flatten"], id="flatten-false"),
-    pytest.param("", ["--frontend", "slang"], [("--frontend", "slang")], [], id="cli-frontend"),
-    pytest.param(
-        'frontend = "slang"\nslang_options = ["--single-unit", "--allow-use-before-declare"]\n',
-        [],
-        [
-            ("--frontend", "slang"),
-            ("--slang-option=--single-unit",),
-            ("--slang-option=--allow-use-before-declare",),
-        ],
-        [],
-        id="target-frontend-and-slang-options",
-    ),
-]
+def _recipe_argv_cases() -> list[Any]:
+    return [
+        pytest.param(
+            "",
+            [],
+            [
+                ("--ppa-profile", "balanced"),
+                ("--frontend", "sv2v"),
+                ("--flatten",),
+                ("-w", "lite"),
+            ],
+            ["--no-flatten", "--timing-report-paths"],
+            id="defaults",
+        ),
+        pytest.param(
+            'ppa_profile = "compact"\nsynth_mode = "physical"\n'
+            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
+            "[flows.synth.advanced_settings_openroad]\n"
+            "placement_density = 0.72\nrepair_hold = true\n",
+            [],
+            [
+                ("--synth-mode", "physical"),
+                ("--ppa-profile", "compact"),
+                ("--abc-delay-ps", "3333"),
+                ("--placement-density", "0.72"),
+                ("--repair-hold",),
+            ],
+            [],
+            id="profile-and-backend-settings",
+        ),
+        pytest.param(
+            'ppa_profile = "compact"\n' + _ABC_RECIPE,
+            ["--ppa-profile", "balanced"],
+            [("--ppa-profile", "balanced")],
+            ["--abc-recipe"],
+            id="cli-profile-resets-backend-settings",
+        ),
+        pytest.param(
+            _ABC_SCRIPT,
+            ["--abc-recipe", "fast"],
+            [("--abc-recipe", "fast")],
+            ["--abc-script"],
+            id="cli-abc-recipe-replaces-script",
+        ),
+        pytest.param(
+            _ABC_RECIPE,
+            ["--abc-script", "+strash;map"],
+            [("--abc-script", "+strash;map")],
+            ["--abc-recipe"],
+            id="cli-abc-script-replaces-recipe",
+        ),
+        pytest.param(
+            "flatten = true\nsdc = true\n",
+            [],
+            [("--flatten",)],
+            ["--sdc", "--no-flatten"],
+            id="flatten-true-and-retired-sdc-flag",
+        ),
+        pytest.param(
+            "flatten = true\n",
+            ["--no-flatten"],
+            [("--no-flatten",)],
+            ["--flatten"],
+            id="cli-no-flatten-beats-config",
+        ),
+        pytest.param(
+            "flatten = false\n", [], [("--no-flatten",)], ["--flatten"], id="flatten-false"
+        ),
+        pytest.param(
+            "", ["--frontend", "slang"], [("--frontend", "slang")], [], id="cli-frontend"
+        ),
+        pytest.param(
+            'frontend = "slang"\nslang_options = ["--single-unit", "--allow-use-before-declare"]\n',
+            [],
+            [
+                ("--frontend", "slang"),
+                ("--slang-option=--single-unit",),
+                ("--slang-option=--allow-use-before-declare",),
+            ],
+            [],
+            id="target-frontend-and-slang-options",
+        ),
+    ]
 
 
 def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
-    for case in _RECIPE_ARGV_CASES:
+    for case in _recipe_argv_cases():
         config, args, present, absent = case.values
         synth_cli.config(config)
 
