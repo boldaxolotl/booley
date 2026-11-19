@@ -846,6 +846,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     code_modifying: bool = False
 
     target_required: bool = True
+    target_metavar: str = "TARGET"
     target_help: str = SurfaceHelp(
         "Exactly one Simulation Target. The CLI accepts one --target value; "
         "MCP accepts one Target selector string.",
@@ -927,6 +928,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         scope = self.args.scope
         if scope is None:
             default_scope = self._default_scope()
+            if isinstance(default_scope, EndpointOutcome):
+                return default_scope
             if not default_scope:
                 message = (
                     f"Target {self.args.target!r} has no mutable RTL "
@@ -944,19 +947,23 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             self.args.count = 10
         return None
 
-    def _default_scope(self) -> list[str]:
+    def _default_scope(self) -> list[str] | EndpointOutcome:
         """The Project's own mutable RTL in the Target's closure, in Target order.
 
         "Own RTL" spans the ``depend`` closure, not only the root core's
         filesets: in a layered Project the root fileset owns the harness while
         the DUT arrives through a dependency (see :meth:`_dut_files`).  Testbench,
         vendored and generated files, include headers, inputs outside the Project
-        and non-Verilog inputs are not mutable.  A Target that cannot be
-        inspected has no scope; the run's own validation reports why.
+        and non-Verilog inputs are not mutable.  A list, or a Target that
+        cannot be selected or inspected, is refused with its own error.
         """
-        inspection = self._inspect_target()
-        if inspection is None:
-            return []
+        if list_error := self._target_list_error(self.args.target):
+            return list_error
+        try:
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(catalog.select(self.args.target, for_flow="sim"))
+        except fusesoc_registry.FuseSocError as exc:
+            return _error_outcome("target", f"mutation: {exc}", report_text=f"mutation: {exc}")
         inputs = inspection.inputs
         unmutable = fusesoc_registry.files_tagged(self.args.work_dir, _UNMUTATED_FILE_TAGS)
         scope: dict[str, None] = {}  # ordered set
@@ -1278,15 +1285,22 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return None
         return _error_outcome("options", message, report_text=message)
 
+    @staticmethod
+    def _target_list_error(target: str) -> EndpointOutcome | None:
+        """Refuse a ``--target`` that does not name exactly one Target."""
+        if len([part for part in target.split(",") if part.strip()]) != 1:
+            message = "--target must select exactly one Target"
+            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        return None
+
     def _validate_run_inputs(
         self,
         target: str,
         work_dir: Path,
         scope_files: list[str],
     ) -> EndpointOutcome | None:
-        if len([part for part in target.split(",") if part.strip()]) != 1:
-            message = "--target must select exactly one Target"
-            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        if list_error := self._target_list_error(target):
+            return list_error
         if scope_error := self._validate_scope_against_target(scope_files):
             return scope_error
         try:
