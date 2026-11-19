@@ -23,7 +23,7 @@ from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import MemorySizing
 from booley.flows.mutation.memory_claims import CampaignClaims
-from booley.flows.mutation.tool_runs import OomKill, ToolRun
+from booley.flows.tool_runs import OomKill, ToolRun
 from booley.runtime import job_slots, resource_history
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.job_records import _proc_cmdline
