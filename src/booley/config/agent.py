@@ -328,11 +328,14 @@ class DeclaredAgent:
     auth: str | Mapping[str, str] | None = None
 
 
-def _checked(value: object, key: str, allowed: tuple[str, ...]) -> str:
+def _checked(
+    value: object, key: str, allowed: tuple[str, ...], offered: tuple[str, ...] | None = None
+) -> str:
+    """Return *value* when it is in *allowed*; the error lists *offered* (default *allowed*)."""
     if value not in allowed:
         raise BackendConfigError(
             f"booley.toml [agent] {key}={value!r} is invalid; "
-            f"use one of {', '.join(repr(a) for a in allowed)}."
+            f"use one of {', '.join(repr(a) for a in offered or allowed)}."
         )
     return str(value)
 
@@ -376,9 +379,13 @@ def parse_agent_section(
     )
 
 
+class RetiredAuthError(BackendConfigError):
+    """``auth = "auto"`` was read by a loader that does not repair it."""
+
+
 def _retired_auth_error(where: str) -> BackendConfigError:
     """The load error for ``auth = "auto"``; *where* names the string or table entry."""
-    return BackendConfigError(
+    return RetiredAuthError(
         f'booley.toml {where} = {RETIRED_AUTH!r} is retired; set "subscription" or '
         '"api_key" (booley doctor names the one your credentials suggest), or re-run booley init'
     )
@@ -393,7 +400,7 @@ def _parse_auth(
             raise _retired_auth_error("[agent] auth")
         return RETIRED_AUTH
     if raw is None or isinstance(raw, str):
-        return None if raw is None else _checked(raw, "auth", _ENV_AUTH_MODES)
+        return None if raw is None else _checked(raw, "auth", _ENV_AUTH_MODES, VALID_AUTH_MODES)
     if not isinstance(raw, dict):
         raise BackendConfigError(
             "booley.toml [agent] auth must be a policy or an [agent.auth] table"
@@ -406,7 +413,7 @@ def _parse_auth(
             table[_checked(cli, "auth key", AGENT_CLIS)] = RETIRED_AUTH
             continue
         table[_checked(cli, "auth key", AGENT_CLIS)] = _checked(
-            policy, f"auth.{cli}", _ENV_AUTH_MODES
+            policy, f"auth.{cli}", _ENV_AUTH_MODES, VALID_AUTH_MODES
         )
         if cli == "claude" and policy == GATEWAY_AUTH:
             raise BackendConfigError(
@@ -585,14 +592,19 @@ def parse_models_section(
     return pins
 
 
-def settings_from_data(data: Mapping[str, Any], *, lazy: bool) -> AgentSettings:
+def settings_from_data(
+    data: Mapping[str, Any], *, lazy: bool, keep_retired_auth: bool = False
+) -> AgentSettings:
     """Build and validate settings from a parsed booley.toml, shared by every loader.
 
     *lazy* is the Specialist-subprocess path: it honors every ``BOOLEY_PRIMARY_AUTH``
-    hand-off and refuses to guess an unresolved CLI inside a Sandbox.
+    hand-off and refuses to guess an unresolved CLI inside a Sandbox. *keep_retired_auth*
+    is :func:`parse_agent_section`'s flag, for Doctor's audits.
     """
     agent = data.get("agent", {})
-    declared = parse_agent_section(agent if isinstance(agent, dict) else {})
+    declared = parse_agent_section(
+        agent if isinstance(agent, dict) else {}, keep_retired_auth=keep_retired_auth
+    )
     resolved = resolve_default_cli(declared)
     if resolved is None and lazy and _inside_container():
         raise _unresolved_provider_error()

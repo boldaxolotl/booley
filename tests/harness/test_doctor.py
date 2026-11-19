@@ -704,6 +704,67 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     assert doctor_stamp.load_stamp(booley_dir) is None
 
 
+@pytest.mark.parametrize(
+    ("auth_toml", "rows"),
+    [
+        (
+            'auth = "auto"\n',
+            [
+                (
+                    "claude: booley.toml [agent] auth 'auto' is retired; detected: subscription",
+                    'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
+                    'claude = "subscription" in booley.toml, or re-run booley init',
+                ),
+                (
+                    "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
+                    'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
+                    'codex = "api_key" in booley.toml, or re-run booley init',
+                ),
+            ],
+        ),
+        (
+            '\n[agent.auth]\nclaude = "subscription"\ncodex = "auto"\n',
+            [
+                (
+                    "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
+                    'set codex = "api_key" under [agent.auth] in booley.toml, '
+                    "or re-run booley init",
+                ),
+            ],
+        ),
+    ],
+    ids=["string", "table"],
+)
+def test_doctor_names_the_value_for_a_retired_auto_auth(tmp_path, monkeypatch, auth_toml, rows):
+    booley_dir = _write_project(tmp_path)
+    toml_path = booley_dir / "booley.toml"
+    toml_path.write_text(
+        toml_path.read_text(encoding="utf-8").replace(
+            '[agent]\nauth = "subscription"\n',
+            '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n' + auth_toml,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fixture")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+
+    result = _doctor_run(tmp_path)
+
+    policy = [
+        (f.message, f.fix)
+        for f in result.findings
+        if f.check_id == "agent.credential-policy" and f.severity is Severity.FAIL
+    ]
+    assert policy == rows
+    messages = _messages(result)
+    assert "project setup audit skipped - no valid project config" not in messages
+    assert "worker backend health check skipped - set [agent] auth first" in messages
+    assert not [m for m in messages if "skipped - project config invalid" in m]
+    text = "\n".join(f"{f.message}\n{f.fix}" for f in result.findings)
+    for absent in ("clis/default", "gateway", "booley doctor names"):
+        assert absent not in text
+
+
 def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
     toml_path = booley_dir / "booley.toml"
