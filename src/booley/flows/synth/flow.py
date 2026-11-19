@@ -508,10 +508,9 @@ class SynthMetrics:
         """One-line cause of a failed run, as the card and RESULT line name it."""
         if self.timed_out:
             return "timeout"
-        if self.termination == "oom":
-            return "OOM"
-        if self.termination == "resource_killed":
-            return "resource-killed"
+        killed = {"oom": "OOM", "resource_killed": "resource-killed"}
+        if self.termination in killed:
+            return killed[self.termination]
         if self.termination == "design_failure":
             return _design_failure_reason(self)
         if self.returncode != 0:

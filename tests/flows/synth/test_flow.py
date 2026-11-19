@@ -4967,7 +4967,9 @@ def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_pat
     job = present_job_report(
         {"detail": result.detail}, endpoint="synth", exit_code=result.exit_code, argv=[]
     )
-    assert ("Failure reason", reason) in [(row.label.strip(), row.value) for row in job.result_rows]
+    assert ("Failure reason", reason) in [
+        (row.label.strip(), row.value) for row in job.result_rows
+    ]
 
 
 def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_path):
