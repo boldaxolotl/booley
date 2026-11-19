@@ -183,7 +183,6 @@ class RunWizard(ModalScreen[str | None]):
     """Choose where and what to run, fill in the form, then submit or copy the command it builds."""
 
     BINDINGS: ClassVar = [Binding("escape", "back", show=False)]
-    _flows: tuple[FlowChoice, ...] = ()  # the built-ins the picked worktree leaves enabled
     DEFAULT_CSS = """
     RunWizard { align: center middle; }
     #run-box { width: 90%; max-width: 100; height: auto; max-height: 90%;
@@ -212,6 +211,7 @@ class RunWizard(ModalScreen[str | None]):
         self._launcher = launcher
         self._targets = targets  # the app's reader: its lock serializes every catalog read
         self._builtin_flows = launcher.flows()  # discovered once; each worktree filters it
+        self._flows: tuple[FlowChoice, ...] = ()  # those the picked worktree leaves enabled
         # What each row of the Flow or Specialist step stands for: (kind, name), or None when disabled.
         self._entries: list[tuple[str, str] | None] = []
         self._specialists: SpecialistListing | None = None  # None while being read
