@@ -27,6 +27,7 @@ from booley.flows.sim.record.test_run_report import (
     test_run_report_lines,
     test_run_row,
 )
+from booley.flows.sim.trace_session import TraceArtifact
 from booley.flows.test_runs import DEFAULT_SEED, build_test_run
 from tests.flows.sim.simulation_record_boundary import (
     Launch,
@@ -36,8 +37,11 @@ from tests.flows.sim.simulation_record_boundary import (
 
 _LOG = "      log: "
 _WAVEFORM = "      waveform: "
-# Evidence files as the renderer reads them: any object with ``log`` and ``trace``.
-_NO_FILES = SimpleNamespace(log=None, trace=None)
+_NO_FILES = TestRunFiles(None, None)
+_CUT = (
+    "WARNING: input does not end with a newline; the final line (byte 351) "
+    "may be a truncated record"
+)
 
 
 def _simulate(
@@ -48,6 +52,7 @@ def _simulate(
     trace_in_work_dir: bool = False,
     trace_subdir: str = "",
     on_live: Callable[[Launch], None] | None = None,
+    warnings: tuple[str, ...] = (),
 ) -> SubprocessResult:
     """The fake simulator: fails the Tests in *failing*; when *traced* it dumps a waveform.
 
@@ -67,6 +72,8 @@ def _simulate(
         dump.parent.mkdir(parents=True, exist_ok=True)
         dump.write_bytes(b"waveform")
         output += f"TRACE_OK: {dump}\n"
+        if warnings:
+            output += TraceArtifact(dump, 8, "tb", 1, 1, warnings).metadata_line() + "\n"
     return SubprocessResult(returncode=int(failed), stdout=output, duration_s=0.1)
 
 
@@ -80,6 +87,7 @@ def _run(
     trace_in_work_dir: bool = False,
     trace_subdir: str = "",
     on_live: Callable[[Launch], None] | None = None,
+    warnings: tuple[str, ...] = (),
     **kwargs: Any,
 ) -> tuple[SimulationRecordSimRun, dict[str, Any]]:
     """Run Target ``lite`` over *tests*; return the run and its ``simulation.json``."""
@@ -94,6 +102,7 @@ def _run(
             trace_in_work_dir=trace_in_work_dir,
             trace_subdir=trace_subdir,
             on_live=on_live,
+            warnings=warnings,
         ),
         target="lite",
         trace=traced,
@@ -257,15 +266,13 @@ def test_live_log_is_the_log_the_result_keeps(tmp_path: Path, monkeypatch: pytes
     assert "[SIM_RESULT] FAILED" in (attempt / kept["path"]).read_text("utf-8")
 
 
-def _files(directory: Path, *, log: bool = True, trace: bool = False) -> Any:
+def _files(directory: Path, *, log: bool = True, trace: bool = False) -> TestRunFiles:
     """Evidence files written into *directory*."""
     directory.mkdir(parents=True, exist_ok=True)
     found = {"log": directory / "0001-run.log", "trace": directory / "0002-trace.fst"}
     for path in found.values():
         path.write_bytes(b"evidence")
-    return SimpleNamespace(
-        log=found["log"] if log else None, trace=found["trace"] if trace else None
-    )
+    return TestRunFiles(found["log"] if log else None, found["trace"] if trace else None)
 
 
 def _row(name: str, grade: str) -> dict[str, object]:
@@ -303,17 +310,28 @@ def test_inconclusive_run_of_a_simulation_record_shows_its_log(
     assert _path(card[2], _LOG).is_file()
 
 
+@pytest.mark.parametrize("warned", [False, True], ids=["clean", "warned"])
 def test_passing_test_run_of_a_traced_run_shows_its_waveform(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    warned: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    run, simulation = _run(tmp_path, monkeypatch, ["irq"], traced=True)
+    warnings = (_CUT, "WARNING: 2 value changes name no declared identifier") if warned else ()
+    run, simulation = _run(tmp_path, monkeypatch, ["irq"], traced=True, warnings=warnings)
     card = _card(run)
 
     assert card[:2] == ["  Test Runs: 1 (1 passed)", "    PASS         irq@1"]
     waveform = _path(card[2], _WAVEFORM)
     assert waveform.is_file()
     # The log of a passing run stays in simulation.json; the card has no rerun block.
-    assert len(card) == 3
+    # #5059: the conversion's warnings follow the waveform line, indented under it.
+    assert card[3:] == [f"        {warning}" for warning in warnings]
+    _, document, _ = _only_work_item(tmp_path)
+    assert [
+        (item["code"], item["message"])
+        for item in document["diagnostics"]
+        if item["code"] == "trace_conversion"
+    ] == [("trace_conversion", warning) for warning in warnings]
+    assert document["grade"] == "pass"
+    assert run.result.exit_code == 0
     assert simulation["tests"][0]["log"] is not None
     assert (_target_directory(tmp_path) / simulation["tests"][0]["trace"]).resolve() == (
         waveform.resolve()

@@ -345,33 +345,35 @@ _TRACE_OK_PATTERN = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
 _TRACE_METADATA_PATTERN = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
 
 
-def _trace_metadata_fields(output: str) -> tuple[str, int, int]:
-    """``(top_scope, signal_count, total_ticks)`` from the last ``TRACE_METADATA:`` JSON."""
+def _trace_metadata_fields(output: str) -> tuple[str, int, int, tuple[str, ...]]:
+    """``(top_scope, signal_count, total_ticks, warnings)`` from the last ``TRACE_METADATA:`` JSON."""
     matches = _TRACE_METADATA_PATTERN.findall(output)
     if not matches:
-        return "", 0, 0
+        return "", 0, 0, ()
     try:
         data = json.loads(matches[-1])
         return (
             str(data["top_scope"]).strip(),
             int(data["signal_count"]),
             int(data["total_ticks"]),
+            tuple(data.get("warnings", ())),
         )
     except (ValueError, KeyError, TypeError):
-        return "", 0, 0
+        return "", 0, 0, ()
 
 
 def _test_trace_result(output: str) -> AdapterTraceResult | None:
     paths = _TRACE_OK_PATTERN.findall(output)
     if not paths:
         return None
-    top_scope, signal_count, total_ticks = _trace_metadata_fields(output)
+    top_scope, signal_count, total_ticks, warnings = _trace_metadata_fields(output)
     return AdapterTraceResult(
         "ok",
         path=paths[-1],
         top_scope=top_scope,
         signal_count=signal_count,
         total_ticks=total_ticks,
+        warnings=warnings,
     )
 
 
