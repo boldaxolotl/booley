@@ -194,41 +194,47 @@ SYNTH_ENDS = [("a", phase, "") for phase in ("sv2v", "yosys", "openroad", "synth
 
 # Private seam: the per-Target step runs only after Yosys configuration; its body is
 # replaced to test the report around it.
-def test_synth_target_end_is_reported_unless_baseline(
-    recorder: _Recorder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from booley.flows import edam
-    from booley.flows.synth.flow import SynthMetrics
-
-    cases = [
+@pytest.mark.parametrize(
+    ("role", "reported", "failure"),
+    [
         (None, True, None),
         ("candidate", True, None),
         ("baseline", False, "raises"),
         (None, True, "raises"),
         (None, True, "lease"),
-    ]
-    for role, reported, failure in cases:
-        recorder.ends.clear()
-        flow = _synth_flow(role)
-        flow.parse_args(["--target", "a", "--work-dir", str(tmp_path), "--timeout-ms", "1000"])
+    ],
+)
+def test_synth_target_end_is_reported_unless_baseline(
+    role: str | None,
+    reported: bool,
+    failure: str | None,
+    recorder: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from booley.flows import edam
+    from booley.flows.synth.flow import SynthMetrics
 
-        def synthesize(_target: str, failure: str | None = failure):
-            if failure == "raises":
-                raise RuntimeError("boom")
-            return SynthMetrics(), ""
+    flow = _synth_flow(role)
+    flow.parse_args(["--target", "a", "--work-dir", str(tmp_path), "--timeout-ms", "1000"])
 
-        monkeypatch.setattr(flow, "_synthesize_target", synthesize)
-        publish = lambda _metrics: None  # noqa: E731
+    def synthesize(_target: str):
         if failure == "raises":
-            with pytest.raises(RuntimeError):
-                flow._run_target("a", publish)
-        elif failure == "lease":
-            # The Flow's own lease fails after its budget: its Target still ends.
-            with edam.work_root_lease(flow._synth_work_root("a"), timeout_s=0):
-                flow._run_target("a", publish)
-        else:
+            raise RuntimeError("boom")
+        return SynthMetrics(), ""
+
+    monkeypatch.setattr(flow, "_synthesize_target", synthesize)
+    publish = lambda _metrics: None  # noqa: E731
+    if failure == "raises":
+        with pytest.raises(RuntimeError):
             flow._run_target("a", publish)
-        assert recorder.ends == (SYNTH_ENDS if reported else []), (role, failure)
+    elif failure == "lease":
+        # The Flow's own lease fails after its budget: its Target still ends.
+        with edam.work_root_lease(flow._synth_work_root("a"), timeout_s=0):
+            flow._run_target("a", publish)
+    else:
+        flow._run_target("a", publish)
+    assert recorder.ends == (SYNTH_ENDS if reported else [])
 
 
 SYNTH_CORE = """CAPI=2:
@@ -261,13 +267,9 @@ targets:
 """
 
 
-def test_synth_job_requests_plan_the_tools_the_target_runs(tmp_path: Path) -> None:
-    from booley.flows.synth.flow import AsicSynthesizeFlow
-    from booley.targets.catalog import TargetCatalog
-
-    (tmp_path / "chip.sv").write_bytes(b"module chip; endmodule\n")
-    (tmp_path / "chip.core").write_bytes(SYNTH_CORE.encode())
-    cases = [
+@pytest.mark.parametrize(
+    ("selector", "argv", "phases"),
+    [
         ("physical", [], ("sv2v", "yosys", "openroad")),
         ("logical", [], ("sv2v", "yosys")),
         ("slang", [], ("yosys", "openroad")),
@@ -276,15 +278,23 @@ def test_synth_job_requests_plan_the_tools_the_target_runs(tmp_path: Path) -> No
         ("broken", [], ()),
         # The baseline's mode and frontend are unknown until it runs: plan every tool.
         ("logical", ["--baseline", "HEAD"], ("sv2v", "yosys", "openroad")),
-    ]
-    for selector, argv, phases in cases:
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", selector, "--work-dir", str(tmp_path), *argv])
-        handle = TargetCatalog.build(tmp_path).select(selector, for_flow="synth")
+    ],
+)
+def test_synth_job_requests_plan_the_tools_the_target_runs(
+    tmp_path: Path, selector: str, argv: list[str], phases: tuple[str, ...]
+) -> None:
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.targets.catalog import TargetCatalog
 
-        assert flow.memory_job_requests((handle, handle)) == (
-            JobRequest("synth", selector, split_phases=phases),
-        ), (selector, argv)
+    (tmp_path / "chip.sv").write_bytes(b"module chip; endmodule\n")
+    (tmp_path / "chip.core").write_bytes(SYNTH_CORE.encode())
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", selector, "--work-dir", str(tmp_path), *argv])
+    handle = TargetCatalog.build(tmp_path).select(selector, for_flow="synth")
+
+    assert flow.memory_job_requests((handle, handle)) == (
+        JobRequest("synth", selector, split_phases=phases),
+    )
 
 
 # Private seam: the per-Target step runs only after Vivado configuration.
