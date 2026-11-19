@@ -110,6 +110,7 @@ from .run_directory import (
     require_run_directory_outside,
 )
 from .test_run_binding import observation_test_runs, work_item_test_runs
+from .test_run_files import TRACE_WARNING_CODE
 
 #: Where a build directory keeps its Simulator Bundle manifest.
 _BUNDLE_MANIFEST_PATH = "evidence/bundle.json"
@@ -1475,6 +1476,12 @@ def _bundle_result(
         diagnostics=tuple(
             item for item in outcome.diagnostics if item.startswith("artifact_persistence:")
         ),
+        trace_warnings=tuple(
+            warning
+            for artifact in outcome.artifacts
+            if artifact.kind == "trace"
+            for warning in artifact.warnings
+        ),
     )
 
 
@@ -1502,6 +1509,7 @@ def simulation_result(
     evidence: list[dict[str, object]],
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
+    trace_warnings: tuple[str, ...] = (),
 ) -> SimulationResult:
     """Build the terminal simulation result for a completed run."""
     observations = _named_observations(request.work_item, observations)
@@ -1520,23 +1528,31 @@ def simulation_result(
         "runtime_inputs": runtime_inputs or [],
         "observations": observations,
         "grade": _result_grade(observations),
-        "diagnostics": [
-            {
-                "severity": "warning",
-                "code": "artifact_persistence"
-                if item.startswith("artifact_persistence:")
-                else "execution",
-                "pointer": "",
-                "message": _bounded_reason(item),
-            }
-            for item in (*outcome_diagnostics_safe(evidence, request), *diagnostics)
-        ],
+        "diagnostics": _result_diagnostics(diagnostics, trace_warnings),
         "evidence": [
             *evidence,
             *request.store.pre_sim_references(request.attempt_directory),
         ],
     }
     return SimulationResult(document)
+
+
+def _result_diagnostics(
+    diagnostics: tuple[str, ...], trace_warnings: tuple[str, ...]
+) -> list[dict[str, object]]:
+    """The Result's warning diagnostics: persistence notes, then the waveform's conversion warnings."""
+    entries = [
+        (
+            "artifact_persistence" if item.startswith("artifact_persistence:") else "execution",
+            item,
+        )
+        for item in diagnostics
+    ]
+    entries.extend((TRACE_WARNING_CODE, warning) for warning in trace_warnings)
+    return [
+        {"severity": "warning", "code": code, "pointer": "", "message": _bounded_reason(message)}
+        for code, message in entries
+    ]
 
 
 def _result_grade(observations: list[dict[str, object]]) -> str:
@@ -1553,13 +1569,6 @@ def _result_grade(observations: list[dict[str, object]]) -> str:
     ]
     precedence = {"pass": 0, "inconclusive": 1, "fail": 2, "error": 3}
     return max(grades, key=lambda item: precedence[item.value]).value
-
-
-def outcome_diagnostics_safe(
-    evidence: list[dict[str, object]], request: WorkExecutionRequest
-) -> tuple[str, ...]:
-    del evidence, request
-    return ()
 
 
 def observation_document(

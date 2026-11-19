@@ -36,6 +36,9 @@ LOG_KIND = "live_run_log"
 #: Evidence kind of the waveform a ``--trace`` run captured.
 TRACE_KIND = "trace"
 
+#: Diagnostic code of a ``bwave build`` warning from converting that waveform.
+TRACE_WARNING_CODE = "trace_conversion"
+
 
 @dataclass(frozen=True, slots=True)
 class TestRunFiles:
@@ -46,6 +49,7 @@ class TestRunFiles:
 
     log: Path | None
     trace: Path | None
+    trace_warnings: tuple[str, ...] = ()
 
     def relative_to(self, base: Path) -> dict[str, str | None]:
         """The ``log`` and ``trace`` keys of a report row: POSIX paths from *base*, or ``None``."""
@@ -120,6 +124,11 @@ def _work_item_files(invocation: Path, relative: object) -> TestRunFiles:
         return TestRunFiles(
             _evidence_file(attempt, evidence, LOG_KIND),
             _evidence_file(attempt, evidence, TRACE_KIND),
+            tuple(
+                cast(str, item["message"])
+                for item in cast(Sequence[Mapping[str, object]], result["diagnostics"])
+                if item["code"] == TRACE_WARNING_CODE
+            ),
         )
     except (
         OSError,

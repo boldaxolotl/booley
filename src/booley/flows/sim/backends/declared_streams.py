@@ -148,6 +148,7 @@ class DeclaredTraceStreams:
         session = self._session
         for stream in self._streams:
             result = stream.conversion.finish(session.budget_remaining_s())
+            session.note_conversion(result)
             last_line = result.detail.splitlines()[-1:] or ["no usable waveform was written"]
             if result.success:
                 self.stores[stream.pattern] = stream.conversion.store_path

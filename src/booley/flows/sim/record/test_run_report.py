@@ -400,6 +400,7 @@ def _row_path_lines(row: Mapping[str, object], found: TestRunFiles) -> list[str]
         lines.append(f"      log: {found.log.resolve()}")
     if found.trace is not None:
         lines.append(f"      waveform: {found.trace.resolve()}")
+        lines.extend(f"        {warning}" for warning in found.trace_warnings)
     return lines
 
 

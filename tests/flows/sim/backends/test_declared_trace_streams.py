@@ -22,10 +22,11 @@ from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave import waveform_store
 from booley.flows.sim import trace_session
+from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
 from booley.flows.sim.backends import icarus as icarus_adapter
 from booley.flows.sim.backends import verilator as verilator_adapter
 from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
-from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
+from booley.flows.sim.trace_session import TraceSession
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="named pipes need POSIX")
 
@@ -64,6 +65,9 @@ for step in os.environ["FAKE_SIM"].split(";"):
     elif op == "write_fst":
         with open(arg, "wb") as out:
             out.write(FST)
+    elif op == "write_cut":
+        with open(arg, "w") as out:
+            out.write(VCD[:-1])
     elif op == "flood":
         with open(arg, "w") as out:
             out.write(VCD + "#9\\n1!\\n" * 150000)
@@ -102,7 +106,7 @@ class Outcome(NamedTuple):
 
 @pytest.fixture(autouse=True)
 def _streaming_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bwave: Path) -> None:
-    """Re-enable streaming (the sim conftest disables it), keep the cache local, probe cheaply."""
+    """Re-enable streaming (the sim conftest disables it) and keep the cache local."""
     monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: True)
     cache = tmp_path / "cache"
     monkeypatch.setattr(
@@ -110,13 +114,6 @@ def _streaming_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bwave:
         "waveform_cache_dir",
         lambda *_args, **_kwargs: cache.mkdir(exist_ok=True) or cache,
     )
-
-    def inspect(_self: TraceSession, path: Path | None) -> TraceInspection:
-        if path is None or path.suffix != ".fst":
-            return TraceInspection(None, "no queryable store")
-        return TraceInspection(TraceArtifact(path, path.stat().st_size, "tb", 1, 1))
-
-    monkeypatch.setattr(TraceSession, "inspect", inspect)
 
 
 def _stage(adapter: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, steps: str) -> Dirs:
@@ -149,6 +146,8 @@ def _run(
     *,
     precreate: dict[str, str] | None = None,
     timeout: int = _RUN_TIMEOUT_S,
+    trace_mode: verilator_adapter.TraceMode = verilator_adapter.TraceMode.NATIVE_FST,
+    transport: AdapterTransportIdentity | None = None,
 ) -> Outcome:
     """Run one traced simulation of *adapter* whose simulator performs *steps*."""
     dirs = _stage(adapter, tmp_path, monkeypatch, steps)
@@ -162,6 +161,7 @@ def _run(
             vcd=True,
             trace_files=entries,
             timeout=timeout,
+            transport=transport,
         )
     else:
         run = verilator_adapter.run_verilated_binary(
@@ -170,12 +170,59 @@ def _run(
             run_cwd=dirs.run,
             work_dir=dirs.work,
             vcd=True,
-            trace_mode=verilator_adapter.TraceMode.NATIVE_FST,
+            trace_mode=trace_mode,
             trace_args=["--trace={file}"],
             trace_files=entries,
             timeout=timeout,
+            transport=transport,
         )
     return Outcome(run.output, dirs)
+
+
+_CUT_WARNING = (
+    "WARNING: input does not end with a newline; the final line (byte {offset}) "
+    "may be a truncated record"
+)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "steps", "entries", "mode", "offset"),
+    [
+        pytest.param("icarus", "write_cut:dump.vcd", [], None, 109, id="post_run"),
+        pytest.param(
+            "verilator",
+            "write_cut:../work/trace.fifo",
+            [],
+            verilator_adapter.TraceMode.VCD_FIFO,
+            109,
+            id="fifo",
+        ),
+        pytest.param(
+            "verilator", "write_cut:fpu.vcd", ["fpu.vcd"], None, 109, id="declared_stream"
+        ),
+    ],
+)
+def test_conversion_warning_reaches_the_trace_result(
+    adapter, steps, entries, mode, offset, tmp_path, monkeypatch
+):
+    """#5059: a successful conversion's `WARNING:` lines travel with its trace result."""
+    identity = AdapterTransportIdentity(
+        adapter=adapter,
+        attempt_token="token",
+        target_identity="target",
+        selected_tests=(),
+        result_path=tmp_path / "result.json",
+    )
+    kwargs = {"trace_mode": mode} if mode else {}
+    out = _run(adapter, tmp_path, monkeypatch, steps, entries, transport=identity, **kwargs)
+
+    warning = _CUT_WARNING.format(offset=offset)
+    assert warning in out.output
+    result = read_adapter_result(identity)
+    trace = result.trace
+    assert result.passed
+    assert trace is not None
+    assert (trace.status, trace.warnings) == ("ok", (warning,))
 
 
 def _no_pipe_left(run_dir: Path, name: str) -> None:
