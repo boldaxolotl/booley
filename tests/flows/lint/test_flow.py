@@ -279,6 +279,7 @@ def test_lint_rejects_an_unusable_linter_before_running_it(
     configured: str | None,
     resolution_error: Exception | None,
     expected: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _lenient_catalog_declaring(monkeypatch, declared)
 
@@ -292,6 +293,9 @@ def test_lint_rejects_an_unusable_linter_before_running_it(
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text.startswith(expected)
     assert commands == []
+    assert ("[lint] lite         ERROR: lint setup failed: " in capsys.readouterr().out) == (
+        "lint setup failed" in expected
+    )
 
 
 def test_lint_runs_make_over_the_resolved_build_root(run_lint: _LintRun, tmp_path: Path) -> None:
@@ -367,6 +371,43 @@ def test_real_fusesoc_lint_setup(
     assert all(option in vc for option in vc_options)
     # Relocatable: no absolute project/build paths baked into the .vc.
     assert str(work_dir) not in vc
+
+
+def test_failed_fusesoc_setup_is_recorded_as_lint_prepare(
+    run_lint: _LintRun, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Lint Flow's own setup runner measures the setup, whatever its outcome."""
+    from booley.runtime import resource_history
+
+    work_dir = tmp_path / "proj"
+    (work_dir / "rtl").mkdir(parents=True)
+    (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    (work_dir / "lint_demo.core").write_bytes(_LINT_CORE_TEXT.encode())
+    monkeypatch.setattr(
+        fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_COMMAND_FOR_HANDLE
+    )
+    failing_setup = canned_command(SubprocessResult(returncode=1, stderr="setup broke"))
+
+    def resolve(*args: object, **kwargs: object) -> object:
+        return _REAL_RESOLVE_TARGET_HANDLE(*args, **{**kwargs, "fusesoc_cmd": failing_setup})
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+
+    result, commands = run_lint(_process(), work_dir=work_dir, resolved=None)
+
+    assert result.exit_code == EXIT_ERROR
+    assert "failed (exit 1)" in result.outcome.report_text
+    assert "setup broke" in result.outcome.report_text
+    assert commands == []
+    (record,) = resource_history.load_records(tmp_path)
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("lint", "lite", "lint_prepare", "exit_nonzero", 1)
 
 
 def _dry_run_plan(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
@@ -793,21 +834,21 @@ def test_lint_record_outcome_follows_the_linter_error(
             _process(2, stderr=_DESIGN_FAIL_STDERR),
             False,
             EXIT_FAILURE,
-            "RESULT: FAIL — lite: %Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'",
+            "RESULT: FAIL — lite [verilator]: %Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'",
             id="design-fail",
         ),
         pytest.param(
             _process(2, stderr="make: verilator: No such file or directory\n"),
             False,
             EXIT_ERROR,
-            "RESULT: ERROR — lite: missing tool: verilator",
+            "RESULT: ERROR — lite [verilator]: missing tool: verilator",
             id="missing-linter",
         ),
         pytest.param(
             _process(-1, "partial lint output", "partial timeout diagnostic", timed_out=True),
             False,
             EXIT_ERROR,
-            "RESULT: ERROR — lite: Timed out after",
+            "RESULT: ERROR — lite [verilator]: Timed out after",
             id="timeout",
         ),
         pytest.param(
@@ -828,7 +869,7 @@ def test_lint_record_outcome_follows_the_linter_error(
             _process(2, stderr=_DESIGN_FAIL_STDERR),
             True,
             EXIT_FAILURE,
-            "RESULT: FAIL — lite: %Error: rtl/x.v:1:1",
+            "RESULT: FAIL — lite [verilator]: %Error: rtl/x.v:1:1",
             id="design-fail-knob-off",
         ),
     ],
@@ -1292,7 +1333,9 @@ class TestUnmatchedScope:
             code = LintFlow().main(["--target", "lite", "--scope", "nonexistent/"])
 
         assert code == EXIT_ERROR
-        assert "lite: %Error: rtl/mod_a.sv:3:1: syntax error" in capsys.readouterr().out
+        assert (
+            "lite [verilator]: %Error: rtl/mod_a.sv:3:1: syntax error" in capsys.readouterr().out
+        )
 
     def test_unmatched_scope_entries(self):
         from booley.flows.lint.flow import unmatched_scope_entries
@@ -2847,8 +2890,34 @@ _GENERATED = "%Warning-WIDTH: gen/generated.sv:2:3: Operator ASSIGN expects 8 bi
             ),
             EXIT_FAILURE,
             [("interface-name-style", "ip/b/rtl/top.sv", ["style_b"])],
-            [],
+            [
+                "[lint]   ip/b/rtl/top.sv:4:11: Interface names must end with _if. "
+                "[interface-name-style]"
+            ],
             id="verible-finding",
+        ),
+        pytest.param(
+            "cross",
+            "lint_b,style_b",
+            (),
+            (
+                _process(stdout=_UNUSED_B),
+                _process(
+                    stdout="src/b_0/rtl/top.sv:4:11: Interface names must end with _if. "
+                    "[interface-name-style]\n"
+                ),
+            ),
+            EXIT_FAILURE,
+            [
+                ("UNUSEDSIGNAL", "ip/b/rtl/top.sv", ["lint_b"]),
+                ("interface-name-style", "ip/b/rtl/top.sv", ["style_b"]),
+            ],
+            [
+                "[lint]   %Warning-UNUSEDSIGNAL: ip/b/rtl/top.sv:1:8 Signal is not used: 'x'",
+                "[lint]   ip/b/rtl/top.sv:4:11: Interface names must end with _if. "
+                "[interface-name-style]",
+            ],
+            id="mixed-linters",
         ),
         pytest.param(
             "cross",
@@ -2864,8 +2933,8 @@ _GENERATED = "%Warning-WIDTH: gen/generated.sv:2:3: Operator ASSIGN expects 8 bi
             EXIT_FAILURE,
             [],
             [
-                "ERROR: %Error: ip/b/rtl/top.sv:3:1: syntax error",
-                "RESULT: FAIL \u2014 lint_b: %Error: ip/b/rtl/top.sv:3:1:",
+                "lint_b       [verilator] ERROR: %Error: ip/b/rtl/top.sv:3:1: syntax error",
+                "RESULT: FAIL \u2014 lint_b [verilator]: %Error: ip/b/rtl/top.sv:3:1:",
             ],
             id="verilator-error",
         ),
@@ -2876,7 +2945,10 @@ _GENERATED = "%Warning-WIDTH: gen/generated.sv:2:3: Operator ASSIGN expects 8 bi
             (_process(1, stdout='src/b_0/rtl/top.sv:3:1: syntax error at token "endmodule"\n'),),
             EXIT_FAILURE,
             [],
-            ["RESULT: FAIL \u2014 style_b: ip/b/rtl/top.sv:3:1: syntax error"],
+            [
+                "style_b      [verible] ERROR: ip/b/rtl/top.sv:3:1: syntax error",
+                "RESULT: FAIL \u2014 style_b [verible]: ip/b/rtl/top.sv:3:1: syntax error",
+            ],
             id="verible-error",
         ),
     ],

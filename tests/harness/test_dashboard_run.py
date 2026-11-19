@@ -378,7 +378,7 @@ FORM_SCRIPTS: dict[str, FormScript] = {
             ("choice", "--mode", "simulate"),
             ("tests", "--test", "reset,stress+soak"),
         ),
-        extra="--result-verbosity full",
+        extra="--no-kill",
         argv=(
             "--target",
             "sim_fifo",
@@ -389,12 +389,11 @@ FORM_SCRIPTS: dict[str, FormScript] = {
             "reset",
             "--test",
             "stress+soak",
-            "--result-verbosity",
-            "full",
+            "--no-kill",
         ),
         shown=(
             "--target sim_fifo --coverage --mode simulate --test reset --test stress+soak"
-            " --result-verbosity full"
+            " --no-kill"
         ),
     ),
     "synth": FormScript(

@@ -12,6 +12,19 @@ from __future__ import annotations
 from pathlib import Path
 
 
+class BooleyTomlError(ValueError):
+    """A ``booley.toml`` read or validation failure.
+
+    ``path`` names the file when the reader knows which one it read; ``line`` is
+    the parser's line when it reported one.
+    """
+
+    def __init__(self, message: str, *, path: Path | None = None, line: int | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+        self.line = line
+
+
 def resolve_toml(directory: Path) -> Path:
     """Resolve ``booley.toml`` in *directory*, falling back to ``pipeline.toml``.
 

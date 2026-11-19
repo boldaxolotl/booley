@@ -46,6 +46,7 @@ from booley.targets.target_surface import (
     surface_payload as _surface_payload,
 )
 from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import fusesoc_setup_runner
 from tests.target_test_support import make_target_handle
 
 detail_payload = functools.partial(_detail_payload, synth_tools=synth_target_tools)
@@ -1216,7 +1217,7 @@ class TestDetail:
         )
 
         def fake_runner(cmd, **kwargs):
-            edam = build_root / "acme_ip_alpha_1.0" / "sim" / "alpha.eda.yml"
+            edam = build_root / "acme_ip_alpha_1.0" / "sim" / "acme_ip_alpha_1.0.eda.yml"
             edam.parent.mkdir(parents=True, exist_ok=True)
             edam.write_text(edam_text, encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -1239,6 +1240,39 @@ class TestDetail:
         text = _targets_view().render_detail(payload)
         assert "WIDTH (int) = 8" in text
         assert "constraints/alpha.sdc" in text
+
+    def test_resolved_half_isolates_cores_sharing_a_target_name(self, project: Path) -> None:
+        for rel in ("alpha/rtl/alpha.sv", "beta/rtl/beta.sv"):
+            (project / rel).parent.mkdir(parents=True, exist_ok=True)
+            (project / rel).touch()
+
+        def edam(core: str, top: str, parameter: str) -> tuple[str, str]:
+            text = (
+                f"name: {core}\ntoplevel: {top}\nflow_options: {{tool: verilator}}\n"
+                f"parameters:\n  {parameter}: {{datatype: int, default: 1, paramtype: vlogparam}}\n"
+                "files: []\n"
+            )
+            return f"{core}/lint/{core}.eda.yml", text
+
+        runner = fusesoc_setup_runner(
+            edams={
+                "acme:ip:alpha:1.0": edam("acme_ip_alpha_1.0", "alpha", "WIDTH"),
+                "acme:ip:beta:1.0": edam("acme_ip_beta_1.0", "beta", "DEPTH"),
+            }
+        )
+
+        detail_payload(project, "alpha#lint", runner=runner)
+        payload = detail_payload(project, "beta#lint", runner=runner)
+
+        resolved = payload["resolved"]
+        assert resolved["toplevel"] == "beta"
+        assert set(resolved["parameters"]) == {"DEPTH"}
+        assert resolved["build_root"] == (
+            ".booley/.runtime/edalize/targets/beta_lint/acme_ip_beta_1.0/lint"
+        )
+        text = _targets_view().render_detail(payload)
+        assert "DEPTH" in text
+        assert "WIDTH" not in text
 
     @pytest.mark.parametrize(
         ("token", "configured_tool"),

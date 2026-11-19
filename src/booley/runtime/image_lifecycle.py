@@ -442,6 +442,10 @@ class OwnedImages:
         self.record(found, tuple(image for image in found.values() if image not in before))
 
 
+#: The reason cleanup_owned_images gives for an owned image a tag still names.
+TAG_RETAINED = "retained (tag/keeper)"
+
+
 def cleanup_owned_images(
     project: Path | str | None = None, *, docker: DockerPort | None = None
 ) -> tuple[str, ...]:
@@ -458,7 +462,7 @@ def cleanup_owned_images(
     for record in records:
         for image in reversed(record.ids):
             if image in tags.values():
-                retained[image] = "retained (tag/keeper)"
+                retained[image] = TAG_RETAINED
             elif image in present:
                 try:
                     adapter.remove_tag(image)  # exact ID, non-force, --no-prune

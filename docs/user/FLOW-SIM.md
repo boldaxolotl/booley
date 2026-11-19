@@ -61,7 +61,6 @@ booley flow sim --target sim_soc --mode elab-only       # compile only
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run the tests (default), or only [compile](#elaboration-checks). |
 | `--resume-from <manifest.json>` | [Resume](#resuming-an-interrupted-run) an interrupted run. |
 | `--verbose` | With `--resume-from`, show every detail of why the manifest doesn't match the current Project. |
-| `--result-verbosity <compact\|full>` | For a Cocotb Target, `full` prints every test function's result. |
 | `--no-kill` | Don't kill leftover simulator processes before the run. For diagnosis only. |
 
 ### Adding a Test
@@ -249,7 +248,8 @@ finished.
 <summary>With a cocotb testbench</summary>
 
 The Test Runs of one [Cocotb Target](#cocotb-targets-python-testbenches)
-run as a batch, so they share one log and one waveform.
+run as a batch, so they share one log and one waveform. A `--coverage` run
+is the exception: it gives each Test Run its own simulator process.
 
 </details>
 
@@ -514,7 +514,8 @@ reruns all its tests. A Cocotb batch is every test that shares a seed and Test
 Variant, run in one simulator process. Resuming a Cocotb Target doesn't start
 it from scratch: only the interrupted batch runs again, and the batches that
 finished are kept. A run with several seeds (`@x20`) or Test Variants has
-several batches.
+several batches. A `--coverage` run has no batches: it gives each Test Run its
+own simulator process.
 
 </details>
 
@@ -534,7 +535,10 @@ pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
 <summary>With a cocotb testbench</summary>
 
 For a [Cocotb Target](#cocotb-targets-python-testbenches), the
-commands run once per batch.
+commands run once per batch. A
+[`--coverage` run](COVERAGE.md#collecting-coverage) gives each Test Run its own
+simulator process, so there they run once per Test Run, with that one Test in
+`BOOLEY_TEST_NAMES`.
 
 </details>
 
