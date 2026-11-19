@@ -155,6 +155,20 @@ def test_completion_error_message_is_bounded() -> None:
     assert message.endswith("…")
 
 
+def test_identical_completion_error_is_recorded_once() -> None:
+    outcome = EndpointOutcome()
+
+    for _ in range(2):
+        normalize_completion_error(outcome, OSError(5, "disk"), "publish report", path="r.json")
+    normalize_completion_error(outcome, OSError(28, "full"), "publish report", path="r.json")
+
+    assert outcome.report_text.count("Completion failure") == 2
+    assert outcome.exit_code == EXIT_ERROR
+    assert [error["message"] for error in outcome.detail["completion_errors"]] == [
+        "[Errno 28] full"
+    ]
+
+
 def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
     endpoint = _Endpoint(reject_admission=True)
 

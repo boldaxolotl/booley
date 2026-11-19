@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
+from booley.flows.lint.request import LintRequest
 from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.request import FlowRequest
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
@@ -221,6 +224,64 @@ class _CustomTimeoutFlow(BooleyFlow):
 
 class _OptionalCustomTimeoutFlow(_CustomTimeoutFlow):
     target_required = False
+
+
+def _unusable_report_dir(kind: str, tmp_path: Path) -> Path:
+    if kind == "unwritable":
+        if sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            pytest.skip("directory permissions are not enforced here")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        return locked
+    afile = tmp_path / "afile"
+    afile.write_bytes(b"")
+    if kind == "through-file":
+        return afile / ".." / "reports"
+    return afile / "sub"
+
+
+@pytest.mark.parametrize("kind", ["uncreatable", "through-file", "unwritable"])
+@pytest.mark.parametrize("flow_type", [LintFlow, _CustomTimeoutFlow])
+def test_unusable_report_dir_is_refused_before_any_job_work(
+    flow_type: type[BooleyFlow],
+    kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report_dir = _unusable_report_dir(kind, tmp_path)
+    runtime = tmp_path / "runtime"
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+    argv = ["--target", "t", "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
+    refusal: BaseException | None = None
+    try:
+        flow_type().execute_cli(argv)
+    except BaseException as exc:  # noqa: BLE001 - any outcome other than a refusal fails below
+        refusal = exc
+    finally:
+        if kind == "unwritable":
+            report_dir.chmod(0o700)
+
+    errors = [line for line in capsys.readouterr().err.splitlines() if "error:" in line]
+    assert isinstance(refusal, SystemExit), f"not refused up front: {refusal!r}"
+    assert refusal.code == 2
+    assert len(errors) == 1
+    assert "argument --report-dir:" in errors[0]
+    assert str(report_dir) in errors[0]
+    assert not (runtime / "display.jsonl").exists()
+    assert not (tmp_path / "reports").exists()
+
+
+def test_typed_request_with_unusable_report_dir_is_refused(tmp_path: Path) -> None:
+    afile = tmp_path / "afile"
+    afile.write_bytes(b"")
+
+    with pytest.raises(ValueError, match="argument --report-dir:"):
+        LintFlow().execute(
+            LintRequest(target="t", work_dir=str(tmp_path), report_dir=afile / "sub")
+        )
 
 
 def test_custom_flow_keeps_its_own_timeout_and_dry_run_surface() -> None:

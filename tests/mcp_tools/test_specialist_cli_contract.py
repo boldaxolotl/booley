@@ -152,6 +152,24 @@ def test_host_refusal_precedes_reports_and_admission(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir())
 
 
+def test_unusable_report_dir_is_refused_before_the_specialist_runs(tmp_path, sandbox, capsys):
+    afile = tmp_path / "afile"
+    afile.write_bytes(b"")
+    endpoint = ProjectSpecialist()
+    # The test is that neither hook is reached once the report directory is refused.
+    for hook in ["_invoke_agent", "write_report"]:
+        setattr(endpoint, hook, Mock(side_effect=AssertionError(hook)))
+
+    with pytest.raises(SystemExit) as exit_info:
+        endpoint.main(["--work-dir", str(tmp_path), "--report-dir", str(afile / "sub")])
+
+    errors = [line for line in capsys.readouterr().err.splitlines() if "error:" in line]
+    assert exit_info.value.code == 2
+    assert len(errors) == 1
+    assert "argument --report-dir:" in errors[0]
+    assert str(afile / "sub") in errors[0]
+
+
 def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox, capsys):
     data = tmp_path / ".booley"
     data.mkdir()

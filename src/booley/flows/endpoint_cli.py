@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import pathlib
 import re
 import sys
 from pathlib import Path
@@ -170,7 +171,10 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
             endpoint._args.steer = ""
         elif len(endpoint._args.steer) == 1:
             endpoint._args.steer = endpoint._args.steer[0]
-    apply_environment(endpoint._args, endpoint.endpoint_kind)
+    try:
+        apply_environment(endpoint._args, endpoint.endpoint_kind)
+    except ReportDirError as exc:
+        parser.error(str(exc))
     return endpoint._args
 
 
@@ -232,6 +236,37 @@ def cli(endpoint) -> None:
     sys.exit(endpoint.main())
 
 
+class ReportDirError(ValueError):
+    """An explicit report directory this process cannot create or write."""
+
+
+def require_usable_report_dir(report_dir: str | os.PathLike[str]) -> None:
+    """Refuse an explicit report directory the run could not create or write.
+
+    Side-effect free: nothing is created. The path is made absolute without
+    folding ``..``, so ``<file>/../reports`` is judged through ``<file>`` as a
+    writer's ``mkdir`` would. The nearest existing ancestor must be a writable
+    directory; ``os.access`` can disagree with a real write on ACLs or some
+    network filesystems, which then fail once at completion.
+    """
+    given = os.fspath(report_dir)
+    # ``pathlib.Path``, not this module's ``Path``: a test pins that name to a pure flavour.
+    found = pathlib.Path.cwd() / given
+    while not (found.exists() or found.is_symlink()):
+        if found.parent == found:
+            reason = "no parent directory exists"
+            break
+        found = found.parent
+    else:
+        if not found.is_dir():
+            reason = f"'{found}' is not a directory"
+        elif not os.access(found, os.W_OK | os.X_OK):
+            reason = f"'{found}' is not writable"
+        else:
+            return
+    raise ReportDirError(f"argument --report-dir: cannot write reports to '{given}': {reason}")
+
+
 def apply_environment(args, endpoint_kind: str) -> None:
     """Resolve Session/Ticket context equally for typed and CLI requests."""
     # Ticket context from env vars (set by developer or explicit board validate)
@@ -244,3 +279,5 @@ def apply_environment(args, endpoint_kind: str) -> None:
             args.report_dir = Path(runtime_env) / report_leaf
         else:
             args.report_dir = None
+    else:
+        require_usable_report_dir(args.report_dir)
