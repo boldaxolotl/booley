@@ -14,12 +14,11 @@ from unittest import mock
 import pytest
 
 from booley.core.boundary import BoundaryError
+from booley.flows import endpoint_cli
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
 from booley.flows.builtin_cli import parse_request
 from booley.flows.endpoint_cli import (
-    ReportDirError,
     normalize_target_arg,
-    require_usable_report_dir,
 )
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
@@ -287,7 +286,7 @@ def test_typed_request_with_unusable_report_dir_is_refused(tmp_path: Path) -> No
     afile = tmp_path / "afile"
     afile.write_bytes(b"")
 
-    with pytest.raises(ReportDirError, match="argument --report-dir:"):
+    with pytest.raises(ValueError, match="argument --report-dir:"):
         LintFlow().execute(
             LintRequest(target="t", work_dir=str(tmp_path), report_dir=afile / "sub")
         )
@@ -304,8 +303,10 @@ def test_report_dir_that_cannot_be_inspected_is_refused(tmp_path: Path, case: st
     report_dir = locked / "reports" if case == "unsearchable-parent" else tmp_path / ("x" * 300)
     locked.chmod(0)
     try:
-        with pytest.raises(ReportDirError, match="argument --report-dir: cannot write reports"):
-            require_usable_report_dir(report_dir)
+        with pytest.raises(
+            endpoint_cli.ReportDirError, match="argument --report-dir: cannot write reports"
+        ):
+            endpoint_cli.require_usable_report_dir(report_dir)
     finally:
         locked.chmod(0o700)
 
