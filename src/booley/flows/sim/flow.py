@@ -75,6 +75,7 @@ from booley.runtime.endpoint_execution import (
     normalize_completion_error,
 )
 from booley.runtime.file_lock import LockContentionError
+from booley.runtime.filesystem_utils import make_directories
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
     TargetHandle,
@@ -289,7 +290,7 @@ class SimulateFlow(
         from .record_reports import simulation_record_invocation_lock
 
         endpoint_dir = report_dir / self.name
-        endpoint_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(endpoint_dir)
         existing = (
             int(path.name.removeprefix(".pruned-"))
             for path in endpoint_dir.iterdir()

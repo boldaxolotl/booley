@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from booley.runtime.filesystem_utils import make_directories
+
 
 def _is_structured_only_agent_text(text: str) -> bool:
     """Return true for bare structured-output JSON chatter."""
@@ -217,6 +219,6 @@ def _codex_write_markdown(
         elif etype == "turn.completed":
             lines.extend(_codex_md_usage_lines(event.get("usage", {})))
 
-    md_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(md_path.parent)
     with md_path.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines).lstrip("\n"))

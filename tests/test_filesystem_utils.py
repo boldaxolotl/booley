@@ -13,7 +13,14 @@ import pytest
 from tests.time_budget import hang_guard_s
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.runtime.filesystem_utils import replace_file, safe_rmtree, unlink_file
+from booley.runtime.filesystem_utils import (
+    RemovedDirectoryError,
+    make_directories,
+    replace_file,
+    run_roots,
+    safe_rmtree,
+    unlink_file,
+)
 
 # ---------------------------------------------------------------------------
 # safe_rmtree
@@ -102,6 +109,69 @@ class TestSafeRmtree:
 # ---------------------------------------------------------------------------
 # replace_file
 # ---------------------------------------------------------------------------
+
+
+class TestMakeDirectories:
+    @pytest.mark.parametrize("guarded", [False, True], ids=["unguarded", "run-roots"])
+    def test_creates_subdirectories_in_an_existing_booley_directory(self, tmp_path, guarded):
+        booley_dir = tmp_path / "checkout" / ".booley"
+        booley_dir.mkdir(parents=True)
+        target = booley_dir / "flow-reports" / "lint" / "1"
+
+        if guarded:
+            with run_roots(tmp_path / "checkout", booley_dir):
+                make_directories(target)
+        else:
+            make_directories(target)
+
+        assert target.is_dir()
+
+    def test_creates_a_booley_directory_inside_an_existing_checkout(self, tmp_path):
+        target = tmp_path / "checkout" / ".booley" / ".runtime" / "edalize"
+        target.parent.parent.parent.mkdir()
+
+        make_directories(target)
+
+        assert target.is_dir()
+
+    def test_refuses_to_recreate_a_removed_checkout(self, tmp_path):
+        checkout = tmp_path / "checkout"
+
+        with pytest.raises(RemovedDirectoryError) as caught:
+            make_directories(checkout / ".booley" / "flow-reports")
+
+        assert caught.value.directory == checkout
+        assert str(checkout) in str(caught.value)
+        assert not checkout.exists()
+
+    def test_refuses_a_removed_run_root_only_while_the_run_lasts(self, tmp_path):
+        checkout = tmp_path / "checkout"
+        booley_dir = checkout / "data"
+        checkout.mkdir()
+
+        with run_roots(checkout, booley_dir), pytest.raises(RemovedDirectoryError) as caught:
+            make_directories(booley_dir / "flow-reports")
+
+        assert caught.value.directory == booley_dir
+        assert not booley_dir.exists()
+        make_directories(booley_dir / "flow-reports")
+        assert (booley_dir / "flow-reports").is_dir()
+
+    def test_durable_publication_refuses_to_recreate_a_removed_checkout(self, tmp_path):
+        from booley.flows.artifact_durability import durable_create
+
+        checkout = tmp_path / "checkout"
+
+        with pytest.raises(RemovedDirectoryError):
+            durable_create(checkout / ".booley" / "flow-reports" / "run.log", b"x")
+
+        assert not checkout.exists()
+
+    def test_a_file_in_the_way_still_fails(self, tmp_path):
+        (tmp_path / "taken").write_bytes(b"")
+
+        with pytest.raises(FileExistsError):
+            make_directories(tmp_path / "taken")
 
 
 def _windows_permission_error(winerror: int) -> PermissionError:

@@ -224,12 +224,12 @@ def resolution(_adr0039_lenient_selection):
 _FAKE_VIVADO = """\
 import sys
 from pathlib import Path
-work_root, returncode = Path(sys.argv[1]), int(sys.argv[2])
+work_root, returncode, route = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3] == "1"
 with (work_root.parent / "vivado-calls").open("a") as calls:
     calls.write("x")
 impl = work_root / "top.runs" / "impl_1"
 impl.mkdir(parents=True, exist_ok=True)
-if returncode == 0:
+if route:
     (impl / "runme.log").write_text("route_design completed successfully\\n")
     for name in ("utilization_placed", "timing_summary_routed", "drc_routed"):
         (impl / f"top_{name}.rpt").write_text(name)
@@ -262,7 +262,14 @@ def vivado(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         return real_build(recipe, **kwargs)
 
     def run_command(work_root, _work_dir):
-        return [sys.executable, str(script), str(work_root), str(state["returncode"])]
+        route = state.get("route", state["returncode"] == 0)
+        return [
+            sys.executable,
+            str(script),
+            str(work_root),
+            str(state["returncode"]),
+            str(int(route)),
+        ]
 
     monkeypatch.setattr(fpga_edam, "build_fpga_edam", build)
     monkeypatch.setattr(fpga_edam, "fpga_run_command", run_command)
@@ -371,6 +378,37 @@ def test_fpga_label_carries_target_source_bytes(tmp_path: Path, vivado: dict) ->
     assert record["key"]["target"] == "default"
     assert record["key"]["phase"] == "fpga_impl"
     assert record["source_bytes"] == 128  # the six fixture files resolved for the Target
+
+
+@pytest.mark.parametrize(
+    ("returncode", "route", "parsed", "exit_code", "outcome"),
+    [
+        (2, True, None, EXIT_SUCCESS, "exit_zero"),
+        (1, False, {}, EXIT_ERROR, "exit_nonzero"),
+        (0, False, {}, EXIT_ERROR, "exit_nonzero"),
+    ],
+    ids=["boardless", "no-route", "exit-zero-no-route"],
+)
+def test_fpga_impl_record_outcome_follows_route_completion(
+    tmp_path: Path,
+    vivado: dict,
+    returncode: int,
+    route: bool,
+    parsed,
+    exit_code: int,
+    outcome: str,
+) -> None:
+    _write_project_config(tmp_path)
+    vivado.update(returncode=returncode, route=route)
+    if parsed is not None:
+        vivado["parsed"] = parsed
+
+    run, _ = _run_fpga(tmp_path)
+
+    assert run.exit_code == exit_code
+    history = json.loads((tmp_path / "runtime/resources/history.json").read_text(encoding="utf-8"))
+    (record,) = history["records"]
+    assert (record["outcome"], record["returncode"]) == (outcome, returncode)
 
 
 @pytest.mark.parametrize("named_state", [True, False], ids=["state-file", "no-state-file"])

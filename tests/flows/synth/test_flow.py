@@ -1418,11 +1418,54 @@ def test_resolution_failure_is_an_infrastructure_error(synth_cli: SynthCli) -> N
     assert "no such target" in outcome.report_text
 
 
-def test_sandbox_runs_a_bare_make_of_the_target_build_dir(synth_cli: SynthCli) -> None:
-    """The one command crossing into the Sandbox is a checkout-relative ``make -C``."""
-    assert synth_cli.run().exit_code == EXIT_SUCCESS
+@pytest.mark.skipif(os.name != "posix", reason="the short root is the Linux Sandbox's /tmp")
+@pytest.mark.parametrize(
+    ("result", "physical"),
+    [
+        pytest.param(_PASS_OUTPUT, False, id="success"),
+        pytest.param(SubprocessResult(returncode=2), False, id="failure"),
+        pytest.param(SubprocessResult(returncode=-1, timed_out=True), False, id="timeout"),
+        pytest.param(_PASS_OUTPUT, True, id="physical"),
+    ],
+)
+def test_sandbox_make_gives_yosys_a_short_tmpdir_removed_after_the_run(
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result: SubprocessResult,
+    physical: bool,
+) -> None:
+    """Yosys's ABC hangs under a TMPDIR over 35 characters (#4730): it gets its own."""
+    long_tmp = tmp_path / ("j" * 80)
+    long_tmp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(long_tmp))
+    monkeypatch.setattr("tempfile.tempdir", str(long_tmp))
+    live: list[list[str]] = []
 
-    assert synth_cli.commands == [["make", "-C", f"{_SYNTH_ROOT}/synth"]]
+    def record(cmd: list[str]) -> SubprocessResult:
+        live.append(
+            [
+                arg
+                for arg in cmd
+                if arg.startswith("BOOLEY_YOSYS_TMPDIR=") and Path(arg.partition("=")[2]).is_dir()
+            ]
+        )
+        return result
+
+    synth_cli.tool_output = record
+    if physical:
+        synth_cli.resolution.resolve = lambda *_a, **_k: _with_synth_mode(
+            _fake_synth_resolved(synth_cli.project), "physical"
+        )
+    synth_cli.run()
+
+    assert synth_cli.commands[0][:3] == ["make", "-C", f"{_SYNTH_ROOT}/synth"]
+    carried = [args for args in live if args]
+    assert len(carried) == 1, "no make command gave Yosys its own TMPDIR"
+    directory = Path(carried[0][0].partition("=")[2])
+    assert directory.parent == Path("/tmp")
+    assert len(str(directory)) <= 35
+    assert not directory.exists()
 
 
 def test_compatibility_argv_matches_the_planned_configure_argv(synth_cli: SynthCli) -> None:
@@ -5018,16 +5061,39 @@ def test_tool_failure_log_keeps_exit_code_and_timeout_state(
     assert not any("design check failed" in m for m in messages)
 
 
-def test_exit_zero_design_failure_reason_omits_exit_header(flow_and_state, tmp_path, caplog):
-    """The exit-0 forced-failure header is not the design-check reason."""
-    diagnostic = "ERROR: syntax error at rtl.sv:3"
+@pytest.mark.parametrize(
+    ("diagnostic", "log", "process"),
+    [
+        ("ERROR: syntax error at rtl.sv:3", "ERROR: syntax error at rtl.sv:3\n", None),
+        (
+            "sv2v_converted.v:3936: ERROR: syntax error, unexpected '['",
+            (Path(__file__).parent / "fixtures/frontend_error_banner_yosys.txt").read_text(),
+            {"returncode": 2, "stdout": "BOOLEY_STAGE: yosys\n"},
+        ),
+        (
+            "Area for cell type $_DFF_P_ is unknown!",
+            "top.sv:8: Warning: unknown character escape sequence '\\q'\n"
+            'ERROR: assert property (a != 4\'hf) else $display("\\q");\n'
+            "                                                ^\n"
+            "Area for cell type $_DFF_P_ is unknown!\n",
+            None,
+        ),
+    ],
+    ids=["exit-zero-header", "banner-before-error", "echoed-error-before-unknown-area"],
+)
+def test_design_failure_reason_is_the_tool_error_line(
+    flow_and_state, tmp_path, caplog, diagnostic, log, process
+):
+    """The reason is the tool error line: not the exit-0 header, nor (issue #4897) Yosys's
+    banner or an echoed source line."""
     with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
         result, report = _run_latch_case(
             flow_and_state,
             tmp_path,
             {
                 "cell": "$_DFF_P_",
-                "artifacts": {"yosys.log": f"{diagnostic}\n"},
+                "artifacts": {"yosys.log": log},
+                **({"process": process} if process else {}),
             },
         )
     assert report["termination"] == "design_failure"
@@ -5369,6 +5435,8 @@ def test_1095_public_frontend_failure(
         assert f"RESULT: ERROR — lite: {report['infra_error']}" in result.report_text
     else:
         assert not report["infra_error"]
+        # No line is a tool error line: the reason stays the first excerpt line.
+        assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
 
 
 def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):

@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from booley.flows import artifacts as flow_artifacts
-from booley.flows.base import SubprocessResult
+from booley.flows.base import FlowMechanics, SubprocessResult
 from booley.flows.lint.flow import (
     LintConfigResult,
     LintFlow,
@@ -32,6 +32,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
+from tests.canned_process_support import canned_command
 from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
@@ -145,7 +146,8 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
     returns the result and the command of every linter run. The Targets run in
     order and take the processes in order (the last repeats). ``resolved(handle,
     build_root)`` stands for ``resolve_target_handle``; ``resolved=None`` keeps
-    the resolver the test installed.
+    the resolver the test installed. ``measured=True`` runs each canned result as a
+    real child process through the measured run, so a history record is written.
     """
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
@@ -159,12 +161,16 @@ def run_lint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _LintRun:
         resolved: Callable[..., object] | None = lambda handle, build_root: _stub_resolved(
             build_root=tmp_path / handle.selector
         ),
+        measured: bool = False,
     ) -> tuple[ExecutionResult, list[list[str]]]:
         commands: list[list[str]] = []
 
         def execute(_flow: LintFlow, cmd: list[str], **_kwargs: object) -> SubprocessResult:
             commands.append(cmd)
-            return processes[min(len(commands), len(processes)) - 1]
+            process = processes[min(len(commands), len(processes)) - 1]
+            if measured:  # the real measured run, which writes the history record
+                return FlowMechanics._execute_local(_flow, canned_command(process))
+            return process
 
         # Unit tests have no Verilator: the linter subprocess is the one
         # private seam the public Flow entry cannot replace.
@@ -750,6 +756,26 @@ _DESIGN_FAIL_STDERR = (
     "%Error: Exiting due to 1 error(s)\n"
 )
 _NON_BLOCKING_KNOB = "[flows.lint]\nwarnings_as_errors = false\n"
+
+
+@pytest.mark.parametrize(
+    ("process", "outcome"),
+    [
+        pytest.param(_process(2, stderr=_WARNINGS_ONLY_STDERR), "exit_zero", id="warnings-only"),
+        pytest.param(
+            _process(0, stderr=_DESIGN_FAIL_STDERR), "exit_nonzero", id="exit-zero-error"
+        ),
+    ],
+)
+def test_lint_record_outcome_follows_the_linter_error(
+    run_lint: _LintRun, tmp_path: Path, process: SubprocessResult, outcome: str
+) -> None:
+    from booley.runtime import resource_history
+
+    run_lint(process, measured=True)
+
+    (record,) = resource_history.load_records(tmp_path)
+    assert (record["outcome"], record["returncode"]) == (outcome, process.returncode)
 
 
 @pytest.mark.parametrize(
@@ -2148,6 +2174,7 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     from types import SimpleNamespace
 
     from booley.flows.lint.flow import _errored_verdict
+    from booley.flows.source_paths import ProjectSourcePaths
 
     executable = "verilator" if family == "verilator" else "verible-verilog-lint"
     fake = tmp_path / f"{executable}.py"
@@ -2160,6 +2187,7 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
         command=[sys.executable, str(fake)],
         resolved=SimpleNamespace(configured_eda_tool=family, files=(), build_root=tmp_path),
         attempt_token="",
+        project_paths=ProjectSourcePaths(),
     )
     result = flow._run_lint_target(_target_handle("lite"), prepared=prepared)
     exit_code, text = _errored_verdict([result])
@@ -2480,6 +2508,7 @@ def test_lint_label_carries_target_source_bytes(tmp_path):
 
     from booley.flows import job_resources
     from booley.flows.base import SubprocessResult
+    from booley.flows.source_paths import ProjectSourcePaths
     from booley.fusesoc.fusesoc_registry import ResolvedFile
 
     (tmp_path / "top.sv").write_bytes(b"module top; endmodule\n")
@@ -2499,6 +2528,7 @@ def test_lint_label_carries_target_source_bytes(tmp_path):
             ),
         ),
         attempt_token="",
+        project_paths=ProjectSourcePaths(),
     )
     seen: list[job_resources.ResourceLabel | None] = []
 
@@ -2532,7 +2562,7 @@ _VERIBLE_FINDINGS = (
     "rtl/top.sv:9:1: Line length exceeds 100. [line-length]\n"
     'rtl/top.sv:3:1: syntax error at token "endmodule"\n'
     'rtl/top.sv:5:1: syntax error at token "foo"\n'
-    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+    'rtl/top.sv:5:7: syntax error at token "bar"\n'  # same line: counted once, first message
 )
 
 
@@ -2566,24 +2596,68 @@ class TestFlowMetrics:
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             return flow._run_lint_target(_target_handle("lite", eda_tool=family))
 
-    @pytest.mark.parametrize(
-        ("family", "output", "returncode"),
-        [
-            pytest.param("verilator", _VERILATOR_FINDINGS, 2, id="verilator"),
-            pytest.param("verible", _VERIBLE_FINDINGS, 1, id="verible"),
-        ],
-    )
     def test_findings_return_unique_warning_and_error_counts(
-        self, tmp_path: Path, state_file: Path, family: str, output: str, returncode: int
+        self, tmp_path: Path, state_file: Path
     ) -> None:
-        result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
+        cases = [
+            (
+                "verilator",
+                _VERILATOR_FINDINGS,
+                2,
+                {
+                    "errors": [
+                        "rtl/x.v:1: Can't find definition of variable: 'zzz'",
+                        "rtl/x.v:9: second diagnostic",
+                    ],
+                    "warnings": [
+                        "rtl/a.v:3 UNUSEDSIGNAL: Signal is not used: 'x'",
+                        "rtl/b.v:9 WIDTH: Operator ASSIGNW expects 8 bits",
+                    ],
+                },
+            ),
+            (
+                "verible",
+                _VERIBLE_FINDINGS,
+                1,
+                {
+                    "errors": [
+                        'rtl/top.sv:3: syntax error at token "endmodule"',
+                        'rtl/top.sv:5: syntax error at token "foo"',
+                    ],
+                    "warnings": [
+                        "rtl/top.sv:4 interface-name-style: Interface names must end with _if.",
+                        "rtl/top.sv:9 line-length: Line length exceeds 100.",
+                    ],
+                },
+            ),
+        ]
+        for family, output, returncode, expected in cases:
+            result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
 
-        assert result.flow_metrics().plain == {"warnings": 2, "errors": 2}
+            values = result.flow_metrics()
+            assert values.plain == {"warnings": 2, "errors": 2}, family
+            assert values.counted_items == expected, family
+
+    def test_listed_findings_are_capped_and_cut(self, tmp_path: Path, state_file: Path) -> None:
+        output = "".join(
+            f"%Warning-WIDTH: rtl/w.v:{line}:1: {'long ' * 60 if line == 1 else 'wide'}\n"
+            for line in range(1, 26)
+        )
+
+        values = self._lint(tmp_path, "verilator", stdout=output, returncode=0).flow_metrics()
+
+        assert values.plain["warnings"] == 25
+        listed = values.counted_items["warnings"]
+        assert len(listed) == 20
+        assert listed[1] == "rtl/w.v:2 WIDTH: wide"
+        assert len(listed[0]) == 200
 
     def test_clean_run_returns_zero_counts(self, tmp_path: Path, state_file: Path) -> None:
         result = self._lint(tmp_path, "verilator", stdout="", returncode=0)
 
-        assert result.flow_metrics().plain == {"warnings": 0, "errors": 0}
+        values = result.flow_metrics()
+        assert values.plain == {"warnings": 0, "errors": 0}
+        assert values.counted_items == {}
 
     def test_warnings_only_run_does_not_count_the_epilogue_as_an_error(
         self, tmp_path: Path, state_file: Path
@@ -2617,33 +2691,238 @@ class TestFlowMetrics:
         with pytest.raises(MetricsUnavailableError, match="exited 3"):
             result.flow_metrics()
 
-    @pytest.mark.parametrize(
-        ("output", "expected"),
-        [
+    def test_lint_error_findings_verilator(self) -> None:
+        from booley.flows.lint.flow import lint_error_findings
+
+        cases = [
             # Two different errors on one line count twice; a rule-less, location-less one once.
-            pytest.param(
+            (
                 "%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n",
                 3,
-                id="same-line-and-locationless",
             ),
             # A repeated line counts once; the same message under another rule counts again.
-            pytest.param(
+            (
                 "%Error-UNSUPPORTED: a.v:2:1: nope\n%Error-UNSUPPORTED: a.v:2:1: nope\n"
                 "%Error: a.v:2:1: nope\n",
                 2,
-                id="repeated-and-other-rule",
             ),
             # Continuation lines of a multi-line message are not errors.
-            pytest.param(
+            (
                 "%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n",
                 1,
-                id="multi-line-message",
             ),
-            pytest.param("%Error: Exiting due to 1 error(s)\n", 0, id="epilogue-only"),
-            pytest.param("", 0, id="empty"),
-        ],
-    )
-    def test_count_lint_errors_verilator(self, output: str, expected: int) -> None:
-        from booley.flows.lint.flow import count_lint_errors
+            ("%Error: Exiting due to 1 error(s)\n", 0),
+            ("", 0),
+        ]
+        for output, expected in cases:
+            assert len(lint_error_findings(output, "verilator")) == expected, output
 
-        assert count_lint_errors(output, "verilator") == expected
+
+def _author_cross_core_project(root: Path) -> None:
+    """Core ``a`` at the root and core ``b`` in ``ip/b`` both lint ``ip/b/rtl/top.sv``."""
+    (root / "ip/b/rtl").mkdir(parents=True)
+    (root / "ip/b/rtl/top.sv").write_bytes(b"module top; endmodule\n")
+    (root / "a.core").write_bytes(
+        b"CAPI=2:\nname: ::a:0\nfilesets:\n  rtl:\n"
+        b"    files: [ip/b/rtl/top.sv]\n    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_a:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+    )
+    (root / "ip/b/b.core").write_bytes(
+        b"CAPI=2:\nname: ::b:0\nfilesets:\n  rtl:\n"
+        b"    files: [rtl/top.sv]\n    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_b:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+        b"  style_b:\n    flow: lint\n    flow_options: {tool: verible}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+    )
+
+
+def _author_alias_project(root: Path) -> None:
+    """Core ``a`` lists the file through a symlink and a ``copyto`` named like an export."""
+    _author_cross_core_project(root)
+    try:
+        (root / "alias").symlink_to(root / "ip/b/rtl", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    (root / "a.core").write_bytes(
+        b"CAPI=2:\nname: ::a:0\nfilesets:\n  rtl:\n"
+        b"    files:\n      - alias/top.sv\n"
+        b"      - ip/b/rtl/top.sv: {copyto: src/a_0/staged.sv}\n"
+        b"    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_a:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+    )
+
+
+def _author_demo_project(root: Path) -> None:
+    """The stealth demo layout: its core lives in ``.booley/cores`` and lists ``picorv32.v``."""
+    (root / ".booley/cores").mkdir(parents=True)
+    (root / "picorv32.v").write_bytes(b"module picorv32; endmodule\n")
+    (root / ".booley/booley.toml").write_bytes(
+        b"[stealth]\nenabled = true\nignore_native_cores = true\n"
+    )
+    (root / ".booley/cores/picorv32_impl.core").write_bytes(
+        b"CAPI=2:\nname: booley::picorv32-impl:0\nfilesets:\n  rtl:\n"
+        b"    files: [picorv32.v]\n    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_core:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: picorv32\n"
+    )
+
+
+_UNUSED_B = "%Warning-UNUSEDSIGNAL: src/b_0/rtl/top.sv:1:8: Signal is not used: 'x'\n"
+_UNUSED_A = "%Warning-UNUSEDSIGNAL: src/a_0/ip/b/rtl/top.sv:1:8: Signal is not used: 'x'\n"
+_GENERATED = "%Warning-WIDTH: gen/generated.sv:2:3: Operator ASSIGN expects 8 bits\n"
+
+
+@pytest.mark.parametrize(
+    ("project", "target", "args", "processes", "exit_code", "rows", "texts"),
+    [
+        pytest.param(
+            "cross",
+            "lint_a,lint_b",
+            (),
+            (_process(stdout=_UNUSED_A + _GENERATED), _process(stdout=_UNUSED_B)),
+            EXIT_FAILURE,
+            [
+                ("UNUSEDSIGNAL", "ip/b/rtl/top.sv", ["lint_a", "lint_b"]),
+                ("WIDTH", "gen/generated.sv", ["lint_a"]),
+            ],
+            ["[lint]   %Warning-UNUSEDSIGNAL: ip/b/rtl/top.sv:1:8 Signal is not used: 'x'"],
+            id="cross-core",
+        ),
+        pytest.param(
+            "alias",
+            "lint_a,lint_b",
+            (),
+            (
+                _process(
+                    stdout="%Warning-UNUSEDSIGNAL: src/a_0/alias/top.sv:1:8: Signal is not used: 'x'\n"
+                    "%Warning-WIDTH: src/a_0/staged.sv:2:3: Operator ASSIGN expects 8 bits\n"
+                ),
+                _process(stdout=_UNUSED_B),
+            ),
+            EXIT_FAILURE,
+            [
+                ("UNUSEDSIGNAL", "ip/b/rtl/top.sv", ["lint_a", "lint_b"]),
+                ("WIDTH", "src/a_0/staged.sv", ["lint_a"]),
+            ],
+            [],
+            id="alias-and-copyto",
+        ),
+        pytest.param(
+            "cross",
+            "lint_b",
+            ("--scope", "ip/b/"),
+            (_process(),),
+            EXIT_SUCCESS,
+            [],
+            ["RESULT: PASS"],
+            id="scope",
+        ),
+        pytest.param(
+            "demo",
+            "lint_core",
+            (),
+            (
+                _process(
+                    stdout="%Warning-UNUSEDSIGNAL: src/booley__picorv32-impl_0/picorv32.v:10:3: "
+                    "Signal is not used: 'y'\n"
+                ),
+            ),
+            EXIT_FAILURE,
+            [("UNUSEDSIGNAL", "picorv32.v", ["lint_core"])],
+            [],
+            id="demo",
+        ),
+        pytest.param(
+            "cross",
+            "style_b",
+            (),
+            (
+                _process(
+                    stdout="src/b_0/rtl/top.sv:4:11: Interface names must end with _if. "
+                    "[interface-name-style]\n"
+                ),
+            ),
+            EXIT_FAILURE,
+            [("interface-name-style", "ip/b/rtl/top.sv", ["style_b"])],
+            [],
+            id="verible-finding",
+        ),
+        pytest.param(
+            "cross",
+            "lint_b",
+            (),
+            (
+                _process(
+                    1,
+                    stderr="%Error: src/b_0/rtl/top.sv:3:1: syntax error, unexpected endmodule\n"
+                    "%Error: Exiting due to 1 error(s)\n",
+                ),
+            ),
+            EXIT_FAILURE,
+            [],
+            [
+                "ERROR: %Error: ip/b/rtl/top.sv:3:1: syntax error",
+                "RESULT: FAIL \u2014 lint_b: %Error: ip/b/rtl/top.sv:3:1:",
+            ],
+            id="verilator-error",
+        ),
+        pytest.param(
+            "cross",
+            "style_b",
+            (),
+            (_process(1, stdout='src/b_0/rtl/top.sv:3:1: syntax error at token "endmodule"\n'),),
+            EXIT_FAILURE,
+            [],
+            ["RESULT: FAIL \u2014 style_b: ip/b/rtl/top.sv:3:1: syntax error"],
+            id="verible-error",
+        ),
+    ],
+)
+def test_lint_reports_project_paths(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project: str,
+    target: str,
+    args: tuple[str, ...],
+    processes: tuple[SubprocessResult, ...],
+    exit_code: int,
+    rows: list[tuple[str, str, list[str]]],
+    texts: list[str],
+) -> None:
+    """Findings, the quoted error and the scope name Project paths, not FuseSoC's copies."""
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    work_dir = tmp_path / "proj"
+    work_dir.mkdir()
+    {
+        "demo": _author_demo_project,
+        "alias": _author_alias_project,
+        "cross": _author_cross_core_project,
+    }[project](work_dir)
+    _real_lint_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, "verible"), tmp_path)
+
+    result, _ = run_lint(
+        *processes,
+        args=("--report-dir", str(tmp_path / "reports"), *args),
+        target=target,
+        work_dir=work_dir,
+        resolved=None,
+    )
+
+    assert result.exit_code == exit_code
+    report_path = tmp_path / "reports/lint_report.json"
+    report: dict[str, Any] = {"warnings": [], "errors": []}
+    if report_path.exists():
+        report = json.loads(report_path.read_bytes())
+    assert [(w["rule"], w["file"], w["targets"]) for w in report["warnings"]] == rows
+    output = capsys.readouterr().out + result.outcome.report_text
+    for text in texts:
+        assert text in output
+    for error in report["errors"]:
+        assert "src/b_0" not in error["message"]
+        assert "ip/b/rtl/top.sv:3:1:" in error["message"]

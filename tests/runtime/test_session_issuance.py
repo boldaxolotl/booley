@@ -19,6 +19,7 @@ import pytest
 from tests import eda_grant_support
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_host_support import fake_docker_host
+from tests.harness.session_docker_fake import serve_sandbox_docker
 from tests.session_issuance_support import (
     damaged,
     fixed,
@@ -819,28 +820,132 @@ def _move_stamp_to_legacy_location(project: Path) -> None:
             _move_stamp_to_legacy_location, "booley session refresh", id="legacy-location"
         ),
         pytest.param(
+            lambda project: _write_project_toml("[flows.lint]\na = true\n[flows.lint]\n")(
+                project, project
+            ),
+            "booley.toml (line 3), then rerun `booley doctor`",
+            id="project-config",
+        ),
+        pytest.param(
             lambda project: _rewrite_stamp(project, lambda doc: doc.pop("project_data_layout")),
             "booley init --seed",
             id="missing-layout",
         ),
     ],
 )
-def test_doctor_names_repair_for_rejected_pre_030_issuance(
-    issued, monkeypatch, damage, fix
+def test_doctor_names_repair_for_rejected_issuance(
+    issued, monkeypatch, request, damage, fix
 ) -> None:
     """Doctor FAILs a rejected pre-0.3.0 issuance and names the repair that applies."""
     project, _spec, _path, _stamp = issued
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
     damage(project)
-    request = inspection.RuntimeInspectionRequest(project, "sha256:" + "a" * 64, None)
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    inspected = inspection.RuntimeInspectionRequest(project, "sha256:" + "a" * 64, None)
     failures = [
         finding
-        for finding in inspection.inspect_runtime(request).issuance.findings
+        for finding in inspection.inspect_runtime(inspected).issuance.findings
         if finding.severity is Severity.FAIL
     ]
     assert len(failures) == 1
     assert "Sandbox host issuance is invalid" in failures[0].message
     assert fix in failures[0].fix
+
+
+def _write_project_toml(text: str):
+    def damage(project: Path, _devcontainer: Path) -> None:
+        (project / ".booley" / "booley.toml").write_bytes(text.encode("utf-8"))
+
+    return damage
+
+
+def _edit_remote_user(_project: Path, devcontainer: Path) -> None:
+    spec = json.loads(devcontainer.read_text(encoding="utf-8"))
+    spec["remoteUser"] = "someone-else"
+    devcontainer.write_text(json.dumps(spec), encoding="utf-8")
+
+
+def _write_host_egress(_project: Path, _devcontainer: Path) -> None:
+    config = host_config_path()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_bytes(b'[sandbox]\negress = "proxied"\n')
+
+
+_CONFIG_REMEDY = "fix {toml}, then start the Sandbox again"
+_INIT_REMEDY = "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+
+
+@pytest.mark.parametrize("entry", ["up", "prepare"])
+@pytest.mark.parametrize(
+    ("damage", "tail"),
+    [
+        pytest.param(
+            _write_project_toml("[flows.lint]\na = true\n[flows.lint]\nb = false\n"),
+            _CONFIG_REMEDY.replace("{toml}", "{toml} (line 3)"),
+            id="duplicate-table",
+        ),
+        pytest.param(
+            _write_project_toml('[eda.vivado]\nlicense = "x"\n'),
+            _CONFIG_REMEDY,
+            id="unknown-eda-key",
+        ),
+        pytest.param(
+            _write_project_toml('[flows.lint]\nbackend = "x"\n'),
+            _CONFIG_REMEDY,
+            id="retired-flow-key",
+        ),
+        pytest.param(
+            _write_project_toml('[agent]\nauth = "bogus"\n'), _CONFIG_REMEDY, id="invalid-agent"
+        ),
+        pytest.param(
+            _write_project_toml("[agent.git]\nname = 42\n"), _CONFIG_REMEDY, id="invalid-agent-git"
+        ),
+        pytest.param(_edit_remote_user, None, id="devcontainer-drift"),
+        pytest.param(
+            _write_host_egress,
+            "fix {config} on the host, then start the Sandbox again",
+            id="invalid-host-config",
+        ),
+    ],
+)
+def test_spec_refusal_names_the_repair_for_its_cause(
+    issued, monkeypatch, request, entry, damage, tail
+) -> None:
+    """A Project config error says to fix the file; drift keeps its refresh remedy."""
+    project, _spec, path, _stamp = issued
+    damage(project, path)
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    serve_sandbox_docker(monkeypatch)
+    toml = project / ".booley" / "booley.toml"
+    with pytest.raises(session_runtime.SessionError) as raised:
+        getattr(session_runtime, entry)(project)
+    message = str(raised.value)
+    if tail is not None:
+        assert message.endswith("; " + tail.format(toml=toml.resolve(), config=host_config_path()))
+        assert "session refresh" not in message
+        assert "Rebuild Container" not in message
+        assert "session down" not in message
+        if damage is _write_host_egress:
+            assert "sandbox.egress" in message
+    elif entry == "prepare":
+        assert message.endswith("; " + _INIT_REMEDY)
+    else:
+        assert message.endswith(
+            f"in VS Code, {_INIT_REMEDY}; headless, run `booley session refresh` on the host"
+        )
+
+
+def test_credential_policy_refusal_keeps_the_parser_line_of_the_stamped_directory(tmp_path):
+    """The credential reader may read another Booley Directory than EDA; its line survives."""
+    stamped = tmp_path / "stamped"
+    stamped.mkdir()
+    (stamped / "booley.toml").write_bytes(b"[agent]\n[agent]\n")
+    with pytest.raises(runtime_spec.ProjectConfigError) as raised:
+        runtime_spec._validate_credential_policy({}, tmp_path, stamped, "claude", {})
+    assert raised.value.path == stamped / "booley.toml"
+    assert raised.value.line == 2
 
 
 def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch) -> None:

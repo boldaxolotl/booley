@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .coverage_acceptance import coverage_test_run_rows
@@ -201,7 +202,7 @@ def _execute_coverage_transaction(
 def _start_target(root: Path) -> None:
     if any((root / name).exists() for name in ("coverage.json", POINT_STORE_NAME, "native")):
         raise ValueError("Coverage attempts cannot resume; allocate a new invocation")
-    root.mkdir(parents=True, exist_ok=True)
+    make_directories(root)
     # Exclusive creation also rejects an interrupted build with no native output.
     with (root / ".collection-started").open("x", encoding="utf-8"):
         pass

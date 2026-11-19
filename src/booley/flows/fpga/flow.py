@@ -46,7 +46,7 @@ from booley.flows.edam import EdamFile
 from booley.flows.flow_config import expected_count
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
-from booley.flows.job_resources import resolved_source_bytes, resource_phase
+from booley.flows.job_resources import judged_commands, resolved_source_bytes, resource_phase
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -68,6 +68,7 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.presentation import colors
 from booley.presentation.terminal_table import render_table
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.parameter_integrity import validate_top_parameter_intent
@@ -626,7 +627,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         Reservation.
         """
         try:
-            return self._implement_target(target)
+            with judged_commands() as commands:
+                metrics = self._implement_target(target)
+                commands.judge(metrics.returncode == 0)
+            return metrics
         finally:
             if getattr(self, "_execution_role", "candidate") != "baseline":
                 report_phase_end(target, "fpga_impl")
@@ -874,7 +878,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
 
         log_dir = work_root_for(self.args.work_dir, self.name, target)
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, text)
         except OSError:
             logger.debug(

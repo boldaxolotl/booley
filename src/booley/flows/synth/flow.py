@@ -48,12 +48,19 @@ from booley.evidence.timing import (
 )
 from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import (
+    EdaFailure,
     classify_eda_failure,
     first_tool_diagnostic,
     strip_failure_markers,
 )
 from booley.flows.flow_config import expected_count
-from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
+from booley.flows.job_resources import (
+    SYNTH_PHASES,
+    JudgedCommands,
+    judged_commands,
+    resolved_source_bytes,
+    resource_phase,
+)
 from booley.flows.memory_admission import job_thread_count
 from booley.flows.metric_declarations import (
     Better,
@@ -81,9 +88,15 @@ from booley.flows.result_table import (
     status_cell,
 )
 from booley.flows.synth import openroad_reuse
-from booley.flows.synth.backends.pipeline import openroad_thread_assignment
+from booley.flows.synth.backends.pipeline import (
+    BoundaryOutcome,
+    openroad_thread_assignment,
+    yosys_tmpdir,
+    yosys_tmpdir_assignment,
+)
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
+    echoed_source_lines,
 )
 from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
 from booley.flows.synth.cli import SynthArguments
@@ -99,6 +112,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_FAILURE,
     EXIT_SUCCESS,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import (
     format_clock,
@@ -685,15 +699,16 @@ def _design_failure_reason(metrics: SynthMetrics) -> str:
     if "unmapped latch:" in metrics.failure_output:
         return "unmapped latch"
     # The exit-0 header names the exit code, not the design problem: skip it.
-    first_reason = next(
-        (
-            line.strip()
-            for line in metrics.failure_output.splitlines()
-            if line.strip() and line.strip() != _EXIT_ZERO_ERROR_HEADER
-        ),
-        "",
-    )
-    return first_reason or "design failure"
+    lines = [
+        line.strip()
+        for line in metrics.failure_output.splitlines()
+        if line.strip() and line.strip() != _EXIT_ZERO_ERROR_HEADER
+    ]
+    # A short Yosys run's excerpt starts with its banner: name the tool's error line,
+    # never an echoed source line (an RTL comment may read ``ERROR: ...``).
+    echoed = echoed_source_lines(lines)
+    candidates = "\n".join(line for index, line in enumerate(lines) if index not in echoed)
+    return first_tool_diagnostic(candidates, default=lines[0] if lines else "design failure")
 
 
 def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
@@ -1185,6 +1200,54 @@ def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -
     return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
 
 
+def _boundary_failure(
+    termination: str, outcome: Any, result: SubprocessResult, output: str
+) -> EdaFailure | None:
+    """The failure a stage's wrapper marker reports, unless the run was stopped."""
+    if termination in {"timeout", "oom", "resource_killed"}:
+        return None
+    boundary_result = replace(result, stdout=output, stderr="")
+    token = getattr(outcome, "attempt_token", None)
+    failure = classify_eda_failure(boundary_result, expected_token=token)
+    stage = getattr(outcome, "stage", None)
+    if (
+        failure is None
+        and re.fullmatch(r"[0-9a-f]{32}", token or "")
+        and stage in {"sv2v", "yosys", "openroad"}
+    ):
+        failure = classify_eda_failure(
+            boundary_result, expected_stage=stage, expected_executable=stage
+        )
+    return failure
+
+
+# Positions in the records a physical run holds: Yosys is recorded before OpenROAD.
+_YOSYS_COMMAND = 0
+_OPENROAD_COMMAND = 1
+
+
+def _judge_stage_commands(
+    commands: JudgedCommands,
+    plan: Any,
+    metrics: SynthMetrics,
+    outcome: BoundaryOutcome,
+    failure: EdaFailure | None,
+) -> None:
+    """Judge the run's commands: only the one whose own output failed the run is failed."""
+    if metrics.returncode == 0:
+        commands.judge(True)
+    elif not runs_openroad(plan.spec.timing.mode):
+        commands.judge(False)
+    else:
+        yosys_owned = (
+            outcome.forced_failure is not None
+            or not outcome.yosys_complete
+            or (failure is not None and failure.stage in {"sv2v", "yosys"})
+            or (metrics.termination == "design_failure" and outcome.openroad_diagnostic is None)
+        )
+        commands.judge(False, _YOSYS_COMMAND if yosys_owned else _OPENROAD_COMMAND)
+
+
 class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
@@ -1555,30 +1618,34 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         self, target: str, plan: Any, source_bytes: int | None
     ) -> tuple[SynthMetrics, str]:
         """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
-        start = time.monotonic()
-        run = self._run_synth_make(target, plan, source_bytes)
-        elapsed = time.monotonic() - start
-        metrics, output = self._interpret_boundary_run(
-            target, plan, run.result, elapsed, producer=run.producer
-        )
+        with judged_commands() as commands:
+            start = time.monotonic()
+            run = self._run_synth_make(target, plan, source_bytes)
+            elapsed = time.monotonic() - start
+            metrics, output = self._interpret_boundary_run(
+                target, plan, run.result, elapsed, producer=run.producer, commands=commands
+            )
         metrics = self._attach_recipe_evidence(target, metrics)
         self._store_openroad_result(target, plan, metrics, run)
         return metrics, output
 
     def _run_synth_make(self, target: str, plan: Any, source_bytes: int | None) -> _SynthRun:
         """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
-        with resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes):
+        with (
+            resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes),
+            yosys_tmpdir() as yosys_tmp,
+        ):
             if not runs_openroad(plan.spec.timing.mode):
-                cmd = self._synth_boundary_cmd(plan)
+                cmd = [*self._synth_boundary_cmd(plan), yosys_tmpdir_assignment(yosys_tmp)]
                 return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))
-            return self._run_physical_stages(target, plan)
+            return self._run_physical_stages(target, plan, yosys_tmp)
 
     def _openroad_slot(self, target: str) -> openroad_reuse.ReuseSlot:
         """The Target's reuse slot, beside its work root (which every run wipes)."""
         root = work_root_for(self.args.work_dir, self.name, target, variant="openroad_reuse")
         return openroad_reuse.ReuseSlot(root)
 
-    def _run_physical_stages(self, target: str, plan: Any) -> _SynthRun:
+    def _run_physical_stages(self, target: str, plan: Any, yosys_tmp: Path) -> _SynthRun:
         """Run Yosys, then OpenROAD unless the Target's reuse slot matches every input.
 
         A baseline runs in a throwaway worktree, so it neither reads nor
@@ -1587,7 +1654,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         """
         timeout = self._get_timeout()
         start = time.monotonic()
-        yosys = self._execute_boundary(self._synth_boundary_cmd(plan, "yosys"), timeout=timeout)
+        yosys_cmd = [*self._synth_boundary_cmd(plan, "yosys"), yosys_tmpdir_assignment(yosys_tmp)]
+        yosys = self._execute_boundary(yosys_cmd, timeout=timeout)
         if yosys.returncode != 0 or yosys.timed_out:
             return _SynthRun(yosys)
         if getattr(self, "_execution_role", "candidate") != "candidate":
@@ -1679,8 +1747,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         outcome: Any,
         result: SubprocessResult,
         output: str,
-    ) -> None:
-        """Apply terminal and mode-specific completeness policy to metrics."""
+    ) -> EdaFailure | None:
+        """Apply terminal and mode-specific completeness policy; return the failure it read."""
         metrics.expected_latches = expected_count("synth", self.args.work_dir, "expected_latches")
         metrics.expected_comb_loops = expected_count(
             "synth", self.args.work_dir, "expected_comb_loops"
@@ -1696,20 +1764,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
             metrics.termination = "infrastructure_error"
-        failure = None
-        if metrics.termination not in {"timeout", "oom", "resource_killed"}:
-            boundary_result = replace(result, stdout=output, stderr="")
-            token = getattr(outcome, "attempt_token", None)
-            failure = classify_eda_failure(boundary_result, expected_token=token)
-            stage = getattr(outcome, "stage", None)
-            if (
-                failure is None
-                and re.fullmatch(r"[0-9a-f]{32}", token or "")
-                and stage in {"sv2v", "yosys", "openroad"}
-            ):
-                failure = classify_eda_failure(
-                    boundary_result, expected_stage=stage, expected_executable=stage
-                )
+        failure = _boundary_failure(metrics.termination, outcome, result, output)
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
             metrics.infra_error = failure.reason
@@ -1747,6 +1802,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             )
         self._apply_design_failure(metrics, outcome, result, output)
         self._apply_unknown_failure(metrics, outcome, result)
+        return failure
 
     @staticmethod
     def _apply_unknown_failure(
@@ -1918,8 +1974,12 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         proc_result: SubprocessResult,
         elapsed: float,
         producer: openroad_reuse.Producer | None = None,
+        *,
+        commands: JudgedCommands,
     ) -> tuple[SynthMetrics, str]:
         """Interpret a boundary result from its freshness-gated artifacts.
+
+        The run's recorded commands are judged from that interpretation.
 
         A *producer* means the OpenROAD outputs were restored from the reuse
         slot; they are interpreted exactly as a fresh run's, and labelled.
@@ -1936,7 +1996,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                 "producer_run_id": producer.run_id,
                 "producer_started_at": producer.started_at,
             }
-        self._apply_boundary_completion(metrics, outcome, proc_result, output)
+        failure = self._apply_boundary_completion(metrics, outcome, proc_result, output)
+        _judge_stage_commands(commands, plan, metrics, outcome, failure)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
 
         return metrics, output
@@ -1980,7 +2041,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
         log_dir = self._synth_work_root(target)
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, output)
         except OSError:
             logger.debug(
@@ -2008,7 +2069,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
         log_dir = work_root_for(project_root, self.name, target, variant="baseline")
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, output)
         except OSError:
             logger.debug(

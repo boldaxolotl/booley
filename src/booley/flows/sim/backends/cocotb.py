@@ -106,6 +106,7 @@ from booley.flows.sim.result import (
 )
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 
 
@@ -928,7 +929,7 @@ def _prepare_cocotb_run(
     build = Path(build_dir).resolve()
     run = Path(run_cwd).resolve() if run_cwd is not None else build
     work = Path(work_dir).resolve() if work_dir is not None else build
-    work.mkdir(parents=True, exist_ok=True)
+    make_directories(work)
     results = _reset_result_transports(work)
     if vcd and not trace_scope.strip():
         detail = (

@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -62,6 +62,7 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.flows.test_runs import TestRun
 from booley.runtime.endpoint_execution import work_item_attempt_requeues
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -134,6 +135,8 @@ class _SharedReady:
     result: BundleBuildResult
     bundle: SimulatorBundle
     build_execution: Mapping[str, object]
+    # The retained launch preparation every other lane of this build derives from.
+    preparation: _OrdinaryGroup | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +206,9 @@ class _OrdinaryGroup(Protocol):
     def artifact_paths(self) -> tuple[Path, ...]: ...
 
     def planning_disclosure(self) -> dict[str, object]: ...
+    def for_work_item(
+        self, test_names: tuple[str, ...], test_runs: tuple[TestRun, ...] | None
+    ) -> _OrdinaryGroup: ...
     def compile(self) -> BuildOutcome: ...
     def finish_build_failure(self) -> SimulationTargetOutcome: ...
     def build_recovery_document(self) -> dict[str, object]: ...
@@ -288,48 +294,64 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         )
         started = time.monotonic()
         inputs = self._group_inputs(request)
-        handle, names = inputs.handle, inputs.names
-        execution, workload = inputs.execution, inputs.workload
+        handle = inputs.handle
         try:
             with self._shared_lock(key):
-                failed = self._shared_failure.get(key)
-                if failed is not None:
-                    return _blocked_shared_result(request, failed, time.monotonic() - started)
-                ready = self._recover_shared(request, key)
-                recovered_failure = self._shared_failure.get(key)
-                if recovered_failure is not None:
-                    return _blocked_shared_result(
-                        request, recovered_failure, time.monotonic() - started
-                    )
-                compiled_group = None
-                if ready is None:
-                    built = self._build_shared(
-                        request, key, handle, names, execution, workload, started
-                    )
-                    if isinstance(built, SimulationResult):
-                        return built
-                    ready, compiled_group = built
+                settled = self._settle_shared(request, key, inputs, started)
+                if isinstance(settled, SimulationResult):
+                    return settled
+                ready, launch_group = settled
         finally:
             # The shared build is settled (built, reused, recovered or failed). Pre-Sim
             # Commands are a phase of their own, so the build's estimate ends here.
             end_phase(handle.selector, "sim_build")
-        return self._launch_shared(
-            request,
-            run_directory,
-            ready,
-            compiled_group,
-            inputs,
-            started,
-        )
+        # A ready build lets the item take a claim of its own before it runs Pre-Sim
+        # Commands and simulates; waiting for it holds no lock of the variant.
+        if request.build_settled is not None:
+            request.build_settled()
+        return self._launch_shared(request, run_directory, ready, launch_group, inputs, started)
 
-    def _launch_shared(self, request, run_directory, ready, compiled_group, inputs, started):
-        launch_group = (
-            compiled_group
-            if compiled_group is not None
-            else self._prepare_shared_launch(
-                request, ready, inputs.execution, inputs.handle, inputs.names
+    def _settle_shared(
+        self, request, key, inputs, started
+    ) -> SimulationResult | tuple[_SharedReady, _OrdinaryGroup | None]:
+        """Settle the build under the shared lock; the one lane that configures gets its group.
+
+        A lane that finds the retained preparation already made gets ``None``
+        and derives its launch from it without the Target slot lease.
+        """
+        failed = self._shared_failure.get(key)
+        if failed is not None:
+            return _blocked_shared_result(request, failed, time.monotonic() - started)
+        ready = self._recover_shared(request, key)
+        recovered_failure = self._shared_failure.get(key)
+        if recovered_failure is not None:
+            return _blocked_shared_result(request, recovered_failure, time.monotonic() - started)
+        if ready is None:
+            return self._build_shared(
+                request,
+                key,
+                inputs.handle,
+                inputs.names,
+                inputs.execution,
+                inputs.workload,
+                started,
             )
+        if ready.preparation is not None:
+            return ready, None
+        # A recovered build is configured once here, by the first lane that needs it.
+        group = self._prepare_shared_launch(
+            request, ready, inputs.execution, inputs.handle, inputs.names
         )
+        self._shared_ready[key] = replace(ready, preparation=group)
+        return self._shared_ready[key], group
+
+    def _launch_shared(self, request, run_directory, ready, launch_group, inputs, started):
+        if launch_group is None:
+            assert ready.preparation is not None
+            launch_group = ready.preparation.for_work_item(
+                inputs.names, work_item_test_runs(request.work_item)
+            )
+            _authenticate_planning_disclosure(request, launch_group)
         return self._claim_and_launch(
             request,
             run_directory,
@@ -407,7 +429,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         result, bundle = self._publish_ready(
             request, directory, attempt, captured.artifacts, captured.execution_ref, started
         )
-        ready = _SharedReady(directory, result, bundle, captured.build_execution)
+        ready = _SharedReady(directory, result, bundle, captured.build_execution, group)
         self._shared_ready[key] = ready
         return ready, group
 
@@ -1770,7 +1792,8 @@ def capture_private_image(
     """Copy the build artifacts into *destination* and return their evidence records."""
     if not paths:
         raise SimulationRecordIntegrityError("successful build has no authenticated image")
-    destination.mkdir(parents=True, mode=0o700, exist_ok=True)
+    make_directories(destination.parent)
+    destination.mkdir(mode=0o700, exist_ok=True)
     sources: list[tuple[Path, str]] = []
     executable_assigned = False
     for source in paths:
@@ -1798,7 +1821,7 @@ def capture_private_image(
     for source, kind in sources:
         authenticated = _regular_child(source_root, source.relative_to(source_root).as_posix())
         target = destination / authenticated.relative_to(source_root)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(target.parent)
         durable_copy(authenticated, target, mode=_ARTIFACT_MODES[kind])
         raw = target.read_bytes()
         records.append(

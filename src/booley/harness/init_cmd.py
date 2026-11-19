@@ -2514,15 +2514,14 @@ def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
     return parse_git_version(result.stdout) if result.returncode == 0 else None
 
 
-def _step_worktree_policies(
-    ctx: InitContext, sandbox_git_version: tuple[int, int, int] | None
-) -> None:
+def _step_worktree_policies(ctx: InitContext, facts: ProjectFacts) -> None:
     """Reconcile pruning safety and the two-sided worktree-link policy."""
     booley_dir = booley_dir_for_init(ctx.project_root)
     _step_worktree_prune_guard(ctx, booley_dir=booley_dir)
     _step_worktree_link_policy(
         ctx,
-        sandbox_git_version=sandbox_git_version,
+        sandbox_git_version=facts.sandbox_git_version,
+        sandbox_image_pending=facts.sandbox_image_pending,
         booley_dir=booley_dir,
     )
 
@@ -2555,6 +2554,9 @@ class ProjectFacts:
 
     #: Git version inside the Sandbox Image; ``None`` when unknown.
     sandbox_git_version: tuple[int, int, int] | None
+    #: Check-only found the Sandbox Image stale, so ``sandbox_git_version`` is not
+    #: yet known: init would rebuild the image before probing it.
+    sandbox_image_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -2586,7 +2588,7 @@ def initialize_project(ctx: InitContext, request: ProjectInitialization) -> bool
     facts = request.host_facts()
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
-    _step_worktree_policies(ctx, facts.sandbox_git_version)
+    _step_worktree_policies(ctx, facts)
     _step_line_endings_and_guidance(ctx, request.guidance_plan, request.line_ending_baseline)
     if request.reconcile_interactive_files:
         _step_sandbox_files(ctx)
@@ -2634,7 +2636,14 @@ class _HostPreparation:
         self.pdk_root = nangate_pdk.cache_root()
         self.image_result = _reconcile_initialized_image(self.ctx)
         self.runtime_image_id = _selected_runtime_image_id(self.image_result)
-        return ProjectFacts(_sandbox_git_version(self.runtime_image_id))
+        pending = (
+            self.ctx.check_only
+            and self.image_result is not None
+            and self.image_result.status is ImageLifecycleStatus.STALE
+        )
+        return ProjectFacts(
+            _sandbox_git_version(self.runtime_image_id), sandbox_image_pending=pending
+        )
 
 
 def _run_project_init_steps(

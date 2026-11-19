@@ -85,6 +85,7 @@ from booley.fusesoc.fusesoc_registry import (
     mirrored_export_name,
     native_cores_ignored,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -181,7 +182,7 @@ class VerilatorCoverageExecution:
         try:
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
-            with SimulationBuildSession(self._handle, request.variant.name) as session:
+            with self._lease(request.variant.name) as session:
                 candidate = session.new_generation()
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
@@ -270,6 +271,10 @@ class VerilatorCoverageExecution:
                 overlay.cleanup()
         return prepared
 
+    def _lease(self, variant: str) -> SimulationBuildSession:
+        """The variant's Target slot lease, waited for up to the build timeout."""
+        return SimulationBuildSession(self._handle, variant, wait_s=self._build_timeout_s())
+
     def _build_timeout_s(self) -> int:
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         return max(1, timeout_ms // 1000)
@@ -320,7 +325,7 @@ class VerilatorCoverageExecution:
         try:
             if self._bundle_bound:
                 return self._run_prepared(request, prepared)
-            with SimulationBuildSession(self._handle, variant):
+            with self._lease(variant):
                 return self._run_prepared(request, prepared)
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(
@@ -505,7 +510,7 @@ class VerilatorCoverageExecution:
         """Run one collector utility in its requested artifact directory."""
         observe_stage(self._handle.selector, "postprocessing", source_bytes=self._source_bytes)
         announce_unit(f"coverage: {request.argv[0]}", target=self._handle.selector)
-        request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(request.output_path.parent)
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"
         result = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
         return SimulationCommandResult(result.returncode, result.stdout, result.stderr)
@@ -767,9 +772,9 @@ def _in_directory_script(directory: Path, script: str) -> str:
 
 
 def _prepare_artifact_directories(request: SimulationRunRequest) -> None:
-    request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(request.raw_path.parent)
     if request.hook_evidence_path is not None:
-        request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(request.hook_evidence_path.parent)
 
 
 def _snapshot_pre_sim_state(

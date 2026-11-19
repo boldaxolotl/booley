@@ -6,12 +6,14 @@ import re
 import shlex
 import shutil
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from booley.core.file_lock import acquire_file_lock
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.sim import verilator_coverage_execution
@@ -22,6 +24,7 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.record.coverage_execution import _coverage_observation
@@ -1148,3 +1151,28 @@ def test_coverage_log_failure_remains_advisory(tmp_path, monkeypatch, observed, 
     assert captured["timeouts"]
     if observed:
         assert sink.error == "OSError: full"
+
+
+def test_coverage_lease_wait_is_bounded_by_the_build_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A busy slot ends the coverage build after the build timeout, not 60 s (#4843)."""
+    execution, target, _raw_path, _captured = _execution_fixture(
+        tmp_path, monkeypatch, options=SimulationOptions(build_timeout_ms=1000)
+    )
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+    slot = simulation_build_slot(handle, SimulationBuildVariant(trace=False, coverage=True).name)
+    slot.mkdir(parents=True)
+
+    with (slot / "lease.lock").open("a+", encoding="utf-8") as holder:
+        acquire_file_lock(holder)
+        started = time.monotonic()
+        result = _build_coverage(execution, target)
+        waited = time.monotonic() - started
+
+    assert result.success is False
+    assert result.infrastructure_error is True
+    assert "busy for 1s" in result.output
+    # A loose upper bound on a real 1 s wait; the old fixed wait was 60 s.
+    assert waited < 30

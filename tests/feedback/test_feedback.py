@@ -282,10 +282,10 @@ class TestAttachments:
         longer one an attached log invented is not caught. The export says so —
         see the attachment risk line — and that warning is the actual mitigation."""
         log_file = tmp_path / "run.log"
-        log_file.write_text("error in rocketwidget_alu_stage3\n", encoding="utf-8")
+        log_file.write_text("error in myrocketwidgetalu3\n", encoding="utf-8")
         append(_bug(attachments=[str(log_file)]), booley_dir)
         report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "rocketwidget_alu_stage3" in report.body
+        assert "myrocketwidgetalu3" in report.body
         assert any("inlines an attached file" in risk for risk in report.risks)
 
     def test_a_vanished_attachment_says_so_instead_of_failing(self, project, booley_dir, tmp_path):

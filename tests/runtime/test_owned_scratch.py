@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import require_symlinks
-from tests.owned_scratch_support import exited_process_payload, write_marker
+from tests.owned_scratch_support import (
+    exited_process_payload,
+    gate_marker_publishes,
+    run_together,
+    write_marker,
+)
+from tests.time_budget import hang_guard_s
 
 from booley.runtime import owned_scratch
 from booley.runtime.pid import UNKNOWN, ProcessObservation, capture_process_identity
@@ -142,3 +148,15 @@ def test_mark_without_identity_leaves_directory_unmarked(tmp_path, monkeypatch):
     monkeypatch.setattr(owned_scratch, "capture_process_identity", lambda _pid: None)
     owned_scratch.mark_owned(tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+@requires_procfs
+def test_concurrent_marks_publish_one_valid_marker(tmp_path, monkeypatch):
+    """AC2: threads marking one directory at once all succeed and leave one marker."""
+    gate_marker_publishes(monkeypatch, 8, hang_guard_s())
+
+    run_together(*[lambda: owned_scratch.mark_owned(tmp_path)] * 8)
+
+    marker = json.loads((tmp_path / owned_scratch.OWNER_MARKER).read_text(encoding="utf-8"))
+    assert marker == {"kind": "booley-owned-scratch", "version": 1, "owner": _own_payload()}
+    assert [p.name for p in tmp_path.iterdir()] == [owned_scratch.OWNER_MARKER]
