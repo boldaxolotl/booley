@@ -28,7 +28,6 @@ from booley.harness.dashboard import sessions
 from booley.harness.dashboard.footer import BackTarget, footer_hints
 from booley.harness.dashboard.jobs import (
     FINISHED_JOB_STATES,
-    TERMINAL_JOB_STATES,
     JobSnapshot,
     JobView,
     job_elapsed_seconds,
@@ -100,7 +99,7 @@ HELP = (
     "The top bar holds the window tabs, Run and Help; in the Jobs window also its filters:\n"
     f"Running, Finished (newest {FINISHED_JOBS}) and All, and the owner"
     " (Enter cycles All sessions, each session, Standalone)\n"
-    "The Jobs tab counts unfinished Jobs; the Jobs window always opens on All sessions\n"
+    "The Jobs tab counts unfinished Jobs, queued ones apart (Jobs 1▶ 1 queued); the Jobs window always opens on All sessions\n"
     "and keeps the Running / Finished / All choice\n"
     "The Targets window lists the selected worktree's Targets with their core and Flows;\n"
     "Enter shows filesets, tests, Test Variants and constraints, then the Flows that can\n"
@@ -117,7 +116,7 @@ HELP = (
     "pick the worktree, the Flow or Specialist, then fill in its form; check the equivalent\n"
     "shell command and submit or copy it;\n"
     "the review also says if the Job runs now or queues and warns\n"
-    "about sessions, running Jobs and uncommitted changes in the worktree\n"
+    "about sessions, unfinished Jobs and uncommitted changes in the worktree\n"
     "After Run the Jobs window opens on All sessions with the new Job selected; a Finished\n"
     "filter switches to Running, which keeps the selected Job listed after it finishes"
 )
@@ -622,14 +621,22 @@ def job_paths(job: JobView) -> tuple[str, ...]:
 
 
 def _job_words(job: JobView, now: float) -> str:
-    """Flow, Target and elapsed time of a Job, as the overview shows them."""
+    """Flow, Target and elapsed time of a Job, as the overview shows them.
+
+    A Job that is not running starts with its state word.
+    """
     elapsed = job_elapsed_seconds(job, now)
-    return f"{job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
+    state = "" if job.state == "running" else f"{job.state} "
+    return f"{state}{job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
 
 
 def _job_summary(job: JobView, now: float) -> str:
-    """Compact overview form: marker, Job label, Flow, Target and elapsed time."""
-    return f"▶ {_job_label(job)} {_job_words(job, now)}"
+    """Compact overview form: ▶ for a running Job, Job label, Flow, Target and elapsed time.
+
+    Any other Job shows its state word after the label instead of the marker.
+    """
+    marker = "▶ " if job.state == "running" else ""
+    return f"{marker}{_job_label(job)} {_job_words(job, now)}"
 
 
 class SessionList(DataTable):
@@ -1333,10 +1340,9 @@ class DashboardApp(App[None]):
         """
         activities: list[tuple[str, Text]] = []
         activities.extend(
-            ("job:" + json.dumps(job.key), _activity_row("Running Job", self._job_line(job)))
+            ("job:" + json.dumps(job.key), _activity_row("Job", self._job_line(job)))
             for job in self.snapshot.jobs.jobs
-            if self._owned_by(job, self._open_session_key())
-            and job.state not in TERMINAL_JOB_STATES
+            if self._owned_by(job, self._open_session_key()) and not _finished(job)
         )
         if session:
             now = self.snapshot.observed_at
@@ -1408,7 +1414,7 @@ class DashboardApp(App[None]):
             jobs=tuple(
                 _job_summary(job, self.snapshot.observed_at)
                 for job in self.snapshot.jobs.jobs
-                if self._owned_by(job, facts.key) and job.state == "running"
+                if self._owned_by(job, facts.key) and not _finished(job)
             ),
             notices=tuple(notices),
             measurement=measurement,
@@ -1462,7 +1468,7 @@ class DashboardApp(App[None]):
                 "job:" + json.dumps(job.key), _job_label(job), _job_words(job, now)
             )
             for job in self.snapshot.jobs.jobs
-            if job.record.session_key is None and job.state == "running"
+            if job.record.session_key is None and not _finished(job)
         ]
         self._overview_width = self._list_width()
         built = sessions.build(
@@ -1530,6 +1536,7 @@ class DashboardApp(App[None]):
         bar.job_filter = jobs_root.job_filter
         bar.owner = self._owner_filter_label(jobs_root.session)
         bar.unfinished = sum(not _finished(job) for job in self.snapshot.jobs.jobs)
+        bar.queued = sum(job.state == "queued" for job in self.snapshot.jobs.jobs)
         bar.worktree = self._worktree.name if self._worktree else ""
 
     @staticmethod
@@ -1977,14 +1984,14 @@ class DashboardApp(App[None]):
         sessions = tuple(
             label for path, label in self._session_checkouts() if path.resolve() == here
         )
-        running = tuple(
+        unfinished = tuple(
             job.handle or job.record.run_id
             for job in self.snapshot.jobs.jobs
             if not _finished(job)
             and job.record.work_dir
             and Path(job.record.work_dir).resolve() == here
         )
-        return Occupants(sessions, running)
+        return Occupants(sessions, unfinished)
 
     def _finished_sim_runs(self, worktree: Path) -> tuple[SimRun, ...] | None:
         """The finished Simulation Jobs of *worktree* that the last read retained; ``None`` before any read.

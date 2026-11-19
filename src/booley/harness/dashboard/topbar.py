@@ -65,6 +65,8 @@ class TopBar(Widget, can_focus=True):
     owner = reactive("All sessions")
     #: Number of unfinished Jobs, shown on the Jobs tab; nothing when zero.
     unfinished = reactive(0)
+    #: Number of those Jobs that wait for admission, shown apart from the started ones.
+    queued = reactive(0)
     #: Directory name of the worktree the Targets window lists.
     worktree = reactive("")
 
@@ -90,7 +92,10 @@ class TopBar(Widget, can_focus=True):
             if window == "sessions" and self.needs_you:
                 count = f" {self.needs_you}◆"
             elif window == "jobs" and self.unfinished:
-                count = f" {self.unfinished}▶"
+                started = self.unfinished - self.queued
+                count = (f" {started}▶" if started else "") + (
+                    f" {self.queued} queued" if self.queued else ""
+                )
             items.append((label + count, WINDOW, window))
         if self.active == "jobs":
             items.extend((label, FILTER, name) for label, name in JOB_FILTERS)

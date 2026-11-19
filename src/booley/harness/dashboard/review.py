@@ -19,7 +19,7 @@ class Occupants:
     """Who is in a worktree: connected-session labels and unfinished-Job handles, or why unknown."""
 
     sessions: tuple[str, ...] = ()
-    running_jobs: tuple[str, ...] = ()
+    unfinished_jobs: tuple[str, ...] = ()
     problem: str = ""
 
 
@@ -79,20 +79,20 @@ def agent_refusal(facts: SpecialistFacts) -> str:
 
 
 def warning_lines(occupants: Occupants, uncommitted: int | str) -> list[str]:
-    """Warnings, not blocks: sessions, running Jobs and changes in the worktree.
+    """Warnings, not blocks: sessions, unfinished Jobs and changes in the worktree.
 
     A string *uncommitted* is why the changes cannot be counted; ``occupants.problem``
     is why sessions and Jobs cannot be told.
     """
     lines: list[str] = []
     if occupants.problem:
-        lines.append(f"Cannot check sessions and running Jobs: {occupants.problem}")
+        lines.append(f"Cannot check sessions and unfinished Jobs: {occupants.problem}")
     for label in occupants.sessions:
         lines.append(f"Warning: session {label} is connected to this worktree")
-    if occupants.running_jobs:
-        handles = ", ".join(occupants.running_jobs)
+    if occupants.unfinished_jobs:
+        handles = ", ".join(occupants.unfinished_jobs)
         lines.append(
-            f"Warning: {_plural(len(occupants.running_jobs), 'running Job')} in this worktree"
+            f"Warning: {_plural(len(occupants.unfinished_jobs), 'unfinished Job')} in this worktree"
             f" ({handles})"
         )
     if isinstance(uncommitted, str):
