@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from booley.flows.synth.mode import SynthMode
 
@@ -98,6 +98,79 @@ def parse_perclock(text: str) -> dict[str, PerClockRow]:
             same if wins else previous.setup_same_clock,
         )
     return rows
+
+
+# Names kept per list in the JSON detail; the run log holds every name.
+UNCONSTRAINED_SAMPLE_SIZE = 10
+_CHECK_PREFIX = "STA_CONSTRAINT_CHECK:"
+_CHECK_HEADER_RE = re.compile(
+    r"There (?:is|are) \d+ (?P<kind>input port|output port|unconstrained endpoint)"
+)
+_CHECK_KINDS = {
+    "input port": "inputs_without_delay",
+    "output port": "outputs_without_delay",
+    "unconstrained endpoint": "endpoints",
+}
+
+
+@dataclass(frozen=True)
+class UnconstrainedTiming:
+    """What the authored SDC leaves untimed, from OpenSTA's constraint check."""
+
+    endpoints: tuple[str, ...] = ()
+    inputs_without_delay: tuple[str, ...] = ()
+    outputs_without_delay: tuple[str, ...] = ()
+
+    @property
+    def found(self) -> bool:
+        """True when any endpoint or I/O port is left untimed."""
+        return bool(self.endpoints or self.inputs_without_delay or self.outputs_without_delay)
+
+    def to_detail(self) -> dict[str, dict[str, Any]]:
+        """Counts with a bounded sample of names per list, for the JSON reports."""
+        return {
+            key: {"count": len(names), "sample": list(names[:UNCONSTRAINED_SAMPLE_SIZE])}
+            for key, names in (
+                ("endpoints", self.endpoints),
+                ("inputs_without_delay", self.inputs_without_delay),
+                ("outputs_without_delay", self.outputs_without_delay),
+            )
+        }
+
+
+def parse_unconstrained_timing(text: str) -> UnconstrainedTiming | None:
+    """Parse the ``STA_CONSTRAINT_CHECK`` block, or None without a complete one.
+
+    A header such as ``There are 2 input ports missing set_input_delay.`` opens a
+    list and each following line adds one name, verbatim (bus bits such as
+    ``data[3]`` survive). A block without ``end`` (OpenROAD died mid-check)
+    counts as no check.
+    """
+    lists: dict[str, list[str]] = {key: [] for key in _CHECK_KINDS.values()}
+    in_block = False
+    complete = False
+    current: list[str] | None = None
+    for raw in text.splitlines():
+        if not raw.startswith(_CHECK_PREFIX):
+            continue
+        body = raw[len(_CHECK_PREFIX) :].rstrip()
+        # Delimiters are matched unindented: a port named ``end`` is a name line.
+        if body == " begin":
+            in_block = True
+        elif body == " end":
+            complete = in_block
+            break
+        elif in_block and (header := _CHECK_HEADER_RE.search(body)):
+            current = lists[_CHECK_KINDS[header.group("kind")]]
+        elif in_block and body.startswith("  ") and current is not None:
+            current.append(body.strip())
+    if not complete:
+        return None
+    return UnconstrainedTiming(
+        endpoints=tuple(lists["endpoints"]),
+        inputs_without_delay=tuple(lists["inputs_without_delay"]),
+        outputs_without_delay=tuple(lists["outputs_without_delay"]),
+    )
 
 
 def detect_clock_port(netlist: Path) -> str | None:

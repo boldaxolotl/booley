@@ -74,7 +74,6 @@ def test_work_document_round_trips_every_field() -> None:
         "top": "tb",
         "cocotb_module": "tests.counter",
         "tests": ("test_a", "test_b"),
-        "result_verbosity": "full",
         "sim_time_grace_s": float("inf"),  # project config may say inf
         "adapter_result_path": "result.json",
         "attempt_token": "token",

@@ -414,10 +414,12 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         )
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
-        report.fail(
-            f"Sandbox host issuance is invalid: {exc}",
-            request.remedy,
+        remedy = (
+            f"fix {exc.location}, then rerun `booley doctor`"
+            if isinstance(exc, runtime_spec.ProjectConfigError)
+            else request.remedy
         )
+        report.fail(f"Sandbox host issuance is invalid: {exc}", remedy)
         return
     report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
 

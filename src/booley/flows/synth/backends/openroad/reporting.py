@@ -139,6 +139,37 @@ def reg2reg_timing_tcl(
     )
 
 
+def constraint_check_tcl(report_dir: Path) -> str:
+    """Tcl that lists what the authored SDC leaves untimed, as a prefixed block.
+
+    Runs OpenSTA's ``check_setup`` for input ports without ``set_input_delay``,
+    output ports without ``set_output_delay``, and unconstrained endpoints (clock
+    ports are not listed). The output is captured and re-printed between
+    ``STA_CONSTRAINT_CHECK: begin`` and ``end``, every line prefixed: raw
+    ``Warning:`` lines would be counted as an actionable EDA warning and turn a
+    PASS into WARN, and the NOTE built from this block must not move the
+    verdict. The begin/end pair tells "checked, nothing found" from "not
+    checked". The unprefixed text also goes, uncapped, to ``unconstrained.rpt`` in
+    ``report_dir`` because ``run.log`` keeps only the tail of a very large run.
+
+    Wrapped in ``catch``: an engine without the command loses only this block,
+    the same warn-and-degrade contract as the rest of this module.
+    """
+    return (
+        "if {![catch {with_output_to_variable _cc {check_setup -verbose "
+        "-no_input_delay -no_output_delay -unconstrained_endpoints}}]} {\n"
+        f"  set _ccf [open {{{(report_dir / 'unconstrained.rpt').as_posix()}}} w]\n"
+        "  puts -nonewline $_ccf $_cc\n"
+        "  close $_ccf\n"
+        '  puts "STA_CONSTRAINT_CHECK: begin"\n'
+        '  foreach _l [split $_cc "\\n"] {\n'
+        '    if {[string trim $_l] ne ""} { puts "STA_CONSTRAINT_CHECK: $_l" }\n'
+        "  }\n"
+        '  puts "STA_CONSTRAINT_CHECK: end"\n'
+        "}\n"
+    )
+
+
 def parse_reg2reg_slack(source: str | Path) -> float | None:
     """Parse the worst reg->reg setup slack (ns) from STA stdout, or None."""
     if isinstance(source, Path):

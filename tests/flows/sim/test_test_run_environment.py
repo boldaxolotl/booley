@@ -208,7 +208,7 @@ class TestRunTimeInputsAreNotBuildInputs:
         )
         inputs = {"rtl/demo.sv": "sha256:" + "1" * 64}
         keys: dict[str, str | None] = {}
-        with SimulationBuildSession(handle) as session:
+        with SimulationBuildSession(handle, wait_s=60) as session:
             for run in runs:
                 prepared = _prepared(handle, cocotb=False)
                 identity = _adapter_identity(handle, prepared, ("stress",), "icarus")

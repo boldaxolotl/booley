@@ -29,7 +29,11 @@ from booley.flows import edam as edam_layer
 from booley.flows import source_paths
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
-from booley.flows.job_resources import repeated_commands, resolved_source_bytes
+from booley.flows.job_resources import (
+    judged_commands_failing_on_error,
+    repeated_commands,
+    resolved_source_bytes,
+)
 from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -265,6 +269,27 @@ class _Attempt:
     source_bytes: int | None = None
 
 
+def _open_preparation_log(
+    handle: TargetHandle,
+    prepared: PreparedSimulationBuild,
+    identity: AdapterTransportIdentity,
+    test_names: tuple[str, ...],
+) -> RunLogIdentity | None:
+    """Open the generation's preparation log and report that the attempt is preparing."""
+    log = prepare_attempt_log(
+        prepared.build_root, handle.selector, identity.attempt_token, handle.project_root
+    )
+    observe_stage(
+        handle.selector,
+        "preparing",
+        evidence_root=prepared.build_root,
+        attempt_token=identity.attempt_token,
+        log=log,
+        tests=test_names,
+    )
+    return log
+
+
 def _require_attempt_log(handle: TargetHandle, attempt: _Attempt) -> None:
     if attempt.log is None:
         log = prepare_attempt_log(
@@ -332,6 +357,8 @@ class PreparedOrdinaryGroup:
         prepared_inputs: Mapping[str, str],
         generation_before: Mapping[str, str],
         source_declarations: tuple[_SourceDeclaration, ...],
+        *,
+        lease_active: bool = True,
     ) -> None:
         self._execution = execution
         self._handle = handle
@@ -346,10 +373,11 @@ class PreparedOrdinaryGroup:
         # Command ran; a hook that wrote into the candidate forbids reuse.
         self._generation_before = generation_before
         self._source_declarations = source_declarations
-        self._lease_active = True
+        self._lease_active = lease_active
         self._build_process: SubprocessResult | None = None
         self._build: BuildOutcome | None = None
         self._artifact_paths: tuple[Path, ...] = ()
+        self._disclosure: dict[str, object] | None = None
 
     @property
     def build_root(self) -> Path:
@@ -454,8 +482,56 @@ class PreparedOrdinaryGroup:
         self._session.discard_candidate(self._attempt.prepared.work_root)
 
     def planning_disclosure(self) -> dict[str, object]:
-        """Describe this preparation using the record planning contract."""
-        return _planning_disclosure(self.prepared_source_entries())
+        """Describe this preparation using the record planning contract.
+
+        The first call, made under the lease, is kept: a group made by
+        :meth:`for_work_item` reports the disclosure of the preparation it came from.
+        """
+        if self._disclosure is None:
+            self._disclosure = _planning_disclosure(self.prepared_source_entries())
+        return self._disclosure
+
+    def for_work_item(
+        self, test_names: tuple[str, ...], test_runs: tuple[TestRun, ...] | None
+    ) -> PreparedOrdinaryGroup:
+        """Prepare another work item's launch from this retained preparation, without the lease.
+
+        Only the test-specific launch preparation is redone; the build and its
+        FuseSoC setup are this group's own. The result reads this group's
+        immutable state, so concurrent lanes may each derive from one group.
+        """
+        build_process, build = self._compiled()
+        handle = self._handle
+        with attempt_scope(handle.selector, identity=handle.identity, tests=test_names):
+            attempt = self._execution._prepare_attempt(
+                handle,
+                test_names,
+                prepared_override=(
+                    self._attempt.prepared,
+                    TraceMode(self._attempt.work.trace_mode),
+                ),
+                test_runs=test_runs,
+                open_log=False,
+            )
+        derived = PreparedOrdinaryGroup(
+            self._execution,
+            handle,
+            attempt,
+            self._session,
+            time.monotonic(),
+            self._compile_surface,
+            self._sources_before,
+            self._prepared_surface,
+            self._prepared_inputs,
+            self._generation_before,
+            self._source_declarations,
+            lease_active=False,
+        )
+        derived._build_process = build_process
+        derived._build = build
+        derived._artifact_paths = self._artifact_paths
+        derived._disclosure = self.planning_disclosure()
+        return derived
 
     def compile(self) -> BuildOutcome:
         """Compile and authenticate this group while its build lease is held."""
@@ -505,14 +581,16 @@ class PreparedOrdinaryGroup:
             attempt_token=attempt.identity.attempt_token,
             source_bytes=attempt.source_bytes,
         )
-        process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
-        build = _fresh_build_outcome(attempt, process, timeout_s)
-        self._build_process = process
-        self._build = build
-        if build.passed and process.returncode == 0 and not process.timed_out:
-            self._artifact_paths = self._session.authorize_fresh_image(
-                attempt.prepared, inputs, attempt.cache_key
-            )
+        with judged_commands_failing_on_error() as commands:
+            process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
+            build = _fresh_build_outcome(attempt, process, timeout_s)
+            self._build_process = process
+            self._build = build
+            if build.passed and process.returncode == 0 and not process.timed_out:
+                self._artifact_paths = self._session.authorize_fresh_image(
+                    attempt.prepared, inputs, attempt.cache_key
+                )
+            commands.judge(build.passed)
         return build
 
     def finish_build_failure(self) -> SimulationTargetOutcome:
@@ -600,12 +678,17 @@ class PreparedOrdinaryGroup:
 
         Every file the attempt writes goes under *evidence_root*, never into the bundle.
         """
-        with attempt_scope(
-            self._handle.selector,
-            identity=self._handle.identity,
-            tests=self._attempt.test_names,
+        with (
+            attempt_scope(
+                self._handle.selector,
+                identity=self._handle.identity,
+                tests=self._attempt.test_names,
+            ),
+            judged_commands_failing_on_error() as commands,
         ):
-            return self._launch_bundle(bundle_root, evidence_root, run_cwd)
+            outcome = self._launch_bundle(bundle_root, evidence_root, run_cwd)
+            commands.judge(_published_pass(outcome))
+            return outcome
 
     def _launch_bundle(
         self, bundle_root: Path, evidence_root: Path, run_cwd: Path
@@ -808,7 +891,9 @@ class SimulationExecution:
         sources_before = project_compile_surface(compile_surface)
         source_declarations = _source_declarations(handle)
         announce_unit("configure", target=handle.selector)
-        with SimulationBuildSession(handle, _build_variant(self._options.trace)) as session:
+        with SimulationBuildSession(
+            handle, _build_variant(self._options.trace), wait_s=self._build_timeout_s()
+        ) as session:
             self._build_session = session
             group: PreparedOrdinaryGroup | None = None
             try:
@@ -957,11 +1042,14 @@ class SimulationExecution:
         *,
         prepared_override: tuple[PreparedSimulationBuild, TraceMode] | None = None,
         test_runs: tuple[TestRun, ...] | None = None,
+        open_log: bool = True,
     ) -> _Attempt:
         """Prepare a fresh candidate, or rebind *prepared_override*'s retained image.
 
         The override carries the candidate's resolved trace mode: a retained
         image was built from the same trace recipe, so it must launch with it.
+        Without *open_log* the generation's preparation log is left alone: the
+        launch opens its own under the item's evidence.
         """
         started = time.monotonic()
         observe_stage(handle.selector, "preparing", tests=test_names)
@@ -980,17 +1068,7 @@ class SimulationExecution:
             test_runs=test_runs,
         )
         _adapter_invocation(work)  # fail unsupported adapters before any build starts
-        log = prepare_attempt_log(
-            prepared.build_root, handle.selector, identity.attempt_token, handle.project_root
-        )
-        observe_stage(
-            handle.selector,
-            "preparing",
-            evidence_root=prepared.build_root,
-            attempt_token=identity.attempt_token,
-            log=log,
-            tests=test_names,
-        )
+        log = _open_preparation_log(handle, prepared, identity, test_names) if open_log else None
         return _Attempt(
             log=log,
             prepared=prepared,
@@ -1456,7 +1534,6 @@ def prepare_simulation_work(
         runtime_inputs=declared_runtime_inputs(prepared.resolved, root),
         top=prepared.toplevel,
         cocotb_module=prepared.resolved.cocotb_module or "",
-        result_verbosity=options.result_verbosity,
         adapter_result_path=str(identity.result_path),
         attempt_token=identity.attempt_token,
         target_identity=identity.target_identity,
@@ -1493,7 +1570,6 @@ def _preview_work(
         runtime_inputs=preview_runtime_inputs(getattr(inspection, "inputs", ())),
         top=inspection.toplevel,
         cocotb_module=str(inspection.flow_options.get("cocotb_module") or ""),
-        result_verbosity=execution._options.result_verbosity,
         **_process_launch_fields(
             handle,
             "cocotb" if cocotb else eda_tool,
@@ -1593,7 +1669,10 @@ def _infrastructure_outcome(
             kind,
             build.reason,
             missing_executable=find_missing_executable(build.output) or "",
-            detail=build_failure_report(build),
+            detail=build_failure_report(
+                build,
+                source_paths.ProjectSourcePaths.for_target(handle, attempt.prepared.resolved),
+            ),
         )
     else:
         failure = SimulationInfrastructureFailure(kind, detail, detail=detail)
@@ -1634,6 +1713,20 @@ def _adapter_invocation(work: PreparedSimulationWork) -> tuple[str, ...]:
         return tuple(prepare_adapter_invocation(work))
     except UnsupportedSimulationAdapterError as exc:
         raise SimulationBuildPreparationError(str(exc)) from exc
+
+
+def _published_pass(outcome: SimulationTargetOutcome) -> bool:
+    """Whether the Simulation Record publishes every Test Run of *outcome* as passed.
+
+    Not ``outcome.passed``: that also needs the adapter aggregate to pass, which
+    a cocotb batch can miss after every test passed (a disk budget tripped at the
+    end), while the Test Runs are still published as passed.
+    """
+    return (
+        outcome.infrastructure_failure is None
+        and bool(outcome.tests)
+        and all(test.passed for test in outcome.tests)
+    )
 
 
 def _group_outcome(
@@ -1907,7 +2000,9 @@ def _build_failure_test(
         verdict="elab_error",
         passed=False,
         elapsed_s=process.duration_s,
-        error_tail=_output_tail(process, True),
+        error_tail=source_paths.ProjectSourcePaths.for_target(
+            handle, attempt.prepared.resolved
+        ).project_text(_output_tail(process, True)),
         elab_failed=True,
         build=build,
         artifacts=(log,) if log is not None else (),

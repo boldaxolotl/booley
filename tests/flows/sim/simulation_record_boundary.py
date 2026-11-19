@@ -97,6 +97,8 @@ class SimulationRecordSimRun:
     flow: SimulateFlow
     # Every simulator launch, in order.
     launches: list[Launch]
+    # Calls of the faked FuseSoC configure, the one stand-in for ``prepare_build``.
+    configures: int = 0
 
     @property
     def launched(self) -> list[tuple[str, tuple[str, ...]]]:
@@ -152,15 +154,16 @@ def run_simulation_record_sim(
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
     launches: list[Launch] = []
+    configured: list[None] = []
     flow = flow or SimulateFlow()
     if report_dir is _DEFAULT_REPORT_DIR:
         report_dir = tmp_path / "reports"
     # Undo the fakes before returning: an autouse fixture may have patched the same
     # class attributes, and a test-long undo would restore its patch after it exits.
     with monkeypatch.context() as scoped:
-        _install_fakes(scoped, process, build, launches)
+        _install_fakes(scoped, process, build, launches, configured)
         result = flow.execute(SimRequest(work_dir=tmp_path, report_dir=report_dir, **request))
-    return SimulationRecordSimRun(result, flow, launches)
+    return SimulationRecordSimRun(result, flow, launches, len(configured))
 
 
 def _install_fakes(
@@ -168,8 +171,10 @@ def _install_fakes(
     process: SubprocessResult | ProcessFactory,
     build: SubprocessResult | None,
     launches: list[Launch],
+    configured: list[None],
 ) -> None:
     def prepare_build(self: SimulationExecution, handle: Any) -> Any:
+        configured.append(None)
         assert self._build_session is not None  # Private: the execution's own session
         work_root = self._build_session.new_generation()
         build_root = work_root / "build"

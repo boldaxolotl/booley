@@ -43,7 +43,7 @@ from .metrics import coverage_record_path, simulation_flow_metrics
 from .record import (
     ManifestTarget,
     NewSimulationRecordPreview,
-    NewSimulationRecordRunRequest,
+    NewSimulationRecordPreviewRequest,
     SimulationRecordManifestView,
     SimulationRecordOutcome,
     SimulationRecordRecoveryStatus,
@@ -526,12 +526,12 @@ def _simulation_record_structured_details(
     }
 
 
-def _coverage_request_target(request: NewSimulationRecordRunRequest) -> ManifestTarget:
+def _coverage_request_target(request: NewSimulationRecordPreviewRequest) -> ManifestTarget:
     """Expose the typed Target projection from one immutable record request."""
     return SimulationRecordManifestView(request.plan.manifest).target
 
 
-def _coverage_request_selector(request: NewSimulationRecordRunRequest) -> str:
+def _coverage_request_selector(request: NewSimulationRecordPreviewRequest) -> str:
     return _coverage_request_target(request).selector
 
 

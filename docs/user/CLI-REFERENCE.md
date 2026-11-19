@@ -155,6 +155,7 @@ booley projects forget <project>         # forget a Project and list what it sti
 booley projects forget --purge <project> # also remove its unused images and state volumes
 booley projects prune-keepers            # preview images left by earlier forgets
 booley projects prune-keepers --confirm <digest>   # remove exactly that preview
+booley projects prune-stamps [<project>...]   # list, or remove, stamps of deleted Projects
 ```
 
 What each command lists, keeps, and removes is in

@@ -54,6 +54,7 @@ repair_timing -setup -skip_gate_cloning
 detailed_placement ; estimate_parasitics -placement
 puts "BOOLEY_STAGE: sta_report"
 report_design_area
+puts [format "OPENROAD_INSTANCE_COUNT: %d" [llength [[ord::get_db_block] getInsts]]]
 write_verilog {openroad_dut.v}
 set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10]
 set csv_out [open {<WORK>/reports/timing/overall.csv.rpt} w]
@@ -137,4 +138,14 @@ if {$_ec ne "NULL"} {
 puts "STA_REG2REG_CLOCKS: same_clock=$_same capture_period_ns=$_cap"
 }
   catch {report_checks -path_delay max -sort_by_slack -group_path_count 10 -from [all_registers] -to [all_registers] -format full -slack_max [expr {[lindex $_r2r_slacks end] + 1e-6}] > {<WORK>/reports/timing/reg2reg.rpt}}
+}
+if {![catch {with_output_to_variable _cc {check_setup -verbose -no_input_delay -no_output_delay -unconstrained_endpoints}}]} {
+  set _ccf [open {<WORK>/reports/timing/unconstrained.rpt} w]
+  puts -nonewline $_ccf $_cc
+  close $_ccf
+  puts "STA_CONSTRAINT_CHECK: begin"
+  foreach _l [split $_cc "\n"] {
+    if {[string trim $_l] ne ""} { puts "STA_CONSTRAINT_CHECK: $_l" }
+  }
+  puts "STA_CONSTRAINT_CHECK: end"
 }
