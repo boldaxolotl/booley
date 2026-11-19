@@ -1,5 +1,3 @@
-"""Producer scenario for the checked-in Cocotb import-failure samples."""
-
 from os import qa_no_such_name  # noqa: F401
 
 import cocotb

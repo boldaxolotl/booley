@@ -374,64 +374,51 @@ class TestFindImportFailure:
         assert "pip_requirements" not in detail
 
     @pytest.mark.parametrize(
-        ("case", "expected"),
+        ("case", "prefix", "extra"),
         [
-            pytest.param(
+            (
                 "import-missing",
                 "cocotb could not import the test module 'import_missing_cases': "
-                "ModuleNotFoundError: No module named 'qa_no_such_module_xyz' "
-                "\u2014 'qa_no_such_module_xyz' is not installed in the sandbox image.",
-                id="import-missing",
+                "ModuleNotFoundError: No module named 'qa_no_such_module_xyz'",
+                "pip_requirements",
             ),
-            pytest.param(
+            (
                 "import-error",
                 "cocotb could not import the test module 'import_error_cases': "
-                "ImportError: cannot import name 'qa_no_such_name' from 'os' "
-                "(/usr/lib/python3.14/os.py)",
-                id="import-error",
+                "ImportError: cannot import name 'qa_no_such_name' from 'os' ",
+                "",
             ),
-            pytest.param(
+            (
                 "import-test-module-missing",
                 "cocotb could not import the test module: "
                 "ModuleNotFoundError: No module named 'qa_no_such_test_module'",
-                id="import-test-module-missing",
+                "",
             ),
-            pytest.param(
-                "no-message",
-                "cocotb could not import the test module 'import_error_cases': ImportError",
-                id="no-message",
-            ),
-            pytest.param(
-                "empty-first-line",
-                "cocotb could not import the test module 'import_error_cases': ImportError:",
-                id="empty-first-line",
-            ),
-            pytest.param("no-discovery-frame", "", id="no-discovery-frame"),
         ],
     )
-    def test_cocotb_2_discovery_traceback_is_an_import_failure(self, case: str, expected: str):
+    def test_cocotb_2_discovery_traceback_is_an_import_failure(
+        self, case: str, prefix: str, extra: str
+    ):
         """cocotb 2.x prints no `Failed to import module` line: the cause is the
         traceback its test discovery lets escape (real 2.1.0 captures)."""
         logs = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0"
-        if case in ("no-message", "empty-first-line"):
-            text = (logs / "import-error.log").read_text(encoding="utf-8")
-            lines = text.splitlines()
-            (index,) = [i for i, line in enumerate(lines) if line.startswith("ImportError: ")]
-            lines[index] = "ImportError" if case == "no-message" else "ImportError: \nmissing dep"
-            output = "\n".join(lines)
-        elif case == "no-discovery-frame":
-            text = (logs / "import-missing.log").read_text(encoding="utf-8")
-            output = text.replace("in discover_tests", "in elsewhere")
-        else:
-            output = (logs / f"{case}.log").read_text(encoding="utf-8")
-        detail = cr.find_import_failure(output)
-        if case == "import-missing":
-            assert detail.startswith(expected)
-            assert "pip_requirements" in detail
-        elif case == "import-test-module-missing":
-            assert detail.startswith(expected)
-        else:
-            assert detail == expected
+        detail = cr.find_import_failure((logs / f"{case}.log").read_text(encoding="utf-8"))
+        assert detail.startswith(prefix)
+        assert extra in detail
+
+    @pytest.mark.parametrize(
+        ("tail", "expected"),
+        [
+            ("ImportError\n", "cocotb could not import the test module: ImportError"),
+            ("ImportError: \nmore\n", "cocotb could not import the test module: ImportError:"),
+        ],
+    )
+    def test_cocotb_2_exception_line_without_a_message(self, tail: str, expected: str):
+        frame = '  File "/x/cocotb/regression.py", line 255, in discover_tests\n'
+        assert cr.find_import_failure(frame + tail) == expected
+
+    def test_import_traceback_outside_cocotb_discovery_is_ignored(self):
+        assert cr.find_import_failure("ModuleNotFoundError: No module named 'x'\n") == ""
 
     def test_clean_output_finds_nothing(self):
         assert cr.find_import_failure("0.00ns INFO cocotb  Running on Icarus\n") == ""

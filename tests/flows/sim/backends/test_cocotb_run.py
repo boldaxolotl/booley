@@ -435,12 +435,7 @@ def _import_2x_lines() -> list[str]:
 def test_a_diagnosed_cause_replaces_the_useless_missing_xml_detail(
     tmp_path, fake_launch, capsys, lines, fragment
 ):
-    """F-25: a frozen run loop, or a cocotb 2.x import failure, names itself instead
-    of 'results.xml not found'.
-
-    No results.xml was written, so the parser can only report the symptom. The
-    cause in the captured output is what the verdict line must quote.
-    """
+    """F-25: a frozen run loop or a cocotb 2.x import failure names itself, not 'results.xml not found'."""
     fake_launch.output = lines()
     assert _run(tmp_path, tests=["test_ravenoc"]) == 1
     out = capsys.readouterr().out
