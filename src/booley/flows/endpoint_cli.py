@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import pathlib
 import re
 import sys
 from pathlib import Path
@@ -243,27 +242,30 @@ class ReportDirError(ValueError):
 def require_usable_report_dir(report_dir: str | os.PathLike[str]) -> None:
     """Refuse an explicit report directory the run could not create or write.
 
-    Side-effect free: nothing is created. The path is made absolute without
-    folding ``..``, so ``<file>/../reports`` is judged through ``<file>`` as a
-    writer's ``mkdir`` would. The nearest existing ancestor must be a writable
-    directory; ``os.access`` can disagree with a real write on ACLs or some
-    network filesystems, which then fail once at completion.
+    Side-effect free: nothing is created. The path is not normalized, so
+    ``<file>/../reports`` is judged through ``<file>`` as a writer's ``mkdir``
+    would. The nearest existing ancestor (at worst ``.`` or the root) must be a
+    writable directory; ``os.access`` can disagree with a real write on ACLs or
+    some network filesystems, which then fail once at completion.
     """
     given = os.fspath(report_dir)
-    # ``pathlib.Path``, not this module's ``Path``: a test pins that name to a pure flavour.
-    found = pathlib.Path.cwd() / given
-    while not (found.exists() or found.is_symlink()):
-        if found.parent == found:
-            reason = "no parent directory exists"
-            break
-        found = found.parent
-    else:
-        if not found.is_dir():
-            reason = f"'{found}' is not a directory"
-        elif not os.access(found, os.W_OK | os.X_OK):
-            reason = f"'{found}' is not writable"
+    found = Path(given)  # relative paths resolve against the cwd, as the writer's do
+    while True:
+        try:
+            os.lstat(found)
+        except (FileNotFoundError, NotADirectoryError):
+            found = found.parent  # ends at the root or ``.``
+            continue
+        except OSError as exc:
+            reason = f"'{found}' cannot be inspected: {exc.strerror or exc}"
         else:
-            return
+            if not os.path.isdir(found):  # noqa: PTH112 - a test pins ``Path`` to a pure flavour
+                reason = f"'{found}' is not a directory"
+            elif os.access(found, os.W_OK | os.X_OK):
+                return
+            else:
+                reason = f"'{found}' is not writable"
+        break
     raise ReportDirError(f"argument --report-dir: cannot write reports to '{given}': {reason}")
 
 
