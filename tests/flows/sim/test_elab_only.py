@@ -29,6 +29,7 @@ from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
@@ -466,7 +467,10 @@ def test_timeout_before_terminal_record_names_the_budget() -> None:
 
     assert outcome.reason == "build timed out after 7 s (raise [flows.sim].build_timeout_ms)"
     assert outcome.output == "still compiling"
-    assert build_module.build_failure_report(outcome).splitlines()[0] == outcome.reason
+    assert (
+        build_module.build_failure_report(outcome, ProjectSourcePaths()).splitlines()[0]
+        == outcome.reason
+    )
 
 
 def test_simulation_record_runs_every_target_and_reports_the_worst_class(

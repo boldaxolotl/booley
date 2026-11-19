@@ -22,6 +22,7 @@ from typing import Any, Literal
 from booley.core.build_paths import work_root_for
 from booley.flows import job_resources
 from booley.flows.eda_failures import classify_eda_failure
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
@@ -677,9 +678,9 @@ def build_output_tail(output: str) -> str:
     return "..." + cut
 
 
-def build_failure_report(outcome: BuildOutcome) -> str:
-    """Return the reason first, then a bounded tail of the build output."""
-    tail = build_output_tail(outcome.output)
+def build_failure_report(outcome: BuildOutcome, project_paths: ProjectSourcePaths) -> str:
+    """Return the reason first, then a bounded tail of the build output by Project path."""
+    tail = build_output_tail(project_paths.project_text(outcome.output))
     if not tail:
         return outcome.reason
     return f"{outcome.reason}\n--- output tail ---\n{tail}"

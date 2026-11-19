@@ -9,8 +9,10 @@ reads tool output.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 
 from fusesoc.vlnv import Vlnv
@@ -46,7 +48,7 @@ class ProjectSourcePaths:
     def for_target(
         cls, handle: TargetHandle, resolved: fusesoc_registry.ResolvedTarget
     ) -> ProjectSourcePaths:
-        """Map each resolved file named ``src/<core>/<name>`` to its Project path.
+        """Map each resolved file, including an overlay of the Target's core, named ``src/<core>/<name>`` to its Project path.
 
         A file without a core, outside the Target's cores, or whose source lies
         outside the Project Root has no Project path. When a core cannot be
@@ -57,6 +59,11 @@ class ProjectSourcePaths:
             roots = core_files_roots(TargetCatalog.build(handle.project_root), handle)
         except FuseSocError:
             return cls()  # an unreadable core leaves every name as reported
+        own = str(Vlnv(handle.vlnv))
+        if own in roots:
+            # An overlay core is the Target's core under a derived VLNV, written
+            # beside it, so its files share the Target's file root.
+            roots.setdefault(str(Vlnv(resolved.vlnv)), roots[own])
         by_name: dict[str, str] = {}
         for item in resolved.files:
             if item.core is None or item.core not in roots:
@@ -76,3 +83,18 @@ class ProjectSourcePaths:
     def project_path(self, reported: str) -> str:
         """The Project path for a name a tool printed, else ``reported`` unchanged."""
         return self.by_name.get(_normalized(reported), reported)
+
+    @cached_property
+    def _name_pattern(self) -> re.Pattern[str] | None:
+        names = sorted(self.by_name, key=len, reverse=True)
+        if not names:
+            return None
+        alternation = "|".join(re.escape(name) for name in names)
+        return re.compile(rf"(?<![\w./-])(?:{alternation})(?![\w/-])")
+
+    def project_text(self, text: str) -> str:
+        """``text`` with each mapped build-tree name replaced by its Project path."""
+        pattern = self._name_pattern
+        if pattern is None:
+            return text
+        return pattern.sub(lambda match: self.by_name[match.group(0)], text)

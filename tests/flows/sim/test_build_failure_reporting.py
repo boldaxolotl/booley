@@ -8,6 +8,9 @@ with the actionable reason and a bounded, marker-free output tail.
 from __future__ import annotations
 
 import json
+import os
+import re
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -20,6 +23,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import classify_build_outcome
 from booley.flows.sim.execution import SimulationOptions
 from booley.flows.sim.execution.contract import SimulationTestOutcome
+from booley.flows.sim.execution.engine import SimulationExecution
 from booley.flows.sim.record.codec import (
     MAX_DETAIL_BYTES,
     canonical_json_bytes,
@@ -33,7 +37,11 @@ from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from booley.flows.source_paths import ProjectSourcePaths
+from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR
+from booley.targets.catalog import TargetCatalog
+from tests.flows.sim.prepared_group import run_prepared_group
 from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
@@ -43,11 +51,19 @@ from tests.flows.sim.simulation_record_test_support import (
     _run_coverage_simulation_record,
 )
 from tests.flows.sim.simulation_record_test_support import _handle as _shared_handle
-from tests.flows.sim.test_execution_engine import _handle, _prepared, _run_execution
+from tests.flows.sim.test_execution_engine import (
+    _handle,
+    _prepared,
+    _real_fusesoc,
+    _run_execution,
+    _subprocess_invoker,
+    _write_runtime_input_project,
+)
 from tests.flows.sim.test_verilator_coverage_execution import (
     _build_coverage,
     _execution_fixture,
 )
+from tests.time_budget import hang_guard_s
 
 TIMEOUT_REASON = "build timed out after 600 s (raise [flows.sim].build_timeout_ms)"
 OOM_REMEDY = (
@@ -117,7 +133,7 @@ def test_oom_build_names_oom_evidence_and_remedy(
         f"build failed while the Sandbox recorded an OOM kill ({peak_text}; {OOM_REMEDY})"
     )
     assert outcome.failure_kind == "infrastructure"
-    report = build_module.build_failure_report(outcome)
+    report = build_module.build_failure_report(outcome, ProjectSourcePaths())
     assert report.splitlines()[0] == outcome.reason
     assert "Error 137" in report
     assert "BOOLEY_BUILD_STAGE" not in report
@@ -162,22 +178,66 @@ def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypa
     assert diagnostic in outcome.output
 
 
-def test_compile_error_still_shows_compiler_lines(tmp_path: Path) -> None:
-    diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    result = _run_execution(
-        handle,
-        prepared,
-        lambda _command, timeout: SubprocessResult(
-            returncode=1, stdout=f"{diagnostic}\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n"
-        ),
-        ("smoke",),
-        cocotb=False,
-        canned_at="build",
+_CORE = "src/acme_lib_runtime_input_1/tb.sv"
+_OVERLAY_CORE = "src/acme_lib_runtime_input-booleytrace_1/tb.sv"
+_DESIGN_LINES = (
+    "{core}:4: syntax error",
+    "{core}:9: error: Unknown module type: missing",
+    "gen/other.sv:2: error: Unknown module type: other",
+)
+_SORRY = "{core}:4: sorry: Constant user functions are not supported."
+
+
+@pytest.mark.parametrize(
+    ("trace", "core", "lines"),
+    [
+        (False, _CORE, _DESIGN_LINES),
+        (True, _OVERLAY_CORE, _DESIGN_LINES),
+        (False, _CORE, (_SORRY,)),
+    ],
+    ids=["design", "trace-overlay", "infrastructure"],
+)
+def test_build_failure_names_project_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trace: bool,
+    core: str,
+    lines: tuple[str, ...],
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    (state / "tests.toml").write_text('[sim]\ntests = ["t"]\n', encoding="utf-8")
+    printed = [line.format(core=core) for line in lines]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    iverilog = fake_bin / "iverilog"
+    iverilog.write_bytes(
+        ("#!/bin/sh\n" + "".join(f"echo '{x}'\n" for x in printed) + "exit 1\n").encode()
     )
-    assert result.infrastructure_failure is None
-    assert diagnostic in result.tests[0].error_tail
+    iverilog.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project),
+        options=SimulationOptions(trace=trace, timeout_ms=hang_guard_s() * 1000),
+    )
+    with _real_fusesoc():
+        outcome = run_prepared_group(execution, handle, ())
+
+    expected = [line.format(core="tb.sv") for line in lines]
+    if lines == (_SORRY,):
+        assert outcome.infrastructure_failure is not None
+        shown = outcome.infrastructure_failure.detail.splitlines()
+    else:
+        assert outcome.infrastructure_failure is None
+        shown = outcome.tests[0].error_tail.splitlines()
+        # The persisted build output keeps the raw build-tree spelling.
+        assert printed[0] in outcome.builds[0].output
+    for line in expected:
+        assert line in shown
 
 
 def _engine_timeout_outcome(tmp_path: Path):
@@ -300,18 +360,61 @@ def test_flow_sim_build_timeout_report_leads_with_the_reason(
     assert run.launched == []
 
 
-def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str):
-    execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch)
+def _failed_coverage_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_stage: Callable[[str], SubprocessResult],
+    files: tuple[ResolvedFile, ...] = (),
+):
+    execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch, files=files)
     execution._options = SimulationOptions(build_timeout_ms=600_000)
     original = execution._invoke
 
     def invoke(command, *, timeout):
         if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return _timed_out_result(stdout)
+            return build_stage(command[-1])
         return original(command, timeout=timeout)
 
     execution._invoke = invoke
     return _build_coverage(execution, target)
+
+
+def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str):
+    return _failed_coverage_build(tmp_path, monkeypatch, lambda _script: _timed_out_result(stdout))
+
+
+def test_coverage_build_failure_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = "src/acme_demo_counter-booleycoverage_1"
+    files = (
+        ResolvedFile(
+            f"{prefix}/rtl/counter.sv",
+            "systemVerilogSource",
+            core="acme:demo:counter-booleycoverage:1",
+        ),
+    )
+
+    def build_stage(script: str) -> SubprocessResult:
+        token = re.search(r"token=([0-9a-f]+)", script)
+        assert token is not None
+        return SubprocessResult(
+            returncode=1,
+            stdout=(
+                f"%Error: {prefix}/rtl/counter.sv:1:8: syntax error\n"
+                "%Error: gen/other.sv:2:3: syntax error\n"
+                f"BOOLEY_BUILD_STAGE token={token.group(1)} rc=1\n"
+            ),
+        )
+
+    build = _failed_coverage_build(tmp_path, monkeypatch, build_stage, files)
+
+    assert build.success is False
+    assert build.infrastructure_error is False
+    assert build.output.splitlines()[:2] == [
+        "%Error: rtl/counter.sv:1:8: syntax error",
+        "%Error: gen/other.sv:2:3: syntax error",
+    ]
 
 
 def test_coverage_build_timeout_is_infrastructure_with_reason_first(
