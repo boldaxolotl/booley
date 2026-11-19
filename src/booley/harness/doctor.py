@@ -3471,10 +3471,12 @@ def _check_oauth_token(
     neither can be revoked by a refresh elsewhere. Advisory: plenty of short runs
     are fine on subscription creds, but a multi-hour headless run is not.
 
-    Stays a WARN (see :class:`_Reporter`) in the visitor mode and under ``api_key``: it names a
-    real, reachable failure mode with a one-command remedy. An explicit ``auth = "subscription"``
-    accepts that tradeoff, so it is a NOTE. In a Sandbox without the app's seed sidecar the login
-    was made inside it, no host-side login shares its refresh token, and the finding is a NOTE too.
+    Stays a WARN (see :class:`_Reporter`) in the visitor mode and under ``api_key``:
+    it names a real, reachable failure mode with a one-command remedy. A
+    ``subscription`` policy accepts that tradeoff, so it is a NOTE: "explicit" when
+    booley.toml records it, the fallback policy otherwise (``policy_recorded``).
+    In a Sandbox without the app's seed sidecar the login was made inside it, no
+    host-side login shares its refresh token, and the finding is a NOTE too.
     A CLI the Project does not list gets no line -- see :func:`_allowed_clis`.
     """
     note_sink = _note or _pass
