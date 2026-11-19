@@ -17,6 +17,7 @@ from typing import Any, Generic, Protocol, TypeVar, cast
 
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from booley.runtime.filesystem_utils import make_directories
 from booley.targets.domain import TargetHandle
 
 from .base import BuiltinFlow, RequestT, SubprocessResult
@@ -473,7 +474,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
         report_dir = self.args.report_dir
         if report_dir is None:
             return implementation
-        report_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(report_dir)
         report_path = target_report_path(self.name, target, report_dir)
         report = self._target_report_payload(target, current, baseline, baseline_ref, report_path)
         report["passed"] = implementation.passed

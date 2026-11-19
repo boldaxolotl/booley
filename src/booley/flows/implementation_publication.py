@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 
 from .implementation_report import (
@@ -124,7 +125,7 @@ def target_report_path(flow: str, target: str, report_dir: Path) -> Path:
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
