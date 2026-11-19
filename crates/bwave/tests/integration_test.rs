@@ -325,13 +325,14 @@ fn test_no_clock_find_honors_window_in_ticks() {
     let store = build_bwave("test_no_clock.vcd", "no_clock_find_window");
     let store_arg = store.to_string_lossy().to_string();
     let virtual_def = "en = tb.enable";
-    let rows: [(&[&str], &str); 10] = [
+    let rows: [(&[&str], &str); 11] = [
         (&["*", "'h1", "--after", "99999"], ""),
         (&["*", "'h1", "--after", "0"], "10 enable 1\n"),
         (&["*", "'h1", "-t", "5:20"], "10 enable 1\n"),
         (&["*", "'h1", "--before", "5"], ""),
         (&["*", "'h1", "--before", "20"], "10 enable 1\n"),
         (&["enable", "rising", "-t", "30:200"], "75 enable 1\n"),
+        (&["enable", "falling", "-t", "0:40"], ""),
         (
             &["*", "change", "-t", "30:60"],
             "50 enable 0\n50 count[3:0] 2\n",
