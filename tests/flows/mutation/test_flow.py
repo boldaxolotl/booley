@@ -1645,7 +1645,9 @@ def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch
     assert "3 detected (2 timeout)" in result.report_text
 
 
-def test_campaign_records_its_setups_builds_and_simulations(tmp_path: Path, monkeypatch) -> None:
+def test_mutation_run_records_its_setups_builds_and_simulations(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Every setup, build and simulation of the baseline and a Mutant is in the history."""
     _write_tests_toml(tmp_path, _MUTATION_VARIANTS)
 
