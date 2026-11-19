@@ -177,7 +177,7 @@ Specialist in the middle of a run.
 | App | Login that doesn't expire | How |
 |---|---|---|
 | Claude | a one-year token | `booley auth` (it runs `claude setup-token` for you) |
-| Codex | an API key | `booley auth --cli codex`, then paste the key |
+| Codex | an API key | `booley auth --cli codex` and paste the key; set [`[agent.auth] codex = "api_key"`](CONFIG.md#pinning-what-bills-agent-auth), then `booley session refresh` |
 
 Codex has no long-lived subscription token, so for Codex this means paying per
 token instead of using your subscription.

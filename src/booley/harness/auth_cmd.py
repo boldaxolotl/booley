@@ -309,6 +309,9 @@ def _resolve_app(args: argparse.Namespace) -> str | None:
     return app
 
 
+_STORED_CREDENTIAL_POLICY = {APP_CLAUDE: "subscription", APP_CODEX: "api_key"}
+
+
 def _store_and_reseed(
     token: str, credential: AppCredential, project_root: Path | None
 ) -> Path | None:
@@ -322,7 +325,7 @@ def _store_and_reseed(
     ok(f"stored {credential.label} at {path} (mode 0600)")
     info("kept outside every repo; Sandboxes receive it only through a read-only mount")
     if project_root is None:
-        policy = "api_key" if credential.app == APP_CODEX else "subscription"
+        policy = _STORED_CREDENTIAL_POLICY[credential.app]
         info(f"{credential.app} Projects with auth={policy} use this stored credential.")
     if _reseed_spec(project_root):
         return path
@@ -373,6 +376,62 @@ def run_auth(args: argparse.Namespace, project_root: Path | None) -> int:
     return _run_store(args, app, project_root)
 
 
+def _report_project_use(app: str, project_root: Path) -> bool:
+    """Say whether the Project's auth policy uses the stored credential."""
+    from booley.config.agent import project_credential_policies
+
+    found = project_credential_policies(project_root, selected=app)
+    using = _STORED_CREDENTIAL_POLICY[app]
+    if app not in found.clis:
+        warn(
+            f"This Project does not list {app} in [agent] clis, "
+            "so its agents will not use the stored credential."
+        )
+        hint(
+            f"to use it here: add {app} to [agent] clis, set [agent.auth] {app} = "
+            f'"{using}", then run booley session refresh'
+        )
+        return False
+    policy = found.policies[app]
+    if auth_token.uses_stored_credential(app, policy):
+        info(f"This Project's {app} auth policy '{policy}' uses the stored credential.")
+        return True
+    warn(
+        f"This Project's {app} auth policy '{policy}' does not use the stored credential, "
+        "so its agents will not use it."
+    )
+    hint(
+        f'to use it here: set [agent.auth] {app} = "{using}" in booley.toml, '
+        "then run booley session refresh"
+    )
+    return False
+
+
+def _report_stored(credential: AppCredential, project_root: Path | None) -> None:
+    """Tell what the stored credential now does, for this Project or any Project."""
+    app = credential.app
+    print()
+    if project_root is None:
+        ok(
+            f"Done. {app} Projects using the stored credential pick this up automatically — "
+            "VS Code's 'Reopen in Container' included, no export needed."
+        )
+        info(
+            "In those Projects it does not refresh, so a host-side login can no longer "
+            "revoke a running agent."
+        )
+    else:
+        if not _report_project_use(app, project_root):
+            return
+        ok(
+            f"Done. {app} Projects using the stored credential pick this up automatically — "
+            "VS Code's 'Reopen in Container' included, no export needed."
+        )
+        info("It does not refresh, so a host-side login can no longer revoke a running agent.")
+    info("Existing containers: rebuild once to add the mount; after that a restart suffices.")
+    info(f"Escape hatch: an exported {credential.env_var} still overrides the stored value.")
+
+
 def _run_store(args: argparse.Namespace, app: str, project_root: Path | None) -> int:
     """Admit storage, acquire a credential, and propagate its reference."""
     credential = auth_token.CREDENTIALS[app]
@@ -402,12 +461,5 @@ def _run_store(args: argparse.Namespace, app: str, project_root: Path | None) ->
     if _store_and_reseed(token, credential, project_root) is None:
         return 1
 
-    print()
-    ok(
-        f"Done. {app} Projects using the stored credential pick this up automatically — "
-        "VS Code's 'Reopen in Container' included, no export needed."
-    )
-    info("It does not refresh, so a host-side login can no longer revoke a running agent.")
-    info("Existing containers: rebuild once to add the mount; after that a restart suffices.")
-    info(f"Escape hatch: an exported {credential.env_var} still overrides the stored value.")
+    _report_stored(credential, project_root)
     return 0

@@ -938,6 +938,20 @@ class TestClaudeMintLocation:
             == stored
         )
 
+    def test_store_outside_a_project_conditions_the_revocation_promise(
+        self, home, monkeypatch, capsys
+    ):
+        rc = _auth_stdin(monkeypatch, None, app=auth_token.APP_CODEX)
+
+        revoke = [
+            line.strip() for line in capsys.readouterr().out.splitlines() if "revoke" in line
+        ]
+        assert rc == 0
+        assert revoke == [
+            "In those Projects it does not refresh, so a host-side login can no longer "
+            "revoke a running agent."
+        ]
+
     def test_reseed_failure_keeps_stored_token_but_returns_failure(self, home, monkeypatch):
         tmp_path = home
         stored = tmp_path / "config" / "booley" / "claude-oauth-token"
@@ -1195,11 +1209,11 @@ def auth_project(home, monkeypatch):
     return project
 
 
-def _auth_stdin(monkeypatch, project):
+def _auth_stdin(monkeypatch, project, app=auth_token.APP_CLAUDE):
     from io import StringIO
 
     monkeypatch.setattr(auth_cmd.sys, "stdin", StringIO(_TOKEN + "-replacement\n"))
-    return auth_cmd.run_auth(SimpleNamespace(token_stdin=True), project)
+    return auth_cmd.run_auth(SimpleNamespace(token_stdin=True, app=app), project)
 
 
 def _foreign_owner(monkeypatch, target):
@@ -1337,6 +1351,57 @@ class TestAuthReseed:
             for mount in captured[0].spec["mounts"]
         )
         assert captured[0].spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
+
+    @pytest.mark.parametrize(
+        ("agent", "expected"),
+        [
+            pytest.param(
+                'default = "codex"\nauth = "subscription"',
+                [
+                    "This Project's codex auth policy 'subscription' does not use the stored "
+                    "credential, so its agents will not use it.",
+                    'to use it here: set [agent.auth] codex = "api_key" in booley.toml, '
+                    "then run booley session refresh",
+                ],
+                id="subscription",
+            ),
+            pytest.param(
+                'default = "codex"\nauth = "api_key"',
+                [
+                    "This Project's codex auth policy 'api_key' uses the stored credential.",
+                    "It does not refresh, so a host-side login can no longer revoke a running agent.",
+                ],
+                id="api_key",
+            ),
+            pytest.param(
+                'default = "claude"\nauth = "subscription"',
+                [
+                    "This Project does not list codex in [agent] clis, so its agents will not "
+                    "use the stored credential.",
+                    "to use it here: add codex to [agent] clis, set [agent.auth] codex = "
+                    '"api_key", then run booley session refresh',
+                ],
+                id="unlisted",
+            ),
+        ],
+    )
+    def test_codex_store_says_whether_the_project_uses_it(
+        self, auth_project, isolated_home, monkeypatch, capsys, agent, expected
+    ):
+        (auth_project / ".booley" / "booley.toml").write_text(f"[agent]\n{agent}\n")
+        auth_token.store_token(_TOKEN)
+        codex_home = isolated_home / ".codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_bytes(b'{"tokens": {"access_token": "SYNTHETIC"}}')
+        _auth_reseed_boundaries(auth_project, monkeypatch)
+
+        rc = _auth_stdin(monkeypatch, auth_project, app=auth_token.APP_CODEX)
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert rc == 0
+        for text in expected:
+            assert text in output
+        assert ("can no longer revoke" in output) == ("api_key" in agent)
 
     def test_clear_never_runs_full_bootstrap(self, auth_project, monkeypatch, capsys):
         auth_token.store_token(_TOKEN)
