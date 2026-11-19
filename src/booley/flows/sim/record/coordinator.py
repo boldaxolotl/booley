@@ -23,6 +23,7 @@ from booley.flows.sim.coverage_reference import (
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY, RECORD_DIRECTORY
 from booley.flows.sim.record_reports import simulation_booley_dir, target_report_directory
+from booley.flows.sim.staged_input_ledger import sweep_cancelled_run_inputs
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.endpoint_execution import (
     note_final_work_item_oom_kill,
@@ -632,6 +633,7 @@ class SimulationRecord:
             if (attempt := store.latest_attempt(work_item_id)) is not None
         }
         recover_interrupted_attempts(manifest, interrupted, project_data, booley_dir=project_data)
+        sweep_cancelled_run_inputs(project_data)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
         invocation = _invocation_number(request.invocation_directory)

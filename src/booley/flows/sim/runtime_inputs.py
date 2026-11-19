@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from booley.flows.artifact_durability import durable_copy, durable_directory
+from booley.flows.sim.staged_input_ledger import StagedInputLedger, leftover_message
 from booley.fusesoc.fusesoc_registry import mirrored_source_path
 from booley.runtime.filesystem_utils import make_directories
 
@@ -159,22 +160,42 @@ def _is_owned_link(link: Path, relative: Path, overlay_root: Path) -> bool:
     return _link_target(link) == overlay_root / relative
 
 
-def _replace_owned_link(destination: Path, target: Path) -> tuple[Path, Path]:
+def _create_link(
+    ledger: StagedInputLedger, run: Path, destination: Path, target: Path, *, directory: bool
+) -> None:
+    relative = destination.relative_to(run)
+    ledger.will_create(relative, kind="link", identity=str(target))
+    destination.symlink_to(target, target_is_directory=directory)
+    ledger.created(relative)
+
+
+def _replace_owned_link(
+    ledger: StagedInputLedger, run: Path, destination: Path, target: Path
+) -> tuple[Path, Path]:
     if destination.readlink() != target:
         destination.unlink()
-        destination.symlink_to(target, target_is_directory=target.is_dir())
+        _create_link(ledger, run, destination, target, directory=target.is_dir())
     return destination, destination.readlink()
 
 
-def _stage_one(run: Path, item: _RuntimeInput, overlay_root: Path) -> tuple[Path, Path] | None:
+def _reject_leftover(ledger: StagedInputLedger, run: Path, path: Path) -> None:
+    relative = path.relative_to(run)
+    if ledger.is_leftover(relative):
+        raise RuntimeInputError(leftover_message(relative))
+
+
+def _stage_one(
+    run: Path, item: _RuntimeInput, overlay_root: Path, ledger: StagedInputLedger
+) -> tuple[Path, Path] | None:
     parent = run
     parts = item.relative.parts
     for index, part in enumerate(parts[:-1], start=1):
         candidate = parent / part
         relative = Path(*parts[:index])
         overlay = item.overlay.parents[len(parts) - index - 1]
+        _reject_leftover(ledger, run, candidate)
         if _is_owned_link(candidate, relative, overlay_root):
-            return _replace_owned_link(candidate, overlay)
+            return _replace_owned_link(ledger, run, candidate, overlay)
         if candidate.is_symlink():
             raise RuntimeInputError(f"run input conflicts with an existing path: {item.relative}")
         if candidate.is_dir():
@@ -182,17 +203,18 @@ def _stage_one(run: Path, item: _RuntimeInput, overlay_root: Path) -> tuple[Path
             continue
         if candidate.exists() or candidate.is_symlink():
             raise RuntimeInputError(f"run input conflicts with an existing path: {item.relative}")
-        candidate.symlink_to(overlay, target_is_directory=True)
+        _create_link(ledger, run, candidate, overlay, directory=True)
         return candidate, candidate.readlink()
 
     destination = parent / parts[-1]
+    _reject_leftover(ledger, run, destination)
     if _is_owned_link(destination, item.relative, overlay_root):
-        return _replace_owned_link(destination, item.overlay)
+        return _replace_owned_link(ledger, run, destination, item.overlay)
     if destination.exists() or destination.is_symlink():
         if not runtime_input_matches(item.source, destination):
             raise RuntimeInputError(f"run input conflicts with an existing path: {item.relative}")
         return None
-    destination.symlink_to(item.overlay)
+    _create_link(ledger, run, destination, item.overlay, directory=False)
     return destination, destination.readlink()
 
 
@@ -226,6 +248,8 @@ def materialize_runtime_inputs(
     build_dir: Path,
     run_cwd: Path,
     inputs: Iterable[str],
+    *,
+    booley_dir: Path,
 ) -> Iterator[None]:
     """Expose declared build-staged inputs in ``run_cwd`` for one run."""
     declared = tuple(inputs)
@@ -240,9 +264,10 @@ def materialize_runtime_inputs(
         raise RuntimeInputError(f"simulation run directory does not exist: {run}")
     overlay_root = build / _OVERLAY_NAME
     staged: list[tuple[Path, Path]] = []
+    ledger = StagedInputLedger(booley_dir, run)
     try:
         for item in _prepare_overlay(build, declared):
-            link = _stage_one(run, item, overlay_root)
+            link = _stage_one(run, item, overlay_root, ledger)
             if link is not None and link[0] not in {path for path, _ in staged}:
                 staged.append(link)
         yield
@@ -250,6 +275,7 @@ def materialize_runtime_inputs(
         raise RuntimeInputError(f"could not expose runtime input: {exc}") from exc
     finally:
         _clean_runtime_state(staged, overlay_root)
+        ledger.discard()
 
 
 @contextmanager
@@ -260,6 +286,7 @@ def materialize_simulation_record_runtime_inputs(
     run_cwd: Path,
     declarations: Iterable[dict[str, str]],
     owned_run_directory: bool,
+    booley_dir: Path,
 ) -> Iterator[tuple[RuntimeInputBinding, ...]]:
     """Copy declared inputs into one attempt, then expose and clean them safely.
 
@@ -274,6 +301,7 @@ def materialize_simulation_record_runtime_inputs(
     bindings: list[RuntimeInputBinding] = []
     owned_destinations: list[Path] = []
     owned_directories: list[Path] = []
+    ledger = StagedInputLedger(booley_dir, run_cwd)
     try:
         for declaration in declarations:
             binding, destination = _materialize_simulation_record_input(
@@ -283,6 +311,7 @@ def materialize_simulation_record_runtime_inputs(
                 run_cwd,
                 owned_run_directory,
                 owned_directories,
+                ledger,
             )
             if (
                 binding.owned
@@ -305,6 +334,7 @@ def materialize_simulation_record_runtime_inputs(
                 # A consumer-created sibling is not owned by this attempt.
                 # Never recurse through a literal Booley Directory to remove it.
                 pass
+        ledger.discard()
 
 
 def _materialize_simulation_record_input(
@@ -314,6 +344,7 @@ def _materialize_simulation_record_input(
     run_cwd: Path,
     owned_run_directory: bool,
     owned_directories: list[Path],
+    ledger: StagedInputLedger,
 ) -> tuple[RuntimeInputBinding, Path]:
     required = {"declaration_id", "source_artifact_path", "destination"}
     if set(declaration) != required:
@@ -328,9 +359,9 @@ def _materialize_simulation_record_input(
     durable_copy(source, authoritative)
     size, digest = _runtime_identity(authoritative)
     destination = run_cwd / destination_relative
-    _prepare_destination_parent(run_cwd, destination_relative, owned_directories)
+    _prepare_destination_parent(run_cwd, destination_relative, owned_directories, ledger)
     method, owned = _expose_simulation_record_input(
-        authoritative, destination, destination_relative, owned_run_directory
+        authoritative, destination, destination_relative, owned_run_directory, ledger, digest
     )
     if _runtime_identity(destination) != (size, digest):
         raise RuntimeInputError(f"runtime input authentication failed: {destination_relative}")
@@ -350,14 +381,20 @@ def _expose_simulation_record_input(
     destination: Path,
     relative: Path,
     owned_run_directory: bool,
+    ledger: StagedInputLedger,
+    digest: str,
 ) -> tuple[str, bool]:
     if owned_run_directory and destination.resolve(strict=False) == authoritative.resolve():
         return "copy", True
+    if ledger.is_leftover(relative):
+        raise RuntimeInputError(leftover_message(relative))
     if destination.exists() or destination.is_symlink():
         if not runtime_input_matches(authoritative, destination):
             raise RuntimeInputError(f"run input conflicts with an existing path: {relative}")
         return "identical_existing", False
+    ledger.will_create(relative, kind="file", identity=digest)
     shutil.copyfile(authoritative, destination, follow_symlinks=False)
+    ledger.created(relative)
     return "copy", True
 
 
@@ -365,6 +402,7 @@ def _prepare_destination_parent(
     run_cwd: Path,
     destination: Path,
     owned_directories: list[Path],
+    ledger: StagedInputLedger,
 ) -> None:
     """Create and remember only missing literal-cwd parent directories."""
     if conflict := destination_parent_conflict(run_cwd, destination):
@@ -373,7 +411,10 @@ def _prepare_destination_parent(
     for component in destination.parts[:-1]:
         current /= component
         if not current.exists():
+            relative = current.relative_to(run_cwd)
+            ledger.will_create(relative, kind="directory", identity=None)
             current.mkdir()
+            ledger.created(relative)
             owned_directories.append(current)
 
 
