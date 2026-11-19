@@ -365,21 +365,19 @@ def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / "state.json"
 
 
+def _flow_in(root: Path) -> AsicSynthesizeFlow:
+    """Return a Flow with common args parsed for *root*."""
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        ["--target", "lite", "--work-dir", str(root), "--report-dir", str(root / "reports")]
+    )
+    return flow
+
+
 @pytest.fixture()
 def flow_and_state(state_file: Path, tmp_path: Path):
     """Return (Flow, state_file) with common args parsed and state loaded."""
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(
-        [
-            "--target",
-            "lite",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-        ]
-    )
-    return flow, state_file
+    return _flow_in(tmp_path), state_file
 
 
 def _write_execution_config(tmp_path: Path, body: str) -> None:
@@ -3109,30 +3107,32 @@ class TestFileBasedInterpretation:
         assert report["total_warnings"] == 2
         assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
 
-    @pytest.mark.parametrize(
-        ("earlier", "evidence"),
-        [
+    _EARLIER_CASES = (
+        (
+            "Warning: found logic loop in module dut:\n"
+            "    cell $add$rtl.sv:7$1\n"
+            "    wire \\feedback\n",
             (
-                "Warning: found logic loop in module dut:\n"
-                "    cell $add$rtl.sv:7$1\n"
-                "    wire \\feedback\n",
-                (
-                    "$add$rtl.sv:7$1",
-                    "\\feedback",
-                    "completed post-optimisation check reports no combinational loops",
-                ),
+                "$add$rtl.sv:7$1",
+                "\\feedback",
+                "completed post-optimisation check reports no combinational loops",
             ),
-            (
-                "Warning: multiple conflicting drivers for dut.sig:\n",
-                ("completed final check reports no multi-driven nets",),
-            ),
-        ],
-        ids=["loop", "driver"],
+        ),
+        (
+            "Warning: multiple conflicting drivers for dut.sig:\n",
+            ("completed final check reports no multi-driven nets",),
+        ),
     )
+
     def test_earlier_structural_warning_passes_when_final_check_is_clean(
-        self, flow_and_state, tmp_path: Path, earlier, evidence
+        self, flow_and_state, tmp_path: Path
     ):
-        flow, _ = flow_and_state
+        for index, (earlier, evidence) in enumerate(self._EARLIER_CASES):
+            root = tmp_path / f"case{index}"
+            root.mkdir()
+            self._assert_earlier_warning_passes(_flow_in(root), root, earlier, evidence)
+
+    def _assert_earlier_warning_passes(self, flow, tmp_path: Path, earlier, evidence):
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -5658,20 +5658,26 @@ def test_synth_baseline_materializes_project_topologies(tmp_path, monkeypatch, t
     assert roots and all(not path.exists() for path in roots)
 
 
-@pytest.mark.parametrize(
-    ("degraded", "final"),
-    [
-        ("final_check", "Found and reported 0 problems.\n"),
-        ("final_check", "Checking module dut...\n"),
-        ("final_check", None),
-        ("final_check", "stale"),
-        ("premap_check", "Checking module dut...\n"),
-        ("premap_check", None),
-        ("premap_check", "stale"),
-    ],
+_PHYSICAL_BOUNDARY_CASES = (
+    ("final_check", "Found and reported 0 problems.\n"),
+    ("final_check", "Checking module dut...\n"),
+    ("final_check", None),
+    ("final_check", "stale"),
+    ("premap_check", "Checking module dut...\n"),
+    ("premap_check", None),
+    ("premap_check", "stale"),
 )
-def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degraded, final):
+
+
+def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path):
     """Either structural check missing, stale, or unterminated gives the same outcome."""
+    for index, (degraded, final) in enumerate(_PHYSICAL_BOUNDARY_CASES):
+        root = tmp_path / f"case{index}"
+        root.mkdir()
+        _assert_physical_boundary((_flow_in(root), flow_and_state[1]), root, degraded, final)
+
+
+def _assert_physical_boundary(flow_and_state, tmp_path, degraded, final):
     loop = (
         "Warning: found logic loop in module dut:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n"
     )
@@ -5757,12 +5763,15 @@ def test_captured_comb_loop_cases_reach_verdict(
         )
 
 
-@pytest.mark.parametrize("mode", ["logical", "physical"])
-@pytest.mark.parametrize("huge", [False, True])
-def test_earlier_loop_report_survives_representative_saturation(
-    flow_and_state, tmp_path, mode, huge
-):
-    flow, _ = flow_and_state
+def test_earlier_loop_report_survives_representative_saturation(flow_and_state, tmp_path):
+    for mode in ("logical", "physical"):
+        for huge in (False, True):
+            root = tmp_path / f"{mode}-{huge}"
+            root.mkdir()
+            _assert_saturation_report(_flow_in(root), root, mode, huge)
+
+
+def _assert_saturation_report(flow, tmp_path, mode, huge):
     padding = " x" * 2000 if huge else ""
     loop = f"Warning: found logic loop in module dut:\n    cell $add$rtl.sv:7$1{padding}\n    wire \\feedback\n"
     raw = tmp_path / "run.log"
