@@ -88,3 +88,10 @@ def test_every_flow_rejects_retired_standalone_frontend_tables(requested, sectio
 
     with pytest.raises(FlowConfigError, match=pattern):
         flow_enabled_from_config(requested, config)
+
+
+def test_retired_flow_key_error_names_the_document_it_read(tmp_path):
+    root = _project(tmp_path, '[flows.lint]\nbackend = "x"\n')
+    with pytest.raises(FlowConfigError, match="retired") as raised:
+        flow_enabled("lint", root)
+    assert raised.value.path == root / ".booley" / "booley.toml"
