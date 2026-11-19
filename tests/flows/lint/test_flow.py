@@ -293,7 +293,6 @@ def test_lint_rejects_an_unusable_linter_before_running_it(
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text.startswith(expected)
     assert commands == []
-    # A Target that fails before its linter is resolved prints its line untagged.
     assert ("[lint] lite         ERROR: lint setup failed: " in capsys.readouterr().out) == (
         "lint setup failed" in expected
     )
