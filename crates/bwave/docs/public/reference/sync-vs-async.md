@@ -156,9 +156,13 @@ rather than initialisation.
   `reset_b` and `rst_l` are active-low, also with a suffix such as
   `rst_n_sync`; `rst`, `reset`, `rst_gen`, `rst_in` and `reset_en`
   are active-high.
-- **Deassertion**: the first transition to the inactive
+- **Deassertion**: the end of the reset's first
+  assertion: its first inactive value after any other
   value. A reset that starts at X or Z stays asserted
-  until then, and one that never deasserts skips
+  until then. One that starts inactive and pulses
+  deasserts where that first pulse ends, so cycle 1
+  follows the pulse, and later pulses do not move it.
+  One that never asserts or never deasserts skips
   nothing.
 - **Header**: every sync query prints one line on stderr
   and `overview` prints it on stdout. Async output has
@@ -169,9 +173,12 @@ rather than initialisation.
   ```
 
   Without a reset it reads
-  `# reset: none detected; no cycles skipped`.
+  `# reset: none detected; no cycles skipped`; a reset
+  that never asserts reads
+  `# reset: tb.rst (active-high by name, auto) never asserts; no cycles skipped`.
 - **JSON**: `--format json` adds a `reset` object with the
-  same facts.
+  same facts; `deassert_tick` is null when the reset
+  never asserts or never deasserts.
 - **`--with-reset`** keeps the reset phase; the header
   then says so and `skipped_cycles` is 0.
 - **Bad `--reset`**: a glob that does not compile or

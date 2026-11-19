@@ -13,7 +13,7 @@ pub struct Reset {
     pub name: String,
     pub active_low: bool,
     pub chosen_by_option: bool,
-    pub deassert_tick: Option<u64>,
+    pub deassertion: Deassertion,
 }
 
 /// Name of a signal without its bit-select, as the lowercased last scope part.
@@ -60,14 +60,32 @@ pub fn active_low(name: &str) -> bool {
     })
 }
 
-/// Tick of the first transition to the inactive value. X, Z and the asserted
-/// value never deassert.
-pub fn deassert_tick(transitions: &[(u64, String)], active_low: bool) -> Option<u64> {
+/// Where a reset's first assertion ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deassertion {
+    /// The tick of the first inactive value after any other value.
+    At(u64),
+    /// Every value is inactive.
+    NeverAsserts,
+    /// It asserts and never returns to the inactive value.
+    NeverDeasserts,
+}
+
+/// The reset's deassertion: the first inactive value after its first other
+/// value. X and Z count as asserted, so a reset that starts X or asserted
+/// deasserts at its first inactive value; one that starts inactive deasserts
+/// at the end of its first pulse, and later pulses do not move it.
+pub fn deassertion(transitions: &[(u64, String)], active_low: bool) -> Deassertion {
     let inactive = if active_low { "1" } else { "0" };
-    transitions
+    let mut rest = transitions
         .iter()
-        .find(|(_, v)| v == inactive)
-        .map(|(t, _)| *t)
+        .skip_while(|(_, v)| v == inactive)
+        .peekable();
+    if rest.peek().is_none() {
+        return Deassertion::NeverAsserts;
+    }
+    rest.find(|(_, v)| v == inactive)
+        .map_or(Deassertion::NeverDeasserts, |(t, _)| Deassertion::At(*t))
 }
 
 // What a sync query or `overview` says about the reset it used.
@@ -82,16 +100,23 @@ pub struct ResetReport {
     /// Whether detection or `--reset` picked the signal.
     #[schemars(extend("enum" = ["auto", "--reset"]), transform = crate::output::without_type)]
     pub chosen_by: &'static str,
-    /// Tick of the first transition to the inactive value; null when the reset
-    /// never deasserts.
+    /// Tick where the reset's first assertion ends: its first inactive value
+    /// after any other value. A reset that starts X or Z counts as asserted;
+    /// one that starts inactive deasserts at the end of its first pulse, and
+    /// later pulses do not move it. Null when the reset never asserts or never
+    /// deasserts.
     pub deassert_tick: Option<u64>,
     /// deassert_tick in the store's timescale, such as `25ns`.
     pub deassert_time: Option<String>,
     /// Clock cycles before the deassert that sync queries skip; 0 with
-    /// --with-reset, without a clock or without a deassert.
+    /// --with-reset, without a clock, without a deassert or when the reset
+    /// never asserts.
     pub skipped_cycles: u64,
     /// Whether --with-reset kept the reset phase.
     pub with_reset: bool,
+    /// Every value of the reset is inactive; only the header says so.
+    #[serde(skip)]
+    pub never_asserts: bool,
 }
 
 impl ResetReport {
@@ -105,6 +130,9 @@ impl ResetReport {
             _ => "active-high",
         };
         let head = format!("# reset: {signal} ({polarity} by name, {})", self.chosen_by);
+        if self.never_asserts {
+            return format!("{head} never asserts; no cycles skipped");
+        }
         let Some(time) = &self.deassert_time else {
             return format!("{head} never deasserts; no cycles skipped");
         };

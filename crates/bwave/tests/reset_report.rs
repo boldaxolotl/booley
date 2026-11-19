@@ -204,6 +204,108 @@ fn reset_names_are_auto_detected() {
     }
 }
 
+/// A store with `rst_sig` driven by `rst`, plus the shared `flag`, `early` and
+/// `gclk` (a clock with no edges from 56 to 94) signals.
+fn pulse_store(rst_sig: &str, rst: &[(u64, &str)]) -> (tempfile::TempDir, String) {
+    let mut events: Vec<(u64, String)> = vec![
+        (0, "0 flag".into()),
+        (12, "1 flag".into()),
+        (18, "0 flag".into()),
+        (42, "1 flag".into()),
+        (48, "0 flag".into()),
+        (0, "0 early".into()),
+        (12, "1 early".into()),
+        (0, "0 gclk".into()),
+    ];
+    for tick in (5..=100).step_by(5).filter(|t| *t <= 55 || *t >= 95) {
+        let value = if tick % 10 == 5 { 1 } else { 0 };
+        events.push((tick, format!("{value} gclk")));
+    }
+    for (tick, value) in rst {
+        events.push((*tick, format!("{value} {rst_sig}")));
+    }
+    let events: Vec<(u64, &str)> = events.iter().map(|(t, e)| (*t, e.as_str())).collect();
+    store(
+        &[(rst_sig, 1), ("flag", 1), ("early", 1), ("gclk", 1)],
+        &events,
+        100,
+    )
+}
+
+#[test]
+fn reset_pulse_from_inactive_deasserts_where_it_ends() {
+    // `asserted` is the reference: asserted from tick 0, deasserted at 25.
+    let (_a, asserted) = pulse_store("rst", &[(0, "1"), (25, "0")]);
+    let (_p, pulse) = pulse_store("rst", &[(0, "0"), (7, "1"), (25, "0")]);
+    let (_n, pulse_n) = pulse_store("rst_n", &[(0, "1"), (7, "0"), (25, "1")]);
+    let (_t, twice) = pulse_store(
+        "rst",
+        &[(0, "0"), (7, "1"), (25, "0"), (60, "1"), (70, "0")],
+    );
+    let commands: [&[&str]; 14] = [
+        &["signal", "-s", "flag"],
+        &["signal", "-s", "flag", "-t", "2c:4c"],
+        &["signal", "-s", "flag", "-t", "200c:"],
+        &["wave", "-s", "flag"],
+        &["value", "-s", "flag", "--at", "2"],
+        &["find", "flag", "'b1"],
+        &["sample", "flag", "change", "-s", "flag"],
+        &["diff", "1", "3", "-s", "flag"],
+        &["distance", "flag", "change"],
+        &["stats", "-s", "flag"],
+        &["stats", "-s", "clk"],
+        &["stuck", "-s", "early"],
+        &["overview", "--clock", "tb.gclk"],
+        &["value", "--async", "--at", "2c", "-s", "flag"],
+    ];
+    let body = |text: &str| -> String {
+        text.lines()
+            .filter(|l| !l.starts_with("# reset:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let sources: [(&str, &str, &[&str], &str, &str); 4] = [
+        ("pulse", &pulse, &[], "tb.rst", "active-high"),
+        ("pulse_n", &pulse_n, &[], "tb.rst_n", "active-low"),
+        ("twice", &twice, &[], "tb.rst", "active-high"),
+        (
+            "pulse --reset",
+            &pulse,
+            &["--reset", "tb.rst"],
+            "tb.rst",
+            "active-high",
+        ),
+    ];
+    for (label, path, extra, signal, polarity) in sources {
+        for command in commands {
+            let run_on = |path: &str| {
+                let mut args = vec![command[0], path];
+                args.extend_from_slice(&command[1..]);
+                args.extend_from_slice(extra);
+                let (out, err, code) = run(&args);
+                assert_eq!(code, 0, "{label} {args:?}: {err}");
+                (body(&out), body(&err))
+            };
+            assert_eq!(run_on(path), run_on(&asserted), "{label} {command:?}");
+        }
+        let chosen = if extra.is_empty() { "auto" } else { "--reset" };
+        let mut args = vec!["signal", path, "-s", "flag"];
+        args.extend_from_slice(extra);
+        let (_, err_extra, _) = run(&args);
+        let line = format!(
+            "# reset: {signal} ({polarity} by name, {chosen}) deasserts @ 25ns; 2 cycles skipped (--with-reset to include)"
+        );
+        assert_eq!(reset_lines(&err_extra), [line.as_str()], "{label}");
+        let mut args = vec!["overview", path, "--format", "json"];
+        args.extend_from_slice(extra);
+        let reset = &json_of(&args)["reset"];
+        assert_eq!(reset["deassert_tick"], 25, "{label}");
+        assert_eq!(reset["deassert_time"], "25ns", "{label}");
+        assert_eq!(reset["skipped_cycles"], 2, "{label}");
+        assert_eq!(reset["chosen_by"], chosen, "{label}");
+    }
+}
+
 #[test]
 fn polarity_follows_low_marker_names() {
     let names = [
@@ -233,7 +335,11 @@ fn polarity_follows_low_marker_names() {
             if low { "active_low" } else { "active_high" },
             "{name}"
         );
-        assert_eq!(reset["deassert_tick"], if low { 30 } else { 0 }, "{name}");
+        assert_eq!(
+            reset["deassert_tick"],
+            if low { json!(30) } else { Value::Null },
+            "{name}"
+        );
     }
 }
 
@@ -260,6 +366,11 @@ fn x_initial_reset_waits_for_inactive_value() {
     let (out, err, code) = run(&["signal", &path, "-s", "rst_n", "-t", "1:1"]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(out.trim(), "1 rst_n 1");
+
+    // X straight to inactive: the X counts as the asserted value.
+    let (_dir, path) = store(&[("rst_n", 1)], &[(0, "x rst_n"), (20, "1 rst_n")], 100);
+    let json = json_of(&["overview", &path, "--format", "json"]);
+    assert_eq!(json["reset"]["deassert_tick"], 20);
 }
 
 #[test]
@@ -317,6 +428,19 @@ fn sync_text_and_overview_print_one_reset_line() {
         ["# reset: tb.rst_n (active-low by name, auto) deasserts @ 25ns; reset phase included (--with-reset)"]
     );
 
+    let (_idle, idle_path) = store(
+        &[("rst", 1), ("flag", 1)],
+        &[(0, "0 rst"), (12, "1 flag")],
+        100,
+    );
+    let idle_line = "# reset: tb.rst (active-high by name, auto) never asserts; no cycles skipped";
+    let (out, err, _) = run(&["signal", &idle_path, "-s", "flag"]);
+    assert_eq!(reset_lines(&err), [idle_line]);
+    let (with_out, _, _) = run(&["signal", &idle_path, "-s", "flag", "--with-reset"]);
+    assert_eq!(out, with_out);
+    let (out, _, _) = run(&["overview", &idle_path]);
+    assert_eq!(reset_lines(&out), [idle_line]);
+
     let (_none, none_path) = store(&[("flag", 1)], &[(0, "0 flag"), (12, "1 flag")], 100);
     let none_line = "# reset: none detected; no cycles skipped";
     let (_, err, _) = run(&["signal", &none_path, "-s", "flag"]);
@@ -355,8 +479,21 @@ fn json_reset_object_matches_header() {
             "signal": "tb.flag",
             "polarity": "active_high",
             "chosen_by": "--reset",
-            "deassert_tick": 0,
-            "deassert_time": "0ns",
+            "deassert_tick": 18,
+            "deassert_time": "18ns",
+            "skipped_cycles": 2,
+            "with_reset": false
+        })
+    );
+    let (_idle, idle_path) = store(&[("rst", 1)], &[(0, "0 rst")], 100);
+    assert_eq!(
+        json_of(&["overview", &idle_path, "--format", "json"])["reset"],
+        json!({
+            "signal": "tb.rst",
+            "polarity": "active_high",
+            "chosen_by": "auto",
+            "deassert_tick": null,
+            "deassert_time": null,
             "skipped_cycles": 0,
             "with_reset": false
         })
