@@ -98,7 +98,7 @@ class CoverageAnalystSpecialist(Specialist):
 
     def __init__(self, *, model: Callable[[AgentCallParams], AgentResult] | None = None) -> None:
         self._model = model
-        self._analysis_lines: list[str] = []
+        self._analysis_summary: list[str] = []
         super().__init__()
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
@@ -314,7 +314,7 @@ class CoverageAnalystSpecialist(Specialist):
             )
         document = report.to_dict()
         invocation = self.reserve_invocation_dir()
-        self._analysis_lines = _analysis_lines(
+        self._analysis_summary = _analysis_lines(
             document, None if invocation is None else (invocation / "report.json").resolve()
         )
         summary = f"Coverage advisory: {document['closure_recommendation']} ({document['eligibility']}, {document['source_access']})"
@@ -331,9 +331,9 @@ class CoverageAnalystSpecialist(Specialist):
         if (
             self._console_publication_requested
             and result.exit_code == EXIT_SUCCESS
-            and self._analysis_lines
+            and self._analysis_summary
         ):
-            print("\n".join(self._analysis_lines), flush=True)
+            print("\n".join(self._analysis_summary), flush=True)
 
     def _build_prompt(self) -> str:
         raise NotImplementedError("Coverage analysis uses the validated Coverage Record seam")
