@@ -2198,7 +2198,6 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut last_json: Option<crate::output::FindMatch> = None;
     let mut truncated = false;
     let grid = SyncGrid::new(cache, cfg, effective_start);
-    let cb = grid.base;
 
     let use_cycle_walk = sync_mode && cache.clock_period_ticks > 0;
 
