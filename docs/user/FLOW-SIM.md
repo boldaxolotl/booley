@@ -516,7 +516,7 @@ Variant, run in one simulator process. Resuming a Cocotb Target doesn't start
 it from scratch: only the interrupted batch runs again, and the batches that
 finished are kept. A run with several seeds (`@x20`) or Test Variants has
 several batches. A `--coverage` run has no batches: it gives each Test Run its
-own simulator process, and it resumes only as described above.
+own simulator process.
 
 </details>
 
