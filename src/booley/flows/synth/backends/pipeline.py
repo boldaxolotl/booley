@@ -438,6 +438,32 @@ def openroad_recipe_text(spec: SynthSpec) -> str:
     return "\n".join(_sta_recipe_lines(spec, _RECIPE_TOKEN_PLACEHOLDER))
 
 
+def _yosys_recipe_lines(spec: SynthSpec, token: str, prereq: str) -> list[str]:
+    """The ``yosys`` stage: its target line, recipe, required outputs and a blank line."""
+    lines = [
+        f"yosys:{prereq}",
+        "\t@echo 'BOOLEY_STAGE: yosys'",
+        _eda_tool_preflight(token, "yosys", "yosys"),
+        _required_file(token, "yosys", spec.liberty.as_posix(), spec.liberty.name),
+    ]
+    if spec.frontend == "slang":
+        marker = _marker(token, "missing_required_file", "yosys", "read_slang")
+        lines.append(
+            "\t@yosys -Q -p 'help read_slang' > .booley_read_slang.log 2>&1; "
+            "grep -q 'No such command' .booley_read_slang.log && "
+            f"{{ echo {marker}; exit 2; }} || true"
+        )
+    lines += [
+        f'\tTMPDIR="$({_YOSYS_TMPDIR})" yosys -s synth.ys > yosys.log 2>&1 {_fail_tail("yosys.log")}',
+        _required_output(token, "yosys", f"stat_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"premap_check_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"check_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"synth_{spec.design_name}.v"),
+        "",
+    ]
+    return lines
+
+
 def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
     """Render the stage-chaining Makefile (the boundary command's far side).
 
@@ -478,27 +504,7 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
             "",
         ]
         yosys_prereq = " sv2v"
-    lines += [
-        f"yosys:{yosys_prereq}",
-        "\t@echo 'BOOLEY_STAGE: yosys'",
-        _eda_tool_preflight(token, "yosys", "yosys"),
-        _required_file(token, "yosys", spec.liberty.as_posix(), spec.liberty.name),
-    ]
-    if spec.frontend == "slang":
-        marker = _marker(token, "missing_required_file", "yosys", "read_slang")
-        lines.append(
-            "\t@yosys -Q -p 'help read_slang' > .booley_read_slang.log 2>&1; "
-            "grep -q 'No such command' .booley_read_slang.log && "
-            f"{{ echo {marker}; exit 2; }} || true"
-        )
-    lines += [
-        f'\tTMPDIR="$({_YOSYS_TMPDIR})" yosys -s synth.ys > yosys.log 2>&1 {_fail_tail("yosys.log")}',
-        _required_output(token, "yosys", f"stat_{spec.design_name}.txt"),
-        _required_output(token, "yosys", f"premap_check_{spec.design_name}.txt"),
-        _required_output(token, "yosys", f"check_{spec.design_name}.txt"),
-        _required_output(token, "yosys", f"synth_{spec.design_name}.v"),
-        "",
-    ]
+    lines += _yosys_recipe_lines(spec, token, yosys_prereq)
     if runs_openroad(mode):
         # `openroad` is the same stage without the Yosys prerequisite, so the
         # Flow can run the two stages separately and skip OpenROAD on reuse.
