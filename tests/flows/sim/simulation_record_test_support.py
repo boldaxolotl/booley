@@ -1263,7 +1263,8 @@ class _ParallelGroup:
         )
 
     def _coordinate(self, name: str) -> None:
-        # The first item builds alone under the Flow's claim; the next two overlap.
+        # The first item builds under the Flow's claim, then the others are admitted beside
+        # it; only the last two meet here.
         if name not in {"beta", "gamma"}:
             return
         self.state.barrier.wait()
