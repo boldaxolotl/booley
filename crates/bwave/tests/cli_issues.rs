@@ -116,8 +116,8 @@ $var wire 1 ! clk $end\n$var wire 8 # data $end\n$var wire 1 % out $end\n\
 $upscope $end\n$scope module other $end\n$var wire 1 & o $end\n$upscope $end\n\
 $enddefinitions $end";
 
-/// Body of the unusable-value-change trace; byte offsets (the header is 207
-/// bytes) are in the comments. The text has no final newline.
+/// Body of the unusable-value-change trace. The header is 207 bytes, so the
+/// body starts at byte 207. The text has no final newline.
 const UNUSABLE_BODY: &str = "#0\n0!\nb00000000 #\n0&\n\
 #10\n1!\n1?\nb0101\n1\nr1.5\n\
 $comment\n1?\n1%\n#10\nsee $enddefinitions\nb0101\n$end\n\
