@@ -295,6 +295,7 @@ def _await_pre_sim(process, command, timeout, monitor, owners):
         observer.begin_command()
     timed_out = False
     settled = False
+    stdout = stderr = ""
     try:
         try:
             monitor.start(process.pid)
@@ -317,13 +318,17 @@ def _await_pre_sim(process, command, timeout, monitor, owners):
             process.stderr.close()
         measurement = monitor.finish(process.reaped_peak_bytes)
         if settled:
-            from booley.flows.base import SubprocessResult
+            from booley.flows.base import SubprocessResult, blame_own_oom_kill
 
             result = SubprocessResult(
                 returncode=process.returncode,
+                stdout=stdout or "",
+                stderr=stderr or "",
                 timed_out=timed_out,
                 duration_s=time.monotonic() - started,
             )
+            # The kill is the attempt's: a work item's requeues only that item (ADR 0087).
+            blame_own_oom_kill(measurement, result, scope)
             record_command("sim", label, flags, measurement, result)
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.job_resources import JobResourceMonitor, ResourceLabel
 from booley.flows.mutation.tool_runs import run_tool
@@ -86,3 +88,33 @@ def test_a_monitor_that_cannot_start_kills_the_tool_and_records_nothing(
         run_tool(sleeper, label=_LABEL, cwd=tmp_path, env=os.environ)
 
     assert resource_history.load_records(tmp_path) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGKILL is POSIX")
+@pytest.mark.parametrize(
+    ("limit_reached", "kill", "outcome"),
+    [(True, "sandbox_limit", "oom_kill"), (False, "host", "host_oom_kill")],
+)
+def test_a_tool_the_oom_killer_took_names_which_kill_it_was(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_reached: bool,
+    kill: str,
+    outcome: str,
+) -> None:
+    # The container's OOM counter rises over the run; the Sandbox's own limit event only
+    # when it reached its limit.
+    counter = itertools.count()
+
+    def events() -> job_resources.MemoryEvents:
+        kills = next(counter)
+        return job_resources.MemoryEvents(kills, kills if limit_reached else 0)
+
+    monkeypatch.setattr(job_resources, "cgroup_memory_events", events)
+    killed = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
+
+    done = run_tool(killed, label=_LABEL, cwd=tmp_path, env=os.environ, timeout=hang_guard_s())
+
+    assert done.oom_kill == kill
+    [record] = resource_history.load_records(tmp_path)
+    assert record["outcome"] == outcome
