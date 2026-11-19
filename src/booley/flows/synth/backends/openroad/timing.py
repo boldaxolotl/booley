@@ -17,6 +17,7 @@ from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 from booley.flows.synth.timing import StaTimingConfig
 
 from .reporting import (
+    path_clocks_tcl,
     perclock_timing_tcl,
     reg2reg_timing_tcl,
     top_paths_report_tcl,
@@ -191,6 +192,7 @@ def write_openroad_script(
     reg2reg_block = reg2reg_timing_tcl((report_dir / "reg2reg.rpt").as_posix(), report_paths=count)
     final_report_block = top_paths_report_tcl("slacks", count, rpt)
     perclock_block = perclock_timing_tcl()
+    worst_clocks_block = path_clocks_tcl("STA_WORST_CLOCKS", "[lindex $paths 0]")
 
     repair_timing_line = _repair_timing_tcl(config)
     pre_rpt = (report_dir / "pre_repair.rpt").as_posix()
@@ -210,7 +212,6 @@ read_verilog {{{sta_netlist.as_posix()}}}
 link_design {design_name}
 {read_sdc}
 if {{[llength [all_clocks]] == 0}} {{ error "{error_message}" }}
-foreach _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }}
 puts "BOOLEY_STAGE: floorplan"
 initialize_floorplan -utilization {util:.3f} -aspect_ratio 1.0 \\
   -core_space {{{_CORE_SPACE}}} \\
@@ -252,7 +253,7 @@ foreach path [lrange $paths 0 {count - 1}] {{
 close $csv_out
 if {{[llength $slacks] > 0}} {{
   puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
-}}
+{worst_clocks_block}}}
 {final_report_block}{perclock_block}{reg2reg_block}""".lstrip()
     script_path.write_text(script, encoding="utf-8")
     return script_path

@@ -533,11 +533,8 @@ class TestPhysicalStaHelpers:
         report_dir = tmp_path / "reports"
         report_dir.mkdir()
         (report_dir / "overall.csv.rpt").write_text(csv.read_text(encoding="utf-8"))
-        stdout = "STA_CLOCK_PERIOD_NS: 10.000000\n"
         capsys.readouterr()
-        assert openroad_reporting.emit_timing_markers(
-            stdout, StaTimingConfig(mode="physical"), report_dir
-        )
+        assert openroad_reporting.emit_timing_markers("", report_dir)
         emitted = capsys.readouterr().out
         assert emitted.count("STA_WORST_SLACK_NS:") == 1
         assert "STA_WORST_SLACK_NS: -0.400000" in emitted
@@ -566,6 +563,8 @@ class TestPhysicalStaHelpers:
         # write that chokes must not cost us the slack number.
         assert tcl.index("STA_REG2REG_SLACK_NS") < tcl.index("report_checks")
         assert "  catch {report_checks" in tcl
+        # The path's clocks are read before report_checks frees the path objects.
+        assert tcl.index("STA_REG2REG_CLOCKS") < tcl.index("report_checks")
 
     def test_perclock_tcl_iterates_all_clocks(self):
         tcl = openroad_reporting.perclock_timing_tcl()
@@ -573,6 +572,9 @@ class TestPhysicalStaHelpers:
         assert "all_clocks" in tcl
         assert "STA_PERCLOCK" in tcl
         assert "-to $_clk" in tcl
+        # The worst setup path's launch clock decides whether Fmax is derivable.
+        assert "startpoint_clock" in tcl
+        assert "setup_same_clock=%s" in tcl
         # Reports both setup (max) and hold (min) slack, guarded by catch.
         assert "-path_delay max" in tcl
         assert "-path_delay min" in tcl
@@ -584,16 +586,65 @@ class TestPhysicalStaHelpers:
 
     def test_print_reg2reg_fmax_emits_derived(self, capsys):
         # slack +0.5 ns at a 2000 ps period → crit 1500 ps → 666.667 MHz.
-        assert (
-            openroad_reporting.print_reg2reg_fmax("STA_REG2REG_SLACK_NS: 0.500000", 2000.0) is True
+        stdout = (
+            "STA_REG2REG_SLACK_NS: 0.500000\n"
+            "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
         )
+        assert openroad_reporting.print_reg2reg_fmax(stdout) is True
         out = capsys.readouterr().out
         assert "STA_REG2REG_CRITICAL_PATH_PS: 1500.000" in out
         assert "STA_REG2REG_FMAX_MHZ: 666.667" in out
 
     def test_print_reg2reg_fmax_noop_when_absent(self, capsys):
-        assert openroad_reporting.print_reg2reg_fmax("STA_WORST_SLACK_NS: -1.0", 2000.0) is False
+        assert openroad_reporting.print_reg2reg_fmax("STA_WORST_SLACK_NS: -1.0") is False
         assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize(
+        "clocks",
+        [
+            pytest.param("", id="no-clocks-marker"),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=0 capture_period_ns=2.000000\n", id="cross"
+            ),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=0 capture_period_ns=NA\n", id="unclocked"
+            ),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=NA\n", id="no-period"
+            ),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=0.400000\n",
+                id="slack-above-period",
+            ),
+        ],
+    )
+    def test_print_reg2reg_fmax_omits_without_same_clock_period(self, capsys, clocks):
+        # The slack is still reported by the Tcl marker; no critical path or Fmax is invented.
+        assert (
+            openroad_reporting.print_reg2reg_fmax("STA_REG2REG_SLACK_NS: 0.500000\n" + clocks)
+            is True
+        )
+        out = capsys.readouterr().out
+        assert "STA_REG2REG_FMAX_MHZ" not in out
+        if clocks.endswith("capture_period_ns=0.400000\n"):
+            assert "STA_REG2REG_CRITICAL_PATH_PS: -100.000" in out
+        else:
+            assert "STA_REG2REG_CRITICAL_PATH_PS" not in out
+
+    def test_path_clocks_tcl_compares_clock_handles_under_catch(self):
+        tcl = openroad_reporting.path_clocks_tcl("STA_X_CLOCKS", "[lindex $p 0]")
+        assert tcl.startswith("catch {")
+        assert "startpoint_clock" in tcl and "endpoint_clock" in tcl
+        assert "$_sc eq $_ec" in tcl
+        assert "STA_X_CLOCKS: same_clock=$_same capture_period_ns=$_cap" in tcl
+
+    def test_parse_path_clocks(self):
+        text = "STA_X: same_clock=1 capture_period_ns=6.400000\n"
+        assert openroad_reporting.parse_path_clocks(text, "STA_X") == (True, 6.4)
+        assert openroad_reporting.parse_path_clocks(
+            "STA_X: same_clock=0 capture_period_ns=NA", "STA_X"
+        ) == (False, None)
+        assert openroad_reporting.parse_path_clocks(text, "STA_Y") is None
 
 
 # ---------------------------------------------------------------------------
@@ -603,17 +654,14 @@ class TestPhysicalStaHelpers:
 
 
 class TestEmitTimingMarkers:
-    @staticmethod
-    def _config():
-        return StaTimingConfig(mode="physical", sdc=())
-
     def test_overall_and_reg2reg_both_emitted(self, tmp_path, capsys):
         stdout = (
-            "STA_CLOCK_PERIOD_NS: 2.000000\n"
             "STA_WORST_SLACK_NS: -0.100000\n"
+            "STA_WORST_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
             "STA_REG2REG_SLACK_NS: 0.500000\n"
+            "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
         )
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.100000" in out
         assert "STA_CRITICAL_PATH_PS: 2100.000" in out
@@ -623,13 +671,12 @@ class TestEmitTimingMarkers:
     def test_no_path_log_reports_no_overall_slack(self, tmp_path, capsys):
         """No STA paths: GPL-0028's comma-separated numbers must not become slack."""
         stdout = (
-            "STA_CLOCK_PERIOD_NS: 10.000000\n"
             "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
-            "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+            "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA setup_same_clock=0\n"
         )
         (tmp_path / "overall.csv.rpt").write_text("", encoding="utf-8")
         (tmp_path / "overall.rpt").write_text("No paths found.\n", encoding="utf-8")
-        openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path)
+        openroad_reporting.emit_timing_markers(stdout, tmp_path)
         out = capsys.readouterr().out
         for marker in ("STA_WORST_SLACK_NS", "STA_CRITICAL_PATH_PS", "STA_FMAX_MHZ"):
             assert marker not in out
@@ -638,31 +685,31 @@ class TestEmitTimingMarkers:
     def test_marker_wins_over_comma_log_lines(self, tmp_path, capsys):
         """A real path keeps its marker slack even beside comma-separated log lines."""
         stdout = (
-            "STA_CLOCK_PERIOD_NS: 10.000000\n"
             "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
             "STA_WORST_SLACK_NS: -0.100000\n"
+            "STA_WORST_CLOCKS: same_clock=1 capture_period_ns=10.000000\n"
         )
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.100000" in out
         assert "STA_CRITICAL_PATH_PS: 10100.000" in out
 
     def test_csv_slack_wins_over_comma_log_lines_without_marker(self, tmp_path, capsys):
         """No marker (killed run) but real CSV rows: the CSV slack, not GPL-0028's 4."""
-        stdout = (
-            "STA_CLOCK_PERIOD_NS: 10.000000\n"
-            "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
-        )
+        stdout = "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
         (tmp_path / "overall.csv.rpt").write_text("a,b,-0.250\n", encoding="utf-8")
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         assert "STA_WORST_SLACK_NS: -0.250000" in capsys.readouterr().out
 
     def test_reg2reg_survives_when_overall_absent(self, tmp_path, capsys):
         """A false-pathed / I/O-bound overall worst path leaves no
         STA_WORST_SLACK_NS, but the internal reg->reg Fmax must still surface."""
         # No overall marker, and no overall.csv.rpt on disk — only reg->reg.
-        stdout = "STA_CLOCK_PERIOD_NS: 2.000000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        stdout = (
+            "STA_REG2REG_SLACK_NS: 0.500000\n"
+            "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
+        )
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS" not in out
         assert "STA_REG2REG_CRITICAL_PATH_PS: 1500.000" in out
@@ -671,22 +718,17 @@ class TestEmitTimingMarkers:
         assert "STA_REPORT:" in out
 
     def test_nothing_surfaced_returns_false(self, tmp_path, capsys):
-        assert (
-            openroad_reporting.emit_timing_markers("no markers here", self._config(), tmp_path)
-            is False
-        )
+        assert openroad_reporting.emit_timing_markers("no markers here", tmp_path) is False
         assert "STA_REPORT:" not in capsys.readouterr().out
 
     def test_overall_from_csv_when_stdout_marker_absent(self, tmp_path, capsys):
         # Overall slack only in the CSV report; reg->reg absent.
         (tmp_path / "overall.csv.rpt").write_text("startpt,endpt,-0.250000\n", encoding="utf-8")
-        assert (
-            openroad_reporting.emit_timing_markers(
-                "STA_CLOCK_PERIOD_NS: 2.000000\n", self._config(), tmp_path
-            )
-            is True
-        )
-        assert "STA_WORST_SLACK_NS: -0.250000" in capsys.readouterr().out
+        assert openroad_reporting.emit_timing_markers("", tmp_path) is True
+        out = capsys.readouterr().out
+        assert "STA_WORST_SLACK_NS: -0.250000" in out
+        # The CSV report carries no clocks, so its slack gets no critical path or Fmax.
+        assert "STA_CRITICAL_PATH_PS" not in out and "STA_FMAX_MHZ" not in out
 
     def test_reg2reg_report_pointer_only_when_the_file_exists(self, tmp_path, capsys):
         """The reg->reg path detail is advertised only when it was written.
@@ -694,20 +736,20 @@ class TestEmitTimingMarkers:
         The Tcl skips the report on a register-free design and the pre-repair
         salvage path never reaches it, so an unconditional pointer would send
         the reader to a file that isn't there."""
-        stdout = "STA_CLOCK_PERIOD_NS: 2.000000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        stdout = "STA_REG2REG_SLACK_NS: 0.500000\n"
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         assert "STA_REG2REG_REPORT:" not in capsys.readouterr().out
 
         (tmp_path / "reg2reg.rpt").write_text("Startpoint: ...\n", encoding="utf-8")
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert f"STA_REG2REG_REPORT: {tmp_path / 'reg2reg.rpt'}" in out
 
     def test_perclock_surfaces_when_overall_and_reg2reg_absent(self, tmp_path, capsys):
         # A design whose overall/reg2reg queries are empty still reports genuine
         # per-clock timing — emit_timing_markers must surface it (return True).
-        stdout = "STA_PERCLOCK: name=clk period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000\n"
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        stdout = _perclock_marker("clk", 2.0, 0.75, 0.1)
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_PERCLOCK: name=clk" in out
         assert "STA_REPORT:" in out
@@ -718,12 +760,13 @@ class TestEmitTimingMarkers:
 # ---------------------------------------------------------------------------
 
 
-def _perclock_marker(name, period, wns, whs):
+def _perclock_marker(name, period, wns, whs, same_clock=True):
     def tok(v):
         return "NA" if v is None else f"{v:.6f}"
 
     return (
-        f"STA_PERCLOCK: name={name} period_ns={period:.6f} wns_ns={tok(wns)} whs_ns={tok(whs)}\n"
+        f"STA_PERCLOCK: name={name} period_ns={period:.6f} wns_ns={tok(wns)} whs_ns={tok(whs)} "
+        f"setup_same_clock={int(same_clock)}\n"
     )
 
 
@@ -733,31 +776,42 @@ class TestPerClockMarkers:
         [
             pytest.param(
                 [("clk", 2.0, 0.75, 0.1)],
-                {"clk": {"period_ns": 2.0, "wns_ns": 0.75, "whs_ns": 0.1}},
+                {"clk": synth_timing.PerClockRow(2.0, 0.75, 0.1, True)},
                 id="basic",
             ),
             pytest.param(
                 [("clk", 2.0, None, None)],
-                {"clk": {"period_ns": 2.0, "wns_ns": None, "whs_ns": None}},
+                {"clk": synth_timing.PerClockRow(2.0, None, None, True)},
                 id="na-becomes-none",
             ),
             # A clock reported twice: the most pessimistic (minimum) slack wins.
             pytest.param(
                 [("clk", 2.0, 0.75, 0.30), ("clk", 2.0, 0.20, 0.05)],
-                {"clk": {"period_ns": 2.0, "wns_ns": 0.20, "whs_ns": 0.05}},
+                {"clk": synth_timing.PerClockRow(2.0, 0.20, 0.05, True)},
                 id="dedup-keeps-min-slack",
             ),
             # A later NA must not overwrite an earlier real slack.
             pytest.param(
-                [("clk", 2.0, 0.75, 0.30), ("clk", 2.0, None, None)],
-                {"clk": {"period_ns": 2.0, "wns_ns": 0.75, "whs_ns": 0.30}},
+                [("clk", 2.0, 0.75, 0.30), ("clk", 2.0, None, None, False)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.75, 0.30, True)},
                 id="na-never-displaces-real-value",
             ),
+            # The same-clock flag belongs to the marker whose setup slack wins.
             pytest.param(
-                [("clk_a", 2.0, 0.5, 0.1), ("clk_b", 4.0, 1.0, 0.2)],
+                [("clk", 2.0, 0.75, 0.30), ("clk", 2.0, 0.20, 0.05, False)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.20, 0.05, False)},
+                id="cross-clock-flag-follows-min-slack",
+            ),
+            pytest.param(
+                [("clk", 2.0, None, None, False), ("clk", 2.0, 0.20, 0.05)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.20, 0.05, True)},
+                id="real-slack-replaces-na-flag",
+            ),
+            pytest.param(
+                [("clk_a", 2.0, 0.5, 0.1), ("clk_b", 4.0, 1.0, 0.2, False)],
                 {
-                    "clk_a": {"period_ns": 2.0, "wns_ns": 0.5, "whs_ns": 0.1},
-                    "clk_b": {"period_ns": 4.0, "wns_ns": 1.0, "whs_ns": 0.2},
+                    "clk_a": synth_timing.PerClockRow(2.0, 0.5, 0.1, True),
+                    "clk_b": synth_timing.PerClockRow(4.0, 1.0, 0.2, False),
                 },
                 id="multi-clock",
             ),
@@ -767,14 +821,21 @@ class TestPerClockMarkers:
         output = "".join(_perclock_marker(*marker) for marker in markers)
         assert synth_timing.parse_perclock(output) == expected
 
+    def test_marker_without_same_clock_flag_is_ignored(self):
+        old = "STA_PERCLOCK: name=clk period_ns=2.000000 wns_ns=0.5 whs_ns=0.1\n"
+        assert synth_timing.parse_perclock(old) == {}
+
     def test_emit_perclock_roundtrip(self, capsys):
         # Re-emitting parses the input and prints canonical marker lines that
-        # parse back to the same values.
-        stdout = _perclock_marker("clk", 2.0, 0.75, 0.1)
+        # parse back to the same values, including the cross-clock flag.
+        stdout = _perclock_marker("clk", 2.0, 0.75, 0.1) + _perclock_marker(
+            "other", 4.0, 1.5, 0.2, same_clock=False
+        )
         assert openroad_reporting.emit_perclock_markers(stdout) is True
         out = capsys.readouterr().out
         assert synth_timing.parse_perclock(out) == {
-            "clk": {"period_ns": 2.0, "wns_ns": 0.75, "whs_ns": 0.1},
+            "clk": synth_timing.PerClockRow(2.0, 0.75, 0.1, True),
+            "other": synth_timing.PerClockRow(4.0, 1.5, 0.2, False),
         }
 
     def test_emit_perclock_na_roundtrips_as_na(self, capsys):
@@ -1009,89 +1070,6 @@ class TestSynthTimingConfigModes:
         with pytest.raises(SystemExit) as exc_info:
             syn_core.synth_timing_config(project_root=tmp_path)
         assert key in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# ADR 0029 — Target-SDC period recovery + generated-default suppression
-# ---------------------------------------------------------------------------
-
-
-def _sdc_config(tmp_path, *sdc_texts):
-    """A StaTimingConfig whose SDC fileset is the given text(s), on disk."""
-    paths = []
-    for i, text in enumerate(sdc_texts):
-        p = tmp_path / f"user_{i}.sdc"
-        p.write_text(text, encoding="utf-8")
-        paths.append(p)
-    return syn_core.StaTimingConfig(mode="physical", sdc=tuple(paths))
-
-
-class TestSdcClockPeriodParsing:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("create_clock -name clk -period 25 [get_ports clk]", [25000.0]),
-            ("create_clock -period 3.5 [get_ports clk]", [3500.0]),
-            (
-                "create_clock -name a -period 10 [get_ports a]\n"
-                "create_clock -name b -period 4 [get_ports b]\n",
-                [10000.0, 4000.0],
-            ),
-            (
-                "# create_clock -name old -period 999 [get_ports x]\n"
-                "create_clock -period 8 [get_ports clk]\n",
-                [8000.0],
-            ),
-            ("set_false_path -from x", []),
-        ],
-        ids=["single-clock-ns-to-ps", "decimal", "multiple-in-order", "commented-ignored", "none"],
-    )
-    def test_periods(self, text, expected):
-        assert synth_timing.parse_sdc_clock_periods_ps(text) == expected
-
-    def test_sta_clock_period_marker(self):
-        assert openroad_reporting.parse_sta_clock_period_ps("STA_CLOCK_PERIOD_NS: 4.0") == 4000.0
-        assert openroad_reporting.parse_sta_clock_period_ps("nope") is None
-
-
-class TestEffectivePeriod:
-    @pytest.mark.parametrize(
-        ("sdc_texts", "stdout", "expected"),
-        [
-            # No SDC: no period fallback.
-            ((), "irrelevant stdout", None),
-            # An SDC-owned clock wins.
-            (("create_clock -period 25 [get_ports clk_i]",), "", 25000.0),
-            (
-                (
-                    "create_clock -name a -period 10 [get_ports a]\n"
-                    "create_clock -name b -period 4 [get_ports b]\n",
-                ),
-                "",
-                4000.0,
-            ),
-            # Authored clock but no parseable -period: the STA-reported period.
-            (
-                ("create_clock -name clk_i [get_ports clk_i]",),
-                "STA_CLOCK_PERIOD_NS: 6.0",
-                6000.0,
-            ),
-            (
-                ("set_false_path -from x\n", "create_clock -period 12 [get_ports clk_i]\n"),
-                "",
-                12000.0,
-            ),
-        ],
-        ids=["no-sdc", "sdc-owned", "tightest-of-multiple", "sta-marker-fallback", "two-files"],
-    )
-    def test_effective_period(self, tmp_path, sdc_texts, stdout, expected):
-        cfg = _sdc_config(tmp_path, *sdc_texts)
-        assert openroad_reporting.effective_period_ps(cfg, stdout) == expected
-
-    def test_concatenates_sdc_files_in_order(self, tmp_path):
-        cfg = _sdc_config(tmp_path, "set_false_path -from x\n", "create_clock -period 12 [x]\n")
-        text = synth_timing.read_user_sdc_text(cfg)
-        assert text.index("set_false_path") < text.index("create_clock")
 
 
 class TestFormalCellRemoval:

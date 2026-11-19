@@ -159,16 +159,9 @@ class TestWriteScript:
     def test_clockless_sdc_is_runtime_input_error(self, tmp_path):
         text = self._write(tmp_path)
         assert "[llength [all_clocks]] == 0" in text
-        assert "foreach _clk [all_clocks]" in text
         assert "BOOLEY_INPUT_ERROR: synth Target 'synth_top'" in text
         assert "c.sdc" in text
         assert "add create_clock" in text
-
-    def test_initial_clock_probe_uses_native_tcl_foreach(self, tmp_path):
-        text = self._write(tmp_path)
-        before_collection_shim = text.split("proc foreach_in_collection", maxsplit=1)[0]
-        assert "foreach _clk [all_clocks]" in before_collection_shim
-        assert "foreach_in_collection _clk [all_clocks]" not in before_collection_shim
 
     def test_reg2reg_block_embedded(self, tmp_path):
         # The internal reg->reg worst-path query must be emitted so the I/O
@@ -255,8 +248,11 @@ class TestWriteScript:
             line = next(row for row in text.splitlines() if f"{marker}: %.6f" in row)
             assert f"[lindex {slacks} 0]" in line, marker
         # No marker sits inside a path loop, so none can print more than once.
-        # (The one remaining ``break`` ends the STA_CLOCK_PERIOD_NS clock loop.)
-        assert text.count("break") == 1
+        assert text.count("break") == 0
+        # The overall worst path's clocks are read once, before the final report frees the paths.
+        assert text.count("STA_WORST_CLOCKS") == 1
+        assert text.index("STA_WORST_CLOCKS") < text.index("report_checks")
+        assert "STA_CLOCK_PERIOD_NS" not in text
         perclock = self._lines(text, "-to $_clk")
         assert perclock
         assert all("-group_path_count 1" in line for line in perclock)

@@ -521,14 +521,27 @@ def _parse_per_clock_sta(output: str) -> dict[str, ClockTiming]:
 
     Each clock's ``critical_path_ps``/``fmax_mhz`` is derived from its period and
     worst setup slack by the shared :mod:`booley.evidence.timing` helper, so
-    the STA and Vivado flows share one ns→ps→MHz derivation. ``critical_path_ps``
+    the STA and Vivado flows share one ns→ps→MHz derivation, but only when
+    that worst path is launched by the same clock. A path launched by another
+    clock is not timed against this clock's period, so the row keeps its
+    slacks and has no critical path or Fmax. ``critical_path_ps``
     intentionally means STA timing — ABC ``delay =`` mapper estimates are never
     a source here.
     """
-    return {
-        name: make_clock_timing(name, row["period_ns"], row["wns_ns"], row["whs_ns"])
-        for name, row in parse_perclock(output).items()
-    }
+    per_clock: dict[str, ClockTiming] = {}
+    for name, row in parse_perclock(output).items():
+        if row.setup_same_clock:
+            per_clock[name] = make_clock_timing(name, row.period_ns, row.wns_ns, row.whs_ns)
+        else:
+            per_clock[name] = ClockTiming(
+                clock=name,
+                period_ns=row.period_ns,
+                wns_ns=row.wns_ns,
+                whs_ns=row.whs_ns,
+                critical_path_ps=None,
+                fmax_mhz=None,
+            )
+    return per_clock
 
 
 def _parse_worst_slack(output: str) -> float | None:

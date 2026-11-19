@@ -75,6 +75,16 @@ RESULT: PASS
 | Setup slack | Worst setup slack across clocks; negative means the constraints are not met. |
 | Δ | With `--baseline`: change from the baseline. |
 
+Each clock's critical path is its period minus the setup slack of its worst
+path, and its Fmax is 1 divided by that critical path. The register-to-register
+Fmax is derived the same way from the worst path between registers, using the
+period of the clock that path ends on. Only the clocks a path actually runs on
+count: a clock that times no path changes none of these numbers. When the worst
+path starts on one clock and ends on another, no period applies to it, so
+Booley shows its slack and leaves out the critical path and Fmax. For a clock
+that is the clock's row in `targets/<target>.json`; for the register-to-register
+path it is the Fmax, and the note below the table shows its slack instead.
+
 Below the table come the cell count, worst hold slack, the register-to-register
 Fmax, a warning count with the log path, and any failure reason. When the
 worst path starts at an input or ends at an output, a note says so: such a
@@ -86,7 +96,7 @@ Everything else is in the run's numbered directory (`synth/3/` above; see
 
 | File | What it holds |
 |---|---|
-| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
+| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz` (both `null` when the clock's worst path starts on another clock); `reg2reg_fmax_mhz` (left out when the worst register-to-register path crosses clocks); `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
 | `artifacts/synth_<target>/run.log` | The full Yosys and OpenROAD output: every warning and error. |
 | `artifacts/synth_<target>/timing/` | The STA reports, physical mode only (see [`timing_report_paths`](#configuration-flowssynth)). |
 | `artifacts/synth_<target>/baseline_timing/` | With `--baseline`: the baseline run's STA reports. |
