@@ -374,14 +374,10 @@ edits before you apply them.
 
 ## Editor credential forwarding
 
-When VS Code opens or attaches to the Sandbox, its Dev Containers extension
-copies your host `~/.gitconfig` into the Sandbox and adds a Git credential
-helper that passes Git's credential requests to your host while the window
-is open. Any process in the Sandbox, the Developer Agent included, can then
-get your host Git credentials. Other editor attaches, such as GitHub
-Codespaces, can add similar helpers. The Sandbox Image sets none, so Doctor
-warns `sandbox.git-credential-helper` and names each helper and the file it
-is in.
+Opening the Sandbox in VS Code can forward your host Git credentials into it,
+so any process in the Sandbox, the Developer Agent included, can use them.
+`booley doctor` run inside the Sandbox warns `sandbox.git-credential-helper`
+and names each helper and the file it is in.
 
 To keep host Git credentials out of the Sandbox:
 
@@ -389,8 +385,6 @@ To keep host Git credentials out of the Sandbox:
    `dev.containers.gitCredentialHelperConfigLocation` to `"none"` and
    `dev.containers.copyGitConfig` to `false`.
 2. In the Sandbox, delete the `helper` lines from each file Doctor names.
-   VS Code never overwrites an existing `~/.gitconfig`, so the copied one
-   stays until you edit it.
 
 If you accept the forwarding,
 [waive](DOCTOR.md#doctor-waivers-doctor-waiverstoml)

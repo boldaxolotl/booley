@@ -53,7 +53,8 @@ _CREDENTIAL_HELPER_FIX = (
     "and dev.containers.copyGitConfig to false in your host VS Code settings; or, to accept "
     f"the forwarding, waive {CREDENTIAL_HELPER_CHECK} in doctor-waivers.toml"
 )
-_USERINFO_RE = re.compile(r"(://)[^/@\s]*@")
+_USERINFO_RE = re.compile(r"(://)[^/\s]*@")
+_QUOTED_SECRET_RE = re.compile(r"""(['"])(password|username)=[^'"]*\1""")
 _INLINE_SECRET_RE = re.compile(r"\b(password|username)=\S+")
 _NEUTRAL_VALUES = {"user.name": DEFAULT_IDENTITY.name, "user.email": DEFAULT_IDENTITY.email}
 
@@ -93,7 +94,10 @@ def _parse_entries(stdout: str, *, with_key: bool) -> list[_ConfigEntry]:
     fields = stdout.split("\0")
     entries = []
     for scope, origin, rest in zip(fields[0::3], fields[1::3], fields[2::3], strict=False):
-        key, value = rest.split("\n", 1) if with_key and "\n" in rest else ("", rest)
+        if not with_key:
+            key, value = "", rest
+        else:
+            key, _, value = rest.partition("\n")
         entries.append(_ConfigEntry(scope, origin, key, value))
     return entries
 
@@ -190,6 +194,7 @@ def inspect_gitconfig_identity(checkout: Path) -> IdentityCheck:
 def _redacted(text: str) -> str:
     """Drop URL userinfo and inline ``password=``/``username=`` values; collapse whitespace."""
     text = _USERINFO_RE.sub(r"\1***@", text)
+    text = _QUOTED_SECRET_RE.sub(r"\1\2=***\1", text)
     text = _INLINE_SECRET_RE.sub(r"\1=***", text)
     return " ".join(text.split())
 
@@ -212,11 +217,14 @@ def inspect_credential_helpers(checkout: Path) -> IdentityCheck:
         return _gitconfig_unreadable(
             CREDENTIAL_HELPER_CHECK, "credential helpers", _first_line(result.stderr)
         )
-    found = [
-        entry
-        for entry in _parse_entries(result.stdout, with_key=True)
-        if entry.scope in _FILE_SCOPES and entry.value
-    ]
+    found: list[_ConfigEntry] = []
+    for entry in _parse_entries(result.stdout, with_key=True):
+        if entry.scope not in _FILE_SCOPES:
+            continue
+        if not entry.value:  # Git: an empty value resets the helpers listed before it
+            found = [prior for prior in found if prior.key != entry.key]
+        else:
+            found.append(entry)
     if not found:
         return clean
     listing = ", ".join(f"{_redacted(e.key)}='{_redacted(e.value)}' ({e.origin})" for e in found)

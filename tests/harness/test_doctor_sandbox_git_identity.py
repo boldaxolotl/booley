@@ -241,6 +241,26 @@ def test_empty_credential_helper_reset_does_not_warn(sandbox_git, capsys):
     assert "set no Git credential helper" in capsys.readouterr().out
 
 
+def test_empty_global_helper_resets_system_helpers_only(sandbox_git, capsys):
+    sandbox_git.add_credential_helper("system", "store")
+    sandbox_git.add_credential_helper("global", "")
+    sandbox_git.add_credential_helper("global", "cache")
+    sandbox_git.set_full_override()
+    reporter = doctor._Reporter.create()
+    _run_checks(sandbox_git, reporter)
+    message = _single_warn(reporter, CREDENTIAL_ID).message
+    assert "'cache'" in message
+    assert "'store'" not in message
+
+
+def test_helper_line_without_value_does_not_warn(sandbox_git, capsys):
+    sandbox_git.config_files["global"].write_bytes(b"[credential]\n\thelper\n")
+    sandbox_git.set_full_override()
+    reporter = doctor._Reporter.create()
+    _run_checks(sandbox_git, reporter)
+    assert not _warns(reporter, CREDENTIAL_ID)
+
+
 def test_credential_helper_is_listed_not_run(sandbox_git, tmp_path, capsys):
     marker = tmp_path / "helper-ran"
     script = tmp_path / "helper.sh"
@@ -249,6 +269,8 @@ def test_credential_helper_is_listed_not_run(sandbox_git, tmp_path, capsys):
     sandbox_git.add_credential_helper("global", f"!sh {script.as_posix()}")
     sandbox_git.add_credential_helper("global", "store", url="https://user:SECRET2@example.com")
     sandbox_git.add_credential_helper("global", "!f() { echo password=SECRET3; }; f")
+    sandbox_git.add_credential_helper("global", "!f() { echo 'password=SECRET4 SECRET5'; }; f")
+    sandbox_git.add_credential_helper("global", "store", url="https://user:SEC@RET6@example.com")
     before = global_file.read_bytes()
     sandbox_git.set_full_override()
     reporter = doctor._Reporter.create()
@@ -257,7 +279,7 @@ def test_credential_helper_is_listed_not_run(sandbox_git, tmp_path, capsys):
     assert script.as_posix() in finding.message
     assert not marker.exists()
     everything = capsys.readouterr().out + "".join(f.message + f.fix for f in reporter.findings)
-    for secret in ("SECRET1", "SECRET2", "SECRET3"):
+    for secret in ("SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "RET6"):
         assert secret not in everything
     assert global_file.read_bytes() == before
 
