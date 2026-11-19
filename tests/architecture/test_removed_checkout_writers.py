@@ -11,7 +11,6 @@ SOURCE = Path(__file__).resolve().parents[2] / "src" / "booley"
 AUDITED = (
     "bwave",
     "flows",
-    "fusesoc/core_projection.py",
     "runtime/_claude_backend.py",
     "runtime/_claude_transcript_md.py",
     "runtime/_codex_backend.py",
@@ -30,7 +29,6 @@ ALLOWED = {
     ("flows/sim/compiler_cache.py", "_cache_blocker"),
     ("flows/sim/record/run_directory.py", "_create_run_directory"),
     ("flows/sim/record/run_directory.py", "_create_marked_chain"),
-    ("fusesoc/core_projection.py", "render_private_mirror"),
     ("runtime/_codex_backend.py", "_create_nested_codex_home"),
     ("specialists/specialist_workspace.py", "_copy_path"),
 }
