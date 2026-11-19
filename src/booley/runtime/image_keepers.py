@@ -81,10 +81,12 @@ def forget_project(
             )
             if purge:  # purge collects recorded images itself, after releasing tags
                 return forgotten, outcomes[0], project_resources.purge(str(forgotten))
-            from booley.runtime.image_lifecycle import cleanup_owned_images
+            from booley.runtime.image_lifecycle import TAG_RETAINED, cleanup_owned_images
 
-            for retained in cleanup_owned_images(forgotten):
-                logger.warning("refresh image cleanup: %s", retained)
+            for line in cleanup_owned_images(forgotten):
+                # A still-tagged image is already in forget's leftover table.
+                if not line.endswith(TAG_RETAINED):
+                    logger.warning("forget image cleanup: %s", line)
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc
     return forgotten, outcomes[0], None

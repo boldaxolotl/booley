@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows import job_resources
+from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
@@ -21,6 +23,8 @@ from booley.flows.sim.verilator_coverage import (
     collect,
 )
 from booley.flows.test_runs import build_test_run
+from booley.runtime import resource_history
+from tests.canned_process_support import canned_command, measured_flow
 from tests.conftest import symlink_or_skip
 
 _HEADER = "# SystemC::Coverage-3\n"
@@ -1228,3 +1232,49 @@ def test_authenticated_cleanup_warning_survives_collection(
     )
     assert warning.severity == "warning"
     assert warning.message == "partial cleanup denied"
+
+
+class _MeasuredMerge:
+    """Replays the wrapped port's merge result through the Flow's measured run."""
+
+    def __init__(self, inner: _GeneratedMainExecution, root: Path) -> None:
+        self.inner = inner
+        self.flow = measured_flow(root)
+
+    def build(self, request) -> SimulationBuildResult:
+        return self.inner.build(request)
+
+    def run(self, request) -> SimulationRunResult:
+        return self.inner.run(request)
+
+    def command(self, request) -> SimulationCommandResult:
+        result = self.inner.command(request)
+        process = SubprocessResult(result.returncode, result.stdout, result.stderr)
+        with job_resources.resource_phase("sim", "sim_postprocess"):
+            self.flow._execute_boundary(canned_command(process), timeout=30)
+        return result
+
+
+@pytest.mark.parametrize(
+    ("mode", "outcome"),
+    [
+        pytest.param("accepted", "exit_zero", id="accepted"),
+        pytest.param("missing", "exit_nonzero", id="missing-merged-file"),
+        pytest.param("mismatch", "exit_nonzero", id="mismatched-counts"),
+    ],
+)
+def test_merge_record_outcome_follows_the_merged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, outcome: str
+) -> None:
+    """The merge records a failure when Booley rejects the file the zero-exit merge wrote (#4964)."""
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    inner = (
+        _GeneratedMainExecution()
+        if mode == "accepted"
+        else _BadMergeExecution(mode, tmp_path / "outside" / "merged.dat")
+    )
+
+    collect(_request(tmp_path, "reset"), _MeasuredMerge(inner, tmp_path))
+
+    records = resource_history.load_records(tmp_path / ".booley")
+    assert [(r["outcome"], r["returncode"]) for r in records] == [(outcome, 0)]

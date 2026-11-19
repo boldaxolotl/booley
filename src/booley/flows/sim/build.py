@@ -22,6 +22,7 @@ from typing import Any, Literal
 from booley.core.build_paths import work_root_for
 from booley.flows import job_resources
 from booley.flows.eda_failures import classify_eda_failure
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
@@ -189,6 +190,30 @@ def prepare_simulation_build(
         raise SimulationBuildPreparationError(str(exc)) from exc
 
 
+def _resolve_judged_setup(
+    handle: TargetHandle,
+    *,
+    work_root: Path,
+    resolution_vlnv: str | None,
+    backend_arguments: Sequence[str],
+    core_library: fusesoc_registry.CoreLibraryPlan | None,
+    setup_runner: SetupRunner | None,
+) -> fusesoc_registry.ResolvedTarget:
+    """Resolve the Target; its FuseSoC setup records a failure when the Flow refuses its output."""
+    with job_resources.judged_commands_failing_on_error() as setup:
+        resolved = fusesoc_registry.resolve_target_handle(
+            handle,
+            build_root=work_root,
+            resolution_vlnv=resolution_vlnv,
+            backend_arguments=backend_arguments,
+            library_plan=core_library,
+            # Without a measured runner FuseSoC setup runs unmeasured.
+            runner=setup_runner or subprocess.run,
+        )
+        setup.judge(True)
+    return resolved
+
+
 def _prepare_simulation_build(
     handle: TargetHandle,
     *,
@@ -208,14 +233,13 @@ def _prepare_simulation_build(
         # Isolated Projects resolve through a private mirror so the build reads
         # only fileset-listed headers; ``None`` elsewhere (shared view).
         core_library = fusesoc_registry.build_library_plan(root, work_root)
-    resolved = fusesoc_registry.resolve_target_handle(
+    resolved = _resolve_judged_setup(
         handle,
-        build_root=work_root,
+        work_root=work_root,
         resolution_vlnv=resolution_vlnv,
         backend_arguments=backend_arguments,
-        library_plan=core_library,
-        # Without a measured runner FuseSoC setup runs unmeasured.
-        runner=setup_runner or subprocess.run,
+        core_library=core_library,
+        setup_runner=setup_runner,
     )
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
@@ -677,9 +701,9 @@ def build_output_tail(output: str) -> str:
     return "..." + cut
 
 
-def build_failure_report(outcome: BuildOutcome) -> str:
-    """Return the reason first, then a bounded tail of the build output."""
-    tail = build_output_tail(outcome.output)
+def build_failure_report(outcome: BuildOutcome, project_paths: ProjectSourcePaths) -> str:
+    """Return the reason first, then a bounded tail of the build output by Project path."""
+    tail = build_output_tail(project_paths.project_text(outcome.output))
     if not tail:
         return outcome.reason
     return f"{outcome.reason}\n--- output tail ---\n{tail}"

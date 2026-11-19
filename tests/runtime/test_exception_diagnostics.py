@@ -59,3 +59,18 @@ def test_report_diagnostic_sanitizes_untrusted_path_components(tmp_path) -> None
     assert path.is_relative_to(tmp_path / ".endpoint-errors")
     assert ".." not in path.relative_to(tmp_path).parts
     assert "failure" in path.read_text(encoding="utf-8")
+
+
+def test_report_diagnostic_for_a_removed_checkout_prints_instead(tmp_path, capsys) -> None:
+    checkout = tmp_path / "gone"
+
+    path = write_exception_diagnostic(
+        ValueError("late failure"),
+        endpoint_name="lint",
+        invocation_id="run",
+        report_dir=checkout / ".booley" / "flow-reports",
+    )
+
+    assert path is None
+    assert not checkout.exists()
+    assert "ValueError: late failure" in capsys.readouterr().err

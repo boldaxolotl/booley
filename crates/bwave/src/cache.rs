@@ -663,7 +663,8 @@ pub fn clock_query_config(cache: &ColumnCache, original: &ExtractConfig) -> Extr
     } else {
         cache.reset_deassert_tick().unwrap_or(0)
     };
-    let base = cycle_base(cache, reset);
+    let grid = SyncGrid::new(cache, &cfg, reset);
+    let base = grid.base;
     let analysis = cache.clock_analysis();
     let all_stops = analysis.ranges(base, cache.clock_period_ticks);
     let mut verdict = analysis.verdict.clone();
@@ -693,7 +694,7 @@ pub fn clock_query_config(cache: &ColumnCache, original: &ExtractConfig) -> Extr
         cfg.warnings.push(warning);
     }
     if !cfg.async_mode {
-        let (mut lo, mut hi) = sampled_cycle_window(cache, &cfg, base);
+        let (mut lo, mut hi) = sampled_cycle_window(cache, &cfg, &grid);
         if let Some(at) = cfg.at_time {
             lo = at.max(0) as u64;
             hi = lo;
@@ -776,13 +777,17 @@ fn sampled_value(cfg: &ExtractConfig, transitions: &[(u64, String)], edge: u64) 
 
 fn observation_boundaries(
     cfg: &ExtractConfig,
-    base: u64,
-    period: u64,
+    grid: &SyncGrid,
     transitions: &[(u64, String)],
     start: u64,
     end: u64,
 ) -> Vec<u64> {
+    let (base, period) = (grid.base, grid.period);
     let mut boundaries = vec![start];
+    // Cycle 0 is off the grid, so cycle 1 may differ from it.
+    if start == 0 && end >= 1 {
+        boundaries.push(1);
+    }
     for (tick, _) in transitions {
         let Some(observation) = tick.checked_add(u64::from(cfg.pre_edge)) else {
             continue;
@@ -966,11 +971,11 @@ fn sync_range_hint(cache: &ColumnCache, requested: &str, effective_start: u64) -
         .saturating_sub(cycle_base(cache, effective_start))
         / cache.clock_period_ticks
         + 1;
-    let start_ns = (effective_start as f64 * cache.ticks_to_ns) as i64;
-    let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
+    let start = crate::format::format_tick_time(effective_start, cache.timescale_exponent);
+    let end = crate::format::format_tick_time(cache.sim_end_tick, cache.timescale_exponent);
     let range = format!(
         "In sync mode, --at selects a clock cycle (0..{total_cycles}). \
-         Simulation time range: {start_ns}ns..{end_ns}ns"
+         Simulation time range: {start}..{end}"
     );
     match requested.parse::<u64>() {
         Ok(tick) if tick <= cache.sim_end_tick => {
@@ -1539,16 +1544,13 @@ fn record_occupied_run(stats: &mut CacheStatsEntry, value: &str, elapsed: u64) {
 }
 
 fn stats_window(cache: &ColumnCache, cfg: &ExtractConfig, reset_start: u64) -> (u64, u64) {
+    let grid = SyncGrid::new(cache, cfg, reset_start);
     let resolve = |time: i64| {
-        if time <= 0 {
-            return reset_start;
-        }
-        let time = time as u64;
+        let time = time.max(0) as u64;
         if !cfg.async_mode && cache.clock_period_ticks > 0 {
-            cycle_base(cache, reset_start)
-                .saturating_add((time - 1).saturating_mul(cache.clock_period_ticks))
+            grid.edge(time).unwrap_or(u64::MAX)
         } else {
-            time
+            time.max(reset_start)
         }
     };
     let start = resolve(cfg.time_min)
@@ -1572,17 +1574,22 @@ fn sampled_occupancy(
     if cfg.async_mode || cache.clock_period_ticks == 0 {
         return (Occupancy::new(), Occupancy::new());
     }
-    let base = cycle_base(cache, query_reset_deassert_tick(cache, cfg).unwrap_or(0));
-    let (start, end) = sampled_cycle_window(cache, cfg, base);
+    let grid = SyncGrid::new(
+        cache,
+        cfg,
+        query_reset_deassert_tick(cache, cfg).unwrap_or(0),
+    );
+    // Occupancy counts clocked and stopped grid cycles; cycle 0 is neither.
+    let (start, end) = sampled_cycle_window(cache, cfg, &grid);
+    let start = start.max(1);
     if start > end {
         return (Occupancy::new(), Occupancy::new());
     }
-    let boundaries =
-        observation_boundaries(cfg, base, cache.clock_period_ticks, transitions, start, end);
+    let boundaries = observation_boundaries(cfg, &grid, transitions, start, end);
     let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
     for (index, &lo) in boundaries.iter().enumerate() {
         let hi = boundaries.get(index + 1).map_or(end, |next| next - 1);
-        let value = sampled_value(cfg, transitions, base + (lo - 1) * cache.clock_period_ticks);
+        let value = grid.value(transitions, lo);
         let stopped_count = crate::clock::stopped_count(&cfg.clock_stopped, lo, hi);
         *clocked.entry(value.clone()).or_insert(0) += hi - lo + 1 - stopped_count;
         *stopped.entry(value).or_insert(0) += stopped_count;
@@ -1661,20 +1668,18 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
     // Header (skip in JSON mode — JSON output is self-describing)
     if !cfg.json_format {
-        if sync_mode {
-            if cache.clock_period_ticks > 0 {
-                let total_cycles = total_ticks / cache.clock_period_ticks;
-                let period_ns = (cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64;
-                let _ = writeln!(
-                    out,
-                    "# Simulation: {}ns, {} cycles ({}ns period)",
-                    total_ns, total_cycles, period_ns
-                );
-            } else {
-                let _ = writeln!(out, "# Simulation: {}ns", total_ns);
-            }
+        let total_time = crate::format::format_tick_time(total_ticks, cache.timescale_exponent);
+        if sync_mode && cache.clock_period_ticks > 0 {
+            let total_cycles = total_ticks / cache.clock_period_ticks;
+            let period =
+                crate::format::format_tick_time(cache.clock_period_ticks, cache.timescale_exponent);
+            let _ = writeln!(
+                out,
+                "# Simulation: {}, {} cycles ({} period)",
+                total_time, total_cycles, period
+            );
         } else {
-            let _ = writeln!(out, "# Simulation: {}ns", total_ns);
+            let _ = writeln!(out, "# Simulation: {}", total_time);
         }
         let _ = writeln!(out, "# {} signals analyzed", matched.len() + virtuals.len());
         let _ = writeln!(out, "");
@@ -1935,8 +1940,8 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                         stopped.get(*val).copied().unwrap_or(0)
                     );
                 } else {
-                    let duration_ns = (t as f64 * cache.ticks_to_ns) as i64;
-                    let _ = writeln!(out, "{}: {}% ({}ns)", dval, pct_str, duration_ns);
+                    let duration = crate::format::format_tick_time(t, cache.timescale_exponent);
+                    let _ = writeln!(out, "{}: {}% ({})", dval, pct_str, duration);
                 }
             }
             if zero_pct_count > 0 {
@@ -2033,7 +2038,7 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let duration_str = if sync_mode && cache.clock_period_ticks > 0 {
         format!("{} cycles", total_ticks / cache.clock_period_ticks)
     } else {
-        format!("{}ns", (total_ticks as f64 * cache.ticks_to_ns) as i64)
+        crate::format::format_tick_time(total_ticks, cache.timescale_exponent)
     };
 
     let filter_str = match &cfg.find_stuck {
@@ -2193,9 +2198,12 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut json_matches: Vec<crate::output::FindMatch> = Vec::new();
     let mut last_json: Option<crate::output::FindMatch> = None;
     let mut truncated = false;
-    let cb = cycle_base(cache, effective_start);
+    let grid = SyncGrid::new(cache, cfg, effective_start);
 
     let use_cycle_walk = sync_mode && cache.clock_period_ticks > 0;
+    let held_window = (mode == TriggerMode::Literal && window_outside_trace(cache, cfg).is_none())
+        .then(|| find_window_ticks(cache, cfg, &grid, effective_start, use_cycle_walk));
+    let mut held = false;
 
     // Closure that records one match. In JSON mode it pushes to `json_matches`
     // (or `last_json` for --last); in text mode it streams writeln. `raw_val`
@@ -2262,14 +2270,14 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         };
 
         if use_cycle_walk {
-            let runs = sampled_event_runs(cache, cfg, cb, &transitions, sig.width, find_value_str);
+            let runs =
+                sampled_event_runs(cache, cfg, &grid, &transitions, sig.width, find_value_str);
             let (omitted, cycles) = find_run_selection(&runs, cfg, line_count);
             find_count = find_count
                 .checked_add(omitted)
                 .expect("find count overflow");
             for cycle in cycles {
-                let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-                let val = sampled_value(cfg, &transitions, tick);
+                let val = grid.value(&transitions, cycle);
                 let dval = fmt_val(&val, sig_idx, sig.width, &radix_map);
                 record_match!(cycle, dname, val.clone(), dval);
                 if truncated || cfg.first_match {
@@ -2278,57 +2286,22 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         } else {
             // Edge mode or async: walk transitions only
-            let mut prev_val: Option<&str> = None;
-            for (tick, val) in &transitions {
-                if *tick < effective_start {
-                    prev_val = Some(val.as_str());
-                    continue;
-                }
-
-                if sync_mode && !(mode == TriggerMode::Change && cache.clock_period_ticks == 0) {
-                    if cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change) {
-                        let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
-                        if (cycle as i64) < cfg.time_min {
-                            prev_val = Some(val.as_str());
-                            continue;
-                        }
-                        if let Some(max) = cfg.time_max {
-                            if (cycle as i64) > max {
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    if (*tick as i64) < cfg.time_min {
-                        prev_val = Some(val.as_str());
-                        continue;
-                    }
-                    if let Some(max) = cfg.time_max {
-                        if (*tick as i64) > max {
-                            break;
-                        }
-                    }
-                }
-
-                let matched = mode.matches(prev_val, val, sig.width, find_value_str);
-                prev_val = Some(val.as_str());
-
-                if matched {
-                    let dval = fmt_val(val, sig_idx, sig.width, &radix_map);
-                    let time = if sync_mode && cache.clock_period_ticks > 0 {
-                        tick_to_cycle(*tick, cb, cache.clock_period_ticks)
-                    } else {
-                        *tick
-                    };
-                    record_match!(time, dname, val.clone(), dval);
-                    if truncated {
-                        break 'outer;
-                    }
-                    if cfg.first_match {
-                        break 'outer;
-                    }
+            for (tick, val) in tick_window_matches(
+                cfg,
+                &transitions,
+                effective_start,
+                sig.width,
+                find_value_str,
+            ) {
+                let dval = fmt_val(val, sig_idx, sig.width, &radix_map);
+                record_match!(tick, dname, val.to_string(), dval);
+                if truncated || cfg.first_match {
+                    break 'outer;
                 }
             }
+        }
+        if let (0, Some(window)) = (find_count, held_window) {
+            held |= holds_in_window(&transitions, window, find_value_str);
         }
     }
 
@@ -2341,98 +2314,58 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let dname = &ve.name;
 
         if use_cycle_walk {
-            let runs = sampled_event_runs(cache, cfg, cb, &ve.transitions, 1, find_value_str);
+            let runs = sampled_event_runs(cache, cfg, &grid, &ve.transitions, 1, find_value_str);
             let (omitted, cycles) = find_run_selection(&runs, cfg, line_count);
             find_count = find_count
                 .checked_add(omitted)
                 .expect("find count overflow");
             for cycle in cycles {
-                let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-                let val = sampled_value(cfg, &ve.transitions, tick);
+                let val = grid.value(&ve.transitions, cycle);
                 record_match!(cycle, dname.as_str(), val.clone(), &val);
                 if truncated || cfg.first_match {
                     break 'vouter;
                 }
             }
-        } else if mode != TriggerMode::Literal {
-            let mut prev_val: Option<&str> = None;
-            for (tick, val) in &ve.transitions {
-                if *tick < effective_start {
-                    prev_val = Some(val.as_str());
-                    continue;
-                }
-                let m = mode.matches(prev_val, val, 1, find_value_str);
-                prev_val = Some(val.as_str());
-                if m {
-                    let time = if sync_mode && cache.clock_period_ticks > 0 {
-                        tick_to_cycle(*tick, cb, cache.clock_period_ticks)
-                    } else {
-                        *tick
-                    };
-                    if mode == TriggerMode::Change
-                        && ((time as i64) < cfg.time_min
-                            || cfg.time_max.is_some_and(|max| (time as i64) > max))
-                    {
-                        continue;
-                    }
-                    record_match!(time, dname.as_str(), val.clone(), val);
-                    if truncated {
-                        break 'vouter;
-                    }
-                    if cfg.first_match {
-                        break 'vouter;
-                    }
-                }
-            }
         } else {
             // Async mode, or sync without a usable clock: walk virtual
-            // transitions directly with level-value matching. Mirrors the
-            // real-signal else-branch above so virtuals don't get silently
-            // skipped (the buggy fall-through pre-fix).
-            for (tick, val) in &ve.transitions {
-                if *tick < effective_start {
-                    continue;
-                }
-
-                if sync_mode {
-                    if cache.clock_period_ticks > 0 && cb > 0 {
-                        let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
-                        if (cycle as i64) < cfg.time_min {
-                            continue;
-                        }
-                        if let Some(max) = cfg.time_max {
-                            if (cycle as i64) > max {
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    if (*tick as i64) < cfg.time_min {
-                        continue;
-                    }
-                    if let Some(max) = cfg.time_max {
-                        if (*tick as i64) > max {
-                            break;
-                        }
-                    }
-                }
-
-                if values_match(val, find_value_str) {
-                    let time = if sync_mode && cache.clock_period_ticks > 0 {
-                        tick_to_cycle(*tick, cb, cache.clock_period_ticks)
-                    } else {
-                        *tick
-                    };
-                    record_match!(time, dname.as_str(), val.clone(), val);
-                    if truncated {
-                        break 'vouter;
-                    }
-                    if cfg.first_match {
-                        break 'vouter;
-                    }
+            // transitions in ticks.
+            for (tick, val) in
+                tick_window_matches(cfg, &ve.transitions, effective_start, 1, find_value_str)
+            {
+                record_match!(tick, dname.as_str(), val.to_string(), val);
+                if truncated || cfg.first_match {
+                    break 'vouter;
                 }
             }
         }
+        if let (0, Some(window)) = (find_count, held_window) {
+            held |= holds_in_window(&ve.transitions, window, find_value_str);
+        }
+    }
+
+    // Why nothing matched, when it can be told.
+    let no_match_note = if find_count > 0 {
+        None
+    } else if edge_on_multi_bit_only(cache, mode, &target_indices, virtual_matches.len()) {
+        Some((
+            multi_bit_edge_note("find", find_pattern, find_value_str),
+            false,
+        ))
+    } else {
+        find_no_match_note(
+            cache,
+            cfg,
+            &target_indices,
+            virtual_matches.len(),
+            held_window,
+            held,
+            use_cycle_walk,
+            find_value_str,
+        )
+        .map(|note| (note, true))
+    };
+    if let (Some((note, _)), true) = (&no_match_note, json_format) {
+        json_warnings.push(note.clone());
     }
 
     // Emit results.
@@ -2508,6 +2441,15 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         }
     }
+    match no_match_note {
+        Some((note, true)) => {
+            let _ = writeln!(err, "# NOTE: {note}");
+        }
+        Some((note, false)) => {
+            let _ = writeln!(err, "# {note}");
+        }
+        None => {}
+    }
     let _ = out.flush();
     let _ = err.flush();
 }
@@ -2556,7 +2498,8 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     };
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
-    let cb = cycle_base(cache, effective_start);
+    let grid = SyncGrid::new(cache, cfg, effective_start);
+    let sampled = sync_mode && cache.clock_period_ticks > 0;
     let mut trigger_data: Vec<(Vec<(u64, String)>, u32)> = trigger_indices
         .iter()
         .map(|&idx| (cache.read_transitions(idx), cache.signals[idx].width))
@@ -2576,12 +2519,12 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let rows_per_event = watched_indices.len() + watched_virtual_indices.len();
     let discovery_limit = cfg.max_lines / rows_per_event.max(1);
 
-    if sync_mode && cache.clock_period_ticks > 0 {
+    if sampled {
         let runs = union_cycle_runs(
             trigger_data
                 .iter()
                 .flat_map(|(transitions, width)| {
-                    sampled_event_runs(cache, cfg, cb, transitions, *width, sa_value)
+                    sampled_event_runs(cache, cfg, &grid, transitions, *width, sa_value)
                 })
                 .collect(),
         );
@@ -2603,11 +2546,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     .take(discovery_limit.saturating_add(1))
                     .collect()
             };
-            trigger_ticks.extend(
-                selected
-                    .into_iter()
-                    .map(|cycle| cb + (cycle - 1) * cache.clock_period_ticks),
-            );
+            trigger_ticks.extend(selected);
         }
     } else if level_mode && !sync_mode {
         // Async level mode: trigger at every watched-signal-change timestamp
@@ -2653,15 +2592,15 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // trigger in the requested range, not the first trigger in the store.
     trigger_ticks.sort_unstable();
     trigger_ticks.dedup();
-    let query_time = |tick| {
-        if sync_mode && cache.clock_period_ticks > 0 {
-            tick_to_cycle(tick, cb, cache.clock_period_ticks)
+    let read = |transitions: &[(u64, String)], trigger: u64| {
+        if sampled {
+            grid.value(transitions, trigger)
         } else {
-            tick
+            sampled_value(cfg, transitions, trigger)
         }
     };
     trigger_ticks.retain(|&tick| {
-        let time = query_time(tick) as i64;
+        let time = tick as i64;
         time >= cfg.time_min && cfg.time_max.is_none_or(|max| time <= max)
     });
     if cfg.first_match {
@@ -2714,7 +2653,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             continue;
         }
 
-        let time_label = query_time(trigger_tick).to_string();
+        let time_label = trigger_tick.to_string();
 
         let stored_rows = watched_indices.iter().enumerate().map(|(wi, &w_idx)| {
             let sig = &cache.signals[w_idx];
@@ -2724,12 +2663,12 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 &sig.name
             };
             // Binary search for value at trigger_tick
-            let val = sampled_value(cfg, &watched_data[wi], trigger_tick);
+            let val = read(&watched_data[wi], trigger_tick);
             let dval = fmt_val(&val, w_idx, cache.signals[w_idx].width, &radix_map);
             (dname.to_string(), dval)
         });
         let virtual_rows = watched_virtual_data.iter().map(|entry| {
-            let val = sampled_value(cfg, &entry.transitions, trigger_tick);
+            let val = read(&entry.transitions, trigger_tick);
             (entry.name.clone(), val)
         });
         for (name, value) in stored_rows.chain(virtual_rows) {
@@ -2750,6 +2689,13 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let _ = writeln!(out, "{}", sample_count);
     } else {
         let _ = writeln!(err, "# {} trigger events", sample_count);
+    }
+    if edge_on_multi_bit_only(cache, mode, &trigger_indices, trigger_virtual_indices.len()) {
+        let _ = writeln!(
+            err,
+            "# {}",
+            multi_bit_edge_note("sample", sa_pattern, sa_value)
+        );
     }
     let _ = out.flush();
     let _ = err.flush();
@@ -2840,24 +2786,12 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         eprintln!("ERROR: value time {requested} is outside simulation range");
         std::process::exit(2);
     });
+    let grid = SyncGrid::new(cache, cfg, effective_start);
     let target_tick = if sync_mode {
-        if unsigned_time == 0 {
-            effective_start
-        } else {
-            cycle_base(cache, effective_start)
-                .checked_add(
-                    (unsigned_time - 1)
-                        .checked_mul(cache.clock_period_ticks)
-                        .unwrap_or_else(|| {
-                            eprintln!("ERROR: {}", beyond_range_message(&requested));
-                            std::process::exit(2);
-                        }),
-                )
-                .unwrap_or_else(|| {
-                    eprintln!("ERROR: {}", beyond_range_message(&requested));
-                    std::process::exit(2);
-                })
-        }
+        grid.edge(unsigned_time).unwrap_or_else(|| {
+            eprintln!("ERROR: {}", beyond_range_message(&requested));
+            std::process::exit(2);
+        })
     } else if cfg.async_mode || cfg.at_time_is_cycle {
         unsigned_time
     } else {
@@ -2887,9 +2821,16 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             );
         }
     }
+    let sample_tick = if sync_mode {
+        grid.read(unsigned_time)
+    } else {
+        cfg.sample_tick(target_tick)
+    };
     let time_label = if sync_mode {
-        if at_time == 0 {
-            "cycle 0 (before first post-reset clock edge)".to_string()
+        if at_time == 0 && sample_tick.is_none() {
+            "cycle 0 (omitted: no tick before the start)".to_string()
+        } else if at_time == 0 {
+            "cycle 0 (before reset deasserts)".to_string()
         } else {
             format!("cycle {}", at_time)
         }
@@ -2903,15 +2844,11 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let values: Vec<String> = matched
         .par_iter()
         .map(|&sig_idx| {
-            cfg.sample_tick(target_tick)
-                .map_or_else(|| "x".into(), |t| cache.value_at_tick_direct(sig_idx, t))
+            sample_tick.map_or_else(|| "x".into(), |t| cache.value_at_tick_direct(sig_idx, t))
         })
         .collect();
-    let virtual_values = evaluate_virtuals_at_tick(
-        cache,
-        &resolved_virtuals,
-        cfg.sample_tick(target_tick).unwrap_or(0),
-    );
+    let virtual_values =
+        evaluate_virtuals_at_tick(cache, &resolved_virtuals, sample_tick.unwrap_or(0));
 
     json_warnings.extend(record_limit(cfg, matched.len() + matched_virtuals.len()));
     if cfg.json_format {
@@ -2949,7 +2886,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             let entry = &virtual_values[idx];
             crate::output::SignalValue {
                 name: entry.name.clone(),
-                value: if cfg.sample_tick(target_tick).is_none() {
+                value: if sample_tick.is_none() {
                     "x".into()
                 } else {
                     entry.value.clone()
@@ -2966,7 +2903,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 at: at_time,
                 at_unit: at_unit.to_string(),
                 target_tick,
-                sample_tick: cfg.sample_tick(target_tick),
+                sample_tick,
                 time_label,
                 signals,
             },
@@ -2996,7 +2933,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             out,
             "{:<40} = {}",
             entry.name,
-            if cfg.sample_tick(target_tick).is_none() {
+            if sample_tick.is_none() {
                 "x"
             } else {
                 &entry.value
@@ -3013,28 +2950,28 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 /// In sync mode (is_cycle=true, clock present): time is a cycle number.
 /// In async mode or no-clock fallback, native resolved points are raw ticks;
 /// direct library points without string-token provenance retain nanoseconds.
-/// Returns None if the time is out of simulation range.
+/// Returns None if the time is out of simulation range, else the target
+/// tick and the tick read there (`None` when nothing precedes the read).
 fn resolve_time_to_tick(
     cache: &ColumnCache,
     cfg: &ExtractConfig,
     time: i64,
     effective_start: u64,
-) -> Option<u64> {
+) -> Option<(u64, Option<u64>)> {
     let time = u64::try_from(time).ok()?;
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
-    let tick = if sync_mode {
-        if time == 0 {
-            effective_start
-        } else {
-            cycle_base(cache, effective_start)
-                .checked_add((time - 1).checked_mul(cache.clock_period_ticks)?)?
-        }
-    } else if cfg.diff_strs.is_some() {
-        time
+    let (tick, read) = if sync_mode {
+        let grid = SyncGrid::new(cache, cfg, effective_start);
+        (grid.edge(time)?, grid.read(time))
     } else {
-        crate::format::nanoseconds_to_tick(time, cache.timescale_exponent).ok()?
+        let tick = if cfg.diff_strs.is_some() {
+            time
+        } else {
+            crate::format::nanoseconds_to_tick(time, cache.timescale_exponent).ok()?
+        };
+        (tick, cfg.sample_tick(tick))
     };
-    (tick <= cache.sim_end_tick).then_some(tick)
+    (tick <= cache.sim_end_tick).then_some((tick, read))
 }
 
 // -- Diff snapshot from cache ------------------------------------------------
@@ -3095,15 +3032,15 @@ pub fn diff_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let _ = writeln!(out, "# diff {} {} vs {}", label, t1, t2);
 
     let (radix_map, _) = build_radix_map(cache, &matched, cfg);
-    cache.prefetch_window(&matched, tick1.max(tick2));
+    cache.prefetch_window(&matched, tick1.0.max(tick2.0));
     let values: Vec<(String, String)> = matched
         .par_iter()
         .map(|&sig_idx| {
-            let v1 = cfg
-                .sample_tick(tick1)
+            let v1 = tick1
+                .1
                 .map_or_else(|| "x".into(), |t| cache.value_at_tick_direct(sig_idx, t));
-            let v2 = cfg
-                .sample_tick(tick2)
+            let v2 = tick2
+                .1
                 .map_or_else(|| "x".into(), |t| cache.value_at_tick_direct(sig_idx, t));
             (v1, v2)
         })
@@ -3166,9 +3103,10 @@ fn collect_event_ticks(
     effective_start: u64,
     sync_mode: bool,
     cfg: &ExtractConfig,
-    cb: u64,
+    grid: &SyncGrid,
     virtuals: &[VirtualEntry],
 ) -> EventCollect {
+    let cb = grid.base;
     let matchers = match compile_patterns(&[pattern.to_string()], cache.scope_prefix()) {
         Ok(m) => m,
         Err(error) => {
@@ -3198,9 +3136,8 @@ fn collect_event_ticks(
     let mode = TriggerMode::classify(value_str);
     // Directional keywords require 1-bit signals; Change also accepts buses.
     // Track all-multibit matches for the existing directional diagnostic.
-    let edge_on_multibit_only = mode.directional()
-        && virtual_matches.is_empty()
-        && target_indices.iter().all(|&i| cache.signals[i].width > 1);
+    let edge_on_multibit_only =
+        edge_on_multi_bit_only(cache, mode, &target_indices, virtual_matches.len());
     let mut ticks = Vec::new();
     let mut runs = Vec::new();
 
@@ -3210,7 +3147,7 @@ fn collect_event_ticks(
             runs.extend(sampled_event_runs(
                 cache,
                 cfg,
-                cb,
+                grid,
                 &transitions,
                 cache.signals[sig_idx].width,
                 value_str,
@@ -3263,7 +3200,7 @@ fn collect_event_ticks(
             runs.extend(sampled_event_runs(
                 cache,
                 cfg,
-                cb,
+                grid,
                 &ve.transitions,
                 1,
                 value_str,
@@ -3332,6 +3269,34 @@ fn collect_event_ticks(
     }
 }
 
+/// Matches of `value` inside the query window for walks off the cycle grid
+/// (async, or sync on a store with no usable clock), where the window bounds
+/// and the reported times are raw ticks, compared in `i128` because ticks
+/// reach `u64::MAX`. Transitions before `start` or the window still seed the
+/// previous value that edge and change triggers compare.
+fn tick_window_matches<'a>(
+    cfg: &'a ExtractConfig,
+    transitions: &'a [(u64, String)],
+    start: u64,
+    width: u32,
+    value: &'a str,
+) -> impl Iterator<Item = (u64, &'a str)> + 'a {
+    let mode = TriggerMode::classify(value);
+    let mut previous: Option<&str> = None;
+    transitions
+        .iter()
+        .take_while(|(tick, _)| {
+            cfg.time_max
+                .is_none_or(|max| i128::from(*tick) <= i128::from(max))
+        })
+        .filter_map(move |(tick, current)| {
+            let matched = mode.matches(previous, current, width, value);
+            previous = Some(current.as_str());
+            let in_window = *tick >= start && i128::from(*tick) >= i128::from(cfg.time_min);
+            (matched && in_window).then_some((*tick, current.as_str()))
+        })
+}
+
 /// Inclusive runs of matching sampling cycles. Their size follows raw
 /// transitions, including when a literal holds for billions of cycles.
 type CycleRuns = Vec<(u64, u64)>;
@@ -3339,28 +3304,27 @@ type CycleRuns = Vec<(u64, u64)>;
 fn sampled_event_runs(
     cache: &ColumnCache,
     cfg: &ExtractConfig,
-    base: u64,
+    grid: &SyncGrid,
     transitions: &[(u64, String)],
     width: u32,
     value: &str,
 ) -> CycleRuns {
-    let period = cache.clock_period_ticks;
-    let (start, end) = sampled_cycle_window(cache, cfg, base);
+    let (start, end) = sampled_cycle_window(cache, cfg, grid);
     if start > end {
         return Vec::new();
     }
-    let boundaries = observation_boundaries(cfg, base, period, transitions, start, end);
-    let mut previous =
-        (start > 1).then(|| sampled_value(cfg, transitions, base + (start - 2) * period));
+    let boundaries = observation_boundaries(cfg, grid, transitions, start, end);
+    // Cycle 1 is the first sampled baseline: cycle 0 precedes no edge.
+    let mut previous = (start > 1).then(|| grid.value(transitions, start - 1));
     let mode = TriggerMode::classify(value);
     let mut runs = Vec::new();
     for (i, &lo) in boundaries.iter().enumerate() {
         let hi = boundaries.get(i + 1).map_or(end, |next| next - 1);
-        let current = sampled_value(cfg, transitions, base + (lo - 1) * period);
+        let current = grid.value(transitions, lo);
         if mode.matches(previous.as_deref(), &current, width, value) {
             runs.push((lo, if mode == TriggerMode::Literal { hi } else { lo }));
         }
-        previous = Some(current);
+        previous = (lo > 0).then_some(current);
     }
     let runs = union_cycle_runs(runs);
     if mode == TriggerMode::Literal
@@ -3623,13 +3587,13 @@ fn emit_empty_distance(cfg: &ExtractConfig, unit: &str) {
 fn distance_from_runs(
     cache: &ColumnCache,
     cfg: &ExtractConfig,
-    base: u64,
+    grid: &SyncGrid,
     a: CycleRuns,
     virtuals: &[VirtualEntry],
 ) {
     let (pat_a, val_a) = cfg.distance_a.as_ref().unwrap();
     let b = if let Some((pattern, value)) = &cfg.distance_b {
-        match collect_event_ticks(cache, pattern, value, base, true, cfg, base, virtuals) {
+        match collect_event_ticks(cache, pattern, value, grid.base, true, cfg, grid, virtuals) {
             EventCollect::Runs(runs) => Some(runs),
             EventCollect::NoPatternMatch => {
                 exit_no_signal_match(std::slice::from_ref(pattern), cache)
@@ -3779,7 +3743,8 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             0
         }
     };
-    let cb = cycle_base(cache, effective_start);
+    let grid = SyncGrid::new(cache, cfg, effective_start);
+    let cb = grid.base;
     let virtuals = build_virtuals(cache, cfg);
 
     // Resolve event A; report `no signals match` vs `no events found` distinctly
@@ -3791,11 +3756,11 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         event_start(val_a),
         sync_mode,
         cfg,
-        cb,
+        &grid,
         &virtuals,
     ) {
         EventCollect::Runs(runs) => {
-            distance_from_runs(cache, cfg, cb, runs, &virtuals);
+            distance_from_runs(cache, cfg, &grid, runs, &virtuals);
             return;
         }
         EventCollect::Ticks(t) => t,
@@ -3805,12 +3770,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         EventCollect::NoEvents { multi_bit_edge } => {
             emit_empty_distance(cfg, if sync_mode { "cycles" } else { "ticks" });
             if multi_bit_edge {
-                eprintln!(
-                    "# distance: signal(s) matched '{}' but edge keyword '{}' \
-                     only fires on 1-bit signals; use a Verilog literal value \
-                     ('hN / 'dN / 'bN) for multi-bit signals.",
-                    pat_a, val_a
-                );
+                eprintln!("# {}", multi_bit_edge_note("distance", pat_a, val_a));
             } else {
                 eprintln!(
                     "# distance: pattern '{}' matched but value '{}' never occurred",
@@ -3830,7 +3790,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 event_start(value),
                 false,
                 cfg,
-                cb,
+                &grid,
                 &virtuals,
             ) {
                 EventCollect::Ticks(t) => t,
@@ -3910,7 +3870,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             event_start(val_b),
             sync_mode,
             cfg,
-            cb,
+            &grid,
             &virtuals,
         ) {
             EventCollect::Runs(_) => {
@@ -4049,13 +4009,10 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
     }
     let sync = !cfg.async_mode && cache.clock_period_ticks > 0;
     let reset = query_reset_deassert_tick(cache, &cfg).unwrap_or(0);
-    let base = cycle_base(cache, reset);
-    let (start, end) = sampled_cycle_window(cache, &cfg, base);
+    let grid = SyncGrid::new(cache, &cfg, reset);
+    let (start, end) = sampled_cycle_window(cache, &cfg, &grid);
     let bound = if sync {
-        base.saturating_add(
-            end.saturating_sub(1)
-                .saturating_mul(cache.clock_period_ticks),
-        )
+        grid.edge(end.max(1)).unwrap_or(u64::MAX)
     } else {
         cfg.time_max.map_or(cache.sim_end_tick, |t| t.max(0) as u64)
     };
@@ -4067,14 +4024,7 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
     let mut positions = std::collections::BTreeSet::new();
     if sync && start <= end {
         for transitions in &data {
-            positions.extend(observation_boundaries(
-                &cfg,
-                base,
-                cache.clock_period_ticks,
-                transitions,
-                start,
-                end,
-            ));
+            positions.extend(observation_boundaries(&cfg, &grid, transitions, start, end));
         }
         for stop in &cfg.clock_stopped {
             positions.insert(start.max(stop.from_cycle));
@@ -4091,13 +4041,7 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
     }
     let mut previous: Vec<_> = if sync && start > 1 {
         data.iter()
-            .map(|t| {
-                Some(sampled_value(
-                    &cfg,
-                    t,
-                    base + (start - 2) * cache.clock_period_ticks,
-                ))
-            })
+            .map(|t| Some(grid.value(t, start - 1)))
             .collect()
     } else {
         vec![None; matched.len()]
@@ -4115,13 +4059,12 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
                 }
             }
         }
-        let tick = if sync {
-            base + (position - 1) * cache.clock_period_ticks
-        } else {
-            position
-        };
         for (index, &signal) in matched.iter().enumerate() {
-            let value = sampled_value(&cfg, &data[index], tick);
+            let value = if sync {
+                grid.value(&data[index], position)
+            } else {
+                sampled_value(&cfg, &data[index], position)
+            };
             if !sync || previous[index].as_ref() != Some(&value) {
                 records.push(crate::output::SignalRecord::Value {
                     time: position,
@@ -4146,17 +4089,16 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
         } else {
             cfg.time_min.max(0) as u64
         };
-        let tick = if sync {
-            base + (position - 1) * cache.clock_period_ticks
-        } else {
-            position
-        };
         let mut held: Vec<_> = matched
             .iter()
             .enumerate()
             .take(cfg.max_lines + 1)
             .map(|(index, &signal)| {
-                let value = sampled_value(&cfg, &data[index], tick);
+                let value = if sync {
+                    grid.value(&data[index], position)
+                } else {
+                    sampled_value(&cfg, &data[index], position)
+                };
                 crate::output::SignalRecord::Value {
                     time: position,
                     name: cache.signals[signal]
@@ -4197,8 +4139,8 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
         let mut out = BufWriter::new(stdout.lock());
         if sync {
             eprintln!(
-                "# sync: period={}ns",
-                (cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64
+                "# sync: period={}",
+                crate::format::format_tick_time(cache.clock_period_ticks, cache.timescale_exponent)
             );
         }
         for record in records {
@@ -4441,6 +4383,70 @@ fn checked_cycle_base(first_rise: u64, period: u64, effective_start: u64) -> Res
     }
 }
 
+/// The counted cycles of one sync query. Cycle 1 is the first clock-grid
+/// edge at or after the reset-dependent start tick; cycle 0 is no grid edge
+/// but a read of the tick just before both the start tick and cycle 1's read.
+#[derive(Clone, Copy)]
+pub(crate) struct SyncGrid {
+    start: u64,
+    base: u64,
+    period: u64,
+    pre_edge: bool,
+}
+
+impl SyncGrid {
+    pub(crate) fn new(cache: &ColumnCache, cfg: &ExtractConfig, start: u64) -> Self {
+        Self {
+            start,
+            base: cycle_base(cache, start),
+            period: cache.clock_period_ticks,
+            pre_edge: cfg.pre_edge && !cfg.async_mode,
+        }
+    }
+
+    /// Like `new`, but an unrepresentable cycle 1 edge is an error, not saturation.
+    fn checked(cache: &ColumnCache, cfg: &ExtractConfig, start: u64) -> Result<Self, String> {
+        let base = checked_cycle_base(cache.first_rise_tick, cache.clock_period_ticks, start)?;
+        Ok(Self {
+            base,
+            ..Self::new(cache, cfg, start)
+        })
+    }
+
+    /// Edge tick of `cycle`; cycle 0's is the start tick. `None` past u64.
+    pub(crate) fn edge(&self, cycle: u64) -> Option<u64> {
+        if cycle == 0 {
+            return Some(self.start);
+        }
+        (cycle - 1)
+            .checked_mul(self.period)
+            .and_then(|offset| self.base.checked_add(offset))
+    }
+
+    /// Tick read for `cycle`, or `None` when no tick precedes the read.
+    pub(crate) fn read(&self, cycle: u64) -> Option<u64> {
+        if cycle == 0 {
+            return self.start.min(self.read(1)?).checked_sub(1);
+        }
+        let edge = self.edge(cycle)?;
+        if self.pre_edge {
+            edge.checked_sub(1)
+        } else {
+            Some(edge)
+        }
+    }
+
+    /// Cycle 0 when a tick precedes the start tick and cycle 1's read, else 1.
+    pub(crate) fn first_cycle(&self) -> u64 {
+        u64::from(self.read(0).is_none())
+    }
+
+    fn value(&self, transitions: &[(u64, String)], cycle: u64) -> String {
+        self.read(cycle)
+            .map_or_else(|| "x".into(), |tick| value_at_tick(transitions, tick))
+    }
+}
+
 fn cycle_base(cache: &ColumnCache, effective_start: u64) -> u64 {
     // An unrepresentable next edge lies beyond every representable query tick.
     // Saturation keeps existing query consumers from wrapping into early time;
@@ -4486,16 +4492,11 @@ pub fn resolve_time_token(
         return i64::try_from(effective_start)
             .map_err(|_| "cycle time is beyond signed tick range".to_string());
     }
-    let base = checked_cycle_base(
-        cache.first_rise_tick,
-        cache.clock_period_ticks,
-        effective_start,
-    )?;
+    let grid = SyncGrid::checked(cache, cfg, effective_start)?;
     match *token {
         TimeToken::Cycle(n) => {
-            let tick = (n as u64 - 1)
-                .checked_mul(cache.clock_period_ticks)
-                .and_then(|offset| base.checked_add(offset))
+            let tick = grid
+                .edge(n as u64)
                 .ok_or_else(|| "cycle time is beyond simulation tick range".to_string())?;
             i64::try_from(tick).map_err(|_| "cycle time is beyond signed tick range".to_string())
         }
@@ -4504,7 +4505,7 @@ pub fn resolve_time_token(
             if tick < 0 {
                 return Ok(0);
             }
-            i64::try_from(tick_to_cycle(tick as u64, base, cache.clock_period_ticks))
+            i64::try_from(tick_to_cycle(tick as u64, grid.base, grid.period))
                 .map_err(|_| "cycle number is beyond signed range".to_string())
         }
     }
@@ -4521,9 +4522,131 @@ fn last_counted_cycle(cache: &ColumnCache, base: u64) -> u64 {
     }
 }
 
-fn sampled_cycle_window(cache: &ColumnCache, cfg: &ExtractConfig, base: u64) -> (u64, u64) {
-    let total = last_counted_cycle(cache, base);
-    let start = u64::try_from(cfg.time_min).unwrap_or(0).max(1);
+/// True when a directional edge keyword met only multi-bit stored signals,
+/// which it never matches (`Change` also accepts buses).
+fn edge_on_multi_bit_only(
+    cache: &ColumnCache,
+    mode: TriggerMode,
+    targets: &[usize],
+    virtual_targets: usize,
+) -> bool {
+    mode.directional()
+        && virtual_targets == 0
+        && targets.iter().all(|&i| cache.signals[i].width > 1)
+}
+
+/// The note a `rising`/`falling` query prints when `edge_on_multi_bit_only`.
+fn multi_bit_edge_note(command: &str, pattern: &str, keyword: &str) -> String {
+    format!(
+        "{command}: signal(s) matched '{pattern}' but edge keyword '{keyword}' \
+         only fires on 1-bit signals; use a Verilog literal value \
+         ('hN / 'dN / 'bN) for multi-bit signals."
+    )
+}
+
+/// The tick span `find` searches for a literal: the ticks of the selected
+/// cycles in sync mode with a clock (cycle `n` spans `[edge(n), edge(n + 1))`),
+/// the ticks `-t` selects in async mode, and everything from the effective
+/// start for sync mode without a clock.
+fn find_window_ticks(
+    cache: &ColumnCache,
+    cfg: &ExtractConfig,
+    grid: &SyncGrid,
+    effective_start: u64,
+    use_cycle_walk: bool,
+) -> (u64, u64) {
+    let end_tick = cache.sim_end_tick;
+    if use_cycle_walk {
+        let edge = |cycle: u64| grid.edge(cycle).unwrap_or(u64::MAX);
+        let (start, end) = sampled_cycle_window(cache, cfg, grid);
+        let lo = if cfg.time_min <= 0 {
+            effective_start
+        } else {
+            edge(start)
+        };
+        let hi = if cfg.time_max.is_some() {
+            edge(end + 1).saturating_sub(1).min(end_tick)
+        } else {
+            end_tick
+        };
+        (lo, hi)
+    } else if !cfg.async_mode {
+        (effective_start, end_tick)
+    } else {
+        let lo = u64::try_from(cfg.time_min).unwrap_or(0);
+        match cfg.time_max {
+            None => (lo, end_tick),
+            // A window wholly before tick 0 is empty, not clamped to tick 0.
+            Some(max) => u64::try_from(max).map_or((1, 0), |hi| (lo, hi)),
+        }
+    }
+}
+
+/// True when the signal holds a value matching `value` at some tick in
+/// `lo..=hi` (false for an empty span), counting the value held before `lo`.
+fn holds_in_window(transitions: &[(u64, String)], (lo, hi): (u64, u64), value: &str) -> bool {
+    if lo > hi {
+        return false;
+    }
+    // Writes at `lo` itself count individually: they are inside the window.
+    let first = transitions.partition_point(|(tick, _)| *tick < lo);
+    let at_start = first.checked_sub(1).map(|i| &transitions[i]);
+    at_start
+        .into_iter()
+        .chain(
+            transitions[first..]
+                .iter()
+                .take_while(|(tick, _)| *tick <= hi),
+        )
+        .any(|(_, v)| values_match(v, value))
+}
+
+/// Why a literal `find` matched nothing, when it can be told (unprefixed).
+/// `window` is the searched tick span and `held` whether any target held the
+/// value in it. Only the width warning that names every target suppresses it.
+#[allow(clippy::too_many_arguments)]
+fn find_no_match_note(
+    cache: &ColumnCache,
+    cfg: &ExtractConfig,
+    targets: &[usize],
+    virtual_targets: usize,
+    window: Option<(u64, u64)>,
+    held: bool,
+    use_cycle_walk: bool,
+    value: &str,
+) -> Option<String> {
+    window?;
+    let literal = cfg.value_literals.first().map(|(_, literal)| literal);
+    let widest = targets
+        .iter()
+        .map(|&i| cache.signals[i].width)
+        .chain((virtual_targets > 0).then_some(1))
+        .max()
+        .unwrap_or(0);
+    if literal
+        .and_then(|literal| literal.bits())
+        .is_some_and(|bits| bits > widest)
+    {
+        return None;
+    }
+    let text = literal.map_or(value, |literal| literal.text.as_str());
+    if !held {
+        Some(format!("{text} was never held in this window"))
+    } else if use_cycle_walk {
+        Some(format!(
+            "{text} was held in this window but no sampled cycle matched; \
+             --async matches raw transitions"
+        ))
+    } else {
+        None
+    }
+}
+
+fn sampled_cycle_window(cache: &ColumnCache, cfg: &ExtractConfig, grid: &SyncGrid) -> (u64, u64) {
+    let total = last_counted_cycle(cache, grid.base);
+    let start = u64::try_from(cfg.time_min)
+        .unwrap_or(0)
+        .max(grid.first_cycle());
     let end = cfg
         .time_max
         .map_or(total, |max| u64::try_from(max).unwrap_or(0).min(total));
@@ -4544,7 +4667,7 @@ fn wave_bound_tick(cache: &ColumnCache, cfg: &ExtractConfig, value: i64) -> Resu
 /// Text naming a query window that holds no part of the trace, or `None`.
 fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<String> {
     let flag = cfg.window_flag.as_deref()?;
-    let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
+    let trace_end = crate::format::format_tick_time(cache.sim_end_tick, cache.timescale_exponent);
     if cfg.async_mode || cache.clock_period_ticks == 0 {
         let start = if cfg.wave_mode {
             wave_bound_tick(cache, cfg, cfg.time_min).ok()?
@@ -4553,14 +4676,15 @@ fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<Stri
         };
         return (start > cache.sim_end_tick).then(|| {
             format!(
-                "{flag} lies outside the trace: the trace ends at tick {} ({end_ns}ns)",
+                "{flag} lies outside the trace: the trace ends at tick {} ({trace_end})",
                 cache.sim_end_tick
             )
         });
     }
     let reset_tick = query_reset_deassert_tick(cache, cfg);
-    let base = cycle_base(cache, reset_tick.unwrap_or(0));
-    let (start, end) = sampled_cycle_window(cache, cfg, base);
+    let grid = SyncGrid::new(cache, cfg, reset_tick.unwrap_or(0));
+    let base = grid.base;
+    let (start, end) = sampled_cycle_window(cache, cfg, &grid);
     let counted = if reset_tick.is_some() {
         "counted after reset"
     } else {
@@ -4568,7 +4692,7 @@ fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<Stri
     };
     (start > end).then(|| {
         format!(
-            "{flag} lies outside the trace: counted cycles are 1..{} ({counted}), and the trace ends at {end_ns}ns",
+            "{flag} lies outside the trace: counted cycles are 1..{} ({counted}), and the trace ends at {trace_end}",
             last_counted_cycle(cache, base)
         )
     })
@@ -4581,25 +4705,23 @@ fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<Stri
 fn sampled_events<'a>(
     cache: &ColumnCache,
     cfg: &ExtractConfig,
-    base: u64,
+    grid: SyncGrid,
     transitions: &'a [(u64, String)],
     width: u32,
     value: &'a str,
 ) -> impl Iterator<Item = (u64, String, bool)> + 'a {
-    let period = cache.clock_period_ticks;
-    let (start, end) = sampled_cycle_window(cache, cfg, base);
+    let (start, end) = sampled_cycle_window(cache, cfg, &grid);
     let mut previous = if start > 1 && start <= end {
-        Some(value_at_tick(transitions, base + (start - 2) * period))
+        Some(grid.value(transitions, start - 1))
     } else {
         None
     };
     let mode = TriggerMode::classify(value);
     (start..=end).map(move |cycle| {
-        let tick = base + (cycle - 1) * period;
-        let current = value_at_tick(transitions, tick);
+        let current = grid.value(transitions, cycle);
         let matched = mode.matches(previous.as_deref(), &current, width, value);
-        previous = Some(current.clone());
-        (tick, current, matched)
+        previous = (cycle > 0).then(|| current.clone());
+        (cycle, current, matched)
     })
 }
 
@@ -4906,14 +5028,15 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // Build column headers and target ticks (BEFORE reading transitions for range decode)
     if sync_mode {
         // Sync: compute tick range, then range-decode only what's needed
-        let cb = cycle_base(cache, effective_start);
+        let grid = SyncGrid::new(cache, cfg, effective_start);
+        let cb = grid.base;
         let total_cycles = if cache.clock_period_ticks > 0 {
             (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1
         } else {
             1
         };
 
-        let cycle_start = range_start.max(0) as u64;
+        let cycle_start = (range_start.max(0) as u64).max(grid.first_cycle());
         let cycle_end = match range_end_opt {
             Some(e) => (e as u64).min(total_cycles),
             None => total_cycles,
@@ -4925,6 +5048,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
         let mut col_headers = Vec::new();
         let mut col_ticks = Vec::new();
+        let mut col_reads = Vec::new();
         let mut c = cycle_start;
         while c <= cycle_end && col_headers.len() < cfg.max_lines {
             if let Some(stop) = cfg
@@ -4949,14 +5073,12 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     }
                 ));
                 col_ticks.push(cb + (c - 1) * cache.clock_period_ticks);
+                col_reads.push(grid.read(c));
                 c = stop.to_cycle.saturating_add(1);
             } else {
                 col_headers.push(c.to_string());
-                col_ticks.push(if c == 0 {
-                    effective_start
-                } else {
-                    cb + (c - 1) * cache.clock_period_ticks
-                });
+                col_ticks.push(grid.edge(c).unwrap_or(u64::MAX));
+                col_reads.push(grid.read(c));
                 c += 1;
             }
         }
@@ -4967,8 +5089,8 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             return;
         }
 
-        let tick_min = cfg.sample_tick(col_ticks[0]).unwrap_or(0);
-        let tick_max = cfg.sample_tick(*col_ticks.last().unwrap()).unwrap_or(0);
+        let tick_min = col_reads[0].unwrap_or(0);
+        let tick_max = col_reads.last().unwrap().unwrap_or(0);
 
         // Range-bounded read: only decode transitions in [tick_min, tick_max]
         cache.prefetch_window(&matched, tick_max);
@@ -4994,10 +5116,10 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         for (ri, (before_val, transitions)) in range_results.iter().enumerate() {
             let sig_idx = matched[ri];
             let width = cache.signals[sig_idx].width;
-            let row: Vec<String> = col_ticks
+            let row: Vec<String> = col_reads
                 .iter()
                 .map(|&t| {
-                    let Some(t) = cfg.sample_tick(t) else {
+                    let Some(t) = t else {
                         return "x".into();
                     };
                     let v = match transitions.binary_search_by_key(&t, |(tick, _)| *tick) {
@@ -5014,9 +5136,9 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         // Append selected virtual rows in definition order.
         for ve in &selected_virtuals {
             display_names.push(ve.name.clone());
-            let row: Vec<String> = col_ticks
+            let row: Vec<String> = col_reads
                 .iter()
-                .map(|&t| sampled_value(cfg, &ve.transitions, t))
+                .map(|t| t.map_or_else(|| "x".into(), |t| value_at_tick(&ve.transitions, t)))
                 .collect();
             grid.push(row);
         }
@@ -5376,7 +5498,13 @@ mod tests {
         .into_iter()
         .map(|(t, v)| (t, v.to_string()))
         .collect::<Vec<_>>();
-        for base in [0, 5, 25, 105] {
+        for (start_tick, base) in [(0, 0), (5, 5), (4, 5), (25, 25), (105, 105)] {
+            let grid = SyncGrid {
+                start: start_tick,
+                base,
+                period: 10,
+                pre_edge: false,
+            };
             for start in 0..=12 {
                 for end in start..=12 {
                     let cfg = ExtractConfig {
@@ -5387,13 +5515,11 @@ mod tests {
                     for width in [1, 4] {
                         for value in ["0", "1", "x", "z", "rising", "falling", "change"] {
                             let expected: Vec<_> =
-                                sampled_events(&cache, &cfg, base, &transitions, width, value)
-                                    .filter_map(|(tick, _, matched)| {
-                                        matched.then_some(tick_to_cycle(tick, base, 10))
-                                    })
+                                sampled_events(&cache, &cfg, grid, &transitions, width, value)
+                                    .filter_map(|(cycle, _, matched)| matched.then_some(cycle))
                                     .collect();
                             let runs =
-                                sampled_event_runs(&cache, &cfg, base, &transitions, width, value);
+                                sampled_event_runs(&cache, &cfg, &grid, &transitions, width, value);
                             let actual: Vec<_> =
                                 runs.iter().flat_map(|&(lo, hi)| lo..=hi).collect();
                             assert_eq!(
@@ -5895,13 +6021,22 @@ b0 #
             async_mode: true,
             ..Default::default()
         };
-        assert_eq!(resolve_time_to_tick(&cache, &cfg, 35, 0), Some(35_000));
+        assert_eq!(
+            resolve_time_to_tick(&cache, &cfg, 35, 0).map(|t| t.0),
+            Some(35_000)
+        );
         cfg.diff_strs = Some(("35t".to_string(), "95t".to_string()));
-        assert_eq!(resolve_time_to_tick(&cache, &cfg, 35, 0), Some(35));
+        assert_eq!(
+            resolve_time_to_tick(&cache, &cfg, 35, 0).map(|t| t.0),
+            Some(35)
+        );
         for provenance in [None, Some(("0t".to_string(), "1t".to_string()))] {
             cfg.diff_strs = provenance;
-            assert_eq!(resolve_time_to_tick(&cache, &cfg, -1, 0), None);
-            assert_eq!(resolve_time_to_tick(&cache, &cfg, 100_001, 0), None);
+            assert_eq!(resolve_time_to_tick(&cache, &cfg, -1, 0).map(|t| t.0), None);
+            assert_eq!(
+                resolve_time_to_tick(&cache, &cfg, 100_001, 0).map(|t| t.0),
+                None
+            );
         }
     }
 
@@ -5924,12 +6059,18 @@ b0 #
         let mut cache = build_cache("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10000000000000000000\n1!\n");
         let cfg = ExtractConfig::default();
         assert_eq!(
-            resolve_time_to_tick(&cache, &cfg, 10_000_000_000_000_000, 0),
+            resolve_time_to_tick(&cache, &cfg, 10_000_000_000_000_000, 0).map(|t| t.0),
             Some(10_000_000_000_000_000_000)
         );
-        assert_eq!(resolve_time_to_tick(&cache, &cfg, i64::MAX, 0), None);
+        assert_eq!(
+            resolve_time_to_tick(&cache, &cfg, i64::MAX, 0).map(|t| t.0),
+            None
+        );
         cache.timescale_exponent = None;
-        assert_eq!(resolve_time_to_tick(&cache, &cfg, 123, 0), Some(123));
+        assert_eq!(
+            resolve_time_to_tick(&cache, &cfg, 123, 0).map(|t| t.0),
+            Some(123)
+        );
     }
 
     #[test]

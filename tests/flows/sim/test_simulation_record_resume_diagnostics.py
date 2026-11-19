@@ -28,6 +28,7 @@ def _interrupted_simulation_record(
     parameter_datatype="int",
     parameter_default="1",
     tests_toml='[sim_0]\ntests=["reset", "wrap"]\n',
+    booley_toml: str | None = None,
 ):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
@@ -50,13 +51,16 @@ def _interrupted_simulation_record(
     data = root / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text(tests_toml, newline="\n")
+    if booley_toml is not None:
+        (data / "booley.toml").write_text(booley_toml, newline="\n")
     reports = root / "reports"
 
     executions = []
 
     def interrupt_execution(_executor, _request):
         executions.append(_request.attempt_id)
-        _executor.prepare_attempt(_request)
+        if _request.child_execution_id is None:  # a child lane's attempt is already published
+            _executor.prepare_attempt(_request)
         raise KeyboardInterrupt("durable ordinary interruption")
 
     monkeypatch.setattr(
@@ -81,7 +85,8 @@ def _resume_until_execution(monkeypatch):
     """Make a resume that reaches execution raise instead of running."""
 
     def resumed(executor, request):
-        executor.prepare_attempt(request)
+        if request.child_execution_id is None:  # a child lane's attempt is already published
+            executor.prepare_attempt(request)
         raise KeyboardInterrupt("resume reached execution")
 
     monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)

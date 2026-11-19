@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 
 from booley.config.flow_enablement import retired_config_error
 from booley.core.booley_dir import resolve_booley_dir
-from booley.core.config_paths import resolve_toml
+from booley.core.config_paths import BooleyTomlError, resolve_toml
 
 SUPPORTED_EDA_KINDS = frozenset({"vivado"})
 PROVISIONING_IMAGE = "image"
@@ -17,7 +18,7 @@ PROVISIONING_HOST = "host"
 _ALLOWED_KEYS = frozenset({"provisioning"})
 
 
-class EdaConfigError(ValueError):
+class EdaConfigError(BooleyTomlError):
     """Project EDA configuration violates the built-in provisioning schema."""
 
 
@@ -64,21 +65,42 @@ def _parse_kind(kind: str, section: Any) -> EdaConfig:
     return EdaConfig(kind=kind, provisioning=provisioning)
 
 
-def load_eda_config(project_root: Path) -> dict[str, EdaConfig]:
-    """Load declarative EDA requests without host provisioning policy."""
+_LOCATION_SUFFIX = re.compile(r"\(at line (\d+), column \d+\)$")
+
+
+def eda_config_path(project_root: Path) -> Path | None:
+    """Return the Project ``booley.toml`` the EDA loader reads, or ``None`` when absent."""
     try:
         booley_dir = resolve_booley_dir(project_root)
     except FileNotFoundError:
-        return {}
+        return None
     path = resolve_toml(booley_dir)
-    if not path.is_file():
+    return path if path.is_file() else None
+
+
+def toml_error_line(exc: tomllib.TOMLDecodeError) -> int | None:
+    lineno: int | None = getattr(exc, "lineno", None)
+    if lineno is not None:
+        return lineno
+    match = _LOCATION_SUFFIX.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def load_eda_config(project_root: Path) -> dict[str, EdaConfig]:
+    """Load declarative EDA requests without host provisioning policy."""
+    path = eda_config_path(project_root)
+    if path is None:
         return {}
     try:
         with path.open("rb") as handle:
             raw = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise EdaConfigError(f"cannot read {path}: {exc}") from exc
-    migration = retired_config_error(raw)
-    if migration:
-        raise EdaConfigError(migration)
-    return parse_eda_config(raw.get("eda"))
+        line = toml_error_line(exc) if isinstance(exc, tomllib.TOMLDecodeError) else None
+        raise EdaConfigError(f"cannot read {path}: {exc}", path=path, line=line) from exc
+    try:
+        migration = retired_config_error(raw)
+        if migration:
+            raise EdaConfigError(migration)
+        return parse_eda_config(raw.get("eda"))
+    except EdaConfigError as exc:
+        raise EdaConfigError(str(exc), path=path) from exc

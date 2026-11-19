@@ -1417,7 +1417,7 @@ def test_invoke_endpoint_hands_the_admission_only_to_an_invocation_that_borrows_
             return EndpointOutcome(report_text="ok")
 
     admission, invocation = object(), Invocation()
-    endpoint = SimpleNamespace(name="sim", _finalize_result=lambda _outcome: None)
+    endpoint = SimpleNamespace(name="sim", _run_roots=None, _finalize_result=lambda _outcome: None)
     invoke_endpoint(
         endpoint, SimpleNamespace(invocation=invocation), admission=admission, started=0.0
     )  # type: ignore[arg-type]
