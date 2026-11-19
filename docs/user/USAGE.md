@@ -243,8 +243,8 @@ The Dashboard has three windows; press `←` or `→` to switch:
   Sessions waiting for your input are grouped under
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
   Each session's row lists its running and queued Jobs; Jobs with no session
-  are listed under **STANDALONE JOBS**. A queued Job is marked `queued`;
-  finished Jobs are only in the Jobs window.
+  are listed under **STANDALONE JOBS**. Finished Jobs are only in the Jobs
+  window.
   When the session's checkout declares a `[target.flow]` table in
   `metrics.toml`, a second line under the session shows its measurement:
   `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
