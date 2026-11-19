@@ -86,6 +86,59 @@ def test_typed_request_executes_without_constructing_a_parser(flow_type, runtime
     assert (report_root / flow.name / "1/report.json").is_file()
 
 
+@pytest.mark.parametrize(
+    ("case", "publishes", "dry_run"),
+    [
+        ("checkout-publishes", True, False),
+        ("checkout-returns", False, False),
+        ("checkout-dry-run", False, True),
+        ("booley-dir-publishes", True, False),
+    ],
+)
+def test_flow_fails_naming_its_removed_root(
+    case, publishes, dry_run, runtime, monkeypatch, capsys
+):
+    from booley.core.booley_dir import reset_cache
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.runtime.filesystem_utils import safe_rmtree
+    from booley.targets.selection import UnknownTargetError
+
+    if case == "booley-dir-publishes":
+        removed = runtime / "bd"
+        removed.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(removed))
+        reset_cache()
+        work_dir, report_dir = runtime, None
+        expected = f"lint failed: Booley Directory {removed} was removed during the run"
+    else:
+        removed = work_dir = runtime / "checkout"
+        (work_dir / ".booley").mkdir(parents=True)
+        report_dir = work_dir / ".booley" / "flow-reports"
+        expected = f"lint failed: checkout {removed} was removed during the run"
+    flow = LintFlow()
+
+    def run():
+        safe_rmtree(removed)
+        if publishes:
+            flow.reserve_invocation_dir()
+            raise UnknownTargetError("Unknown target 'demo'; selectable Targets: (none authored)")
+        return EndpointOutcome()
+
+    replace_run(monkeypatch, flow, run)
+    request = flow.request_type(
+        target="demo", work_dir=work_dir, report_dir=report_dir, dry_run=dry_run
+    )
+    result = flow.execute(request)
+
+    assert result.outcome.report_text == expected
+    assert result.exit_code == 2
+    assert not removed.exists()
+    if publishes:
+        err = capsys.readouterr().err
+        assert "Traceback" in err
+        assert "RemovedDirectoryError" in err
+
+
 def test_flow_report_root_precedence(runtime, monkeypatch):
     from booley.runtime.endpoint_execution import EndpointOutcome
 

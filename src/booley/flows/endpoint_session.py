@@ -12,7 +12,7 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
-from booley.flows.endpoint_reporting import _StdoutWitness
+from booley.flows.endpoint_reporting import _StdoutWitness, removed_root
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
@@ -23,6 +23,7 @@ from booley.runtime.exception_diagnostics import (
     exception_report_text,
     write_exception_diagnostic,
 )
+from booley.runtime.filesystem_utils import run_roots
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
@@ -98,6 +99,21 @@ def _prepare_endpoint_report_root(endpoint: EndpointState) -> EndpointOutcome | 
     return result if result is not None else _canonicalize_flow_report_root(endpoint)
 
 
+def _record_run_roots(endpoint: EndpointState) -> None:
+    """Remember the checkout and its existing Booley Directory, which the run must not recreate."""
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
+
+    checkout = Path(endpoint.args.work_dir).absolute()
+    booley_dir: Path | None
+    try:
+        booley_dir = resolve_checkout_booley_dir(checkout)
+    except (OSError, RuntimeError, ValueError):
+        booley_dir = None
+    if booley_dir is not None and not booley_dir.is_dir():
+        booley_dir = None
+    endpoint._run_roots = (checkout, booley_dir)
+
+
 def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
@@ -109,6 +125,7 @@ def prepare_execution(
         return early_outcome
     if (early_outcome := _prepare_endpoint_report_root(endpoint)) is not None:
         return early_outcome
+    _record_run_roots(endpoint)
     endpoint._default_target_args()
     if (selection_error := _prepare_target(endpoint)) is not None:
         return selection_error
@@ -200,11 +217,13 @@ def invoke_endpoint(
     endpoint._stdout_witness = witness
     sys.stdout = witness  # type: ignore[assignment]
     try:
-        try:
-            invocation = prepared.invocation
-            result = invocation.run(admission if invocation.borrows_admission else None)
-        except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
-            result = _exception_outcome(endpoint, prepared, exc)
+        roots = [root for root in endpoint._run_roots or () if root is not None]
+        with run_roots(*roots):
+            try:
+                invocation = prepared.invocation
+                result = invocation.run(admission if invocation.borrows_admission else None)
+            except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
+                result = _exception_outcome(endpoint, prepared, exc)
     finally:
         sys.stdout = witness.wrapped
     _attach_memory_warning(result, admission)
@@ -239,12 +258,16 @@ def finish_execution(
     for cleanup_error in endpoint._requeue_cleanup_errors:
         normalize_completion_error(outcome, cleanup_error, "retire the killed attempt's progress")
     endpoint._requeue_cleanup_errors.clear()
+    removed = removed_root(endpoint)
+    if removed is not None:
+        outcome.exit_code = EXIT_ERROR
+        outcome.report_text = f"{endpoint.name} failed: {removed} was removed during the run"
     exit_code = endpoint._finish_main(
         outcome,
         prepared.display_target,
         outcome.display_label or prepared.display_label,
         started=started,
         dry_run=prepared.dry_run,
-        non_persisting_dry_run=prepared.non_persisting_dry_run,
+        persist_report=not prepared.non_persisting_dry_run and removed is None,
     )
     return ExecutionResult(exit_code=exit_code, outcome=outcome)

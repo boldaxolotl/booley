@@ -106,6 +106,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_FAILURE,
     EXIT_SUCCESS,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import (
     format_clock,
@@ -2029,7 +2030,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
         log_dir = self._synth_work_root(target)
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, output)
         except OSError:
             logger.debug(
@@ -2057,7 +2058,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
         log_dir = work_root_for(project_root, self.name, target, variant="baseline")
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, output)
         except OSError:
             logger.debug(

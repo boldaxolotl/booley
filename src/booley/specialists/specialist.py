@@ -35,6 +35,7 @@ from booley.runtime.exception_diagnostics import (
     log_exception,
     write_exception_diagnostic,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.model_fallback import ModelRun, call_with_fallback
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.owned_scratch import sweep_stale_scratch
@@ -227,7 +228,7 @@ class Specialist(McpTool):
         transcript_dir = self.args.transcript_dir
         if transcript_dir is None:
             return None
-        transcript_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(transcript_dir)
         return transcript_dir / f"{self.name}.jsonl"
 
     def _write_provider_diagnostic(
@@ -419,7 +420,7 @@ class Specialist(McpTool):
         if path is None:
             return
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(path.parent)
             path.write_text(self._last_session_id, encoding="utf-8")
         except OSError:
             logger.warning("Failed to persist session_id to %s", path)

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shutil
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.sharing_retry import (
     is_transient_read_error,
     is_transient_sharing_error,
@@ -19,16 +23,72 @@ from booley.core.sharing_retry import (
 )
 
 __all__ = [
+    "RemovedDirectoryError",
     "is_transient_read_error",
     "is_transient_sharing_error",
+    "make_directories",
     "open_with_sharing_retry",
     "read_file_bytes",
     "replace_file",
+    "run_roots",
     "safe_rmtree",
     "unlink_file",
 ]
 
 logger = logging.getLogger(__name__)
+
+# Directories the running endpoint must not recreate (its checkout and Booley Directory).
+_run_roots: tuple[Path, ...] = ()
+
+
+class RemovedDirectoryError(FileNotFoundError):
+    """Creating a directory would recreate a checkout or Booley Directory someone removed."""
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__(
+            errno.ENOENT, f"{directory} was removed; not recreating it", str(directory)
+        )
+        self.directory = directory
+
+
+@contextmanager
+def run_roots(*roots: Path) -> Iterator[None]:
+    """Refuse recreating *roots* in :func:`make_directories` while the block runs.
+
+    The roots are process-wide, not per thread: Flows write from worker threads.
+    """
+    global _run_roots
+    previous = _run_roots
+    _run_roots = (*previous, *(root.absolute() for root in roots))
+    try:
+        yield
+    finally:
+        _run_roots = previous
+
+
+def make_directories(path: Path) -> None:
+    """``mkdir -p`` that never recreates a run root or a removed checkout.
+
+    A missing run root, or a missing ``.booley`` under a missing parent, raises
+    :class:`RemovedDirectoryError` before anything is created. Directories are
+    created one level at a time, so a root removed meanwhile fails the next
+    ``mkdir`` instead of coming back.
+    """
+    missing: list[Path] = []
+    current = path.absolute()
+    while not current.is_dir():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    missing.reverse()
+    for index, directory in enumerate(missing):
+        if directory in _run_roots:
+            raise RemovedDirectoryError(directory)
+        if directory.name == BOOLEY_DIR_NAME and index > 0:
+            raise RemovedDirectoryError(missing[index - 1])
+    for directory in missing:
+        directory.mkdir(exist_ok=True)
 
 
 def _strip_windows_reparse_points(root: Path) -> None:
