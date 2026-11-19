@@ -274,15 +274,14 @@ class SimulationRecordResumeMixin:
             current_plan = self._resume_simulation_record_plan(
                 validated, SimulationRecordManifestView(validated.manifest).origin_invocation_id
             )
-            preview = SimulationRecord().preview(
-                ResumeSimulationRecordPreviewRequest(
-                    validated,
-                    current_plan,
-                    Path(self.args.work_dir),
-                    self.args.report_dir,
-                    self._simulation_record_policy(),
-                )
+            request = ResumeSimulationRecordPreviewRequest(
+                validated,
+                current_plan,
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._simulation_record_policy(),
             )
+            preview = SimulationRecord().preview(request)
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -293,6 +292,11 @@ class SimulationRecordResumeMixin:
         status = _simulation_record_recovery_detail(preview.recovery)
         status.update(preview.diagnostic.detail)
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
+        if not preview.mismatches:
+            # The real run reports a mismatch before its run_cwd check.
+            refusal = _resume_run_cwd_refusal(request, status)
+            if refusal is not None:
+                return refusal
         lines = [
             f"manifest: {validated.path}",
             f"completed: {len(preview.recovery.completed)}",
@@ -672,3 +676,18 @@ class SimulationRecordResumeMixin:
                 f"cannot reconstruct coverage aggregate: {detail}"
             )
         return prepared.plan.targets[0]
+
+
+def _resume_run_cwd_refusal(
+    request: ResumeSimulationRecordPreviewRequest, status: dict[str, object]
+) -> EndpointOutcome | None:
+    """Return the real run's failure when a record with work left has an unusable run_cwd."""
+    try:
+        SimulationRecord().preflight(request)
+    except (OSError, ValueError) as exc:
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=f"Simulation Record resume failed: {exc}",
+            detail=status,
+        )
+    return None

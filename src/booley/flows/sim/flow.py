@@ -902,28 +902,34 @@ class SimulateFlow(
         record with the execution adapter, and builds or simulates nothing.
         """
         simulation_record = SimulationRecord()
+        requests = [
+            NewSimulationRecordPreviewRequest(
+                # Placeholder ids: a preview reserves no invocation and
+                # starts no execution, so neither is ever read.
+                self._coverage_simulation_record_plan(plan, invocation_id=1, execution_id=""),
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._simulation_record_policy(),
+            )
+            for plan in self._coverage_prepared.targets
+        ]
         try:
             previews = [
-                _simulation_record_preview_entry(
-                    simulation_record.preview(
-                        NewSimulationRecordPreviewRequest(
-                            # Placeholder ids: a preview reserves no invocation and
-                            # starts no execution, so neither is ever read.
-                            self._coverage_simulation_record_plan(
-                                plan, invocation_id=1, execution_id=""
-                            ),
-                            Path(self.args.work_dir),
-                            self.args.report_dir,
-                            self._simulation_record_policy(),
-                        )
-                    )
-                )
-                for plan in self._coverage_prepared.targets
+                _simulation_record_preview_entry(simulation_record.preview(request))
+                for request in requests
             ]
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Record coverage preview failed: {exc}",
+            )
+        try:
+            for request in requests:
+                simulation_record.preflight(request)
+        except (OSError, ValueError) as exc:
+            # The real run's failure, with every Target still pending.
+            return _coverage_failure_outcome(
+                (), {}, [_coverage_request_selector(item) for item in requests], exc, None
             )
         outcome = _simulation_record_preview_outcome(previews)
         outcome.detail["coverage"] = True
@@ -1462,6 +1468,7 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         """Preview ordinary records without reserving or mutating report state."""
         previews = []
+        requests = []
         simulation_record = SimulationRecord()
         try:
             for planned in planning.candidates:
@@ -1471,20 +1478,26 @@ class SimulateFlow(
                     invocation_id=1,
                     execution_id="",
                 )
-                preview = simulation_record.preview(
-                    NewSimulationRecordPreviewRequest(
-                        plan,
-                        Path(self.args.work_dir),
-                        self.args.report_dir,
-                        self._simulation_record_policy(),
-                    )
+                request = NewSimulationRecordPreviewRequest(
+                    plan,
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._simulation_record_policy(),
                 )
-                previews.append(_simulation_record_preview_entry(preview))
+                requests.append(request)
+                previews.append(
+                    _simulation_record_preview_entry(simulation_record.preview(request))
+                )
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Record preview failed: {exc}",
             )
+        try:
+            for request in requests:
+                simulation_record.preflight(request)
+        except (OSError, ValueError) as exc:
+            return self._ordinary_simulation_record_failure(exc, [])
         return _simulation_record_preview_outcome(previews)
 
     def _ordinary_simulation_record_plan(
