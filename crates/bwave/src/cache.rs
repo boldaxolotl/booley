@@ -966,11 +966,11 @@ fn sync_range_hint(cache: &ColumnCache, requested: &str, effective_start: u64) -
         .saturating_sub(cycle_base(cache, effective_start))
         / cache.clock_period_ticks
         + 1;
-    let start_ns = (effective_start as f64 * cache.ticks_to_ns) as i64;
-    let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
+    let start = crate::format::format_tick_time(effective_start, cache.timescale_exponent);
+    let end = crate::format::format_tick_time(cache.sim_end_tick, cache.timescale_exponent);
     let range = format!(
         "In sync mode, --at selects a clock cycle (0..{total_cycles}). \
-         Simulation time range: {start_ns}ns..{end_ns}ns"
+         Simulation time range: {start}..{end}"
     );
     match requested.parse::<u64>() {
         Ok(tick) if tick <= cache.sim_end_tick => {
@@ -1661,20 +1661,18 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
     // Header (skip in JSON mode — JSON output is self-describing)
     if !cfg.json_format {
-        if sync_mode {
-            if cache.clock_period_ticks > 0 {
-                let total_cycles = total_ticks / cache.clock_period_ticks;
-                let period_ns = (cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64;
-                let _ = writeln!(
-                    out,
-                    "# Simulation: {}ns, {} cycles ({}ns period)",
-                    total_ns, total_cycles, period_ns
-                );
-            } else {
-                let _ = writeln!(out, "# Simulation: {}ns", total_ns);
-            }
+        let total_time = crate::format::format_tick_time(total_ticks, cache.timescale_exponent);
+        if sync_mode && cache.clock_period_ticks > 0 {
+            let total_cycles = total_ticks / cache.clock_period_ticks;
+            let period =
+                crate::format::format_tick_time(cache.clock_period_ticks, cache.timescale_exponent);
+            let _ = writeln!(
+                out,
+                "# Simulation: {}, {} cycles ({} period)",
+                total_time, total_cycles, period
+            );
         } else {
-            let _ = writeln!(out, "# Simulation: {}ns", total_ns);
+            let _ = writeln!(out, "# Simulation: {}", total_time);
         }
         let _ = writeln!(out, "# {} signals analyzed", matched.len() + virtuals.len());
         let _ = writeln!(out, "");
@@ -1935,8 +1933,8 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                         stopped.get(*val).copied().unwrap_or(0)
                     );
                 } else {
-                    let duration_ns = (t as f64 * cache.ticks_to_ns) as i64;
-                    let _ = writeln!(out, "{}: {}% ({}ns)", dval, pct_str, duration_ns);
+                    let duration = crate::format::format_tick_time(t, cache.timescale_exponent);
+                    let _ = writeln!(out, "{}: {}% ({})", dval, pct_str, duration);
                 }
             }
             if zero_pct_count > 0 {
@@ -2033,7 +2031,7 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let duration_str = if sync_mode && cache.clock_period_ticks > 0 {
         format!("{} cycles", total_ticks / cache.clock_period_ticks)
     } else {
-        format!("{}ns", (total_ticks as f64 * cache.ticks_to_ns) as i64)
+        crate::format::format_tick_time(total_ticks, cache.timescale_exponent)
     };
 
     let filter_str = match &cfg.find_stuck {
@@ -4119,8 +4117,8 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
         let mut out = BufWriter::new(stdout.lock());
         if sync {
             eprintln!(
-                "# sync: period={}ns",
-                (cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64
+                "# sync: period={}",
+                crate::format::format_tick_time(cache.clock_period_ticks, cache.timescale_exponent)
             );
         }
         for record in records {
@@ -4466,7 +4464,7 @@ fn wave_bound_tick(cache: &ColumnCache, cfg: &ExtractConfig, value: i64) -> Resu
 /// Text naming a query window that holds no part of the trace, or `None`.
 fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<String> {
     let flag = cfg.window_flag.as_deref()?;
-    let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
+    let trace_end = crate::format::format_tick_time(cache.sim_end_tick, cache.timescale_exponent);
     if cfg.async_mode || cache.clock_period_ticks == 0 {
         let start = if cfg.wave_mode {
             wave_bound_tick(cache, cfg, cfg.time_min).ok()?
@@ -4475,7 +4473,7 @@ fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<Stri
         };
         return (start > cache.sim_end_tick).then(|| {
             format!(
-                "{flag} lies outside the trace: the trace ends at tick {} ({end_ns}ns)",
+                "{flag} lies outside the trace: the trace ends at tick {} ({trace_end})",
                 cache.sim_end_tick
             )
         });
@@ -4490,7 +4488,7 @@ fn window_outside_trace(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<Stri
     };
     (start > end).then(|| {
         format!(
-            "{flag} lies outside the trace: counted cycles are 1..{} ({counted}), and the trace ends at {end_ns}ns",
+            "{flag} lies outside the trace: counted cycles are 1..{} ({counted}), and the trace ends at {trace_end}",
             last_counted_cycle(cache, base)
         )
     })
