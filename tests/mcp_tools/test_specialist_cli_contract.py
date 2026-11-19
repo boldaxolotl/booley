@@ -156,7 +156,6 @@ def test_unusable_report_dir_is_refused_before_the_specialist_runs(tmp_path, san
     afile = tmp_path / "afile"
     afile.write_bytes(b"")
     endpoint = ProjectSpecialist()
-    # The test is that neither hook is reached once the report directory is refused.
     for hook in ["_invoke_agent", "write_report"]:
         setattr(endpoint, hook, Mock(side_effect=AssertionError(hook)))
 

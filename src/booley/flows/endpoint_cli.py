@@ -242,10 +242,9 @@ class ReportDirError(ValueError):
 def require_usable_report_dir(report_dir: str | os.PathLike[str]) -> None:
     """Refuse an explicit report directory the run could not create or write.
 
-    Side-effect free: nothing is created. The path is not normalized, so
-    ``<file>/../reports`` is judged through ``<file>`` as a writer's ``mkdir``
-    would. The nearest existing ancestor (at worst ``.`` or the root) must be a
-    writable directory; ``os.access`` can disagree with a real write on ACLs or
+    Side-effect free: nothing is created, and the path is not normalized. The
+    nearest existing ancestor (at worst ``.`` or the root) must be a writable
+    directory; ``os.access`` can disagree with a real write on ACLs or
     some network filesystems, which then fail once at completion.
     """
     given = os.fspath(report_dir)
