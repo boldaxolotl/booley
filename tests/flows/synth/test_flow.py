@@ -930,114 +930,104 @@ _ABC_SCRIPT = '[flows.synth.advanced_settings_yosys]\nabc_script = "+strash;map"
 _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
 
 
-@pytest.mark.parametrize(
-    ("config", "args", "present", "absent"),
-    [
-        pytest.param(
-            "",
-            [],
-            [
-                ("--ppa-profile", "balanced"),
-                ("--frontend", "sv2v"),
-                ("--flatten",),
-                ("-w", "lite"),
-            ],
-            ["--no-flatten", "--timing-report-paths"],
-            id="defaults",
-        ),
-        pytest.param(
-            'ppa_profile = "compact"\nsynth_mode = "physical"\n'
-            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
-            "[flows.synth.advanced_settings_openroad]\n"
-            "placement_density = 0.72\nrepair_hold = true\n",
-            [],
-            [
-                ("--synth-mode", "physical"),
-                ("--ppa-profile", "compact"),
-                ("--abc-delay-ps", "3333"),
-                ("--placement-density", "0.72"),
-                ("--repair-hold",),
-            ],
-            [],
-            id="profile-and-backend-settings",
-        ),
-        pytest.param(
-            'ppa_profile = "compact"\n' + _ABC_RECIPE,
-            ["--ppa-profile", "balanced"],
-            [("--ppa-profile", "balanced")],
-            ["--abc-recipe"],
-            id="cli-profile-resets-backend-settings",
-        ),
-        pytest.param(
-            _ABC_SCRIPT,
-            ["--abc-recipe", "fast"],
-            [("--abc-recipe", "fast")],
-            ["--abc-script"],
-            id="cli-abc-recipe-replaces-script",
-        ),
-        pytest.param(
-            _ABC_RECIPE,
-            ["--abc-script", "+strash;map"],
-            [("--abc-script", "+strash;map")],
-            ["--abc-recipe"],
-            id="cli-abc-script-replaces-recipe",
-        ),
-        pytest.param(
-            "flatten = true\nsdc = true\n",
-            [],
-            [("--flatten",)],
-            ["--sdc", "--no-flatten"],
-            id="flatten-true-and-retired-sdc-flag",
-        ),
-        pytest.param(
-            "flatten = true\n",
-            ["--no-flatten"],
-            [("--no-flatten",)],
-            ["--flatten"],
-            id="cli-no-flatten-beats-config",
-        ),
-        pytest.param(
-            "flatten = false\n", [], [("--no-flatten",)], ["--flatten"], id="flatten-false"
-        ),
-        pytest.param(
-            "", ["--frontend", "slang"], [("--frontend", "slang")], [], id="cli-frontend"
-        ),
-        pytest.param(
-            'frontend = "slang"\nslang_options = ["--single-unit", "--allow-use-before-declare"]\n',
-            [],
-            [
-                ("--frontend", "slang"),
-                ("--slang-option=--single-unit",),
-                ("--slang-option=--allow-use-before-declare",),
-            ],
-            [],
-            id="target-frontend-and-slang-options",
-        ),
-    ],
-)
-def test_configure_argv_carries_the_recipe(
-    synth_cli: SynthCli,
-    config: str,
-    args: list[str],
-    present: list[tuple[str, ...]],
-    absent: list[str],
-) -> None:
-    if config:
+_RECIPE_ARGV_CASES = [
+    pytest.param(
+        "",
+        [],
+        [
+            ("--ppa-profile", "balanced"),
+            ("--frontend", "sv2v"),
+            ("--flatten",),
+            ("-w", "lite"),
+        ],
+        ["--no-flatten", "--timing-report-paths"],
+        id="defaults",
+    ),
+    pytest.param(
+        'ppa_profile = "compact"\nsynth_mode = "physical"\n'
+        "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
+        "[flows.synth.advanced_settings_openroad]\n"
+        "placement_density = 0.72\nrepair_hold = true\n",
+        [],
+        [
+            ("--synth-mode", "physical"),
+            ("--ppa-profile", "compact"),
+            ("--abc-delay-ps", "3333"),
+            ("--placement-density", "0.72"),
+            ("--repair-hold",),
+        ],
+        [],
+        id="profile-and-backend-settings",
+    ),
+    pytest.param(
+        'ppa_profile = "compact"\n' + _ABC_RECIPE,
+        ["--ppa-profile", "balanced"],
+        [("--ppa-profile", "balanced")],
+        ["--abc-recipe"],
+        id="cli-profile-resets-backend-settings",
+    ),
+    pytest.param(
+        _ABC_SCRIPT,
+        ["--abc-recipe", "fast"],
+        [("--abc-recipe", "fast")],
+        ["--abc-script"],
+        id="cli-abc-recipe-replaces-script",
+    ),
+    pytest.param(
+        _ABC_RECIPE,
+        ["--abc-script", "+strash;map"],
+        [("--abc-script", "+strash;map")],
+        ["--abc-recipe"],
+        id="cli-abc-script-replaces-recipe",
+    ),
+    pytest.param(
+        "flatten = true\nsdc = true\n",
+        [],
+        [("--flatten",)],
+        ["--sdc", "--no-flatten"],
+        id="flatten-true-and-retired-sdc-flag",
+    ),
+    pytest.param(
+        "flatten = true\n",
+        ["--no-flatten"],
+        [("--no-flatten",)],
+        ["--flatten"],
+        id="cli-no-flatten-beats-config",
+    ),
+    pytest.param("flatten = false\n", [], [("--no-flatten",)], ["--flatten"], id="flatten-false"),
+    pytest.param("", ["--frontend", "slang"], [("--frontend", "slang")], [], id="cli-frontend"),
+    pytest.param(
+        'frontend = "slang"\nslang_options = ["--single-unit", "--allow-use-before-declare"]\n',
+        [],
+        [
+            ("--frontend", "slang"),
+            ("--slang-option=--single-unit",),
+            ("--slang-option=--allow-use-before-declare",),
+        ],
+        [],
+        id="target-frontend-and-slang-options",
+    ),
+]
+
+
+def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
+    for case in _RECIPE_ARGV_CASES:
+        config, args, present, absent = case.values
         synth_cli.config(config)
 
-    unit = synth_cli.plan(*args)["work_units"][0]
-    argv = unit["commands"][0]["argv"]
+        unit = synth_cli.plan(*args)["work_units"][0]
+        argv = unit["commands"][0]["argv"]
 
-    for tokens in present:
-        assert _has_tokens(argv, *tokens), (tokens, argv)
-    for token in absent:
-        assert token not in argv, (token, argv)
-    args = configure.parse_configure_argv(argv)
-    _profile, yosys, openroad = configure.resolve_ppa_settings(args)
-    expected = {"yosys": dataclasses.asdict(yosys)}
-    if SynthMode(args.synth_mode).runs_openroad:
-        expected["openroad"] = dataclasses.asdict(openroad)
-    assert unit["recipe"]["effective_ppa_settings"] == expected
+        for tokens in present:
+            assert _has_tokens(argv, *tokens), (case.id, tokens, argv)
+        for token in absent:
+            assert token not in argv, (case.id, token, argv)
+        parsed = configure.parse_configure_argv(argv)
+        _profile, yosys, openroad = configure.resolve_ppa_settings(parsed)
+        expected = {"yosys": dataclasses.asdict(yosys)}
+        if SynthMode(parsed.synth_mode).runs_openroad:
+            expected["openroad"] = dataclasses.asdict(openroad)
+        assert unit["recipe"]["effective_ppa_settings"] == expected, case.id
 
 
 @pytest.mark.parametrize(
@@ -1646,24 +1636,24 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
     ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
 
 
-@pytest.mark.parametrize("mode,schema", [("logical", 4), ("physical", 5)])
-def test_recipe_schema_bumps_without_default_clock(tmp_path: Path, mode, schema):
-    snapshot = synthesis_recipe_snapshot(
-        dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
-        default_recipe_args(),
-        target="lite",
-    )
-    assert snapshot["schema"] == schema
-    assert "default_clock_ps" not in snapshot
-    assert "ppa_profile_settings" not in snapshot
+def test_recipe_schema_bumps_without_default_clock(tmp_path: Path):
+    for mode, schema in [("logical", 4), ("physical", 5)]:
+        snapshot = synthesis_recipe_snapshot(
+            dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
+            default_recipe_args(),
+            target="lite",
+        )
+        assert snapshot["schema"] == schema
+        assert "default_clock_ps" not in snapshot
+        assert "ppa_profile_settings" not in snapshot
 
-    previous = {**snapshot, "schema": 3}
-    assert synthesis_recipe_snapshot_fingerprint(previous) != (
-        synthesis_recipe_snapshot_fingerprint(snapshot)
-    )
-    assert synthesis_recipe_changes(previous, snapshot) == [
-        {"path": "schema", "before": 3, "after": schema}
-    ]
+        previous = {**snapshot, "schema": 3}
+        assert synthesis_recipe_snapshot_fingerprint(previous) != (
+            synthesis_recipe_snapshot_fingerprint(snapshot)
+        )
+        assert synthesis_recipe_changes(previous, snapshot) == [
+            {"path": "schema", "before": 3, "after": schema}
+        ]
 
 
 def test_physical_fanout_policy_invalidates_old_recipe(tmp_path):

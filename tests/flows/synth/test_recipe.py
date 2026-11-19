@@ -60,9 +60,8 @@ _YOSYS_TABLE = yosys_ppa._YOSYS_PROFILES
 _OPENROAD_TABLE = openroad_ppa._PROFILES
 
 
-@pytest.mark.parametrize(
-    ("table", "field", "value", "mode", "options", "invalidates"),
-    [
+def test_profile_table_edit_invalidates_only_recipes_that_run_it(tmp_path, monkeypatch):
+    rows = [
         (_YOSYS_TABLE, "abc_delay_ps", 1234, "logical", {}, True),
         (_YOSYS_TABLE, "abc_delay_ps", 1234, "physical", {}, True),
         (_OPENROAD_TABLE, "setup_margin_ns", 0.7, "physical", {}, True),
@@ -77,18 +76,17 @@ _OPENROAD_TABLE = openroad_ppa._PROFILES
             {"advanced_settings_openroad": {"setup_margin_ns": 0.5}},
             False,
         ),
-    ],
-)
-def test_profile_table_edit_invalidates_only_recipes_that_run_it(
-    tmp_path, monkeypatch, table, field, value, mode, options, invalidates
-):
-    before = _fingerprint(tmp_path, mode=mode, profile="max_frequency", **options)
-    monkeypatch.setitem(
-        table, "max_frequency", dataclasses.replace(table["max_frequency"], **{field: value})
-    )
-
-    after = _fingerprint(tmp_path, mode=mode, profile="max_frequency", **options)
-    assert (after != before) is invalidates
+    ]
+    for table, field, value, mode, options, invalidates in rows:
+        before = _fingerprint(tmp_path, mode=mode, profile="max_frequency", **options)
+        with monkeypatch.context() as edit:
+            edit.setitem(
+                table,
+                "max_frequency",
+                dataclasses.replace(table["max_frequency"], **{field: value}),
+            )
+            after = _fingerprint(tmp_path, mode=mode, profile="max_frequency", **options)
+        assert (after != before) is invalidates, (field, mode, options)
 
 
 @pytest.mark.parametrize(
