@@ -43,7 +43,7 @@ The worktree gets its own Booley Directory (the `.booley/` folder), a
 directory](COVERAGE.md#waiver-directory-coveragewaivers) when its `anchor` is
 `project_data_repository`). Build results, reports, logs, and evidence stay in
 the main Booley Directory. A path Booley does not classify is not copied; the
-command names it unless Git tracks or ignores it.
+command names it unless Git tracks or ignores everything in it.
 
 <details markdown>
 <summary>In stealth mode</summary>
