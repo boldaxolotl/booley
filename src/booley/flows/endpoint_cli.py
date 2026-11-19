@@ -89,6 +89,7 @@ def add_common_args(
     target_required: bool,
     accepts_target: bool,
     target_help: str,
+    target_metavar: str,
     human: bool = False,
 ) -> None:
     """Add args shared by all endpoints.
@@ -111,7 +112,7 @@ def add_common_args(
             action="append",
             default=None,
             required=target_required,
-            metavar="TARGET[,TARGET...]",
+            metavar=target_metavar,
             help=target_help,
         )
 
@@ -137,6 +138,7 @@ def human_endpoint_parser(endpoint, *, project: Path | None = None) -> argparse.
         target_required=endpoint.target_required,
         accepts_target=endpoint.accepts_target,
         target_help=endpoint.target_help,
+        target_metavar=endpoint.target_metavar,
         human=True,
     )
     endpoint._add_args(parser)

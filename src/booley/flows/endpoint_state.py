@@ -83,6 +83,7 @@ class EndpointState(ABC):
     # Class-overridable because argparse help is also the MCP ``target`` schema
     # description. The default is endpoint-neutral; a Flow that drives a sim
     # sub-loop can override it with narrower wording.
+    target_metavar: str = "TARGET[,TARGET...]"  # the CLI's `--target` metavar
     target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
         "repeated or its value comma-separated; MCP accepts one comma-separated string. "
