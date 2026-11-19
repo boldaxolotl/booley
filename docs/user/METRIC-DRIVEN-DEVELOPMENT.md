@@ -105,8 +105,9 @@ Inside a table:
 - `off = ["tests_failed_max"]` removes a bound that `[defaults.<flow>]` would
   add to this table.
 - `notes = { area_kge_max = "after DSP sharing" }` records why a bound is what
-  it is; when a later commit changes that bound, the report shows the note
-  beside the change.
+  it is. A note names a bound in force in this table, its own or one from
+  `[defaults.<flow>]`, spelled as that bound's key; when a later commit
+  changes that bound, the report shows the note beside the change.
 
 `[defaults.<flow>]` adds its bounds to every table of that Flow. It never
 creates a table, so a Target with no table of its own is still not measured.
@@ -246,7 +247,10 @@ enforced total, not in it, as in
 
 The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer
-sees it.
+sees it. Only a bound still in force carries a note, so a bound turned `off`,
+moved to `track` or removed, and a removed table, always show "(no note)" and
+still mark the report "rules loosened". Give the reason for such a change in
+the commit message.
 
 <details markdown>
 <summary>In stealth mode</summary>
