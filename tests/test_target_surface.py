@@ -49,12 +49,6 @@ def _targets_view():
     return importlib.import_module("booley.harness.targets_view")
 
 
-@pytest.fixture(autouse=True)
-def _colors_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin plain output so FORCE_COLOR on a developer machine cannot break substrings."""
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
-
-
 def select_target(project_root, token, *, for_flow=None):
     return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
 
