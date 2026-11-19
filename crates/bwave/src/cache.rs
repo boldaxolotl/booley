@@ -3522,7 +3522,7 @@ fn stopped_pair_sum(segments: &[PairSegment], stops: &[crate::clock::StoppedRang
         .sum()
 }
 
-fn emit_empty_distance(cfg: &ExtractConfig, unit: &str) {
+fn emit_empty_distance(cfg: &ExtractConfig, unit: &str, warnings: Vec<String>) {
     if cfg.json_format {
         emit_query_json(
             cfg,
@@ -3535,7 +3535,7 @@ fn emit_empty_distance(cfg: &ExtractConfig, unit: &str) {
                 stopped_cycles: 0,
                 truncated: false,
             },
-            Vec::new(),
+            warnings,
         );
     }
 }
@@ -3554,10 +3554,14 @@ fn distance_from_runs(
             EventCollect::NoPatternMatch => {
                 exit_no_signal_match(std::slice::from_ref(pattern), cache)
             }
-            EventCollect::NoEvents { .. } => {
-                emit_empty_distance(cfg, "cycles");
+            EventCollect::NoEvents { multi_bit_edge } => {
+                let note = multi_bit_edge.then(|| multi_bit_edge_note("distance", pattern, value));
+                emit_empty_distance(cfg, "cycles", note.clone().into_iter().collect());
                 if !cfg.json_format {
-                    eprintln!("# distance: no events found for {pattern} {value}");
+                    match note {
+                        Some(note) => eprintln!("# {note}"),
+                        None => eprintln!("# distance: no events found for {pattern} {value}"),
+                    }
                 }
                 return;
             }
@@ -3723,25 +3727,25 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             exit_no_signal_match(std::slice::from_ref(pat_a), cache);
         }
         EventCollect::NoEvents { multi_bit_edge } => {
-            emit_empty_distance(cfg, if sync_mode { "cycles" } else { "ticks" });
-            if multi_bit_edge {
-                eprintln!(
-                    "# distance: signal(s) matched '{}' but edge keyword '{}' \
-                     only fires on 1-bit signals; use a Verilog literal value \
-                     ('hN / 'dN / 'bN) for multi-bit signals.",
-                    pat_a, val_a
-                );
-            } else {
-                eprintln!(
+            let note = multi_bit_edge.then(|| multi_bit_edge_note("distance", pat_a, val_a));
+            emit_empty_distance(
+                cfg,
+                if sync_mode { "cycles" } else { "ticks" },
+                note.clone().into_iter().collect(),
+            );
+            match note {
+                Some(note) => eprintln!("# {note}"),
+                None => eprintln!(
                     "# distance: pattern '{}' matched but value '{}' never occurred",
                     pat_a, val_a
-                );
+                ),
             }
             return;
         }
     };
 
     if cfg.json_format {
+        let mut warnings: Vec<String> = Vec::new();
         let b = cfg.distance_b.as_ref().map(|(pattern, value)| {
             match collect_event_ticks(
                 cache,
@@ -3756,6 +3760,12 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 EventCollect::Ticks(t) => t,
                 EventCollect::NoPatternMatch => {
                     exit_no_signal_match(std::slice::from_ref(pattern), cache)
+                }
+                EventCollect::NoEvents {
+                    multi_bit_edge: true,
+                } => {
+                    warnings.push(multi_bit_edge_note("distance", pattern, value));
+                    Vec::new()
                 }
                 _ => Vec::new(),
             }
@@ -3772,11 +3782,9 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let count = pairs.len() as u64;
         let summary = (!deltas.is_empty()).then(|| distance_summary(&deltas));
         let truncated = !cfg.stats_mode && pairs.len() > cfg.max_lines;
-        let warnings = if truncated {
-            record_limit(cfg, pairs.len())
-        } else {
-            Vec::new()
-        };
+        if truncated {
+            warnings.extend(record_limit(cfg, pairs.len()));
+        }
         let pairs = if cfg.stats_mode {
             Vec::new()
         } else {
@@ -3842,11 +3850,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
             EventCollect::NoEvents { multi_bit_edge } => {
                 if multi_bit_edge {
-                    eprintln!(
-                        "# distance: signal(s) matched '{}' but edge keyword '{}' \
-                         only fires on 1-bit signals.",
-                        pat_b, val_b
-                    );
+                    eprintln!("# {}", multi_bit_edge_note("distance", pat_b, val_b));
                 } else {
                     eprintln!(
                         "# distance: pattern '{}' matched but value '{}' never occurred",
@@ -4439,6 +4443,15 @@ fn last_counted_cycle(cache: &ColumnCache, base: u64) -> u64 {
             .checked_add(1)
             .expect("sampled cycle count overflow")
     }
+}
+
+/// The note a `rising`/`falling` query prints when every matched signal is multi-bit.
+fn multi_bit_edge_note(command: &str, pattern: &str, keyword: &str) -> String {
+    format!(
+        "{command}: signal(s) matched '{pattern}' but edge keyword '{keyword}' \
+         only fires on 1-bit signals; use a Verilog literal value \
+         ('hN / 'dN / 'bN) for multi-bit signals."
+    )
 }
 
 fn sampled_cycle_window(cache: &ColumnCache, cfg: &ExtractConfig, base: u64) -> (u64, u64) {
