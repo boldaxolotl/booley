@@ -19,8 +19,8 @@ from typing import Any
 import pytest
 
 import booley
+from booley.flows.mutation.flow import run_tool
 from booley.flows.mutation.memory_claims import CampaignClaims
-from booley.flows.mutation.tool_runs import run_tool
 from booley.flows.sim.backends import cocotb_results as cr
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome

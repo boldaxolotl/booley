@@ -25,7 +25,7 @@ from booley.runtime.job_records import _proc_cmdline
 if TYPE_CHECKING:
     from booley.flows.job_estimates import JobRequest
     from booley.flows.mutation.flow import MutationFlow
-    from booley.flows.mutation.tool_runs import OomKill
+    from booley.flows.tool_runs import OomKill
     from booley.runtime.endpoint_execution import EndpointOutcome
 
 _Run = TypeVar("_Run")
