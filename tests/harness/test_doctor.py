@@ -252,7 +252,7 @@ def _patch_bootstrap_current(monkeypatch) -> None:
     monkeypatch.setattr(
         host_diagnostics,
         "inspect_host",
-        lambda: host_diagnostics.HostDiagnosticResult(report, "docker"),
+        lambda _root: host_diagnostics.HostDiagnosticResult(report, "docker"),
     )
 
 
@@ -1350,7 +1350,7 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(
         host_diagnostics,
         "inspect_host",
-        lambda: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
+        lambda _root: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
     )
 
     result = _doctor_run(tmp_path, deep=True, record_clean=True)
@@ -3226,7 +3226,7 @@ def _prepare_row(monkeypatch, row):
         monkeypatch.setattr(
             host_diagnostics,
             "inspect_host",
-            lambda: host_diagnostics.HostDiagnosticResult(report, None),
+            lambda _root: host_diagnostics.HostDiagnosticResult(report, None),
         )
 
 

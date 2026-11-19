@@ -345,8 +345,8 @@ unknown key or an invalid value.
 
 After editing the file, run `booley bootstrap`. A changed `egress` also needs
 [each Project's Sandbox recreated](#after-changing-sandbox-settings); until
-then a running Sandbox keeps its previous mode and host-side Doctor
-warns about it.
+then a running Sandbox keeps its previous mode. Host-side Doctor warns about
+this Project's own Sandbox and notes other Projects' Sandboxes.
 
 To switch `egress` without editing the file, run
 `booley bootstrap --egress unproxied` (or `proxy`). It records the mode,
