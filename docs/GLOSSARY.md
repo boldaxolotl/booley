@@ -222,7 +222,7 @@ _Avoid_: python testbench config, cocotb core, cocotb suite
 Project-declared shell commands that Booley executes inside the **Sandbox**
 immediately before each simulator process, for non-RTL per-test build steps that
 FuseSoC cannot express. They run once per Test Run, or once per batch for a
-**Cocotb Target**.
+**Cocotb Target** outside a coverage run.
 _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 
 ### Flows, EDA tools, and MCP tools
