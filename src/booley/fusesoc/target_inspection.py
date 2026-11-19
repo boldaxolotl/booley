@@ -88,6 +88,26 @@ def _inspect_inputs(
     return tuple(inputs)
 
 
+def _inspect_setup_inputs(
+    root: Path,
+    cores: list[Any],
+    flags: Mapping[str, Any],
+    *,
+    tb_paths: Collection[str],
+) -> tuple[TargetInput, ...] | None:
+    """Return the sources setup lists, or None when a generator or filter may change them."""
+    top = cores[-1]
+    for core in cores:
+        core_flags = dict(flags)
+        core_flags["is_toplevel"] = core.name == top.name
+        try:
+            if core.get_ttptttg(core_flags) or core.get_filters(core_flags):
+                return None
+        except SyntaxError:
+            return None
+    return _inspect_inputs(root, cores, flags, tb_paths=tb_paths)
+
+
 def _inspect_parameters(cores: list[Any], flags: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve parameters in dependency order like FuseSoC's Edalizer."""
     parameters: dict[str, Any] = {}
@@ -294,6 +314,7 @@ class _TargetSourceInspector:
                 parameters=_inspect_parameters(cores, flags),
                 inputs=_inspect_inputs(self.root, cores, inventory_flags, tb_paths=tb_paths),
                 tool_options=_inspect_tool_options(core, flags),
+                setup_inputs=_inspect_setup_inputs(self.root, cores, flags, tb_paths=tb_paths),
             )
         except (OSError, SyntaxError, RuntimeError, ValueError) as exc:
             raise fusesoc_registry.FuseSocError(

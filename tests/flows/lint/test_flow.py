@@ -716,6 +716,90 @@ def test_dry_run_tolerates_a_typed_missing_toplevel(
     assert plan["work_units"][0]["recipe"]["toplevel"] == ""
 
 
+_LINT = "flow: lint, flow_options: {tool: verilator}"
+_SV = "file_type: systemVerilogSource"
+_UNDECLARED_TOP = (
+    "{target}: lint toplevel '{top}' is not declared by any fileset file (1 HDL sources) "
+    "\u2014 lint would be vacuous. Fix the Target's `toplevel` or add the declaring file to "
+    "its filesets."
+)
+_SETUP_PROJECT = {
+    "rtl/top.sv": "module top; endmodule\n",
+    "rtl/flag_top.sv": "module flag_top; endmodule\n",
+    "rtl/auto_top.sv": "module auto_top; endmodule\n",
+    "gen.core": (
+        "CAPI=2:\nname: ::gen:0\n"
+        "generators:\n  mkgen: {interpreter: python3, command: gen.py}\n"
+        f"filesets:\n  rtl:\n    files: [rtl/top.sv: {{{_SV}}}]\n"
+        "generate:\n  g1: {generator: mkgen}\n"
+        "targets:\n"
+        "  default: {filesets: [rtl], generate: [g1]}\n"
+        f"  declared: {{{_LINT}, filesets: [rtl], toplevel: top}}\n"
+        f"  undeclared: {{{_LINT}, filesets: [rtl], toplevel: no_such_top}}\n"
+        f"  generates: {{{_LINT}, filesets: [rtl], generate: [g1], toplevel: gen_top}}\n"
+        f"  unrelated_generator: {{{_LINT}, filesets: [rtl], toplevel: gen_top}}\n"
+    ),
+    "user.core": (
+        "CAPI=2:\nname: ::user:0\n"
+        f"filesets:\n  rtl:\n    depend: ['::gen:0']\n    files: [rtl/top.sv: {{{_SV}}}]\n"
+        f"targets:\n  dependency_generates: {{{_LINT}, filesets: [rtl], toplevel: gen_top}}\n"
+    ),
+    "setup.core": (
+        "CAPI=2:\nname: ::setup:0\n"
+        "filesets:\n  rtl:\n    files:\n"
+        f"      - rtl/top.sv: {{{_SV}}}\n"
+        f"      - owned ? (rtl/flag_top.sv): {{{_SV}}}\n"
+        "      - rtl/auto_top.sv\n"
+        "targets:\n"
+        f"  flagged: {{{_LINT}, filesets: [rtl], flags: {{owned: true}}, toplevel: flag_top}}\n"
+        f"  filtered: {{{_LINT}, filesets: [rtl], filters: [autotype], toplevel: auto_top}}\n"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("target", "failing_top"),
+    [
+        pytest.param("declared", None, id="declared"),
+        pytest.param("undeclared", "no_such_top", id="undeclared"),
+        pytest.param("generates", None, id="generates"),
+        pytest.param("unrelated_generator", "gen_top", id="unrelated-generator"),
+        pytest.param("dependency_generates", None, id="dependency-generates"),
+        pytest.param("flagged", None, id="flagged"),
+        pytest.param("filtered", None, id="filtered"),
+    ],
+)
+def test_dry_run_judges_an_undeclared_toplevel_unless_setup_generates(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: str,
+    failing_top: str | None,
+) -> None:
+    """Planning judges the sources FuseSoC setup lists, except where setup can add or retype some."""
+    for name, text in _SETUP_PROJECT.items():
+        path = tmp_path / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(text.encode())
+    monkeypatch.setattr(
+        TargetCatalog, "build", classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root))
+    )
+
+    result, commands = run_lint(args=("--dry-run",), target=target)
+
+    plan = _dry_run_plan(capsys)
+    assert commands == []
+    if failing_top is None:
+        assert result.exit_code == EXIT_SUCCESS
+        assert plan["aggregate_errors"] == []
+        assert len(plan["work_units"]) == 1
+    else:
+        assert result.exit_code == EXIT_ERROR
+        assert plan["aggregate_errors"] == [_UNDECLARED_TOP.format(target=target, top=failing_top)]
+        assert plan["work_units"] == []
+
+
 def test_dry_run_previews_fusesoc_setup_without_resolving(
     run_lint: _LintRun,
     tmp_path: Path,
