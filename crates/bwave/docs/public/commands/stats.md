@@ -4,8 +4,10 @@
 
 Per-signal activity report. For each matching signal,
 B-Wave counts transitions, computes toggle %, builds a
-value histogram (how often each value held) and a
-time-in-state map (how many ticks each value held).
+value histogram (`value_hist`: occurrence counts, one
+per run in which the value held, however long the run)
+and a time-in-state map (how many ticks each value held).
+For per-cycle counts, read `time_in_state_clocked_cycles`.
 Useful for "is this signal active?", "which state
 dominates?", and as a sanity check before deeper
 queries.
@@ -40,13 +42,15 @@ the same key in both modes. The duration map is named
 a parallel `time_in_state_ns` is emitted whenever the
 trace has a timescale.
 
+Example for `-t 1:10000` on a 10-tick clock:
+
 ```json
 {
   "$schema": "...",
   "command": "stats",
   "data": {
-    "simulation_ns": 100000,
-    "total_ticks": 100000,
+    "simulation_ns": 99990,
+    "total_ticks": 99990,
     "total_cycles": 10000,
     "clock_period_ns": 10,
     "signals": [
@@ -56,9 +60,11 @@ trace has a timescale.
         "transitions": 42,
         "toggle_pct": 0.42,
         "value_pct": 0.50,
-        "value_hist":          {"'h0": 5000, "'h1": 3000, "'h2": 1500, "'h3": 500},
-        "time_in_state_ticks": {"'h0": 50000, "'h1": 30000, "'h2": 15000, "'h3": 5000},
-        "time_in_state_ns":    {"'h0": 50000, "'h1": 30000, "'h2": 15000, "'h3": 5000}
+        "value_hist":          {"'h0": 12, "'h1": 11, "'h2": 10, "'h3": 10},
+        "time_in_state_ticks": {"'h0": 49995, "'h1": 29997, "'h2": 14998, "'h3": 5000},
+        "time_in_state_ns":    {"'h0": 49995, "'h1": 29997, "'h2": 14998, "'h3": 5000},
+        "time_in_state_clocked_cycles": {"'h0": 5000, "'h1": 3000, "'h2": 1500, "'h3": 500},
+        "time_in_state_stopped_cycles": {}
       }
     ]
   },
@@ -86,9 +92,10 @@ bwave stats sim.fst -s "*data_out*" --format json \
 - Sync JSON adds per-value `time_in_state_clocked_cycles` and
   `time_in_state_stopped_cycles` maps. Both are null in async mode or without
   a clock. Text output shows the same clocked/stopped split.
-- These maps, and the sync text percentages, count grid samples in the query
-  window with both endpoints included. `total_cycles` counts whole elapsed
-  periods, so it can differ from the sample total.
+- In sync mode the window is the cycles `wave` shows for the same `-t`, both
+  endpoints included. `total_cycles`, the text header's cycle count, and the
+  clocked plus stopped counts (JSON and text) all equal that number of cycles.
+- In async mode `total_cycles` counts whole clock periods in the tick window.
 - Tick/ns occupancy stays a physical duration.
 
 See `reference/sync-vs-async` for the clock verdict and sampling modes.

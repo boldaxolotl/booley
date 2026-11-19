@@ -1565,6 +1565,24 @@ fn stats_window(cache: &ColumnCache, cfg: &ExtractConfig, reset_start: u64) -> (
     (start, end)
 }
 
+/// Cycle count of a stats window: sync counts the cycles `wave` shows; async
+/// counts whole elapsed periods of the tick window.
+fn stats_total_cycles(cache: &ColumnCache, cfg: &ExtractConfig, total_ticks: u64) -> Option<u64> {
+    if cache.clock_period_ticks == 0 {
+        return None;
+    }
+    if cfg.async_mode {
+        return Some(total_ticks / cache.clock_period_ticks);
+    }
+    let grid = SyncGrid::new(
+        cache,
+        cfg,
+        query_reset_deassert_tick(cache, cfg).unwrap_or(0),
+    );
+    let (start, end) = sampled_cycle_window(cache, cfg, &grid);
+    Some(if start <= end { end - start + 1 } else { 0 })
+}
+
 type Occupancy = std::collections::BTreeMap<String, u64>;
 fn sampled_occupancy(
     cache: &ColumnCache,
@@ -1574,19 +1592,18 @@ fn sampled_occupancy(
     if cfg.async_mode || cache.clock_period_ticks == 0 {
         return (Occupancy::new(), Occupancy::new());
     }
-    let grid = SyncGrid::new(
-        cache,
-        cfg,
-        query_reset_deassert_tick(cache, cfg).unwrap_or(0),
-    );
-    // Occupancy counts clocked and stopped grid cycles; cycle 0 is neither.
-    let (start, end) = sampled_cycle_window(cache, cfg, &grid);
-    let start = start.max(1);
+    let reset_start = query_reset_deassert_tick(cache, cfg).unwrap_or(0);
+    let grid = SyncGrid::new(cache, cfg, reset_start);
+    let (first, end) = sampled_cycle_window(cache, cfg, &grid);
+    let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
+    if first == 0 {
+        *clocked.entry(grid.value(transitions, 0)).or_insert(0) += 1;
+    }
+    let start = first.max(1);
     if start > end {
-        return (Occupancy::new(), Occupancy::new());
+        return (clocked, stopped);
     }
     let boundaries = observation_boundaries(cfg, &grid, transitions, start, end);
-    let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
     for (index, &lo) in boundaries.iter().enumerate() {
         let hi = boundaries.get(index + 1).map_or(end, |next| next - 1);
         let value = grid.value(transitions, lo);
@@ -1629,11 +1646,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         if cfg.json_format {
             // JSON consumers (coverage_analyst) still get a parseable empty
             // envelope on stdout; the exit code carries the failure.
-            let total_cycles = if cache.clock_period_ticks > 0 {
-                Some(total_ticks / cache.clock_period_ticks)
-            } else {
-                None
-            };
+            let total_cycles = stats_total_cycles(cache, cfg, total_ticks);
             let clock_period_ns = if cache.clock_period_ticks > 0 {
                 Some((cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64)
             } else {
@@ -1670,7 +1683,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if !cfg.json_format {
         let total_time = crate::format::format_tick_time(total_ticks, cache.timescale_exponent);
         if sync_mode && cache.clock_period_ticks > 0 {
-            let total_cycles = total_ticks / cache.clock_period_ticks;
+            let total_cycles = stats_total_cycles(cache, cfg, total_ticks).unwrap_or(0);
             let period =
                 crate::format::format_tick_time(cache.clock_period_ticks, cache.timescale_exponent);
             let _ = writeln!(
@@ -1763,11 +1776,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // the name, which let callers confuse it with nanoseconds.
     if cfg.json_format {
         use crate::format::format_as_verilog_literal;
-        let total_cycles = if cache.clock_period_ticks > 0 {
-            Some(total_ticks / cache.clock_period_ticks)
-        } else {
-            None
-        };
+        let total_cycles = stats_total_cycles(cache, cfg, total_ticks);
         let clock_period_ns = if cache.clock_period_ticks > 0 {
             Some((cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64)
         } else {

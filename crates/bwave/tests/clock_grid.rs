@@ -116,15 +116,13 @@ fn stopped_levels_and_window_metadata() {
     let p = json("distance", &path, &["data", "change", "-t", "1:6"]);
     assert_eq!(p["data"]["pairs"][1]["elapsed"], 2);
     assert_eq!(p["data"]["pairs"][0]["stopped_cycles"], 2);
-    let p = json("stats", &path, &["-s", "valid", "-t", "1:6"]);
-    assert_eq!(
-        p["data"]["signals"][0]["time_in_state_clocked_cycles"]["'h1"],
-        3
-    );
-    assert_eq!(
-        p["data"]["signals"][0]["time_in_state_stopped_cycles"]["'h1"],
-        3
-    );
+    for (window, total, clocked) in [("1:6", 6, 3), ("0:6", 6, 3)] {
+        let p = json("stats", &path, &["-s", "valid", "-t", window]);
+        let signal = &p["data"]["signals"][0];
+        assert_eq!(p["data"]["total_cycles"], total, "{window}");
+        assert_eq!(signal["time_in_state_clocked_cycles"]["'h1"], clocked);
+        assert_eq!(signal["time_in_state_stopped_cycles"]["'h1"], 3);
+    }
 }
 
 #[test]
@@ -681,13 +679,20 @@ fn cycle_zero_reads_before_the_start_tick() {
         assert_eq!(tok["sample_tick"], read0, "{case}");
         let st = reset_json("stats", &path, &["-s", "data", "-t", "0:1"], mode);
         let occupancy = &st["signals"][0]["time_in_state_clocked_cycles"];
-        let key = match (on_edge, pre, reset_at) {
-            (true, false, _) => "'h1",
-            (true, true, _) => "'h0",
-            (false, false, _) => "'h2",
-            (false, true, _) => "'h1",
+        // Cycles 0 and 1 of the window, as `wave -t 0:1` shows them.
+        let (key0, key1) = match (on_edge, pre) {
+            (true, false) => ("'h0", "'h1"),
+            (true, true) => ("'h0", "'h0"),
+            (false, false) => ("'h1", "'h2"),
+            (false, true) => ("'h1", "'h1"),
         };
-        assert_eq!(occupancy, &serde_json::json!({ key: 1 }), "{case}");
+        let mut want = serde_json::Map::new();
+        for key in [key0, key1] {
+            let n = want.get(key).map_or(0, |n| n.as_u64().unwrap());
+            want.insert(key.into(), (n + 1).into());
+        }
+        assert_eq!(st["total_cycles"], 2, "{case}");
+        assert_eq!(occupancy, &serde_json::Value::Object(want), "{case}");
         // `p` rises at 14, so a consumer that kept reading tick 14 for cycle 0
         // on the on-edge trace is wrong in pre-edge mode.
         let pv = reset_json("value", &path, &["--at", "0", "-s", "p"], mode);
