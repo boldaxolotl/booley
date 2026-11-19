@@ -650,7 +650,8 @@ def _add_auth_subparser(sub) -> None:
         default=None,
         help=(
             "Agent CLI (credential changes default to claude; "
-            "status uses the Project's default CLI or both CLIs)"
+            "status reports this CLI only, else every Agent CLI the Project allows, "
+            "default first, or both outside a Project)"
         ),
     )
     # Historical spelling of --cli: same dest, so both parse identically.

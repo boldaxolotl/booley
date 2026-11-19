@@ -290,7 +290,9 @@ def _credential_policy_inspectable(
             request.project_root, booley_dir=request.booley_dir, selected=app
         )
         # Called only for its errors: a policy that cannot be planned cannot be seeded.
-        auth_token.credential_plan(app, found.policies.get(app, found.policies[found.default]))
+        # Every listed CLI is planned, as init plans them.
+        for cli in found.clis if app in found.clis else (app,):
+            auth_token.credential_plan(cli, found.policies.get(cli, found.policies[found.default]))
     except (
         BackendConfigError,
         BooleyLayoutError,

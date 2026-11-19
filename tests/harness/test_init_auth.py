@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
 from booley.harness import init_cmd
@@ -12,6 +14,7 @@ from tests.harness.init_agent_support import (
     credential_reads,
     empty_host,
     login,
+    project_config,
 )
 
 
@@ -117,6 +120,32 @@ def test_auth_step_reports_the_credential_that_bills(
         hint = lines[winner + 1].lstrip()
         assert hint.startswith("→ the subscription login at ")
         assert hint.endswith("is present but not used; the line above wins")
+
+
+def test_auth_step_reports_every_allowed_cli_under_its_policy(_home, tmp_path, capsys):
+    login(_home, "claude")
+    config = project_config(
+        tmp_path / "project",
+        b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+        b'[agent.auth]\nclaude = "subscription"\ncodex = "api_key"\n',
+    )
+    # private: the selection must come from the resolver, as host init builds it;
+    # a hand-built `AgentSelection` cannot show the resolver keeping the other CLIs.
+    selection = init_cmd._resolve_agent_selection(
+        InitContext(show_step_banners=False), argparse.Namespace(), config
+    )
+    assert selection is not None
+
+    result = _auth_step(selection)
+
+    assert (result.name, result.status, result.detail) == (
+        "auth",
+        "warn",
+        "claude/subscription; codex/api_key unavailable",
+    )
+    out = capsys.readouterr().out
+    assert "detected subscription auth for claude" in out
+    assert "no api_key auth available for codex" in out
 
 
 @pytest.mark.parametrize("external", [False, True])

@@ -4867,7 +4867,12 @@ def _seed_mount_policy_project(tmp_path, monkeypatch, app, policy):
 
 
 def test_seed_mount_policy_unavailable_fails_without_comparing(tmp_path, monkeypatch):
-    for damage in ("invalid-policy", "ambiguous-seed", "directory-conflict"):
+    for damage in (
+        "invalid-policy",
+        "ambiguous-seed",
+        "directory-conflict",
+        "non-default-ambiguous-seed",
+    ):
         (tmp_path / damage).mkdir()
         _assert_unavailable_policy_fails_without_comparing(tmp_path / damage, monkeypatch, damage)
 
@@ -4876,11 +4881,15 @@ def _assert_unavailable_policy_fails_without_comparing(tmp_path, monkeypatch, da
     from booley.runtime import inspection
 
     data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "subscription")
-    spec = build_spec("claude")
+    if damage == "non-default-ambiguous-seed":
+        (data / "booley.toml").write_text(
+            '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\nauth = "subscription"\n'
+        )
+    spec = build_spec("codex" if damage == "non-default-ambiguous-seed" else "claude")
     dc.write_devcontainer(data.parent, spec)
     if damage == "invalid-policy":
         (data / "booley.toml").write_text('[agent]\nauth="invalid"\n')
-    elif damage == "ambiguous-seed":
+    elif damage in ("ambiguous-seed", "non-default-ambiguous-seed"):
         (Path.home() / ".claude.json").write_text('{"primaryApiKey":"SYNTHETIC_SECRET"}')
     else:
         data.rename(data.with_name("moved"))

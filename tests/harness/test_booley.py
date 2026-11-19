@@ -213,6 +213,11 @@ def test_auth_cli_and_hidden_app_alias_parse_identically(monkeypatch, capsys):
     auth_help = capsys.readouterr().out
     assert "--cli" in auth_help
     assert "--app" not in auth_help
+    words = " ".join(auth_help.split())
+    assert (
+        "status reports this CLI only, else every Agent CLI the Project allows, default first"
+        in words
+    )
 
 
 # ===========================================================================

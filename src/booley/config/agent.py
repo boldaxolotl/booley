@@ -920,10 +920,18 @@ def project_credential_policies(
     return ProjectCredentialPolicies(clis, default, _declared_policies(declared, clis))
 
 
-def project_credential_policy(
-    project_root: Path, *, booley_dir: Path | None = None, cli: str | None = None
-) -> tuple[str, str]:
-    """The CLI (default unless `cli` names one) and its declared auth policy at a root."""
-    found = project_credential_policies(project_root, booley_dir=booley_dir, selected=cli)
-    chosen = cli or found.default
-    return chosen, found.policies.get(chosen, missing_auth_policy())
+def project_cli_policies(
+    project_root: Path,
+    *,
+    booley_dir: Path | None = None,
+    cli: str | None = None,
+    selected: str | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Each Agent CLI to report with its declared auth policy: *cli* alone, else every
+    allowed CLI, the default first. *selected* (default *cli*) is the CLI an undeclared
+    set falls back to, as in :func:`project_credential_policies`."""
+    found = project_credential_policies(
+        project_root, booley_dir=booley_dir, selected=selected or cli
+    )
+    clis = (cli,) if cli else (found.default, *(c for c in found.clis if c != found.default))
+    return tuple((name, found.policies.get(name, missing_auth_policy())) for name in clis)
