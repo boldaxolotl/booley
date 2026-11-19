@@ -39,9 +39,11 @@ manual Git steps with the real Sandbox paths; use those, not host paths.
 
 The worktree gets its own Booley Directory (the `.booley/` folder), a
 **Snapshot**: a copy of the Booley Directory's configuration (settings,
-`cores/`, hooks, Ticket history). Build results, reports, logs, and
-evidence stay in the main Booley Directory. A path Booley does not classify is
-not copied, and the command names it.
+`cores/`, hooks, Ticket history, and the [waiver
+directory](COVERAGE.md#waiver-directory-coveragewaivers) when its `anchor` is
+`project_data_repository`). Build results, reports, logs, and evidence stay in
+the main Booley Directory. A path Booley does not classify is not copied; the
+command names it unless Git tracks or ignores everything in it.
 
 <details markdown>
 <summary>In stealth mode</summary>

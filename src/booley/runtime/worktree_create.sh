@@ -539,8 +539,10 @@ WORKTREE_BOOLEY_REL=$(booley_dir_relative "$WORKTREE_DIR")
 # The Snapshot is an allowlist: only paths classified as Checkout state versioned
 # with the RTL in booley.core.booley_dir_parts.BOOLEY_DIR_PATHS are copied.
 # Common state, state tied to one checkout's sources, and paths no row covers stay
-# in the Main Booley Directory (unclassified ones are named on stderr). Only
-# nested repositories and tool caches inside copied configuration are excluded.
+# in the Main Booley Directory (unclassified ones Git neither tracks nor ignores
+# are named on stderr). A [coverage.waivers] directory anchored to the project
+# data repository is copied too. Only nested repositories and tool caches inside
+# copied configuration are excluded.
 if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$BOOLEY_DIR_PATH" ]; then
     echo "Copying $BOOLEY_REL/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/$WORKTREE_BOOLEY_REL"
