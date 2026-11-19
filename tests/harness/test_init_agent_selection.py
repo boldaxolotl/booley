@@ -12,12 +12,13 @@ from types import SimpleNamespace
 import pytest
 
 from booley.harness import init_cmd
+from booley.harness.setup import git_hooks
 from booley.harness.setup.common import InitContext
 from booley.projects import inventory
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
 from tests.conftest import symlink_or_skip
-from tests.docker_cli_guard import docker_cli_absent
+from tests.docker_cli_guard import docker_cli_absent, docker_cli_answers
 from tests.harness.init_agent_support import (
     api_key,
     empty_host,
@@ -159,6 +160,66 @@ def test_full_init_without_a_verified_image_probes_no_git_version(tmp_path, monk
     assert docker_calls == []
     assert [call["runtime_image_id"] for call in sandbox_calls] == [None]
     assert "trackability inspection incomplete" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("status", "host_git", "sandbox_answer", "verdict"),
+    [
+        pytest.param(
+            init_cmd.ImageLifecycleStatus.STALE,
+            (2, 53, 0),
+            "git version 2.53.0",
+            "worktree_link_policy: unknown until the Sandbox Image is reconciled",
+            id="stale-image",
+        ),
+        pytest.param(
+            init_cmd.ImageLifecycleStatus.CURRENT,
+            (2, 53, 0),
+            "git version 2.47.9",
+            "worktree_link_policy: would set false",
+            id="known-old-sandbox-git",
+        ),
+        pytest.param(
+            init_cmd.ImageLifecycleStatus.STALE,
+            (2, 47, 9),
+            "git version 2.53.0",
+            "worktree_link_policy: would set false",
+            id="known-old-host-git",
+        ),
+    ],
+)
+def test_check_only_predicts_the_link_policy_only_from_a_known_git(
+    tmp_path, monkeypatch, capsys, status, host_git, sandbox_answer, verdict
+):
+    """A stale image's Git is unknown, so check-only must not predict a downgrade from it."""
+    for command in (("init", "-q"), ("config", "worktree.useRelativePaths", "true")):
+        run_bounded_child(["git", *command], cwd=tmp_path, check=True)
+    image = init_cmd.LifecycleResult("booley-sandbox-riscv", _SANDBOX_IMAGE, status)
+    _stub_nested_init_services(tmp_path, monkeypatch, image)
+    docker_cli_answers(monkeypatch, sandbox_answer)
+    # Private seam: the host Git version is the real `git --version`; no run_init input sets it.
+    monkeypatch.setattr(git_hooks, "_host_git_version", lambda: host_git)
+    args = argparse.Namespace(
+        seed=False,
+        check_only=True,
+        provider="claude",
+        auth="subscription",
+        skip_credentials=True,
+    )
+
+    assert init_cmd.run_init(args, tmp_path) == 1
+
+    output = capsys.readouterr().out
+    assert verdict in output
+    assert ("would set worktree.useRelativePaths=false" in output) is verdict.endswith(
+        "would set false"
+    )
+    configured = run_bounded_child(
+        ["git", "config", "--local", "--get", "worktree.useRelativePaths"],
+        cwd=tmp_path,
+        check=True,
+    )
+    assert configured.stdout.strip() == "true"
 
 
 def _initialize_nested_git_repositories(parent_booley_dir, child):
