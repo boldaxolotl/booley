@@ -12,6 +12,7 @@ import contextlib
 import functools
 import hashlib
 import json
+import mmap
 import os
 import re
 import shutil
@@ -1710,29 +1711,62 @@ def _check_sandbox_memory(
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
 
     Unset, the budget falls back to the installed memory, which an agent and the
-    Jobs then share, so Doctor WARNs. Reads configuration only, so it runs
-    inside and outside the Sandbox.
+    Jobs then share, so Doctor WARNs. Outside the Sandbox it reads configuration
+    only; inside, it also compares it with the live limit the Memory Budget reads.
     """
-    _warn = _warning_sink(_warn, "sandbox.memory-unset")
+    unset_warn = _warning_sink(_warn, "sandbox.memory-unset")
     if project is None:
         _skip("sandbox memory skipped - no valid project config")
         return
     mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
     if not mem_str:
-        _warn(
+        unset_warn(
             "[sandbox].memory is unset: the Memory Budget falls back to installed memory",
             'set [sandbox] memory = "<size>" (booley resources shows Job peaks)',
         )
         return
     limit = resource_policy.parse_memory_limit(mem_str)
     if limit is None:
-        _warn(
+        unset_warn(
             f"[sandbox] memory = {mem_str!r} is unparseable: the Memory Budget "
             "falls back to installed memory",
             'set [sandbox] memory to a size such as "16g"',
         )
         return
+    if runtime_context.inside_session_runtime():
+        _check_live_sandbox_memory(
+            mem_str, limit, _pass, _warning_sink(_warn, "sandbox.memory-drift")
+        )
+        return
     _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
+
+
+_MEMORY_DRIFT_FIX = f"recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
+
+
+def _check_live_sandbox_memory(mem_str: str, configured: int, _pass: Check, _warn: Warn) -> None:
+    """Compare ``[sandbox].memory`` with the limit the running Sandbox has.
+
+    The kernel stores the limit in whole pages, so the comparison is in pages.
+    """
+    live = resource_policy.cgroup_memory_limit_bytes()
+    if live is None:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox has no readable "
+            "memory limit, so the Memory Budget falls back to installed memory",
+            _MEMORY_DRIFT_FIX,
+        )
+    elif live // mmap.PAGESIZE != configured // mmap.PAGESIZE:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox's memory limit is "
+            f"still {resource_policy.format_memory(live)}, and the Memory Budget comes from it",
+            _MEMORY_DRIFT_FIX,
+        )
+    else:
+        _pass(
+            f"[sandbox].memory = {resource_policy.format_memory(live)}: "
+            "the Sandbox's memory limit, which sizes the Memory Budget"
+        )
 
 
 _PROC_MEMINFO = Path("/proc/meminfo")
