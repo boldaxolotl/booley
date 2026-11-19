@@ -20,6 +20,7 @@ from booley.runtime.docker_capacity import (
     DockerBuildRequest,
 )
 from booley.runtime.image_identity import ImageMetadata
+from booley.runtime.image_provenance import ENV_SANDBOX_FLAVOR
 from booley.runtime.version_attribution import VersionOrigin
 from tests.conftest import symlink_or_skip
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
@@ -52,6 +53,8 @@ class FakeDocker:
         self.mutations: list[tuple[str, ...]] = []
         # Every ``(method, reference)`` read of an image, for call-count assertions.
         self.reads: list[tuple[str, str]] = []
+        # ``Config.Env`` per image ID; tags of one image share it.
+        self.environments: dict[str, dict[str, str]] = {}
 
     def image_id(self, image: str) -> str | None:
         self.reads.append(("image_id", image))
@@ -65,7 +68,8 @@ class FakeDocker:
         )
         if record is None:
             return None
-        return ImageMetadata(image, record[0], dict(record[1]), {}, self._layers(image))
+        environment = dict(self.environments.get(record[0], {}))
+        return ImageMetadata(image, record[0], dict(record[1]), environment, self._layers(image))
 
     def _layers(self, image: str) -> tuple[str, ...]:
         chain = []
@@ -864,6 +868,7 @@ def _release_puller(
         pytest.param("pull-fails", "could not pull", id="pull-fails"),
         pytest.param("local-parent", "registry ancestry", id="local-parent"),
         pytest.param("other-role", "no complete published", id="other-role"),
+        pytest.param("other-flavor", "image is booley-sandbox-riscv", id="other-flavor"),
     ],
 )
 def test_prepare_pulls_complete_release_and_refuses_other_roles(
@@ -891,6 +896,8 @@ def test_prepare_pulls_complete_release_and_refuses_other_roles(
         planned = replace(
             planned, nodes=(replace(node, role=lifecycle.ImageRole.STANDARD_SUBSTRATE),)
         )
+    if case == "other-flavor":
+        docker_builds.docker.environments["sha256:" + "a" * 64] = RISCV_ENVIRONMENT
     _release_puller(monkeypatch, docker_builds.docker, None if case == "pull-fails" else labels)
 
     if message is not None:
@@ -1224,6 +1231,7 @@ def test_official_release_plan_observes_only_selected_complete_image(
         }
     )
     docker.images[node.reference] = ("sha256:" + "a" * 64, labels)
+    docker.environments["sha256:" + "a" * 64] = RISCV_ENVIRONMENT
 
     planned = lifecycle.plan(
         lifecycle.ProjectImageScope(root),
@@ -1307,6 +1315,32 @@ def test_hybrid_project_selection_fingerprint_includes_release_flavor(
         fingerprints.append(planned.nodes[-1].logical_selection_fingerprint)
 
     assert fingerprints[0] != fingerprints[1]
+
+
+@pytest.mark.parametrize(
+    ("installed", "switched"),
+    [
+        (lifecycle.BASE_IMAGE, "booley-sandbox-riscv"),
+        ("booley-sandbox-riscv", lifecycle.BASE_IMAGE),
+    ],
+)
+def test_source_project_check_detects_a_flavor_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed: str, switched: str
+) -> None:
+    root = _project(tmp_path, installed)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    _pin_inputs(monkeypatch)
+    _install_planned_graph(
+        docker, lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker).nodes
+    )
+    assert _check_project(root, docker).status is lifecycle.Status.CURRENT
+
+    (root / ".booley" / "booley.toml").write_text(
+        f'[sandbox]\nimage = "{switched}"\n', encoding="utf-8", newline="\n"
+    )
+
+    assert _check_project(root, docker).status is lifecycle.Status.STALE
 
 
 @pytest.mark.parametrize(
@@ -3292,6 +3326,8 @@ def test_layout_verification_malformed_filesystem_ancestry_is_controlled(rootfs)
 # lifecycle node model, so a model drift fails here instead of in release CI.
 _PUBLISHED_CONTRACTS = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
 _PUBLISHED_WHEEL_SOURCE = "5" * 64
+# Only the published RISC-V image sets this marker (Dockerfile.riscv).
+RISCV_ENVIRONMENT = {ENV_SANDBOX_FLAVOR: "riscv"}
 
 
 def _published_release_labels(*, version: str = "0.2.6") -> dict[str, str]:
@@ -3402,19 +3438,62 @@ def test_official_host_bootstrap_pulls_and_verifies_the_published_release_image(
     assert result.payload_fingerprint == _PUBLISHED_WHEEL_SOURCE
 
 
-@pytest.mark.parametrize("selected", [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"])
-def test_official_project_check_accepts_the_published_release_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: str
+@pytest.mark.parametrize("held_by", ["project-tag", "published-name"])
+@pytest.mark.parametrize("configured", [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"])
+@pytest.mark.parametrize("found", [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"])
+def test_official_project_check_accepts_only_the_configured_release_flavor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, found: str, configured: str, held_by: str
 ) -> None:
-    root = _project(tmp_path, selected)
-    docker = FakeDocker({selected: ("sha256:" + "8" * 64, _published_release_labels())})
+    root = _project(tmp_path, configured)
+    source = (
+        lifecycle.project_image.project_image_name(root) if held_by == "project-tag" else found
+    )
+    image_id = "sha256:" + "8" * 64
+    docker = FakeDocker({source: (image_id, _published_release_labels())})
+    if found == "booley-sandbox-riscv":
+        docker.environments[image_id] = RISCV_ENVIRONMENT
     _wire_official_release(monkeypatch, docker)
+    policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
 
-    result = _check_project(
-        root, docker, artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    check = _check_project(root, docker, artifact_policy=policy)
+    ensured = lifecycle.plan(
+        lifecycle.ProjectImageScope(root), docker=docker, artifact_policy=policy
     )
 
-    assert result.status is lifecycle.Status.CURRENT
+    matches = found == configured
+    assert check.status is (lifecycle.Status.CURRENT if matches else lifecycle.Status.STALE)
+    assert [step.action for step in ensured.steps] == [
+        lifecycle.PlanAction.REUSE if matches else lifecycle.PlanAction.PULL
+    ]
+
+
+def test_official_overlay_on_the_other_flavor_reacquires_the_configured_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _requirements_project(tmp_path)
+    docker = FakeDocker({})
+    _wire_official_release(monkeypatch, docker)
+    policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL
+    scope = lifecycle.ProjectImageScope(root)
+    parent, overlay = lifecycle.plan(scope, docker=docker, artifact_policy=policy).nodes
+    # The release parent still holds the standard image; the overlay was built on it
+    # with the RISC-V selection label.
+    docker.images[parent.reference] = ("sha256:" + "8" * 64, _published_release_labels())
+    TransactionBuilder(docker).prepare(
+        overlay, candidate_reference=overlay.reference, parent_reference=parent.reference
+    )
+
+    check = _check_project(root, docker, artifact_policy=policy)
+    planned = lifecycle.plan(scope, docker=docker, artifact_policy=policy)
+
+    assert check.status is lifecycle.Status.STALE
+    assert [(step.action, step.reason.message) for step in planned.steps] == [
+        (
+            lifecycle.PlanAction.PULL,
+            "configured Sandbox Image is booley-sandbox-riscv but the image is booley-sandbox",
+        ),
+        (lifecycle.PlanAction.BUILD, "a selected ancestor must be replaced"),
+    ]
 
 
 def _layout_build_probe(probe: SimpleNamespace, context, spec) -> int:
