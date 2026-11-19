@@ -380,15 +380,18 @@ def _is_head(project_root: Path, commit: str) -> bool:
 
 def _has_tracked_changes(repository: Path, *paths: str) -> bool:
     """Whether *repository* (limited to *paths* when given) has an uncommitted tracked change."""
-    changes = raw_git(
-        repository,
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=no",
-        "--ignore-submodules=all",
-        *(("--", *paths) if paths else ()),
-    )
+    try:
+        changes = raw_git(
+            repository,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=no",
+            "--ignore-submodules=all",
+            *(("--", *paths) if paths else ()),
+        )
+    except FileCommitError:
+        return False  # a note must never refuse a measurement or hide a stored run
     return bool(changes)
 
 

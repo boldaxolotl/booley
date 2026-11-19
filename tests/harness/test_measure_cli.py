@@ -639,12 +639,15 @@ def test_live_tree_notices(
     if revision in ("other-commit", "stored"):
         # The same live state does warn for HEAD: only the other commit goes without notices.
         assert run_command(monkeypatch, project) == 0
-        assert changes in capsys.readouterr().err
+        first = capsys.readouterr()
+        assert changes in first.err
 
     assert run_command(monkeypatch, project, *asked) == 0
 
-    err = capsys.readouterr().err
+    captured = capsys.readouterr()
+    err = captured.err
     if revision == "stored":
+        assert captured.out == first.out
         assert changes in err and "working-tree differences" not in err
         assert err.index(changes) < err.index("is already Measured by run")
     elif revision == "other-commit":
@@ -705,6 +708,21 @@ def test_stealth_notes_uncommitted_booley_directory_changes(
     for arguments in (("HEAD~1",), ("--again", "HEAD~1")):
         assert run_command(monkeypatch, project, *arguments) == 0
         assert "note:" not in capsys.readouterr().err
+
+
+def test_an_unreadable_status_does_not_hide_the_stored_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    clean = capsys.readouterr()
+    (project / ".git" / "index").write_bytes(b"not an index")
+
+    assert run_command(monkeypatch, project) == 0
+    captured = capsys.readouterr()
+    assert captured.out == clean.out
+    assert "note:" not in captured.err
 
 
 def test_a_clean_live_tree_prints_no_notice(
