@@ -131,20 +131,18 @@ _ONE_LOOP_CHECK = _EARLIER_LOOP + "Found and reported 1 problem.\n"
 _ONE_DRIVER_CHECK = _EARLIER_DRIVER + "Found and reported 1 problem.\n"
 
 
-_FINAL_CHECK_CASES = (
-    # final check, loop disposition, multi-driven disposition, actionable warnings
-    (_CLEAN_CHECK, "informational", "informational", 0),
-    (_ONE_LOOP_CHECK, "structural", "informational", 2),
-    (_ONE_DRIVER_CHECK, "informational", "structural", 2),
+@pytest.mark.parametrize(
+    ("final", "loop_disposition", "driver_disposition", "actionable"),
+    [
+        (_CLEAN_CHECK, "informational", "informational", 0),
+        (_ONE_LOOP_CHECK, "structural", "informational", 2),
+        (_ONE_DRIVER_CHECK, "informational", "structural", 2),
+    ],
+    ids=["clean", "final_loop", "final_driver"],
 )
-
-
-def test_earlier_structural_warnings_follow_completed_check_counts() -> None:
-    for case in _FINAL_CHECK_CASES:
-        _assert_follows_final_check(*case)
-
-
-def _assert_follows_final_check(final, loop_disposition, driver_disposition, actionable) -> None:
+def test_earlier_structural_warnings_follow_completed_check_counts(
+    final, loop_disposition, driver_disposition, actionable
+) -> None:
     diagnostics = parse_synth_diagnostics(
         {
             "yosys": _EARLIER_LOOP + _EARLIER_DRIVER,
@@ -220,12 +218,8 @@ def test_earlier_structural_warnings_without_both_completed_checks_stay_structur
     assert all(group.rationale is None for group in diagnostics.warnings.representatives)
 
 
-def test_earlier_repeated_loops_do_not_change_exact_final_count():
-    for count in (0, 2):
-        _assert_exact_final_count(count)
-
-
-def _assert_exact_final_count(count):
+@pytest.mark.parametrize("count", [0, 2])
+def test_earlier_repeated_loops_do_not_change_exact_final_count(count):
     loop = "Warning: found logic loop in module top:\n    wire \\feedback\n"
     diagnostics = parse_synth_diagnostics(
         {
