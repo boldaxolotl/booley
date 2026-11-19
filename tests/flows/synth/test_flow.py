@@ -64,6 +64,7 @@ from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import WarningSummary, parse_synth_diagnostics
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.presentation.report_results import present_job_report
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -3309,6 +3310,8 @@ class TestFileBasedInterpretation:
         assert "12,345" not in result.report_text
         assert result.exit_code == EXIT_FAILURE
         assert "no metrics" in result.report_text
+        status = result.detail["implementation"]["results"]["lite"]["status"]
+        assert status["failure_reasons"] == ["no metrics"]
 
     def test_error_in_log_despite_exit_0_fails(self, flow_and_state, tmp_path: Path):
         """False-pass guard parity: yosys/ABC can emit ERROR: lines yet exit 0;
@@ -5091,6 +5094,14 @@ def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_pat
         "actual=8, expected=7, excess=1"
         in report["implementation"]["status"]["diagnostic_excerpt"]
     )
+    reason = "8 latches (actual=8, expected=7, excess=1; types: $_DLATCH_P_=8)"
+    assert report["implementation"]["status"]["failure_reasons"] == [reason]
+    job = present_job_report(
+        {"detail": result.detail}, endpoint="synth", exit_code=result.exit_code, argv=[]
+    )
+    assert ("Failure reason", reason) in [
+        (row.label.strip(), row.value) for row in job.result_rows
+    ]
 
 
 def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_path):
@@ -5235,6 +5246,7 @@ def test_design_failure_reason_is_the_tool_error_line(
     # The status cell and RESULT line show the same reason, not the header.
     assert f"FAIL ({diagnostic})" in result.report_text
     assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
+    assert report["implementation"]["status"]["failure_reasons"] == [diagnostic]
 
 
 @pytest.mark.parametrize(
@@ -5283,6 +5295,7 @@ def test_nonlatch_generic_master_failure_does_not_manufacture_latch_evidence(
     assert report["implementation"]["conditions"]["has_critical"] is False
     assert "unmapped generic cell" in result.report_text
     assert "latches" not in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert report["implementation"]["status"]["failure_reasons"] == ["unmapped generic cell"]
 
 
 @pytest.mark.parametrize("stale", [False, True])
@@ -5306,11 +5319,15 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
 
 
 @pytest.mark.parametrize(
-    ("case", "termination"),
+    ("case", "termination", "reasons"),
     [
-        ({"process": {"returncode": 2, "timed_out": True}}, "timeout"),
-        ({"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}}, "oom"),
-        ({"process": {"returncode": 137}}, "resource_killed"),
+        ({"process": {"returncode": 2, "timed_out": True}}, "timeout", ["timeout"]),
+        (
+            {"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}},
+            "oom",
+            ["OOM"],
+        ),
+        ({"process": {"returncode": 137}}, "resource_killed", ["resource-killed"]),
         (
             {
                 "process": {
@@ -5319,6 +5336,7 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
                 }
             },
             "infrastructure_error",
+            [],
         ),
         (
             {
@@ -5328,20 +5346,23 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
                 }
             },
             "infrastructure_error",
+            [],
         ),
         (
             {"mode": "logical", "missing_netlist": True, "process": {"returncode": 0}},
             "infrastructure_error",
+            [],
         ),
     ],
 )
 def test_latch_and_fresh_ord_do_not_override_stronger_execution_failure(
-    flow_and_state, tmp_path, case, termination
+    flow_and_state, tmp_path, case, termination, reasons
 ):
     result, report = _run_latch_case(
         flow_and_state, tmp_path, {"mode": "physical", "openroad": _LATCH_ORD, **case}
     )
     assert report["termination"] == termination
+    assert report["implementation"]["status"]["failure_reasons"] == reasons
     assert report["implementation"]["conditions"]["unexpected_latches"] == 8
     assert result.exit_code == EXIT_ERROR
     assert report["returncode"] == 2
@@ -6415,6 +6436,9 @@ def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):
     assert conditions["expected_comb_loops"] == 0
     assert conditions["unexpected_comb_loops"] == 1
     assert "actual=1, expected=0, excess=1" in result.report_text
+    assert report["implementation"]["status"]["failure_reasons"] == [
+        "1 comb loops (actual=1, expected=0, excess=1)"
+    ]
 
 
 @pytest.mark.parametrize("case", ["plain", "baseline"])
