@@ -379,8 +379,12 @@ def run_auth(args: argparse.Namespace, project_root: Path | None) -> int:
 def _report_project_use(app: str, project_root: Path) -> bool:
     """Say whether the Project's auth policy uses the stored credential."""
     from booley.config.agent import project_credential_policies
+    from booley.runtime.session_issuance import authorized_project_data_source
 
-    found = project_credential_policies(project_root, selected=app)
+    # The source issuance reads, so a trusted BOOLEY_DIR is honored as the Sandbox spec is.
+    found = project_credential_policies(
+        project_root, booley_dir=authorized_project_data_source(project_root), selected=app
+    )
     using = _STORED_CREDENTIAL_POLICY[app]
     if app not in found.clis:
         warn(
@@ -411,22 +415,18 @@ def _report_stored(credential: AppCredential, project_root: Path | None) -> None
     """Tell what the stored credential now does, for this Project or any Project."""
     app = credential.app
     print()
+    if project_root is not None and not _report_project_use(app, project_root):
+        return
+    ok(
+        f"Done. {app} Projects using the stored credential pick this up automatically — "
+        "VS Code's 'Reopen in Container' included, no export needed."
+    )
     if project_root is None:
-        ok(
-            f"Done. {app} Projects using the stored credential pick this up automatically — "
-            "VS Code's 'Reopen in Container' included, no export needed."
-        )
         info(
             "In those Projects it does not refresh, so a host-side login can no longer "
             "revoke a running agent."
         )
     else:
-        if not _report_project_use(app, project_root):
-            return
-        ok(
-            f"Done. {app} Projects using the stored credential pick this up automatically — "
-            "VS Code's 'Reopen in Container' included, no export needed."
-        )
         info("It does not refresh, so a host-side login can no longer revoke a running agent.")
     info("Existing containers: rebuild once to add the mount; after that a restart suffices.")
     info(f"Escape hatch: an exported {credential.env_var} still overrides the stored value.")
