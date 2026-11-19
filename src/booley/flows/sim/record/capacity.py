@@ -288,9 +288,12 @@ class SimulationRecordCapacity:
     @staticmethod
     def _failed_cause(exc: SimulationRecordCapacityError, permit: ChildPermit) -> str:
         """The terminal cause of a lane whose work raised a capacity error."""
+        from booley.flows.sim.build_session import SimulationBuildLeaseStoppedError
         from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 
-        stopped = isinstance(exc.__cause__, PreSimScopeStoppedError)
+        stopped = isinstance(
+            exc.__cause__, (PreSimScopeStoppedError, SimulationBuildLeaseStoppedError)
+        )
         return "lease_lost" if stopped and permit.lease_health.lost.is_set() else "record_error"
 
     def _child_cancellation_cause(self, permit: ChildPermit) -> str | None:

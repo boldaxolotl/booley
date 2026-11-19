@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.build_session import SimulationBuildLeaseStoppedError
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_record import CoverageRecordValidationError
 from booley.flows.sim.coverage_record_store import CoverageRecordStoreError
@@ -724,7 +725,7 @@ class SimulationRecord:
                     store, manifest, attempt, invocation, request, child_execution_id
                 )
             )
-        except PreSimScopeStoppedError as signal:
+        except (PreSimScopeStoppedError, SimulationBuildLeaseStoppedError) as signal:
             raise SimulationRecordCapacityError(str(signal)) from signal
         except BaseException:
             note_final_work_item_oom_kill(work_item_label(attempt.item), passed=False, raised=True)

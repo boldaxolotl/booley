@@ -11,6 +11,7 @@ from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.flows.sim.build_session import SimulationBuildLeaseTimeoutError
 from booley.flows.terminal_progress import progress_lane
 from booley.runtime import oom_priority
 from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, job_attempt
@@ -104,6 +105,9 @@ class BoundedSimulationRecordScheduler:
     kill of its commands stops only that item. When its executor reports the
     attempt as unpublished (``True``), the item goes to the back of the queue and
     runs once more, alone and unarmed (ADR 0087).
+
+    An item whose wait for the Target slot lease times out also ends alone and
+    without a result, so a later resume runs it; its lane takes the next item.
     """
 
     def __init__(
@@ -120,8 +124,8 @@ class BoundedSimulationRecordScheduler:
         self._prepare_child = prepare_child or (lambda _attempt, _child: None)
         self._stop = threading.Event()
         self._errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
-        # A lost child lease interrupts one lane's item without stopping the record.
-        self._interruptions: queue.SimpleQueue[LeaseLostError] = queue.SimpleQueue()
+        # A lost child lease or a lease wait timeout interrupts one lane's item without stopping the record.
+        self._interruptions: queue.SimpleQueue[RuntimeError] = queue.SimpleQueue()
         self._lane_gate = threading.Lock()
         self._live = 0
         self._lanes_exited = threading.Event()
@@ -304,6 +308,10 @@ class BoundedSimulationRecordScheduler:
                 # drain the queue.
                 self._interruptions.put(exc)
             return outer
+        except SimulationBuildLeaseTimeoutError as exc:
+            # Only this item ends, with no result; a later resume runs it (#4843).
+            self._interruptions.put(exc)
+            return True
         except BaseException as exc:  # noqa: BLE001 -- ferry lane failures to owner
             self._fail_simulation_record(exc)
             return False

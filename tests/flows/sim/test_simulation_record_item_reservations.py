@@ -23,11 +23,18 @@ from typing import Any
 
 import pytest
 
+from booley.core.file_lock import acquire_file_lock
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.endpoint_session import _attach_memory_warning
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import MemorySizing, job_thread_count
+from booley.flows.sim.build_session import (
+    SimulationBuildLeaseStoppedError,
+    SimulationBuildLeaseTimeoutError,
+    SimulationBuildSession,
+    simulation_build_slot,
+)
 from booley.flows.sim.record import capacity
 from booley.flows.sim.record.capacity import LeaseLostError, SimulationRecordCapacity
 from booley.flows.sim.record.codec import canonical_json_bytes
@@ -75,6 +82,7 @@ from tests.flows.sim.simulation_record_test_support import (
 from tests.flows.test_endpoint_admission import _selection_prepared
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
+from tests.time_budget import hang_guard_s
 
 NAMES = ("alpha", "beta", "gamma")
 BUDGET_MIB = 1000.0
@@ -854,33 +862,60 @@ def test_items_run_in_parallel_each_on_their_own_reservation(
 
 
 @pytest.mark.parametrize("siblings", [False, True], ids=["one-lane", "other-lanes-run"])
+@pytest.mark.parametrize("fault", ["lost-lease", "lease-timeout", "lease-lost-while-waiting"])
 def test_lost_work_item_lease_stops_only_that_item_while_other_lanes_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, siblings: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, siblings: bool, fault: str
 ) -> None:
     names = _names(6) if siblings else NAMES
     options = _sized(names, 100.0, CORES) if siblings else {"history": _history("sim")}
     lost = "t02" if siblings else "beta"
+    expected = SimulationBuildLeaseTimeoutError if fault == "lease-timeout" else LeaseLostError
     with _scenario(tmp_path, monkeypatch, **options) as scenario:
         together = _barrier(2)
 
-        def lose_its_own_lease() -> None:
+        def fail_the_item() -> None:
             if siblings:
-                together.wait()  # a sibling lane runs while this item's lease goes
+                together.wait()  # a sibling lane runs while this item fails
             scope = current_supervised_execution()
             assert scope is not None
+            if fault == "lease-timeout":
+                # This item never reaches the peers' rendezvous; release the peers' wait.
+                scenario.state.first_finished.set()
+                raise SimulationBuildLeaseTimeoutError("Simulation slot busy for 1s (#4843)")
             _remove_child_lease(scenario.store, str(scope.execution_id))
+            if fault == "lease-lost-while-waiting":
+                _wait_for_busy_slot(scenario.state.handle)
             _wait_until(scope.cancelled)
 
         if siblings:
             scenario.hooks["t01"] = _meet(together)
-        scenario.hooks[lost] = lose_its_own_lease
-        with pytest.raises(LeaseLostError):
+        scenario.hooks[lost] = fail_the_item
+        with pytest.raises(expected):
             scenario.simulation_record().run(scenario.request(_manifest_for(names)))
         assert scenario.admission.cancellation_cause() is None
 
-    # Every other item ran and finished; the lost one published no result.
-    assert sorted(scenario.state.completion_order) == sorted(names)
+    # Every other item ran and finished; the failed one published no result. A lease wait
+    # that timed out raised before its simulator ran, so it never completes.
+    finished = [name for name in names if name != lost] if fault == "lease-timeout" else names
+    assert sorted(scenario.state.completion_order) == sorted(finished)
     assert len(list(scenario.record().root.glob("work-items/*/result.json"))) == len(names) - 1
+    if fault == "lease-timeout":
+        # The item is left interrupted, so a later resume runs it.
+        manifest = scenario.record().load_manifest()
+        (interrupted,) = scenario.record().scan(manifest).interrupted
+        (item,) = (i for i in manifest.document["work_items"] if i["work_item_id"] == interrupted)
+        assert list(item["selection"]["names"]) == [lost]
+
+
+def _wait_for_busy_slot(handle: Any) -> None:
+    """Wait for the Target slot lease while another handle holds it, until cancelled."""
+    slot = simulation_build_slot(handle)
+    slot.mkdir(parents=True, exist_ok=True)
+    with (slot / "lease.lock").open("a+", encoding="utf-8") as holder:
+        acquire_file_lock(holder)
+        # The wait ends at the cancellation, well before the guard.
+        with pytest.raises(SimulationBuildLeaseStoppedError):
+            SimulationBuildSession(handle, wait_s=hang_guard_s()).__enter__()
 
 
 @pytest.mark.parametrize("parallel", [False, True], ids=["one-lane", "running-lanes"])
