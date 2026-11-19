@@ -113,6 +113,27 @@ fn scale_time(value: i128, unit: i8, exponent: i8) -> Result<i128, String> {
     }
 }
 
+/// Render `ticks` as exact nanoseconds in the store's timescale (`6.4ns`,
+/// `10ns`), or `<ticks> ticks` when the store has no timescale exponent.
+/// Decimal digit shifting, not `f64`, so no timescale loses or invents digits.
+pub(crate) fn format_tick_time(ticks: u64, exponent: Option<i8>) -> String {
+    let Some(exponent) = exponent else {
+        return format!("{ticks} ticks");
+    };
+    let shift = i32::from(exponent) + 9;
+    if ticks == 0 || shift >= 0 {
+        let zeros = if ticks == 0 { 0 } else { shift as usize };
+        return format!("{ticks}{}ns", "0".repeat(zeros));
+    }
+    let places = shift.unsigned_abs() as usize;
+    let digits = format!("{ticks:0>width$}", width = places + 1);
+    let (whole, fraction) = digits.split_at(digits.len() - places);
+    match fraction.trim_end_matches('0') {
+        "" => format!("{whole}ns"),
+        fraction => format!("{whole}.{fraction}ns"),
+    }
+}
+
 /// Convert legacy nonnegative integer nanoseconds using unsigned tick bounds.
 /// Missing metadata preserves the legacy raw-tick fallback.
 pub(crate) fn nanoseconds_to_tick(value: u64, exponent: Option<i8>) -> Result<u64, String> {
@@ -1501,6 +1522,23 @@ mod exact_time_tests {
                 TimeToken::Pico(100).resolve_to_tick(Some(exponent)),
                 Ok(10_i64.pow((-12 - exponent + 2) as u32))
             );
+        }
+    }
+
+    #[test]
+    fn format_tick_time_keeps_exact_nanoseconds() {
+        let cases: &[(u64, Option<i8>, &str)] = &[
+            (6400, Some(-12), "6.4ns"),
+            (10000, Some(-12), "10ns"),
+            (500, Some(-12), "0.5ns"),
+            (0, Some(-12), "0ns"),
+            (3, Some(-8), "30ns"),
+            (123456789, Some(-15), "123.456789ns"),
+            (5, Some(-6), "5000ns"),
+            (6400, None, "6400 ticks"),
+        ];
+        for (ticks, exponent, expected) in cases {
+            assert_eq!(format_tick_time(*ticks, *exponent), *expected);
         }
     }
 
