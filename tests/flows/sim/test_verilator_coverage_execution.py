@@ -765,6 +765,7 @@ def _execution_fixture(
         target=handle.selector,
         target_identity=handle.identity,
         resolved=SimpleNamespace(
+            vlnv="acme:demo:counter-booleycoverage:1",
             cocotb_module="test_counter" if cocotb else "",
             parameters={},
             files=files,

@@ -1671,7 +1671,10 @@ def _infrastructure_outcome(
             kind,
             build.reason,
             missing_executable=find_missing_executable(build.output) or "",
-            detail=build_failure_report(build),
+            detail=build_failure_report(
+                build,
+                source_paths.ProjectSourcePaths.for_target(handle, attempt.prepared.resolved),
+            ),
         )
     else:
         failure = SimulationInfrastructureFailure(kind, detail, detail=detail)
@@ -1999,7 +2002,9 @@ def _build_failure_test(
         verdict="elab_error",
         passed=False,
         elapsed_s=process.duration_s,
-        error_tail=_output_tail(process, True),
+        error_tail=source_paths.ProjectSourcePaths.for_target(
+            handle, attempt.prepared.resolved
+        ).project_text(_output_tail(process, True)),
         elab_failed=True,
         build=build,
         artifacts=(log,) if log is not None else (),
