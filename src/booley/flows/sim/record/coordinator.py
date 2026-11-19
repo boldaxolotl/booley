@@ -74,15 +74,12 @@ class SimulationRecordPolicy:
     timeout_seconds: float | None = None
     build_timeout_seconds: float | None = None
     no_kill: bool = False
-    result_verbosity: str = "compact"
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("record timeout must be positive")
         if self.build_timeout_seconds is not None and self.build_timeout_seconds <= 0:
             raise ValueError("record build timeout must be positive")
-        if self.result_verbosity not in {"compact", "full"}:
-            raise ValueError("result verbosity must be compact or full")
 
 
 def simulation_options_from_policy(
@@ -99,7 +96,6 @@ def simulation_options_from_policy(
         build_timeout_ms=round(policy.build_timeout_seconds * 1000)
         if policy.build_timeout_seconds is not None
         else None,
-        result_verbosity=policy.result_verbosity,
     )
 
 

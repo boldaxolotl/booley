@@ -1534,7 +1534,6 @@ def prepare_simulation_work(
         runtime_inputs=declared_runtime_inputs(prepared.resolved, root),
         top=prepared.toplevel,
         cocotb_module=prepared.resolved.cocotb_module or "",
-        result_verbosity=options.result_verbosity,
         adapter_result_path=str(identity.result_path),
         attempt_token=identity.attempt_token,
         target_identity=identity.target_identity,
@@ -1571,7 +1570,6 @@ def _preview_work(
         runtime_inputs=preview_runtime_inputs(getattr(inspection, "inputs", ())),
         top=inspection.toplevel,
         cocotb_module=str(inspection.flow_options.get("cocotb_module") or ""),
-        result_verbosity=execution._options.result_verbosity,
         **_process_launch_fields(
             handle,
             "cocotb" if cocotb else eda_tool,
