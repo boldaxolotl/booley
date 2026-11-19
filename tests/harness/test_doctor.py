@@ -2633,7 +2633,7 @@ def test_doctor_never_passes_unchecked_image_provenance(case, tmp_path, monkeypa
         monkeypatch.setattr(
             host_diagnostics,
             "inspect_host",
-            lambda: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
+            lambda _root: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
         )
     if case == "undecodable-input":
         (tmp_path / "a.txt").write_bytes(b"\xff\xfe not utf-8\n")
