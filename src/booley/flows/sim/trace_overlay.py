@@ -217,7 +217,7 @@ class TraceOverlay:
     """Absolute path to the written overlay ``.core`` (carries the marker)."""
 
     vlnv: str
-    """The overlay's derived VLNV — what :func:`resolve_target` is handed."""
+    """The overlay's derived VLNV, passed as *resolution_vlnv* to ``resolve_target_handle``."""
 
     mode: TraceMode = TraceMode.VCD_FIFO
     """The coherent build/run recipe selected for this overlay."""

@@ -321,9 +321,8 @@ def test_simulation_record_plan_is_derived_only_from_a_validated_manifest() -> N
         SimulationRecordPlan(manifest, ("item:0000:ffffffffffffffff",))  # type: ignore[call-arg]
 
 
-def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _distinct_root_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Validate a candidate resume whose baseline prerequisite has its own checkout root."""
     candidate, candidate_store, baseline, baseline_store = _linked_simulation_record_stores(
         tmp_path
     )
@@ -358,6 +357,15 @@ def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
         candidate_store.manifest_path,
         project_root=candidate_root,
         revision_root=lambda target: roots[target["role"]],
+    )
+    return validated, candidate, baseline_store, candidate_root, baseline_root
+
+
+def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validated, candidate, baseline_store, candidate_root, baseline_root = _distinct_root_resume(
+        tmp_path, monkeypatch
     )
 
     assert [binding.project_root for binding in validated.bindings] == [

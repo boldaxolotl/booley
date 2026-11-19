@@ -1258,7 +1258,9 @@ def _make_test_class(design: str, simulator: str) -> type:
                     target_value,
                 ]
             )
-            extract_cycles = {r[0] for r in parse_find_value_output(stdout)}
+            # The oracle numbers grid cycles from 1; cycle 0 (the tick before reset
+            # deasserts) is covered by crates/bwave/tests/clock_grid.rs.
+            extract_cycles = {r[0] for r in parse_find_value_output(stdout) if r[0] >= 1}
 
             # Exclude boundary cycles (oracle can't see past last rising edge)
             max_oracle_cycle = max(oracle_cycles) if oracle_cycles else 0

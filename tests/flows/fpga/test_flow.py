@@ -7,6 +7,7 @@ import dataclasses
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -36,9 +37,10 @@ from booley.flows.target_parameters import ParameterValue
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.runtime import runtime_context
+from booley.runtime import resource_history, runtime_context
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command
 from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
@@ -224,12 +226,12 @@ def resolution(_adr0039_lenient_selection):
 _FAKE_VIVADO = """\
 import sys
 from pathlib import Path
-work_root, returncode = Path(sys.argv[1]), int(sys.argv[2])
+work_root, returncode, route = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3] == "1"
 with (work_root.parent / "vivado-calls").open("a") as calls:
     calls.write("x")
 impl = work_root / "top.runs" / "impl_1"
 impl.mkdir(parents=True, exist_ok=True)
-if returncode == 0:
+if route:
     (impl / "runme.log").write_text("route_design completed successfully\\n")
     for name in ("utilization_placed", "timing_summary_routed", "drc_routed"):
         (impl / f"top_{name}.rpt").write_text(name)
@@ -262,7 +264,14 @@ def vivado(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         return real_build(recipe, **kwargs)
 
     def run_command(work_root, _work_dir):
-        return [sys.executable, str(script), str(work_root), str(state["returncode"])]
+        route = state.get("route", state["returncode"] == 0)
+        return [
+            sys.executable,
+            str(script),
+            str(work_root),
+            str(state["returncode"]),
+            str(int(route)),
+        ]
 
     monkeypatch.setattr(fpga_edam, "build_fpga_edam", build)
     monkeypatch.setattr(fpga_edam, "fpga_run_command", run_command)
@@ -373,6 +382,37 @@ def test_fpga_label_carries_target_source_bytes(tmp_path: Path, vivado: dict) ->
     assert record["source_bytes"] == 128  # the six fixture files resolved for the Target
 
 
+@pytest.mark.parametrize(
+    ("returncode", "route", "parsed", "exit_code", "outcome"),
+    [
+        (2, True, None, EXIT_SUCCESS, "exit_zero"),
+        (1, False, {}, EXIT_ERROR, "exit_nonzero"),
+        (0, False, {}, EXIT_ERROR, "exit_nonzero"),
+    ],
+    ids=["boardless", "no-route", "exit-zero-no-route"],
+)
+def test_fpga_impl_record_outcome_follows_route_completion(
+    tmp_path: Path,
+    vivado: dict,
+    returncode: int,
+    route: bool,
+    parsed,
+    exit_code: int,
+    outcome: str,
+) -> None:
+    _write_project_config(tmp_path)
+    vivado.update(returncode=returncode, route=route)
+    if parsed is not None:
+        vivado["parsed"] = parsed
+
+    run, _ = _run_fpga(tmp_path)
+
+    assert run.exit_code == exit_code
+    history = json.loads((tmp_path / "runtime/resources/history.json").read_text(encoding="utf-8"))
+    (record,) = history["records"]
+    assert (record["outcome"], record["returncode"]) == (outcome, returncode)
+
+
 @pytest.mark.parametrize("named_state", [True, False], ids=["state-file", "no-state-file"])
 @pytest.mark.parametrize(
     ("wns_ns", "returncode", "exit_code", "verdict"),
@@ -447,9 +487,8 @@ def _git(repo: Path, *args: str) -> str:
     return run_bounded_child(["git", *args], cwd=repo, check=True).stdout.strip()
 
 
-def test_baseline_runs_the_candidate_target_at_the_baseline_revision(
-    tmp_path: Path, vivado: dict, resolution: _Resolution
-) -> None:
+def _commit_project(tmp_path: Path) -> None:
+    """Commit the fixture Project so ``--baseline HEAD`` has a revision to check out."""
     _write_project_config(tmp_path)
     (tmp_path / ".gitignore").write_bytes(
         b".booley/.runtime/\nreports/\nruntime/\nfake_vivado.py\n"
@@ -459,6 +498,12 @@ def test_baseline_runs_the_candidate_target_at_the_baseline_revision(
     _git(tmp_path, "config", "user.name", "Test")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-qm", "project")
+
+
+def test_baseline_runs_the_candidate_target_at_the_baseline_revision(
+    tmp_path: Path, vivado: dict, resolution: _Resolution
+) -> None:
+    _commit_project(tmp_path)
     flow = _fpga_flow(tmp_path, "--baseline", "HEAD")
 
     outcome = flow.execute_prepared().outcome
@@ -482,6 +527,35 @@ def test_baseline_runs_the_candidate_target_at_the_baseline_revision(
     assert flow.memory_job_requests((_layer_target_handle(tmp_path, "default"),)) == (
         JobRequest("fpga", "default"),
     )
+
+
+def test_baseline_setup_records_keep_their_outcome_when_vivado_fails(
+    tmp_path: Path, vivado: dict
+) -> None:
+    """Judging a Target's failed Vivado run must not rewrite its successful setups."""
+    _commit_project(tmp_path)
+    vivado.update(returncode=1, route=False)
+    real_resolve = fusesoc_registry.resolve_target_handle  # the autouse fake
+
+    def resolve(handle, **kwargs):
+        # The real resolver runs this command as the setup, through the Flow's runner.
+        kwargs.get("runner", subprocess.run)(
+            canned_command(SubprocessResult(returncode=0)),
+            cwd=handle.project_root,
+            env=dict(os.environ),
+        )
+        return real_resolve(handle, **kwargs)
+
+    with patch.object(fusesoc_registry, "resolve_target_handle", side_effect=resolve):
+        outcome = _fpga_flow(tmp_path, "--baseline", "HEAD").execute_prepared().outcome
+
+    assert outcome.exit_code == EXIT_ERROR
+    outcomes: dict[str, list[str]] = {}
+    for record in resource_history.load_records(tmp_path):
+        outcomes.setdefault(record["key"]["phase"], []).append(record["outcome"])
+    assert outcomes["fpga_prepare"] == ["exit_zero"] * len(outcomes["fpga_prepare"])
+    assert len(outcomes["fpga_prepare"]) == 3
+    assert set(outcomes["fpga_impl"]) == {"exit_nonzero"}
 
 
 @pytest.mark.parametrize(
@@ -951,6 +1025,48 @@ def test_real_fusesoc_fpga_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     edam_text = edam.read_text(encoding="utf-8")
     assert str(project) not in edam_text
     assert project.as_posix() not in edam_text
+
+
+def test_failed_fusesoc_setup_is_recorded_as_fpga_prepare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vivado: dict
+) -> None:
+    """The FPGA Flow's own setup runner measures the setup, whatever its outcome."""
+    monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE)
+    project = tmp_path / "proj"
+    for name, text in {
+        "rtl/include/defs.svh": "`define FOO 1\n",
+        "rtl/pkg.sv": "package pkg; endpackage\n",
+        "rtl/dut.sv": "module dut_top(input logic clk); endmodule\n",
+        "rtl/legacy.v": "module legacy; endmodule\n",
+        "tb/tb_dut.sv": "module tb_dut; endmodule\n",
+        "constraints/timing.xdc": "create_clock\n",
+        "fpga_demo.core": _FPGA_CORE_TEXT,
+        ".booley/booley.toml": "[flows.fpga]\n",
+    }.items():
+        (project / name).parent.mkdir(parents=True, exist_ok=True)
+        (project / name).write_bytes(text.encode())
+    failing_setup = canned_command(SubprocessResult(returncode=1, stderr="setup broke"))
+
+    def resolve(handle, **kwargs):
+        return _REAL_RESOLVE_HANDLE(handle, **kwargs, fusesoc_cmd=failing_setup)
+
+    with patch.object(fusesoc_registry, "resolve_target_handle", side_effect=resolve):
+        outcome = _fpga_flow(project, targets="fpga").execute_prepared().outcome
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "failed (exit 1)" in outcome.report_text
+    assert "setup broke" in outcome.report_text
+    assert _vivado_calls(project) == 0
+    (record,) = resource_history.load_records(tmp_path)
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("fpga", "fpga", "fpga_prepare", "exit_nonzero", 1)
 
 
 _CLOCKS = {

@@ -16,7 +16,7 @@ It does exactly two things, on two different sides of the trust boundary:
     ``vlnv#name`` qualifier. These names power ``--target`` validation and
     per-config criteria expansion.
 
-  * **Resolution** (:func:`resolve_target`) goes through the ``fusesoc run
+  * **Resolution** (:func:`resolve_target_handle`) goes through the ``fusesoc run
     --setup`` CLI — the ``depends`` graph, fileset expansion, and parameter
     typing are FuseSoC's job, driven through the FuseSoC program and **never** the
     mid-migration Python API (decision 6). FuseSoC *generates* the EDAM; Booley
@@ -89,9 +89,6 @@ from booley.targets.selection import (
     resolve as _resolve_selector,
 )
 from booley.targets.selection import (
-    split_selector as _split_qualifier,
-)
-from booley.targets.selection import (
     vlnv_key as _vlnv_key,
 )
 
@@ -129,7 +126,7 @@ _STATE_DIR_NAME = ".booley"
 # host repo — cannot commit ``.core`` files to the main tree; they author them
 # under ``.booley/cores/`` instead, versioned by the Booley Directory's own
 # git repo. :func:`discover_cores` scans it as a *second root* (never as an
-# exception carved into the Booley Directory skip), and :func:`setup_command` hands it
+# exception carved into the Booley Directory skip), and :func:`setup_command_for_handle` hands it
 # to FuseSoC as a second ``--cores-root``. FuseSoC's scanner checks
 # ``FUSESOC_IGNORE`` only on directories it walks *into*, never on ancestors of
 # a scan root, so the ``.booley/FUSESOC_IGNORE`` marker does not veto
@@ -939,6 +936,18 @@ def fusesoc_core_rejection(core_file: Path | str) -> FuseSocCoreRejection | None
     return None
 
 
+def core_target_flow_options(core_doc: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """Return a Target's declared ``flow_options`` mapping, ``{}`` when absent or not a mapping."""
+    targets = core_doc.get("targets") or {}
+    if not isinstance(targets, Mapping):
+        return {}
+    target = targets.get(name)
+    if not isinstance(target, Mapping):
+        return {}
+    flow_options = target.get("flow_options")
+    return flow_options if isinstance(flow_options, Mapping) else {}
+
+
 def core_target_flow_option(core_doc: Mapping[str, Any], name: str, option: str) -> Any:
     """Return a Target's ``flow_options.<option>`` value, or ``None``.
 
@@ -946,16 +955,7 @@ def core_target_flow_option(core_doc: Mapping[str, Any], name: str, option: str)
     reads ``flow_options.tool`` — used to check host-side that mandatory edalize
     plumbing (e.g. Yosys's required ``arch``) is present without a full resolve.
     """
-    targets = core_doc.get("targets") or {}
-    if not isinstance(targets, Mapping):
-        return None
-    target = targets.get(name)
-    if not isinstance(target, Mapping):
-        return None
-    flow_options = target.get("flow_options")
-    if isinstance(flow_options, Mapping):
-        return flow_options.get(option)
-    return None
+    return core_target_flow_options(core_doc, name).get(option)
 
 
 def core_target_doctor_flows(core_doc: Mapping[str, Any], name: str) -> tuple[str, ...]:
@@ -1609,7 +1609,7 @@ def _target_source_files(
     marker. RTL include headers are omitted by default because this is normally
     a compile list; *include_headers* retains them for build-input consumers
     such as freshness fingerprinting. This is the pre-resolve partition
-    (decision 13) for consumers that cannot wait for :func:`resolve_target`.
+    (decision 13) for consumers that cannot wait for :func:`resolve_target_handle`.
     Every returned source is canonicalized through resolution symlinks first;
     this applies equally to RTL, TB, and dependency files.
 
@@ -1945,23 +1945,6 @@ def _worktree_root_of(path: str) -> str | None:
     return None
 
 
-def _missing_target_sources(project_root: Path | str, target: str) -> list[str]:
-    """Literal fileset paths of *target*'s declaring core that don't exist on disk.
-
-    CAPI2 fileset paths are relative to the declaring ``.core``'s directory
-    (the *core root*), which is where FuseSoC's export would look for them.
-    Returned as declared (core-root-relative), in ``.core`` order. Empty when
-    everything exists — or when *target* is not enumerable / its ``.core`` is
-    unreadable, in which case existence is not this preflight's question and
-    resolution's own errors take over.
-    """
-    try:
-        ref = _resolve_ref(project_root, target)
-    except FuseSocError:
-        return []
-    return missing_target_sources_for_ref(project_root, ref)
-
-
 def missing_target_sources_for_ref(
     project_root: Path | str,
     ref: TargetRef,
@@ -1983,10 +1966,10 @@ def missing_target_sources_for_ref(
     return missing
 
 
-def _preflight_target_sources(target: str, project_root: Path | str) -> None:
-    """Fail fast when *target* references source paths that don't exist on disk.
+def preflight_target_sources_for_ref(project_root: Path | str, ref: TargetRef) -> None:
+    """Fail fast when *ref*'s Target references source paths that don't exist on disk.
 
-    The shared seam every built-in resolves through (:func:`resolve_target` —
+    The shared seam every built-in resolves through (:func:`resolve_target_handle` —
     simulate, elaborate, lint, asic_synthesize's ``--extra-rtl`` filelist,
     fpga_impl, coverage/mutation) so a dangling fileset reference dies here
     with an actionable message instead of FuseSoC's first-file-only
@@ -1995,17 +1978,8 @@ def _preflight_target_sources(target: str, project_root: Path | str) -> None:
     Raises :class:`MissingSourceError` listing **all** missing literal paths;
     paths under a ``worktrees/`` directory get a ``git worktree add`` fix-hint
     (the motivating incident: a baseline Target pointing at a worktree checkout
-    the user was expected to create).
+    the user was expected to create). The selected token is not resolved again.
     """
-    missing = _missing_target_sources(project_root, target)
-    if not missing:
-        return
-    ref = _resolve_ref(project_root, target)  # exists: missing is non-empty
-    _raise_missing_target_sources(target, ref, missing)
-
-
-def preflight_target_sources_for_ref(project_root: Path | str, ref: TargetRef) -> None:
-    """Fail fast for missing sources without resolving a selected token again."""
     missing = missing_target_sources_for_ref(project_root, ref)
     if missing:
         _raise_missing_target_sources(ref.name, ref, missing)
@@ -2484,11 +2458,9 @@ def _restore_tb_tags(
     resolved: ResolvedTarget,
     *,
     project_root: Path,
-    source_ref: TargetRef | None,
+    source_ref: TargetRef,
 ) -> ResolvedTarget:
     """Restore TB tags omitted by FuseSoC 2.4.7's EDAM writer."""
-    if source_ref is None:
-        return resolved
     tb_paths = {
         PurePosixPath(str(path).replace("\\", "/")).as_posix()
         for path in target_source_files_for_ref(
@@ -2509,75 +2481,25 @@ def _restore_tb_tags(
     return replace(resolved, files=files)
 
 
-def _find_edam(build_root: Path, target: str) -> Path:
-    """Locate the resolved ``.eda.yml`` for *target* under *build_root*.
+def _find_edam(build_root: Path, target: str, vlnv: str) -> Path:
+    """Locate the ``.eda.yml`` that FuseSoC wrote for *vlnv*'s *target* under *build_root*.
 
-    FuseSoC lays runs out as ``<build_root>/<name>/<target>/<name>.eda.yml``;
-    glob for the Target dir so we tolerate the VLNV→dir name mangling.
+    FuseSoC lays a run out as ``<build_root>/<core>/<target>/<core>.eda.yml``
+    (Flow API) or ``<build_root>/<core>/<target>-<tool>/<core>.eda.yml``
+    (tool API), where ``<core>`` is the sanitized VLNV. Only that path is
+    accepted, so a build root shared by several cores never yields another
+    core's EDAM; when it is missing the lookup raises instead.
     """
-    matches = sorted(build_root.glob(f"*/{target}/*.eda.yml"))
+    core = Vlnv(vlnv).sanitized_name
+    matches = sorted(build_root.glob(f"{core}/{target}/{core}.eda.yml"))
     if not matches:
-        # Fall back to any EDAM under the tree (single-target spikes nest flat).
-        matches = sorted(build_root.rglob("*.eda.yml"))
-    if not matches:
-        raise TargetResolutionError(
-            f"no .eda.yml found under {build_root} after resolving '{target}'"
-        )
-    if len(matches) > 1:
-        logger.debug("multiple EDAMs under %s; using %s", build_root, matches[0])
-    return matches[0]
-
-
-def _setup_command(
-    target: str,
-    *,
-    project_root: Path | str,
-    build_root: Path | str,
-    vlnv: str | None = None,
-    fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
-) -> list[str]:
-    """Build (but do not run) the ``fusesoc run --setup`` argv for *target*.
-
-    The command-construction half of :func:`resolve_target`, factored out so the
-    ``--dry-run`` preview can show exactly what resolution *would* execute
-    without running it (decision 4: FuseSoC owns the setup). The declaring core
-    is always looked up via :func:`resolve_ref` (a cheap ``.core`` YAML read — no
-    subprocess) because its ``flow``/upstream ``tool`` fields drive the
-    ``tool_<x>`` use-flag
-    re-injection below, and because *target* may be a ``vlnv#name`` qualifier
-    (ADR 0030) whose bare ``name`` is what ``fusesoc --target`` must receive — so
-    *vlnv*, when passed, overrides only the resolved VLNV argument and does
-    **not** skip enumeration. Raises :class:`TargetResolutionError` if *target*
-    is not a single known Target (unless *vlnv* is supplied, which names the core
-    explicitly).
-    """
-    project_root = Path(project_root)
-    build_root = Path(build_root)
-    try:
-        library_plan = prepare_core_library_plan(project_root)
-    except (CoreProjectionError, OSError) as exc:
-        raise TargetResolutionError(f"could not project stealth cores: {exc}") from exc
-    if vlnv is None:
-        try:
-            ref = _resolve_ref(project_root, target)
-        except FuseSocError as exc:  # unknown / ambiguous → resolution error
-            raise TargetResolutionError(str(exc)) from exc
-        vlnv = ref.vlnv
-    else:
-        # vlnv names the core explicitly; still enumerate for the tool_<x> flag.
-        try:
-            ref = _resolve_ref(project_root, target)
-        except FuseSocError:
-            ref = None
-    target_name = ref.name if ref is not None else target
-    return _setup_argv(
-        library_plan,
-        target_name=target_name,
-        vlnv=vlnv,
-        flow=ref.flow if ref is not None else None,
-        eda_tool=ref.eda_tool if ref is not None else None,
-        build_root=build_root,
-        fusesoc_cmd=fusesoc_cmd,
+        matches = sorted(build_root.glob(f"{core}/{target}-*/{core}.eda.yml"))
+    if matches:
+        return matches[0]
+    others = len(list(build_root.rglob("*.eda.yml")))
+    detail = f"; {others} EDAMs of other resolutions are present" if others else ""
+    raise TargetResolutionError(
+        f"no .eda.yml for {vlnv} Target '{target}' under {build_root}{detail}"
     )
 
 
@@ -2671,67 +2593,6 @@ def _setup_argv(
     ]
 
 
-def _resolve_target(
-    target: str,
-    *,
-    project_root: Path | str,
-    build_root: Path | str,
-    vlnv: str | None = None,
-    fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
-    env: Mapping[str, str] | None = None,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> ResolvedTarget:
-    """Resolve *target* through ``fusesoc run --setup`` and read its EDAM.
-
-    *vlnv*, when passed, overrides the resolved VLNV argument but does not skip
-    enumeration (:func:`setup_command` still reads the ``.core`` to re-inject the
-    EDA-tool use-flag); otherwise the declaring core is found via
-    :func:`enumerate_targets`. Resolution runs the CLI (decision 6),
-    pointing FuseSoC at *project_root* (``--cores-root``) and isolating output
-    in *build_root* (``--build-root``); the resolved ``.eda.yml`` it generates
-    is then parsed into a :class:`ResolvedTarget` (decision 4).
-
-    *runner* defaults to :func:`subprocess.run` and is injectable for tests.
-    """
-    project_root = Path(project_root)
-    build_root = Path(build_root)
-    # A vlnv#name selection token (ADR 0030) carries a qualifier that setup_command
-    # needs to resolve the declaring core, but FuseSoC's --target, its output dir,
-    # and the EDAM all key off the BARE Target name — which is simply the part
-    # after '#' (Target names never contain one).
-    bare_target = _split_qualifier(target)[1]
-
-    cmd = _setup_command(
-        target,
-        project_root=project_root,
-        build_root=build_root,
-        vlnv=vlnv,
-        fusesoc_cmd=fusesoc_cmd,
-    )
-    vlnv = cmd[-1]
-    # Fail fast — before the fusesoc subprocess — when the Target's filesets
-    # reference sources that don't exist on disk (all of them, with a
-    # `git worktree add` hint for missing worktree baselines). Checked against
-    # the *enumerated* core for `target`, so an explicit-vlnv resolve (e.g. a
-    # --trace overlay, which reuses the base core's filesets) is covered too.
-    _preflight_target_sources(bare_target, project_root)
-    try:
-        source_ref = _resolve_ref(project_root, target)
-    except FuseSocError:
-        source_ref = None
-    return _run_setup_command(
-        cmd,
-        project_root=project_root,
-        build_root=build_root,
-        target=bare_target,
-        vlnv=vlnv,
-        source_ref=source_ref,
-        fusesoc_cmd=fusesoc_cmd,
-        env=env,
-        runner=runner,
-    )
-
-
 def _run_setup_command(
     cmd: list[str],
     *,
@@ -2739,7 +2600,7 @@ def _run_setup_command(
     build_root: Path,
     target: str,
     vlnv: str,
-    source_ref: TargetRef | None,
+    source_ref: TargetRef,
     fusesoc_cmd: Sequence[str],
     env: Mapping[str, str] | None,
     runner: Callable[..., subprocess.CompletedProcess[str]],
@@ -2768,17 +2629,13 @@ def _run_setup_command(
     if proc.returncode != 0:
         diagnostic = proc.stderr.strip() or proc.stdout.strip()
         detail = f":\n{diagnostic}" if diagnostic else " with no diagnostic output"
-        hint = (
-            unprovided_dependency_suffix(project_root, [source_ref])
-            if source_ref is not None
-            else ""
-        )
+        hint = unprovided_dependency_suffix(project_root, [source_ref])
         raise TargetResolutionError(
             f"fusesoc run --setup --target {target} {vlnv} failed "
             f"(exit {proc.returncode}){detail}{hint}"
         )
 
-    edam_path = _find_edam(build_root, target)
+    edam_path = _find_edam(build_root, target, vlnv)
     resolved = parse_edam(edam_path, target=target, vlnv=vlnv)
     return _restore_tb_tags(resolved, project_root=project_root, source_ref=source_ref)
 
@@ -2837,49 +2694,3 @@ def resolve_target_handle(
         env=env,
         runner=runner,
     )
-
-
-def _try_resolve_target(
-    target: str,
-    *,
-    project_root: Path | str,
-    build_root: Path | str | None = None,
-    **kwargs: Any,
-) -> ResolvedTarget | None:
-    """Resolve *target*'s ``.core`` Target, or ``None`` when none is authored / resolution fails.
-
-    The **transitional bridge** (decision 23) for the legacy ``configs.toml``
-    fallback path: ADR 0022 makes the ``.core`` the design-description home, but
-    a project mid-migration may not have authored one yet. This returns a
-    :class:`ResolvedTarget` when *target* is a selectable Target (so the caller
-    sources defines/top/params/files from FuseSoC), and ``None`` otherwise — when
-    no ``.core`` declares *target*, or when ``fusesoc run --setup`` is unavailable
-    (e.g. no ``fusesoc`` on PATH outside the Sandbox) or fails. ``None`` is the
-    caller's cue to fall back to the legacy ``configs.toml`` design-description
-    until the project is hand-migrated (Phase 8).
-
-    Unlike :func:`resolve_target` (which raises), this never propagates a
-    :class:`FuseSocError`; it is the soft, "prefer the ``.core`` if there is one"
-    entry point. *build_root* defaults to a payload-dedicated dir under
-    the checkout's Booley Directory ``.runtime``; extra *kwargs* are forwarded to
-    :func:`resolve_target` (e.g. ``runner`` for tests).
-    """
-    proot = Path(project_root)
-    try:
-        ref = _resolve_ref(proot, target)
-    except FuseSocError as exc:  # unknown / ambiguous / unreadable .core → legacy fallback
-        logger.debug("try_resolve_target(%s): resolution failed: %s", target, exc)
-        return None
-    if build_root is None:
-        build_root = in_checkout_booley_dir(proot) / ".runtime" / "edalize" / "payload" / ref.name
-    try:
-        return _resolve_target(
-            ref.name,
-            project_root=proot,
-            build_root=build_root,
-            vlnv=ref.vlnv,
-            **kwargs,
-        )
-    except FuseSocError as exc:  # no fusesoc on PATH / setup failure → legacy fallback
-        logger.debug("try_resolve_target(%s): resolution failed: %s", target, exc)
-        return None

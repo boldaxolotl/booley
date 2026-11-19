@@ -2589,22 +2589,6 @@ def test_vscode_prepare_names_init_for_egress_drift(tmp_path, monkeypatch):
     assert "session refresh" not in message
 
 
-def test_startup_host_config_error_names_file_without_teardown(tmp_path, monkeypatch):
-    from booley.config.host_config import host_config_path
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    config = host_config_path()
-    config.parent.mkdir(parents=True)
-    config.write_text('[sandbox]\negress = "proxied"\n', encoding="utf-8")
-    monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
-    with pytest.raises(sr.SessionError) as raised:
-        sr._validate_up_request(tmp_path)
-    message = str(raised.value)
-    assert str(config) in message
-    assert "sandbox.egress" in message
-    assert "session down" not in message
-
-
 def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypatch):
     from booley.runtime import session_admission as admission
 
@@ -3380,6 +3364,28 @@ def _linked_cli(monkeypatch, argv):
 
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
     return cli.main()
+
+
+def test_ctrl_c_while_session_enter_prepares_the_sandbox_prints_one_line(
+    tmp_path, monkeypatch, capsys
+):
+    _linked_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+
+    def interrupted(_root):
+        raise KeyboardInterrupt
+
+    # This is where the host Sandbox preparation (the Docker image checks) runs; no Docker fake
+    # can deliver a Ctrl-C into it (the same seam `_linked_attachment` replaces).
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", interrupted)
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _linked_cli(monkeypatch, ["session", "enter", "--", "true"])
+
+    assert type(raised.value) is KeyboardInterrupt
+    assert capsys.readouterr().err.splitlines()[-1:] == ["interrupted; session enter cancelled"]
+    sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert capsys.readouterr().err == ""
 
 
 def _linked_attachment(monkeypatch):

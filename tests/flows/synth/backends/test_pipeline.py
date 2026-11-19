@@ -384,6 +384,39 @@ class TestGeneratedMakefile:
         assert "stage=sv2v" in result.stdout
         assert not (tmp_path / "yosys-ran").exists()
 
+    @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
+    @pytest.mark.parametrize("own_tmpdir", [True, False])
+    def test_only_yosys_runs_under_the_yosys_tmpdir(
+        self, tmp_path: Path, own_tmpdir: bool
+    ) -> None:
+        liberty = tmp_path / "cells.lib"
+        liberty.write_text("library (x) {}\n", encoding="utf-8")
+        spec = dataclasses.replace(_spec(tmp_path, mode="logical"), liberty=liberty)
+        plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "sv2v").write_text(
+            f'#!/bin/sh\necho "module m; endmodule" > sv2v_converted.v\n'
+            f'echo "$TMPDIR" > {tmp_path / "sv2v-tmp"}\n',
+            encoding="utf-8",
+        )
+        (fake_bin / "yosys").write_text(
+            f'#!/bin/sh\necho "$TMPDIR" > {tmp_path / "yosys-tmp"}\nexit 1\n', encoding="utf-8"
+        )
+        (fake_bin / "sv2v").chmod(0o755)
+        (fake_bin / "yosys").chmod(0o755)
+        job_tmp = tmp_path / "job-tmp"
+        job_tmp.mkdir()
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "TMPDIR": str(job_tmp)}
+
+        with syn_make.yosys_tmpdir() as own:
+            assignment = [syn_make.yosys_tmpdir_assignment(own)] if own_tmpdir else []
+            run_bounded_child(["make", "-C", str(plan.build_dir), *assignment], env=env)
+
+        assert (tmp_path / "sv2v-tmp").read_text(encoding="utf-8").strip() == str(job_tmp)
+        expected = str(own) if own_tmpdir else str(job_tmp)
+        assert (tmp_path / "yosys-tmp").read_text(encoding="utf-8").strip() == expected
+
     def test_missing_liberty_is_a_warning_not_an_error(self, tmp_path: Path):
         import dataclasses
 
@@ -552,17 +585,96 @@ class TestBoundaryOutput:
         assert "kind=missing_output" in outcome.text
         assert "subject=sv2v_converted.v" in outcome.text
 
-    def test_rederives_sta_markers_from_log(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+    @pytest.mark.parametrize(
+        ("sdc_text", "overall", "reg2reg", "expected", "absent"),
+        [
+            pytest.param(
+                "create_clock -name clk -period 4.0 [get_ports clk]\n",
+                (1, 4.0, 2.0),
+                (1, 4.0, 2.0),
+                (
+                    "STA_CRITICAL_PATH_PS: 2000.000",
+                    "STA_FMAX_MHZ: 500.000",
+                    "STA_REG2REG_CRITICAL_PATH_PS: 2000.000",
+                    "STA_REG2REG_FMAX_MHZ: 500.000",
+                ),
+                (),
+                id="single-clock",
+            ),
+            pytest.param(
+                "create_clock -name rx_clk -period 6.4 [get_ports rx_clk]\n"
+                "create_clock -name ghost_clk -period 5.0 [get_ports ghost_clk]\n",
+                (1, 6.4, 1.429488),
+                (1, 6.4, 1.429488),
+                (
+                    "STA_CRITICAL_PATH_PS: 4970.512",
+                    "STA_FMAX_MHZ: 201.187",
+                    "STA_REG2REG_CRITICAL_PATH_PS: 4970.512",
+                    "STA_REG2REG_FMAX_MHZ: 201.187",
+                ),
+                (),
+                id="phantom-clock",
+            ),
+            pytest.param(
+                "create_clock -name rx_clk -period 6.4 [get_ports rx_clk]\n"
+                "create_clock -name ptp_sample_clk -period 8.0 [get_ports ptp_sample_clk]\n",
+                (1, 6.4, 0.9),
+                (0, 8.0, 1.429488),
+                (
+                    "STA_WORST_SLACK_NS: 0.900000",
+                    "STA_CRITICAL_PATH_PS: 5500.000",
+                    "STA_FMAX_MHZ: 181.818",
+                    "STA_REG2REG_SLACK_NS: 1.429488",
+                ),
+                ("STA_REG2REG_CRITICAL_PATH_PS", "STA_REG2REG_FMAX_MHZ"),
+                id="cross-clock-reg2reg",
+            ),
+            pytest.param(
+                "create_clock -name rx_clk -period 6.4 [get_ports rx_clk]\n"
+                "create_clock -name ptp_sample_clk -period 8.0 [get_ports ptp_sample_clk]\n",
+                (0, 8.0, 0.9),
+                (1, 6.4, 1.429488),
+                (
+                    "STA_WORST_SLACK_NS: 0.900000",
+                    "STA_REG2REG_CRITICAL_PATH_PS: 4970.512",
+                    "STA_REG2REG_FMAX_MHZ: 201.187",
+                ),
+                ("STA_CRITICAL_PATH_PS", "STA_FMAX_MHZ"),
+                id="cross-clock-overall",
+            ),
+        ],
+    )
+    def test_rederives_sta_markers_from_log(
+        self,
+        tmp_path: Path,
+        sdc_text: str,
+        overall: tuple[int, float, float],
+        reg2reg: tuple[int, float, float],
+        expected: tuple[str, ...],
+        absent: tuple[str, ...],
+    ):
+        sdc = tmp_path / "constraints" / "dut.sdc"
+        sdc.parent.mkdir(parents=True)
+        sdc.write_text(sdc_text, encoding="utf-8")
+        plan = syn_make.configure_synthesis(_spec(tmp_path, sdc=(sdc,)), _build_dir(tmp_path))
+        o_same, o_period, o_slack = overall
+        r_same, r_period, r_slack = reg2reg
         (plan.build_dir / "openroad.log").write_text(
-            "STA_WORST_SLACK_NS: 2.000000\n"
-            "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n",
+            f"STA_WORST_SLACK_NS: {o_slack:.6f}\n"
+            f"STA_WORST_CLOCKS: same_clock={o_same} capture_period_ns={o_period:.6f}\n"
+            f"STA_REG2REG_SLACK_NS: {r_slack:.6f}\n"
+            f"STA_REG2REG_CLOCKS: same_clock={r_same} capture_period_ns={r_period:.6f}\n"
+            "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1"
+            " setup_same_clock=1\n",
             encoding="utf-8",
         )
         outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
-        # period 4000 ps - slack 2000 ps -> crit path 2000 ps -> Fmax 500 MHz.
-        assert "STA_CRITICAL_PATH_PS: 2000.000" in outcome.text
-        assert "STA_FMAX_MHZ: 500.000" in outcome.text
+        # The path's own capture clock period minus its slack, never an SDC period.
+        derived = outcome.text.split("STA_REPORT:")[0]
+        for line in expected:
+            assert line in derived
+        for marker in absent:
+            assert f"{marker}:" not in derived
         assert "STA_REPORT:" in outcome.text
 
     def test_ignores_stale_standalone_opensta_log(self, tmp_path: Path):
@@ -788,6 +900,7 @@ def _run_fake_make(tmp_path: Path, monkeypatch, spec, scripts: dict[str, str]):
 def _interpret(tmp_path: Path, plan, result, started: float):
     """The Flow's metrics for a finished fake make run."""
     from booley.flows.base import SubprocessResult
+    from booley.flows.job_resources import JudgedCommands
     from booley.flows.synth.flow import AsicSynthesizeFlow
 
     flow = AsicSynthesizeFlow()
@@ -805,6 +918,7 @@ def _interpret(tmp_path: Path, plan, result, started: float):
             dispatched_unix=started,
         ),
         0.1,
+        commands=JudgedCommands(),
     )
     return metrics
 

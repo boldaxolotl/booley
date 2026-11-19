@@ -33,6 +33,7 @@ from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.server import _params_to_argv
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 pytestmark = pytest.mark.skipif(
@@ -80,6 +81,10 @@ class Bench:
     on_yosys: Callable[[], SubprocessResult | None] | None = None
     #: Runs in place of the OpenROAD stage's file writes when set; may return a result.
     on_openroad: Callable[[Path], SubprocessResult | None] | None = None
+    #: Send each stage's result through a real child process and the measured run,
+    #: which writes the resource history record (the flow under run is in ``flow``).
+    measured: bool = False
+    flow: AsicSynthesizeFlow | None = None
 
     @property
     def lib(self) -> Path:
@@ -124,13 +129,22 @@ class Bench:
         )
 
     def boundary(self, cmd: list[str], **_kwargs) -> SubprocessResult:
+        """Emulate a make stage, as a real measured process when ``measured``."""
+        result = self._emulate(cmd)
+        if not self.measured or self.flow is None or result.returncode == -1:
+            return result  # -1: the command never started, as the real run returns it
+        real = self.flow._execute(canned_command(result))
+        real.dispatched_unix = result.dispatched_unix  # the stale guard sees the bench's files
+        return real
+
+    def _emulate(self, cmd: list[str]) -> SubprocessResult:
         """Emulate ``make -C <dir> [yosys|openroad]``; a bare make runs both stages."""
         # Stamped before writing: the stale guard stays active while the coarse
         # file clock cannot make this call's own writes look stale.
         dispatched = time.time() - 1
         self.commands.append(cmd)
         build = self.root / cmd[2]
-        stage = cmd[3] if len(cmd) > 3 else "all"
+        stage = next((arg for arg in cmd[3:] if "=" not in arg), "all")
         stdout = ""
         if stage in {"yosys", "all"}:
             for name, text in {
@@ -166,7 +180,7 @@ class Bench:
         slack = 2.0 + self.openroad_calls / 1000
         (build / "openroad.log").write_text(
             f"STA_WORST_SLACK_NS: {slack:.6f}\n"
-            f"STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns={slack:.6f} whs_ns=0.1\n"
+            f"STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns={slack:.6f} whs_ns=0.1 setup_same_clock=1\n"
             "Design area 7000 u^2 50% utilization.\n"
         )
         (build / "openroad_dut.v").write_text(self.netlist)
@@ -176,7 +190,7 @@ class Bench:
 
     def run(self, *argv: str, target: str = TARGET) -> tuple[object, dict]:
         """One fresh ``booley flow synth`` invocation; returns (outcome, Target report)."""
-        flow = AsicSynthesizeFlow()
+        flow = self.flow = AsicSynthesizeFlow()
         flow.parse_args(
             [
                 "--target",
@@ -273,7 +287,9 @@ def test_openroad_gets_the_job_thread_share_without_changing_the_reuse_key(bench
     assert stage_commands("openroad") == [
         ["make", "-C", rel, "openroad", "BOOLEY_OPENROAD_THREAD_OPTION=-threads 2"]
     ]
-    assert stage_commands("yosys") == [["make", "-C", rel, "yosys"]]
+    yosys = stage_commands("yosys")
+    assert [cmd[:4] for cmd in yosys] == [["make", "-C", rel, "yosys"]]
+    assert yosys[0][4].startswith("BOOLEY_YOSYS_TMPDIR=")
 
     # The slot stored at 2 threads (and the none before) matches at 8: same key.
     with fixed_job_threads(8):
@@ -670,3 +686,65 @@ def test_reservation_follows_the_synthesis_phases(bench: Bench, scenario: str) -
         # The OpenROAD phase ends at the reuse, before the restored results are interpreted.
         reuse_end = next(e for e in shrinker.ends if e[:2] == (TARGET, "openroad"))
         assert reuse_end[2:] == (500.0, False)
+
+
+def _fail_yosys(bench: Bench, **files: str | None) -> None:
+    """Append each text to a stage file; a ``None`` text removes the file."""
+
+    def write() -> None:
+        for name, text in files.items():
+            path = bench.root / bench.commands[-1][2] / name
+            if text is None:
+                path.unlink()
+                continue
+            with path.open("a", encoding="utf-8") as out:
+                out.write(text)
+
+    bench.on_yosys = write
+
+
+_CONFLICTING_DRIVERS = (
+    "Warning: multiple conflicting drivers for dut.sig:\n"
+    "    port Q[0] of cell $procdff$1 ($dff)\n"
+    "Found and reported 1 problem.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("target", "files", "openroad_exit", "outcomes"),
+    [
+        (LOGICAL_TARGET, {"yosys.log": "ERROR: boom\n"}, 0, ["exit_nonzero"]),
+        (TARGET, {"yosys.log": "ERROR: boom\n"}, None, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {"check_dut.txt": _CONFLICTING_DRIVERS}, None, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {"sv2v_converted.v": None}, None, ["exit_nonzero", "exit_zero"]),
+        (TARGET, {}, -1, ["exit_zero"]),
+        (TARGET, {}, 1, ["exit_zero", "exit_nonzero"]),
+    ],
+    ids=[
+        "logical",
+        "physical-yosys-log",
+        "physical-structural",
+        "physical-sv2v-output-missing",
+        "physical-openroad-not-started",
+        "physical-openroad-fails",
+    ],
+)
+def test_synth_record_outcome_follows_the_failing_stage(
+    bench: Bench,
+    tmp_path: Path,
+    target: str,
+    files: dict[str, str | None],
+    openroad_exit: int | None,
+    outcomes: list[str],
+) -> None:
+    from booley.runtime import resource_history
+
+    bench.measured = True
+    _fail_yosys(bench, **files)
+    if openroad_exit is not None:  # -1: it never starts
+        bench.on_openroad = lambda _build: SubprocessResult(returncode=openroad_exit)
+
+    bench.run(target=target)
+
+    records = resource_history.load_records(tmp_path)
+    assert [r["outcome"] for r in records if r["key"]["phase"] == "synth"] == outcomes

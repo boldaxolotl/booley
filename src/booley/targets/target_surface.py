@@ -20,8 +20,9 @@ import subprocess
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
+from booley.core.boundary import as_str_list
 from booley.core.build_paths import work_root_for
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import lexical_stealth_path
@@ -48,19 +49,45 @@ class CoreGroup:
 
 
 @dataclass(frozen=True)
+class SynthTools:
+    """What the Synthesis Flow runs for one Target's declared options."""
+
+    synth_mode: str
+    frontend: str
+    eda_tools: tuple[str, ...]
+    """EDA programs in run order, e.g. ``("sv2v", "yosys", "openroad")``."""
+
+
+SynthToolsResolver = Callable[[Mapping[str, object], str], SynthTools]
+"""Resolve ``(flow_options, target selector)`` to :class:`SynthTools`; raises
+:class:`ValueError` for invalid options. The Synthesis Flow owns the rules and
+``booley.targets`` may not import it, so the composition layer passes it in."""
+
+
+@dataclass(frozen=True)
 class TargetSurface:
     """The whole surface: per-core groups plus non-fatal observations."""
 
     groups: tuple[CoreGroup, ...]
     warnings: tuple[str, ...]
     """Non-fatal observations produced while building the surface."""
+    flow_options: Mapping[str, Mapping[str, object]]
+    """Declared ``flow_options`` per ``TargetHandle.identity``."""
 
     def entries(self) -> Iterator[TargetHandle]:
         for group in self.groups:
             yield from group.entries
 
 
-class TargetRow(TypedDict):
+class _SynthFields(TypedDict):
+    """Synthesis-Flow facts a Target row and a Target detail both carry."""
+
+    synth_mode: str | None
+    frontend: str | None
+    eda_tools: list[str] | None
+
+
+class TargetRow(_SynthFields):
     """JSON row for one listed Target."""
 
     name: str
@@ -103,7 +130,7 @@ class ResolvedDetail(TypedDict):
     build_root: str
 
 
-class TargetDetailPayload(TypedDict):
+class TargetDetailPayload(_SynthFields):
     """JSON payload for one selected Target."""
 
     name: str
@@ -140,7 +167,10 @@ def _surface_from_catalog(catalog: TargetCatalog) -> TargetSurface:
         )
         for (vlnv, core_file), entries in sorted(grouped.items(), key=lambda kv: kv[0])
     )
-    return TargetSurface(groups=groups, warnings=())
+    flow_options = {
+        entry.identity: catalog.declared_flow_options(entry) for entry in catalog.list()
+    }
+    return TargetSurface(groups=groups, warnings=(), flow_options=flow_options)
 
 
 def filter_surface(
@@ -185,7 +215,9 @@ def filter_surface(
         kept = tuple(e for e in group.entries if keep(e))
         if kept:
             groups.append(replace(group, entries=kept))
-    return TargetSurface(groups=tuple(groups), warnings=surface.warnings)
+    return TargetSurface(
+        groups=tuple(groups), warnings=surface.warnings, flow_options=surface.flow_options
+    )
 
 
 def _vlnv_identity(vlnv: str) -> str:
@@ -207,32 +239,68 @@ def _rel_to(path: Path, root: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def surface_payload(surface: TargetSurface, project_root: Path | str) -> SurfacePayload:
+def _synth_fields(
+    entry: TargetHandle,
+    flow_options: Mapping[str, object],
+    synth_tools: SynthToolsResolver,
+    warnings: list[str],
+) -> _SynthFields:
+    """Synth mode, frontend and EDA tools for *entry*; invalid options add a warning."""
+    none: _SynthFields = {"synth_mode": None, "frontend": None, "eda_tools": None}
+    if "synth" in entry.drivable_by:
+        try:
+            tools = synth_tools(flow_options, entry.selector)
+        except ValueError as exc:
+            warnings.append(str(exc))
+            return none
+        return {
+            "synth_mode": tools.synth_mode,
+            "frontend": tools.frontend,
+            "eda_tools": list(tools.eda_tools),
+        }
+    declared = flow_options.get("frontends")
+    if entry.flow and "fpga" not in entry.drivable_by and declared:
+        # Edalize flow API: each frontend runs before the declared tool.
+        frontends = as_str_list(
+            list(cast(tuple[object, ...], declared)) if isinstance(declared, tuple) else declared
+        )
+        none["eda_tools"] = [*frontends, *([entry.eda_tool] if entry.eda_tool else [])]
+    return none
+
+
+def surface_payload(
+    surface: TargetSurface, project_root: Path | str, *, synth_tools: SynthToolsResolver
+) -> SurfacePayload:
     """JSON-ready view of a (possibly filtered) surface."""
     root = Path(project_root)
-    return {
-        "cores": [
+    warnings = list(surface.warnings)
+    cores: list[CoreRow] = []
+    for group in surface.groups:
+        targets: list[TargetRow] = []
+        for e in group.entries:
+            targets.append(
+                {
+                    "name": e.name,
+                    "selector": e.selector,
+                    "flow": e.flow,
+                    "eda_tool": e.eda_tool,
+                    "cocotb_module": e.cocotb_module,
+                    "toplevel": e.declared_toplevel or None,
+                    "doctor_flows": list(e.doctor_flows),
+                    "drivable_by": list(e.drivable_by),
+                    **_synth_fields(
+                        e, surface.flow_options.get(e.identity, {}), synth_tools, warnings
+                    ),
+                }
+            )
+        cores.append(
             {
                 "vlnv": group.vlnv,
                 "core_file": _rel_to(group.core_file, root),
-                "targets": [
-                    {
-                        "name": e.name,
-                        "selector": e.selector,
-                        "flow": e.flow,
-                        "eda_tool": e.eda_tool,
-                        "cocotb_module": e.cocotb_module,
-                        "toplevel": e.declared_toplevel or None,
-                        "doctor_flows": list(e.doctor_flows),
-                        "drivable_by": list(e.drivable_by),
-                    }
-                    for e in group.entries
-                ],
+                "targets": targets,
             }
-            for group in surface.groups
-        ],
-        "warnings": list(surface.warnings),
-    }
+        )
+    return {"cores": cores, "warnings": warnings}
 
 
 def _resolved_error(
@@ -250,6 +318,21 @@ def _resolved_error(
     return first_line
 
 
+def _resolved_detail(resolved: fusesoc_registry.ResolvedTarget, root: Path) -> ResolvedDetail:
+    return {
+        "toplevel": resolved.toplevel,
+        "eda_tool": resolved.configured_eda_tool,
+        "cocotb_module": resolved.cocotb_module,
+        "parameters": dict(resolved.parameters),
+        "rtl_hdl_sources": len(resolved.rtl_hdl_source_files),
+        "rtl_include_dirs": len(resolved.rtl_include_dirs),
+        "tb_files": len(resolved.tb_files),
+        "sdc_files": [f.name for f in resolved.sdc_files],
+        "xdc_files": [f.name for f in resolved.xdc_files],
+        "build_root": _rel_to(resolved.build_root, root),
+    }
+
+
 def detail_payload(
     project_root: Path | str,
     token: str,
@@ -258,6 +341,7 @@ def detail_payload(
     fusesoc_cmd: Sequence[str] = fusesoc_registry.DEFAULT_FUSESOC_CMD,
     env: Mapping[str, str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    synth_tools: SynthToolsResolver,
 ) -> TargetDetailPayload:
     """Everything ``booley targets <name>`` shows for one Target.
 
@@ -267,7 +351,7 @@ def detail_payload(
     ambiguous *token*\\ s DO raise (:class:`booley.targets.domain.UnknownTargetError`
     / :class:`booley.targets.domain.AmbiguousTargetError`) — their messages already
     name the candidates. The remaining keyword arguments mirror
-    :func:`fusesoc_registry.resolve_target`.
+    :func:`fusesoc_registry.resolve_target_handle`.
     """
     root = Path(project_root)
     catalog = TargetCatalog.build(root)
@@ -275,6 +359,10 @@ def detail_payload(
     surface = _surface_from_catalog(catalog)
     entry = next(e for e in surface.entries() if e.selector == handle.selector)
     selected = entry
+    warnings = list(surface.warnings)
+    synth_fields = _synth_fields(
+        entry, surface.flow_options.get(entry.identity, {}), synth_tools, warnings
+    )
 
     payload: TargetDetailPayload = {
         "name": selected.name,
@@ -287,12 +375,13 @@ def detail_payload(
         "toplevel": entry.declared_toplevel or None,
         "doctor_flows": list(entry.doctor_flows),
         "drivable_by": list(entry.drivable_by),
-        "warnings": list(surface.warnings),
+        "warnings": warnings,
+        **synth_fields,
     }
     if not resolve:
         return payload
 
-    build_root = work_root_for(root, "targets", selected.name)
+    build_root = work_root_for(root, "targets", handle.selector)
     try:
         resolved = fusesoc_registry.resolve_target_handle(
             handle,
@@ -304,16 +393,5 @@ def detail_payload(
     except fusesoc_registry.FuseSocError as exc:
         payload["resolved_error"] = _resolved_error(catalog, handle, exc)
     else:
-        payload["resolved"] = {
-            "toplevel": resolved.toplevel,
-            "eda_tool": resolved.configured_eda_tool,
-            "cocotb_module": resolved.cocotb_module,
-            "parameters": dict(resolved.parameters),
-            "rtl_hdl_sources": len(resolved.rtl_hdl_source_files),
-            "rtl_include_dirs": len(resolved.rtl_include_dirs),
-            "tb_files": len(resolved.tb_files),
-            "sdc_files": [f.name for f in resolved.sdc_files],
-            "xdc_files": [f.name for f in resolved.xdc_files],
-            "build_root": _rel_to(resolved.build_root, root),
-        }
+        payload["resolved"] = _resolved_detail(resolved, root)
     return payload

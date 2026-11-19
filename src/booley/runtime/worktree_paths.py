@@ -10,7 +10,6 @@ from pathlib import Path, PurePosixPath
 
 from booley.core.booley_dir import (
     BOOLEY_DIR_NAME,
-    BooleyDirOutsideCheckoutError,
     own_booley_dir_relative,
     resolve_booley_dir,
     resolve_checkout_booley_dir,
@@ -86,18 +85,12 @@ def _is_same_directory(first: Path, second: Path) -> bool:
         return False
 
 
-def _require_ambient_booley_dir(root: Path, own: Path, ambient: str) -> None:
+def _require_ambient_booley_dir(own: Path, ambient: str) -> None:
     """Refuse a ``BOOLEY_DIR`` that does not name *own*, the checkout's Booley Directory."""
     selected = Path(ambient)
     # An absent default ``.booley`` can only match by spelling.
     if Path(os.path.normpath(selected.absolute())) == own or _is_same_directory(selected, own):
         return
-    try:
-        inside = selected.resolve(strict=True).is_relative_to(root.resolve())
-    except OSError:
-        inside = False
-    if not inside:
-        raise BooleyDirOutsideCheckoutError(ambient, root)
     raise BooleyDirMismatchError(
         f"BOOLEY_DIR={ambient} is not this checkout's Booley Directory {own}; "
         "unset BOOLEY_DIR or point it at that directory"
@@ -108,10 +101,10 @@ def worktree_booley_dir(project_root: Path) -> PurePosixPath:
     """Return the checkout's Booley Directory relative to its root, or refuse worktree creation.
 
     Raises:
-        BooleyDirOutsideCheckoutError: the directory (or a host ``BOOLEY_DIR``) is
-            outside the checkout.
-        BooleyDirMismatchError: ``BOOLEY_DIR`` names another directory inside the
-            checkout, or a configured ``[project].dir`` does not exist.
+        BooleyDirOutsideCheckoutError: a configured ``[project].dir`` is outside
+            the checkout.
+        BooleyDirMismatchError: ``BOOLEY_DIR`` names any other directory, or a
+            configured ``[project].dir`` does not exist.
     """
     root = Path(os.path.normpath(project_root.absolute()))
     relative = own_booley_dir_relative(root)
@@ -122,7 +115,7 @@ def worktree_booley_dir(project_root: Path) -> PurePosixPath:
         raise BooleyDirMismatchError(f"Booley Directory {own} does not exist")
     ambient = os.environ.get("BOOLEY_DIR")
     if ambient:
-        _require_ambient_booley_dir(root, own, ambient)
+        _require_ambient_booley_dir(own, ambient)
     return relative
 
 

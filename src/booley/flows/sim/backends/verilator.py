@@ -53,6 +53,7 @@ from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.result import format_infra_error
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.filesystem_utils import make_directories
 
 _publish_adapter_result = publish_native_adapter_result
 
@@ -382,7 +383,7 @@ def run_verilated_binary(
 ) -> NativeRun:
     """Run one edalize-built ``V<top>`` under the resolved trace recipe."""
     paths = _resolve_run_paths(bin_dir, run_cwd, work_dir)
-    paths.work_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(paths.work_dir)
     exe = _find_binary(paths.bin_dir, top_module)
     if exe is None:
         return _missing_binary_result(paths, top_module, transport, pass_sentinels, fail_sentinels)

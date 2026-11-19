@@ -345,8 +345,8 @@ unknown key or an invalid value.
 
 After editing the file, run `booley bootstrap`. A changed `egress` also needs
 [each Project's Sandbox recreated](#after-changing-sandbox-settings); until
-then a running Sandbox keeps its previous mode and host-side Doctor
-warns about it.
+then a running Sandbox keeps its previous mode. Host-side Doctor warns about
+this Project's own Sandbox and notes other Projects' Sandboxes.
 
 To switch `egress` without editing the file, run
 `booley bootstrap --egress unproxied` (or `proxy`). It records the mode,
@@ -371,6 +371,24 @@ After changing `clis`, `auth`, or `default`,
 CLI set or `auth` stops the Sandbox from starting. Adding a CLI hands its login
 to the Sandbox, and the agent inside can edit `booley.toml`, so review `[agent]`
 edits before you apply them.
+
+## Editor credential forwarding
+
+Opening the Sandbox in VS Code can forward your host Git credentials into it,
+so any process in the Sandbox, the Developer Agent included, can use them.
+`booley doctor` run inside the Sandbox warns `sandbox.git-credential-helper`
+and names each helper and the file it is in.
+
+To keep host Git credentials out of the Sandbox:
+
+1. In your host VS Code user settings, set
+   `dev.containers.gitCredentialHelperConfigLocation` to `"none"` and
+   `dev.containers.copyGitConfig` to `false`.
+2. In the Sandbox, delete the `helper` lines from each file Doctor names.
+
+If you accept the forwarding,
+[waive](DOCTOR.md#doctor-waivers-doctor-waiverstoml)
+`sandbox.git-credential-helper`.
 
 ## Applying Sandbox changes
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
 import textwrap
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from booley.fusesoc.fusesoc_registry import read_core
@@ -97,3 +99,40 @@ def relocated_project(project: Path, directory: str = "state") -> Path:
     booley_dir.mkdir(parents=True, exist_ok=True)
     (project / "booley.toml").write_text(f'[project]\ndir = "{directory}"\n', encoding="utf-8")
     return booley_dir
+
+
+def fusesoc_setup_runner(
+    *,
+    edam: tuple[Path, str] | None = None,
+    edams: Mapping[str, tuple[str, str]] | None = None,
+    returncode: int = 0,
+    stderr: str = "",
+    error: OSError | None = None,
+    calls: list[dict[str, object]] | None = None,
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """Stand-in for the ``fusesoc run --setup`` subprocess.
+
+    Records each call (``cmd`` plus keywords) in *calls*, raises *error* when
+    given, else writes ``edam`` (path, text) as FuseSoC would and returns
+    *returncode* with *stderr*. *edams* maps each core VLNV (the positional
+    argument) to an EDAM (path relative to the command's ``--build-root``,
+    text), written only for the core being set up.
+    """
+
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if calls is not None:
+            calls.append({"cmd": cmd, **kwargs})
+        if error is not None:
+            raise error
+        if edam is not None:
+            path, text = edam
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        if edams is not None and cmd[-1] in edams:
+            relative, text = edams[cmd[-1]]
+            path = Path(cmd[cmd.index("--build-root") + 1]) / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr=stderr)
+
+    return run

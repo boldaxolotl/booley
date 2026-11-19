@@ -14,16 +14,35 @@ selected clock:
 - Each later cycle is one period further on, whether or not the clock rose
   there. Cycle distances stay proportional to elapsed time, even across a
   clock stop.
+- Cycle 0 is not a grid point. It reads strictly before the reset
+  deassertion tick and before cycle 1's read, in both sample modes. Cycle 0
+  is omitted when no such tick exists: the start tick is tick 0 (no reset
+  was found, `--with-reset` is set, or reset deasserts at tick 0), or a
+  pre-edge read of cycle 1 already sits on tick 0. `wave` then
+  starts at cycle 1, and `value --at 0` returns `x` with a null
+  `sample_tick`. Cycle 0 is not an edge, so `rising`, `falling` and
+  `change` skip it and `find` reports only level matches there.
 
 ### Clock selection
 
-B-Wave considers one-bit signals whose name contains `clk`, ordered by scope
-depth and then name, and picks the first with a measurable period.
-`--clock PATTERN` picks the first one-bit match in the same order.
+B-Wave picks the clock like this:
+
+1. Candidates are one-bit signals whose hierarchical name, up to the first
+   `[`, contains `clk` in any case.
+2. They are ordered by scope depth, then name.
+3. The first with two rising edges (0 to 1) wins.
+
+`--clock PATTERN` picks the first one-bit match in the same order. No match
+exits with code 2. A match with fewer than two rising edges gives an
+`unavailable` verdict. `overview`, `list` and every query print
+`# clock override: NAME (period=P ticks, first_rise=T)` on stderr, except in
+JSON mode. List the candidates with `bwave list trace.fst -s "*clk*"`.
 
 Without a usable clock, sync falls back to ticks: `value.at_unit` and
-`find.unit` are `tick`, and `stats.total_cycles` is null. See
-`troubleshooting/clock-detection`.
+`find.unit` are `tick`, and `stats.total_cycles` is null. Every sync query
+then prints one `# WARNING: no usable clock: ...` line (in JSON, the same
+text without the prefix in `warnings`) that names `--clock PATTERN` or
+`--async`.
 
 ### Clock regularity
 
@@ -31,10 +50,14 @@ The grid is only right while the clock keeps its period. `build`, `overview`,
 and `stats` print the check:
 
 ```text
-# clock: tb.clk
+# clock: tb.clk (auto-detected; --clock PATTERN to override)
 # clock regularity: pass (stopped_stretches)
 # clock stopped: 1 stretches, 3 cycles, longest 3:5
 ```
+
+The first line ends `(auto-detected; --clock PATTERN to override)`, or
+`(--clock)` when `--clock` chose the clock, and is `# clock: <not detected>`
+when there is no candidate.
 
 | Status | Meaning |
 |---|---|
@@ -42,10 +65,37 @@ and `stats` print the check:
 | `warning` | An edge is off the grid, or the clock goes X/Z after its first rise. Cycle numbers are unreliable. |
 | `unavailable` | Fewer than two rising edges, or no clock candidate. |
 
-The verdict is advisory and never changes a query's mode. Every sync query
-warns on `warning` and `unavailable`; JSON carries the verdict in
-`clock_regularity` and `warnings`. On a warning, use `--async` with tick or
-time bounds.
+| Reason | Meaning |
+|---|---|
+| `regular` | Every rising edge fits the grid. |
+| `stopped_stretches` | Some interior grid points have no rising edge. |
+| `off_grid_edge` | Frequency change, phase change, or jitter. |
+| `non_integer_period` | The period is fractional and the simulator rounded it to ticks. |
+| `unknown_clock` | The clock goes X/Z after its first rising edge. |
+| `insufficient_edges` | Fewer than two rising edges, so no period. |
+| `multiple_clock_periods` | Candidate clocks have different periods. |
+
+`non_integer_period` is inferred, not proven, and is only considered when an
+edge is off the grid. It needs at least seven rising edges, gaps of exactly
+two adjacent lengths each seen at least twice, a total span that is not a
+whole multiple of the gap count, and every rise within one tick of the
+straight line from the first rise to the last. Tick rounding fits this;
+some jitter patterns do too.
+
+The verdict is advisory and never changes a query's mode. Which findings
+warn in queries:
+
+- `off_grid_edge`, `non_integer_period` and `unknown_clock` warn on every
+  sync query, and on async queries that use cycle tokens.
+- `insufficient_edges` gives the one no-clock warning on sync queries.
+- `multiple_clock_periods` never warns in queries. It shows in the `build`,
+  `overview` and `stats` header and in JSON `clock_regularity`.
+
+JSON carries the verdict in `clock_regularity` and the warnings in
+`warnings`. On `off_grid_edge`, `non_integer_period` or `unknown_clock`,
+use `--async` with tick or time bounds. On `insufficient_edges`, select
+another clock with `--clock` or use `--async`. On `multiple_clock_periods`,
+select the intended domain with `--clock PATTERN`.
 
 ### Clock stops
 
@@ -93,9 +143,6 @@ Pre-edge details:
   read as `sample_tick`.
 - An edge at tick 0 has nothing before it: values are unknown and
   `sample_tick` is null.
-- Cycle 0 is a snapshot taken before the reset-dependent start tick, not a
-  grid edge. The first pre-edge read can precede reset deassertion by one
-  tick.
 - Pre-edge needs a usable clock. `--sample-mode` is rejected with `--async`
   and by `list`, `overview`, and `stuck`.
 
@@ -195,4 +242,4 @@ sync mode, and async mode rejects them and requires a unit suffix (`100t`,
   probably staring at post-edge values from the cycle
   *after* the one you think you set up.
 - If sync output is empty or wrong, run `bwave overview` and check the clock
-  and its verdict. See `troubleshooting/clock-detection`.
+  and its verdict (Clock regularity, above).

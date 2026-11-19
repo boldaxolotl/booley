@@ -1019,7 +1019,7 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
             stdout=(
                 "Chip area for top module 'my_ip': 1000.0\nNumber of cells: 10\n"
                 "STA_WORST_SLACK_NS: 0.500000\nOPENROAD_DESIGN_AREA_UM2: 1000.0\n"
-                "STA_PERCLOCK: name=clk period_ns=10.0 wns_ns=0.5 whs_ns=0.1\n"
+                "STA_PERCLOCK: name=clk period_ns=10.0 wns_ns=0.5 whs_ns=0.1 setup_same_clock=1\n"
             ),
             stderr="",
         ),

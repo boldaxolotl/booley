@@ -93,7 +93,7 @@ Common controls: repeat `--target` or use comma-separated values; `--target a --
 
 Key Flow-specific controls:
 
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. A Developer Agent's MCP tool call passes the same suite as a `test` array. Resume one exact durable Simulation Record with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Record, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. A Developer Agent's MCP tool call passes the same suite as a `test` array. Resume one exact durable Simulation Record with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Record, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; the complete XML and JSON results are always retained
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
@@ -178,12 +178,14 @@ variants, and the first public test that killed each detected mutant.
 
 | Command | What it does |
 |---------|-------------|
-| `booley targets` | List every `.core` Target: drivable Booley Flows, EDA tool, toplevel, and `✓` Doctor selection |
+| `booley targets` | List every `.core` Target: drivable Booley Flows, the EDA tools it runs (e.g. `sv2v+yosys+openroad` for a physical synth Target, `yosys` for a logical one with the `slang` frontend), toplevel, and `✓` Doctor selection |
 | `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
-| `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |
+| `booley targets <name>` | Detail: synth mode and frontend (synth Targets), parameters, file counts, SDC/XDC (the last three run `fusesoc`, container-side) |
 
-`--json` composes with all of the above; Developer Agents get the same listing via the `booley_targets` MCP tool.
+`--json` composes with all of the above and reports each Target's `synth_mode`,
+`frontend`, and `eda_tools`. Developer Agents get the same listing via the
+`booley_targets` MCP tool.
 
 Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
 

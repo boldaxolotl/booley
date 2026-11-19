@@ -49,6 +49,7 @@ from booley.runtime.endpoint_execution import (
     job_stopped_after_oom,
     note_job_oom_kill,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -94,7 +95,7 @@ class SubprocessResult:
         return self.oom_killed
 
 
-def _blame_own_oom_kill(
+def blame_own_oom_kill(
     measurement: job_resources.JobMeasurement,
     result: SubprocessResult,
     scope: Any,
@@ -104,8 +105,9 @@ def _blame_own_oom_kill(
 ) -> None:
     """Mark a command whose own process the OOM killer took, and which kind it was.
 
-    A kill also counts for the whole Job, which the requeue reads for a kill at
-    the Sandbox's limit but not for a host kill (ADR 0087).
+    A kill also counts for the current attempt, the Job's or a Simulation Record
+    work item's, which the requeue reads for a kill at the Sandbox's limit but
+    not for a host kill (ADR 0087).
     """
     cancelled = scope is not None and scope.cancelled()
     result.oom_killed = job_resources.own_oom_kill(
@@ -149,7 +151,7 @@ def _start_local_process(cmd, cwd, env, scope):
     if scope is not None and scope.cancelled():
         return None
     try:
-        proc = subprocess.Popen(
+        proc = job_resources.MeasuredPopen(
             cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
@@ -372,9 +374,7 @@ class FlowMechanics:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
         result.oom_kill_delta = measurement.oom_kill_delta or 0
-        _blame_own_oom_kill(
-            measurement, result, scope, kill_logs=label.kill_logs, since=dispatched
-        )
+        blame_own_oom_kill(measurement, result, scope, kill_logs=label.kill_logs, since=dispatched)
         job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
         return result
 
@@ -388,9 +388,12 @@ class FlowMechanics:
             # Only a spawned tool counts as started in the progress record.
             observer.begin_command()
         monitor.start(proc.pid)
-        if observer is not None:
-            return _observe_local_process(proc, observer, scope, start, timeout)
-        return _communicate_local_process(cmd, proc, scope, start, timeout)
+        try:
+            if observer is not None:
+                return _observe_local_process(proc, observer, scope, start, timeout)
+            return _communicate_local_process(cmd, proc, scope, start, timeout)
+        finally:
+            monitor.finish(proc.reaped_peak_bytes)
 
     def _resource_flags(self) -> tuple[str, ...]:
         """Instrumentation flags that key this Flow's resource history."""
@@ -427,7 +430,7 @@ class FlowMechanics:
         from booley.flows.run_log import begin_run_log
 
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             begin_run_log(log_dir, flow=self.name, target=target)
             from booley.flows.terminal_progress import current_progress
 
@@ -695,7 +698,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         report_dir = self.args.report_dir
         if report_dir is not None:
             report_path = Path(report_dir) / self.name / "flow_plan.json"
-            report_path.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(report_path.parent)
             serialized = json.dumps(payload, indent=2) + "\n"
             temporary_path: Path | None = None
             try:

@@ -252,7 +252,7 @@ def _patch_bootstrap_current(monkeypatch) -> None:
     monkeypatch.setattr(
         host_diagnostics,
         "inspect_host",
-        lambda: host_diagnostics.HostDiagnosticResult(report, "docker"),
+        lambda _root: host_diagnostics.HostDiagnosticResult(report, "docker"),
     )
 
 
@@ -702,6 +702,67 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     assert re.search(r"^  ✗ failed +1$", output, re.M)
     assert "[agent] clis ['codex']" in output
     assert doctor_stamp.load_stamp(booley_dir) is None
+
+
+@pytest.mark.parametrize(
+    ("auth_toml", "rows"),
+    [
+        (
+            'auth = "auto"\n',
+            [
+                (
+                    "claude: booley.toml [agent] auth 'auto' is retired; detected: subscription",
+                    'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
+                    'claude = "subscription" in booley.toml, or re-run booley init',
+                ),
+                (
+                    "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
+                    'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
+                    'codex = "api_key" in booley.toml, or re-run booley init',
+                ),
+            ],
+        ),
+        (
+            '\n[agent.auth]\nclaude = "subscription"\ncodex = "auto"\n',
+            [
+                (
+                    "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
+                    'set codex = "api_key" under [agent.auth] in booley.toml, '
+                    "or re-run booley init",
+                ),
+            ],
+        ),
+    ],
+    ids=["string", "table"],
+)
+def test_doctor_names_the_value_for_a_retired_auto_auth(tmp_path, monkeypatch, auth_toml, rows):
+    booley_dir = _write_project(tmp_path)
+    toml_path = booley_dir / "booley.toml"
+    toml_path.write_text(
+        toml_path.read_text(encoding="utf-8").replace(
+            '[agent]\nauth = "subscription"\n',
+            '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n' + auth_toml,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fixture")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+
+    result = _doctor_run(tmp_path)
+
+    policy = [
+        (f.message, f.fix)
+        for f in result.findings
+        if f.check_id == "agent.credential-policy" and f.severity is Severity.FAIL
+    ]
+    assert policy == rows
+    messages = _messages(result)
+    assert "project setup audit skipped - no valid project config" not in messages
+    assert "worker backend health check skipped - set [agent] auth first" in messages
+    assert not [m for m in messages if "skipped - project config invalid" in m]
+    text = "\n".join(f"{f.message}\n{f.fix}" for f in result.findings)
+    for absent in ("clis/default", "gateway", "booley doctor names"):
+        assert absent not in text
 
 
 def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, capsys):
@@ -1289,7 +1350,7 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(
         host_diagnostics,
         "inspect_host",
-        lambda: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
+        lambda _root: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
     )
 
     result = _doctor_run(tmp_path, deep=True, record_clean=True)
@@ -2950,24 +3011,46 @@ def _edit_booley_toml(booley_dir: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-@pytest.mark.parametrize("row", ["set", "unset", "unparseable", "no-project"])
+@pytest.mark.parametrize(
+    "row",
+    [
+        "set",
+        "unset",
+        "unparseable",
+        "no-project",
+        "inside-applied",
+        "inside-unaligned",
+        "inside-unapplied",
+        "inside-unreadable",
+    ],
+)
 def test_sandbox_memory(row, tmp_path, monkeypatch):
-    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; unset falls back to installed memory."""
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; inside the Sandbox, the live limit does."""
+    booley_dir = _setup_sandbox_memory_row(row, tmp_path, monkeypatch)
     if row == "unset":
         _edit_booley_toml(booley_dir, 'memory = "16g"\n', "")
     elif row == "unparseable":
         _edit_booley_toml(booley_dir, '"16g"', '"lots"')
     elif row == "no-project":
         (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
+    elif row == "inside-unaligned":
+        _edit_booley_toml(booley_dir, '"16g"', '"17179869185"')
+    elif row == "inside-unapplied":
+        _edit_booley_toml(booley_dir, '"16g"', '"2290m"')
 
     result = _doctor_run(tmp_path)
 
+    if row.startswith("inside-"):
+        _assert_inside_sandbox_memory(row, result)
+        return
     warns = _messages(result, Severity.WARN, check_id="sandbox.memory-unset")
+    drift = _messages(result, Severity.WARN, check_id="sandbox.memory-drift")
+    assert drift == []
     if row == "set":
         assert warns == []
-        assert any(m.startswith("[sandbox].memory = 16") for m in _messages(result, Severity.PASS))
+        passes = _messages(result, Severity.PASS)
+        assert any(m.startswith("[sandbox].memory = 16") for m in passes)
+        assert not any("the Sandbox's memory limit" in m for m in passes)
     elif row == "no-project":
         assert warns == []
         assert "sandbox memory skipped - no valid project config" in _messages(
@@ -2978,6 +3061,42 @@ def test_sandbox_memory(row, tmp_path, monkeypatch):
         assert "the Memory Budget falls back to installed memory" in warning
         assert ("unparseable" in warning) is (row == "unparseable")
         assert "memory_budget" not in warning
+
+
+def _setup_sandbox_memory_row(row, tmp_path, monkeypatch):
+    """Set up a Project and a fake cgroup limit file; return the Booley Directory."""
+    if row.startswith("inside-"):
+        _runtime_setup(tmp_path, monkeypatch, inside=True)
+        booley_dir = tmp_path / ".booley"
+    else:
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+    cgroup = tmp_path / "memory.max"
+    monkeypatch.setattr(doctor.resource_policy, "CGROUP_MEMORY_LIMIT_PATHS", (cgroup,))
+    if row != "inside-unreadable":
+        # The host row's 8g proves host Doctor ignores the live limit.
+        cgroup.write_text(f"{(8 if row == 'set' else 16) * _GIB}\n", encoding="utf-8")
+    return booley_dir
+
+
+def _assert_inside_sandbox_memory(row, result):
+    warns = _messages(result, Severity.WARN, check_id="sandbox.memory-unset")
+    drift = _messages(result, Severity.WARN, check_id="sandbox.memory-drift")
+    passes = _messages(result, Severity.PASS)
+    live_pass = "[sandbox].memory = 16g: the Sandbox's memory limit, which sizes the Memory Budget"
+    assert warns == []
+    if row in {"inside-applied", "inside-unaligned"}:
+        assert drift == []
+        assert live_pass in passes
+    elif row == "inside-unapplied":
+        (warning,) = drift
+        assert "'2290m'" in warning
+        assert "still 16g" in warning
+        assert "`booley session refresh`" in _fixes(result, warning)[0]
+    else:
+        (warning,) = drift
+        assert "no readable memory limit" in warning
+        assert not any(m.startswith("[sandbox].memory") for m in passes)
 
 
 def test_sandbox_swap(tmp_path, monkeypatch):
@@ -3107,7 +3226,7 @@ def _prepare_row(monkeypatch, row):
         monkeypatch.setattr(
             host_diagnostics,
             "inspect_host",
-            lambda: host_diagnostics.HostDiagnosticResult(report, None),
+            lambda _root: host_diagnostics.HostDiagnosticResult(report, None),
         )
 
 

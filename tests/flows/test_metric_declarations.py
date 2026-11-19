@@ -95,8 +95,8 @@ clk2   -0.100   0.500    3                      200                  0.050    0.
 _SYNTH_OUTPUT = (
     "Chip area for top module '\\t': 52480.0\n"
     "Number of cells: 12345\n"
-    "STA_PERCLOCK: name=clk_core period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000\n"
-    "STA_PERCLOCK: name=clk_io period_ns=5.000000 wns_ns=-1.000000 whs_ns=0.200000\n"
+    "STA_PERCLOCK: name=clk_core period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000 setup_same_clock=1\n"
+    "STA_PERCLOCK: name=clk_io period_ns=5.000000 wns_ns=-1.000000 whs_ns=0.200000 setup_same_clock=1\n"
 )
 
 
@@ -145,7 +145,7 @@ def _coverage_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     """Lint values of one Target with a warning and an error."""
-    from booley.flows.lint.flow import LintConfigResult, count_lint_errors, parse_warnings
+    from booley.flows.lint.flow import LintConfigResult, lint_error_findings, parse_warnings
 
     output = (
         "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
@@ -154,7 +154,7 @@ def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     return LintConfigResult(
         target="lite",
         warnings=parse_warnings(output, "lite"),
-        error_count=count_lint_errors(output, "verilator"),
+        error_findings=lint_error_findings(output, "verilator"),
     ).flow_metrics()
 
 
@@ -162,7 +162,7 @@ def _mutation_values() -> Any:
     """Mutation values of a run that scored four valid Mutants and detected three."""
     from booley.flows.mutation.metrics import mutation_metric_values
 
-    return mutation_metric_values(3, 1)
+    return mutation_metric_values(3, ["MUT-1 negate a.v:4: 'a' -> 'b'"])
 
 
 # Flows with no report reader of their own: ``coverage`` has no Flow, the ``sim`` reader serves it.
@@ -229,7 +229,8 @@ def test_synth_report_yields_declared_metric_values() -> None:
 
     # ``jtag`` reports a period but no slack (NA), so no fmax can be derived for it.
     metrics = _synth_metrics(
-        _SYNTH_OUTPUT + "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+        _SYNTH_OUTPUT
+        + "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
     )
     metrics.area_kge = 65.8
     detail = _synth_detail(metrics)

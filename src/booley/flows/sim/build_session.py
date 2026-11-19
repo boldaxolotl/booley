@@ -28,6 +28,7 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
 from booley.core.file_lock import (
+    LockTimeoutError,
     release_file_lock,
     reset_child_lease_fd,
     set_child_lease_fd,
@@ -35,7 +36,10 @@ from booley.core.file_lock import (
 )
 from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
+from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.runtime.filesystem_utils import make_directories
+from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
@@ -47,6 +51,14 @@ from .record_reports import simulation_booley_dir
 
 class SimulationBuildSlotError(RuntimeError):
     """A Simulation build slot cannot be used safely."""
+
+
+class SimulationBuildLeaseTimeoutError(SimulationBuildSlotError):
+    """The Target slot lease stayed busy for the whole bounded wait."""
+
+
+class SimulationBuildLeaseStoppedError(SimulationBuildSlotError):
+    """The supervised execution stopped while waiting for the Target slot lease."""
 
 
 class CacheDecision(StrEnum):
@@ -62,6 +74,8 @@ class CacheDecision(StrEnum):
 
 
 _GENERATION_DIR = "g"
+# How long one lease attempt blocks before the wait rechecks cancellation.
+_LEASE_SLICE_S = 0.5
 
 
 def _runtime_artifacts(prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
@@ -643,8 +657,9 @@ def preview_generation_root(handle: TargetHandle, variant: str = "") -> Path:
 class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
     """Hold one Target slot across preparation, selected tests, and artifact capture."""
 
-    def __init__(self, handle: TargetHandle, variant: str = "") -> None:
+    def __init__(self, handle: TargetHandle, variant: str = "", *, wait_s: float) -> None:
         self.handle = handle
+        self._wait_s = wait_s
         self.variant = variant
         self.slot = simulation_build_slot(handle, variant)
         self._lock: IO[str] | None = None
@@ -657,20 +672,48 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
     def __enter__(self) -> SimulationBuildSession:
         try:
-            self.slot.mkdir(parents=True, exist_ok=True)
+            make_directories(self.slot)
             lock = (self.slot / "lease.lock").open("a+", encoding="utf-8")
             try:
-                wait_for_file_lock(lock, timeout_s=60)
+                self._wait_for_lease(lock)
             except BaseException:
                 lock.close()
                 raise
             self._lock = lock
             self._lease_token = set_child_lease_fd(lock.fileno())
             return self
+        except SimulationBuildSlotError:
+            raise
         except (OSError, RuntimeError) as exc:
             raise SimulationBuildSlotError(
                 f"cannot lease Simulation slot {self.slot}: {exc}"
             ) from exc
+
+    def _wait_for_lease(self, lock: IO[str]) -> None:
+        """Wait up to the build timeout for the lease, reporting and watching for a stop."""
+        deadline = time.monotonic() + self._wait_s
+        reported = False
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                wait_for_file_lock(lock, timeout_s=min(_LEASE_SLICE_S, remaining))
+                return
+            except LockTimeoutError:
+                pass
+            if not reported:
+                announce_unit("waiting for the Simulation build slot")
+                reported = True
+            scope = current_supervised_execution()
+            if scope is not None and scope.cancelled():
+                raise SimulationBuildLeaseStoppedError(
+                    f"stopped waiting for Simulation slot {self.slot}: "
+                    f"{scope.describe_cancellation()}"
+                )
+            if time.monotonic() >= deadline:
+                raise SimulationBuildLeaseTimeoutError(
+                    f"Simulation slot {self.slot} stayed busy for {self._wait_s:g}s "
+                    "(the build timeout)"
+                )
 
     def new_generation(self) -> Path:
         """Allocate an empty, never-reused FuseSoC output root under the lease."""
@@ -914,6 +957,8 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
 __all__ = [
     "CacheDecision",
+    "SimulationBuildLeaseStoppedError",
+    "SimulationBuildLeaseTimeoutError",
     "SimulationBuildSession",
     "SimulationBuildSlotError",
     "TargetCompileSurface",

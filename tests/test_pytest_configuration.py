@@ -132,6 +132,20 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[bus-expected2]",
     "tests/bwave/test_scope_relative_globs.py::test_gui_refuses_bit_slice[False]",
     "tests/bwave/test_scope_relative_globs.py::test_gui_refuses_bit_slice[True]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before hs --count-find *req* 1 --before 25 --count-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --after hs --first-find *req* 1 --after 25 --first-2]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before hs-find *req* 1 --before 25-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --after hs-find *req* 1 --after 25-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[sample *req* 1 -s *data* --before hs --count-sample *req* 1 -s *data* --before 25 --count-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[sample *req* 1 -s *data* --after hs --first-sample *req* 1 -s *data* --after 25 --first-2]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[sample *req* 1 -s *data* --after hs-sample *req* 1 -s *data* --after 25-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before=hs --count-find *req* 1 --before=25 --count-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --time=hs:he-find *req* 1 --time=25:35-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 -ths:he-find *req* 1 -t25:35-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[value --at=hs -s *req*-value --at=25 -s *req*-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[diff -s *data* hs he-diff -s *data* 25 35-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before hs --async --count-find *req* 1 --before 265 --async --count-0]",
+    "tests/bwave/test_sessions.py::test_async_marker_bound_on_a_clockless_trace_is_refused",
 }
 
 

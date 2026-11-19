@@ -56,6 +56,14 @@ def _eda_warning_reasons(metrics: SynthMetrics) -> tuple[str, ...]:
     )
 
 
+def _failure_reasons(metrics: SynthMetrics, timing: tuple[str, ...]) -> tuple[str, ...]:
+    if metrics.passed:
+        return timing
+    if metrics.termination == "infrastructure_error":
+        return ()
+    return (metrics.failure_reason(), *timing)
+
+
 def _run(metrics: SynthMetrics, *, fatal_timing: bool) -> ImplementationRun:
     warnings, failures = _timing_reasons(metrics, fatal=fatal_timing)
     warnings = (*warnings, *_eda_warning_reasons(metrics))
@@ -72,7 +80,7 @@ def _run(metrics: SynthMetrics, *, fatal_timing: bool) -> ImplementationRun:
         elapsed_s=metrics.elapsed_s,
         termination=metrics.termination,
         warning_reasons=warnings if metrics.passed else (),
-        failure_reasons=failures if metrics.passed else (),
+        failure_reasons=_failure_reasons(metrics, failures),
         metrics=metrics.qor_detail(),
         conditions=conditions,
         completion={

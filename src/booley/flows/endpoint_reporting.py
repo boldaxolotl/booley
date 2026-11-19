@@ -26,6 +26,7 @@ from booley.runtime.endpoint_execution import (
     normalize_completion_error,
 )
 from booley.runtime.execution_records import atomic_write_json
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
@@ -231,7 +232,7 @@ def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool 
 def _next_invocation_dir(endpoint: EndpointState, report_dir: Path) -> Path:
     """Atomically reserve the next numbered ``{endpoint_name}/{N}`` directory."""
     endpoint_dir = report_dir / endpoint.name
-    endpoint_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(endpoint_dir)
     while True:
         # `.pruned-<N>` directories keep their number reserved.
         existing = (
@@ -260,7 +261,7 @@ def reserve_invocation_dir(endpoint: EndpointState) -> Path | None:
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
-    report_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(report_dir)
     if endpoint._reserved_invocation_dir is None:
         endpoint._reserved_invocation_dir = endpoint._next_invocation_dir(report_dir)
     return endpoint._reserved_invocation_dir
@@ -275,7 +276,7 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
-    report_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(report_dir)
     if not endpoint._skip_report_detail_refresh:
         endpoint.refresh_report_detail(result)
     report = _report_document(endpoint, result)
@@ -513,6 +514,30 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
         print(result.report_text, flush=True)
 
 
+def removed_root(endpoint: EndpointState) -> str | None:
+    """Name the checkout or Booley Directory that vanished since the run started."""
+    if endpoint._run_roots is None:
+        return None
+    checkout, booley_dir = endpoint._run_roots
+    if not checkout.is_dir():
+        return f"checkout {checkout}"
+    if booley_dir is not None and not booley_dir.is_dir():
+        return f"Booley Directory {booley_dir}"
+    return None
+
+
+def report_root_removed(endpoint: EndpointState) -> bool:
+    """Whether the report directory lies under a checkout or Booley Directory that vanished."""
+    report_dir = endpoint.args.report_dir
+    if report_dir is None or endpoint._run_roots is None:
+        return False
+    report_dir = Path(report_dir).absolute()
+    return any(
+        root is not None and not root.is_dir() and report_dir.is_relative_to(root)
+        for root in endpoint._run_roots
+    )
+
+
 def _finish_main(
     endpoint: EndpointState,
     result: EndpointOutcome,
@@ -521,12 +546,12 @@ def _finish_main(
     started: float | None,
     *,
     dry_run: bool,
-    non_persisting_dry_run: bool,
+    persist_report: bool,
 ) -> int:
     """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
     duration = (time.monotonic() - started) if started is not None else 0.0
     try:
-        if not non_persisting_dry_run:
+        if persist_report:
             _publish_report_with_recovery(endpoint, result)
     finally:
         try:

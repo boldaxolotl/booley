@@ -53,7 +53,13 @@ over that severity bug with a project waiver.
    Sandbox-specific SKIPs on each side; a *FAIL* that exists on one side only
    is real. The host-session reminder is a PASS: Project Setup planning expects a
    Claude Code or Codex session on the host, while Booley Flows and MCP tools live only in the Sandbox. It needs
-   no waiver. Resolve or waive other host-only warnings before continuing.
+   no waiver. Resolve host warnings about this Project. A host finding about
+   state this Project does not own belongs to the user: never waive it in this
+   Project's waiver file and do not run its remedy. Another Project's leftovers
+   show as notes: they do not block setup, so list each with its `→` remedy for
+   the final report. A host-wide warning or failure (Host Bootstrap, the host
+   clock) and another Project's unusable claim or journal file keep their
+   severity: hand each to the user with its remedy.
 7. Run plain `booley doctor` **once more** in the container after the footprint
    and host findings are settled. Host-side waiver changes must land before this
    point.
@@ -308,6 +314,7 @@ Once all three final invocations are green:
   changed.
 - Report every waiver with its check ID, subject (if any), reason, and expiry or
   permanent status. There must be no warning merely "left for later."
+- List each host finding left for the user in step 6, with its `→` remedy.
 - Set `status: complete` in `SETUP-PLAN.md`, and include the plan's §3
   deviation log plus (unattended mode) any `review`-flagged decision rows the
   user should audit.

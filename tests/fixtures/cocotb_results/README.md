@@ -2,8 +2,9 @@
 
 `2.1.0/results.xml` is one complete producer-emitted document containing a
 passing test, an assertion failure, and an explicitly skipped test. It replaces
-the authored mixed-suite input in the result parser tests. The zero-match and
-skip samples below add an empty suite and the run logs that name skip reasons.
+the authored mixed-suite input in the result parser tests. The zero-match,
+skip, and import-failure samples below add an empty suite, the run logs that
+name skip reasons, and the run logs of a test module that fails to import.
 Ordinary pytest runs read the XML and require neither Cocotb nor a simulator.
 
 ## Provenance
@@ -154,3 +155,44 @@ docker run --rm --network none --hostname cocotb-results \
 No substitutions were applied: the files are the emitted bytes. The suite
 timestamp, the `/capture/...` file property, and the log's REAL TIME and RATIO
 columns differ per capture.
+
+## Import-failure samples
+
+When a test module fails to import, Cocotb 2.1.0 prints no `Failed to import
+module` line. Test discovery lets the exception escape, so the
+console holds a Python traceback through `discover_tests` and no results.xml is
+written. `import_missing_cases.py` imports a package that does not exist and
+`import_error_cases.py` imports a missing name from `os`. Three logs are checked
+in under `2.1.0/`:
+
+- `import-missing.log`: traceback ending in `ModuleNotFoundError` raised by the
+  test module's own import.
+- `import-error.log`: traceback ending in a plain `ImportError`.
+- `import-test-module-missing.log`: the test module itself does not exist, so
+  the traceback has no `<module>` frame of the test module.
+
+Captured on 19 NOV 2026 with Cocotb **2.1.0** (`cocotb-config --version`),
+Icarus, and the local Sandbox Image `booley-sandbox:latest`, image ID
+`sha256:434acae01dbc78416c762555f08842e3e96e547e86eaa2ed3b1682ce56d1ad0b`.
+`make` exits 2 (the Icarus makefile requires results.xml) and no results.xml
+exists afterwards. The command ends with `ls results.xml` failing, which
+confirms the file is absent.
+
+```sh
+capture_dir=$(mktemp -d)
+docker run --rm --network none --hostname cocotb-results \
+  --user "$(id -u):$(id -g)" --entrypoint sh \
+  --mount type=bind,src="$PWD/tests/fixtures/cocotb_results",dst=/source,readonly \
+  --mount type=bind,src="$capture_dir",dst=/capture \
+  booley-sandbox:latest -c '
+    cp /source/import_missing_cases.py /source/import_error_cases.py \
+      /source/capture.sv /source/Makefile /capture/ &&
+    cd /capture &&
+    test "$(cocotb-config --version)" = 2.1.0 &&
+    COCOTB_RANDOM_SEED=1 make COCOTB_TEST_MODULES=import_missing_cases > import-missing.log 2>&1;
+    COCOTB_RANDOM_SEED=1 make COCOTB_TEST_MODULES=import_error_cases > import-error.log 2>&1;
+    COCOTB_RANDOM_SEED=1 make COCOTB_TEST_MODULES=qa_no_such_test_module \
+      > import-test-module-missing.log 2>&1; ls results.xml'
+```
+
+No substitutions were applied: the logs are the emitted bytes.

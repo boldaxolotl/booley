@@ -65,6 +65,7 @@ from booley.runtime.project_worktree_pairing import (
 from booley.runtime.session_activity import process_identity_from_session_key
 from booley.runtime.submodule_materialization import SubmoduleMaterializationError, submodule_paths
 from booley.runtime.worktree_evidence import tracked_booley_paths, worktree_evidence_paths
+from booley.runtime.worktree_usage import WORKTREE_BRANCH_PREFIXES
 
 _RECORD_SCHEMA = 1
 
@@ -76,6 +77,10 @@ _LABELS: tuple[Label, ...] = get_args(Label)
 _STAMP_FORMAT = "%Y%m%dT%H%M%S%fZ"
 _STAMP_PATTERN = r"\d{8}T\d{12}Z"
 _SUBJECT: dict[Label, str] = {"outer": "the worktree", "paired": "its Paired Checkout"}
+_DETACHED: dict[Label, str] = {
+    "outer": "detached HEAD",
+    "paired": "the Paired Checkout's detached HEAD",
+}
 
 
 class WorktreeRemovalRefusedError(Exception):
@@ -105,7 +110,7 @@ class Removal:
 
     evidence: Path | None
     kept_branches: tuple[str, ...]
-    detached_head: str | None
+    detached_heads: dict[Label, str]  # Component label to the commit its detached HEAD was on
 
 
 @dataclass(frozen=True)
@@ -132,6 +137,7 @@ class _Target:
     record_path: Path
     started: list[str] = field(default_factory=lambda: [])
     record_exists: bool = False
+    detached: dict[Label, str] = field(default_factory=lambda: {})
 
 
 # ---------------------------------------------------------------------------
@@ -174,11 +180,11 @@ def _paired_component(path: Path, registrations: list[Registration]) -> _Compone
     return None if plain_copy and not (nested / ".git").exists() else component
 
 
-def _read_started(record_path: Path) -> list[str] | None:
-    """The components the record says began removal; ``None`` without a record.
+def _read_record(record_path: Path) -> tuple[list[str], dict[Label, str]] | None:
+    """The components the record says began removal and their detached commits.
 
-    An unreadable record counts as one that proves nothing, which only makes the
-    checks stricter.
+    ``None`` without a record. An unreadable record counts as one that proves
+    nothing, which only makes the checks stricter.
     """
     try:
         raw = record_path.read_bytes()
@@ -187,15 +193,24 @@ def _read_started(record_path: Path) -> list[str] | None:
     try:
         payload: object = json.loads(raw)
     except ValueError:
-        return []
+        return [], {}
     if not isinstance(payload, dict):
-        return []
-    items = cast("dict[str, object]", payload).get("started")
-    if not isinstance(items, list):
-        return []
-    return [
-        item for item in cast("list[object]", items) if isinstance(item, str) and item in _LABELS
-    ]
+        return [], {}
+    fields = cast("dict[str, object]", payload)
+    items = fields.get("started")
+    started = (
+        [item for item in cast("list[object]", items) if isinstance(item, str) and item in _LABELS]
+        if isinstance(items, list)
+        else []
+    )
+    commits = fields.get("detached")
+    detached: dict[Label, str] = {}
+    if isinstance(commits, dict):
+        for label in _LABELS:
+            commit = cast("dict[str, object]", commits).get(label)
+            if isinstance(commit, str):
+                detached[label] = commit
+    return started, detached
 
 
 def _is_inside(candidate: Path, directory: Path) -> bool:
@@ -212,11 +227,12 @@ def _locate(project_root: Path, main: Path, name: str) -> _Target:
     outer = _component("outer", path, outer_registrations)
     paired = None if source is None else _paired_component(path, paired_registrations)
     record_path = common / "worktrees" / ".removing" / f"{name}.json"
-    started = _read_started(record_path)
+    record = _read_record(record_path)
     target = _Target(
         name, main, common, path, source, outer, paired,
         [*outer_registrations, *paired_registrations], record_path,
-        started or [], started is not None,
+        [] if record is None else record[0], record is not None,
+        {} if record is None else record[1],
     )  # fmt: skip
     gone = outer.state == "gone" and (paired is None or paired.state == "gone")
     if gone and not target.record_exists:
@@ -371,7 +387,7 @@ def _work_reasons(target: _Target, component: _Component) -> list[str]:
     upstream = merge_target(_upstream_repo(target, component))
     unmerged = count_unmerged(component.path, upstream)
     if unmerged:
-        branch = (registration.branch or "detached HEAD").removeprefix("refs/heads/")
+        branch = (registration.branch or _DETACHED[component.label]).removeprefix("refs/heads/")
         reasons.append(
             f"{unmerged} commit(s) on {branch} not in {upstream.removeprefix('refs/heads/')}"
         )
@@ -505,7 +521,7 @@ def _evidence_root(common: Path) -> Path:
 
 
 def _write_record(target: _Target) -> None:
-    payload = {"schema": _RECORD_SCHEMA, "started": target.started}
+    payload = {"schema": _RECORD_SCHEMA, "started": target.started, "detached": target.detached}
     target.record_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_replace_bytes(target.record_path, (json.dumps(payload) + "\n").encode())
     target.record_exists = True
@@ -570,23 +586,51 @@ def _move_evidence(target: _Target) -> Path | None:
     return destination
 
 
-def _kept(target: _Target) -> tuple[tuple[str, ...], str | None]:
-    """Branches and the detached HEAD the removal leaves reachable, read before deleting."""
+def _own_branches(target: _Target, component: _Component) -> list[str]:
+    """The component's named branches that exist now, whether or not a HEAD is on them.
+
+    The Paired Checkout's ``booley-worktree/<name>`` always counts. The outer
+    worktree's ``booley/<name>`` and ``wt/<name>`` count only when it has no
+    branch, so that a detached HEAD does not hide the branch that blocks reusing
+    the name.
+    """
+    if component.label == "paired":
+        repo, names = target.source, [f"booley-worktree/{target.name}"]
+    elif component.registration is None or component.registration.branch is None:
+        repo, names = target.main, [f"{p}{target.name}" for p in WORKTREE_BRANCH_PREFIXES]
+    else:
+        return []
+    if repo is None:
+        return []
+    return [
+        n
+        for n in names
+        if run_git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{n}").returncode == 0
+    ]
+
+
+def _kept(target: _Target) -> tuple[tuple[str, ...], dict[Label, str]]:
+    """Branches and detached HEADs the removal leaves reachable, read before deleting."""
     branches: list[str] = []
-    detached = None
+    detached: dict[Label, str] = {}
     for component in (target.paired, target.outer):
-        registration = None if component is None else component.registration
-        if registration is None:
+        if component is None:
             continue
-        if registration.branch is not None:
+        registration = component.registration
+        if registration is None:
+            if _resuming(target, component) and component.label in target.detached:
+                detached[component.label] = target.detached[component.label]
+        elif registration.branch is not None:
             branches.append(registration.branch.removeprefix("refs/heads/"))
-        elif component is target.outer:
-            detached = registration.head
+        else:
+            detached[component.label] = registration.head
+        branches.extend(b for b in _own_branches(target, component) if b not in branches)
     return tuple(branches), detached
 
 
 def _remove(target: _Target) -> Removal:
     branches, detached = _kept(target)
+    target.detached = detached
     _write_record(target)
     evidence = _move_evidence(target)
     if target.source is not None and target.paired and target.paired.state != "gone":
@@ -658,8 +702,11 @@ def report_removal(name: str, removal: Removal) -> str:
         lines.append(f"Evidence kept in {removal.evidence}")
     if removal.kept_branches:
         lines.append(f"Branches kept: {', '.join(removal.kept_branches)}")
-    if removal.detached_head is not None:
-        lines.append(f"detached HEAD was {removal.detached_head}")
+    lines.extend(
+        f"{_DETACHED[label]} was {removal.detached_heads[label]}"
+        for label in _LABELS
+        if label in removal.detached_heads
+    )
     return "\n".join(lines)
 
 

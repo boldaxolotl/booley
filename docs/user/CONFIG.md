@@ -137,14 +137,17 @@ reserve as much as that Target's build until Booley has measured them.
 If the kernel kills a Job for running out of memory because the Sandbox has
 used `[sandbox].memory` plus its
 [swap](SANDBOX.md#project-settings-sandbox), Booley runs it again once,
-alone. A second kill fails the Job.
+alone. A second kill fails the Job. When one test of a Simulation (with its
+Pre-Sim Commands) is killed after the shared build, or one build or simulation
+of a Mutation run is killed, only that part runs again.
 
 If the host itself runs out of memory while the Sandbox stays below that
 limit, running alone does not help, so Booley does not retry the Job. The
 result says the host ran out of memory: free memory on the host, or lower
-`[sandbox].memory` and recreate the Sandbox, then run the Job again. A kill
-Booley cannot see (inside a FuseSoC generator, a Pre-Sim Command or a mutation
-run, for example) is a plain failure.
+`[sandbox].memory` and recreate the Sandbox, then run the Job again. A Mutant
+whose build or simulation is killed on the host, or killed again when run
+alone, counts as inconclusive. A kill Booley cannot see (inside a FuseSoC
+generator, for example) is a plain failure.
 
 Limits apply to one Project.
 
