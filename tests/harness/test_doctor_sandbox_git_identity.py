@@ -227,7 +227,8 @@ def test_credential_helper_warns(sandbox_git):
         _run_checks(sandbox_git, reporter)
         finding = _single_warn(reporter, CREDENTIAL_ID)
         assert shown in finding.message
-        assert sandbox_git.config_files[scope].as_posix() in finding.message
+        # Git echoes the path as given for some scopes and slash-normalized for others.
+        assert sandbox_git.config_files[scope].as_posix() in finding.message.replace("\\", "/")
         assert "editor attach" in finding.message
         assert "dev.containers.gitCredentialHelperConfigLocation" in finding.fix
 
