@@ -14,9 +14,13 @@ import pytest
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.runtime import runtime_context, worktree_paths
+from booley.runtime.docs_links import sandbox_doc_path
+from tests.docs.test_sandbox_doc_citations import citation_problems
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
+
+_REMOVAL_CITATION = f'{sandbox_doc_path("WORKTREES.md")} → "Removing a worktree"'
 
 # ---------------------------------------------------------------------------
 # Parser and venue
@@ -173,7 +177,8 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert command in steps, "Snapshot removal instructions missing"
     assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
     assert "WARNING" not in steps
-    assert "preserve" in steps and "WORKTREES.md (host doc, not shipped)" in steps
+    assert "preserve" in steps
+    assert _REMOVAL_CITATION in steps and citation_problems(steps, "Snapshot steps") == []
     assert steps.count("git -C") == 2 and "booley-worktree/" not in steps
     assert shlex.join(["git", "-C", str(project), "branch", "-D", "booley/goal-entry"]) in steps
     assert "populated submodules" in steps and "--force" in steps
@@ -1282,6 +1287,8 @@ def test_existing_project_registration_is_refused_and_preserved(
     assert shlex.join(["git", "-C", str(source), "worktree", "remove", str(nested)]) in error
     assert "preserve" in error and "locks" in error and "forcing removal" in error
     assert "remove --force" not in error
+    flat = " ".join(error.split())
+    assert _REMOVAL_CITATION in flat and citation_problems(flat, "Pairing refusal") == []
     assert nested.as_posix() in git(source, "worktree", "list", "--porcelain")
     assert git(source, "rev-parse", "booley-ticket/taken")
 
