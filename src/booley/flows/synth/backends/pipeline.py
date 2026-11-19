@@ -50,6 +50,7 @@ from booley.flows.synth.mode import runs_openroad
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import SynthDiagnostics, parse_synth_diagnostics
 from booley.flows.target_parameters import ParameterValue
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 
 # Bounded log tail echoed by a failing make recipe so the actionable
@@ -144,7 +145,7 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
             f"synth: physical Target {(spec.target or spec.design_name)!r} has no "
             "Target-owned SDC files"
         )
-    build_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(build_dir)
     _clear_stage_artifacts(build_dir, spec.design_name)
 
     warnings: list[str] = []
@@ -179,7 +180,7 @@ def _configure_openroad(spec: SynthSpec, build_dir: Path) -> SynthSpec:
     The OpenROAD script, the interpret half and the reuse key all read the
     returned spec's SDC paths.
     """
-    (build_dir / "reports" / "timing").mkdir(parents=True, exist_ok=True)
+    make_directories(build_dir / "reports" / "timing")
     staged = tuple(_stage_sdc(i, path, build_dir) for i, path in enumerate(spec.timing.sdc))
     # Relative script-internal paths: the recipes run with cwd=build_dir.
     openroad_timing.write_openroad_script(

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from booley.flows.artifact_durability import durable_copy, durable_directory
 from booley.fusesoc.fusesoc_registry import mirrored_source_path
+from booley.runtime.filesystem_utils import make_directories
 
 if TYPE_CHECKING:
     from booley.fusesoc.fusesoc_registry import ResolvedTarget
@@ -136,7 +137,7 @@ def _prepare_overlay(build: Path, inputs: tuple[str, ...]) -> tuple[_RuntimeInpu
             if not source.is_relative_to(build) or not source.is_file():
                 raise RuntimeInputError(f"declared staged input is missing: {value}")
             overlay = _safe_child(overlay_root, relative, label="runtime input overlay")
-            overlay.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(overlay.parent)
             if not overlay.exists() and not overlay.is_symlink():
                 overlay.symlink_to(source)
             elif not overlay.is_symlink() or overlay.resolve() != source:
@@ -323,7 +324,7 @@ def _materialize_simulation_record_input(
     if source.is_symlink() or not source.is_file():
         raise RuntimeInputError(f"declared runtime input is missing: {source_relative}")
     authoritative = copies_root / destination_relative
-    authoritative.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(authoritative.parent)
     durable_copy(source, authoritative)
     size, digest = _runtime_identity(authoritative)
     destination = run_cwd / destination_relative

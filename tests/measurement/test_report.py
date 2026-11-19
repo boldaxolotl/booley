@@ -50,12 +50,6 @@ def write_markdown_report(view: dict[str, Any]) -> Path:
     return write_report(view)
 
 
-@pytest.fixture(autouse=True)
-def plain_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Terminal text without ANSI unless a test turns colour on."""
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-
-
 def section(markdown: str, title: str) -> str:
     """The body of the Markdown section *title*; empty when the report has none."""
     marker = f"## {title}\n"

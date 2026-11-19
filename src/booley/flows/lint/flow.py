@@ -65,6 +65,7 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
 )
 from booley.runtime.execution_records import atomic_write_json
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -879,7 +880,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         """Refresh the live tail and publish captured numbered evidence."""
         try:
             build_root = work_root_for(self.args.work_dir, "lint", selector)
-            build_root.mkdir(parents=True, exist_ok=True)
+            make_directories(build_root)
             write_run_log(build_root, combined)
         except OSError:
             logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
@@ -1071,7 +1072,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         report_dir = self.args.report_dir
         if report_dir is None:
             return None
-        report_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(report_dir)
 
         warning_details = _build_warning_details(unique_warnings)
         errors = [{"target": cr.target, "message": cr.error} for cr in (errored or [])]

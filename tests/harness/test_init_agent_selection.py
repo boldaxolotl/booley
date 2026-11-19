@@ -17,7 +17,7 @@ from booley.harness.setup.common import InitContext
 from booley.projects import inventory
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
-from tests.conftest import symlink_or_skip
+from tests.conftest import symlink_or_skip, use_terminal_stdin
 from tests.docker_cli_guard import docker_cli_absent, docker_cli_answers
 from tests.harness.init_agent_support import (
     api_key,
@@ -477,16 +477,13 @@ def test_seed_stops_when_existing_guidance_cannot_be_inspected(
         assert reached == [tmp_path]
 
 
-def _select_at_terminal(root, **flags):
-    """Resolve and persist the selection with a terminal; return the last record."""
-    ctx = InitContext(project_root=root, interactive=True, show_step_banners=False)
-    config = project_config(root)
-    # private: `run_init` takes `interactive` from `sys.stdin.isatty`, bound when booley is
-    # imported, so a test cannot give it a terminal; prompts are driven at the selection step.
-    selection = init_cmd._resolve_agent_selection(ctx, argparse.Namespace(**flags), config)
-    if selection is not None:
-        init_cmd._step_agent_config(ctx, selection, config)  # private: same reason
-    return ctx.results[-1]
+def _select_at_terminal(root, monkeypatch, capsys):
+    """Run ``booley init --seed`` at a terminal; return its output."""
+    use_terminal_stdin(monkeypatch)
+    project_config(root)
+    stub_host_images(monkeypatch)
+    seed_init(root)
+    return capsys.readouterr().out
 
 
 def _answer_prompts(monkeypatch, *answers):
@@ -532,21 +529,19 @@ def test_terminal_prompts_resolve_or_abort(
         api_key(monkeypatch, "claude")
     asked = _answer_prompts(monkeypatch, *answers)
 
-    result = _select_at_terminal(tmp_path)
+    output = _select_at_terminal(tmp_path, monkeypatch, capsys)
 
     assert len(asked) == prompts
     if len(asked) == 2:
         assert "auth for claude" in asked[1]
     config = tmp_path / ".booley" / "booley.toml"
     if written is None:
-        assert result == init_cmd.StepResult("agent_config", "err", "agent selection aborted")
+        assert "agent_config — agent selection aborted" in output
         assert not config.exists()
     else:
         assert config.read_bytes() == written
     if len(answers) == 3:
-        assert (
-            "agent provider selection aborted after 3 invalid answers" in capsys.readouterr().out
-        )
+        assert "agent provider selection aborted after 3 invalid answers" in output
 
 
 @pytest.mark.parametrize(
@@ -574,16 +569,16 @@ def test_terminal_prompts_resolve_or_abort(
     ],
 )
 def test_recorded_selection_is_kept_without_prompting(
-    tmp_path, monkeypatch, body, credentials, label
+    tmp_path, monkeypatch, capsys, body, credentials, label
 ):
     """A prompt would abort: the recorded selection is authoritative and not rewritten."""
     if "key" in credentials:
         api_key(monkeypatch, "claude")
     config = project_config(tmp_path, body)
 
-    result = _select_at_terminal(tmp_path)
+    output = _select_at_terminal(tmp_path, monkeypatch, capsys)
 
-    assert result == init_cmd.StepResult("agent_config", "skip", label)
+    assert f"agent_config — {label}" in output
     assert config.read_bytes() == body
 
 
