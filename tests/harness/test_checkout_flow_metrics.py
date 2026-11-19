@@ -230,8 +230,25 @@ def test_coverage_run_returns_coverage_percents_with_test_counts(
     assert judged(result, "coverage", "line_coverage_max", "line_coverage")[1] == 1
 
 
+@pytest.mark.parametrize(
+    ("noise", "fragments"),
+    [
+        pytest.param(
+            "Failed to import module tb_top: ModuleNotFoundError: No module named 'pyuvm'\n",
+            ("tb_top", "pyuvm"),
+            id="cocotb-1x",
+        ),
+        pytest.param(
+            (
+                Path(__file__).parents[1] / "fixtures/cocotb_results/2.1.0/import-missing.log"
+            ).read_text(encoding="utf-8"),
+            ("import_missing_cases", "qa_no_such_module_xyz"),
+            id="cocotb-2x",
+        ),
+    ],
+)
 def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, noise: str, fragments: tuple[str, str]
 ) -> None:
     from booley.measurement.metrics_file import Bound, TableRules
     from booley.measurement.verdicts import FlowFailed, evaluate_table, measure_exit_code
@@ -255,7 +272,6 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
     import_failure = tmp_path / "cocotb"
     import_failure.mkdir()
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
-    noise = "Failed to import module tb_top: ModuleNotFoundError: No module named 'pyuvm'\n"
     # The run half swaps "results.xml not found" for the import failure it finds in the output.
     detail = find_import_failure(noise)
     stdout = noise + _cocotb_output([], state="missing", detail=detail, passed=False)
@@ -274,18 +290,18 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
         (Bound("tests_total_min", "tests_total", "min", 1, None, None, None),),
         (),
     )
-    for result, fragments in (
+    for result, expected in (
         (missing, ("missing tool: verilator",)),
-        (cocotb, ("tb_top", "pyuvm")),
+        (cocotb, fragments),
     ):
         assert result.metrics == {}
         assert result.excerpt is not None
-        assert all(fragment in result.excerpt for fragment in fragments), result.excerpt
+        assert all(fragment in result.excerpt for fragment in expected), result.excerpt
         verdicts = evaluate_table(rules, FlowFailed(result.excerpt))
         assert [v.detail for v in verdicts] == [result.excerpt]
         assert measure_exit_code(v.verdict for v in verdicts) == 2
     (reason,) = cocotb.unavailable.values()
-    assert "tb_top" in reason and "pyuvm" in reason
+    assert all(fragment in reason for fragment in fragments)
 
 
 def unfinished_simulation_record_result(
