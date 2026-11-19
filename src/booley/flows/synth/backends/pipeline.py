@@ -46,7 +46,7 @@ from booley.flows.synth.backends.openroad import reporting as openroad_reporting
 from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.flows.synth.backends.yosys import core as syn_core
-from booley.flows.synth.mode import runs_openroad
+from booley.flows.synth.mode import SynthMode, runs_openroad
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import SynthDiagnostics, parse_synth_diagnostics
 from booley.flows.target_parameters import ParameterValue
@@ -437,6 +437,19 @@ _RECIPE_TOKEN_PLACEHOLDER = "0" * 32
 def openroad_recipe_text(spec: SynthSpec) -> str:
     """The OpenROAD stage's recipe with a fixed token: one OpenROAD reuse-key input."""
     return "\n".join(_sta_recipe_lines(spec, _RECIPE_TOKEN_PLACEHOLDER))
+
+
+def tool_phases(mode: SynthMode | str, frontend: str) -> tuple[str, ...]:
+    """The tool phases one synthesis run goes through, in run order.
+
+    Mirrors the stages :func:`_render_makefile` renders: ``sv2v`` for the sv2v
+    frontend, ``yosys``, and ``openroad`` when the mode runs it.
+    """
+    return (
+        *(("sv2v",) if frontend == "sv2v" else ()),
+        "yosys",
+        *(("openroad",) if runs_openroad(mode) else ()),
+    )
 
 
 def _yosys_recipe_lines(spec: SynthSpec, token: str, prereq: str) -> list[str]:

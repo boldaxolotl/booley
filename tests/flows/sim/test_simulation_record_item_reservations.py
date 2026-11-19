@@ -300,7 +300,11 @@ def _scenario(
     path.write_text(json.dumps({"$schema": SCHEMA, "records": list(history)}), encoding="utf-8")
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
+        lambda _root: SimpleNamespace(
+            select=lambda *_args, **_kwargs: state.handle,
+            # A synthesis Job plans its tools from the Target's flow options.
+            inspect=lambda _handle: SimpleNamespace(flow_options={}),
+        ),
     )
     # Private seam: the fake simulators stand in for the Pre-Sim hook runner, which has no public
     # injection point on the executor.
