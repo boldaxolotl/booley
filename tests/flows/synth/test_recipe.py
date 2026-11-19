@@ -160,6 +160,11 @@ def test_snapshot_records_the_settings_in_effect(
     [
         pytest.param({"setup_margin_ns": float("-inf")}, "setup-margin-ns", id="argv-parse"),
         pytest.param({"utilization_pct": float("nan")}, "utilization_pct", id="range-check"),
+        pytest.param({"abc_delay_ps": 0}, "abc_delay_ps", id="abc-delay"),
+        pytest.param({"utilization_pct": 150.0}, "utilization_pct", id="utilization"),
+        pytest.param({"placement_density": 2.0}, "placement_density", id="density"),
+        pytest.param({"setup_margin_ns": -1.0}, "setup_margin_ns", id="margin"),
+        pytest.param({"repair_tns_percent": 150.0}, "repair_tns_percent", id="tns"),
     ],
 )
 def test_snapshot_rejects_settings_the_backend_rejects(tmp_path, call, message):
