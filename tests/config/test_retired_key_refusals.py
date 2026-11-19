@@ -700,6 +700,9 @@ NOT_A_KEY: dict[str, str] = {
     ),
     "src/booley/eda/cli.py::run": "a deprecated CLI command, not configuration",
     "src/booley/flows/endpoint_session.py::finish_execution": "reports a removed checkout",
+    "src/booley/flows/mutation/flow.py::<module>": (
+        "a report note that duplicate Mutants are removed, not configuration"
+    ),
     "src/booley/runtime/filesystem_utils.py::RemovedDirectoryError.__init__": (
         "refuses to recreate a removed checkout, not configuration"
     ),
