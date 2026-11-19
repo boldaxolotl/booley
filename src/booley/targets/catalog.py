@@ -245,10 +245,19 @@ class TargetCatalog:
         refs = next((refs for target_name, refs in self._declarations if target_name == name), ())
         return len(refs if include_private else self._visible(refs))
 
-    def inspect(self, handle: TargetHandle) -> TargetInspection:
-        """Inspect a handle through this snapshot's shared FuseSoC library view."""
+    def inspect(self, handle: TargetHandle, *, reconcile: bool = True) -> TargetInspection:
+        """Inspect a handle through this snapshot's shared FuseSoC library view.
+
+        With ``reconcile=False`` nothing is written: a fresh inspector refuses
+        with ``FuseSocError`` when Stealth core projections are out of date. It
+        is not retained, so the refusal never outlives a reconciling inspection.
+        """
         self._require_handle(handle)
         self._require_fresh()
+        if not reconcile:
+            return _TargetSourceInspector(
+                self.project_root, reconcile=False
+            ).inspect_catalog_handle(handle)
         if self._state.inspector is None:
             self._state.inspector = _TargetSourceInspector(self.project_root)
         return self._state.inspector.inspect_catalog_handle(handle)

@@ -167,8 +167,9 @@ def _conditioned_target_names(value: Any) -> set[str]:
 class _TargetSourceInspector:
     """Inspect and cache Target sources through one Project library view."""
 
-    def __init__(self, project_root: Path | str) -> None:
+    def __init__(self, project_root: Path | str, *, reconcile: bool = True) -> None:
         self.root = Path(project_root).resolve()
+        self._reconcile = reconcile
         self._prepared_state: tuple[fusesoc_registry.CoreLibraryPlan, CoreManager] | None = None
         self._startup_error: fusesoc_registry.FuseSocError | None = None
         self._documents: dict[Path, dict[str, Any]] = {}
@@ -183,7 +184,11 @@ class _TargetSourceInspector:
         if self._prepared_state is not None:
             return self._prepared_state
         try:
-            plan = fusesoc_registry.prepare_core_library_plan(self.root)
+            plan = (
+                fusesoc_registry.prepare_core_library_plan(self.root)
+                if self._reconcile
+                else fusesoc_registry.current_core_library_plan(self.root)
+            )
             manager = CoreManager(_InspectionConfig(), library_manager=LibraryManager())
             manager.core2parser = fusesoc_registry.fusesoc_core_parser()
             for index, (library_root, ignored_dirs) in enumerate(

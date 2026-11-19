@@ -202,6 +202,16 @@ def projection_issues(project_root: Path | str) -> tuple[str, ...]:
     return tuple(sorted(issues))
 
 
+def reconciliation_issues(project_root: Path | str) -> tuple[str, ...]:
+    """Describe what preparing the FuseSoC library view would reconcile, without writes.
+
+    Empty outside Stealth Mode.
+    """
+    root = Path(project_root)
+    projections = projection_issues(root) if projection_enabled(root) else ()
+    return (*projections, *registry_issues(root))
+
+
 def registry_issues(project_root: Path | str) -> tuple[str, ...]:
     """Describe what :func:`reconcile_isolated_registry` would change, without writes.
 

@@ -192,21 +192,26 @@ def _reference_projection(
 
 
 STEALTH_SOURCE_LIMITATION = (
-    "Stealth Mode: no verified source snapshot is available, so analysis uses "
-    "normalized report evidence only and no Waiver Candidate is ready for human review."
+    "Stealth Mode: the Stealth core projections are out of date ({issues}), so analysis "
+    "uses normalized report evidence only and no Waiver Candidate is ready for human "
+    "review. A new Simulation run refreshes them once no file named here blocks them."
 )
 
 
 def stealth_source_limitation(project_root: Path) -> str | None:
-    """Return the Stealth Mode reason sources are unavailable, or None outside it."""
-    from booley.fusesoc.core_projection import projection_enabled
+    """Return why Stealth Mode leaves sources unread, or None when it does not.
+
+    Only out-of-date Stealth core projections qualify: a Simulation run
+    refreshes them. An unreadable configuration or authored core keeps the
+    generic report-only limitation, which no refresh fixes.
+    """
+    from booley.fusesoc.core_projection import CoreProjectionError, reconciliation_issues
 
     try:
-        enabled = projection_enabled(project_root)
-    except ValueError:
-        # An unreadable configuration is a report-only cause coverage_sources already folds in.
+        issues = reconciliation_issues(project_root)
+    except (CoreProjectionError, OSError, ValueError):
         return None
-    return STEALTH_SOURCE_LIMITATION if enabled else None
+    return STEALTH_SOURCE_LIMITATION.format(issues=", ".join(issues)) if issues else None
 
 
 def coverage_sources(
@@ -215,15 +220,10 @@ def coverage_sources(
     """Return the complete verified closure, or report-only on any mismatch."""
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
-    from booley.fusesoc.core_projection import projection_enabled
     from booley.targets.catalog import TargetCatalog
     from booley.targets.domain import FuseSocError
 
     try:
-        # FuseSoC inspection reconciles projected/isolated cores in stealth mode.
-        # Advisory source access must not prepare or change that project state.
-        if projection_enabled(project_root):
-            raise CoverageAnalysisError("Source inspection requires project reconciliation")
         catalog = TargetCatalog.build(project_root)
         handle = catalog.select(coverage_record.target.identity)
         _safe_path(handle.core_file)
@@ -232,7 +232,8 @@ def coverage_sources(
         )
         if fingerprint != coverage_record.fingerprints["target_definition"]:
             return None
-        inspection = catalog.inspect(handle)
+        # Advisory source access must not change Project state.
+        inspection = catalog.inspect(handle, reconcile=False)
         expected = {"rtl": [], "testbench": []}
         files = {}
         root = project_root.resolve()
