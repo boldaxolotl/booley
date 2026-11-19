@@ -166,6 +166,18 @@ def test_cli_prints_the_report_once(
     assert report in (shown.out if exit_code == 0 else shown.err)
 
 
+def test_base_without_changes_in_scope_exits_zero_without_model_call(
+    repo: Path, agent: ScriptedAgent
+) -> None:
+    (repo / "rtl/e.sv").write_text(E_SV + "// outside scope\n", newline="\n")
+
+    result = review(repo, agent, ["--scope", "rtl/a.sv,rtl/c.sv", "--base", "main"])
+
+    assert result.exit_code == 0
+    assert "No changes in scope since main" in result.report_text
+    assert agent.calls == []
+
+
 def test_missing_spec_is_refused_even_when_nothing_changed(
     repo: Path, agent: ScriptedAgent
 ) -> None:
