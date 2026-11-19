@@ -109,6 +109,7 @@ from .run_directory import (
     require_run_directory_outside,
 )
 from .test_run_binding import observation_test_runs, work_item_test_runs
+from .test_run_files import TRACE_WARNING_CODE
 
 #: Where a build directory keeps its Simulator Bundle manifest.
 _BUNDLE_MANIFEST_PATH = "evidence/bundle.json"
@@ -1543,7 +1544,7 @@ def _result_diagnostics(
         )
         for item in diagnostics
     ]
-    entries.extend(("trace_conversion", warning) for warning in trace_warnings)
+    entries.extend((TRACE_WARNING_CODE, warning) for warning in trace_warnings)
     return [
         {"severity": "warning", "code": code, "pointer": "", "message": _bounded_reason(message)}
         for code, message in entries

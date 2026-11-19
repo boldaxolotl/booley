@@ -323,7 +323,14 @@ def test_passing_test_run_of_a_traced_run_shows_its_waveform(
     assert waveform.is_file()
     # The log of a passing run stays in simulation.json; the card has no rerun block.
     # #5059: the conversion's warnings follow the waveform line, indented under it.
-    assert card[3:] == [f"        {warning}" for warning in warnings]
+    assert card[3:] == (
+        [
+            f"        {_CUT}",
+            "        WARNING: 2 value changes name no declared identifier",
+        ]
+        if warned
+        else []
+    )
     _, document, _ = _only_work_item(tmp_path)
     assert [
         (item["code"], item["message"])
