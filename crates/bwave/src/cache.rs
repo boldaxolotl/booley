@@ -2157,6 +2157,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let (radix_map, radix_warnings) = build_radix_map(cache, &target_indices, cfg);
     json_warnings.extend(radix_warnings);
+    let mode = TriggerMode::classify(find_value_str);
     let sync_mode = !cfg.async_mode;
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
