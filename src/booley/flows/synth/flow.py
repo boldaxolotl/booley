@@ -504,6 +504,22 @@ class SynthMetrics:
             and not self.has_critical
         )
 
+    def failure_reason(self) -> str:
+        """One-line cause of a failed run, as the card and RESULT line name it."""
+        if self.timed_out:
+            return "timeout"
+        if self.termination == "oom":
+            return "OOM"
+        if self.termination == "resource_killed":
+            return "resource-killed"
+        if self.termination == "design_failure":
+            return _design_failure_reason(self)
+        if self.returncode != 0:
+            return f"rc={self.returncode}" + ("" if self.has_metrics else ", no metrics")
+        if not self.has_metrics:
+            return "no metrics"
+        return "critical conditions" if self.has_critical else "failed"
+
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
@@ -2953,26 +2969,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     @staticmethod
     def _format_failure_summary(tgt: str, cur: SynthMetrics) -> str:
         """Format one target failure for the final RESULT line."""
-        reason = "failed"
-        if cur.infra_error:
-            reason = cur.infra_error
-        elif cur.timed_out:
-            reason = "timeout"
-        elif cur.termination == "oom":
-            reason = "OOM"
-        elif cur.termination == "resource_killed":
-            reason = "resource-killed"
-        elif cur.termination == "design_failure":
-            reason = _design_failure_reason(cur)
-        elif cur.returncode != 0 and not cur.has_metrics:
-            reason = f"rc={cur.returncode}, no metrics"
-        elif cur.returncode != 0:
-            reason = f"rc={cur.returncode}"
-        elif not cur.has_metrics:
-            reason = "no metrics"
-        elif cur.has_critical:
-            reason = "critical conditions"
-        return f"{tgt}: {reason}"
+        return f"{tgt}: {cur.infra_error or cur.failure_reason()}"
 
 
 def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:
