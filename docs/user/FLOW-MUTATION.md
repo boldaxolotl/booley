@@ -70,16 +70,19 @@ observable behavior, which is why the default threshold is 80 %, not all.
 ### Equivalent Mutants on Verilator Targets
 
 On a Verilator Target, Booley compares the C++ Verilator generates for each
-Mutant with the baseline's. A Mutant with identical C++ builds the same
-simulator as the original, so no test could detect it: Booley skips it and
-takes the next candidate instead. The run still scores `--count` Mutants
-unless the candidates run out or fail to build; the report then states how many it scored. A
-Mutant that does not build is replaced the same way on every Target, and the
-report states how many candidates did not build. The run stops replacing after
-`--count` candidates failed to build and scores the Mutants it kept; with none
-kept it ends with `ERROR`. The report does not list the skipped Mutants; the
-run's machine-readable result holds their IDs. On other Targets, such as
-Icarus, no Mutant is skipped as equivalent.
+Mutant with the baseline's and with every Mutant it already kept. A Mutant with
+identical C++ to the baseline builds the same simulator as the original, so no
+test could detect it; one with identical C++ to a kept Mutant tests the same
+behavior twice. Booley skips either and takes the next candidate instead. The
+run still scores `--count` Mutants unless the candidates run out or fail to
+build; the report then states how many it scored. A Mutant that does not build
+is replaced the same way on every Target, and the report states how many
+candidates did not build. The run stops replacing after `--count` candidates
+failed to build and scores the Mutants it kept; with none kept it ends with
+`ERROR`. The report does not list the skipped Mutants; the run's
+machine-readable result holds their IDs, and for a duplicate the ID of the
+Mutant it duplicates. On other Targets, such as Icarus, no Mutant is skipped as
+equivalent or duplicate.
 
 ## Which Mutants it plants
 
@@ -114,7 +117,9 @@ directories. The testbench is never mutated, but editing it can change the
 Mutants. When Booley cannot read the whole design (a module that is missing, a
 vendor primitive, a file the parser rejects, any other error in the design, or
 a Target it cannot inspect), it reads each scope file alone with its default
-parameters, and the report says so on a `Target elaboration failed` line. A
+parameters, and the report says so on a `Target elaboration failed` line,
+followed by a note that Mutants may then duplicate each other and that only
+Verilator Targets remove duplicates. A
 module the Target never instantiates is also read with its default parameters
 when Booley can reach it.
 

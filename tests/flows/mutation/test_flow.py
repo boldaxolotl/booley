@@ -535,18 +535,26 @@ def _mutant_index(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+_FOLD_LINE = b"  assign y = a & b; // folds"
+
+
 def _write_fake_verilation(build_root: Path) -> None:
     """What a Verilator build leaves in its root: a dependency file and the RTL's C++.
 
     The C++ names each staged source by its absolute path, as ``VL_STOP_MT`` does for a
     design that calls ``$error``, and holds the source without the lines marked ``// dead``,
-    the code a default assignment that every branch overwrites compiles away.
+    the code a default assignment that every branch overwrites compiles away.  A line marked
+    ``// folds`` other than ``_FOLD_LINE`` compiles to one constant, as a parameter value
+    that the generator did not know folds any change of that expression away.
     """
     (build_root / "Vtb__ver.d").write_bytes(b"Vtb.cpp: deps\n")
     lines: list[bytes] = []
     for staged in sorted(build_root.glob("src/**/*.sv")):
         lines.append(f'VL_STOP_MT("{staged}", 1, "")'.encode())
-        lines += [line for line in staged.read_bytes().split(b"\n") if b"// dead" not in line]
+        for line in staged.read_bytes().split(b"\n"):
+            if b"// dead" in line:
+                continue
+            lines.append(b"folded" if b"// folds" in line and line != _FOLD_LINE else line)
     (build_root / "Vtb___024root__0.cpp").write_bytes(b"\n".join(lines) + b"\n")
 
 
@@ -1827,6 +1835,7 @@ def test_identity_is_in_results_and_manifest(tmp_path: Path, monkeypatch) -> Non
     assert reason.startswith(f"{_SCOPE}:")
     assert f"Mutant generation: per-file elaboration ({reason})" in progress
     assert identity == expected
+    assert result.report_text.splitlines()[2] == _DUPLICATE_RISK_LINE
     assert manifest["identity"] == result.detail["identity"]
     markdown = _results_markdown(tmp_path, result)
     for line in (
@@ -1949,6 +1958,7 @@ def test_a_run_without_a_verdict_publishes_a_complete_manifest(
 
     assert result.exit_code == EXIT_ERROR
     assert result.report_text.startswith("mutation campaign produced no trustworthy verdict")
+    assert result.report_text.splitlines()[2] == _DUPLICATE_RISK_LINE  # a per-file run
     assert result.detail["phase"] == "variant_infrastructure"
     assert result.report_text.splitlines()[-1].startswith("RESULT: ERROR (sweep: ")
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
@@ -2604,6 +2614,7 @@ def test_verilator_equivalent_mutant_is_replaced_by_the_next_candidate(
     assert (result.detail["total_requested"], result.detail["total_scored"]) == (4, 4)
     assert len(result.detail["classified"]) == 4
     assert "shortfall" not in result.detail
+    assert result.detail["duplicate_dropped"] == []  # every kept Mutant builds different C++
     # The dropped Mutant was built (its C++ was compared) but never simulated, and the
     # next candidate took its number and build directory.
     assert fake.runs == [None, 1, 2, 3, 4]
@@ -2736,6 +2747,72 @@ def test_equivalent_and_build_failure_drops_share_one_replacement_order(
     assert result.detail["equivalent_dropped"] == equivalent
     assert result.detail["invalid_dropped"] == invalid
     assert fake.runs == [None, 1, 2, 3, 4]
+
+
+_DUPLICATE_RISK_LINE = (
+    "[mutation_test] Parameter values were unknown to the generator, so Mutants may "
+    "duplicate each other; duplicates are removed only on Verilator Targets"
+)
+# `y = a & b` is the only line that stays as written: any Mutant of it, and `folds`
+# stands for a parameter value that makes the expression a constant, builds the same C++.
+_FOLDING_RTL = """\
+module m (input logic [3:0] a, input logic [3:0] b, output logic [3:0] y, output logic [3:0] z);
+  assign y = a & b; // folds
+  assign z = a | b;
+endmodule
+"""
+
+
+@pytest.mark.parametrize("inconclusive", [False, True], ids=["scored", "inconclusive"])
+def test_verilator_duplicate_mutant_is_replaced_by_the_next_candidate(
+    tmp_path: Path, monkeypatch, inconclusive: bool
+) -> None:
+    _write_scope(tmp_path, _FOLDING_RTL)
+    ranked = _candidates(tmp_path)
+    # The pick order, pinned: a generator change fails here, not in the walk below.
+    assert [mutant.line for mutant in ranked[:8]] == [3, 2, 2, 3, 3, 2, 2, 3]
+
+    def run(index: int | None) -> subprocess.CompletedProcess:
+        if inconclusive and index == 3:
+            return _fake_proc(rc=1, stdout=_INFRA_OUT)
+        return _detects_every_mutant(index)
+
+    # Candidates 0 and 3 do not build; 1, 4 and 7 are kept; 2, 5 and 6 build the C++ of
+    # candidate 1.  Counting duplicates toward the cap of 3 would stop the run after 3.
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=3,
+        seed=0,
+        min_detected=0,
+        run=run,
+        build=_failing_builds(1, 4),
+        simulation=_VERILATED,
+    )
+
+    detail = result.detail
+    if inconclusive:
+        assert result.exit_code == EXIT_ERROR
+        assert detail["phase"] == "variant_infrastructure"
+    else:
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        assert "shortfall" not in detail
+    assert detail["duplicate_dropped"] == [
+        {"id": ranked[i].id, "duplicates": ranked[1].id} for i in (2, 5, 6)
+    ]
+    assert detail["invalid_dropped"] == [ranked[0].id, ranked[3].id]
+    assert detail["equivalent_dropped"] == []
+    assert [(row["index"], row["id"]) for row in detail["classified"]] == [
+        (1, ranked[1].id),
+        (2, ranked[4].id),
+        (3, ranked[7].id),
+    ]
+    assert fake.builds == [None, 1, 1, 2, 2, 2, 3, 3, 3]
+    assert fake.runs == [None, 1, 2, 3]
+    assert [row["index"] for row in detail["variant_files"]] == [1, 2, 3]
+    assert _DUPLICATE_RISK_LINE not in result.report_text  # the scope elaborated whole
+    for i in (2, 5, 6):
+        assert ranked[i].id not in result.report_text
 
 
 def test_verilator_version_separates_run_identities(tmp_path: Path, monkeypatch) -> None:

@@ -526,6 +526,23 @@ EQUIVALENT_MUTANT_NOTE = (
 )
 
 
+#: After the per-file elaboration line: why two Mutants may test one behavior.
+_DUPLICATE_RISK_NOTE = (
+    "[mutation_test] Parameter values were unknown to the generator, so Mutants may "
+    "duplicate each other; duplicates are removed only on Verilator Targets"
+)
+
+
+def _elaboration_fallback_lines(identity: Mapping[str, Any]) -> list[str]:
+    """The report lines saying the Mutants were generated per file, and what that risks."""
+    if not (reason := identity.get("elaboration_fallback")):
+        return []
+    return [
+        f"[mutation_test] Target elaboration failed, Mutants generated per file: {reason}",
+        _DUPLICATE_RISK_NOTE,
+    ]
+
+
 def generate_specs_markdown(specs: list[MutationSpec]) -> str:
     lines = [
         "# Mutation Specifications",
@@ -740,7 +757,7 @@ class MutationRunPlan:
         """The ``--count auto`` fields shared by the report detail and the manifest.
 
         Empty for an explicit count. ``scored`` is the number of Mutants actually
-        scored, so a generator or equivalence shortfall alone can set ``budget_capped``.
+        scored, so a generator, equivalence, or duplicate shortfall alone can set ``budget_capped``.
         """
         if not self.auto_mode:
             return {}
@@ -786,8 +803,19 @@ class RunResultInputs:
     equivalent_dropped: list[str] = field(default_factory=list)
     #: IDs of the candidates whose build failed and were replaced, in drop order.
     invalid_dropped: list[str] = field(default_factory=list)
+    #: ``{"id", "duplicates"}`` of each candidate dropped for building the C++ of the kept
+    #: Mutant ``duplicates``, in drop order.
+    duplicate_dropped: list[dict[str, str]] = field(default_factory=list)
     #: Each test run's baseline duration and Mutant time limit, for the run artifacts.
     time_limits: Mapping[str, MutantTimeLimit] = field(default_factory=dict)
+
+    def dropped_detail(self) -> dict[str, Any]:
+        """The result detail's lists of dropped candidates."""
+        return {
+            "equivalent_dropped": self.equivalent_dropped,
+            "invalid_dropped": self.invalid_dropped,
+            "duplicate_dropped": self.duplicate_dropped,
+        }
 
 
 @dataclass(frozen=True)
@@ -828,6 +856,13 @@ _Dropped = Literal["equivalent", "build_failure"]
 
 
 @dataclass(frozen=True)
+class _Duplicate:
+    """A candidate dropped because its generated C++ equals a kept Mutant's."""
+
+    of: str  # the kept Mutant's ID
+
+
+@dataclass(frozen=True)
 class VariantSweep:
     """The Mutants a sweep kept and scored, numbered 1..n, and the ones it dropped."""
 
@@ -835,6 +870,7 @@ class VariantSweep:
     results: list[MutationResult]
     equivalent_dropped: list[str]  # IDs of the Mutants whose build equals the baseline's
     invalid_dropped: list[str]  # IDs of the Mutants that did not build
+    duplicate_dropped: list[dict[str, str]]  # each Mutant whose build equals a kept Mutant's
     elapsed: float
     inconclusive: str  # why a Mutant's outcome cannot be trusted; empty when all can
 
@@ -1376,6 +1412,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             evidence=self._variant_evidence(variants),
             equivalent_dropped=sweep.equivalent_dropped,
             invalid_dropped=sweep.invalid_dropped,
+            duplicate_dropped=sweep.duplicate_dropped,
             time_limits=baseline.time_limits,
         )
         if sweep.inconclusive:
@@ -1644,13 +1681,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             min_detected=plan.min_detected,
             requested=plan.count,
         )
-        detail["equivalent_dropped"] = inputs.equivalent_dropped
-        detail["invalid_dropped"] = inputs.invalid_dropped
+        detail.update(inputs.dropped_detail())
         detail.update(plan.auto_count_fields(inputs.count))
         self._attach_campaign_artifacts(plan, inputs, detail)
         report_text = f"mutation campaign produced no trustworthy verdict: {reason}"
         if replaced_line := _replaced_builds_line(len(inputs.invalid_dropped)):
             report_text = f"{replaced_line}\n{report_text}"
+        report_text = "\n".join([report_text, *_elaboration_fallback_lines(inputs.identity)])
         artifact_lines = self._artifact_display_lines(detail)
         if artifact_lines:
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
@@ -2487,10 +2524,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Build and run candidates in pick order until ``plan.count`` Mutants are kept.
 
         Each candidate takes the next free number and build directory.  One whose build
-        equals the baseline's, or that does not build at all, is dropped and its number goes
-        to the next candidate; both drop kinds share the one pick order.  Reaching
-        ``plan.count`` candidates that did not build, or running out of candidates, leaves
-        fewer Mutants than requested.  Equivalent drops do not count toward that cap.
+        equals the baseline's or a kept Mutant's, or that does not build at all, is dropped and
+        its number goes to the next candidate; all drop kinds share the one pick order.
+        Reaching ``plan.count`` candidates that did not build, or running out of candidates,
+        leaves fewer Mutants than requested.  Equivalent and duplicate drops do not count
+        toward that cap.
         """
         start = time.monotonic()
         self._reset_mutant_logs()
@@ -2498,6 +2536,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         results: list[MutationResult] = []
         equivalent_dropped: list[str] = []
         invalid_dropped: list[str] = []
+        duplicate_dropped: list[dict[str, str]] = []
+        kept_cpp: list[tuple[Mapping[str, str], str]] = []
         inconclusive: list[str] = []
         # Progress counts to the Mutants that can run: a generator shortfall has
         # fewer candidates than the requested count.
@@ -2508,7 +2548,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             spec = _spec_of(len(specs) + 1, mutant)
             self.emit_progress(f"build and test Mutant {spec.index}/{planned}")
             variants = generated.variants.with_proposals([spec])
-            result = self._run_one_variant(plan, spec, variants, baseline)
+            result = self._run_one_variant(plan, spec, variants, baseline, kept_cpp)
+            if isinstance(result, _Duplicate):
+                duplicate_dropped.append({"id": spec.mutant_id, "duplicates": result.of})
+                continue
             if isinstance(result, str):
                 dropped = equivalent_dropped if result == "equivalent" else invalid_dropped
                 dropped.append(spec.mutant_id)
@@ -2519,7 +2562,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 inconclusive.append(f"mutation #{spec.index}: {result.inconclusive_reason}")
         elapsed = time.monotonic() - start
         return VariantSweep(
-            specs, results, equivalent_dropped, invalid_dropped, elapsed, "; ".join(inconclusive)
+            specs,
+            results,
+            equivalent_dropped,
+            invalid_dropped,
+            duplicate_dropped,
+            elapsed,
+            "; ".join(inconclusive),
         )
 
     def _run_one_variant(
@@ -2528,12 +2577,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         spec: MutationSpec,
         variants: MutationVariantPlan,
         baseline: Baseline,
-    ) -> MutationResult | _Dropped:
+        kept_cpp: list[tuple[Mapping[str, str], str]],
+    ) -> MutationResult | _Dropped | _Duplicate:
         """Build and test one Mutant, or say why the candidate is dropped.
 
-        ``"equivalent"``: the Mutant builds the baseline's C++.  ``"build_failure"``: the
-        Mutant does not build.  Either way its build directory is removed and it leaves no
-        log, since the next candidate reuses the number.
+        ``"equivalent"``: the Mutant builds the baseline's C++.  A ``_Duplicate``: it builds
+        the C++ of a Mutant already kept.  ``"build_failure"``: it does not build.  Each
+        drop removes the build directory and leaves no log, since the next candidate reuses
+        the number.
         """
         build_path = workspace.variant_build_dir(spec.index)
         elab, oom_kill = self._run_elab(
@@ -2552,9 +2603,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if elab.returncode != 0:
             shutil.rmtree(build_path, ignore_errors=True)
             return "build_failure"
-        if self._builds_the_baseline(plan.work_dir, build_path, baseline):
+        mutant_id = spec.mutant_id
+        if drop := self._compare_build(plan.work_dir, build_path, baseline, mutant_id, kept_cpp):
             shutil.rmtree(build_path, ignore_errors=True)
-            return "equivalent"
+            return drop
         runs = self._run_target_test_suite(
             plan.target,
             plan.work_dir,
@@ -2591,16 +2643,33 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         return tail_snippet(combined)
 
     @staticmethod
-    def _builds_the_baseline(work_dir: Path, build_path: Path, baseline: Baseline) -> bool:
-        """True if the Mutant's generated C++ equals the baseline's, so no test can tell them apart.
+    def _compare_build(
+        work_dir: Path,
+        build_path: Path,
+        baseline: Baseline,
+        mutant_id: str,
+        kept_cpp: list[tuple[Mapping[str, str], str]],
+    ) -> Literal["equivalent"] | _Duplicate | None:
+        """Say whether the Mutant's generated C++ makes it untestable apart from another build.
 
-        Never true without a baseline to compare with (a Target not simulated with
-        Verilator) or when the Mutant's build has no recognizable Verilator layout.
+        ``"equivalent"`` when it equals the baseline's, a ``_Duplicate`` when it equals a kept
+        Mutant's; otherwise the Mutant is recorded in ``kept_cpp`` and the answer is ``None``.
+        Always ``None`` without a baseline to compare with (a Target not simulated with
+        Verilator) or when the build has no recognizable Verilator layout.
         """
         if baseline.generated_cpp is None:
-            return False
+            return None
         generated = work_dir / (build_path / _EDALIZE_BINDIR_MARKER).read_text(encoding="utf-8")
-        return generated_cpp(generated, build_path, work_dir) == baseline.generated_cpp
+        digests = generated_cpp(generated, build_path, work_dir)
+        if digests is None:
+            return None
+        if digests == baseline.generated_cpp:
+            return "equivalent"
+        for kept_digests, kept_id in kept_cpp:
+            if digests == kept_digests:
+                return _Duplicate(kept_id)
+        kept_cpp.append((digests, mutant_id))
+        return None
 
     @staticmethod
     def _scope_residue(baseline: Mapping[str, str], work_dir: Path) -> list[str]:
@@ -2666,8 +2735,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         if inputs.shortfall:
             detail["shortfall"] = inputs.shortfall
-        detail["equivalent_dropped"] = inputs.equivalent_dropped
-        detail["invalid_dropped"] = inputs.invalid_dropped
+        detail.update(inputs.dropped_detail())
         detail.update(plan.auto_count_fields(count))
         if auto_mode:
             detail["source_size_budget"] = source_size_budget
@@ -2948,10 +3016,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         gate = "PASS" if passed else "FAIL"
         source = _threshold_source(plan, inputs.count)
         lines: list[str] = [self._identity_header(plan, inputs)]
-        if reason := inputs.identity.get("elaboration_fallback"):
-            lines.append(
-                f"[mutation_test] Target elaboration failed, Mutants generated per file: {reason}"
-            )
+        lines += _elaboration_fallback_lines(inputs.identity)
         if inputs.shortfall:
             lines.append(f"[mutation_test] {inputs.shortfall}")
         if replaced_line := _replaced_builds_line(len(inputs.invalid_dropped)):
@@ -3205,7 +3270,7 @@ def _mutation_detail(
 def _shortfall_message(scored: int, requested: int) -> str | None:
     """The note when ``scored`` Mutants fall short of ``requested``, else None.
 
-    One text for every cause (a generator shortfall or an equivalent drop), and it
+    One text for every cause (a generator shortfall or an equivalent or duplicate drop), and it
     claims nothing about how many candidates exist.
     """
     if scored >= requested:
