@@ -5645,3 +5645,78 @@ fn issue_4705_value_past_end_names_at_and_the_typed_time() {
     assert!(out.contains("# Snapshot at 30"), "{out}");
     let _ = std::fs::remove_file(fst);
 }
+
+fn fractional_clock_store(half_period: u64) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("frac.vcd");
+    let fst = dir.path().join("frac.fst");
+    let mut text = String::from("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$var wire 1 \" d $end\n$var wire 1 # k $end\n$var wire 1 $ rst_n $end\n$upscope $end\n$enddefinitions $end\n");
+    text.push_str("#0\n0!\n0\"\n0#\n0$\n#500\n1$\n");
+    let mut last = 500;
+    for i in 0..40u64 {
+        let t = (i + 1) * half_period;
+        text.push_str(&format!("#{t}\n{}!\n", (i + 1) % 2));
+        if i == 12 {
+            text.push_str("1\"\n");
+        }
+        last = t;
+    }
+    text.push_str(&format!("#{}\n", last + 100));
+    std::fs::write(&vcd, text).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+#[test]
+fn tick_times_keep_fractional_nanoseconds() {
+    let (_dir, fst) = fractional_clock_store(3200);
+    // (args, read stderr, expected substring) on a 1ps store with a 6400-tick clock.
+    let cases: &[(&[&str], bool, &str)] = &[
+        (
+            &["signal", "-s", "tb.d", "--clock", "tb.clk"],
+            true,
+            "# sync: period=6.4ns",
+        ),
+        (
+            &["stats", "-s", "tb.d"],
+            false,
+            "# Simulation: 127.6ns, 19 cycles (6.4ns period)",
+        ),
+        (
+            &["stats", "-s", "tb.d", "--async"],
+            false,
+            "# Simulation: 128.1ns",
+        ),
+        (&["stats", "-s", "tb.d", "--async"], false, "(86.5ns)"),
+        (&["stuck", "--async"], false, "(100%, 128.1ns)"),
+        (
+            &["value", "-s", "tb.d", "--at", "999"],
+            true,
+            "Simulation time range: 0.5ns..128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "-t", "500:600"],
+            true,
+            "the trace ends at 128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "--async", "-t", "999999t:9999999t"],
+            true,
+            "the trace ends at tick 128100 (128.1ns)",
+        ),
+    ];
+    for (args, use_err, expected) in cases {
+        let mut full: Vec<&str> = vec![args[0], &fst];
+        full.extend_from_slice(&args[1..]);
+        let (out, err, _) = run(&full);
+        let text = if *use_err { &err } else { &out };
+        assert!(
+            text.contains(expected),
+            "{args:?}: want {expected:?}\nstdout: {out}\nstderr: {err}"
+        );
+    }
+    let (_dir, fst) = fractional_clock_store(5000);
+    let (_, err, _) = run(&["signal", &fst, "-s", "tb.d"]);
+    assert!(err.lines().any(|l| l == "# sync: period=10ns"), "{err}");
+}
