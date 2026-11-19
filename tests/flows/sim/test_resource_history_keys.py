@@ -17,6 +17,10 @@ from typing import Any
 import pytest
 
 from booley.flows import job_resources
+from booley.flows.sim.build import SimulationBuildPreparationError
+from booley.flows.sim.build_session import SimulationBuildSession, SimulationBuildSlotError
+from booley.flows.sim.execution.contract import SimulationOptions
+from booley.flows.sim.execution.engine import SimulationExecution
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
@@ -24,6 +28,7 @@ from booley.flows.sim.verilator_coverage import SelectedCoverageRun, SimulationC
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.runtime import resource_history
 from tests.canned_process_support import measured_flow
+from tests.flows.sim.test_verilator_build_reuse_engine import _select
 from tests.flows.sim.test_verilator_build_reuse_record import (  # noqa: F401 -- fixture
     flow_project,
 )
@@ -292,11 +297,6 @@ def test_setup_without_edam_records_a_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A FuseSoC setup that exits zero but writes no EDAM is recorded as failed (#4964)."""
-    from booley.flows.sim.build import SimulationBuildPreparationError
-    from booley.flows.sim.execution.contract import SimulationOptions
-    from booley.flows.sim.execution.engine import SimulationExecution
-    from tests.flows.sim.test_verilator_build_reuse_engine import _select
-
     booley_dir = flow_project / ".booley"
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     _fusesoc_stub(tmp_path, monkeypatch, b"exit 0\n")
@@ -315,4 +315,65 @@ def test_setup_without_edam_records_a_failure(
     records = resource_history.load_records(booley_dir)
     assert [(r["key"]["phase"], r["outcome"], r["returncode"]) for r in records] == [
         ("sim_prepare", "exit_nonzero", 0)
+    ]
+
+
+def test_rejected_repeat_setup_is_recorded_beside_the_planning_setup(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repeated setup that exits zero but is refused is not dropped as an unchanged repeat (#4964)."""
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    flow = measured_flow(flow_project)
+    execution = SimulationExecution(
+        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
+    )
+    with execution.ordinary_group(_select(flow_project), ("first",), planning=True):
+        pass
+    _fusesoc_stub(tmp_path, monkeypatch, b"exit 0\n")
+
+    with (
+        pytest.raises(SimulationBuildPreparationError),
+        execution.ordinary_group(_select(flow_project), ("first",)),
+    ):
+        raise AssertionError("the Target has no EDAM, so preparation must fail")
+
+    records = resource_history.load_records(booley_dir)
+    assert [(r["key"]["phase"], r["outcome"], r["returncode"]) for r in records] == [
+        ("sim_prepare", "exit_zero", 0),
+        ("sim_prepare", "exit_nonzero", 0),
+    ]
+
+
+def test_elab_only_build_whose_image_is_rejected_records_a_failure(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An elaboration-only build that exits zero but whose image is refused is recorded failed (#4964)."""
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise SimulationBuildSlotError("build produced no image")
+
+    monkeypatch.setattr(SimulationBuildSession, "authorize_fresh_image", refuse)
+
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=flow_project,
+            report_dir=tmp_path / "reports",
+            mode=SimulationMode.ELAB_ONLY,
+            timeout_ms=hang_guard_s() * 1000,
+        )
+    )
+
+    assert result.exit_code != 0
+    records = resource_history.load_records(booley_dir)
+    assert [(r["key"]["phase"], r["outcome"], r["returncode"]) for r in records] == [
+        ("sim_prepare", "exit_zero", 0),
+        ("sim_build", "exit_nonzero", 0),
     ]

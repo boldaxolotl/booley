@@ -117,6 +117,10 @@ class JudgedCommands:
     def __init__(self) -> None:
         self._builders: list[Callable[[], list[dict[str, Any]]]] = []
         self._verdicts: dict[int, bool] = {}
+        # Commands that exited zero as an unchanged repeat: written only when judged failed.
+        self._unchanged_repeats: set[int] = set()
+        # An enclosing block that nested blocks join: it writes and judges for them.
+        self.joinable = False
 
     def judge(self, succeeded: bool, command: int | None = None) -> None:
         """Record the Flow's judgment of every held command, or of the one at *command*.
@@ -133,6 +137,8 @@ class JudgedCommands:
         """Build the records; a judged exit outcome follows the judgment, a stop stays."""
         rows: list[dict[str, Any]] = []
         for index, build in enumerate(self._builders):
+            if index in self._unchanged_repeats and self._verdicts.get(index) is not False:
+                continue
             for row in build():
                 if index in self._verdicts and row["outcome"] in ("exit_zero", "exit_nonzero"):
                     row["outcome"] = "exit_zero" if self._verdicts[index] else "exit_nonzero"
@@ -141,9 +147,18 @@ class JudgedCommands:
 
 
 @contextlib.contextmanager
-def judged_commands() -> Iterator[JudgedCommands]:
-    """Hold the records of the commands run inside the block; write them when it ends."""
+def judged_commands(*, joinable: bool = False) -> Iterator[JudgedCommands]:
+    """Hold the records of the commands run inside the block; write them when it ends.
+
+    A *joinable* block lets a ``judged_commands`` block nested in it hold and
+    judge its commands there, so the outer block has the last word on them.
+    """
+    outer = _judged.get()
+    if outer is not None and outer.joinable:
+        yield outer
+        return
     held = JudgedCommands()
+    held.joinable = joinable
     token = _judged.set(held)
     try:
         yield held
@@ -154,13 +169,13 @@ def judged_commands() -> Iterator[JudgedCommands]:
 
 
 @contextlib.contextmanager
-def judged_commands_failing_on_error() -> Iterator[JudgedCommands]:
+def judged_commands_failing_on_error(*, joinable: bool = False) -> Iterator[JudgedCommands]:
     """Like :func:`judged_commands`, but a block that raises judges its commands failed.
 
     For a block where an exception after a command is the Flow refusing that
     command's result.
     """
-    with judged_commands() as commands:
+    with judged_commands(joinable=joinable) as commands:
         try:
             yield commands
         except BaseException:
@@ -1040,16 +1055,19 @@ def record_command(
     nothing: they would pollute the Project's real keys. Inside ``judged_commands``
     the records are held until the block ends.
     """
-    if _repeating.get() and result.returncode == 0 and not result.timed_out:
+    unchanged_repeat = _repeating.get() and result.returncode == 0 and not result.timed_out
+    held = _judged.get()
+    if unchanged_repeat and held is None:
         return
 
     def build() -> list[dict[str, Any]]:
         return history_records(flow, label, flags, measurement, result)
 
-    held = _judged.get()
     if held is None:
         _append_to_history(build)
     else:
+        if unchanged_repeat:
+            held._unchanged_repeats.add(len(held._builders))
         held._builders.append(build)
 
 
