@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.flows.artifact_durability import durable_directory
 from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
@@ -394,6 +395,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 run_cwd=run_cwd,
                 declarations=declarations,
                 owned_run_directory=run_directory.owned,
+                booley_dir=resolve_checkout_booley_dir(request.project_root),
             )
         )
         evidence_root = request.attempt_directory / "execution-evidence"

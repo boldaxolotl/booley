@@ -287,6 +287,41 @@ async def test_running_cancel_is_terminal_after_process_stops_and_root_stays_pin
         await stop_jobs(jobs)
 
 
+@pytest.mark.asyncio
+async def test_cancelled_job_staged_inputs_are_removed_on_recovery(context, monkeypatch):
+    """A cancelled Job's staged input is swept once the child is reaped."""
+    build, run, booley_dir = (context.work_dir / name for name in ("build", "run", "booley"))
+    for directory in (build, run, booley_dir):
+        directory.mkdir()
+    (build / "firmware.hex").write_text("01\n", encoding="utf-8")
+    monkeypatch.setattr(job_results, "project_booley_dir", lambda: booley_dir)
+    jobs = JobLifecycle()
+    script = f"""
+        from pathlib import Path
+        import time
+        from booley.flows.sim.runtime_inputs import materialize_runtime_inputs
+        with materialize_runtime_inputs(
+            Path({str(build)!r}), Path({str(run)!r}), ("firmware.hex",),
+            booley_dir=Path({str(booley_dir)!r}),
+        ):
+            Path({str(context.work_dir / "ready")!r}).write_text("ready")
+            time.sleep({2 * hang_guard_s()})
+    """
+    run_id = jobs.submit("lint", command(script), JOB_TIMEOUT, context=context)
+    try:
+        await wait_until((context.work_dir / "ready").exists)
+        assert (run / "firmware.hex").is_symlink()
+        records = booley_dir / ".runtime/staged-runtime-inputs"
+        assert len(list(records.glob("*.json"))) == 1
+        assert await jobs.cancel(run_id) == "running"
+        await jobs.poll(run_id)
+        assert not (run / "firmware.hex").is_symlink()
+        assert list(run.iterdir()) == []
+        assert list(records.glob("*.json")) == []
+    finally:
+        await stop_jobs(jobs)
+
+
 def write_report(context, run_id, report):
     path = context.runtime_dir / "flow-reports/lint/1/report.json"
     path.parent.mkdir(parents=True, exist_ok=True)

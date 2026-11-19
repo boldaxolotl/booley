@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import uuid
 from pathlib import Path
@@ -315,6 +316,7 @@ def test_literal_runtime_input_materialization_is_attempt_owned_or_a_typed_confl
         run_cwd=run,
         declarations=(declaration,),
         owned_run_directory=False,
+        booley_dir=tmp_path / ".booley",
     )
 
     if conflict:
@@ -328,10 +330,144 @@ def test_literal_runtime_input_materialization_is_attempt_owned_or_a_typed_confl
             assert (run / "generated/nested/input.bin").read_bytes() == b"runtime input"
             assert bindings[0].owned is True
         assert not (run / "generated").exists()
+        assert not (tmp_path / ".booley/.runtime/staged-runtime-inputs").exists() or not list(
+            (tmp_path / ".booley/.runtime/staged-runtime-inputs").glob("*.json")
+        )
         assert (attempt / "runtime-inputs/generated/nested/input.bin").read_bytes() == (
             b"runtime input"
         )
     assert existing.read_bytes() == b"project-owned"
+
+
+_STAGED_DECLARATION = {
+    "declaration_id": "sha256:" + "2" * 64,
+    "source_artifact_path": "input.bin",
+    "destination": "generated/input.bin",
+}
+
+
+def _staging(tmp_path: Path, attempt: str):
+    """Stage ``generated/input.bin`` into the literal run of *tmp_path* for one attempt."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir(exist_ok=True)
+    (bundle / "input.bin").write_bytes(b"runtime input")
+    (tmp_path / attempt).mkdir()
+    (tmp_path / "run").mkdir(exist_ok=True)
+    return materialize_simulation_record_runtime_inputs(
+        bundle_root=bundle,
+        attempt_root=tmp_path / attempt,
+        run_cwd=tmp_path / "run",
+        declarations=(_STAGED_DECLARATION,),
+        owned_run_directory=False,
+        booley_dir=tmp_path / ".booley",
+    )
+
+
+def _die_staging(tmp_path: Path, *, inside_copy: bool = False) -> None:
+    """Stage in a forked worker that dies, like a SIGKILL, before it can clean up."""
+    from tests.flows.sim.test_simulation_record_crash_matrix import _KILLED, _run_killed
+
+    def worker() -> None:
+        if inside_copy:
+            real = shutil.copyfile
+
+            def dying(source, destination, **kwargs):
+                if Path(destination).is_relative_to(tmp_path / "run"):
+                    os._exit(_KILLED)
+                return real(source, destination, **kwargs)
+
+            shutil.copyfile = dying  # type: ignore[assignment]
+        with _staging(tmp_path, "attempt-killed"):
+            os._exit(_KILLED)
+
+    _run_killed(worker, tmp_path / "trace.txt")
+
+
+def _records(tmp_path: Path) -> list[Path]:
+    return list((tmp_path / ".booley/.runtime/staged-runtime-inputs").glob("*.json"))
+
+
+def _fails_with(tmp_path: Path, attempt: str, match: str) -> str:
+    """Stage once more and return the message of the error that fails the run."""
+    with pytest.raises(RuntimeInputError, match=match) as caught, _staging(tmp_path, attempt):
+        pytest.fail("the run must fail before it exposes its inputs")
+    return str(caught.value)
+
+
+def _modified_leftover_is_named(tmp_path: Path, destination: Path) -> None:
+    with destination.open("r+b") as stream:
+        stream.write(b"RUNTIME")
+    message = _fails_with(tmp_path, "attempt-2", "cancelled Booley run left it there")
+    assert "generated/input.bin" in message
+    assert "safe to delete" in message
+    assert destination.read_bytes() == b"RUNTIME input"
+    assert len(_records(tmp_path)) == 1
+
+
+def _symlinked_parent_is_refused(tmp_path: Path) -> None:
+    user = tmp_path / "user"
+    user.mkdir()
+    (user / "input.bin").write_bytes(b"runtime input")
+    (tmp_path / "run/generated").rename(tmp_path / "moved")
+    (tmp_path / "run/generated").symlink_to(user, target_is_directory=True)
+    _fails_with(tmp_path, "attempt-2", "contains a symlink")
+    assert (user / "input.bin").read_bytes() == b"runtime input"
+
+
+def _replayed_record_deletes_nothing(tmp_path: Path, destination: Path) -> None:
+    """The record of an already-swept run, replayed against a new file, deletes nothing."""
+    record = _records(tmp_path)[0]
+    stale = record.read_bytes()
+    swept = destination.stat().st_ino
+    with _staging(tmp_path, "attempt-2"):
+        pass
+    assert not destination.parent.exists()
+    destination.parent.mkdir()
+    holders = tmp_path / "holders"
+    holders.mkdir()
+    # A filesystem may hand the swept inode number to the next file; hold it so the
+    # replacement is a different file, as the record's identity check assumes.
+    for index in range(1000):
+        destination.write_bytes(b"runtime input")
+        if destination.stat().st_ino != swept:
+            break
+        destination.rename(holders / str(index))
+    assert destination.stat().st_ino != swept
+    record.write_bytes(stale)
+    _fails_with(tmp_path, "attempt-3", "cancelled Booley run left it there")
+    assert destination.read_bytes() == b"runtime input"
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="the kill worker forks")
+@pytest.mark.parametrize(
+    "case",
+    ["unchanged", "modified", "user-file", "pending", "parent-symlink", "stale-record-replay"],
+)
+def test_killed_staging_leftover_is_removed_or_named(tmp_path: Path, case: str) -> None:
+    """A killed run's copy goes; a user's file, or one the user changed, stays."""
+    destination = tmp_path / "run/generated/input.bin"
+    if case == "user-file":
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"runtime input")
+    _die_staging(tmp_path, inside_copy=case == "pending")
+    assert destination.exists() is (case != "pending")
+    assert len(_records(tmp_path)) == (case != "user-file")
+
+    if case == "modified":
+        return _modified_leftover_is_named(tmp_path, destination)
+    if case == "parent-symlink":
+        return _symlinked_parent_is_refused(tmp_path)
+    if case == "stale-record-replay":
+        return _replayed_record_deletes_nothing(tmp_path, destination)
+    if case == "pending":
+        destination.write_bytes(b"runtime input")
+    with _staging(tmp_path, "attempt-2") as bindings:
+        assert destination.read_bytes() == b"runtime input"
+        assert bindings[0].owned is (case == "unchanged")
+    assert destination.exists() is (case in {"user-file", "pending"})
+    assert destination.parent.exists() is (case in {"user-file", "pending"})
+    assert _records(tmp_path) == []
+    return None
 
 
 def _recording_executor(
@@ -998,3 +1134,20 @@ def test_resume_configures_its_recovered_shared_build_once(tmp_path: Path, monke
     assert resumed.launched == [("sim", (name,)) for name in ("t1", "t2", "t3")]
     # Resume re-plans one disclosure per group (4), then configures the recovered build once.
     assert resumed.configures == 5
+
+
+def test_a_failed_confirmation_unwinds_the_copy_it_follows(tmp_path: Path, monkeypatch) -> None:
+    from booley.flows.sim.staged_input_ledger import StagedInputLedger
+
+    real_created = StagedInputLedger.created
+
+    def failing(self: StagedInputLedger, relative: Path) -> None:
+        if relative.name == "input.bin":
+            raise OSError("disk full")
+        real_created(self, relative)
+
+    monkeypatch.setattr(StagedInputLedger, "created", failing)
+    with pytest.raises(OSError, match="disk full"), _staging(tmp_path, "attempt"):
+        pytest.fail("a failed confirmation must not expose the input")
+
+    assert not (tmp_path / "run/generated").exists()
