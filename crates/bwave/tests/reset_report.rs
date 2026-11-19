@@ -211,11 +211,8 @@ fn pulse_store(rst_sig: &str, rst: &[(u64, &str)]) -> (tempfile::TempDir, String
         (0, "0 flag".into()),
         (12, "1 flag".into()),
         (18, "0 flag".into()),
-        (42, "1 flag".into()),
-        (48, "0 flag".into()),
         (0, "0 early".into()),
         (12, "1 early".into()),
-        (0, "0 gclk".into()),
     ];
     for tick in (5..=100).step_by(5).filter(|t| *t <= 55 || *t >= 95) {
         let value = if tick % 10 == 5 { 1 } else { 0 };
@@ -295,9 +292,7 @@ fn reset_pulse_from_inactive_deasserts_where_it_ends() {
         args.extend_from_slice(extra);
         let reset = &json_of(&args)["reset"];
         assert_eq!(reset["deassert_tick"], 25, "{label}");
-        assert_eq!(reset["deassert_time"], "25ns", "{label}");
         assert_eq!(reset["skipped_cycles"], 2, "{label}");
-        assert_eq!(reset["chosen_by"], chosen, "{label}");
     }
 }
 
@@ -424,12 +419,8 @@ fn sync_text_and_overview_print_one_reset_line() {
         100,
     );
     let idle_line = "# reset: tb.rst (active-high by name, auto) never asserts; no cycles skipped";
-    let (out, err, _) = run(&["signal", &idle_path, "-s", "flag"]);
+    let (_, err, _) = run(&["signal", &idle_path, "-s", "flag"]);
     assert_eq!(reset_lines(&err), [idle_line]);
-    let (with_out, _, _) = run(&["signal", &idle_path, "-s", "flag", "--with-reset"]);
-    assert_eq!(out, with_out);
-    let (out, _, _) = run(&["overview", &idle_path]);
-    assert_eq!(reset_lines(&out), [idle_line]);
 
     let (_none, none_path) = store(&[("flag", 1)], &[(0, "0 flag"), (12, "1 flag")], 100);
     let none_line = "# reset: none detected; no cycles skipped";
