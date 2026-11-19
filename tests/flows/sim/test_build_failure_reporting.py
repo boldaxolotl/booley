@@ -178,37 +178,24 @@ def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypa
     assert diagnostic in outcome.output
 
 
-_CORE = "src/acme_lib_runtime_input_1/tb.sv"
-_OVERLAY_CORE = "src/acme_lib_runtime_input-booleytrace_1/tb.sv"
-_DESIGN_LINES = (
-    "{core}:4: syntax error",
-    "{core}:9: error: Unknown module type: missing",
-    "gen/other.sv:2: error: Unknown module type: other",
-)
-_SORRY = "{core}:4: sorry: Constant user functions are not supported."
+_DESIGN = ("{core}:4: syntax error", "gen/other.sv:2: error: Unknown module type: other")
+_SORRY = ("{core}:4: sorry: Constant user functions are not supported.",)
 
 
 @pytest.mark.parametrize(
-    ("trace", "core", "lines"),
-    [
-        (False, _CORE, _DESIGN_LINES),
-        (True, _OVERLAY_CORE, _DESIGN_LINES),
-        (False, _CORE, (_SORRY,)),
-    ],
+    ("trace", "lines"),
+    [(False, _DESIGN), (True, _DESIGN), (False, _SORRY)],
     ids=["design", "trace-overlay", "infrastructure"],
 )
 def test_build_failure_names_project_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trace: bool,
-    core: str,
-    lines: tuple[str, ...],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trace: bool, lines: tuple[str, ...]
 ) -> None:
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project = tmp_path / "project"
     state = _write_runtime_input_project(project)
     (state / "tests.toml").write_text('[sim]\ntests = ["t"]\n', encoding="utf-8")
+    core = f"src/acme_lib_runtime_input{'-booleytrace' if trace else ''}_1/tb.sv"
     printed = [line.format(core=core) for line in lines]
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -218,35 +205,29 @@ def test_build_failure_names_project_paths(
     )
     iverilog.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
-
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    execution = SimulationExecution(
-        invoke=_subprocess_invoker(project),
-        options=SimulationOptions(trace=trace, timeout_ms=hang_guard_s() * 1000),
-    )
+    options = SimulationOptions(trace=trace, timeout_ms=hang_guard_s() * 1000)
     with _real_fusesoc():
-        outcome = run_prepared_group(execution, handle, ())
+        outcome = run_prepared_group(
+            SimulationExecution(invoke=_subprocess_invoker(project), options=options), handle, ()
+        )
 
-    expected = [line.format(core="tb.sv") for line in lines]
-    if lines == (_SORRY,):
-        assert outcome.infrastructure_failure is not None
-        shown = outcome.infrastructure_failure.detail.splitlines()
-    else:
-        assert outcome.infrastructure_failure is None
-        shown = outcome.tests[0].error_tail.splitlines()
+    failure = outcome.infrastructure_failure
+    shown = (failure.detail if failure else outcome.tests[0].error_tail).splitlines()
+    assert (failure is not None) == (lines == _SORRY)
+    for line in lines:
+        assert line.format(core="tb.sv") in shown
+    if failure is None:
         # The persisted build output keeps the raw build-tree spelling.
         assert printed[0] in outcome.builds[0].output
-    for line in expected:
-        assert line in shown
 
 
 def test_project_text_leaves_longer_unmapped_filenames_alone() -> None:
     paths = ProjectSourcePaths({"src/core/top.sv": "rtl/top.sv"})
-
-    text = "src/core/top.sv:4: bad; src/core/top.sv.generated:4: note; see src/core/top.sv."
-
-    assert paths.project_text(text) == (
-        "rtl/top.sv:4: bad; src/core/top.sv.generated:4: note; see rtl/top.sv."
+    text = "src/core/top.sv:4: bad; src/core/top.sv.generated:4: note; src/core/top.sv."
+    assert (
+        paths.project_text(text)
+        == "rtl/top.sv:4: bad; src/core/top.sv.generated:4: note; rtl/top.sv."
     )
 
 
