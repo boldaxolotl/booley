@@ -927,7 +927,7 @@ def _add_measure_subparser(sub) -> None:
         "--again",
         action="store_true",
         help="Measure again even when the commit is already Measured; "
-        "otherwise its stored run is shown",
+        "otherwise, without --target, its stored run is shown",
     )
     parser.add_argument(
         "--target",
