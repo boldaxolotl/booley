@@ -526,6 +526,54 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     assert tool_calls[0][tool_calls[0].index("--target") + 1] == "sim_fast"
 
 
+@pytest.mark.parametrize(
+    ("toplevel", "row"),
+    [
+        pytest.param("dut", "lint dry-run [lint_fast] passed", id="dut"),
+        pytest.param(
+            "no_such_top", "lint dry-run [lint_fast] failed with exit 2", id="no_such_top"
+        ),
+    ],
+)
+def test_plain_doctor_lint_dry_run_judges_the_toplevel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toplevel: str, row: str
+) -> None:
+    """Plain Doctor's lint dry-run runs the real Lint Flow, so an undeclared toplevel fails it."""
+    from booley.flows.lint.flow import LintFlow
+
+    booley_dir = _write_project(tmp_path)
+    core = tmp_path / "unit.core"
+    original = core.read_bytes().replace(b"\r\n", b"\n")
+    edited = original.replace(
+        b"    filesets: [rtl]\n    toplevel: dut\n  synth_fast",
+        f"    filesets: [rtl]\n    toplevel: {toplevel}\n  synth_fast".encode(),
+    )
+    assert (edited != original) == (toplevel != "dut")
+    core.write_bytes(edited)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    other_commands = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        if "booley.flows.lint" not in argv:
+            return other_commands(cmd, **kwargs)
+        values = argv[argv.index("booley.flows.lint") + 1 :]
+        values[values.index("--work-dir") + 1] = str(tmp_path)
+        values[values.index("--report-dir") + 1] = str(tmp_path / "flow-reports")
+        with monkeypatch.context() as scoped:
+            scoped.setenv("BOOLEY_CONTAINER", "1")
+            scoped.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+            scoped.setattr(runtime_context, "inside_session_runtime", lambda: True)
+            outcome = LintFlow().execute_cli(values).outcome
+        return subprocess.CompletedProcess(cmd, outcome.exit_code, outcome.report_text, "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    messages = _messages(_doctor_run(tmp_path))
+
+    assert row in messages
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
 def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     tmp_path: Path,

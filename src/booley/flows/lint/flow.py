@@ -70,7 +70,12 @@ from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import LINT_EDA_TOOL_FAMILIES, MissingTargetToplevelError, TargetHandle
+from booley.targets.domain import (
+    LINT_EDA_TOOL_FAMILIES,
+    MissingTargetToplevelError,
+    TargetHandle,
+    TargetInspection,
+)
 from booley.targets.flow_names import config_section
 
 from .. import artifacts
@@ -476,6 +481,38 @@ def filter_by_scope(warnings: list[LintWarning], scope: str) -> list[LintWarning
     return [w for w in warnings if any(sp in w.file for sp in scope_paths)]
 
 
+def _vacuous_toplevel_error(toplevel: str, hdl_sources: int) -> str:
+    """Name a lint toplevel that no fileset file declares."""
+    return (
+        f"lint toplevel '{toplevel}' is not declared by any "
+        f"fileset file ({hdl_sources} HDL sources) — lint "
+        "would be vacuous. Fix the Target's `toplevel` or add the "
+        "declaring file to its filesets."
+    )
+
+
+def _require_declared_toplevel(inspection: TargetInspection, project_root: Path) -> None:
+    """Raise when the sources FuseSoC setup lists never declare the toplevel.
+
+    Skipped when the Target has no toplevel or setup may generate or retype sources
+    (``setup_inputs`` is None); the post-setup check then judges the resolved sources.
+    """
+    if not inspection.toplevel or inspection.setup_inputs is None:
+        return
+    hdl_files = [
+        resolved
+        for resolved in (
+            fusesoc_registry.ResolvedFile(
+                name=item.path, file_type=item.file_type, is_include=item.is_include
+            )
+            for item in inspection.setup_inputs
+        )
+        if resolved.is_hdl and not resolved.is_include
+    ]
+    if not _toplevel_declared(hdl_files, project_root, inspection.toplevel):
+        raise ValueError(_vacuous_toplevel_error(inspection.toplevel, len(hdl_files)))
+
+
 def _toplevel_declared(
     hdl_files: list[Any],
     build_root: Path,
@@ -843,6 +880,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
     def _lint_work_unit(self, target: TargetHandle) -> WorkUnitPlan:
         """Normalize one selected lint Target into the shared plan model."""
         inspection = self._lint_plan_inspection(target)
+        if inspection is not None:
+            _require_declared_toplevel(inspection, target.project_root)
         command = self._lint_plan_command(target)
         inputs = inspection.inputs if inspection is not None else ()
         sources, constraints = normalize_plan_inputs(inputs, self.args.work_dir)
@@ -1062,12 +1101,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 resolved.toplevel,
             )
         if not result.toplevel_linted:
-            result.error = (
-                f"lint toplevel '{resolved.toplevel}' is not declared by any "
-                f"fileset file ({result.files_linted} HDL sources) — lint "
-                "would be vacuous. Fix the Target's `toplevel` or add the "
-                "declaring file to its filesets."
-            )
+            result.error = _vacuous_toplevel_error(resolved.toplevel, result.files_linted)
             result.error_is_eda_tool_failure = True
             return False
         return True
