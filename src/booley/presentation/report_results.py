@@ -96,6 +96,7 @@ def _targets(value: object) -> list[tuple[str, Mapping[str, object]]]:
 def _cap(rows: list[ResultLine]) -> tuple[ResultLine, ...]:
     if len(rows) <= _ROW_LIMIT:
         return tuple(rows)
+    # Failure rows are never trimmed (#5173), so the result can exceed _ROW_LIMIT.
     room = max(_ROW_LIMIT - 1 - sum(row.semantic == "fail" for row in rows), 0)
     kept: list[ResultLine] = []
     for row in rows:
@@ -259,10 +260,10 @@ def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
             f"{key} {_value(row.get(key))}" for key in ("simulation", "collection", "evaluation")
         ]
         semantic = (
-            "pass"
-            if row.get("evaluation") == "pass"
-            else "fail"
+            "fail"
             if _coverage_failed(row)
+            else "pass"
+            if row.get("evaluation") == "pass"
             else "unknown"
         )
         rows.append(_row(f"  {name}", " · ".join(facts), semantic))

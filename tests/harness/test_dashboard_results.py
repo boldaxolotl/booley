@@ -700,6 +700,21 @@ def test_failed_targets_past_item_limit_are_named():
         (
             "sim",
             {
+                "coverage": True,
+                "targets": seven(
+                    lambda bad: {
+                        "simulation": "pass",
+                        "collection": "ok",
+                        "evaluation": "pass",
+                        **({"error": "publish failed"} if bad else {}),
+                    }
+                ),
+            },
+            [("  t6", "simulation pass · collection ok · evaluation pass", "fail")],
+        ),
+        (
+            "sim",
+            {
                 "mode": "elab-only",
                 "targets": seven(
                     lambda bad: (
@@ -719,5 +734,6 @@ def test_failed_targets_past_item_limit_are_named():
         ]
         for row in expected:
             assert row in rows, endpoint
+        assert ("  t6", "fail") in [(label, sem) for label, _, sem in rows], endpoint
         assert not any(label.startswith("  t5") for label, _, _ in rows), endpoint
         assert ("Targets", "1 more Targets in report", "") in rows, endpoint
