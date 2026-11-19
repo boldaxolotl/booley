@@ -96,6 +96,7 @@ from booley.flows.synth.backends.pipeline import (
 )
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
+    echoed_source_lines,
 )
 from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
 from booley.flows.synth.cli import SynthArguments
@@ -698,15 +699,16 @@ def _design_failure_reason(metrics: SynthMetrics) -> str:
     if "unmapped latch:" in metrics.failure_output:
         return "unmapped latch"
     # The exit-0 header names the exit code, not the design problem: skip it.
-    first_reason = next(
-        (
-            line.strip()
-            for line in metrics.failure_output.splitlines()
-            if line.strip() and line.strip() != _EXIT_ZERO_ERROR_HEADER
-        ),
-        "",
-    )
-    return first_reason or "design failure"
+    lines = [
+        line.strip()
+        for line in metrics.failure_output.splitlines()
+        if line.strip() and line.strip() != _EXIT_ZERO_ERROR_HEADER
+    ]
+    # A short Yosys run's excerpt starts with its banner: name the tool's error line,
+    # never an echoed source line (an RTL comment may read ``ERROR: ...``).
+    echoed = echoed_source_lines(lines)
+    candidates = "\n".join(line for index, line in enumerate(lines) if index not in echoed)
+    return first_tool_diagnostic(candidates, default=lines[0] if lines else "design failure")
 
 
 def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
