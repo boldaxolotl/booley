@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shlex
 import shutil
-from collections.abc import Callable
-from contextlib import redirect_stdout
+import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -379,6 +381,37 @@ def openroad_thread_assignment(threads: int) -> str:
     return f"{_OPENROAD_THREAD_OPTION}=-threads {threads}"
 
 
+#: Make variable holding the TMPDIR the Yosys recipe runs under.
+_YOSYS_TMPDIR = "BOOLEY_YOSYS_TMPDIR"
+
+
+@contextmanager
+def yosys_tmpdir() -> Iterator[Path]:
+    """A fresh short temporary directory for one run's Yosys, removed on exit.
+
+    The pinned Yosys's ABC hangs once TMPDIR is longer than 35 characters
+    (#4730), and a measurement checkout makes the Job's TMPDIR about 75. The
+    directory sits directly under ``/tmp``, Yosys's own fallback, never under
+    ``TMPDIR``. Synthesis runs only in the Linux Sandbox; the other branch lets
+    the Flow's tests run on a Windows test host.
+    """
+    root = Path("/tmp") if os.name == "posix" else Path(tempfile.gettempdir())
+    directory = Path(tempfile.mkdtemp(prefix="booley-yosys-", dir=root))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def yosys_tmpdir_assignment(directory: Path) -> str:
+    """The make command-line assignment that runs Yosys with TMPDIR *directory*.
+
+    A make variable, not ``TMPDIR=``: make exports command-line variables to
+    every recipe, and sv2v and OpenROAD keep the Job's TMPDIR.
+    """
+    return f"{_YOSYS_TMPDIR}={directory.as_posix()}"
+
+
 def _sta_recipe_lines(spec: SynthSpec, token: str) -> list[str]:
     """The physical synthesis + timing stage's recipe body."""
     lines = ["\t@echo 'BOOLEY_STAGE: sta'"]
@@ -405,6 +438,32 @@ def openroad_recipe_text(spec: SynthSpec) -> str:
     return "\n".join(_sta_recipe_lines(spec, _RECIPE_TOKEN_PLACEHOLDER))
 
 
+def _yosys_recipe_lines(spec: SynthSpec, token: str, prereq: str) -> list[str]:
+    """The ``yosys`` stage: its target line, recipe, required outputs and a blank line."""
+    lines = [
+        f"yosys:{prereq}",
+        "\t@echo 'BOOLEY_STAGE: yosys'",
+        _eda_tool_preflight(token, "yosys", "yosys"),
+        _required_file(token, "yosys", spec.liberty.as_posix(), spec.liberty.name),
+    ]
+    if spec.frontend == "slang":
+        marker = _marker(token, "missing_required_file", "yosys", "read_slang")
+        lines.append(
+            "\t@yosys -Q -p 'help read_slang' > .booley_read_slang.log 2>&1; "
+            "grep -q 'No such command' .booley_read_slang.log && "
+            f"{{ echo {marker}; exit 2; }} || true"
+        )
+    lines += [
+        f'\tTMPDIR="$({_YOSYS_TMPDIR})" yosys -s synth.ys > yosys.log 2>&1 {_fail_tail("yosys.log")}',
+        _required_output(token, "yosys", f"stat_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"premap_check_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"check_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"synth_{spec.design_name}.v"),
+        "",
+    ]
+    return lines
+
+
 def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
     """Render the stage-chaining Makefile (the boundary command's far side).
 
@@ -428,6 +487,8 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
         "# post-mortem log tail to the stage that died.",
         ".POSIX:",
         "",
+        f"{_YOSYS_TMPDIR} = $${{TMPDIR:-/tmp}}",
+        "",
         f"all: {default_target}",
         f".PHONY: {' '.join(phony)}",
         "",
@@ -443,27 +504,7 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
             "",
         ]
         yosys_prereq = " sv2v"
-    lines += [
-        f"yosys:{yosys_prereq}",
-        "\t@echo 'BOOLEY_STAGE: yosys'",
-        _eda_tool_preflight(token, "yosys", "yosys"),
-        _required_file(token, "yosys", spec.liberty.as_posix(), spec.liberty.name),
-    ]
-    if spec.frontend == "slang":
-        marker = _marker(token, "missing_required_file", "yosys", "read_slang")
-        lines.append(
-            "\t@yosys -Q -p 'help read_slang' > .booley_read_slang.log 2>&1; "
-            "grep -q 'No such command' .booley_read_slang.log && "
-            f"{{ echo {marker}; exit 2; }} || true"
-        )
-    lines += [
-        f"\tyosys -s synth.ys > yosys.log 2>&1 {_fail_tail('yosys.log')}",
-        _required_output(token, "yosys", f"stat_{spec.design_name}.txt"),
-        _required_output(token, "yosys", f"premap_check_{spec.design_name}.txt"),
-        _required_output(token, "yosys", f"check_{spec.design_name}.txt"),
-        _required_output(token, "yosys", f"synth_{spec.design_name}.v"),
-        "",
-    ]
+    lines += _yosys_recipe_lines(spec, token, yosys_prereq)
     if runs_openroad(mode):
         # `openroad` is the same stage without the Yosys prerequisite, so the
         # Flow can run the two stages separately and skip OpenROAD on reuse.
