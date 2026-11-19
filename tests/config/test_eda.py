@@ -118,5 +118,6 @@ def test_host_policy_is_only_applied_by_eda_loaders(document, monkeypatch):
     assert settings._load_booley_toml(document.parent)["eda"]["vivado"]["provisioning"] == "host"
     assert project_config._get("PROJECT_NAME") == "rtl_project"
     for loader in (configuration.load_eda_config, public_eda.load_eda_config):
-        with pytest.raises(eda.EdaConfigError, match="unsupported on Windows"):
+        with pytest.raises(eda.EdaConfigError, match="unsupported on Windows") as raised:
             loader(document.parent)
+        assert raised.value.path == document

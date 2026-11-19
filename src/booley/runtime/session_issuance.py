@@ -38,6 +38,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.config_paths import BooleyTomlError, resolve_toml
 from booley.core.differences import format_differences
 from booley.core.egress_modes import declared_egress
 from booley.core.private_store import PrivateStore, ProjectStore
@@ -184,6 +185,27 @@ class HostPolicyError(RuntimeSpecError):
     def __init__(self, error: HostConfigError) -> None:
         super().__init__(str(error))
         self.path = error.path
+
+
+class ProjectConfigError(RuntimeSpecError):
+    """The Project's booley.toml cannot be read or fails validation; refreshing cannot cure it."""
+
+    def __init__(self, message: str, path: Path, line: int | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+        self.line = line
+
+    @property
+    def location(self) -> str:
+        """The file, with its line when the parser reported one."""
+        return f"{self.path} (line {self.line})" if self.line else str(self.path)
+
+
+def _project_config_error(exc: Exception) -> ProjectConfigError | None:
+    source = exc if isinstance(exc, BooleyTomlError) else exc.__cause__
+    if isinstance(source, BooleyTomlError) and source.path is not None:
+        return ProjectConfigError(str(exc), source.path, source.line)
+    return None
 
 
 class EgressDriftError(RuntimeSpecError):
@@ -922,7 +944,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
         authority.AuthorityError,
         eda_requirements.SessionRequirementsError,
     ) as exc:
-        raise _runtime_authority_error(spec, exc) from exc
+        raise _project_config_error(exc) or _runtime_authority_error(spec, exc) from exc
 
 
 def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
@@ -1246,7 +1268,9 @@ def _project_identity_environment(project_data: Path) -> dict[str, str]:
     try:
         return git_identity_environment(load_git_identity(project_data))
     except GitIdentityError as exc:
-        raise RuntimeSpecError(f"invalid [agent.git] identity: {exc}") from exc
+        raise ProjectConfigError(
+            f"invalid [agent.git] identity: {exc}", project_data / "booley.toml"
+        ) from exc
 
 
 def _pin_git_identity(spec: dict[str, Any], project_data: Path) -> None:
@@ -1362,7 +1386,9 @@ def _validate_credential_policy(
     try:
         found = project_credential_policies(project, booley_dir=project_data, selected=app)
     except BackendConfigError as exc:
-        raise RuntimeSpecError(f"booley.toml [agent] is invalid: {exc}") from exc
+        raise ProjectConfigError(
+            f"booley.toml [agent] is invalid: {exc}", resolve_toml(project_data)
+        ) from exc
     # The set is recorded in [agent] clis order, which also fixes the name and volume order.
     expected = dict(found.policies) if app in found.clis else {}
     if app in auth_token.CREDENTIALS and app not in found.clis:
