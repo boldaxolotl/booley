@@ -411,12 +411,7 @@ class TestGeneratedMakefile:
 
         with syn_make.yosys_tmpdir() as own:
             assignment = [syn_make.yosys_tmpdir_assignment(own)] if own_tmpdir else []
-            subprocess.run(
-                ["make", "-C", str(plan.build_dir), *assignment],
-                env=env,
-                capture_output=True,
-                check=False,
-            )
+            run_bounded_child(["make", "-C", str(plan.build_dir), *assignment], env=env)
 
         assert (tmp_path / "sv2v-tmp").read_text(encoding="utf-8").strip() == str(job_tmp)
         expected = str(own) if own_tmpdir else str(job_tmp)
