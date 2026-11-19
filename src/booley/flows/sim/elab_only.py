@@ -545,7 +545,8 @@ class ElabOnlyMixin:
         try:
             compile_surface = resolve_target_compile_surface(handle)
             sources_before = project_compile_surface(compile_surface)
-            with SimulationBuildSession(handle) as session:
+            wait_s = max(1, self._effective_build_timeout_ms() // 1000)
+            with SimulationBuildSession(handle, wait_s=wait_s) as session:
                 candidate = session.new_generation()
                 self._open_run_log(target, candidate)
                 prepared = self._prepare_elab_only_target(
