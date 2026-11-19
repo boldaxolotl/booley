@@ -55,9 +55,20 @@ RESULT: WARN (7 warnings)
 See /work/.booley/flow-reports/lint/3/lint_report.json for the full warning list (rule/file:line/message).
 ```
 
+Example (Verible):
+
+```text
+[lint] lint_style   [verible] 1 warning (target total), 12 files, 0.2s
+[lint] 1 unique in-scope warning
+[lint]   rtl/fifo.sv:4:11: Interface names must end with _if. [interface-name-style]
+
+RESULT: WARN (1 warnings)
+```
+
 The Target line shows its linter, everything the linter reported (before
 merging and `--scope`), and the number of files linted. The console lists the
-first five findings. The `RESULT` line gives one verdict:
+first five findings, each in the form its linter prints. The `RESULT` line
+gives one verdict:
 
 | Verdict | Meaning | Exit |
 |---|---|---:|
@@ -83,15 +94,25 @@ is a warning.
 </details>
 
 A Target that could not be linted cleanly prints `ERROR:` on its own line in
-both the `FAIL` and `ERROR` cases; the `RESULT` line tells them apart. On a
-`FAIL`, both lines quote the linter's first error and point at the full log.
+both the `FAIL` and `ERROR` cases; the `RESULT` line tells them apart. Both
+lines name the linter, except for a Target that failed before its linter was
+known, such as a setup failure. On a `FAIL`, both lines quote the linter's
+first error and point at the full log.
 
 Example (Verilator):
 
 ```text
-[lint] lint_soc     ERROR: %Error: rtl/fifo.sv:3:1: Can't find definition of variable: 'zzz' (full log: .booley/flow-reports/lint/4/artifacts/lint_soc/run.log)
+[lint] lint_soc     [verilator] ERROR: %Error: rtl/fifo.sv:3:1: Can't find definition of variable: 'zzz' (full log: .booley/flow-reports/lint/4/artifacts/lint_soc/run.log)
 …
-RESULT: FAIL — lint_soc: %Error: rtl/fifo.sv:3:1: Can't find definition of variable: 'zzz' (full log: .booley/flow-reports/lint/4/artifacts/lint_soc/run.log)
+RESULT: FAIL — lint_soc [verilator]: %Error: rtl/fifo.sv:3:1: Can't find definition of variable: 'zzz' (full log: .booley/flow-reports/lint/4/artifacts/lint_soc/run.log)
+```
+
+Example (Verible):
+
+```text
+[lint] lint_style   [verible] ERROR: rtl/fifo.sv:3:1: syntax error at token "endmodule" (full log: .booley/flow-reports/lint/5/artifacts/lint_style/run.log)
+…
+RESULT: FAIL — lint_style [verible]: rtl/fifo.sv:3:1: syntax error at token "endmodule" (full log: .booley/flow-reports/lint/5/artifacts/lint_style/run.log)
 ```
 
 Each run's files are in its numbered run directory (`lint/3/` above), under

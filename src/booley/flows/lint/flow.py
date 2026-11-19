@@ -342,9 +342,14 @@ def parse_verible_warnings(output: str, target: str) -> list[LintWarning]:
     return warnings
 
 
+def _linter_tag(result: LintConfigResult) -> str:
+    """``" [<linter>]"`` for a Target whose linter is known, else ``""``."""
+    return f" [{result.eda_tool}]" if result.eda_tool else ""
+
+
 def _target_errors_text(errored: list[LintConfigResult]) -> str:
-    """Join each errored Target's message as ``target: error`` for a RESULT line."""
-    return "; ".join(f"{cr.target}: {cr.error}" for cr in errored)
+    """Join each errored Target's message as ``target [linter]: error`` for a RESULT line."""
+    return "; ".join(f"{cr.target}{_linter_tag(cr)}: {cr.error}" for cr in errored)
 
 
 def _errored_verdict(errored: list[LintConfigResult]) -> tuple[int, str]:
@@ -523,10 +528,17 @@ def _lint_warnings_as_errors(work_dir: Path) -> bool:
 _MAX_ECHOED_WARNINGS = 5
 
 
+def _echoed_finding(w: LintWarning) -> str:
+    """One finding in the form its retained Target's linter prints it."""
+    if dict(w.eda_tools)[w.target] == "verible":
+        return f"{w.file}:{w.line}:{w.col}: {w.message} [{w.rule}]"
+    return f"%Warning-{w.rule}: {w.file}:{w.line}:{w.col} {w.message}"
+
+
 def _echo_warnings(unique: list[LintWarning], report_path: Path | None = None) -> None:
-    """Print the first few warnings with file:line so they are actionable."""
+    """Print the first few warnings with file:line, each in its linter's form."""
     for w in unique[:_MAX_ECHOED_WARNINGS]:
-        print(f"[lint]   %Warning-{w.rule}: {w.file}:{w.line}:{w.col} {w.message}")
+        print(f"[lint]   {_echoed_finding(w)}")
     if len(unique) > _MAX_ECHOED_WARNINGS:
         suffix = f" (see {report_path})" if report_path is not None else ""
         print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more{suffix}")
@@ -537,7 +549,7 @@ def _target_summary_line(result: LintConfigResult) -> str:
     wcount = len(result.warnings)
     label = "warning" if wcount == 1 else "warnings"
     if result.error:
-        return f"[lint] {result.target:<12} ERROR: {result.error}"
+        return f"[lint] {result.target:<12}{_linter_tag(result)} ERROR: {result.error}"
     files = f", {result.files_linted} files" if result.files_linted >= 0 else ""
     prefix = (
         f"[lint] {result.target:<12} [{result.eda_tool}] {wcount} {label} (target total){files}, "
