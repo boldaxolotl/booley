@@ -1563,6 +1563,29 @@ fn stats_window(cache: &ColumnCache, cfg: &ExtractConfig, reset_start: u64) -> (
     (start, end)
 }
 
+/// Inclusive cycles a sync window shows, as `wave` renders them: A through B,
+/// cycle 0 included when A is 0, capped at the last counted cycle.
+fn shown_cycle_window(cache: &ColumnCache, cfg: &ExtractConfig, base: u64) -> (u64, u64) {
+    let last = cache.sim_end_tick.saturating_sub(base) / cache.clock_period_ticks + 1;
+    let start = cfg.time_min.max(0) as u64;
+    let end = cfg.time_max.map_or(last, |end| (end as u64).min(last));
+    (start, end)
+}
+
+/// Cycle count of a stats window: sync counts `wave`'s shown cycles; async
+/// counts whole elapsed periods of the tick window.
+fn stats_total_cycles(cache: &ColumnCache, cfg: &ExtractConfig, total_ticks: u64) -> Option<u64> {
+    if cache.clock_period_ticks == 0 {
+        return None;
+    }
+    if cfg.async_mode {
+        return Some(total_ticks / cache.clock_period_ticks);
+    }
+    let base = cycle_base(cache, query_reset_deassert_tick(cache, cfg).unwrap_or(0));
+    let (start, end) = shown_cycle_window(cache, cfg, base);
+    Some(if start <= end { end - start + 1 } else { 0 })
+}
+
 type Occupancy = std::collections::BTreeMap<String, u64>;
 fn sampled_occupancy(
     cache: &ColumnCache,
@@ -1572,14 +1595,21 @@ fn sampled_occupancy(
     if cfg.async_mode || cache.clock_period_ticks == 0 {
         return (Occupancy::new(), Occupancy::new());
     }
-    let base = cycle_base(cache, query_reset_deassert_tick(cache, cfg).unwrap_or(0));
-    let (start, end) = sampled_cycle_window(cache, cfg, base);
+    let reset_start = query_reset_deassert_tick(cache, cfg).unwrap_or(0);
+    let base = cycle_base(cache, reset_start);
+    let (first, end) = shown_cycle_window(cache, cfg, base);
+    let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
+    if first == 0 && first <= end {
+        *clocked
+            .entry(sampled_value(cfg, transitions, reset_start))
+            .or_insert(0) += 1;
+    }
+    let start = first.max(1);
     if start > end {
-        return (Occupancy::new(), Occupancy::new());
+        return (clocked, stopped);
     }
     let boundaries =
         observation_boundaries(cfg, base, cache.clock_period_ticks, transitions, start, end);
-    let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
     for (index, &lo) in boundaries.iter().enumerate() {
         let hi = boundaries.get(index + 1).map_or(end, |next| next - 1);
         let value = sampled_value(cfg, transitions, base + (lo - 1) * cache.clock_period_ticks);
@@ -1622,11 +1652,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         if cfg.json_format {
             // JSON consumers (coverage_analyst) still get a parseable empty
             // envelope on stdout; the exit code carries the failure.
-            let total_cycles = if cache.clock_period_ticks > 0 {
-                Some(total_ticks / cache.clock_period_ticks)
-            } else {
-                None
-            };
+            let total_cycles = stats_total_cycles(cache, cfg, total_ticks);
             let clock_period_ns = if cache.clock_period_ticks > 0 {
                 Some((cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64)
             } else {
@@ -1663,7 +1689,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if !cfg.json_format {
         if sync_mode {
             if cache.clock_period_ticks > 0 {
-                let total_cycles = total_ticks / cache.clock_period_ticks;
+                let total_cycles = stats_total_cycles(cache, cfg, total_ticks).unwrap_or(0);
                 let period_ns = (cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64;
                 let _ = writeln!(
                     out,
@@ -1758,11 +1784,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // the name, which let callers confuse it with nanoseconds.
     if cfg.json_format {
         use crate::format::format_as_verilog_literal;
-        let total_cycles = if cache.clock_period_ticks > 0 {
-            Some(total_ticks / cache.clock_period_ticks)
-        } else {
-            None
-        };
+        let total_cycles = stats_total_cycles(cache, cfg, total_ticks);
         let clock_period_ns = if cache.clock_period_ticks > 0 {
             Some((cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64)
         } else {
@@ -4907,17 +4929,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if sync_mode {
         // Sync: compute tick range, then range-decode only what's needed
         let cb = cycle_base(cache, effective_start);
-        let total_cycles = if cache.clock_period_ticks > 0 {
-            (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1
-        } else {
-            1
-        };
-
-        let cycle_start = range_start.max(0) as u64;
-        let cycle_end = match range_end_opt {
-            Some(e) => (e as u64).min(total_cycles),
-            None => total_cycles,
-        };
+        let (cycle_start, cycle_end) = shown_cycle_window(cache, cfg, cb);
 
         if cycle_start >= cycle_end && range_start != range_end_opt.unwrap_or(-1) as i64 {
             // Range but no valid cycles

@@ -5645,3 +5645,66 @@ fn issue_4705_value_past_end_names_at_and_the_typed_time() {
     assert!(out.contains("# Snapshot at 30"), "{out}");
     let _ = std::fs::remove_file(fst);
 }
+
+#[test]
+fn issue_4764_stats_cycle_window_matches_wave() {
+    let fst = build_bwave("small_clocked.vcd", "4764-stats-window");
+    let p = fst.to_str().unwrap();
+    let query = |command: &str, window: &[&str], extra: &[&str]| {
+        let mut args = vec![command, p, "-s", "state"];
+        args.extend(window);
+        args.extend(extra);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command} {window:?}: {err}");
+        out
+    };
+    let json = |command: &str, window: &[&str]| -> serde_json::Value {
+        serde_json::from_str(&query(command, window, &["--format", "json"])).unwrap()
+    };
+    for (window, shown) in [
+        (&["-t", "0:10"][..], 11),
+        (&["-t", "3:10"], 8),
+        (&["--with-reset", "-t", "0:10"], 11),
+        (&[], 49),
+    ] {
+        let wave = json("wave", window);
+        assert_eq!(
+            wave["data"]["columns"].as_array().unwrap().len(),
+            shown,
+            "{window:?}"
+        );
+        let stats = json("stats", window);
+        let signal = &stats["data"]["signals"][0];
+        let sampled: u64 = [
+            "time_in_state_clocked_cycles",
+            "time_in_state_stopped_cycles",
+        ]
+        .iter()
+        .flat_map(|key| signal[key].as_object().unwrap().values())
+        .map(|n| n.as_u64().unwrap())
+        .sum();
+        assert_eq!(stats["data"]["total_cycles"], shown, "{window:?}");
+        assert_eq!(sampled, shown as u64, "{window:?}");
+        let text = query("stats", window, &[]);
+        assert!(
+            text.contains(&format!(", {shown} cycles (")),
+            "{window:?}: {text}"
+        );
+        let text_sampled: u64 = text
+            .lines()
+            .filter_map(|line| line.split_once("% (")?.1.strip_suffix(" stopped cycles)"))
+            .flat_map(|counts| counts.split(" clocked, "))
+            .map(|n| n.parse::<u64>().unwrap())
+            .sum();
+        assert_eq!(text_sampled, shown as u64, "{window:?}: {text}");
+    }
+    // value_hist counts held runs: 'h0 holds cycles 0..4 as one run.
+    let stats = json("stats", &["--with-reset", "-t", "0:4"]);
+    let signal = &stats["data"]["signals"][0];
+    assert_eq!(signal["value_hist"], serde_json::json!({"'h0": 1}));
+    assert_eq!(
+        signal["time_in_state_clocked_cycles"],
+        serde_json::json!({"'h0": 5})
+    );
+    let _ = std::fs::remove_file(fst);
+}

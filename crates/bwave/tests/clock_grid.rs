@@ -116,15 +116,13 @@ fn stopped_levels_and_window_metadata() {
     let p = json("distance", &path, &["data", "change", "-t", "1:6"]);
     assert_eq!(p["data"]["pairs"][1]["elapsed"], 2);
     assert_eq!(p["data"]["pairs"][0]["stopped_cycles"], 2);
-    let p = json("stats", &path, &["-s", "valid", "-t", "1:6"]);
-    assert_eq!(
-        p["data"]["signals"][0]["time_in_state_clocked_cycles"]["'h1"],
-        3
-    );
-    assert_eq!(
-        p["data"]["signals"][0]["time_in_state_stopped_cycles"]["'h1"],
-        3
-    );
+    for (window, total, clocked) in [("1:6", 6, 3), ("0:6", 7, 4)] {
+        let p = json("stats", &path, &["-s", "valid", "-t", window]);
+        let signal = &p["data"]["signals"][0];
+        assert_eq!(p["data"]["total_cycles"], total, "{window}");
+        assert_eq!(signal["time_in_state_clocked_cycles"]["'h1"], clocked);
+        assert_eq!(signal["time_in_state_stopped_cycles"]["'h1"], 3);
+    }
 }
 
 #[test]
