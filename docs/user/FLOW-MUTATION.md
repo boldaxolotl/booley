@@ -80,9 +80,8 @@ is replaced the same way on every Target, and the report states how many
 candidates did not build. The run stops replacing after `--count` candidates
 failed to build and scores the Mutants it kept; with none kept it ends with
 `ERROR`. The report does not list the skipped Mutants; the run's
-machine-readable result holds their IDs, and for a duplicate the ID of the
-Mutant it duplicates. On other Targets, such as Icarus, no Mutant is skipped as
-equivalent or duplicate.
+machine-readable result holds their IDs. On other Targets, such as Icarus, no
+Mutant is skipped as equivalent or duplicate.
 
 ## Which Mutants it plants
 
@@ -118,10 +117,9 @@ Mutants. When Booley cannot read the whole design (a module that is missing, a
 vendor primitive, a file the parser rejects, any other error in the design, or
 a Target it cannot inspect), it reads each scope file alone with its default
 parameters, and the report says so on a `Target elaboration failed` line,
-followed by a note that Mutants may then duplicate each other and that only
-Verilator Targets remove duplicates. A
-module the Target never instantiates is also read with its default parameters
-when Booley can reach it.
+followed by a note that Mutants may then duplicate each other. A module the
+Target never instantiates is also read with its default parameters when Booley
+can reach it.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
