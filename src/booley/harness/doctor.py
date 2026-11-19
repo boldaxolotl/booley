@@ -4001,9 +4001,15 @@ def _check_agent_backend_health(
 ) -> None:
     _warn = _warning_sink(_warn, "agent.backend-health")
     try:
+        from booley.config.agent import RetiredAuthError
         from booley.runtime.agent_config import get_backend_config, load_backend_config
 
-        load_backend_config(project_root)
+        try:
+            load_backend_config(project_root)
+        except RetiredAuthError:
+            # The agent.credential-policy rows already name the value to set.
+            (_note or _pass)("worker backend health check skipped - set [agent] auth first")
+            return
         cfg = get_backend_config()
         warning = cfg.active_backend.health_check()
     except (ImportError, AttributeError, RuntimeError, OSError, ValueError) as exc:
