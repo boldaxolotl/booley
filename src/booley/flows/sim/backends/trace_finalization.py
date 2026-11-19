@@ -110,6 +110,7 @@ def finalize_trace(
             top_scope=artifact.top_scope,
             signal_count=artifact.signal_count,
             total_ticks=artifact.total_ticks,
+            warnings=artifact.warnings,
         )
     if selection.ambiguous:
         reason = ambiguous_trace_reason(selection.ambiguous)

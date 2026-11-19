@@ -86,6 +86,7 @@ class AdapterTraceResult:
     top_scope: str = ""
     signal_count: int = 0
     total_ticks: int = 0
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -171,6 +172,7 @@ def _payload(identity: AdapterTransportIdentity, result: AdapterResult) -> dict[
                 "top_scope": result.trace.top_scope,
                 "signal_count": result.trace.signal_count,
                 "total_ticks": result.trace.total_ticks,
+                "warnings": list(result.trace.warnings),
             }
             if result.trace is not None
             else None
@@ -422,6 +424,7 @@ def _validated_trace(payload: dict[str, Any]) -> AdapterTraceResult | None:
         trace = require_dict(raw, field="trace")
         signal_count = require_int(trace.get("signal_count", 0), field="trace.signal_count")
         total_ticks = require_int(trace.get("total_ticks", 0), field="trace.total_ticks")
+        warnings = _optional_string_tuple(trace, "warnings")
     except BoundaryError as exc:
         raise AdapterTransportError(str(exc)) from exc
     status = trace.get("status")
@@ -438,7 +441,7 @@ def _validated_trace(payload: dict[str, Any]) -> AdapterTraceResult | None:
         raise AdapterTransportError("adapter trace success requires a path")
     if status == "incident" and not detail:
         raise AdapterTransportError("adapter trace incident requires detail")
-    return AdapterTraceResult(status, path, detail, top_scope, signal_count, total_ticks)
+    return AdapterTraceResult(status, path, detail, top_scope, signal_count, total_ticks, warnings)
 
 
 def _optional_string_tuple(payload: dict[str, Any], field: str) -> tuple[str, ...]:

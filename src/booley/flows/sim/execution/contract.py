@@ -107,6 +107,7 @@ class SimulationArtifactEvidence:
     top_scope: str = ""
     signal_count: int = 0
     total_ticks: int = 0
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

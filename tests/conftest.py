@@ -751,6 +751,12 @@ import sys
 import time
 
 args = sys.argv[1:]
+if args[0] == "list":
+    sys.stdout.write(
+        '{{"data": {{"scope_prefix": "tb", "root_scopes": ["tb"], '
+        '"signal_count": 1, "total_ticks": 1}}}}'
+    )
+    sys.exit(0)
 store = args[args.index("-o") + 1]
 mode = os.environ.get("FAKE_BWAVE_MODE", "ok")
 if mode == "never_read":
@@ -762,6 +768,13 @@ data = sys.stdin.buffer.read()
 if b"$enddefinitions" not in data:
     sys.stderr.write("fake bwave: no VCD header\\n")
     sys.exit(1)
+if not data.endswith(b"\\n"):
+    offset = data.rfind(b"\\n") + 1
+    sys.stderr.write(
+        "WARNING: input does not end with a newline; the final line "
+        f"(byte {{offset}}) may be a truncated record\\n"
+    )
+sys.stderr.write(f"# wrote {{store}}\\n")
 with open(store, "wb") as out:
     out.write({store_bytes!r})
 '''
@@ -772,7 +785,9 @@ def fake_bwave(tmp_path, monkeypatch):
     """A POSIX ``bwave build`` fake selected as the native binary (never via PATH).
 
     It reads stdin to EOF and writes a minimal store when it saw a VCD header,
-    else exits 1. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
+    else exits 1; like the real tool it warns on stderr about input without a final
+    newline and reports ``# wrote <store>``, and ``list`` answers a one-signal
+    hierarchy. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
     stdin) or ``exit_early`` (exits 1 at once).
     """
     from booley.bwave import waveform_store

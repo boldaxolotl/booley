@@ -116,6 +116,15 @@ class ConversionResult:
             and (not self.attempts or self.attempts[-1].return_code == 0)
         )
 
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        """The ``WARNING:`` lines a successful build printed on stderr, in order."""
+        if not self.success or not self.attempts:
+            return ()
+        return tuple(
+            line for line in self.attempts[-1].stderr.splitlines() if line.startswith("WARNING:")
+        )
+
 
 @dataclass(frozen=True)
 class DiscoveryResult:
