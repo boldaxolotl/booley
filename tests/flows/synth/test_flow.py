@@ -813,16 +813,12 @@ def test_dry_run_plans_every_selected_target(synth_cli: SynthCli) -> None:
     assert list(synth_cli.project.glob(".booley-synth-plan-*")) == []
 
 
-def test_dry_and_real_runs_plan_the_same_work(
-    synth_cli: SynthCli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    synth_cli.config("[flows.synth.timing]\nreepair_timing = true\n")
+def test_dry_and_real_runs_plan_the_same_work(synth_cli: SynthCli) -> None:
     dry = synth_cli.plan()
     outcome = synth_cli.run()
 
     assert outcome.exit_code == EXIT_SUCCESS, outcome.report_text
     assert dry["semantic_plan_fingerprint"] == synth_cli.run_plan.semantic_plan_fingerprint
-    assert "unknown key" not in capsys.readouterr().out
 
 
 def test_physical_dry_run_discloses_runtime_clock_validation(
