@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.core.build_paths import work_root_for
+from booley.core.file_lock import acquire_file_lock
 from booley.flows import run_log
 from booley.flows.base import SubprocessResult
 from booley.flows.memory_admission import JOB_THREADS_ENV
@@ -40,6 +42,7 @@ from booley.flows.sim.build import (
     prepare_simulation_build,
 )
 from booley.flows.sim.build_session import (
+    SimulationBuildLeaseTimeoutError,
     SimulationBuildSession,
     SimulationBuildSlotError,
     TargetCompileSurface,
@@ -59,6 +62,7 @@ from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import LiveProgressSink, install_progress
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
+from booley.flows.terminal_progress import TerminalProgress
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.runtime import paths as runtime_paths
@@ -1998,7 +2002,7 @@ def _assert_live_and_preview_build_variant(
             pass
 
     preview_root.assert_called_once_with(handle, expected)
-    session_class.assert_called_once_with(handle, expected)
+    session_class.assert_called_once_with(handle, expected, wait_s=3600)
     assert prepare.call_args.kwargs["variant"] == expected
     assert prepare.call_args.kwargs["build_root"] == work_root
     setup.assert_called_once_with(handle, build_root=work_root)
@@ -3081,3 +3085,33 @@ def test_retained_log_failure_keeps_build_slot_failure_boundary(tmp_path, observ
         group.compile()
     discard.assert_called_once_with(prepared.work_root)
     invoke.assert_not_called()
+
+
+def test_lease_wait_reports_and_is_bounded_by_the_build_timeout(tmp_path: Path) -> None:
+    """A busy Target slot shows that the run waits, for the build timeout, not 60 s (#4843)."""
+    handle = _handle(tmp_path)
+    execution = SimulationExecution(
+        invoke=MagicMock(), options=SimulationOptions(build_timeout_ms=1000)
+    )
+    stream = io.StringIO()
+    slot = simulation_build_slot(handle, "")
+    slot.mkdir(parents=True)
+    with (
+        (slot / "lease.lock").open("a+", encoding="utf-8") as holder,
+        TerminalProgress("sim", "sim", tmp_path, stream=stream).installed() as progress,
+        _compile_surface_patch(handle),
+        patch("booley.flows.sim.execution.engine._source_declarations", return_value=()),
+    ):
+        acquire_file_lock(holder)
+        started = time.monotonic()
+        with (
+            pytest.raises(SimulationBuildLeaseTimeoutError, match="busy for 1s"),
+            execution.ordinary_group(handle, ()),
+        ):
+            pass
+        waited = time.monotonic() - started
+        stage = progress.stage
+
+    assert "waiting for the Simulation build slot" in stage
+    # A loose upper bound on a real 1 s wait; the old fixed wait was 60 s.
+    assert waited < 30

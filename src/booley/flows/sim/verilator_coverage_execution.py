@@ -182,7 +182,7 @@ class VerilatorCoverageExecution:
         try:
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
-            with SimulationBuildSession(self._handle, request.variant.name) as session:
+            with self._lease(request.variant.name) as session:
                 candidate = session.new_generation()
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
@@ -271,6 +271,10 @@ class VerilatorCoverageExecution:
                 overlay.cleanup()
         return prepared
 
+    def _lease(self, variant: str) -> SimulationBuildSession:
+        """The variant's Target slot lease, waited for up to the build timeout."""
+        return SimulationBuildSession(self._handle, variant, wait_s=self._build_timeout_s())
+
     def _build_timeout_s(self) -> int:
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         return max(1, timeout_ms // 1000)
@@ -321,7 +325,7 @@ class VerilatorCoverageExecution:
         try:
             if self._bundle_bound:
                 return self._run_prepared(request, prepared)
-            with SimulationBuildSession(self._handle, variant):
+            with self._lease(variant):
                 return self._run_prepared(request, prepared)
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(

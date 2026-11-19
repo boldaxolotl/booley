@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import (
     SimulationOptions,
 )
@@ -20,6 +21,7 @@ from booley.flows.sim.execution.engine import (
     PreparedOrdinaryGroup,
     SimulationBuildSlotError,
 )
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import serial_execution
 from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
@@ -48,6 +50,11 @@ from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     materialize_simulation_record_runtime_inputs,
+)
+from tests.flows.sim.simulation_record_boundary import (
+    PASS_PROCESS,
+    Launch,
+    run_simulation_record_sim,
 )
 from tests.flows.sim.simulation_record_test_support import (
     _BAD_DIGEST,
@@ -266,7 +273,7 @@ def _assert_shared_simulation_record(
     assert outcome.complete is True
     assert compile_count == 1
     assert [item[0] for item in launches] == ["alpha", "beta"]
-    assert bindings == [("beta",)]
+    assert bindings == []
     assert launches[0][1] != launches[1][1]
     assert [item[2] for item in launches] == [b"pristine", b"pristine"]
     assert all(not item[1].exists() for item in launches)
@@ -780,7 +787,7 @@ def test_shared_bundle_stores_the_simulator_once_and_every_attempt_launches_it(
 
     store = SimulationRecordStore(invocation / "targets/sim/record")
     (bundle,) = _bundle_directories(invocation, "shared")
-    assert counters == {"compile": 1, "durable_reuse": 2, "launch": 3}
+    assert counters == {"compile": 1, "durable_reuse": 0, "launch": 3}
     assert launched == [bundle, bundle, bundle]
     copies = [
         path for path in store.root.rglob("*") if path.is_file() and path.read_bytes() == b"image"
@@ -953,3 +960,41 @@ def test_requeued_attempt_rebuilds_the_shared_build_its_kill_failed(
 
     assert item["compile"] == 2
     assert flow["compile"] == 1
+
+
+def test_forty_test_runs_configure_their_shared_build_once(tmp_path: Path, monkeypatch) -> None:
+    """Every lane after the first launches from the retained preparation (#4843)."""
+    names = [f"t{index:02d}" for index in range(40)]
+
+    run = run_simulation_record_sim(tmp_path, monkeypatch, {"sim": names}, PASS_PROCESS)
+
+    assert run.result.exit_code == 0, run.result.outcome.report_text
+    assert run.launched == [("sim", (name,)) for name in names]
+    # 40 disclosure preparations from planning (one per work item), then one build.
+    assert run.configures == 41
+
+
+def test_resume_configures_its_recovered_shared_build_once(tmp_path: Path, monkeypatch) -> None:
+    """A build recovered from disk is configured by the first lane that needs it only."""
+    for module in ("flow", "flow_resume", "record.resume"):
+        monkeypatch.setattr(f"booley.flows.sim.{module}.git_full_sha", lambda *_a: "a" * 40)
+
+    def interrupt_at_t1(launch: Launch) -> SubprocessResult:
+        if launch.tests == ("t1",):
+            raise KeyboardInterrupt("interrupted at t1")
+        return PASS_PROCESS
+
+    targets = {"sim": ["t0", "t1", "t2", "t3"]}
+    flow = SimulateFlow()
+    with pytest.raises(KeyboardInterrupt, match="interrupted at t1"):
+        run_simulation_record_sim(tmp_path, monkeypatch, targets, interrupt_at_t1, flow=flow)
+    (manifest,) = (tmp_path / "reports").rglob("manifest.json")
+
+    resumed = run_simulation_record_sim(
+        tmp_path, monkeypatch, targets, PASS_PROCESS, flow=flow, resume_from=manifest
+    )
+
+    assert resumed.result.exit_code == 0, resumed.result.outcome.report_text
+    assert resumed.launched == [("sim", (name,)) for name in ("t1", "t2", "t3")]
+    # Resume re-plans one disclosure per group (4), then configures the recovered build once.
+    assert resumed.configures == 5
