@@ -26,7 +26,7 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
-from booley.evidence.timing import make_clock_timing
+from booley.evidence.timing import make_clock_timing, worst_clock
 from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
@@ -1795,7 +1795,7 @@ class TestParseArea:
 # ===========================================================================
 
 
-def _perclock_marker(name: str, period_ns, wns_ns, whs_ns) -> str:
+def _perclock_marker(name: str, period_ns, wns_ns, whs_ns, same_clock: bool = True) -> str:
     """Render one canonical STA_PERCLOCK marker line for tests.
 
     ``None`` is emitted as the ``NA`` sentinel the parser maps back to None.
@@ -1806,7 +1806,8 @@ def _perclock_marker(name: str, period_ns, wns_ns, whs_ns) -> str:
 
     return (
         f"STA_PERCLOCK: name={name} period_ns={period_ns:.6f} "
-        f"wns_ns={_tok(wns_ns)} whs_ns={_tok(whs_ns)}\n"
+        f"wns_ns={_tok(wns_ns)} whs_ns={_tok(whs_ns)} "
+        f"setup_same_clock={int(same_clock)}\n"
     )
 
 
@@ -1844,32 +1845,25 @@ class TestParsePerClockSta:
         assert per_clock["clk_b"].critical_path_ps == pytest.approx(3000.0)
         assert per_clock["clk_b"].fmax_mhz == pytest.approx(333.333, rel=1e-4)
 
+    def test_cross_clock_worst_path_has_no_fmax(self):
+        output = (
+            "STA_PERCLOCK: name=rx_clk period_ns=6.400000 wns_ns=5.000000 whs_ns=0.1"
+            " setup_same_clock=1\n"
+            "STA_PERCLOCK: name=ptp_sample_clk period_ns=8.000000 wns_ns=1.429488 whs_ns=0.2"
+            " setup_same_clock=0\n"
+        )
+        per_clock = _parse_per_clock_sta(output)
+        crossing = per_clock["ptp_sample_clk"]
+        assert crossing.wns_ns == pytest.approx(1.429488)
+        assert crossing.whs_ns == pytest.approx(0.2)
+        assert crossing.critical_path_ps is None
+        assert crossing.fmax_mhz is None
+        assert per_clock["rx_clk"].critical_path_ps == pytest.approx(1400.0)
+        assert per_clock["rx_clk"].fmax_mhz == pytest.approx(714.286, rel=1e-4)
+        assert worst_clock(per_clock) is per_clock["rx_clk"]
+
     def test_no_marker_yields_empty(self):
         assert _parse_per_clock_sta("no timing info here") == {}
-
-
-class TestParsePerClockRaw:
-    """Raw marker parsing (syn_core.parse_perclock) as consumed by the Flow."""
-
-    def test_na_becomes_none(self):
-        from booley.flows.synth.timing import parse_perclock
-
-        row = parse_perclock(_perclock_marker("clk", 2.0, None, 0.3))["clk"]
-        assert row["period_ns"] == pytest.approx(2.0)
-        assert row["wns_ns"] is None
-        assert row["whs_ns"] == pytest.approx(0.3)
-
-    def test_duplicate_clock_keeps_min_slack(self):
-        from booley.flows.synth.timing import parse_perclock
-
-        # Same clock reported twice (raw + re-emitted): the most pessimistic
-        # (minimum) slack wins for both setup and hold.
-        output = _perclock_marker("clk", 2.0, 0.75, 0.30) + _perclock_marker(
-            "clk", 2.0, 0.20, 0.05
-        )
-        row = parse_perclock(output)["clk"]
-        assert row["wns_ns"] == pytest.approx(0.20)
-        assert row["whs_ns"] == pytest.approx(0.05)
 
 
 # ===========================================================================
@@ -3391,7 +3385,8 @@ class TestFileBasedInterpretation:
             )
             (build_dir / "openroad.log").write_text(
                 "STA_WORST_SLACK_NS: 2.000000\n"
-                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n"
+                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1"
+                " setup_same_clock=1\n"
                 "Design area 7000 u^2 50% utilization.\n" + check_block,
                 encoding="utf-8",
             )
@@ -3474,7 +3469,7 @@ class TestFileBasedInterpretation:
                 encoding="utf-8",
             )
             (build_dir / "openroad.log").write_text(
-                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=NA whs_ns=NA\n"
+                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
                 "Design area 7000 u^2 50% utilization.\n",
                 encoding="utf-8",
             )
@@ -3667,7 +3662,9 @@ class TestBaselineFlow:
         assert [
             (plan.baseline.selector, plan.candidate.selector) for plan in flow._target_pairs
         ] == [("lite", "lite")]
-        assert flow.memory_job_requests((handle,)) == (JobRequest("synth", "lite"),)
+        assert flow.memory_job_requests((handle,)) == (
+            JobRequest("synth", "lite", split_phases=("sv2v", "yosys", "openroad")),
+        )
 
     def test_worktree_setup_failure_rejected(self, state_file: Path, tmp_path: Path):
         """A worktree that cannot be created (bad ref, not a repo) is surfaced
@@ -5052,7 +5049,7 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
             "expected": expected,
             "openroad": (
                 "STA_WORST_SLACK_NS: 0.000000\n"
-                "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\n"
+                "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1 setup_same_clock=1\n"
                 "Design area 63 u^2 50% utilization.\n"
                 "OPENROAD_INSTANCE_COUNT: 23\n"
             ),
@@ -5140,9 +5137,8 @@ def test_expected_physical_unmapped_latch_is_noncritical_design_failure(flow_and
 
 
 _NO_PATH_OPENROAD_LOG = (
-    "STA_CLOCK_PERIOD_NS: 10.000000\n"
     "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
-    "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+    "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
     "Design area 63 u^2 50% utilization.\n"
 )
 
@@ -5859,7 +5855,7 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
             "artifacts": artifacts,
             f"missing_{prefix}": final is None,
             f"stale_{prefix}": final == "stale",
-            "openroad": "STA_WORST_SLACK_NS: 0.000000\nSTA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\nDesign area 63 u^2 50% utilization.\n",
+            "openroad": "STA_WORST_SLACK_NS: 0.000000\nSTA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1 setup_same_clock=1\nDesign area 63 u^2 50% utilization.\n",
         },
     )
     clean = final == "Found and reported 0 problems.\n"

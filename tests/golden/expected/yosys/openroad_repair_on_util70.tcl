@@ -5,7 +5,6 @@ read_verilog {<WORK>/sta_dut.v}
 link_design dut
 read_sdc {<WORK>/target.sdc}
 if {[llength [all_clocks]] == 0} { error "BOOLEY_INPUT_ERROR: synth Target 'synth_dut' SDC files \[<WORK>/target.sdc\] created no clocks; add create_clock to the Target-owned SDC" }
-foreach _clk [all_clocks] { puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }
 puts "BOOLEY_STAGE: floorplan"
 initialize_floorplan -utilization 70.000 -aspect_ratio 1.0 \
   -core_space {2.8 2.8 2.09 2.09} \
@@ -70,6 +69,18 @@ foreach path [lrange $paths 0 9] {
 close $csv_out
 if {[llength $slacks] > 0} {
   puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
+catch {
+set _same 0
+set _cap "NA"
+set _pc [lindex $paths 0]
+set _sc [get_property $_pc startpoint_clock]
+set _ec [get_property $_pc endpoint_clock]
+if {$_ec ne "NULL"} {
+  set _cap [format "%.6f" [get_property $_ec period]]
+  if {$_sc ne "NULL" && $_sc eq $_ec} { set _same 1 }
+}
+puts "STA_WORST_CLOCKS: same_clock=$_same capture_period_ns=$_cap"
+}
 }
 if {[llength $slacks] > 0} {
   report_checks -path_delay max -sort_by_slack -group_path_count 10 -slack_max [expr {[lindex $slacks end] + 1e-6}] > {<WORK>/reports/timing/overall.rpt}
@@ -87,20 +98,45 @@ if {![catch {set _clks [all_clocks]}]} {
     set _cn [get_property $_clk name]
     set _per [get_property $_clk period]
     set _wns "NA"
+    set _ssc 0
     if {![catch {set _sp [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1 -to $_clk]}] && [llength $_sp] > 0} {
       set _wns [format "%.6f" [get_property [lindex $_sp 0] slack]]
+      catch {
+set _same 0
+set _cap "NA"
+set _pc [lindex $_sp 0]
+set _sc [get_property $_pc startpoint_clock]
+set _ec [get_property $_pc endpoint_clock]
+if {$_ec ne "NULL"} {
+  set _cap [format "%.6f" [get_property $_ec period]]
+  if {$_sc ne "NULL" && $_sc eq $_ec} { set _same 1 }
+}
+        set _ssc $_same
+      }
     }
     set _whs "NA"
     if {![catch {set _hp [find_timing_paths -path_delay min -sort_by_slack -group_path_count 1 -to $_clk]}] && [llength $_hp] > 0} {
       set _whs [format "%.6f" [get_property [lindex $_hp 0] slack]]
     }
-    puts [format "STA_PERCLOCK: name=%s period_ns=%.6f wns_ns=%s whs_ns=%s" $_cn $_per $_wns $_whs]
+    puts [format "STA_PERCLOCK: name=%s period_ns=%.6f wns_ns=%s whs_ns=%s setup_same_clock=%s" $_cn $_per $_wns $_whs $_ssc]
   }
 }
 if {![catch {set _r2r [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10 -from [all_registers] -to [all_registers]]}] && [llength $_r2r] > 0} {
   set _r2r_slacks {}
   foreach _p [lrange $_r2r 0 9] { lappend _r2r_slacks [get_property $_p slack] }
   puts [format "STA_REG2REG_SLACK_NS: %.6f" [lindex $_r2r_slacks 0]]
+catch {
+set _same 0
+set _cap "NA"
+set _pc [lindex $_r2r 0]
+set _sc [get_property $_pc startpoint_clock]
+set _ec [get_property $_pc endpoint_clock]
+if {$_ec ne "NULL"} {
+  set _cap [format "%.6f" [get_property $_ec period]]
+  if {$_sc ne "NULL" && $_sc eq $_ec} { set _same 1 }
+}
+puts "STA_REG2REG_CLOCKS: same_clock=$_same capture_period_ns=$_cap"
+}
   catch {report_checks -path_delay max -sort_by_slack -group_path_count 10 -from [all_registers] -to [all_registers] -format full -slack_max [expr {[lindex $_r2r_slacks end] + 1e-6}] > {<WORK>/reports/timing/reg2reg.rpt}}
 }
 if {![catch {with_output_to_variable _cc {check_setup -verbose -no_input_delay -no_output_delay -unconstrained_endpoints}}]} {

@@ -283,7 +283,9 @@ def _selection(handle: Any, *, matches: bool = True) -> Any:
 
 def test_target_selection_invocation_sizes_its_prepared_targets(tmp_path: Path) -> None:
     flow, handle = _synth_flow(tmp_path)
-    flow._args = SimpleNamespace(work_dir=tmp_path, target="synth_after")
+    flow._args = SimpleNamespace(
+        work_dir=tmp_path, target="synth_after", baseline=None, frontend=None
+    )
 
     def invocation(selection: Any) -> TargetSelectionInvocation:
         # Private seam: the Flow's run step is the callable the invocation wraps.

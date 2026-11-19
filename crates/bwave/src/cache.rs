@@ -14,7 +14,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::format::{format_value_with_radix, values_match, Radix, TriggerMode};
-use crate::reset::{Reset, ResetReport};
+use crate::reset::{Deassertion, Reset, ResetReport};
 use crate::signal::{anchored_form, compile_patterns, match_signal};
 use crate::slice::SliceOf;
 use crate::ExtractConfig;
@@ -277,12 +277,12 @@ impl ColumnCache {
         self.reset = index.map(|i| {
             let name = self.signals[i].name.clone();
             let active_low = crate::reset::active_low(&name);
-            let deassert_tick = crate::reset::deassert_tick(&self.read_transitions(i), active_low);
+            let deassertion = crate::reset::deassertion(&self.read_transitions(i), active_low);
             Reset {
                 name,
                 active_low,
                 chosen_by_option,
-                deassert_tick,
+                deassertion,
             }
         });
         let clock = self.signals.iter().position(|s| s.name == self.clock_id);
@@ -303,10 +303,13 @@ impl ColumnCache {
         Ok(())
     }
 
-    /// Tick where the reset deasserts; `None` without a reset or when it
-    /// never reaches its inactive value.
+    /// Tick where the reset's first assertion ends; `None` without a reset,
+    /// or when it never asserts or never deasserts.
     pub fn reset_deassert_tick(&self) -> Option<u64> {
-        self.reset.as_ref().and_then(|r| r.deassert_tick)
+        match self.reset.as_ref()?.deassertion {
+            Deassertion::At(tick) => Some(tick),
+            Deassertion::NeverAsserts | Deassertion::NeverDeasserts => None,
+        }
     }
 
     /// Override the display clock with a different signal's timing.
@@ -767,6 +770,7 @@ pub fn reset_report(cache: &ColumnCache, with_reset: bool) -> ResetReport {
         deassert_time: tick.map(|t| format!("{}{unit}", u128::from(t) * factor)),
         skipped_cycles,
         with_reset,
+        never_asserts: reset.is_some_and(|r| r.deassertion == Deassertion::NeverAsserts),
     }
 }
 
@@ -1565,6 +1569,24 @@ fn stats_window(cache: &ColumnCache, cfg: &ExtractConfig, reset_start: u64) -> (
     (start, end)
 }
 
+/// Cycle count of a stats window: sync counts the cycles `wave` shows; async
+/// counts whole elapsed periods of the tick window.
+fn stats_total_cycles(cache: &ColumnCache, cfg: &ExtractConfig, total_ticks: u64) -> Option<u64> {
+    if cache.clock_period_ticks == 0 {
+        return None;
+    }
+    if cfg.async_mode {
+        return Some(total_ticks / cache.clock_period_ticks);
+    }
+    let grid = SyncGrid::new(
+        cache,
+        cfg,
+        query_reset_deassert_tick(cache, cfg).unwrap_or(0),
+    );
+    let (start, end) = sampled_cycle_window(cache, cfg, &grid);
+    Some(if start <= end { end - start + 1 } else { 0 })
+}
+
 type Occupancy = std::collections::BTreeMap<String, u64>;
 fn sampled_occupancy(
     cache: &ColumnCache,
@@ -1574,19 +1596,18 @@ fn sampled_occupancy(
     if cfg.async_mode || cache.clock_period_ticks == 0 {
         return (Occupancy::new(), Occupancy::new());
     }
-    let grid = SyncGrid::new(
-        cache,
-        cfg,
-        query_reset_deassert_tick(cache, cfg).unwrap_or(0),
-    );
-    // Occupancy counts clocked and stopped grid cycles; cycle 0 is neither.
-    let (start, end) = sampled_cycle_window(cache, cfg, &grid);
-    let start = start.max(1);
+    let reset_start = query_reset_deassert_tick(cache, cfg).unwrap_or(0);
+    let grid = SyncGrid::new(cache, cfg, reset_start);
+    let (first, end) = sampled_cycle_window(cache, cfg, &grid);
+    let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
+    if first == 0 {
+        *clocked.entry(grid.value(transitions, 0)).or_insert(0) += 1;
+    }
+    let start = first.max(1);
     if start > end {
-        return (Occupancy::new(), Occupancy::new());
+        return (clocked, stopped);
     }
     let boundaries = observation_boundaries(cfg, &grid, transitions, start, end);
-    let (mut clocked, mut stopped) = (Occupancy::new(), Occupancy::new());
     for (index, &lo) in boundaries.iter().enumerate() {
         let hi = boundaries.get(index + 1).map_or(end, |next| next - 1);
         let value = grid.value(transitions, lo);
@@ -1629,11 +1650,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         if cfg.json_format {
             // JSON consumers (coverage_analyst) still get a parseable empty
             // envelope on stdout; the exit code carries the failure.
-            let total_cycles = if cache.clock_period_ticks > 0 {
-                Some(total_ticks / cache.clock_period_ticks)
-            } else {
-                None
-            };
+            let total_cycles = stats_total_cycles(cache, cfg, total_ticks);
             let clock_period_ns = if cache.clock_period_ticks > 0 {
                 Some((cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64)
             } else {
@@ -1670,7 +1687,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if !cfg.json_format {
         let total_time = crate::format::format_tick_time(total_ticks, cache.timescale_exponent);
         if sync_mode && cache.clock_period_ticks > 0 {
-            let total_cycles = total_ticks / cache.clock_period_ticks;
+            let total_cycles = stats_total_cycles(cache, cfg, total_ticks).unwrap_or(0);
             let period =
                 crate::format::format_tick_time(cache.clock_period_ticks, cache.timescale_exponent);
             let _ = writeln!(
@@ -1763,11 +1780,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // the name, which let callers confuse it with nanoseconds.
     if cfg.json_format {
         use crate::format::format_as_verilog_literal;
-        let total_cycles = if cache.clock_period_ticks > 0 {
-            Some(total_ticks / cache.clock_period_ticks)
-        } else {
-            None
-        };
+        let total_cycles = stats_total_cycles(cache, cfg, total_ticks);
         let clock_period_ns = if cache.clock_period_ticks > 0 {
             Some((cache.clock_period_ticks as f64 * cache.ticks_to_ns) as i64)
         } else {
@@ -3566,7 +3579,7 @@ fn stopped_pair_sum(segments: &[PairSegment], stops: &[crate::clock::StoppedRang
         .sum()
 }
 
-fn emit_empty_distance(cfg: &ExtractConfig, unit: &str) {
+fn emit_empty_distance(cfg: &ExtractConfig, unit: &str, warnings: Vec<String>) {
     if cfg.json_format {
         emit_query_json(
             cfg,
@@ -3579,7 +3592,7 @@ fn emit_empty_distance(cfg: &ExtractConfig, unit: &str) {
                 stopped_cycles: 0,
                 truncated: false,
             },
-            Vec::new(),
+            warnings,
         );
     }
 }
@@ -3598,10 +3611,14 @@ fn distance_from_runs(
             EventCollect::NoPatternMatch => {
                 exit_no_signal_match(std::slice::from_ref(pattern), cache)
             }
-            EventCollect::NoEvents { .. } => {
-                emit_empty_distance(cfg, "cycles");
+            EventCollect::NoEvents { multi_bit_edge } => {
+                let note = multi_bit_edge.then(|| multi_bit_edge_note("distance", pattern, value));
+                emit_empty_distance(cfg, "cycles", note.clone().into_iter().collect());
                 if !cfg.json_format {
-                    eprintln!("# distance: no events found for {pattern} {value}");
+                    match note {
+                        Some(note) => eprintln!("# {note}"),
+                        None => eprintln!("# distance: no events found for {pattern} {value}"),
+                    }
                 }
                 return;
             }
@@ -3768,20 +3785,25 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             exit_no_signal_match(std::slice::from_ref(pat_a), cache);
         }
         EventCollect::NoEvents { multi_bit_edge } => {
-            emit_empty_distance(cfg, if sync_mode { "cycles" } else { "ticks" });
-            if multi_bit_edge {
-                eprintln!("# {}", multi_bit_edge_note("distance", pat_a, val_a));
-            } else {
-                eprintln!(
+            let note = multi_bit_edge.then(|| multi_bit_edge_note("distance", pat_a, val_a));
+            emit_empty_distance(
+                cfg,
+                if sync_mode { "cycles" } else { "ticks" },
+                note.clone().into_iter().collect(),
+            );
+            match note {
+                Some(note) => eprintln!("# {note}"),
+                None => eprintln!(
                     "# distance: pattern '{}' matched but value '{}' never occurred",
                     pat_a, val_a
-                );
+                ),
             }
             return;
         }
     };
 
     if cfg.json_format {
+        let mut warnings: Vec<String> = Vec::new();
         let b = cfg.distance_b.as_ref().map(|(pattern, value)| {
             match collect_event_ticks(
                 cache,
@@ -3796,6 +3818,12 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 EventCollect::Ticks(t) => t,
                 EventCollect::NoPatternMatch => {
                     exit_no_signal_match(std::slice::from_ref(pattern), cache)
+                }
+                EventCollect::NoEvents {
+                    multi_bit_edge: true,
+                } => {
+                    warnings.push(multi_bit_edge_note("distance", pattern, value));
+                    Vec::new()
                 }
                 _ => Vec::new(),
             }
@@ -3812,11 +3840,9 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let count = pairs.len() as u64;
         let summary = (!deltas.is_empty()).then(|| distance_summary(&deltas));
         let truncated = !cfg.stats_mode && pairs.len() > cfg.max_lines;
-        let warnings = if truncated {
-            record_limit(cfg, pairs.len())
-        } else {
-            Vec::new()
-        };
+        if truncated {
+            warnings.extend(record_limit(cfg, pairs.len()));
+        }
         let pairs = if cfg.stats_mode {
             Vec::new()
         } else {
@@ -3882,11 +3908,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
             EventCollect::NoEvents { multi_bit_edge } => {
                 if multi_bit_edge {
-                    eprintln!(
-                        "# distance: signal(s) matched '{}' but edge keyword '{}' \
-                         only fires on 1-bit signals.",
-                        pat_b, val_b
-                    );
+                    eprintln!("# {}", multi_bit_edge_note("distance", pat_b, val_b));
                 } else {
                     eprintln!(
                         "# distance: pattern '{}' matched but value '{}' never occurred",

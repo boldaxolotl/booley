@@ -2053,6 +2053,7 @@ def _trace_artifact(
         trace.top_scope,
         trace.signal_count,
         trace.total_ticks,
+        trace.warnings,
     )
 
 

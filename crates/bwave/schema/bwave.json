@@ -346,7 +346,7 @@
           ]
         },
         "deassert_tick": {
-          "description": "Tick of the first transition to the inactive value; null when the reset never deasserts.",
+          "description": "Tick where the reset's first assertion ends; null when it never asserts or never deasserts.",
           "minimum": 0,
           "type": [
             "integer",

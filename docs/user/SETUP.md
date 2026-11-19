@@ -154,7 +154,8 @@ bill each CLI differently. All values are in
 `"auto"`, naming the value init would record. Set it in `booley.toml`, or re-run
 `booley init` to record it for you.
 
-To see which login Booley is using, run `booley auth --status` on the host.
+To see which login each Agent CLI your Project allows would use, run `booley auth --status`
+on the host; add `--cli <name>` to see one.
 
 Where each credential comes from:
 

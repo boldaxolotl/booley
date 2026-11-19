@@ -467,7 +467,9 @@ def _target_selection(
     handles = tuple(make_target_handle(work_dir, n, drivable_by=(drivable_by,)) for n in names)
     # Private seam: Target selection reads the Flow's parsed request, and preparing it through
     # execute needs a resolved FuseSoC core.
-    flow._args = SimpleNamespace(work_dir=work_dir, target=",".join(names))
+    flow._args = SimpleNamespace(
+        work_dir=work_dir, target=",".join(names), baseline=None, frontend=None
+    )
     selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
     return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]
 
