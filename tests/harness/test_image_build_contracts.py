@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import json
 import os
 import posixpath
+import re
+import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
@@ -154,25 +159,73 @@ def test_publisher_and_build_stamp_share_standard_contract_calculator() -> None:
     assert "profile=BuildProfile.DEVELOPMENT_WHEEL" in test_workflow
 
 
+def require_build_requirements(pyproject: Path) -> None:
+    """Fail naming each ``[build-system] requires`` entry the test environment misses."""
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    for text in data["build-system"]["requires"]:
+        requirement = Requirement(text)
+        try:
+            found = importlib.metadata.version(requirement.name)
+        except importlib.metadata.PackageNotFoundError:
+            found = None
+        if found is None or not requirement.specifier.contains(found, prereleases=True):
+            pytest.fail(
+                f"official_build builds offline from the test environment, which needs "
+                f"{text} but has {found or 'none'}; install the test extra"
+            )
+
+
 @pytest.fixture(scope="module")
-def official_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]:
-    """Build the official sdist and the wheel built from it, as ``publish.yml`` does.
+def official_build_run(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
+    """Run ``python -m build`` as ``publish.yml`` does, offline.
+
+    ``--no-isolation`` builds with the test environment's backend, and
+    ``PIP_NO_INDEX`` makes any return to isolation fail on every host.
 
     The checkout copy holds only Git-listed files, so the Git-ignored packaged docs
-    exist only if the build step renders them. Returns the checkout copy, the sdist
-    and the wheel, so tests share one full copy and one ``python -m build``.
+    exist only if the build step renders them. Returns the checkout copy, the
+    ``dist`` folder and the finished build.
     """
+    require_build_requirements(SOURCE_ROOT / "pyproject.toml")
     base = tmp_path_factory.mktemp("official-wheel")
     checkout = base / "checkout"
     copy_source_checkout(SOURCE_ROOT, checkout)
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
     dist = base / "dist"
     built = run_bounded_child(
-        [sys.executable, "-m", "build", "--outdir", str(dist)],
+        [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(dist)],
         cwd=checkout,
+        env={**os.environ, "PIP_NO_INDEX": "1"},
     )
+    return checkout, dist, built
+
+
+@pytest.fixture(scope="module")
+def official_build(
+    official_build_run: tuple[Path, Path, subprocess.CompletedProcess[str]],
+) -> tuple[Path, Path, Path]:
+    """Return the checkout copy, the official sdist and the wheel built from it."""
+    checkout, dist, built = official_build_run
     assert built.returncode == 0, built.stderr or built.stdout
     return checkout, next(dist.glob("booley_rtl-*.tar.gz")), next(dist.glob("booley_rtl-*.whl"))
+
+
+def test_official_build_succeeds_without_a_package_index(
+    official_build_run: tuple[Path, Path, subprocess.CompletedProcess[str]],
+) -> None:
+    _checkout, _dist, built = official_build_run
+    assert built.returncode == 0, built.stderr or built.stdout
+
+
+@pytest.mark.parametrize("requirement", ["setuptools>=9999", "booley-absent-backend>=1"])
+def test_official_build_names_an_unmet_build_requirement(tmp_path: Path, requirement: str) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_bytes(f'[build-system]\nrequires = ["{requirement}"]\n'.encode())
+    with pytest.raises(pytest.fail.Exception, match=re.escape(requirement)) as failed:
+        require_build_requirements(pyproject)
+    assert "pip" not in str(failed.value)
 
 
 def test_official_wheel_renders_shipped_docs_from_sources(
