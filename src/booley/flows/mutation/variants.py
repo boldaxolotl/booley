@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from booley.runtime.filesystem_utils import make_directories
+
 
 class MutationProposal(Protocol):
     """The proposal fields consumed by :class:`MutationVariantPlan`."""
@@ -192,7 +194,7 @@ class MutationVariantPlan:
         for mutation in self._mutations:
             path = destination / f"mutant_{mutation.index}" / mutation.file
             self._validate_destination(path, destination)
-            path.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(path.parent)
             path.write_bytes(_replace_exact(self._originals[mutation.file], mutation))
             written[mutation.index] = path
         return written
