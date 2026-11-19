@@ -756,9 +756,19 @@ def test_snapshot_copies_only_versioned_checkout_state(project, capsys):
 
 
 @_real_script
-def test_snapshot_skips_and_names_unclassified_paths(project, capsys):
+def test_snapshot_skips_and_names_unclassified_paths(project, capsys, tmp_path):
+    excludes = tmp_path / "empty-excludes"
+    excludes.touch()
+    assert _git(project, "config", "core.excludesFile", str(excludes)).returncode == 0
     data = project / ".booley"
+    _write(data / ".gitignore", "tmp/\nruntime/\n")
+    _write(data / "committed" / "x", "tracked\n")
+    _write(data / "mixed" / "tracked", "tracked\n")
+    assert _git(project, "add", "-f", ".booley/committed", ".booley/mixed").returncode == 0
+    assert _git(project, "commit", "-m", "tracked configuration").returncode == 0
     _write(data / "eval_tmp" / "x", "stale\n")
+    _write(data / "mixed" / "new", "untracked\n")
+    _write(data / "tmp" / "qa" / "x", "ignored\n")
     _write(data / "runtime" / "unknown.json", "{}\n")
 
     assert _new("unclassified", project) == 0
@@ -768,9 +778,39 @@ def test_snapshot_skips_and_names_unclassified_paths(project, capsys):
     assert not (copied / "runtime" / "unknown.json").exists()
     skipped = [line for line in capsys.readouterr().err.splitlines() if "skipped" in line]
     assert len(skipped) == 2
-    assert any("eval_tmp" in line and "runtime" not in line for line in skipped)
-    assert any("runtime/unknown.json" in line for line in skipped)
+    assert any("eval_tmp" in line for line in skipped)
+    assert any("mixed" in line for line in skipped)
+    assert not any(name in line for line in skipped for name in ("committed", "tmp/qa", "runtime"))
     assert (data / "eval_tmp" / "x").is_file()
+
+
+@_real_script
+@pytest.mark.parametrize("anchor", ["project_data_repository", "rtl_repository", "elsewhere"])
+def test_snapshot_carries_the_project_data_waiver_directory(project, capsys, anchor):
+    from booley.flows.sim.coverage_flow_context import coverage_project_context
+    from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots, load_approved_waiver_set
+    from tests.flows.sim.test_coverage_policy import _TARGET
+    from tests.flows.sim.test_coverage_waivers import _write_valid_approval
+
+    data = project / ".booley"
+    with (data / "booley.toml").open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(f'[coverage.waivers]\nanchor = "{anchor}"\ndirectory = "coverage-waivers"\n')
+    _write_valid_approval(CoverageRepositoryRoots(project, data))
+    assert _git(project, "add", "rtl/counter.sv").returncode == 0
+    assert _git(project, "commit", "-m", "rtl").returncode == 0
+
+    assert _new("waivers", project) == 0
+
+    worktree = worktree_cmd.worktree_path(project, "waivers")
+    approval = worktree / ".booley" / "coverage-waivers" / "rtl" / "counter.sv.toml"
+    assert approval.exists() is (anchor == "project_data_repository")
+    skipped = [line for line in capsys.readouterr().err.splitlines() if "skipped" in line]
+    if anchor == "project_data_repository":
+        assert not any("coverage-waivers" in line for line in skipped)
+        context = coverage_project_context(worktree)
+        roots = CoverageRepositoryRoots(context.rtl_repository, context.project_data_repository)
+        waivers = load_approved_waiver_set(context.waiver_config, roots, known_targets=(_TARGET,))
+        assert [waiver.waiver_id for waiver in waivers.waivers] == ["counter-basic-block"]
 
 
 @_real_script
