@@ -1047,6 +1047,20 @@ class TestResolveTargetHandleMocked:
         assert result.toplevel == "tb_counter"
         assert result.edam_path == build_root / "demo_core_0" / "sim" / "demo_core_0.eda.yml"
 
+    def test_resolution_reads_the_tool_api_edam_layout(self, tmp_path: Path):
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        build_root = tmp_path / "build"
+        edam = build_root / "demo_core_0" / "sim-verilator" / "demo_core_0.eda.yml"
+
+        result = resolve_target_handle(
+            _handle(project),
+            build_root=build_root,
+            runner=fusesoc_setup_runner(edam=(edam, _EDAM_TEXT)),
+        )
+
+        assert result.edam_path == edam
+
     @pytest.mark.parametrize("others", [1, 2])
     def test_resolution_refuses_another_cores_edam_when_ambiguous(
         self, tmp_path: Path, others: int
