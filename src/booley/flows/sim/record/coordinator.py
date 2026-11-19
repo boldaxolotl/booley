@@ -218,6 +218,8 @@ class WorkExecutionRequest:
     target_handle: TargetHandle | None = None
     child_execution_id: str | None = None
     pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
+    #: Called by the executor once the item's shared build is ready (built, reused or recovered).
+    build_settled: Callable[[], None] | None = None
     pre_sim_decoder: PreSimFiringDecoder = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -777,8 +779,25 @@ class SimulationRecord:
             raise SimulationRecordPublicationError(str(exc), failure) from exc
         return False
 
-    @staticmethod
+    def _build_settled(
+        self, store: SimulationRecordStore, attempt: ScheduledAttempt
+    ) -> Callable[[], None]:
+        """What the executor does when the item's shared build is ready.
+
+        The Flow's claim learns the build is settled, then the scheduler may let the
+        item take a claim of its own.
+        """
+
+        def settled() -> None:
+            if self._flow_claim is not None:
+                self._flow_claim.settle(store.root, attempt.item)
+            if attempt.build_settled is not None:
+                attempt.build_settled()
+
+        return settled
+
     def _work_execution_request(
+        self,
         store,
         manifest,
         attempt,
@@ -805,6 +824,7 @@ class SimulationRecord:
             binding.handle if binding is not None else None,
             child_execution_id,
             request.pre_sim_firing_published,
+            self._build_settled(store, attempt),
         )
 
     def _publish_scheduled_result(
