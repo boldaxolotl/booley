@@ -56,7 +56,8 @@ def _interrupted_simulation_record(
 
     def interrupt_execution(_executor, _request):
         executions.append(_request.attempt_id)
-        _executor.prepare_attempt(_request)
+        if _request.child_execution_id is None:  # a child lane's attempt is already published
+            _executor.prepare_attempt(_request)
         raise KeyboardInterrupt("durable ordinary interruption")
 
     monkeypatch.setattr(
@@ -81,7 +82,8 @@ def _resume_until_execution(monkeypatch):
     """Make a resume that reaches execution raise instead of running."""
 
     def resumed(executor, request):
-        executor.prepare_attempt(request)
+        if request.child_execution_id is None:  # a child lane's attempt is already published
+            executor.prepare_attempt(request)
         raise KeyboardInterrupt("resume reached execution")
 
     monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)

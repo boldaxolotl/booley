@@ -32,6 +32,7 @@ from booley.core.models import (
     AgentResult,
     ArtifactPathResolver,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import rfc3339_from_epoch, utc_now_rfc3339
 
 from ._claude_transcript_md import (  # noqa: F401 — re-exported for backward compat
@@ -689,7 +690,7 @@ def _open_transcript(
     """Open a transcript file within an ExitStack, or return None."""
     if transcript_path is None:
         return None
-    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(transcript_path.parent)
     return stack.enter_context(transcript_path.open("w", encoding="utf-8"))
 
 

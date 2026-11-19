@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import sys
@@ -686,6 +687,20 @@ def pin_memory_budget(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
     no key there sets it, and the host's memory must not matter.
     """
     return lambda mib: pin_budget(monkeypatch, mib)
+
+
+@pytest.fixture(autouse=True)
+def _terminal_as_under_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under ``pytest -s`` stdin and stdout are the terminal: start as under capture."""
+    from booley.presentation import colors
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+
+
+def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``sys.stdin`` an empty terminal, so ``booley init`` runs interactively."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
 
 @pytest.fixture(autouse=True)

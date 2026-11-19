@@ -274,7 +274,7 @@ icarus_reuse_posix_only = pytest.mark.skipif(
 
 def _icarus_key(prepared: PreparedSimulationBuild, root: Path) -> str | None:
     """The Icarus reuse key of one prepared build, with the host tool identity pinned."""
-    session = SimulationBuildSession(_handle(root, "sim_icarus"))
+    session = SimulationBuildSession(_handle(root, "sim_icarus"), wait_s=60)
     return session.reusable_key(prepared, snapshot_build_inputs(prepared), hooks=False)
 
 

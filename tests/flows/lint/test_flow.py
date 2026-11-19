@@ -2174,6 +2174,7 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     from types import SimpleNamespace
 
     from booley.flows.lint.flow import _errored_verdict
+    from booley.flows.source_paths import ProjectSourcePaths
 
     executable = "verilator" if family == "verilator" else "verible-verilog-lint"
     fake = tmp_path / f"{executable}.py"
@@ -2186,6 +2187,7 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
         command=[sys.executable, str(fake)],
         resolved=SimpleNamespace(configured_eda_tool=family, files=(), build_root=tmp_path),
         attempt_token="",
+        project_paths=ProjectSourcePaths(),
     )
     result = flow._run_lint_target(_target_handle("lite"), prepared=prepared)
     exit_code, text = _errored_verdict([result])
@@ -2506,6 +2508,7 @@ def test_lint_label_carries_target_source_bytes(tmp_path):
 
     from booley.flows import job_resources
     from booley.flows.base import SubprocessResult
+    from booley.flows.source_paths import ProjectSourcePaths
     from booley.fusesoc.fusesoc_registry import ResolvedFile
 
     (tmp_path / "top.sv").write_bytes(b"module top; endmodule\n")
@@ -2525,6 +2528,7 @@ def test_lint_label_carries_target_source_bytes(tmp_path):
             ),
         ),
         attempt_token="",
+        project_paths=ProjectSourcePaths(),
     )
     seen: list[job_resources.ResourceLabel | None] = []
 
@@ -2712,3 +2716,213 @@ class TestFlowMetrics:
         ]
         for output, expected in cases:
             assert len(lint_error_findings(output, "verilator")) == expected, output
+
+
+def _author_cross_core_project(root: Path) -> None:
+    """Core ``a`` at the root and core ``b`` in ``ip/b`` both lint ``ip/b/rtl/top.sv``."""
+    (root / "ip/b/rtl").mkdir(parents=True)
+    (root / "ip/b/rtl/top.sv").write_bytes(b"module top; endmodule\n")
+    (root / "a.core").write_bytes(
+        b"CAPI=2:\nname: ::a:0\nfilesets:\n  rtl:\n"
+        b"    files: [ip/b/rtl/top.sv]\n    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_a:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+    )
+    (root / "ip/b/b.core").write_bytes(
+        b"CAPI=2:\nname: ::b:0\nfilesets:\n  rtl:\n"
+        b"    files: [rtl/top.sv]\n    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_b:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+        b"  style_b:\n    flow: lint\n    flow_options: {tool: verible}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+    )
+
+
+def _author_alias_project(root: Path) -> None:
+    """Core ``a`` lists the file through a symlink and a ``copyto`` named like an export."""
+    _author_cross_core_project(root)
+    try:
+        (root / "alias").symlink_to(root / "ip/b/rtl", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    (root / "a.core").write_bytes(
+        b"CAPI=2:\nname: ::a:0\nfilesets:\n  rtl:\n"
+        b"    files:\n      - alias/top.sv\n"
+        b"      - ip/b/rtl/top.sv: {copyto: src/a_0/staged.sv}\n"
+        b"    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_a:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: top\n"
+    )
+
+
+def _author_demo_project(root: Path) -> None:
+    """The stealth demo layout: its core lives in ``.booley/cores`` and lists ``picorv32.v``."""
+    (root / ".booley/cores").mkdir(parents=True)
+    (root / "picorv32.v").write_bytes(b"module picorv32; endmodule\n")
+    (root / ".booley/booley.toml").write_bytes(
+        b"[stealth]\nenabled = true\nignore_native_cores = true\n"
+    )
+    (root / ".booley/cores/picorv32_impl.core").write_bytes(
+        b"CAPI=2:\nname: booley::picorv32-impl:0\nfilesets:\n  rtl:\n"
+        b"    files: [picorv32.v]\n    file_type: systemVerilogSource\n"
+        b"targets:\n  lint_core:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: picorv32\n"
+    )
+
+
+_UNUSED_B = "%Warning-UNUSEDSIGNAL: src/b_0/rtl/top.sv:1:8: Signal is not used: 'x'\n"
+_UNUSED_A = "%Warning-UNUSEDSIGNAL: src/a_0/ip/b/rtl/top.sv:1:8: Signal is not used: 'x'\n"
+_GENERATED = "%Warning-WIDTH: gen/generated.sv:2:3: Operator ASSIGN expects 8 bits\n"
+
+
+@pytest.mark.parametrize(
+    ("project", "target", "args", "processes", "exit_code", "rows", "texts"),
+    [
+        pytest.param(
+            "cross",
+            "lint_a,lint_b",
+            (),
+            (_process(stdout=_UNUSED_A + _GENERATED), _process(stdout=_UNUSED_B)),
+            EXIT_FAILURE,
+            [
+                ("UNUSEDSIGNAL", "ip/b/rtl/top.sv", ["lint_a", "lint_b"]),
+                ("WIDTH", "gen/generated.sv", ["lint_a"]),
+            ],
+            ["[lint]   %Warning-UNUSEDSIGNAL: ip/b/rtl/top.sv:1:8 Signal is not used: 'x'"],
+            id="cross-core",
+        ),
+        pytest.param(
+            "alias",
+            "lint_a,lint_b",
+            (),
+            (
+                _process(
+                    stdout="%Warning-UNUSEDSIGNAL: src/a_0/alias/top.sv:1:8: Signal is not used: 'x'\n"
+                    "%Warning-WIDTH: src/a_0/staged.sv:2:3: Operator ASSIGN expects 8 bits\n"
+                ),
+                _process(stdout=_UNUSED_B),
+            ),
+            EXIT_FAILURE,
+            [
+                ("UNUSEDSIGNAL", "ip/b/rtl/top.sv", ["lint_a", "lint_b"]),
+                ("WIDTH", "src/a_0/staged.sv", ["lint_a"]),
+            ],
+            [],
+            id="alias-and-copyto",
+        ),
+        pytest.param(
+            "cross",
+            "lint_b",
+            ("--scope", "ip/b/"),
+            (_process(),),
+            EXIT_SUCCESS,
+            [],
+            ["RESULT: PASS"],
+            id="scope",
+        ),
+        pytest.param(
+            "demo",
+            "lint_core",
+            (),
+            (
+                _process(
+                    stdout="%Warning-UNUSEDSIGNAL: src/booley__picorv32-impl_0/picorv32.v:10:3: "
+                    "Signal is not used: 'y'\n"
+                ),
+            ),
+            EXIT_FAILURE,
+            [("UNUSEDSIGNAL", "picorv32.v", ["lint_core"])],
+            [],
+            id="demo",
+        ),
+        pytest.param(
+            "cross",
+            "style_b",
+            (),
+            (
+                _process(
+                    stdout="src/b_0/rtl/top.sv:4:11: Interface names must end with _if. "
+                    "[interface-name-style]\n"
+                ),
+            ),
+            EXIT_FAILURE,
+            [("interface-name-style", "ip/b/rtl/top.sv", ["style_b"])],
+            [],
+            id="verible-finding",
+        ),
+        pytest.param(
+            "cross",
+            "lint_b",
+            (),
+            (
+                _process(
+                    1,
+                    stderr="%Error: src/b_0/rtl/top.sv:3:1: syntax error, unexpected endmodule\n"
+                    "%Error: Exiting due to 1 error(s)\n",
+                ),
+            ),
+            EXIT_FAILURE,
+            [],
+            [
+                "ERROR: %Error: ip/b/rtl/top.sv:3:1: syntax error",
+                "RESULT: FAIL \u2014 lint_b: %Error: ip/b/rtl/top.sv:3:1:",
+            ],
+            id="verilator-error",
+        ),
+        pytest.param(
+            "cross",
+            "style_b",
+            (),
+            (_process(1, stdout='src/b_0/rtl/top.sv:3:1: syntax error at token "endmodule"\n'),),
+            EXIT_FAILURE,
+            [],
+            ["RESULT: FAIL \u2014 style_b: ip/b/rtl/top.sv:3:1: syntax error"],
+            id="verible-error",
+        ),
+    ],
+)
+def test_lint_reports_project_paths(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project: str,
+    target: str,
+    args: tuple[str, ...],
+    processes: tuple[SubprocessResult, ...],
+    exit_code: int,
+    rows: list[tuple[str, str, list[str]]],
+    texts: list[str],
+) -> None:
+    """Findings, the quoted error and the scope name Project paths, not FuseSoC's copies."""
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    work_dir = tmp_path / "proj"
+    work_dir.mkdir()
+    {
+        "demo": _author_demo_project,
+        "alias": _author_alias_project,
+        "cross": _author_cross_core_project,
+    }[project](work_dir)
+    _real_lint_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, "verible"), tmp_path)
+
+    result, _ = run_lint(
+        *processes,
+        args=("--report-dir", str(tmp_path / "reports"), *args),
+        target=target,
+        work_dir=work_dir,
+        resolved=None,
+    )
+
+    assert result.exit_code == exit_code
+    report_path = tmp_path / "reports/lint_report.json"
+    report: dict[str, Any] = {"warnings": [], "errors": []}
+    if report_path.exists():
+        report = json.loads(report_path.read_bytes())
+    assert [(w["rule"], w["file"], w["targets"]) for w in report["warnings"]] == rows
+    output = capsys.readouterr().out + result.outcome.report_text
+    for text in texts:
+        assert text in output
+    for error in report["errors"]:
+        assert "src/b_0" not in error["message"]
+        assert "ip/b/rtl/top.sv:3:1:" in error["message"]

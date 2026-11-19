@@ -152,7 +152,7 @@ def _watch(
         )
         return _fake_proc(rc=0, stdout="ok")
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", run)
+    monkeypatch.setattr("booley.flows.mutation.flow.run_tool", run)
     return seen
 
 
@@ -245,7 +245,7 @@ def test_a_job_queued_behind_a_build_or_simulation_names_the_mutation_job(
             managed.store.release(waiter)
         return _fake_proc(rc=0, stdout="ok")
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", run)
+    monkeypatch.setattr("booley.flows.mutation.flow.run_tool", run)
     job = job_slots.JobLabel("run-7", "mutation", _TARGET)
 
     _admitted_run(tmp_path, monkeypatch, managed.context(job))

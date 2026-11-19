@@ -37,6 +37,8 @@ Narrow the query rather than raising the limit.
   rejected (`reference/verilog-literals`).
 - **Virtual Signals**: `--virtual "hsk = *valid & *ready"` defines a 1-bit
   predicate (`reference/virtual-signals`).
+- **Wide values**: `wave` elides values past 24 characters so one wide bus
+  cannot set the column width of the whole table.
 
 ## Reach for `wave` first
 
@@ -76,31 +78,3 @@ bwave gui @dut \
   --group 'Control=tb.dut.ctrl.state%h@blue' \
   --time 1180c:1260c
 ```
-
-## Common errors
-
-- `ERROR: waveform store has no signals` (exit 2 on queries, exit 0 on `list`):
-  the store is empty — a header-only trace.fst, the signature of a Verilator
-  sim traced via the auto-generated `--main`. Re-run with a custom C++ `--exe`
-  main; no pattern will help. (`bwave build` refuses to *create* such a store —
-  `input VCD declares no signals`, exit 2 — so an empty store always came from
-  an external producer writing FST directly.)
-- **`register` refused a raw `.vcd`**: queries need a built store, so an alias
-  bound to a VCD could never answer one. `bwave build <vcd> -o <out>.fst` first,
-  or `register <vcd> --as ALIAS --build` to do it in one step.
-- **Async query returned only the t=0 row** (exit 0, no warning): the window is
-  inside the trace but held no transitions. A `# WARNING: ... outside the trace`
-  means the window is past the end. `list` reports `total_ticks` in *ticks*,
-  not nanoseconds; converting by eye is how you land past the end. Check the
-  timescale, or drop `--async` and use cycles.
-- **`signal` printed nothing for `-t N:N`**: it prints *transitions*. It falls
-  back to the held value and says so, but `value --at N` is the direct way to
-  ask "what is it holding right now?".
-- **`wave` cells show `AABB..CCDD`**: values wider than 24 chars are elided so
-  one 512-bit bus can't set the column width for the whole table. Use
-  `value --at CYCLE` or `signal` for full width.
-- `unknown radix suffix '%u'` (exit 2): only `%h`, `%d`, `%b` exist.
-- `--first and --last are mutually exclusive` (exit 2).
-- `bad --virtual` syntax: parens required to mix operators (`(*a & *b) | *c`),
-  signal-to-signal comparisons require equal widths, bare hex rejected (use
-  `'h0C` not `0C`).
