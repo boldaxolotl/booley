@@ -427,11 +427,12 @@ def test_auth_status_in_handwritten_sandbox_reports_declared_gateway(
         '[agent]\ndefault = "codex"\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n',
     )
 
-    code, captured = _auth_status(gateway_env, capsys)
+    code, captured = _auth_status(gateway_env, capsys, app=None)
 
     output = captured.out + captured.err
     assert code == 0
     assert "agents run on the gateway at" in output
+    assert "claude: auth policy 'subscription'" in output
     assert "applies inside a Sandbox only" not in output
 
 

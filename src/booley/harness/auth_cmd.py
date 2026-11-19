@@ -58,15 +58,22 @@ _MODE_DESC = {
 }
 
 
-def _policy_note(policy: str) -> None:
-    """State the auth policy and where its credentials come from, in words."""
-    note(f"auth policy '{policy}'; credentials come from the environment this command inherited")
+def _policy_note(policy: str, cli: str | None = None) -> None:
+    """State the auth policy and where its credentials come from, in words.
+
+    A Project report names the CLI each policy belongs to.
+    """
+    prefix = f"{cli}: " if cli else ""
+    note(
+        f"{prefix}auth policy '{policy}'; "
+        "credentials come from the environment this command inherited"
+    )
 
 
-def _report_gateway_status(app: str | None) -> int:
+def _report_gateway_status(app: str | None, label: str | None = None) -> int:
     """Report the env-selected gateway policy: Codex only, URL + token required."""
     app = app or APP_CODEX
-    _policy_note(GATEWAY_AUTH)
+    _policy_note(GATEWAY_AUTH, label)
     if app != APP_CODEX:
         err(f"{app}: auth '{GATEWAY_AUTH}' routes Codex only")
         return 1
@@ -117,62 +124,75 @@ def _host_policy(policy: str, *, handoff: bool) -> str:
 
 
 def _report_status(app: str | None = None, project_root: Path | None = None) -> int:
-    """Report the launching process's credential under the selected Project policy."""
+    """Report the launching process's credentials under the Project's policies.
+
+    In a Project every allowed Agent CLI is reported under its own policy, the default
+    first; *app* narrows the report to that CLI. The exit code is nonzero only when no
+    reported CLI has a usable credential.
+    """
     from booley.config import agent_app
-    from booley.config.agent import (
-        _inside_container,
-        gateway_handoff_active,
-        missing_auth_policy,
-        project_credential_policy,
-    )
+    from booley.config.agent import missing_auth_policy, project_cli_policies
     from booley.core.booley_dir import resolve_authoritative_booley_dir
 
     banner("Agent auth status")
-    policy = missing_auth_policy()
     # Under BOOLEY_AGENT_APP=auto the registrar's choice names the app; it also
     # refuses (AgentAppError) outside a Sandbox.
-    app = app or agent_app.resolved_app(None)
-    if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
-        provider, policy = project_credential_policy(project_root, cli=app)
-        app = app or provider
+    chosen = app or agent_app.resolved_app(None)
+    if project_root is None or not resolve_authoritative_booley_dir(project_root).is_dir():
+        apps = (chosen,) if chosen else tuple(auth_token.CREDENTIALS)
+        return 0 if _report_policy(apps, missing_auth_policy(), label=None) else 1
+    usable = 0
+    # Only --cli filters; the auto choice only names an undeclared set.
+    for cli, policy in project_cli_policies(project_root, cli=app, selected=chosen):
+        try:
+            usable += _report_policy((cli,), policy, label=cli)
+        except ValueError as exc:  # one CLI's unplannable credential must not hide the others
+            err(f"{cli}: {exc}")
+    return 0 if usable else 1
+
+
+def _report_policy(apps: tuple[str, ...], policy: str, *, label: str | None) -> int:
+    """Report *apps* under *policy*; the number of them with a usable credential."""
+    from booley.config.agent import _inside_container, gateway_handoff_active
+
     # A declared gateway policy is honored inside any Sandbox (hand-written specs
     # included), as the runtime and Doctor do; only outside one does it read as `subscription`.
     handoff = gateway_handoff_active() or (policy == GATEWAY_AUTH and _inside_container())
-    if handoff and _gateway_covers(app):
-        return _report_gateway_status(app)
+    covered = apps[0] if len(apps) == 1 else None
+    if handoff and _gateway_covers(covered):
+        return int(_report_gateway_status(covered, label) == 0)
     policy = _host_policy(policy, handoff=handoff)
-    apps = [app] if app else list(auth_token.CREDENTIALS)
-    usable = 0
-    _policy_note(policy)
-    for selected in apps:
-        plan = auth_token.credential_plan(selected, policy)
-        for message in auth_token.credential_warnings(plan):
-            warn(message)
-        effective = plan.selected
-        if effective is None:
-            warn(
-                f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
-            )
-            if auth_token.defers_to_cli(policy):
-                hint(f"run the app's login, export an API key, or booley auth --cli {selected}")
-            continue
-        usable += 1
-        line = f"{selected}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
-        if effective.rotation_free:
-            ok(line)
-        else:
-            warn(line)
-            hint("a host-side login can revoke a running container's copy mid-run")
-            if auth_token.defers_to_cli(policy):
-                hint(f"booley auth --cli {selected}")
-        for loser in effective.overridden:
-            hint(f"{loser} is present but not used; the line above wins")
-        if auth_token.read_stored_token(selected) and not auth_token.stored_token_is_private(
-            selected
-        ):
-            warn(f"{selected}: stored credential is readable by others — chmod 600 it")
-        _report_token_storage(plan)
-    return 0 if usable else 1
+    _policy_note(policy, label)
+    return sum(_report_cli(selected, policy) for selected in apps)
+
+
+def _report_cli(selected: str, policy: str) -> int:
+    """Report one CLI's credential under *policy*; 1 when it has a usable one."""
+    plan = auth_token.credential_plan(selected, policy)
+    for message in auth_token.credential_warnings(plan):
+        warn(message)
+    effective = plan.selected
+    if effective is None:
+        warn(
+            f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
+        )
+        if auth_token.defers_to_cli(policy):
+            hint(f"run the app's login, export an API key, or booley auth --cli {selected}")
+        return 0
+    line = f"{selected}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
+    if effective.rotation_free:
+        ok(line)
+    else:
+        warn(line)
+        hint("a host-side login can revoke a running container's copy mid-run")
+        if auth_token.defers_to_cli(policy):
+            hint(f"booley auth --cli {selected}")
+    for loser in effective.overridden:
+        hint(f"{loser} is present but not used; the line above wins")
+    if auth_token.read_stored_token(selected) and not auth_token.stored_token_is_private(selected):
+        warn(f"{selected}: stored credential is readable by others — chmod 600 it")
+    _report_token_storage(plan)
+    return 1
 
 
 def _report_token_storage(plan: auth_token.CredentialPlan) -> None:

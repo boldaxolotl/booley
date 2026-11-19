@@ -578,6 +578,8 @@ class AgentSelection:
     write_default: bool = False
     #: One policy for every CLI, an ``[agent.auth]`` table, or ``None`` to leave it as recorded.
     auth_record: str | dict[str, str] | None = None
+    #: The other allowed Agent CLIs with their policies, in ``[agent] clis`` order.
+    others: tuple[tuple[str, str], ...] = ()
 
 
 def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
@@ -775,7 +777,10 @@ def _resolve_agent_selection(
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
     policies, record = resolved
-    return AgentSelection(provider, policies.get(provider, DEFAULT_AUTH), write_default, record)
+    others = tuple((cli, policy) for cli, policy in policies.items() if cli != provider)
+    return AgentSelection(
+        provider, policies.get(provider, DEFAULT_AUTH), write_default, record, others
+    )
 
 
 def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]]) -> str:
@@ -893,23 +898,29 @@ def _step_auth(
         skip("credential check skipped by --skip-credentials")
         ctx.record("auth", "skip", "credential check skipped")
         return
-    mode = _detect_auth_mode(selection.provider, selection.auth)
+    pieces = [
+        _report_cli_auth(cli, policy)
+        for cli, policy in ((selection.provider, selection.auth), *selection.others)
+    ]
+    unavailable = any(piece.endswith(" unavailable") for piece in pieces)
+    detail = "; ".join(pieces)
+    if unavailable:
+        ctx.record("auth", "warn", detail)
+    else:
+        ctx.record("auth", "ok", f"{'checked authentication: ' if ctx.check_only else ''}{detail}")
+
+
+def _report_cli_auth(cli: str, policy: str) -> str:
+    """Report one allowed CLI's credential; the record piece for it."""
+    mode = _detect_auth_mode(cli, policy)
     if mode:
-        ok(f"detected {mode} auth for {selection.provider}")
-        _check_provider_creds(selection.provider, mode, selection.auth)
-        ctx.record(
-            "auth",
-            "ok",
-            f"{'checked authentication: ' if ctx.check_only else ''}{selection.provider}/{mode}",
-        )
-        return
-    key_var = "ANTHROPIC_API_KEY" if selection.provider == "claude" else "OPENAI_API_KEY"
-    login = "claude login" if selection.provider == "claude" else "codex login"
-    warn(
-        f"no {selection.auth} auth available for {selection.provider} — "
-        f"set {key_var} or run '{login}' as appropriate"
-    )
-    ctx.record("auth", "warn", f"{selection.provider}/{selection.auth} unavailable")
+        ok(f"detected {mode} auth for {cli}")
+        _check_provider_creds(cli, mode, policy)
+        return f"{cli}/{mode}"
+    key_var = "ANTHROPIC_API_KEY" if cli == "claude" else "OPENAI_API_KEY"
+    login = "claude login" if cli == "claude" else "codex login"
+    warn(f"no {policy} auth available for {cli} — set {key_var} or run '{login}' as appropriate")
+    return f"{cli}/{policy} unavailable"
 
 
 # ---------------------------------------------------------------------------
