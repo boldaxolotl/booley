@@ -179,7 +179,7 @@ def require_build_requirements(pyproject: Path) -> None:
 def official_build_run(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
-    """Run ``python -m build`` as ``publish.yml`` does, offline.
+    """Run ``python -m build`` for the artifacts ``publish.yml`` builds, offline.
 
     ``--no-isolation`` builds with the test environment's backend, and
     ``PIP_NO_INDEX`` makes any return to isolation fail on every host.
