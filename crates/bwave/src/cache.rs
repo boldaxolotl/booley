@@ -14,7 +14,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::format::{format_value_with_radix, values_match, Radix, TriggerMode};
-use crate::reset::{Reset, ResetReport};
+use crate::reset::{Deassertion, Reset, ResetReport};
 use crate::signal::{anchored_form, compile_patterns, match_signal};
 use crate::slice::SliceOf;
 use crate::ExtractConfig;
@@ -277,12 +277,12 @@ impl ColumnCache {
         self.reset = index.map(|i| {
             let name = self.signals[i].name.clone();
             let active_low = crate::reset::active_low(&name);
-            let deassert_tick = crate::reset::deassert_tick(&self.read_transitions(i), active_low);
+            let deassertion = crate::reset::deassertion(&self.read_transitions(i), active_low);
             Reset {
                 name,
                 active_low,
                 chosen_by_option,
-                deassert_tick,
+                deassertion,
             }
         });
         let clock = self.signals.iter().position(|s| s.name == self.clock_id);
@@ -303,10 +303,13 @@ impl ColumnCache {
         Ok(())
     }
 
-    /// Tick where the reset deasserts; `None` without a reset or when it
-    /// never reaches its inactive value.
+    /// Tick where the reset's first assertion ends; `None` without a reset,
+    /// or when it never asserts or never deasserts.
     pub fn reset_deassert_tick(&self) -> Option<u64> {
-        self.reset.as_ref().and_then(|r| r.deassert_tick)
+        match self.reset.as_ref()?.deassertion {
+            Deassertion::At(tick) => Some(tick),
+            Deassertion::NeverAsserts | Deassertion::NeverDeasserts => None,
+        }
     }
 
     /// Override the display clock with a different signal's timing.
@@ -767,6 +770,7 @@ pub fn reset_report(cache: &ColumnCache, with_reset: bool) -> ResetReport {
         deassert_time: tick.map(|t| format!("{}{unit}", u128::from(t) * factor)),
         skipped_cycles,
         with_reset,
+        never_asserts: reset.is_some_and(|r| r.deassertion == Deassertion::NeverAsserts),
     }
 }
 
