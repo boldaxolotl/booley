@@ -3338,11 +3338,39 @@ class TestFileBasedInterpretation:
         run_log = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
         assert "despite exit 0" in run_log.read_text(encoding="utf-8")
 
-    def test_timing_markers_rederived_from_openroad_log(self, flow_and_state, tmp_path: Path):
+    @staticmethod
+    def _constraint_check_block(scenario: str) -> str:
+        """The block run_openroad.tcl prints: every captured check_setup line
+        carries the prefix so OpenSTA's "Warning:" text is not an EDA warning."""
+        if scenario == "unchecked":
+            return ""
+        check_lines: list[str] = []
+        if scenario == "clock_only":
+            inputs = [f"in{i}" for i in range(10)] + ["data[3]", "end"]
+            endpoints = [f"out{i}" for i in range(13)] + ["r1/D"]
+            check_lines = [
+                "Warning: There are 12 input ports missing set_input_delay.",
+                *(f"  {name}" for name in inputs),
+                "Warning: There is 1 output port missing set_output_delay.",
+                "  y",
+                "Warning: There are 14 unconstrained endpoints.",
+                *(f"  {name}" for name in endpoints),
+            ]
+        return "".join(
+            f"STA_CONSTRAINT_CHECK: {line}\n" for line in ["begin", *check_lines, "end"]
+        )
+
+    @pytest.mark.parametrize("scenario", ["clock_only", "constrained", "unchecked"])
+    def test_timing_markers_rederived_from_openroad_log(
+        self, flow_and_state, tmp_path: Path, scenario: str
+    ):
         """The Python-derived Fmax/critical-path markers (legacy in-process
-        prints) are reconstructed from the STA log file at interpret time."""
+        prints) are reconstructed from the STA log file at interpret time, and
+        the constraint check block becomes a NOTE that never moves the verdict."""
         flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
+
+        check_block = self._constraint_check_block(scenario)
 
         def fake_configure(target, cmd):
             return _stub_plan(tmp_path, target, mode="physical")
@@ -3356,7 +3384,7 @@ class TestFileBasedInterpretation:
             (build_dir / "openroad.log").write_text(
                 "STA_WORST_SLACK_NS: 2.000000\n"
                 "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n"
-                "Design area 7000 u^2 50% utilization.\n",
+                "Design area 7000 u^2 50% utilization.\n" + check_block,
                 encoding="utf-8",
             )
             (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
@@ -3383,6 +3411,48 @@ class TestFileBasedInterpretation:
         assert "2,000 ps" in result.report_text
         assert "500 MHz" in result.report_text
         assert "+2.000 ns" in result.report_text
+        # The check never changes the verdict or exit code (the raw OpenSTA
+        # "Warning:" form would have turned this PASS into WARN).
+        assert "RESULT: PASS" in result.report_text
+        self._assert_constraint_outcome(result, tmp_path, scenario)
+
+    @staticmethod
+    def _assert_constraint_outcome(result, tmp_path: Path, scenario: str) -> None:
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))
+        if scenario == "unchecked":
+            # No block means no check ran (logical mode, or OpenROAD died first):
+            # no key and no NOTE, not zero counts.
+            assert "unconstrained" not in report
+            assert "unconstrained" not in result.detail["lite"]
+            assert "constrained paths" not in result.report_text
+            return
+        detail = report["unconstrained"]
+        assert result.detail["lite"]["unconstrained"] == detail
+        if scenario == "constrained":
+            assert "timing covers only constrained paths" not in result.report_text
+            assert detail == {
+                key: {"count": 0, "sample": []}
+                for key in ("endpoints", "inputs_without_delay", "outputs_without_delay")
+            }
+            return
+        note = next(
+            line for line in result.report_text.splitlines() if "constrained paths" in line
+        )
+        assert "NOTE" in note
+        assert "14 unconstrained endpoints" in note
+        assert "12 inputs without set_input_delay (in0, in1, in2, +9 more)" in note
+        assert "1 output without set_output_delay (y)" in note
+        assert detail["inputs_without_delay"] == {
+            "count": 12,
+            "sample": [f"in{i}" for i in range(10)],
+        }
+        assert detail["endpoints"]["count"] == 14
+        assert len(detail["endpoints"]["sample"]) == 10
+        assert detail["outputs_without_delay"] == {"count": 1, "sample": ["y"]}
+        # The bounded sample drops names the run log keeps.
+        run_log = (tmp_path / report["artifacts"]["log"]).read_text(encoding="utf-8")
+        assert "data[3]" in run_log
+        assert "r1/D" in run_log
 
     def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
         """A clock label without numeric setup/hold evidence cannot complete PPA."""
