@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,13 +11,14 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.flows.synth import timing as synth_timing
+from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
 from booley.flows.synth.backends.pipeline import SynthSpec, configure_synthesis
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.timing import OpenRoadPpaSettings, StaTimingConfig
 from tests.conftest import symlink_or_skip
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _SYNTH_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
@@ -65,14 +67,16 @@ def _run_yosys(
     build_dir = tmp_path / "build"
     configure_synthesis(_spec(liberty=liberty, **overrides), build_dir)
     (build_dir / "sv2v_converted.v").write_text(rtl, encoding="utf-8")
-    result = subprocess.run(
-        ["yosys", "-q", "-s", "synth.ys"],
-        cwd=build_dir,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    with syn_make.yosys_tmpdir() as yosys_tmp:
+        result = subprocess.run(
+            ["yosys", "-q", "-s", "synth.ys"],
+            cwd=build_dir,
+            env={**os.environ, "TMPDIR": str(yosys_tmp)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
     return build_dir, result
 
 
@@ -162,11 +166,8 @@ class TestFinalCheckImportIsolation:
         assert "Assertion failed" in result.stderr
 
 
-@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
-class TestAbcDelayTargetReachesMapping:
-    """The generated ABC script must use a placeholder spelling Yosys really expands."""
-
-    _LIBERTY = """library(test) {
+#: A toy Liberty that ABC can map multi-bit logic to; the buffer cell is required.
+_MAPPING_LIBERTY = """library(test) {
   cell(INV_X1) {
     area: 1;
     pin(A) { direction: input; capacitance: 1; }
@@ -190,8 +191,20 @@ class TestAbcDelayTargetReachesMapping:
     pin(A2) { direction: input; capacitance: 1; }
     pin(ZN) { direction: output; function: \"A1 & A2\"; }
   }
+  cell(BUF_X1) {
+    area: 2;
+    pin(A) { direction: input; capacitance: 1; }
+    pin(Z) { direction: output; function: \"A\"; }
+  }
 }
 """
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
+class TestAbcDelayTargetReachesMapping:
+    """The generated ABC script must use a placeholder spelling Yosys really expands."""
+
+    _LIBERTY = _MAPPING_LIBERTY
 
     @pytest.mark.parametrize("abc_recipe", ["fast", "balanced"])
     def test_delay_target_is_passed_to_abc_map(self, tmp_path, abc_recipe):
@@ -205,6 +218,38 @@ class TestAbcDelayTargetReachesMapping:
         assert result.returncode == 0, result.stderr
         abc_log = (build_dir / "log_abc_dut.txt").read_text(encoding="utf-8")
         assert "map -D 3333" in abc_log
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
+def test_abc_completes_under_a_long_job_tmpdir(tmp_path):
+    """The pinned Yosys's ABC hangs once TMPDIR passes 35 characters (#4730)."""
+    liberty = tmp_path / "toy.lib"
+    liberty.write_text(_MAPPING_LIBERTY, encoding="utf-8")
+    build_dir = tmp_path / "build"
+    configure_synthesis(_spec(liberty=liberty), build_dir)
+    (build_dir / "sv2v_converted.v").write_text(
+        "module dut(input [7:0] a, input [7:0] b, input [7:0] c, output [7:0] y);\n"
+        "  assign y = a * b + c;\nendmodule\n",
+        encoding="utf-8",
+    )
+    job_tmp = tmp_path / ("j" * 80)
+    job_tmp.mkdir()
+
+    with syn_make.yosys_tmpdir() as yosys_tmp:
+        result = run_bounded_child(
+            [
+                "make",
+                "-o",
+                "sv2v",
+                "-C",
+                str(build_dir),
+                "yosys",
+                syn_make.yosys_tmpdir_assignment(yosys_tmp),
+            ],
+            env={**os.environ, "TMPDIR": str(job_tmp)},
+        )
+
+    assert result.returncode == 0, result.stdout
 
 
 # ---------------------------------------------------------------------------
