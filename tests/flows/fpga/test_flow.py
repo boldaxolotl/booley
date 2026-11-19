@@ -530,7 +530,7 @@ def test_baseline_runs_the_candidate_target_at_the_baseline_revision(
 
 
 def test_baseline_setup_records_keep_their_outcome_when_vivado_fails(
-    tmp_path: Path, vivado: dict, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, vivado: dict
 ) -> None:
     """Judging a Target's failed Vivado run must not rewrite its successful setups."""
     _commit_project(tmp_path)
@@ -546,9 +546,8 @@ def test_baseline_setup_records_keep_their_outcome_when_vivado_fails(
         )
         return real_resolve(handle, **kwargs)
 
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
-
-    outcome = _fpga_flow(tmp_path, "--baseline", "HEAD").execute_prepared().outcome
+    with patch.object(fusesoc_registry, "resolve_target_handle", side_effect=resolve):
+        outcome = _fpga_flow(tmp_path, "--baseline", "HEAD").execute_prepared().outcome
 
     assert outcome.exit_code == EXIT_ERROR
     outcomes: dict[str, list[str]] = {}
