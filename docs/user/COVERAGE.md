@@ -272,12 +272,10 @@ the report it saved.
 <details markdown>
 <summary>In stealth mode</summary>
 
-In Stealth Mode the Coverage Analyst reads your sources when the Stealth core
-copies (and, with `ignore_native_cores`, Booley's private core registry) are
-current, as they are after a Simulation run. Otherwise it changes nothing,
-works from the coverage report alone, and proposes no Waiver Candidate ready
-for human review; its limitations name the out-of-date copies, and a new
-Simulation run refreshes them. See [Stealth Mode](STEALTH.md).
+In Stealth Mode the Coverage Analyst reads your sources when Booley's Stealth
+core projections are current, as they are after a Simulation run. Otherwise it
+works from the coverage report alone, proposes no Waiver Candidate ready for
+human review, and its limitations say why. See [Stealth Mode](STEALTH.md).
 
 </details>
 
