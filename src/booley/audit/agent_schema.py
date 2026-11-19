@@ -42,15 +42,17 @@ def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "use only [agent].clis/default/auth",
         )
     try:
-        declared = parse_agent_section(agent)
-        settings_from_data({k: v for k, v in data.items() if k != "models"}, lazy=False)
+        declared = parse_agent_section(agent, keep_retired_auth=True)
+        settings_from_data(
+            {k: v for k, v in data.items() if k != "models"}, lazy=False, keep_retired_auth=True
+        )
     except GatewayConfigError:
         pass  # the credential-policy check reports the bad gateway variable
     except BackendConfigError as exc:
         return failure(
             str(exc),
             'set [agent] clis/default to "claude" or "codex"; auth to "subscription", '
-            '"api_key" (or "gateway" for Codex), alone or per CLI in [agent.auth], '
+            '"api_key", alone or per CLI in [agent.auth], '
             "or re-run booley init",
         )
     if declared.default is None and declared.auth is None:
@@ -88,7 +90,7 @@ def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     if (problem := _models_table_problem(models)) is not None:
         return problem
     try:
-        settings = settings_from_data(data, lazy=False)
+        settings = settings_from_data(data, lazy=False, keep_retired_auth=True)
     except GatewayConfigError:
         return ConfigTableAudit()  # the credential-policy check reports the bad gateway variable
     except BackendConfigError as exc:
@@ -116,7 +118,9 @@ def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 def _agent_section_fails(data: Mapping[str, Any]) -> bool:
     """Whether the Project's Agent CLI selection is invalid even without ``[models]``."""
     try:
-        settings_from_data({k: v for k, v in data.items() if k != "models"}, lazy=False)
+        settings_from_data(
+            {k: v for k, v in data.items() if k != "models"}, lazy=False, keep_retired_auth=True
+        )
     except BackendConfigError:
         return True
     except GatewayConfigError:
