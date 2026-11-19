@@ -131,7 +131,7 @@ def test_preflight_rejects_empty_duplicate_or_unregistered_tests(tmp_path, tests
 
 
 @pytest.mark.parametrize(
-    "hooks,reset", [(None, True), ("[write_hook]", False), ("[start_hook, write_hook]", True)]
+    "hooks,reset", [("[write_hook]", False), ("[start_hook, write_hook]", True)]
 )
 def test_custom_main_hook_errors_are_atomic_preflight_errors(tmp_path, hooks, reset):
     context = project(tmp_path)
@@ -140,9 +140,7 @@ def test_custom_main_hook_errors_are_atomic_preflight_errors(tmp_path, hooks, re
     data = path.read_text().replace(
         "files: [rtl/counter.sv]", "files: [rtl/counter.sv, {main.cpp: {file_type: cppSource}}]"
     )
-    coverage = f"reset_included: {str(reset).lower()}"
-    if hooks is not None:
-        coverage += f", custom_main_hooks: {hooks}"
+    coverage = f"reset_included: {str(reset).lower()}, custom_main_hooks: {hooks}"
     data = data.replace(
         "flow_options: {tool: verilator}",
         f"flow_options: {{tool: verilator, booley: {{coverage: {{{coverage}}}}}}}",

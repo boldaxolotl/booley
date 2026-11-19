@@ -1218,37 +1218,59 @@ def _window_evidence(
     )
 
 
+_HOOKS_IN_CORE = "flow_options.booley.coverage.custom_main_hooks in the Target's .core"
+
+
 def coverage_request_finding(request: CoverageCollectionRequest) -> CoverageFinding | None:
     """Validate Target-owned hook declarations without executing or allocating paths."""
     target = request.target
-    if target.harness != "custom_main":
-        if target.custom_main_hooks:
-            return CoverageFinding(
-                "error",
-                "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
-                "/target/custom_main_hooks",
-                "custom_main_hooks is allowed only for a custom-main Target.",
-            )
-        return None
     hooks = target.custom_main_hooks
-    if len(set(hooks)) != len(hooks):
+    unknown = sorted(set(hooks) - {"start_hook", "write_hook"})
+    if target.harness != "custom_main":
+        if not hooks:
+            return None
+        code = "COV_CUSTOM_MAIN_HOOK_FORBIDDEN"
+        message = (
+            f"{_HOOKS_IN_CORE} is allowed only for a custom-main Target "
+            "(one with its own C or C++ main); remove it."
+        )
+    elif len(set(hooks)) != len(hooks):
         code = "COV_CUSTOM_MAIN_HOOK_DUPLICATE"
-        message = "Custom-main hook declarations must not contain duplicates."
-    elif set(hooks) - {"start_hook", "write_hook"}:
+        message = (
+            f"{_HOOKS_IN_CORE} lists a hook more than once; "
+            "list start_hook and write_hook at most once each."
+        )
+    elif unknown:
         code = "COV_CUSTOM_MAIN_HOOK_UNKNOWN"
-        message = "Custom-main hook declarations contain an unknown hook."
+        message = (
+            f"{_HOOKS_IN_CORE} lists unknown hook(s) {unknown!r}; "
+            "the hooks are start_hook and write_hook."
+        )
     elif "write_hook" not in hooks:
         code = "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED"
-        message = "A custom main must declare write_hook."
+        message = (
+            f"a custom main must declare write_hook in {_HOOKS_IN_CORE} "
+            "and call booley_coverage_write() once on every normal exit path."
+        )
     elif not request.reset_included and "start_hook" not in hooks:
         code = "COV_CUSTOM_MAIN_START_HOOK_REQUIRED"
-        message = "A post-reset custom main must declare start_hook."
+        message = (
+            "with reset_included: false, a custom main must also declare start_hook in "
+            f"{_HOOKS_IN_CORE} and call booley_coverage_start() once after reset, "
+            "before booley_coverage_write()."
+        )
     elif request.reset_included and "start_hook" in hooks:
         code = "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY"
-        message = "start_hook is invalid when reset activity is included."
+        message = (
+            f"start_hook in {_HOOKS_IN_CORE} is invalid while "
+            "reset activity is included (reset_included is true or unset); remove start_hook, "
+            "or set reset_included: false and call booley_coverage_start() after reset."
+        )
     else:
         return None
-    return CoverageFinding("error", code, "/target/custom_main_hooks", message)
+    return CoverageFinding(
+        "error", code, "/target/custom_main_hooks", f"{target.selector}: {message}"
+    )
 
 
 def _preflight_error_result(
