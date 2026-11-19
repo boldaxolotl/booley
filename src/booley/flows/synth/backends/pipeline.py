@@ -894,7 +894,6 @@ def _timing_sections(
     fresh_text: Callable[[str], str | None],
 ) -> list[str]:
     """OpenROAD log sections plus re-derived physical STA markers."""
-    spec = plan.spec
     report_dir = plan.build_dir / "reports" / "timing"
     parts: list[str] = []
     openroad_text = fresh_text("openroad.log")
@@ -904,9 +903,7 @@ def _timing_sections(
         surfaced = False
         if openroad_text is not None:
             parts.append(f"--- openroad.log ---\n{openroad_text}")
-            surfaced = openroad_reporting.emit_timing_markers(
-                openroad_text, spec.timing, report_dir
-            )
+            surfaced = openroad_reporting.emit_timing_markers(openroad_text, report_dir)
             openroad_timing._print_openroad_area_markers(openroad_text)
         if not surfaced and openroad_text is not None:
             print("WARNING: STA completed but no timing path slack was reported")

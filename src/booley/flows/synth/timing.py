@@ -55,26 +55,48 @@ _PERCLOCK_RE = re.compile(
     r"STA_PERCLOCK:\s*name=(?P<name>\S+)\s+period_ns=(?P<period>[-+]?\d+(?:\.\d+)?)"
     r"\s+wns_ns=(?P<wns>NA|[-+]?\d+(?:\.\d+)?)"
     r"\s+whs_ns=(?P<whs>NA|[-+]?\d+(?:\.\d+)?)"
-)
-_CREATE_CLOCK_PERIOD_RE = re.compile(
-    r"(?m)^[^\n#]*?\bcreate_clock\b[^\n]*?-period\s+"
-    r"([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)"
+    r"\s+setup_same_clock=(?P<same>[01])"
 )
 
 
-def parse_perclock(text: str) -> dict[str, dict[str, float | None]]:
-    """Parse normalized per-clock timing markers from adapter output."""
-    rows: dict[str, dict[str, float | None]] = {}
+class PerClockRow(NamedTuple):
+    """One clock's normalized ``STA_PERCLOCK`` marker.
+
+    ``setup_same_clock`` is True only when the clock's worst setup path is
+    launched and captured by that same clock; a path launched by another
+    clock (or by none) is timed against no period of this clock.
+    """
+
+    period_ns: float | None
+    wns_ns: float | None
+    whs_ns: float | None
+    setup_same_clock: bool
+
+
+def parse_perclock(text: str) -> dict[str, PerClockRow]:
+    """Parse normalized per-clock timing markers from adapter output.
+
+    Repeated markers for one clock keep the worst (minimum) slacks; the
+    same-clock flag is the one of the marker whose setup slack wins.
+    """
+    rows: dict[str, PerClockRow] = {}
     for match in _PERCLOCK_RE.finditer(text):
         name = match.group("name")
         period = _optional_float(match.group("period"))
         wns = _optional_float(match.group("wns"))
         whs = _optional_float(match.group("whs"))
-        row = rows.setdefault(name, {"period_ns": period, "wns_ns": wns, "whs_ns": whs})
-        if period is not None:
-            row["period_ns"] = period
-        row["wns_ns"] = _minimum_optional(row["wns_ns"], wns)
-        row["whs_ns"] = _minimum_optional(row["whs_ns"], whs)
+        same = match.group("same") == "1"
+        previous = rows.get(name)
+        if previous is None:
+            rows[name] = PerClockRow(period, wns, whs, same)
+            continue
+        wins = wns is not None and (previous.wns_ns is None or wns < previous.wns_ns)
+        rows[name] = PerClockRow(
+            period if period is not None else previous.period_ns,
+            _minimum_optional(previous.wns_ns, wns),
+            _minimum_optional(previous.whs_ns, whs),
+            same if wins else previous.setup_same_clock,
+        )
     return rows
 
 
@@ -149,22 +171,6 @@ def parse_unconstrained_timing(text: str) -> UnconstrainedTiming | None:
         inputs_without_delay=tuple(lists["inputs_without_delay"]),
         outputs_without_delay=tuple(lists["outputs_without_delay"]),
     )
-
-
-def read_user_sdc_text(config: StaTimingConfig) -> str:
-    """Concatenate the Target's authored SDC files in fileset order."""
-    return "\n".join(path.read_text(encoding="utf-8") for path in config.sdc)
-
-
-def parse_sdc_clock_periods_ps(text: str) -> list[float]:
-    """Return authored ``create_clock -period`` values converted from ns to ps."""
-    periods: list[float] = []
-    for match in _CREATE_CLOCK_PERIOD_RE.finditer(text):
-        try:
-            periods.append(float(match.group(1)) * 1000.0)
-        except ValueError:
-            continue
-    return periods
 
 
 def detect_clock_port(netlist: Path) -> str | None:
