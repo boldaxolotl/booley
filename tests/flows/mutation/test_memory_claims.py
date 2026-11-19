@@ -397,11 +397,12 @@ def _kill_runs(
 ) -> list[_Observed]:
     """Replace the tools: from run *first_killed* on, each takes the next of *kills*."""
     seen: list[_Observed] = []
+    pending = list(kills)  # a copy: the parametrized list is shared by repeated runs
 
     def run(*_args: object, **_kwargs: object) -> ToolRun:
         holders, waiters = managed.store.snapshot(job_slots.CLASS_MEMORY)
         seen.append(_Observed([(h.pid, h.memory) for h in holders], len(waiters), None))
-        kill = kills.pop(0) if len(seen) >= first_killed and kills else None
+        kill = pending.pop(0) if len(seen) >= first_killed and pending else None
         return ToolRun([], -9 if kill else 0, "ok", "", kill)
 
     monkeypatch.setattr("booley.flows.mutation.flow.run_tool", run)
