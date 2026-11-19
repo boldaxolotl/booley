@@ -895,6 +895,34 @@ def test_history_counts_and_keeps_jobs_not_records(tmp_path):
         "old": 1,
     }
 
+    # One synthesis run writes a whole-command record and one per tool, and counts once
+    # for each planned key (#4535).
+    from booley.flows.job_estimates import JobRequest, phase_keys
+
+    tools = ("sv2v", "yosys", "openroad")
+    label = job_resources.ResourceLabel("core", "synth", split=job_resources.SYNTH_PHASES)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0, oom_killed=False)
+    measurement = job_resources.JobMeasurement(
+        0.25,
+        job_resources.Usage(),
+        {tool: job_resources.Usage() for tool in tools},
+        None,
+        None,
+        None,
+    )
+    synth_records = job_resources.history_records("flow", label, (), measurement, result)
+    resource_history.append_records(
+        tmp_path, [{**record, "job": "900"} for record in synth_records]
+    )
+    planned = phase_keys(JobRequest("synth", "core", split_phases=tools))
+    counted = {
+        resource_history.history_key(entry): entry["runs"]
+        for entry in resource_history.summarize(_history(tmp_path))
+        if entry["key"]["target"] == "core"
+    }
+    assert [counted[key] for key in planned] == [1, 1, 1]
+    assert counted[resource_history.HistoryKey("core", "synth", (), "")] == 1
+
 
 @pytest.mark.parametrize(
     "unreadable",
