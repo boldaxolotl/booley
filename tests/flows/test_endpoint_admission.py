@@ -39,6 +39,7 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
+from tests.memory_budget_support import fail_budget
 from tests.oom_priority_support import (
     PROC_PATH,
     FakeProc,
@@ -591,10 +592,7 @@ def test_memory_admission_survives_a_budget_it_cannot_compute(
     memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unreadable MemTotal serializes the Job; it never refuses."""
-    monkeypatch.setattr(
-        "booley.flows.memory_admission.compute_memory_budget",
-        lambda: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
-    )
+    fail_budget(monkeypatch)
 
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
