@@ -21,9 +21,6 @@ _USER_DOC_PATH = re.compile(
 )
 # Modules whose string literals may name user docs by repo path or file name.
 _REPO_PATH_ALLOWED = {
-    # Agent-facing: name an unshipped doc as "<FILE> (host doc, not shipped)".
-    "specialists/review_contract.py",
-    "runtime/project_worktree_pairing.py",
     # The slug table itself.
     "runtime/docs_links.py",
     # Locates the packaged TROUBLESHOOTING.md mirror on disk.
