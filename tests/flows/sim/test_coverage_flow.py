@@ -27,6 +27,7 @@ from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.filesystem_utils import safe_rmtree
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.memory_budget_support import fail_budget
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
@@ -1253,12 +1254,14 @@ def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
+    fail_budget(monkeypatch)
 
     with simulation_record_invocation_lock(reports / "sim/1"):
         result = _coverage(tmp_path, resume_from=manifest)
 
     assert result.exit_code == 2
     assert "resume origin is busy" in result.outcome.report_text
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path, monkeypatch):

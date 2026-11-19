@@ -50,3 +50,13 @@ def pin_budget(monkeypatch: pytest.MonkeyPatch, mib: int) -> None:
     monkeypatch.setattr(
         memory_admission, "compute_memory_budget", lambda **_: budget_of(mib * MIB)
     )
+
+
+def fail_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the Memory Budget uncomputable, so every admitted Job carries a warning."""
+    from booley.flows import memory_admission
+
+    def unreadable(**_: object) -> MemoryBudget:
+        raise OSError("MemTotal unreadable")
+
+    monkeypatch.setattr(memory_admission, "compute_memory_budget", unreadable)
