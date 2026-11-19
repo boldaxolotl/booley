@@ -71,6 +71,27 @@ _EXTRA_CORE = textwrap.dedent(
     """
 )
 
+_SYNTH_CORE = textwrap.dedent(
+    """\
+    CAPI=2:
+    name: acme:ip:modes:1.0
+
+    targets:
+      synth_physical:
+        flow: generic
+        flow_options: {tool: yosys, arch: xilinx, synth_mode: physical, frontend: slang}
+      synth_logical:
+        flow: generic
+        flow_options: {tool: yosys, arch: xilinx, synth_mode: logical, frontend: slang}
+      synth_bad:
+        flow: generic
+        flow_options: {tool: yosys, arch: xilinx, synth_mode: fast}
+      sim_sv2v:
+        flow: sim
+        flow_options: {tool: icarus, frontends: [sv2v]}
+    """
+)
+
 _FOOTER = (
     "✓ = selected by flow_options.booley.doctor · "
     "`booley targets <name>` resolves parameters/files/SDC/XDC"
@@ -164,6 +185,52 @@ class TestTargetsListing:
         payload = json.loads(capsys.readouterr().out)
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
         assert sorted(names) == ["sim", "synth"]
+        rows = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
+        assert rows["synth"]["synth_mode"] == "physical"  # defaulted: no synth_mode in the core
+        assert rows["synth"]["frontend"] == "sv2v"
+        assert rows["synth"]["eda_tools"] == ["sv2v", "yosys", "openroad"]
+        assert rows["sim"]["synth_mode"] is None
+        assert rows["sim"]["frontend"] is None
+        assert rows["sim"]["eda_tools"] is None
+
+    def test_listing_names_each_synth_targets_eda_tools(self, project: Path, capsys):
+        (project / "modes.core").write_text(_SYNTH_CORE, encoding="utf-8")
+        assert _run(project) == 0
+        out = capsys.readouterr().out
+        cells = {
+            _cells(line)[0]: _cells(line)[2] for line in out.splitlines() if line.startswith("  ")
+        }
+        assert cells["synth_physical"] == "yosys+openroad"
+        assert cells["synth_logical"] == "yosys"
+        assert cells["synth_bad"] == "yosys"
+        assert cells["synth"] == "sv2v+yosys+openroad"
+        assert cells["sim_sv2v"] == "sv2v+icarus"
+        assert cells["sim"] == "verilator"
+        assert (
+            "WARNING: Target 'synth_bad' flow_options.synth_mode must be one of "
+            "physical, logical; got 'fast'"
+        ) in out
+
+        assert _run(project, "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        rows = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
+        assert [rows["synth_logical"][k] for k in ("synth_mode", "frontend", "eda_tools")] == [
+            "logical",
+            "slang",
+            ["yosys"],
+        ]
+        assert [rows["synth_physical"][k] for k in ("synth_mode", "frontend", "eda_tools")] == [
+            "physical",
+            "slang",
+            ["yosys", "openroad"],
+        ]
+        assert [rows["synth_bad"][k] for k in ("synth_mode", "frontend", "eda_tools")] == [
+            None,
+            None,
+            None,
+        ]
+        assert rows["sim_sv2v"]["synth_mode"] is None
+        assert rows["sim_sv2v"]["eda_tools"] == ["sv2v", "icarus"]
 
     # --for is a declared option string, not an argparse prefix abbreviation;
     # --for-flow remains an accepted long-form alias.
@@ -199,6 +266,21 @@ class TestTargetsListing:
 
 
 class TestTargetsDetail:
+    def test_host_detail_shows_effective_synth_mode(self, project: Path, capsys):
+        (project / "modes.core").write_text(_SYNTH_CORE, encoding="utf-8")
+        assert _run(project, "synth") == 0
+        out = capsys.readouterr().out
+        assert "EDA tool      sv2v+yosys+openroad" in out
+        assert "synth mode    physical" in out
+        assert "frontend      sv2v" in out
+
+        assert _run(project, "synth", "--json") == 0
+        assert json.loads(capsys.readouterr().out)["synth_mode"] == "physical"
+        assert _run(project, "synth_logical", "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["synth_mode"] == "logical"
+        assert payload["frontend"] == "slang"
+
     def test_unknown_target_is_exit_2(self, project: Path, capsys):
         assert _run(project, "ghost") == 2
         err = capsys.readouterr().err

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib
 import importlib.util
 import re
@@ -15,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.core.checkout_role import SourceCheckoutProjectError
+from booley.flows.synth.recipe import synth_target_tools
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
@@ -34,13 +36,20 @@ from booley.targets.selection import minimal_selector
 from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
     collect_surface,
-    detail_payload,
     filter_surface,
     is_glob,
-    surface_payload,
+)
+from booley.targets.target_surface import (
+    detail_payload as _detail_payload,
+)
+from booley.targets.target_surface import (
+    surface_payload as _surface_payload,
 )
 from tests.conftest import symlink_or_skip
 from tests.target_test_support import make_target_handle
+
+detail_payload = functools.partial(_detail_payload, synth_tools=synth_target_tools)
+surface_payload = functools.partial(_surface_payload, synth_tools=synth_target_tools)
 
 
 def _targets_view():
@@ -872,6 +881,7 @@ class TestFilterSurface:
                 ),
             ),
             warnings=(),
+            flow_options={},
         )
 
         assert tuple(filter_surface(surface, for_flow="sim").entries()) == (handle,)
@@ -906,7 +916,7 @@ class TestFilterSurface:
 
     def test_observations_survive_filtering(self, project: Path):
         original = collect_surface(project)
-        original = target_surface.TargetSurface(original.groups, ("observation",))
+        original = target_surface.TargetSurface(original.groups, ("observation",), {})
         surface = filter_surface(original, glob="no-such-target-*")
         assert not surface.groups
         assert surface.warnings == ("observation",)
@@ -974,7 +984,7 @@ class TestToplevelDisplay:
         group = target_surface.CoreGroup(
             vlnv="acme:ip:alpha:1.0", core_file=project / "alpha/alpha.core", entries=(patched,)
         )
-        surface = target_surface.TargetSurface(groups=(group,), warnings=())
+        surface = target_surface.TargetSurface(groups=(group,), warnings=(), flow_options={})
         text = _targets_view().render_listing(surface_payload(surface, project))
         assert long_top not in text
         assert "tool_verilator?" in text and "…" in text and "top=" not in text
@@ -1004,6 +1014,9 @@ class TestSurfacePayload:
             "toplevel": "tb_alpha",
             "doctor_flows": ["sim"],
             "drivable_by": ["sim"],
+            "synth_mode": None,
+            "frontend": None,
+            "eda_tools": None,
         }
         assert payload["warnings"] == []
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
 import sys
 import textwrap
@@ -13,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.core.host_shell import quote_arg
+from booley.flows.synth.recipe import synth_target_tools
 from booley.fusesoc import core_projection, fusesoc_registry, selftest_overlay
 from booley.fusesoc.core_projection import CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
@@ -54,7 +56,9 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError, UnknownTargetError
-from booley.targets.target_surface import collect_surface, detail_payload, surface_payload
+from booley.targets.target_surface import collect_surface
+from booley.targets.target_surface import detail_payload as _detail_payload
+from booley.targets.target_surface import surface_payload as _surface_payload
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
 from tests.fusesoc_test_support import (
@@ -64,6 +68,9 @@ from tests.fusesoc_test_support import (
     touch_declared_sources,
 )
 from tests.fusesoc_test_support import write_core as _write_core
+
+detail_payload = functools.partial(_detail_payload, synth_tools=synth_target_tools)
+surface_payload = functools.partial(_surface_payload, synth_tools=synth_target_tools)
 
 # Spelled out, not imported: the layout is the contract the production constant must match.
 STATE_CORES_SUBDIR = "cores"
