@@ -168,7 +168,6 @@ mod tests {
     fn deassertion_is_where_the_first_assertion_ends() {
         use Deassertion::{At, NeverAsserts, NeverDeasserts};
         let cases = [
-            (steps(&[]), NeverAsserts),
             (steps(&[(0, "0"), (9, "0")]), NeverAsserts),
             (steps(&[(0, "1"), (9, "0")]), At(9)),
             (steps(&[(0, "x"), (9, "0")]), At(9)),

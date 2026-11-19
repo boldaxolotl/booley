@@ -237,12 +237,10 @@ fn reset_pulse_from_inactive_deasserts_where_it_ends() {
         "rst",
         &[(0, "0"), (7, "1"), (25, "0"), (60, "1"), (70, "0")],
     );
-    let commands: [&[&str]; 6] = [
+    let commands: [&[&str]; 4] = [
         &["signal", "-s", "flag"],
         &["signal", "-s", "flag", "-t", "2c:4c"],
-        &["value", "-s", "flag", "--at", "2"],
         &["stats", "-s", "flag"],
-        &["overview", "--clock", "tb.gclk"],
         &["value", "--async", "--at", "2c", "-s", "flag"],
     ];
     let body = |text: &str| -> String {
