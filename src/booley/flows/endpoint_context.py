@@ -32,6 +32,7 @@ class EndpointContext(EndpointState):
             target_required=self.target_required,
             accepts_target=self.accepts_target,
             target_help=self.target_help,
+            target_metavar=self.target_metavar,
         )
 
     @abstractmethod

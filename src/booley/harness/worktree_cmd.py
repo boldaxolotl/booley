@@ -31,7 +31,11 @@ from pathlib import Path
 from booley.config.worktree import GcAge
 from booley.core.booley_dir import resolve_common_booley_dir
 from booley.flows.execution import FlowConfigError, flow_enabled
-from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir
+from booley.runtime.booley_dir import (
+    BooleyDirOutsideCheckoutError,
+    own_booley_dir,
+    own_booley_dir_relative,
+)
 from booley.runtime.docs_links import docs_url
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
@@ -42,6 +46,7 @@ from booley.runtime.project_worktree_pairing import (
     ProjectPairingError,
     pair_project_worktree,
     project_pairing_source,
+    refuse_paired_checkout,
     remove_creation_lock,
     rollback_outer_worktree,
     rollback_project_pairing,
@@ -328,8 +333,10 @@ def _create(project_root: Path, name: str) -> _Created | None:
     from booley.core.layout_lock import layout_gate
 
     try:
+        # Placement first: an escaping [project].dir keeps its own advice even when it names a checkout.
+        refuse_paired_checkout(project_root / own_booley_dir_relative(project_root))
         worktree_booley_dir(project_root)
-    except (BooleyDirOutsideCheckoutError, BooleyDirMismatchError) as exc:
+    except (ProjectPairingError, BooleyDirOutsideCheckoutError, BooleyDirMismatchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return None
     with layout_gate(project_root):

@@ -49,6 +49,7 @@ from booley.runtime.endpoint_execution import (
     job_stopped_after_oom,
     note_job_oom_kill,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -149,7 +150,7 @@ def _start_local_process(cmd, cwd, env, scope):
     if scope is not None and scope.cancelled():
         return None
     try:
-        proc = subprocess.Popen(
+        proc = job_resources.MeasuredPopen(
             cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
@@ -388,9 +389,12 @@ class FlowMechanics:
             # Only a spawned tool counts as started in the progress record.
             observer.begin_command()
         monitor.start(proc.pid)
-        if observer is not None:
-            return _observe_local_process(proc, observer, scope, start, timeout)
-        return _communicate_local_process(cmd, proc, scope, start, timeout)
+        try:
+            if observer is not None:
+                return _observe_local_process(proc, observer, scope, start, timeout)
+            return _communicate_local_process(cmd, proc, scope, start, timeout)
+        finally:
+            monitor.finish(proc.reaped_peak_bytes)
 
     def _resource_flags(self) -> tuple[str, ...]:
         """Instrumentation flags that key this Flow's resource history."""
@@ -427,7 +431,7 @@ class FlowMechanics:
         from booley.flows.run_log import begin_run_log
 
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             begin_run_log(log_dir, flow=self.name, target=target)
             from booley.flows.terminal_progress import current_progress
 
@@ -695,7 +699,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         report_dir = self.args.report_dir
         if report_dir is not None:
             report_path = Path(report_dir) / self.name / "flow_plan.json"
-            report_path.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(report_path.parent)
             serialized = json.dumps(payload, indent=2) + "\n"
             temporary_path: Path | None = None
             try:

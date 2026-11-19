@@ -67,6 +67,7 @@ from booley.flows.sim.backends.trace_finalization import (
 )
 from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.filesystem_utils import make_directories
 
 # The dump module's explicit ``$dumpfile`` name — identical to iverilog's
 # default with ``-fst`` omitted. vvp writes it into the run cwd.
@@ -136,7 +137,7 @@ def _prepare_icarus_run(
     build = Path(build_dir).resolve()
     run = Path(run_cwd).resolve() if run_cwd is not None else build
     work = Path(work_dir).resolve() if work_dir is not None else build
-    work.mkdir(parents=True, exist_ok=True)
+    make_directories(work)
     image = find_icarus_image(build)
     if image is None:
         return f"ERROR: no vvp image (*.scr) found in {build}"

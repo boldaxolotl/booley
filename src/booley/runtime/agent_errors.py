@@ -143,7 +143,9 @@ class ModelUnavailableError(AgentProviderError):
             f"account cannot use it. {fix}"
         )
         if not settings or any(key != GATEWAY_MODEL_ENV for key in settings):
-            message += " booley.toml is a Protected Input, so change it before Goal entry."
+            message += (
+                " booley.toml is a Protected Input, so change it before the next measurement."
+            )
         super().__init__(message, provider)
 
 

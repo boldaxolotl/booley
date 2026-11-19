@@ -20,6 +20,7 @@ import pytest
 
 import booley
 from booley.flows.mutation.memory_claims import CampaignClaims
+from booley.flows.mutation.tool_runs import run_tool
 from booley.flows.sim.backends import cocotb_results as cr
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
@@ -104,14 +105,14 @@ def _copyto_run(
         if staged_inode is not None:
             staged_inode.append((run_dir / "vectors.hex").stat().st_ino)
     if launch is not None:
-        original = subprocess.run
+        original = run_tool
 
         def _run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and _LAUNCH_MARK in " ".join(cmd):
                 return launch(cmd)
             return original(cmd, *args, **kwargs)
 
-        monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _run)
+        monkeypatch.setattr("booley.flows.mutation.flow.run_tool", _run)
     _prepare_scope_files(tmp_path, [_SCOPE])
     endpoint = _make_endpoint(
         tmp_path, monkeypatch, target="default", scope=_SCOPE, count=1, min_detected=0, tb_top="tb"

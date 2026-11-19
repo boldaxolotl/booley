@@ -10,33 +10,21 @@ here and the adapter dispatch died with its module.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
-from booley.core.booley_dir import in_checkout_booley_dir
-from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import FuseSocError
 from booley.targets.flow_names import config_section
 
-_UNSET = object()
 
-
-def tb_top_for_target(target: str, work_dir: Path | None = None, *, resolved: Any = _UNSET) -> str:
+def tb_top_for_target(target: str, work_dir: Path | None = None) -> str:
     """Return the testbench top for one Target — the sim Target's toplevel (.core).
 
-    A sim Target's ``toplevel`` is its TB top (decision 4). Pass a
-    once-resolved Target as *resolved* to reuse it. When *resolved* is ``None``
-    (the cheap, no-subprocess path used by dry-run and schema discovery), the
-    toplevel is read straight from the ``.core`` YAML via
-    :func:`fusesoc_registry.core_target_toplevel` — no ``fusesoc run``. The
+    A sim Target's ``toplevel`` is its TB top (decision 4). It is read
+    straight from the ``.core`` YAML through the Target Catalog, with no
+    ``fusesoc run``, which keeps dry-run and schema discovery cheap. The
     legacy ``configs.toml`` ``tb_top`` source was removed.
     """
-    if resolved is _UNSET:
-        resolved = _maybe_resolve(target, work_dir)
-    if resolved is not None:
-        return str(resolved.toplevel)
     if work_dir is None:
         return ""
     try:
@@ -45,30 +33,6 @@ def tb_top_for_target(target: str, work_dir: Path | None = None, *, resolved: An
         Exception  # noqa: BLE001 — best-effort .core read; degrades to an empty TB top
     ):
         return ""
-
-
-def _maybe_resolve(target: str, work_dir: Path | None) -> Any:
-    """Resolve *target*'s ``.core`` Target, or ``None`` when it cannot be.
-
-    ``None`` (no ``.core`` declares *target*, no ``work_dir`` to anchor
-    discovery, or ``fusesoc`` unavailable) routes the caller to the cheap
-    no-resolve read.
-    """
-    if work_dir is None:
-        return None
-    try:
-        handle = TargetCatalog.build(work_dir).select(target)
-        build_root = (
-            in_checkout_booley_dir(work_dir) / ".runtime" / "edalize" / "payload" / handle.name
-        )
-        return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
-    except FuseSocError as exc:
-        logging.getLogger(__name__).debug(
-            "Target %s resolution failed: %s",
-            target,
-            exc,
-        )
-        return None
 
 
 def _load_flow_config(flow_name: str, work_dir: Path) -> dict[str, Any]:

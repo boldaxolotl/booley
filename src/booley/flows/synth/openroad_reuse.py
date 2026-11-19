@@ -60,6 +60,7 @@ from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.runtime.build_metadata import current_build_metadata
 from booley.runtime.execution_records import atomic_write_json
+from booley.runtime.filesystem_utils import make_directories
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +349,7 @@ class ReuseSlot:
         try:
             for name in entry.files:
                 destination = build_dir / name
-                destination.parent.mkdir(parents=True, exist_ok=True)
+                make_directories(destination.parent)
                 # copyfile, not copy2: new mtimes keep the stale-artifact guard unchanged.
                 shutil.copyfile(entry.generation / name, destination)
                 copied.append(destination)
@@ -370,7 +371,7 @@ class ReuseSlot:
         ]
         for name in names:
             destination = self.root / generation / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(destination.parent)
             shutil.copyfile(build_dir / name, destination)
             with destination.open("rb") as stream:
                 os.fsync(stream.fileno())
