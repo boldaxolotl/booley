@@ -55,6 +55,8 @@ _BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 _RELATIVE_BOUND = re.compile(
     r"(?P<metric>.+?)_(?P<change>increase|reduce)_at_(?P<how>most|least)(?:_[a-z]+)?"
 )
+# A relative change such as "+10%" or "-5%", which a bound value cannot hold.
+_PERCENTAGE = re.compile(r"\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*%\s*")
 _RELATIVE_LIMIT: dict[tuple[str, str], Limit] = {
     ("increase", "most"): "max",
     ("reduce", "least"): "max",
@@ -424,7 +426,13 @@ class _Loader:
         try:
             number = require_finite_number_value(value, field=key)
         except ValueError as exc:
-            self.error(header, key, str(exc))
+            message = str(exc)
+            if isinstance(value, str) and _PERCENTAGE.fullmatch(value):
+                message += (
+                    "; a bound is an absolute number, not a percentage, and a relative"
+                    " bound key such as `<metric>_increase_at_most` is rejected too"
+                )
+            self.error(header, key, message)
             return
         assert ref.limit is not None  # a bound key always ends in _max or _min
         out.bounds.append(
