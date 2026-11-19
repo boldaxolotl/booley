@@ -249,7 +249,8 @@ finished.
 <summary>With a cocotb testbench</summary>
 
 The Test Runs of one [Cocotb Target](#cocotb-targets-python-testbenches)
-run as a batch, so they share one log and one waveform.
+run as a batch, so they share one log and one waveform. A `--coverage` run
+is the exception: it gives each Test Run its own simulator process.
 
 </details>
 
@@ -514,7 +515,8 @@ reruns all its tests. A Cocotb batch is every test that shares a seed and Test
 Variant, run in one simulator process. Resuming a Cocotb Target doesn't start
 it from scratch: only the interrupted batch runs again, and the batches that
 finished are kept. A run with several seeds (`@x20`) or Test Variants has
-several batches.
+several batches. A `--coverage` run has no batches: it gives each Test Run its
+own simulator process, and it resumes only as described above.
 
 </details>
 
@@ -534,7 +536,10 @@ pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
 <summary>With a cocotb testbench</summary>
 
 For a [Cocotb Target](#cocotb-targets-python-testbenches), the
-commands run once per batch.
+commands run once per batch. A
+[`--coverage` run](COVERAGE.md#collecting-coverage) gives each Test Run its own
+simulator process, so there they run once per Test Run, with that one Test in
+`BOOLEY_TEST_NAMES`.
 
 </details>
 

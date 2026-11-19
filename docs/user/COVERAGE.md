@@ -44,6 +44,18 @@ before anything builds. Coverage runs only in the default `--mode simulate`.
 
 Generated or custom C++ mains, HDL testbenches, and cocotb all work.
 
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+A coverage run gives each Test Run of a
+[Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) its own
+simulator process, instead of one process per batch of Test Runs that share a
+seed and Test Variant. Its
+[Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
+therefore run once per Test Run, each with one Test in `BOOLEY_TEST_NAMES`.
+
+</details>
+
 ## Reading results
 
 Each Target gets its own **Coverage Record**: the coverage evidence of one
