@@ -195,7 +195,6 @@ def test_unmanaged_admission_never_reports_cancellation() -> None:
         {"test": ("a", "a")},
         {"test": ("a",), "tests_file": Path("tests.txt")},
         {"test": ()},
-        {"result_verbosity": "verbose"},
         {"resume_from": Path("manifest.json"), "target": "sim"},
         {"resume_from": Path("manifest.json"), "mode": SimulationMode.ELAB_ONLY},
     ],

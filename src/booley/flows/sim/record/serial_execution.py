@@ -30,6 +30,7 @@ from booley.flows.artifact_durability import (
     fsync_directory,
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.job_resources import judged_commands_failing_on_error
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
 from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.build_session import project_compile_surface
@@ -1410,8 +1411,11 @@ def _launch_bundle(
     """Launch the record's bundle in place, verifying it before launch and after exit."""
     pre_launch = verify_bundle_in_place(bundle, build_result, build_directory)
     evidence_root = request.attempt_directory / "execution-evidence"
-    outcome = group.launch_bundle(build_directory, evidence_root, run_cwd)  # type: ignore[attr-defined]
-    post_exit = verify_bundle_in_place(bundle, build_result, build_directory)
+    # The run's recorded outcome waits for the post-exit check: a bundle changed
+    # by the run is refused there, after the run's own verdict.
+    with judged_commands_failing_on_error(joinable=True):
+        outcome = group.launch_bundle(build_directory, evidence_root, run_cwd)  # type: ignore[attr-defined]
+        post_exit = verify_bundle_in_place(bundle, build_result, build_directory)
     return _bundle_result(
         request,
         build_directory,

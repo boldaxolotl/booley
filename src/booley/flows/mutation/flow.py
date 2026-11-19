@@ -24,6 +24,7 @@ Exit codes:
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -33,7 +34,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -44,6 +45,7 @@ from booley.config.project_config import load_test_configuration_field, lookup_t
 from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import BoundaryError
 from booley.flows import artifacts as _artifacts
+from booley.flows import tool_runs
 from booley.flows.base import BuiltinFlow
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.eda_failures import new_attempt_token
@@ -75,7 +77,6 @@ from booley.flows.mutation.operators import (
 from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
 from booley.flows.mutation.snippet import detection_snippet, tail, tail_snippet
-from booley.flows.mutation.tool_runs import run_tool, setup_runner
 from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
@@ -136,6 +137,7 @@ from booley.flows.target_test_suite import (
     TargetTestSuite,
     require_runnable_target_test_suite,
 )
+from booley.flows.tool_runs import oom_kill_of, setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -162,6 +164,9 @@ logger = logging.getLogger(__name__)
 
 # The clock that times each test run; tests replace it, never ``time.monotonic``.
 _monotonic = time.monotonic
+
+# Every tool the Mutation Flow starts is measured and recorded under its name.
+run_tool = functools.partial(tool_runs.run_tool, flow="mutation")
 
 #: Source suffixes the generator and the variant applier accept.
 _MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
@@ -392,6 +397,8 @@ class MutationTestRun:
     #: The signal that killed the run when nobody in Booley sent it (the out-of-memory
     #: killer's SIGKILL); such a run says nothing about the Mutant. ``""`` for none.
     killed_by: str = ""
+    #: Why the out-of-memory kill that ended the final run is not retried; ``""`` for none.
+    oom_kill: str = ""
 
 
 @dataclass(frozen=True)
@@ -1550,24 +1557,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if (run_cwd_error := self._baseline_run_cwd_error(plan)) is not None:
             return run_cwd_error
         build_path = workspace.baseline_build_dir()
-        shutil.rmtree(build_path, ignore_errors=True)
-        make_directories(build_path)
-        elab = self._run_elab(plan.target, plan.work_dir, build_path)
-        elab_output = (elab.stdout or "") + (elab.stderr or "")
+        elab, oom_kill = self._run_elab(plan.target, plan.work_dir, build_path)
         if elab.returncode != 0:
-            return _error_outcome(
-                "elaboration",
-                "pristine source did not elaborate",
-                report_text="mutation baseline did not elaborate from pristine source\n"
-                + tail(elab_output, 50),
-                detail=_failure_detail(
-                    phase="baseline_elaboration",
-                    reason="pristine source did not elaborate",
-                    specs=[],
-                    work_dir=plan.work_dir,
-                    log_tail=tail(elab_output, 50),
-                ),
-            )
+            return _baseline_build_error(plan, elab, oom_kill)
 
         cpp, version = self._baseline_verilator_build(plan.work_dir, build_path)
         runs = self._run_target_test_suite(
@@ -1719,15 +1711,26 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         work_dir: Path,
         build_path: Path,
         mutation: tuple[MutationVariantPlan, int] | None = None,
-    ) -> subprocess.CompletedProcess:
-        """Build pristine source or one replacement in private exported copies.
+    ) -> tuple[subprocess.CompletedProcess, str]:
+        """Build pristine source or one replacement in a fresh *build_path*; why a kill is final too.
 
         The build holds a Memory Reservation sized from the Target's history.
+        An OOM kill at the Sandbox's limit builds once more, alone, from scratch.
         """
-        with self._claims.hold(
-            lambda: self._build_job_request(target, work_dir), build=True, target=target
-        ):
-            return self._build_elab(target, work_dir, build_path, mutation)
+
+        def build(alone: bool) -> subprocess.CompletedProcess:
+            shutil.rmtree(build_path, ignore_errors=True)
+            make_directories(build_path)
+            with self._claims.hold(
+                lambda: self._build_job_request(target, work_dir),
+                build=True,
+                target=target,
+                alone=alone,
+            ):
+                return self._build_elab(target, work_dir, build_path, mutation)
+
+        name = f"{target} build" if mutation is None else f"{target} Mutant {mutation[1]} build"
+        return self._claims.run_retrying_oom(build, oom_kill_of, name=name)
 
     @staticmethod
     def _build_job_request(target: str, work_dir: Path) -> JobRequest | None:
@@ -1808,7 +1811,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
             environment=_target_environment(work_dir, handle.identity),
-            setup_runner=setup_runner(handle.selector),
+            setup_runner=setup_runner("mutation", handle.selector, "sim_prepare"),
         )
         if mutation is not None:
             materialize_build_mutation(
@@ -2212,14 +2215,33 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
             request = self._unit_job_request(target, work_dir, build_path, unit, batched)
+            return self._run_claimed_unit(target, unit, request, _launch)
+
+        return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
+
+    def _run_claimed_unit(
+        self,
+        target: str,
+        unit: CampaignUnit,
+        request: JobRequest | None,
+        launch: Callable[[CampaignUnit, ResourceLabel], MutationTestRun],
+    ) -> MutationTestRun:
+        """Run one campaign unit on its own claim, once more alone after a kill at the Sandbox's limit."""
+
+        def attempt(alone: bool) -> MutationTestRun:
             # The wait for memory comes first, so it never counts in a duration or time limit.
-            with self._claims.hold(lambda: request, build=False, target=target, tests=unit.tests):
+            with self._claims.hold(
+                lambda: request, build=False, target=target, tests=unit.tests, alone=alone
+            ):
                 started = _monotonic()
-                run = _launch(unit, _sim_run_label(target, request))
+                run = launch(unit, _sim_run_label(target, request))
                 run.duration_s = _monotonic() - started
                 return run
 
-        return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
+        run, oom_kill = self._claims.run_retrying_oom(
+            attempt, lambda run: oom_kill_of(run.process), name=f"{target} {unit.display_name}"
+        )
+        return replace(run, oom_kill=oom_kill)
 
     def _unit_job_request(
         self, target: str, work_dir: Path, build_path: Path, unit: CampaignUnit, batched: bool
@@ -2313,7 +2335,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + "runner produced no process result"
             )
-        killed = f"killed by signal {run.killed_by}" if run.killed_by else ""
+        killed = run.oom_kill or (f"killed by signal {run.killed_by}" if run.killed_by else "")
         if reason := killed or _infra_failure_reason(run.process):
             return VariantSuiteVerdict(inconclusive_reason=prefix + reason)
         return None
@@ -2514,9 +2536,19 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         log, since the next candidate reuses the number.
         """
         build_path = workspace.variant_build_dir(spec.index)
-        shutil.rmtree(build_path, ignore_errors=True)
-        make_directories(build_path)
-        elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
+        elab, oom_kill = self._run_elab(
+            plan.target, plan.work_dir, build_path, (variants, spec.index)
+        )
+        if oom_kill:
+            # A killed build says nothing about whether the Mutant builds.
+            shutil.rmtree(build_path, ignore_errors=True)
+            output = (elab.stdout or "") + (elab.stderr or "")
+            return MutationResult(
+                index=spec.index,
+                inconclusive_reason=f"build: {oom_kill}",
+                sim_output_snippet=f"sim outcome inconclusive: build: {oom_kill}",
+                log_path=self._persist_mutant_log(spec.index, output),
+            )
         if elab.returncode != 0:
             shutil.rmtree(build_path, ignore_errors=True)
             return "build_failure"
@@ -2996,6 +3028,32 @@ def _no_site_hint(plan: MutationRunPlan) -> str:
 def _names_or_none(names: Sequence[str]) -> str:
     """*names* comma-joined, or ``none``."""
     return ", ".join(names) or "none"
+
+
+def _baseline_build_error(
+    plan: MutationRunPlan, elab: subprocess.CompletedProcess, oom_kill: str
+) -> EndpointOutcome:
+    """The error that ends the run when the pristine source's build failed or was OOM-killed."""
+    log_tail = tail((elab.stdout or "") + (elab.stderr or ""), 50)
+    if oom_kill:
+        # A killed build says nothing about the source.
+        reason = f"pristine source build was {oom_kill}"
+        headline = f"mutation baseline: {reason}"
+    else:
+        reason = "pristine source did not elaborate"
+        headline = "mutation baseline did not elaborate from pristine source"
+    return _error_outcome(
+        "elaboration",
+        reason,
+        report_text=f"{headline}\n{log_tail}",
+        detail=_failure_detail(
+            phase="baseline_elaboration",
+            reason=reason,
+            specs=[],
+            work_dir=plan.work_dir,
+            log_tail=log_tail,
+        ),
+    )
 
 
 def _error_outcome(

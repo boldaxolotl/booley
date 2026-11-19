@@ -279,3 +279,40 @@ def test_read_json_keeps_missing_and_corrupt_errors(store, monkeypatch):
     with pytest.raises(json.JSONDecodeError):
         store.read_json("record.json")
     assert attempts == {record: 1, store.root / "gone.json": 1}
+
+
+def test_scan_each_collects_each_files_error_and_scan_raises_the_first(store) -> None:
+    project_store = private_store.ProjectStore(store, lambda path, root: f"repair {path.name}")
+    good_root = "/work/good"
+    project_store.write(good_root, json.dumps({"project_root": good_root}))
+    bad_name = "0" * 64 + ".json"
+    store.atomic_write_text(bad_name, "not json")
+
+    entries, errors = project_store.scan_each()
+
+    assert [entry.project_root for entry in entries] == [good_root]
+    assert [path.name for path, _ in errors] == [bad_name]
+    assert isinstance(errors[0][1], store.error_type)
+    with pytest.raises(store.error_type, match="cannot read"):
+        project_store.scan()
+    # An entry that is no per-Project file belongs to no Project and still raises.
+    store.root.joinpath("stray.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(store.error_type, match="unexpected"):
+        project_store.scan_each()
+
+
+def test_scan_each_collects_a_symlink_named_for_a_project(store, tmp_path) -> None:
+    from tests.conftest import symlink_or_skip
+
+    project_store = private_store.ProjectStore(store, lambda path, root: "repair")
+    store.ensure_directory()
+    target = tmp_path / "outside.json"
+    target.write_text("{}", encoding="utf-8")
+    link_name = "1" * 64 + ".json"
+    symlink_or_skip(store.root / link_name, target, target_is_directory=False)
+
+    entries, errors = project_store.scan_each()
+
+    assert entries == ()
+    assert [path.name for path, _ in errors] == [link_name]
+    assert "unexpected" in str(errors[0][1])

@@ -116,15 +116,13 @@ fn stopped_levels_and_window_metadata() {
     let p = json("distance", &path, &["data", "change", "-t", "1:6"]);
     assert_eq!(p["data"]["pairs"][1]["elapsed"], 2);
     assert_eq!(p["data"]["pairs"][0]["stopped_cycles"], 2);
-    let p = json("stats", &path, &["-s", "valid", "-t", "1:6"]);
-    assert_eq!(
-        p["data"]["signals"][0]["time_in_state_clocked_cycles"]["'h1"],
-        3
-    );
-    assert_eq!(
-        p["data"]["signals"][0]["time_in_state_stopped_cycles"]["'h1"],
-        3
-    );
+    for (window, total, clocked) in [("1:6", 6, 3), ("0:6", 6, 3)] {
+        let p = json("stats", &path, &["-s", "valid", "-t", window]);
+        let signal = &p["data"]["signals"][0];
+        assert_eq!(p["data"]["total_cycles"], total, "{window}");
+        assert_eq!(signal["time_in_state_clocked_cycles"]["'h1"], clocked);
+        assert_eq!(signal["time_in_state_stopped_cycles"]["'h1"], 3);
+    }
 }
 
 #[test]
@@ -473,4 +471,292 @@ fn stops_keep_edge_triggers_and_distance_statistics() {
         assert_eq!(p["data"]["count"], count);
         assert_eq!(p["data"]["matches"][0]["time"], first);
     }
+}
+
+/// Period 10, clk rises at 5, 15, 25, 35 and 45. `data` becomes 1, 2, 3 at
+/// 15, 25, 35; `p` rises at 14 so a pre-edge read of tick 14 differs from one
+/// of tick 13; `rstn` rises at `reset_at`.
+fn reset_body(reset_at: u64) -> String {
+    let mut events: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
+    let mut at = |t: u64, s: &str| events.entry(t).or_default().push_str(s);
+    at(0, "0!\n1\"\nb0000 #\n0$\n0%\n");
+    for t in [5, 15, 25, 35, 45] {
+        at(t, "1!\n");
+        at(t + 1, "0!\n");
+    }
+    at(14, "1%\n");
+    at(15, "b0001 #\n");
+    at(25, "b0010 #\n");
+    at(35, "b0011 #\n");
+    at(reset_at, "1$\n");
+    let mut body = String::new();
+    for (t, s) in events {
+        body += &format!("#{t}\n{s}");
+    }
+    body + "#50\n"
+}
+
+const RESET_HEADER: &str = "$var wire 1 $ rstn $end\n$var wire 1 % p $end\n";
+
+fn reset_json(command: &str, path: &str, args: &[&str], mode: &str) -> serde_json::Value {
+    let mut all = args.to_vec();
+    all.extend(["--sample-mode", mode]);
+    json(command, path, &all)["data"].clone()
+}
+
+fn reset_text(command: &str, path: &str, args: &[&str], mode: &str) -> String {
+    let mut all = vec![command, path];
+    all.extend_from_slice(args);
+    all.extend(["--sample-mode", mode]);
+    let (out, err, code) = run(&all);
+    assert_eq!(code, 0, "{err}");
+    out
+}
+
+fn strings(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn match_times(v: &serde_json::Value) -> Vec<u64> {
+    v["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["time"].as_u64().unwrap())
+        .collect()
+}
+
+fn pair_list(v: &serde_json::Value) -> Vec<(u64, u64)> {
+    v["pairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["from"].as_u64().unwrap(), p["to"].as_u64().unwrap()))
+        .collect()
+}
+
+#[test]
+fn cycle_zero_reads_before_the_start_tick() {
+    // (reset tick, mode, cycle 0 sample tick, cycle 1 sample tick, cycle 0
+    // data/rstn/p at cycle 0, wave data/rstn/p rows for cycles 0..2).
+    type Row = (u64, &'static str, [u64; 3], &'static str, &'static str);
+    let rows: [Row; 4] = [
+        (
+            15,
+            "post-edge",
+            [14, 15, 25],
+            "0 0 1",
+            "[0 1 2] [0 1 1] [1 1 1]",
+        ),
+        (
+            15,
+            "pre-edge",
+            [13, 14, 24],
+            "0 0 0",
+            "[0 0 1] [0 0 1] [0 1 1]",
+        ),
+        (
+            18,
+            "post-edge",
+            [17, 25, 35],
+            "1 0 1",
+            "[1 2 3] [0 1 1] [1 1 1]",
+        ),
+        (
+            18,
+            "pre-edge",
+            [17, 24, 34],
+            "1 0 1",
+            "[1 1 2] [0 1 1] [1 1 1]",
+        ),
+    ];
+    for (reset_at, mode, [read0, read1, _], zero, rows_wave) in rows {
+        let (_dir, path, _) = store(&reset_body(reset_at), RESET_HEADER);
+        let on_edge = reset_at == 15;
+        let pre = mode == "pre-edge";
+        let case = format!("reset {reset_at} {mode}");
+        let v0 = reset_json(
+            "value",
+            &path,
+            &["--at", "0", "-s", "data", "-s", "rstn", "-s", "p"],
+            mode,
+        );
+        assert_eq!(v0["sample_tick"], read0, "{case}");
+        assert_eq!(v0["target_tick"], reset_at, "{case}");
+        let got: Vec<String> = v0["signals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["value"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got.join(" "), zero, "{case}");
+        assert_eq!(
+            v0["time_label"], "cycle 0 (before reset deasserts)",
+            "{case}"
+        );
+        let v1 = reset_json("value", &path, &["--at", "1", "-s", "data"], mode);
+        assert_eq!(v1["sample_tick"], read1, "{case}");
+        assert_ne!(v0["sample_tick"], v1["sample_tick"], "{case}");
+        let w = reset_json(
+            "wave",
+            &path,
+            &["-t", "0:2", "-s", "data", "-s", "rstn", "-s", "p"],
+            mode,
+        );
+        assert_eq!(strings(&w["columns"]), ["0", "1", "2"], "{case}");
+        assert_eq!(
+            w["ticks"],
+            serde_json::json!([
+                reset_at,
+                if on_edge { 15 } else { 25 },
+                if on_edge { 25 } else { 35 }
+            ]),
+            "{case}"
+        );
+        let rendered: Vec<String> = w["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| format!("[{}]", strings(r).join(" ")))
+            .collect();
+        assert_eq!(rendered.join(" "), rows_wave, "{case}");
+        // wave and find agree on cycle 0: rstn is 0 there and nowhere else.
+        let f = reset_json("find", &path, &["rstn", "0", "-t", "0:2"], mode);
+        let expected: Vec<u64> = if on_edge && pre { vec![0, 1] } else { vec![0] };
+        assert_eq!(match_times(&f), expected, "{case}");
+        let s = reset_text(
+            "sample",
+            &path,
+            &["rstn", "0", "-s", "data", "-t", "0:2"],
+            mode,
+        );
+        let lines: Vec<&str> = s.lines().collect();
+        let data0 = zero.split(' ').next().unwrap();
+        let mut expected_lines = vec![format!("0 data {data0}")];
+        if on_edge && pre {
+            expected_lines.push("1 data 0".into());
+        }
+        assert_eq!(lines, expected_lines, "{case}");
+        let d = reset_json(
+            "distance",
+            &path,
+            &["rstn", "0", "--to", "data", "'h3"],
+            mode,
+        );
+        let want: Vec<(u64, u64)> = match (on_edge, pre) {
+            (true, false) => vec![(0, 3)],
+            (true, true) => vec![(0, 4), (1, 4)],
+            (false, false) => vec![(0, 2)],
+            (false, true) => vec![(0, 3)],
+        };
+        assert_eq!(pair_list(&d), want, "{case}");
+        let t = reset_text(
+            "signal",
+            &path,
+            &["-s", "data", "-s", "rstn", "-t", "0:2"],
+            mode,
+        );
+        let want_signal = match (on_edge, pre) {
+            (true, false) => "0 data 0\n0 rstn 0\n1 data 1\n1 rstn 1\n2 data 2\n",
+            (true, true) => "0 data 0\n0 rstn 0\n2 data 1\n2 rstn 1\n",
+            (false, false) => "0 data 1\n0 rstn 0\n1 data 2\n1 rstn 1\n2 data 3\n",
+            (false, true) => "0 data 1\n0 rstn 0\n1 rstn 1\n2 data 2\n",
+        };
+        assert_eq!(t, want_signal, "{case}");
+        let df = reset_text("diff", &path, &["0", "1", "-s", "data", "-s", "rstn"], mode);
+        if on_edge && pre {
+            assert!(df.contains("no differences"), "{case}: {df}");
+        } else {
+            assert!(df.contains("@0=0") && df.contains("@1=1"), "{case}: {df}");
+        }
+        assert_eq!(df.contains("data"), !pre, "{case}: {df}");
+        let tok = reset_json("value", &path, &["--at", "14t", "-s", "data"], mode);
+        assert_eq!(tok["at"], 0, "{case}");
+        assert_eq!(tok["sample_tick"], read0, "{case}");
+        let st = reset_json("stats", &path, &["-s", "data", "-t", "0:1"], mode);
+        let occupancy = &st["signals"][0]["time_in_state_clocked_cycles"];
+        // Cycles 0 and 1 of the window, as `wave -t 0:1` shows them.
+        let (key0, key1) = match (on_edge, pre) {
+            (true, false) => ("'h0", "'h1"),
+            (true, true) => ("'h0", "'h0"),
+            (false, false) => ("'h1", "'h2"),
+            (false, true) => ("'h1", "'h1"),
+        };
+        let mut want = serde_json::Map::new();
+        for key in [key0, key1] {
+            let n = want.get(key).map_or(0, |n| n.as_u64().unwrap());
+            want.insert(key.into(), (n + 1).into());
+        }
+        assert_eq!(st["total_cycles"], 2, "{case}");
+        assert_eq!(occupancy, &serde_json::Value::Object(want), "{case}");
+        // `p` rises at 14, so a consumer that kept reading tick 14 for cycle 0
+        // on the on-edge trace is wrong in pre-edge mode.
+        let pv = reset_json("value", &path, &["--at", "0", "-s", "p"], mode);
+        assert_eq!(
+            pv["signals"][0]["value"],
+            if on_edge && pre { "0" } else { "1" },
+            "{case}"
+        );
+        let pf = reset_json("find", &path, &["p", "0", "-t", "0:2"], mode);
+        assert_eq!(
+            match_times(&pf),
+            if on_edge && pre { vec![0] } else { vec![] },
+            "{case}"
+        );
+        let pd = reset_json("distance", &path, &["p", "0", "--to", "data", "'h3"], mode);
+        assert_eq!(
+            pair_list(&pd),
+            if on_edge && pre { vec![(0, 4)] } else { vec![] },
+            "{case}"
+        );
+        let ps = reset_text("signal", &path, &["-s", "p", "-t", "0:2"], mode);
+        assert_eq!(
+            ps,
+            if on_edge && pre {
+                "0 p 0\n1 p 1\n"
+            } else {
+                "0 p 1\n"
+            },
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn cycle_zero_is_omitted_without_an_earlier_tick() {
+    // --with-reset starts at tick 0, so no tick precedes cycle 0.
+    let (_dir, path, _) = store(&reset_body(15), RESET_HEADER);
+    let v = json("value", &path, &["--at", "0", "-s", "data", "--with-reset"])["data"].clone();
+    assert!(v["sample_tick"].is_null(), "{v}");
+    assert_eq!(v["target_tick"], 0);
+    assert_eq!(v["signals"][0]["value"], "x");
+    assert_eq!(
+        v["time_label"],
+        "cycle 0 (omitted: no tick before the start)"
+    );
+    let w = json("wave", &path, &["-t", "0:2", "-s", "data", "--with-reset"])["data"].clone();
+    assert_eq!(strings(&w["columns"]), ["1", "2"]);
+    let f = json("find", &path, &["rstn", "0", "-t", "0:2", "--with-reset"])["data"].clone();
+    assert_eq!(match_times(&f), [1]);
+    // The clock first rises at tick 1, together with reset: cycle 1 reads
+    // tick 0 in pre-edge mode, leaving nothing for cycle 0.
+    let body = "#0\n0!\n1\"\nb0000 #\n0$\n0%\n#1\n1!\n1$\n#2\n0!\n#11\n1!\n#12\n0!\n#21\n1!\n#22\n0!\n#30\n";
+    let (_dir, path, _) = store(body, RESET_HEADER);
+    let post = json("value", &path, &["--at", "0", "-s", "rstn"])["data"].clone();
+    assert_eq!(post["sample_tick"], 0);
+    let pre = json(
+        "value",
+        &path,
+        &["--at", "0", "-s", "rstn", "--sample-mode", "pre-edge"],
+    )["data"]
+        .clone();
+    assert!(pre["sample_tick"].is_null(), "{pre}");
+    assert_eq!(
+        pre["time_label"],
+        "cycle 0 (omitted: no tick before the start)"
+    );
 }

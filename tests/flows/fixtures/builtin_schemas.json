@@ -108,15 +108,6 @@
         "default": false,
         "description": "Enable waveform trace (debugging only \u2014 do not use for pass/fail checks)"
       },
-      "result_verbosity": {
-        "type": "string",
-        "enum": [
-          "compact",
-          "full"
-        ],
-        "description": "Cocotb result detail on stdout; full XML/JSON artifacts are always retained",
-        "default": "compact"
-      },
       "no_kill": {
         "type": "boolean",
         "default": false,
