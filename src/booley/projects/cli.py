@@ -72,8 +72,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     stamps = actions.add_parser(
         "prune-stamps",
         help=(
-            "Remove the Sandbox issuance stamps of the named deleted Projects that Booley "
-            "no longer remembers; keep their images and state volumes; with no ROOT, list them"
+            "Remove the Sandbox issuance stamps of the named deleted Projects that are absent "
+            "from the Project Inventory; keep their images and state volumes; with no ROOT, list them"
         ),
     )
     stamps.add_argument("roots", nargs="*", metavar="ROOT")
