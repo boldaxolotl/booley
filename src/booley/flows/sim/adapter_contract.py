@@ -58,7 +58,6 @@ class PreparedSimulationWork:
     top: str = ""
     cocotb_module: str = ""
     tests: tuple[str, ...] = ()
-    result_verbosity: str = "compact"
     sim_time_grace_s: float = 0.0
     adapter_result_path: str = ""
     attempt_token: str = ""

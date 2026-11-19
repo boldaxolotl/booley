@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import subprocess
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import InitVar, dataclass
 from pathlib import Path
 
@@ -164,6 +165,7 @@ def resolve_target_execution_ref(
     ref: TargetExecutionRef,
     *,
     build_root: Path | str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> fusesoc_registry.ResolvedTarget:
     """Resolve the plan's exact callable selector after handle verification."""
     if handle.identity != ref.identity or handle.vlnv != ref.vlnv:
@@ -175,4 +177,5 @@ def resolve_target_execution_ref(
         handle,
         build_root=build_root,
         library_plan=fusesoc_registry.build_library_plan(handle.project_root, build_root),
+        runner=runner,
     )

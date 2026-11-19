@@ -184,7 +184,6 @@ _PROBE_WARNING = "forwards a probe result's warning text, built by the probe"
 _UPGRADE_PRESENTATION = (
     "forwards the upgrade presentation's summary and action, built by its owner"
 )
-_PURGE_COMMAND = "fix is a purge command joined at runtime"
 _SKIPPED_ENDPOINT = "fix is SkippedEndpoint.fix, built at runtime by endpoint validation"
 
 _UNRESOLVED: dict[str, str] = {
@@ -230,7 +229,6 @@ _UNRESOLVED: dict[str, str] = {
     'warn - harness/doctor.py::_check_upgrade_review "presentation.summary"': _UPGRADE_PRESENTATION,
     'warn - harness/host_diagnostics.py::_add_environment "finding.message"': _OWNER_RECORD,
     'warn - harness/setup/readiness.py::_add_config_audit "finding.message"': _OWNER_RECORD,
-    'warn host.forgotten-project-stamps harness/host_diagnostics.py::_inspect_forgotten_stamps "f\'{len(orphans)} Sandbox issuance stamp("': _PURGE_COMMAND,
     'warn project.custom-endpoint-skipped harness/doctor.py::_check_custom_endpoints "custom endpoint"': _SKIPPED_ENDPOINT,
 }
 

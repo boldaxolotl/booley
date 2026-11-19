@@ -1550,7 +1550,7 @@ fn bit_range_pattern_selects_the_slice() {
     let (out, _, _) = run(&["signal", &b, "-s", "qa.data[5:4]", "--format", "json"]);
     assert!(out.contains("\"name\": \"data[5:4]\""), "{out}");
     let (out, _, _) = run(&["wave", &b, "-s", "qa.data[5:4]", "-t", "0:9"]);
-    assert!(out.contains("data[5:4]  0  0  0  0  3  3  3"), "{out}");
+    assert!(out.contains("data[5:4]  0  0  0  3  3  3"), "{out}");
     let (out, _, _) = run(&[
         "wave",
         &b,
@@ -2475,11 +2475,18 @@ fn issue_1100_change_commands_agree_and_preserve_literals() {
             } else {
                 vec!["--async", "--count"]
             };
-            assert_eq!(
-                issue_1100_query(&store, command, "bus", "rising", &extra),
-                "0"
-            );
+            let mut args = vec![command, store.as_str(), "bus", "rising"];
+            args.extend(extra);
+            let (out, error, _) = issue_1100_run(&args);
+            assert_eq!(out.trim(), "0");
+            let note = format!("# {command}: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.");
+            assert!(error.lines().any(|l| l == note), "{command}: {error}");
         }
+        let (out, _, _) = issue_1100_run(&["find", &store, "bus", "rising", "--format", "json"]);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let warnings = json["warnings"].as_array().unwrap();
+        let note = "find: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.";
+        assert!(warnings.iter().any(|w| w == note), "{warnings:?}");
         let (_, error, _) = issue_1100_run(&["distance", &store, "bus", "rising", "--async"]);
         assert!(error.contains("only fires on 1-bit signals"));
     }
@@ -5030,6 +5037,34 @@ fn issue_1418_signed_bounds() {
 }
 
 #[test]
+fn find_no_match_note_counts_same_tick_writes_and_skips_negative_windows() {
+    let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n";
+    let (_dir, store) = issue_1100_store(body, "serial");
+    let note = |extra: &[&str]| {
+        let mut args = vec!["find", store.as_str(), "scalar", "'h1"];
+        args.extend_from_slice(extra);
+        let (out, err, code) = issue_1100_run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.is_empty(), "{out}");
+        err.lines()
+            .filter(|l| l.starts_with("# NOTE:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Tick 15 writes 1 then 0: the transient 1 is held inside the window.
+    let held = note(&["--with-reset", "-t", "2:2"]);
+    assert!(held.contains("was held in this window"), "{held}");
+    // A window wholly before tick 0 holds nothing, whatever tick 0 holds.
+    let (_, err, code) =
+        issue_1100_run(&["find", &store, "scalar", "'h0", "--async", "-t=-2t:-1t"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("# NOTE: 'h0 was never held in this window"),
+        "{err}"
+    );
+}
+
+#[test]
 fn issue_1421_same_tick_samples_zero_window_and_reset_round_trip() {
     for engine in ["serial", "parallel"] {
         let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n#25\n1$\n1!\n0!\n1!\n#30\n0$\n#35\n1$\n#40\n0$\n";
@@ -5247,6 +5282,8 @@ const ALL: &[&str] = &["signal", "find", "wave", "sample", "stats", "distance"];
 const BOUND_FLAGS: &[&str] = &["find", "sample"];
 const SYNC_PAST_END: &str = "lies outside the trace: counted cycles are 1..19 \
      (counted after reset), and the trace ends at 200ns";
+const SYNC_WITH_RESET_PAST_END: &str = "lies outside the trace: counted cycles are 1..20 \
+     (counted from the first clock edge), and the trace ends at 200ns";
 const TICK_PAST_END: &str = "lies outside the trace: the trace ends at tick 200 (200ns)";
 
 /// (fixture, commands, window args, flag as typed when a warning is expected).
@@ -5270,8 +5307,22 @@ fn window_rows() -> Vec<WindowRow> {
         (0, ALL, &["-t", "0:999999"], None),
         (0, ALL, &["-t", "0:5"], None),
         (0, ALL, &["-t", "0t:999999t", "--async"], None),
-        (0, &["signal", "wave"], &["-t", "0:0"], Some("-t 0:0 ")),
-        (0, BOUND_FLAGS, &["--before", "0"], Some("--before 0 ")),
+        // Cycle 0 exists after a detected reset, so `-t 0:0` is inside the trace.
+        (0, &["signal", "wave"], &["-t", "0:0"], None),
+        (
+            0,
+            &["signal", "wave"],
+            &["-t", "0:0", "--with-reset"],
+            Some("-t 0:0 "),
+        ),
+        // `--before 0` ends at cycle 0, which exists after a detected reset.
+        (0, BOUND_FLAGS, &["--before", "0"], None),
+        (
+            0,
+            BOUND_FLAGS,
+            &["--before", "0", "--with-reset"],
+            Some("--before 0 "),
+        ),
         (0, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
         (1, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
         (
@@ -5293,6 +5344,7 @@ fn window_rows() -> Vec<WindowRow> {
 /// The warning each row expects: the flag as typed plus the trace's extent.
 fn window_expected(fixture: usize, window: &[&str], flag: &str) -> String {
     let extent = match (fixture, window.contains(&"--async")) {
+        (0, false) if window.contains(&"--with-reset") => SYNC_WITH_RESET_PAST_END,
         (0, false) => SYNC_PAST_END,
         (2, _) => "lies outside the trace: the trace ends at tick 52962 (529620ns)",
         _ => TICK_PAST_END,
@@ -5558,6 +5610,7 @@ fn issue_4698_oversized_literals_warn_in_every_command() {
         assert!(dist.contains(&expected), "{dist:?}");
         let def = format!("v = *data == {lit}");
         let (_, virt) = issue_4698_json(&["find", p, "v", "'h1", "--virtual", &def, "--async"]);
+        let virt = without_never_held_notes(virt);
         assert_eq!(virt.len(), 1, "{virt:?}");
         assert!(
             virt[0].starts_with(&format!(
@@ -5592,13 +5645,19 @@ fn issue_4698_literal_over_its_own_prefix_warns_and_still_matches() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The literal-width warnings are asserted here, not the #4748 no-match note.
+fn without_never_held_notes(warnings: Vec<String>) -> Vec<String> {
+    let note = |w: &String| w.ends_with(" was never held in this window");
+    warnings.into_iter().filter(|w| !note(w)).collect()
+}
+
 #[test]
 fn issue_4698_one_warning_lists_only_signals_the_literal_cannot_fit() {
     let fst = build_bwave("small_clocked.vcd", "4698_multi");
     let p = fst.to_str().unwrap();
     let (_, warnings) = issue_4698_json(&["find", p, "*a*", "'h1F"]);
     assert_eq!(
-        warnings,
+        without_never_held_notes(warnings),
         vec!["'h1F needs 5 bits and never matches tb.dut.enable (1-bit), tb.dut.flag (1-bit), tb.dut.state[3:0] (4-bit)".to_string()]
     );
     let _ = std::fs::remove_file(fst);
@@ -5650,6 +5709,7 @@ fn issue_4698_virtual_comparison_with_oversized_literal_states_its_result() {
                 "--async",
                 "--count",
             ]);
+            let warnings = without_never_held_notes(warnings);
             assert_eq!(warnings, vec![expected.clone()], "{op}");
             assert_eq!(json["data"]["count"], count, "{op} {value}: {json}");
         }

@@ -64,7 +64,8 @@ current attempt's evidence.
 - On the durable path, Pre-Sim Commands fire once per Simulation Attempt,
   after bundle authentication and runtime-input staging and before launch. The
   explicit legacy per-test access mode uses a private build per work item and
-  fires before compilation. Cocotb fires once per batch.
+  fires before compilation. Cocotb fires once per batch, or once per Test
+  Run in a coverage run.
 - Elaboration Check does not use this seam; it shares only build preparation
   and classification with full Simulation.
 

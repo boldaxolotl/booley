@@ -88,7 +88,6 @@ from booley.flows.result_table import (
     status_cell,
 )
 from booley.flows.synth import openroad_reuse
-from booley.flows.synth.backends import configure
 from booley.flows.synth.backends.pipeline import (
     BoundaryOutcome,
     openroad_thread_assignment,
@@ -98,14 +97,20 @@ from booley.flows.synth.backends.pipeline import (
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
     echoed_source_lines,
+    load_timing_config,
 )
 from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
 from booley.flows.synth.cli import SynthArguments
 from booley.flows.synth.mode import SynthMode, runs_openroad
 from booley.flows.synth.request import SynthRequest
-from booley.flows.synth.timing import parse_perclock
+from booley.flows.synth.timing import (
+    UnconstrainedTiming,
+    parse_perclock,
+    parse_unconstrained_timing,
+)
 from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
+from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.presentation.terminal_table import render_table
 from booley.runtime.endpoint_execution import (
@@ -277,7 +282,8 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 
 
 # Metrics the synthesis Flow declares; names are the ones ``metrics.toml`` bounds use.
-# area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
+# area_um2/area_kge/cell_count are the mapped netlist in logical mode and the placed netlist
+# after repair in OpenROAD modes.
 _SYNTH_COST_TIER = CostTier.HIGH
 SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
     MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
@@ -301,6 +307,8 @@ class SynthMetrics:
     area_source: str = ""
     area_kge: float | None = None
     cells: int | None = None
+    # Provenance for ``cells``, like ``area_source``.
+    cell_count_source: str = ""
     wire_count: int = 0
     process_count: int = 0
     # Worst setup slack in ns from OpenROAD's embedded STA (negative == timing VIOLATED). The
@@ -330,6 +338,9 @@ class SynthMetrics:
     # purely combinational design).
     reg2reg_slack_ns: float | None = None
     reg2reg_fmax_mhz: float | None = None
+    # What the authored SDC leaves untimed. None when no check ran (logical mode,
+    # or OpenROAD did not reach it); zero counts mean it ran and found nothing.
+    unconstrained: UnconstrainedTiming | None = None
     elapsed_s: float = 0.0
     latches: int = 0
     latch_types: dict[str, int] | None = None
@@ -407,6 +418,7 @@ class SynthMetrics:
             "area_source": self.area_source,
             "area_kge": self.area_kge,
             "cell_count": self.cells,
+            "cell_count_source": self.cell_count_source,
             "wire_count": self.wire_count,
             "synth_mode": self.synth_mode.value if self.synth_mode else "",
             "per_clock": per_clock_to_json(self.per_clock),
@@ -506,6 +518,21 @@ class SynthMetrics:
             and not self.has_critical
         )
 
+    def failure_reason(self) -> str:
+        """One-line cause of a failed run, as the implementation report and RESULT line name it."""
+        if self.timed_out:
+            return "timeout"
+        killed = {"oom": "OOM", "resource_killed": "resource-killed"}
+        if self.termination in killed:
+            return killed[self.termination]
+        if self.termination == "design_failure":
+            return _design_failure_reason(self)
+        if self.returncode != 0:
+            return f"rc={self.returncode}" + ("" if self.has_metrics else ", no metrics")
+        if not self.has_metrics:
+            return "no metrics"
+        return "critical conditions" if self.has_critical else "failed"
+
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
@@ -575,14 +602,10 @@ def _is_io_bound_critical(metrics: SynthMetrics) -> bool:
     at an input port or ends at an output port (in->reg, reg->out, or a pure
     in->out feedthrough).
 
-    That matters because the generated SDC sets I/O delays as a *percentage of
-    the clock period*: ``set_input_delay`` and ``set_output_delay`` both scale
-    with ``period_ps``, so an I/O path's slack barely moves as the period is
-    tuned (a pure in->out feedthrough is exactly period-invariant, since the
-    scaled input and output delays cancel). An author chasing an I/O-bound
-    violation by shrinking ``period_ps`` chases a tail that never closes; the
-    real levers are declaring the actual external I/O delays or false-pathing
-    the port via the ``[flows.synth.timing].sdc`` knob. (SETUP-28)
+    That matters because an I/O path's slack depends on the external delays the
+    Target's SDC declares for that port, so the fix is there: a realistic
+    ``set_input_delay`` / ``set_output_delay``, or ``set_false_path`` for a port
+    that should not be timed. (SETUP-28)
     """
     worst = metrics.wns_ns
     r2r = metrics.reg2reg_slack_ns
@@ -612,6 +635,27 @@ def _parse_physical_area(output: str) -> float | None:
     """Extract OpenROAD's post-optimization placed design area in µm²."""
     matches = re.findall(r"OPENROAD_DESIGN_AREA_UM2:\s*([-+]?\d+(?:\.\d+)?)", output)
     return float(matches[-1]) if matches else None
+
+
+def _parse_physical_cell_count(output: str) -> int | None:
+    """Extract OpenROAD's instance count after repair and final placement."""
+    matches = re.findall(r"OPENROAD_INSTANCE_COUNT:\s*(\d+)", output)
+    return int(matches[-1]) if matches else None
+
+
+def _cell_count(output: str, mode: SynthMode, yosys_cells: int | None) -> tuple[int | None, str]:
+    """Return the canonical cell count and its provenance for ``mode``.
+
+    OpenROAD modes use the placed netlist's instance count; a run that never
+    reached the final report, and logical mode, use the mapped Yosys count.
+    """
+    if mode.runs_openroad:
+        placed = _parse_physical_cell_count(output)
+        if placed is not None:
+            return placed, SynthMode.PHYSICAL.area_source
+    if yosys_cells is None:
+        return None, ""
+    return yosys_cells, SynthMode.LOGICAL.area_source
 
 
 def _parse_logical_estimated_fmax(output: str) -> float | None:
@@ -731,7 +775,8 @@ def _parse_synth_output(
     """Parse all metrics from combined synthesis stdout/stderr."""
     mode = SynthMode(synth_mode)
     stat = parse_stat(output)
-    mapped_area_um2, cells = stat.area_um2, stat.cells
+    mapped_area_um2 = stat.area_um2
+    cells, cell_count_source = _cell_count(output, mode, stat.cells)
     if mode.runs_openroad:
         area_um2 = _parse_physical_area(output)
         estimated_fmax_mhz = None
@@ -752,6 +797,7 @@ def _parse_synth_output(
         area_source=area_source,
         area_kge=area_kge,
         cells=cells,
+        cell_count_source=cell_count_source,
         wire_count=wire_count,
         process_count=process_count,
         wns_ns=wns_ns,
@@ -759,6 +805,7 @@ def _parse_synth_output(
         estimated_fmax_mhz=estimated_fmax_mhz,
         reg2reg_slack_ns=reg2reg_slack_ns,
         reg2reg_fmax_mhz=reg2reg_fmax_mhz,
+        unconstrained=parse_unconstrained_timing(output),
         synth_mode=mode,
         elapsed_s=elapsed_s,
         latches=latches,
@@ -872,6 +919,7 @@ _BASELINE_DETAIL_FIELDS = (
     "area_source",
     "area_kge",
     "cell_count",
+    "cell_count_source",
     "wire_count",
     "per_clock",
     "estimated_fmax_mhz",
@@ -881,6 +929,7 @@ _REPORT_QOR_FIELDS = (
     "area_um2",
     "area_source",
     "cell_count",
+    "cell_count_source",
     "synth_mode",
     "per_clock",
     "estimated_fmax_mhz",
@@ -895,6 +944,7 @@ _REPORT_BASELINE_FIELDS = (
     "area_source",
     "synth_mode",
     "cell_count",
+    "cell_count_source",
     "per_clock",
     "estimated_fmax_mhz",
 )
@@ -968,6 +1018,8 @@ def _target_summary(
             **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         },
     }
+    if metrics.unconstrained is not None:
+        summary["unconstrained"] = metrics.unconstrained.to_detail()
     if metrics.openroad_reuse:
         summary["openroad_reuse"] = dict(metrics.openroad_reuse)
     if baseline is not None:
@@ -1115,6 +1167,8 @@ def _build_report_dict(
     }
     if _is_io_bound_critical(metrics):
         report["io_bound_critical"] = True
+    if metrics.unconstrained is not None:
+        report["unconstrained"] = metrics.unconstrained.to_detail()
     if metrics.openroad_reuse:
         report["openroad_reuse"] = dict(metrics.openroad_reuse)
     if baseline_metrics and baseline_ref:
@@ -1398,13 +1452,17 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         selected_root = build_root or self._synth_work_root(target)
         shutil.rmtree(selected_root, ignore_errors=True)
         handle = self._target_handle(target)
+        runner = setup_runner(self.name, target, "synth_prepare")
         ref = getattr(self, "_target_execution_refs", {}).get(target)
         if ref is not None:
-            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
+            return resolve_target_execution_ref(
+                handle, ref, build_root=selected_root, runner=runner
+            )
         return fusesoc_registry.resolve_target_handle(
             handle,
             build_root=selected_root,
             library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
+            runner=runner,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -1448,7 +1506,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             cmd.extend(["--timing-report-paths", str(self._report_path_count)])
         cmd.extend(["-w", target])
         try:
-            configure.check_options(configure.parse_configure_argv(cmd), project_root=work_dir)
+            load_timing_config(work_dir)
         except SystemExit as exc:
             raise BoundaryError(str(exc.code)) from None
         return _PlannedSynthRecipe(tuple(cmd), resolved)
@@ -2602,8 +2660,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                     "structural counts were emitted before the final synthesis checks completed",
                 )
             )
-        if _is_io_bound_critical(cur):
-            lines.append(self._format_io_bound_line(tgt, cur))
+        lines.extend(self._constraint_note_lines(tgt, cur))
         if cur.has_critical:
             lines.append(self._format_critical_line(tgt, cur))
         if cur.warning_summary.total_warnings:
@@ -2893,9 +2950,47 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         run = producer.get("producer_run_id")
         return note_line(tgt, "REUSED", f"OpenROAD results reused from run {run} ({when})")
 
+    def _constraint_note_lines(self, tgt: str, cur: SynthMetrics) -> list[str]:
+        """The I/O-bound and unconstrained-timing NOTEs, when they apply."""
+        lines: list[str] = []
+        if _is_io_bound_critical(cur):
+            lines.append(self._format_io_bound_line(tgt, cur))
+        if cur.unconstrained is not None and cur.unconstrained.found:
+            lines.append(self._format_unconstrained_line(tgt, cur, cur.unconstrained))
+        return lines
+
+    @staticmethod
+    def _format_unconstrained_line(
+        tgt: str, cur: SynthMetrics, unconstrained: UnconstrainedTiming
+    ) -> str:
+        """Advisory: timing numbers cover only the paths the SDC constrains."""
+
+        def ports(names: tuple[str, ...], noun: str, command: str) -> str:
+            shown = ", ".join(names[:3])
+            more = len(names) - 3
+            if more > 0:
+                shown += f", +{more} more"
+            plural = noun if len(names) == 1 else f"{noun}s"
+            return f"{len(names)} {plural} without {command} ({shown})"
+
+        parts: list[str] = []
+        if unconstrained.endpoints:
+            count = len(unconstrained.endpoints)
+            parts.append(f"{count} unconstrained endpoint{'' if count == 1 else 's'}")
+        if unconstrained.inputs_without_delay:
+            parts.append(ports(unconstrained.inputs_without_delay, "input", "set_input_delay"))
+        if unconstrained.outputs_without_delay:
+            parts.append(ports(unconstrained.outputs_without_delay, "output", "set_output_delay"))
+        return note_line(
+            tgt,
+            "NOTE",
+            f"timing covers only constrained paths: {'; '.join(parts)}; "
+            f"full lists: {cur.log_path or 'run.log'}",
+        )
+
     @staticmethod
     def _format_io_bound_line(tgt: str, cur: SynthMetrics) -> str:
-        """Advisory: the worst path is I/O-bound, so period_ps is the wrong lever."""
+        """Advisory: the worst path is I/O-bound; its remedy is in the Target's SDC."""
         worst = cur.wns_ns
         r2r = cur.reg2reg_slack_ns
         return note_line(
@@ -2903,8 +2998,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             "NOTE",
             f"critical path is I/O-bound "
             f"(worst slack {worst:+.3f} ns vs reg2reg {r2r:+.3f} ns); "
-            "period_ps won't move it — declare I/O delays / false-path the port "
-            "via the [flows.synth.timing].sdc knob",
+            "set the port's real external delay with set_input_delay / "
+            "set_output_delay, or exclude it with set_false_path, in the Target's "
+            "file_type: SDC fileset",
         )
 
     @staticmethod
@@ -2960,26 +3056,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     @staticmethod
     def _format_failure_summary(tgt: str, cur: SynthMetrics) -> str:
         """Format one target failure for the final RESULT line."""
-        reason = "failed"
-        if cur.infra_error:
-            reason = cur.infra_error
-        elif cur.timed_out:
-            reason = "timeout"
-        elif cur.termination == "oom":
-            reason = "OOM"
-        elif cur.termination == "resource_killed":
-            reason = "resource-killed"
-        elif cur.termination == "design_failure":
-            reason = _design_failure_reason(cur)
-        elif cur.returncode != 0 and not cur.has_metrics:
-            reason = f"rc={cur.returncode}, no metrics"
-        elif cur.returncode != 0:
-            reason = f"rc={cur.returncode}"
-        elif not cur.has_metrics:
-            reason = "no metrics"
-        elif cur.has_critical:
-            reason = "critical conditions"
-        return f"{tgt}: {reason}"
+        return f"{tgt}: {cur.infra_error or cur.failure_reason()}"
 
 
 def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:

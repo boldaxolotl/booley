@@ -12,6 +12,7 @@ import hashlib
 import math
 import shutil
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
@@ -21,7 +22,6 @@ from booley.flows.synth.backends.openroad import ppa as openroad_ppa_options
 from booley.flows.synth.backends.yosys import ppa as yosys_ppa_options
 from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
     FRONTEND_CHOICES,
-    load_timing_config,
     parse_params,
     resolve_liberty,
     synth_timing_config,
@@ -120,25 +120,25 @@ def _resolve_syn_workdir(
     return result_root / dir_name
 
 
-def _resolve_ppa_settings(
+def resolve_ppa_settings(
     args: argparse.Namespace,
 ) -> tuple[
     str,
     yosys_ppa_options.YosysPpaSettings,
     OpenRoadPpaSettings,
 ]:
-    """Resolve a generic profile plus explicit backend overrides."""
+    """Resolve a generic profile plus explicit backend overrides.
+
+    Raises :class:`BoundaryError` for a value the backend rejects.
+    """
     profile = getattr(args, "ppa_profile", None) or DEFAULT_PPA_PROFILE
-    try:
-        yosys = yosys_ppa_options.with_yosys_overrides(
-            yosys_ppa_options.yosys_profile(profile),
-            abc_recipe=getattr(args, "abc_recipe", None),
-            abc_script=getattr(args, "abc_script", None),
-            generic_abc_before_mapping=getattr(args, "generic_abc_before_mapping", None),
-            abc_delay_ps=getattr(args, "abc_delay_ps", None),
-        )
-    except BoundaryError as exc:
-        raise SystemExit(f"ERROR: {exc}") from None
+    yosys = yosys_ppa_options.with_yosys_overrides(
+        yosys_ppa_options.yosys_profile(profile),
+        abc_recipe=getattr(args, "abc_recipe", None),
+        abc_script=getattr(args, "abc_script", None),
+        generic_abc_before_mapping=getattr(args, "generic_abc_before_mapping", None),
+        abc_delay_ps=getattr(args, "abc_delay_ps", None),
+    )
     openroad = openroad_ppa_options.with_openroad_overrides(
         openroad_ppa_options.openroad_profile(profile),
         **_openroad_cli_overrides(args),
@@ -169,7 +169,7 @@ def _validate_resolved_ppa(
 ) -> None:
     """Range-check resolved PPA values before rendering backend commands."""
     if yosys.abc_delay_ps is not None and yosys.abc_delay_ps <= 0:
-        raise SystemExit("ERROR: abc_delay_ps must be greater than zero")
+        raise BoundaryError("abc_delay_ps must be greater than zero")
     numeric = {
         "utilization_pct": openroad.utilization_pct,
         "placement_density": openroad.placement_density,
@@ -178,15 +178,15 @@ def _validate_resolved_ppa(
     }
     for name, value in numeric.items():
         if value is not None and not math.isfinite(value):
-            raise SystemExit(f"ERROR: {name} must be a finite number")
+            raise BoundaryError(f"{name} must be a finite number")
     if not 0 < openroad.utilization_pct < 100:
-        raise SystemExit("ERROR: utilization_pct must be between 0 and 100")
+        raise BoundaryError("utilization_pct must be between 0 and 100")
     if not 0 < openroad.placement_density <= 1:
-        raise SystemExit("ERROR: placement_density must be in the range (0, 1]")
+        raise BoundaryError("placement_density must be in the range (0, 1]")
     if openroad.setup_margin_ns < 0:
-        raise SystemExit("ERROR: setup_margin_ns must be non-negative")
+        raise BoundaryError("setup_margin_ns must be non-negative")
     if openroad.repair_tns_percent is not None and not 0 <= openroad.repair_tns_percent <= 100:
-        raise SystemExit("ERROR: repair_tns_percent must be between 0 and 100")
+        raise BoundaryError("repair_tns_percent must be between 0 and 100")
 
 
 def _legacy_timing_fallbacks(args: argparse.Namespace) -> tuple[bool, bool]:
@@ -251,7 +251,10 @@ def resolve_spec(
     root = _project_root(project_root)
     sources = tuple(_resolve_extra_rtl(args, root))
     inc_dirs = tuple(_resolve_inc_dirs(args, root))
-    profile, yosys_ppa, openroad_ppa = _resolve_ppa_settings(args)
+    try:
+        profile, yosys_ppa, openroad_ppa = resolve_ppa_settings(args)
+    except BoundaryError as exc:
+        sys.exit(f"ERROR: {exc}")
     timing = _resolve_syn_timing(args, openroad_ppa, project_root=project_root)
     if timing.mode.runs_openroad and not timing.sdc:
         sys.exit(
@@ -287,15 +290,22 @@ def resolve_spec(
     )
 
 
-def check_options(args: argparse.Namespace, *, project_root: Path) -> None:
-    """Run the configure checks that read only the options and ``booley.toml``.
+def recipe_ppa_settings(
+    recipe_args: Sequence[str],
+) -> tuple[yosys_ppa_options.YosysPpaSettings, OpenRoadPpaSettings]:
+    """Resolve the Yosys and OpenROAD settings the backend runs for *recipe_args*.
 
-    Planning runs them on its argv so a dry run refuses what configure would.
-    Sources and Liberty stay configure-time checks. Exits with an ``ERROR:``
-    message on failure.
+    Raises :class:`BoundaryError` for an option argparse cannot take or a value
+    the backend rejects.
     """
-    _resolve_ppa_settings(args)
-    load_timing_config(project_root)
+    parser = _build_parser()
+    parser.exit_on_error = False
+    try:
+        args = parser.parse_args(list(recipe_args))
+    except argparse.ArgumentError as exc:
+        raise BoundaryError(str(exc)) from None
+    _profile, yosys, openroad = resolve_ppa_settings(args)
+    return yosys, openroad
 
 
 def parse_configure_argv(cmd: list[str]) -> argparse.Namespace:

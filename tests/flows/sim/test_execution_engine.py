@@ -36,6 +36,7 @@ from booley.flows.sim.adapter_transport import (
     publish_native_adapter_result,
     write_adapter_result,
 )
+from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
@@ -66,9 +67,11 @@ from booley.flows.terminal_progress import TerminalProgress
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.runtime import paths as runtime_paths
+from booley.runtime import resource_history
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command, measured_flow
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session, split_invoker
 from tests.flows.sim.prepared_group import run_prepared_group
@@ -1717,10 +1720,12 @@ def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
 
 
 def test_missing_new_image_refuses_the_build_and_never_launches(
-    stale_icarus: _StaleIcarus,
+    stale_icarus: _StaleIcarus, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BOOLEY_DIR", str(stale_icarus.project / ".booley"))
     handle = stale_icarus.select()
     launched = False
+    flow = measured_flow(stale_icarus.project)
     base_invoke = _subprocess_invoker(stale_icarus.project)
 
     def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
@@ -1731,7 +1736,7 @@ def test_missing_new_image_refuses_the_build_and_never_launches(
                 script.with_suffix("").unlink(missing_ok=True)
         if "booley.flows.sim.backends.icarus" in command[-1]:
             launched = True
-        return result
+        return flow._execute_boundary(canned_command(result), timeout=timeout)
 
     execution = SimulationExecution(
         invoke=invoke, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
@@ -1739,6 +1744,116 @@ def test_missing_new_image_refuses_the_build_and_never_launches(
     with pytest.raises(SimulationBuildSlotError, match="cannot record Simulation image"):
         run_prepared_group(execution, handle, ("smoke",))
     assert launched is False
+    assert _run_records(stale_icarus.project, "sim_build") == [("exit_nonzero", 0)]
+
+
+def _run_records(project: Path, phase: str) -> list[tuple[str, int]]:
+    """``(outcome, returncode)`` of every Resource History record of *phase*."""
+    records = resource_history.load_records(project / ".booley")
+    return [(r["outcome"], r["returncode"]) for r in records if r["key"]["phase"] == phase]
+
+
+def _native_launch(
+    handle: TargetHandle, output: str, simulator_rc: int, termination: RunTermination | None = None
+) -> Callable[..., SubprocessResult]:
+    """A native adapter launch that exits as the production adapter does."""
+
+    def launch(_command: list[str], *, timeout: float) -> SubprocessResult:
+        del timeout
+        identity = AdapterTransportIdentity(
+            "icarus", "abc123", handle.identity, ("smoke",), _evidence_path(handle)
+        )
+        run = publish_native_adapter_result(
+            identity, output, simulator_rc, termination=termination
+        )
+        return SubprocessResult(returncode=run.exit_code, stdout="")
+
+    return launch
+
+
+def _cocotb_batch_abort(handle: TargetHandle, prepared: PreparedSimulationBuild):
+    """A cocotb batch whose tests all passed but whose final disk accounting aborted it."""
+
+    def launch(_command: list[str], *, timeout: float) -> SubprocessResult:
+        del timeout
+        result = AdapterResult(
+            False,
+            False,
+            0,
+            ("smoke",),
+            termination="disk_budget",
+            failure_kind="infrastructure",
+            detail="run directory exceeded its disk budget",
+            test_results=(AdapterTestResult("smoke", "pass"),),
+        )
+        _write_transport(handle, prepared, ("smoke",), result, adapter="cocotb")
+        return SubprocessResult(returncode=1, stdout="")
+
+    return launch
+
+
+_DISK_ABORT = RunTermination(
+    "disk_budget", "run directory exceeded its disk budget", "infrastructure"
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        pytest.param("pass", ("exit_zero", 0), id="pass"),
+        pytest.param("simulator-exit", ("exit_nonzero", 0), id="simulator-exit"),
+        pytest.param("sva-error", ("exit_nonzero", 0), id="sva-error"),
+        pytest.param("aborted", ("exit_nonzero", 0), id="aborted"),
+        pytest.param("missing-waveform", ("exit_nonzero", 0), id="missing-waveform"),
+        pytest.param("cocotb-batch-abort", ("exit_zero", 1), id="cocotb-batch-abort"),
+    ],
+)
+def test_sim_run_record_outcome_follows_the_test_run_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, expected: tuple[str, int]
+) -> None:
+    """The recorded outcome is the Flow's verdict on the Test Run; the raw exit code stays (#4964)."""
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=case == "cocotb-batch-abort")
+    passed = "[SIM_RESULT] PASSED\n"
+    launches: dict[str, Callable[..., SubprocessResult]] = {
+        "pass": _native_launch(handle, passed, 0),
+        "simulator-exit": _native_launch(handle, passed, 3),
+        "sva-error": _native_launch(handle, passed + "[5] Error: assertion failed\n", 0),
+        "aborted": _native_launch(handle, passed, 0, _DISK_ABORT),
+        "cocotb-batch-abort": _cocotb_batch_abort(handle, prepared),
+    }
+    options = SimulationOptions()
+    trace_mode = None
+    if case == "missing-waveform":
+        (tmp_path / "run").mkdir()
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley" / "booley.toml").write_text(
+            '[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8"
+        )
+        trace = tmp_path / "run" / "wave.fst"
+        trace.write_bytes(b"old")
+        launches[case] = _passing_trace_invoker(handle, prepared, trace, fresh=False)
+        options = SimulationOptions(trace=True)
+        trace_mode = TraceMode.NATIVE_FST
+    flow = measured_flow(tmp_path)
+
+    def invoke(command: list[str], *, timeout: float) -> SubprocessResult:
+        result = launches[case](command, timeout=timeout)
+        return flow._execute_boundary(canned_command(result), timeout=timeout)
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        invoke,
+        ("smoke",),
+        cocotb=case == "cocotb-batch-abort",
+        options=options,
+        trace_mode=trace_mode,
+    )
+
+    assert all(test.passed for test in outcome.tests) == (case in ("pass", "cocotb-batch-abort"))
+    assert _run_records(tmp_path, "sim_run") == [expected]
 
 
 def _write_fake_trace_tools(root: Path) -> None:

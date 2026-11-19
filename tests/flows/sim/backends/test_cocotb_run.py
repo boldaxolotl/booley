@@ -350,7 +350,6 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         trace=True,
         trace_scope="counter",
         trace_convert_timeout_s=90,
-        result_verbosity="full",
         sim_time_grace_s=2.5,
         runtime_inputs=("firmware.hex",),
         adapter_result_path=str(result_path),
@@ -372,7 +371,6 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         "timeout": 120,
         "max_rundir_bytes": 1000,
         "sim_time_grace_s": 2.5,
-        "result_verbosity": "full",
         "expected_trace_scope": "counter",
         "runtime_inputs": ("firmware.hex",),
         "transport": AdapterTransportIdentity(
@@ -598,10 +596,6 @@ _LINE_FULL = (
     f'[COCOTB_RESULTS] {{"version":2,"state":"ok","detail":"","tests":[{_DONE},{_BOOM},{_SKIP}],'
     '"skipped_unselected":0}'
 )
-_LINE_FOCUSED_COMPACT = (
-    f'[COCOTB_RESULTS] {{"version":2,"state":"ok","detail":"","tests":[{_DONE},{_BOOM}],'
-    '"skipped_unselected":1,"reported_names":["done","boom","skip_me"]}'
-)
 _RESULTS_JSON = """\
 {
   "version": 2,
@@ -649,34 +643,22 @@ _UNFOCUSED_TESTS = (
     ("skip_me", "inconclusive", "reported skipped by cocotb; the run log names no skip reason"),
 )
 
-# case -> (xml, selection, verbosity, stdout line, failure_kind, per-test verdicts, diagnostics)
+# case -> (xml, selection, stdout line, failure_kind, per-test verdicts, diagnostics)
 _GOLDEN_CASES = {
-    "focused-compact": (
+    "focused": (
         _GOLDEN_XML,
         _FOCUSED,
-        "compact",
-        _LINE_FOCUSED_COMPACT,
-        "inconclusive",
-        (("done", "pass", ""), _MISSING_ID),
-        (_DIAGNOSTIC.format("boom"),),
-    ),
-    "focused-full": (
-        _GOLDEN_XML,
-        _FOCUSED,
-        "full",
         _LINE_FULL,
         "inconclusive",
         (("done", "pass", ""), _MISSING_ID),
         (_DIAGNOSTIC.format("boom, skip_me"),),
     ),
-    "unfocused-compact": (_GOLDEN_XML, [], "compact", _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
-    "unfocused-full": (_GOLDEN_XML, [], "full", _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
+    "unfocused": (_GOLDEN_XML, [], _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
     # A non-finite time makes the transported payload undecodable: both selected tests
     # become inconclusive for missing results (the line itself is not pinned here).
-    "nan-focused-compact": (
+    "nan-focused": (
         _GOLDEN_XML.replace('time="0.25"', 'time="nan"'),
         _FOCUSED,
-        "compact",
         None,
         "inconclusive",
         (
@@ -697,7 +679,7 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     Characterization: the literals were captured from the code that parsed the
     adapter's own stdout line back into results, so this proves the refactor
     changes nothing observable (selected-but-unreported, unselected-ran and
-    unselected-skipped tests; compact and full verbosity; a non-finite time).
+    unselected-skipped tests; full results always carried; a non-finite time).
     The adapter must also build its result without parsing that line.
     """
 
@@ -707,7 +689,7 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     # Patch the defining module and the adapter's own namespace: either call style fails.
     monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
     monkeypatch.setattr(crun, "parse_results_line", forbidden_parse, raising=False)
-    xml, selection, verbosity, line, failure_kind, verdicts, notes = _GOLDEN_CASES[case]
+    xml, selection, line, failure_kind, verdicts, notes = _GOLDEN_CASES[case]
     fake_launch.output = []
     fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
         xml, encoding="utf-8"
@@ -715,7 +697,7 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     identity = _identity(tmp_path, selection)
     work = tmp_path / "work"
 
-    _run(tmp_path, tests=selection, result_verbosity=verbosity, transport=identity, work_dir=work)
+    _run(tmp_path, tests=selection, transport=identity, work_dir=work)
 
     result = read_adapter_result(identity)
     assert (result.passed, result.inconclusive, result.failure_kind) == (False, True, failure_kind)

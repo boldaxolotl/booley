@@ -4,8 +4,9 @@ The command composes the measurement building blocks: it exports the commit, rea
 checkout's own ``metrics.toml``, preflights and runs one child Flow per rules table inside
 the admission queue (:mod:`booley.harness.measure_children`), stores the Measurement Run in
 the Main Booley Directory, writes the Markdown report and prints the report. A commit that is
-already Measured is not measured again: its stored run is shown, unless ``--again`` is given. The run is a
-Standalone Job of its own, so the Dashboard shows it like any shell run.
+already Measured is not measured again: its stored run is shown, unless ``--again`` or
+``--target`` is given. The run is a Standalone Job of its own, so the Dashboard shows it like
+any shell run.
 
 ``--target <name>`` measures only that Target's tables. Such a run is never stored in the
 Main Booley Directory, so it never makes the commit Measured: its document, Markdown report
@@ -324,7 +325,7 @@ def _measure(
         print(notice, file=sys.stderr)
     main = main_booley_dir_of(project_root)
     store = MeasurementStore(main)
-    if not request.again:
+    if not request.again and request.target is None:
         stored = _measured_run(store, keyed.key)
         if stored is not None:
             return _show(project_root, store, stored, commit, request, hooks)

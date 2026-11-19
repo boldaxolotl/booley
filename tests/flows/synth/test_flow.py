@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,7 @@ from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.progress_lifecycle import abort_open_progress
+from booley.flows.synth.backends import configure
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
     AsicSynthesizeFlow,
@@ -62,9 +64,11 @@ from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import WarningSummary, parse_synth_diagnostics
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.presentation.report_results import present_job_report
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command
 from tests.conftest import symlink_or_skip
 from tests.flows.synth.captured_yosys import load_capture
 from tests.fusesoc_test_support import relocated_project
@@ -933,9 +937,8 @@ _ABC_SCRIPT = '[flows.synth.advanced_settings_yosys]\nabc_script = "+strash;map"
 _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
 
 
-@pytest.mark.parametrize(
-    ("config", "args", "present", "absent"),
-    [
+def _recipe_argv_cases() -> list[Any]:
+    return [
         pytest.param(
             "",
             [],
@@ -1016,24 +1019,27 @@ _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
             [],
             id="target-frontend-and-slang-options",
         ),
-    ],
-)
-def test_configure_argv_carries_the_recipe(
-    synth_cli: SynthCli,
-    config: str,
-    args: list[str],
-    present: list[tuple[str, ...]],
-    absent: list[str],
-) -> None:
-    if config:
+    ]
+
+
+def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
+    for case in _recipe_argv_cases():
+        config, args, present, absent = case.values
         synth_cli.config(config)
 
-    argv = synth_cli.plan(*args)["work_units"][0]["commands"][0]["argv"]
+        unit = synth_cli.plan(*args)["work_units"][0]
+        argv = unit["commands"][0]["argv"]
 
-    for tokens in present:
-        assert _has_tokens(argv, *tokens), (tokens, argv)
-    for token in absent:
-        assert token not in argv, (token, argv)
+        for tokens in present:
+            assert _has_tokens(argv, *tokens), (case.id, tokens, argv)
+        for token in absent:
+            assert token not in argv, (case.id, token, argv)
+        parsed = configure.parse_configure_argv(argv)
+        _profile, yosys, openroad = configure.resolve_ppa_settings(parsed)
+        expected = {"yosys": dataclasses.asdict(yosys)}
+        if SynthMode(parsed.synth_mode).runs_openroad:
+            expected["openroad"] = dataclasses.asdict(openroad)
+        assert unit["recipe"]["effective_ppa_settings"] == expected, case.id
 
 
 @pytest.mark.parametrize(
@@ -1109,7 +1115,7 @@ def test_configure_argv_carries_the_recipe(
         pytest.param(
             'synth_mode = "physical"\n'
             "[flows.synth.advanced_settings_openroad]\nutilization_pct = 150\n",
-            r"ERROR: utilization_pct must be between 0 and 100",
+            r"candidate lite: utilization_pct must be between 0 and 100",
             id="out-of-range-utilization",
         ),
     ],
@@ -1124,8 +1130,6 @@ def test_invalid_recipe_fails_planning(synth_cli: SynthCli, config: str, message
 
 
 def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli) -> None:
-    from booley.flows.synth.backends import configure
-
     default_recipe = synth_cli.plan()["work_units"][0]["recipe"]
     synth_cli.config("timing_report_paths = 3\n")
     synth_cli.resolution.resolve = _resolving(_fake_synth_resolved)
@@ -1142,7 +1146,7 @@ def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli)
     # reads the working directory's config); no public name reaches that step
     # without also discovering the root.
     args = configure.parse_configure_argv(argv)
-    _profile, _yosys, openroad = configure._resolve_ppa_settings(args)
+    _profile, _yosys, openroad = configure.resolve_ppa_settings(args)
     assert configure._resolve_syn_timing(args, openroad).report_paths == 3
 
 
@@ -1555,6 +1559,39 @@ def test_real_fusesoc_synth_setup(synth_cli: SynthCli, tmp_path: Path) -> None:
     assert str(work_dir) not in edam.read_text(encoding="utf-8")
 
 
+def test_failed_fusesoc_setup_is_recorded_as_synth_prepare(
+    synth_cli: SynthCli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Synthesis Flow's own setup runner measures the setup, whatever its outcome."""
+    from booley.runtime import resource_history
+
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE)
+    failing_setup = canned_command(SubprocessResult(returncode=1, stderr="setup broke"))
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = lambda handle, **kwargs: _REAL_RESOLVE_HANDLE(
+        handle, **{**kwargs, "fusesoc_cmd": failing_setup}
+    )
+
+    outcome = synth_cli.run(target="syn")
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "failed (exit 1)" in outcome.report_text
+    assert "setup broke" in outcome.report_text
+    assert synth_cli.commands == []
+    (record,) = resource_history.load_records(tmp_path)
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("synth", "syn", "synth_prepare", "exit_nonzero", 1)
+
+
 @pytest.mark.skipif(
     shutil.which("git") is None or os.name == "nt",
     reason="the baseline worktree runs only on POSIX with git",
@@ -1654,23 +1691,24 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
     ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
 
 
-@pytest.mark.parametrize("mode,schema", [("logical", 4), ("physical", 5)])
-def test_recipe_schema_bumps_without_default_clock(tmp_path: Path, mode, schema):
-    snapshot = synthesis_recipe_snapshot(
-        dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
-        default_recipe_args(),
-        target="lite",
-    )
-    assert snapshot["schema"] == schema
-    assert "default_clock_ps" not in snapshot
+def test_recipe_schema_bumps_without_default_clock(tmp_path: Path):
+    for mode, schema in [("logical", 4), ("physical", 5)]:
+        snapshot = synthesis_recipe_snapshot(
+            dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
+            default_recipe_args(),
+            target="lite",
+        )
+        assert snapshot["schema"] == schema
+        assert "default_clock_ps" not in snapshot
+        assert "ppa_profile_settings" not in snapshot
 
-    previous = {**snapshot, "schema": 3}
-    assert synthesis_recipe_snapshot_fingerprint(previous) != (
-        synthesis_recipe_snapshot_fingerprint(snapshot)
-    )
-    assert synthesis_recipe_changes(previous, snapshot) == [
-        {"path": "schema", "before": 3, "after": schema}
-    ]
+        previous = {**snapshot, "schema": 3}
+        assert synthesis_recipe_snapshot_fingerprint(previous) != (
+            synthesis_recipe_snapshot_fingerprint(snapshot)
+        )
+        assert synthesis_recipe_changes(previous, snapshot) == [
+            {"path": "schema", "before": 3, "after": schema}
+        ]
 
 
 def test_physical_fanout_policy_invalidates_old_recipe(tmp_path):
@@ -1918,16 +1956,35 @@ class TestModeSpecificArea:
             "Chip area for top module '\\top': 500.0\n"
             "STA_CRITICAL_PATH_PS: 1250.0\n"
             "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
         )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
         assert metrics.area_um2 == 640.25
         assert metrics.area_source == "openroad_post_optimization"
+        assert metrics.cells == 112
+        assert metrics.cell_count_source == "openroad_post_optimization"
+        assert metrics.wire_count == 42
 
     def test_logical_uses_yosys_area(self):
-        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        output = (
+            "Number of cells: 100\n"
+            "Chip area for top module '\\top': 500.0\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
+        )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
         assert metrics.area_um2 == 500.0
         assert metrics.area_source == "yosys_mapped"
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
+        assert metrics.wire_count == 42
+
+    def test_physical_without_openroad_count_keeps_labelled_yosys_count(self):
+        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
 
 
 # ===========================================================================
@@ -2374,13 +2431,15 @@ class TestIoBoundCritical:
         assert _is_io_bound_critical(SynthMetrics(wns_ns=-2.0)) is False
         assert _is_io_bound_critical(SynthMetrics(reg2reg_slack_ns=-0.25)) is False
 
-    def test_note_line_names_the_sdc_knob(self):
-        cur = SynthMetrics(wns_ns=-2.0, reg2reg_slack_ns=-0.25)
-        line = AsicSynthesizeFlow._format_io_bound_line("lite", cur)
-        assert "I/O-bound" in line
-        assert "period_ps won't move it" in line
-        assert "sdc" in line
-        assert "-2.000 ns" in line and "-0.250 ns" in line
+    def test_io_bound_note_points_at_target_sdc(self, flow_and_state):
+        flow, _ = flow_and_state
+        cur = SynthMetrics(area_um2=500.0, cells=10, wns_ns=-2.0, reg2reg_slack_ns=-0.25)
+        result = flow._aggregate_results(["lite"], {"lite": cur}, {}, None)
+        note = next(line for line in result.report_text.splitlines() if "I/O-bound" in line)
+        assert "-2.000 ns" in note and "-0.250 ns" in note
+        for text in ("file_type: SDC", "set_input_delay", "set_output_delay", "set_false_path"):
+            assert text in note
+        assert "period_ps" not in note and "[flows.synth.timing]" not in note
 
     def test_report_dict_sets_flag(self):
         cur = SynthMetrics(
@@ -2714,6 +2773,7 @@ class TestSingleConfigRun:
         assert data["area_kge"] == pytest.approx(8.02005)
         assert data["area_um2"] == 6400.0
         assert data["area_source"] == "yosys_mapped"
+        assert data["cell_count_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
         assert "post_opt_area_um2" not in data
         assert data["cell_count"] == 100
@@ -3264,6 +3324,8 @@ class TestFileBasedInterpretation:
         assert "12,345" not in result.report_text
         assert result.exit_code == EXIT_FAILURE
         assert "no metrics" in result.report_text
+        status = result.detail["implementation"]["results"]["lite"]["status"]
+        assert status["failure_reasons"] == ["no metrics"]
 
     def test_error_in_log_despite_exit_0_fails(self, flow_and_state, tmp_path: Path):
         """False-pass guard parity: yosys/ABC can emit ERROR: lines yet exit 0;
@@ -3293,11 +3355,39 @@ class TestFileBasedInterpretation:
         run_log = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
         assert "despite exit 0" in run_log.read_text(encoding="utf-8")
 
-    def test_timing_markers_rederived_from_openroad_log(self, flow_and_state, tmp_path: Path):
+    @staticmethod
+    def _constraint_check_block(scenario: str) -> str:
+        """The block run_openroad.tcl prints: every captured check_setup line
+        carries the prefix so OpenSTA's "Warning:" text is not an EDA warning."""
+        if scenario == "unchecked":
+            return ""
+        check_lines: list[str] = []
+        if scenario == "clock_only":
+            inputs = [f"in{i}" for i in range(10)] + ["data[3]", "end"]
+            endpoints = [f"out{i}" for i in range(13)] + ["r1/D"]
+            check_lines = [
+                "Warning: There are 12 input ports missing set_input_delay.",
+                *(f"  {name}" for name in inputs),
+                "Warning: There is 1 output port missing set_output_delay.",
+                "  y",
+                "Warning: There are 14 unconstrained endpoints.",
+                *(f"  {name}" for name in endpoints),
+            ]
+        return "".join(
+            f"STA_CONSTRAINT_CHECK: {line}\n" for line in ["begin", *check_lines, "end"]
+        )
+
+    @pytest.mark.parametrize("scenario", ["clock_only", "constrained", "unchecked"])
+    def test_timing_markers_rederived_from_openroad_log(
+        self, flow_and_state, tmp_path: Path, scenario: str
+    ):
         """The Python-derived Fmax/critical-path markers (legacy in-process
-        prints) are reconstructed from the STA log file at interpret time."""
+        prints) are reconstructed from the STA log file at interpret time, and
+        the constraint check block becomes a NOTE that never moves the verdict."""
         flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
+
+        check_block = self._constraint_check_block(scenario)
 
         def fake_configure(target, cmd):
             return _stub_plan(tmp_path, target, mode="physical")
@@ -3311,7 +3401,7 @@ class TestFileBasedInterpretation:
             (build_dir / "openroad.log").write_text(
                 "STA_WORST_SLACK_NS: 2.000000\n"
                 "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n"
-                "Design area 7000 u^2 50% utilization.\n",
+                "Design area 7000 u^2 50% utilization.\n" + check_block,
                 encoding="utf-8",
             )
             (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
@@ -3338,6 +3428,48 @@ class TestFileBasedInterpretation:
         assert "2,000 ps" in result.report_text
         assert "500 MHz" in result.report_text
         assert "+2.000 ns" in result.report_text
+        # The check never changes the verdict or exit code (the raw OpenSTA
+        # "Warning:" form would have turned this PASS into WARN).
+        assert "RESULT: PASS" in result.report_text
+        self._assert_constraint_outcome(result, tmp_path, scenario)
+
+    @staticmethod
+    def _assert_constraint_outcome(result, tmp_path: Path, scenario: str) -> None:
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))
+        if scenario == "unchecked":
+            # No block means no check ran (logical mode, or OpenROAD died first):
+            # no key and no NOTE, not zero counts.
+            assert "unconstrained" not in report
+            assert "unconstrained" not in result.detail["lite"]
+            assert "constrained paths" not in result.report_text
+            return
+        detail = report["unconstrained"]
+        assert result.detail["lite"]["unconstrained"] == detail
+        if scenario == "constrained":
+            assert "timing covers only constrained paths" not in result.report_text
+            assert detail == {
+                key: {"count": 0, "sample": []}
+                for key in ("endpoints", "inputs_without_delay", "outputs_without_delay")
+            }
+            return
+        note = next(
+            line for line in result.report_text.splitlines() if "constrained paths" in line
+        )
+        assert "NOTE" in note
+        assert "14 unconstrained endpoints" in note
+        assert "12 inputs without set_input_delay (in0, in1, in2, +9 more)" in note
+        assert "1 output without set_output_delay (y)" in note
+        assert detail["inputs_without_delay"] == {
+            "count": 12,
+            "sample": [f"in{i}" for i in range(10)],
+        }
+        assert detail["endpoints"]["count"] == 14
+        assert len(detail["endpoints"]["sample"]) == 10
+        assert detail["outputs_without_delay"] == {"count": 1, "sample": ["y"]}
+        # The bounded sample drops names the run log keeps.
+        run_log = (tmp_path / report["artifacts"]["log"]).read_text(encoding="utf-8")
+        assert "data[3]" in run_log
+        assert "r1/D" in run_log
 
     def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
         """A clock label without numeric setup/hold evidence cannot complete PPA."""
@@ -4931,6 +5063,7 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
                 "STA_WORST_SLACK_NS: 0.000000\n"
                 "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\n"
                 "Design area 63 u^2 50% utilization.\n"
+                "OPENROAD_INSTANCE_COUNT: 23\n"
             ),
             "artifacts": {
                 "yosys.log": yosys,
@@ -4953,6 +5086,8 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
     if expected:
         assert report["timing_complete"] is True
         assert report["ppa_complete"] is True
+        assert report["cell_count"] == 23
+        assert report["cell_count_source"] == "openroad_post_optimization"
 
 
 @pytest.mark.parametrize("expected", [8, 9])
@@ -4973,6 +5108,14 @@ def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_pat
         "actual=8, expected=7, excess=1"
         in report["implementation"]["status"]["diagnostic_excerpt"]
     )
+    reason = "8 latches (actual=8, expected=7, excess=1; types: $_DLATCH_P_=8)"
+    assert report["implementation"]["status"]["failure_reasons"] == [reason]
+    job = present_job_report(
+        {"detail": result.detail}, endpoint="synth", exit_code=result.exit_code, argv=[]
+    )
+    assert ("Failure reason", reason) in [
+        (row.label.strip(), row.value) for row in job.result_rows
+    ]
 
 
 def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_path):
@@ -5117,6 +5260,7 @@ def test_design_failure_reason_is_the_tool_error_line(
     # The status cell and RESULT line show the same reason, not the header.
     assert f"FAIL ({diagnostic})" in result.report_text
     assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
+    assert report["implementation"]["status"]["failure_reasons"] == [diagnostic]
 
 
 @pytest.mark.parametrize(
@@ -5165,6 +5309,7 @@ def test_nonlatch_generic_master_failure_does_not_manufacture_latch_evidence(
     assert report["implementation"]["conditions"]["has_critical"] is False
     assert "unmapped generic cell" in result.report_text
     assert "latches" not in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert report["implementation"]["status"]["failure_reasons"] == ["unmapped generic cell"]
 
 
 @pytest.mark.parametrize("stale", [False, True])
@@ -5188,11 +5333,15 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
 
 
 @pytest.mark.parametrize(
-    ("case", "termination"),
+    ("case", "termination", "reasons"),
     [
-        ({"process": {"returncode": 2, "timed_out": True}}, "timeout"),
-        ({"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}}, "oom"),
-        ({"process": {"returncode": 137}}, "resource_killed"),
+        ({"process": {"returncode": 2, "timed_out": True}}, "timeout", ["timeout"]),
+        (
+            {"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}},
+            "oom",
+            ["OOM"],
+        ),
+        ({"process": {"returncode": 137}}, "resource_killed", ["resource-killed"]),
         (
             {
                 "process": {
@@ -5201,6 +5350,7 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
                 }
             },
             "infrastructure_error",
+            [],
         ),
         (
             {
@@ -5210,20 +5360,23 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
                 }
             },
             "infrastructure_error",
+            [],
         ),
         (
             {"mode": "logical", "missing_netlist": True, "process": {"returncode": 0}},
             "infrastructure_error",
+            [],
         ),
     ],
 )
 def test_latch_and_fresh_ord_do_not_override_stronger_execution_failure(
-    flow_and_state, tmp_path, case, termination
+    flow_and_state, tmp_path, case, termination, reasons
 ):
     result, report = _run_latch_case(
         flow_and_state, tmp_path, {"mode": "physical", "openroad": _LATCH_ORD, **case}
     )
     assert report["termination"] == termination
+    assert report["implementation"]["status"]["failure_reasons"] == reasons
     assert report["implementation"]["conditions"]["unexpected_latches"] == 8
     assert result.exit_code == EXIT_ERROR
     assert report["returncode"] == 2
@@ -6297,6 +6450,9 @@ def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):
     assert conditions["expected_comb_loops"] == 0
     assert conditions["unexpected_comb_loops"] == 1
     assert "actual=1, expected=0, excess=1" in result.report_text
+    assert report["implementation"]["status"]["failure_reasons"] == [
+        "1 comb loops (actual=1, expected=0, excess=1)"
+    ]
 
 
 @pytest.mark.parametrize("case", ["plain", "baseline"])
