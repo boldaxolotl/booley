@@ -169,6 +169,20 @@ def judged_commands(*, joinable: bool = False) -> Iterator[JudgedCommands]:
 
 
 @contextlib.contextmanager
+def unjudged_commands() -> Iterator[None]:
+    """Record the commands run inside the block at once, whatever judgment encloses it.
+
+    For a command an enclosing ``judged_commands`` block does not cover, such as
+    a setup that runs inside the Target's judged Vivado run.
+    """
+    token = _judged.set(None)
+    try:
+        yield
+    finally:
+        _judged.reset(token)
+
+
+@contextlib.contextmanager
 def judged_commands_failing_on_error(*, joinable: bool = False) -> Iterator[JudgedCommands]:
     """Like :func:`judged_commands`, but a block that raises judges its commands failed.
 

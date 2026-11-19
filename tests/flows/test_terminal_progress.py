@@ -181,7 +181,7 @@ def lint_pair(tmp_path, monkeypatch):
         )
     )
 
-    def resolve(target, *, build_root, library_plan=None):
+    def resolve(target, *, build_root, library_plan=None, **_kwargs):
         return fusesoc_registry.ResolvedTarget(
             name=target.selector,
             vlnv=target.vlnv,

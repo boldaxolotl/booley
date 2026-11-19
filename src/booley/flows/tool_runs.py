@@ -1,9 +1,9 @@
-"""The one place the Mutation Flow starts a tool.
+"""The one place a Flow starts a tool outside ``FlowMechanics._execute_local``.
 
 Each FuseSoC setup, build and simulation runs as
 ``subprocess.run(capture_output=True, text=True)`` would, measured by the
 shared Job resource monitor and recorded in the Job resource history under the
-Mutation Flow's name. A run the OOM killer took is named as such, with whether
+calling Flow's name. A run the OOM killer took is named as such, with whether
 the host or the Sandbox's own limit ran out (ADR 0087); ``CampaignClaims``
 decides whether it runs again.
 """
@@ -21,7 +21,6 @@ from typing import Literal
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.job_resources import JobResourceMonitor, MeasuredPopen, ResourceLabel
-from booley.flows.sim.build import SetupRunner
 
 #: Which out-of-memory kill took a process of a run's own tree: at the Sandbox's
 #: own memory limit, or the host's while the Sandbox stayed below it.
@@ -67,6 +66,7 @@ def _communicate(
 def run_tool(
     cmd: Sequence[str],
     *,
+    flow: str,
     label: ResourceLabel,
     cwd: str | os.PathLike[str],
     env: Mapping[str, str],
@@ -83,9 +83,8 @@ def run_tool(
     monitor = JobResourceMonitor()
     process: MeasuredPopen | None = None
     started = time.monotonic()
-    hard_timeout = False
+    hard_timeout = settled = False
     stdout = stderr = ""
-    settled = False
     result: SubprocessResult | None = None
     try:
         with MeasuredPopen(
@@ -117,7 +116,7 @@ def run_tool(
                 duration_s=time.monotonic() - started,
             )
             _blame_oom_kill(measurement, result)
-            job_resources.record_command("mutation", label, (), measurement, result)
+            job_resources.record_command(flow, label, (), measurement, result)
     assert result is not None  # a spawn failure raised above; a hard timeout re-raised
     return ToolRun(list(cmd), result.returncode, stdout, stderr, _oom_kill(result))
 
@@ -139,8 +138,10 @@ def _oom_kill(result: SubprocessResult) -> OomKill | None:
     return "host" if result.host_oom_kill else "sandbox_limit"
 
 
-def setup_runner(target: str) -> SetupRunner:
-    """A FuseSoC setup runner that records *target*'s ``sim_prepare`` run."""
+def setup_runner(
+    flow: str, target: str, phase: str
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """A FuseSoC setup runner that records *target*'s *phase* run under *flow*."""
 
     def run(
         cmd: Sequence[str],
@@ -151,7 +152,8 @@ def setup_runner(target: str) -> SetupRunner:
     ) -> subprocess.CompletedProcess[str]:
         return run_tool(
             cmd,
-            label=ResourceLabel(target, "sim_prepare"),
+            flow=flow,
+            label=ResourceLabel(target, phase),
             cwd=cwd,
             env=os.environ if env is None else env,
         )
