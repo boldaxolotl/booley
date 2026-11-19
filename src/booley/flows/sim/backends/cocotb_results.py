@@ -46,7 +46,7 @@ import re
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final, Literal, cast
 from xml.etree import ElementTree
 
@@ -107,16 +107,37 @@ _RENDERED_ID_RULE = (
     'such as "name/param=value".'
 )
 
-# cocotb's own console cry when it cannot import the test module, e.g.
+# cocotb 1.x's own console cry when it cannot import the test module, e.g.
 #     0.00ns CRITICAL cocotb.regression  Failed to import module test_eth_mac:
 #                                        No module named 'cocotb_test'
 # It writes NO results.xml in this case and still exits 0, so every downstream
 # signal Booley has says only "file missing" — the true cause exists on the
 # console and nowhere else. Scanning for it turns a log-diving exercise into a
-# one-line diagnosis (F-6, taxi port).
+# one-line diagnosis (F-6, taxi port). cocotb 2.x prints no such line: see
+# _discovery_import_failure.
 _IMPORT_FAILURE_RE = re.compile(
     r"Failed to import module\s+(?P<module>[\w.]+)\s*:\s*(?P<error>.+?)\s*$",
     re.MULTILINE,
+)
+
+# cocotb 2.x lets the exception out of its test discovery, so the console holds a
+# plain traceback and no results.xml (captured: tests/fixtures/cocotb_results/2.1.0/
+# import-missing.log):
+#     File ".../cocotb/regression.py", line 255, in discover_tests
+#       mod = import_module(module_name)
+#     ...
+#     File "/capture/import_missing_cases.py", line 4, in <module>
+#       import qa_no_such_module_xyz
+#   ModuleNotFoundError: No module named 'qa_no_such_module_xyz'
+# The discovery frame says the traceback is cocotb importing the test module; the
+# first `<module>` frame after it is the test module (importlib's frames are never
+# `in <module>`); the exception line starts at column 0.
+_DISCOVERY_FRAME_RE = re.compile(
+    r'^\s*File "[^"]*cocotb/regression\.py", line \d+, in discover_tests$', re.MULTILINE
+)
+_MODULE_FRAME_RE = re.compile(r'^\s*File "(?P<path>[^"]+)", line \d+, in <module>$', re.MULTILINE)
+_IMPORT_ERROR_LINE_RE = re.compile(
+    r"^(?P<error>(?:ModuleNotFoundError|ImportError)(?:: .+?)?)\s*$", re.MULTILINE
 )
 
 # The specific import error worth a remedy, rather than just an echo: a
@@ -128,19 +149,42 @@ _MISSING_MODULE_RE = re.compile(r"No module named ['\"](?P<name>[\w.]+)['\"]")
 IMPORT_FAILURE_PREFIX = "cocotb could not import the test module"
 
 
+def _discovery_import_failure(output: str) -> tuple[str, str] | None:
+    """The ``(module, error)`` of a cocotb 2.x discovery import traceback, or ``None``.
+
+    *module* is ``""`` when the test module itself was not found: there is then no
+    ``<module>`` frame of it in the traceback.
+    """
+    anchors = list(_DISCOVERY_FRAME_RE.finditer(output))
+    if not anchors:
+        return None
+    tail_start = anchors[-1].end()
+    last = _IMPORT_ERROR_LINE_RE.search(output, tail_start)
+    if last is None:
+        return None
+    frame = _MODULE_FRAME_RE.search(output, tail_start, last.start())
+    module = PurePosixPath(frame.group("path")).stem if frame else ""
+    return module, last.group("error")
+
+
 def find_import_failure(output: str) -> str:
     """Explain a cocotb test-module import failure found in *output*, or ``""``.
 
+    Understands cocotb 1.x's ``Failed to import module`` line and cocotb 2.x's
+    discovery traceback ending in ``ImportError`` or ``ModuleNotFoundError``.
     Returned as a ready-to-show ``detail`` string: the caller substitutes it for
     the parser's "results.xml not found", which is a true statement about a
     symptom and a useless one about the cause.
     """
     m = _IMPORT_FAILURE_RE.search(output)
-    if not m:
+    found = (
+        (m.group("module"), m.group("error").strip()) if m else _discovery_import_failure(output)
+    )
+    if found is None:
         return ""
-    module = m.group("module")
-    error = m.group("error").strip()
-    detail = f"{IMPORT_FAILURE_PREFIX} '{module}': {error}"
+    module, error = found
+    named = f" '{module}'" if module else ""
+    detail = f"{IMPORT_FAILURE_PREFIX}{named}: {error}"
 
     missing = _MISSING_MODULE_RE.search(error)
     if missing:

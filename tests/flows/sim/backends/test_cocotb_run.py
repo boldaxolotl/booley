@@ -407,21 +407,44 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
     assert seen["tests"] == []
 
 
-def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path, fake_launch, capsys):
-    """F-25: a frozen run loop names itself instead of 'results.xml not found'.
-
-    The guard killed the sim before cocotb wrote any XML, so the parser can only
-    report the symptom. The abort reason in the captured output is the cause.
-    """
+def _stall_lines() -> list[str]:
     from booley.flows.sim.run_guard import format_sim_time_stall
 
-    fake_launch.output = [
+    return [
         "     0.00ns INFO     cocotb.regression   running test_ravenoc\n",
         f"ERROR: {format_sim_time_stall(180)}\n",
     ]
+
+
+def _import_2x_lines() -> list[str]:
+    log = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/import-missing.log"
+    return log.read_text(encoding="utf-8").splitlines(keepends=True)
+
+
+@pytest.mark.parametrize(
+    ("lines", "fragment"),
+    [
+        pytest.param(_stall_lines, "run-loop version mismatch", id="stall"),
+        pytest.param(
+            _import_2x_lines,
+            "could not import the test module 'import_missing_cases'",
+            id="import-2x",
+        ),
+    ],
+)
+def test_a_diagnosed_cause_replaces_the_useless_missing_xml_detail(
+    tmp_path, fake_launch, capsys, lines, fragment
+):
+    """F-25: a frozen run loop, or a cocotb 2.x import failure, names itself instead
+    of 'results.xml not found'.
+
+    No results.xml was written, so the parser can only report the symptom. The
+    cause in the captured output is what the verdict line must quote.
+    """
+    fake_launch.output = lines()
     assert _run(tmp_path, tests=["test_ravenoc"]) == 1
     out = capsys.readouterr().out
-    assert "run-loop version mismatch" in out
+    assert fragment in out
     # The verdict line quotes the promoted detail, not "results.xml not found".
     assert "results.xml not found" not in out.split("INCONCLUSIVE")[-1]
 
