@@ -251,7 +251,7 @@ class TestWriteScript:
         assert text.count("break") == 0
         # The overall worst path's clocks are read once, before the final report frees the paths.
         assert text.count("STA_WORST_CLOCKS") == 1
-        assert text.index("STA_WORST_CLOCKS") < text.index("report_checks")
+        assert text.index("STA_WORST_CLOCKS") < text.index("overall.rpt}")
         assert "STA_CLOCK_PERIOD_NS" not in text
         perclock = self._lines(text, "-to $_clk")
         assert perclock
