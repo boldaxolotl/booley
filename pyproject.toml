@@ -72,6 +72,10 @@ test = [
     "hypothesis>=6.170.14",
     "pytest==9.2.0",
     "pytest-asyncio==1.4.0",
+    # official_build (tests/harness/test_image_build_contracts.py) builds with
+    # --no-isolation, so the test environment carries the build backend; keep
+    # the floor equal to [build-system] requires.
+    "setuptools>=84.0.0",
     # Run independent tests concurrently in CI. Linux keeps module/class
     # affinity; Windows uses work stealing to balance slower real-Git tests.
     # tests/conftest.py gives every worker its own temp root for
