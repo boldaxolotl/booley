@@ -197,11 +197,11 @@ SYNTH_ENDS = [("a", phase, "") for phase in ("sv2v", "yosys", "openroad", "synth
 @pytest.mark.parametrize(
     ("role", "reported", "failure"),
     [
-        (None, True, None),
-        ("candidate", True, None),
-        ("baseline", False, "raises"),
-        (None, True, "raises"),
-        (None, True, "lease"),
+        pytest.param(None, True, None, id="default"),
+        pytest.param("candidate", True, None, id="candidate"),
+        pytest.param("baseline", False, "raises", id="baseline"),
+        pytest.param(None, True, "raises", id="raises"),
+        pytest.param(None, True, "lease", id="lease_fails"),
     ],
 )
 def test_synth_target_end_is_reported_unless_baseline(
@@ -270,14 +270,18 @@ targets:
 @pytest.mark.parametrize(
     ("selector", "argv", "phases"),
     [
-        ("physical", [], ("sv2v", "yosys", "openroad")),
-        ("logical", [], ("sv2v", "yosys")),
-        ("slang", [], ("yosys", "openroad")),
-        ("physical", ["--frontend", "slang"], ("yosys", "openroad")),
+        pytest.param("physical", [], ("sv2v", "yosys", "openroad"), id="physical"),
+        pytest.param("logical", [], ("sv2v", "yosys"), id="logical"),
+        pytest.param("slang", [], ("yosys", "openroad"), id="slang"),
+        pytest.param(
+            "physical", ["--frontend", "slang"], ("yosys", "openroad"), id="frontend_override"
+        ),
         # An invalid mode plans the whole command; the run reports the error.
-        ("broken", [], ()),
+        pytest.param("broken", [], (), id="invalid_mode"),
         # The baseline's mode and frontend are unknown until it runs: plan every tool.
-        ("logical", ["--baseline", "HEAD"], ("sv2v", "yosys", "openroad")),
+        pytest.param(
+            "logical", ["--baseline", "HEAD"], ("sv2v", "yosys", "openroad"), id="baseline"
+        ),
     ],
 )
 def test_synth_job_requests_plan_the_tools_the_target_runs(

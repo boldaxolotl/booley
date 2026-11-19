@@ -764,9 +764,16 @@ def _recorded_keys(
     ("flow_class", "method", "phase", "flow_name", "split"),
     [
         # Private seam: each method is the Flow's run step; see _label_seen.
-        (LintFlow, "_run_linter", "lint", "lint", None),
-        (FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None),
-        (AsicSynthesizeFlow, "_run_synth_make", "synth", "synth", job_resources.SYNTH_PHASES),
+        pytest.param(LintFlow, "_run_linter", "lint", "lint", None, id="lint"),
+        pytest.param(FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None, id="fpga"),
+        pytest.param(
+            AsicSynthesizeFlow,
+            "_run_synth_make",
+            "synth",
+            "synth",
+            job_resources.SYNTH_PHASES,
+            id="synth",
+        ),
     ],
 )
 def test_flows_label_their_commands_and_requests_map_to_their_keys(
