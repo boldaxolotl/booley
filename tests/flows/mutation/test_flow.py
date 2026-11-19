@@ -2763,10 +2763,16 @@ endmodule
 """
 
 
-@pytest.mark.parametrize("inconclusive", [False, True], ids=["scored", "inconclusive"])
 def test_verilator_duplicate_mutant_is_replaced_by_the_next_candidate(
-    tmp_path: Path, monkeypatch, inconclusive: bool
+    tmp_path: Path, monkeypatch
 ) -> None:
+    for inconclusive in (False, True):
+        root = tmp_path / ("inconclusive" if inconclusive else "scored")
+        root.mkdir()
+        _assert_duplicate_is_replaced(root, monkeypatch, inconclusive=inconclusive)
+
+
+def _assert_duplicate_is_replaced(tmp_path: Path, monkeypatch, *, inconclusive: bool) -> None:
     _write_scope(tmp_path, _FOLDING_RTL)
     ranked = _candidates(tmp_path)
     # The pick order, pinned: a generator change fails here, not in the walk below.
