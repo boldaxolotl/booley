@@ -492,7 +492,7 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
             f"{{ echo {marker}; exit 2; }} || true"
         )
     lines += [
-        f'\tTMPDIR="$({_YOSYS_TMPDIR})" yosys -s synth.ys > yosys.log 2>&1 {_fail_tail('yosys.log')}",
+        f'\tTMPDIR="$({_YOSYS_TMPDIR})" yosys -s synth.ys > yosys.log 2>&1 {_fail_tail("yosys.log")}',
         _required_output(token, "yosys", f"stat_{spec.design_name}.txt"),
         _required_output(token, "yosys", f"premap_check_{spec.design_name}.txt"),
         _required_output(token, "yosys", f"check_{spec.design_name}.txt"),

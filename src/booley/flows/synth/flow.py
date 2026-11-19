@@ -1628,12 +1628,14 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
     def _run_synth_make(self, target: str, plan: Any, source_bytes: int | None) -> _SynthRun:
         """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
-        with resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes):
-            with yosys_tmpdir() as yosys_tmp:
-                if not runs_openroad(plan.spec.timing.mode):
-                    cmd = [*self._synth_boundary_cmd(plan), yosys_tmpdir_assignment(yosys_tmp)]
-                    return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))
-                return self._run_physical_stages(target, plan, yosys_tmp)
+        with (
+            resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes),
+            yosys_tmpdir() as yosys_tmp,
+        ):
+            if not runs_openroad(plan.spec.timing.mode):
+                cmd = [*self._synth_boundary_cmd(plan), yosys_tmpdir_assignment(yosys_tmp)]
+                return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))
+            return self._run_physical_stages(target, plan, yosys_tmp)
 
     def _openroad_slot(self, target: str) -> openroad_reuse.ReuseSlot:
         """The Target's reuse slot, beside its work root (which every run wipes)."""

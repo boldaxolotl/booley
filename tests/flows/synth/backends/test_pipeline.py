@@ -384,6 +384,44 @@ class TestGeneratedMakefile:
         assert "stage=sv2v" in result.stdout
         assert not (tmp_path / "yosys-ran").exists()
 
+    @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
+    @pytest.mark.parametrize("own_tmpdir", [True, False])
+    def test_only_yosys_runs_under_the_yosys_tmpdir(
+        self, tmp_path: Path, own_tmpdir: bool
+    ) -> None:
+        liberty = tmp_path / "cells.lib"
+        liberty.write_text("library (x) {}\n", encoding="utf-8")
+        spec = dataclasses.replace(_spec(tmp_path, mode="logical"), liberty=liberty)
+        plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "sv2v").write_text(
+            f'#!/bin/sh\necho "module m; endmodule" > sv2v_converted.v\n'
+            f'echo "$TMPDIR" > {tmp_path / "sv2v-tmp"}\n',
+            encoding="utf-8",
+        )
+        (fake_bin / "yosys").write_text(
+            f'#!/bin/sh\necho "$TMPDIR" > {tmp_path / "yosys-tmp"}\nexit 1\n', encoding="utf-8"
+        )
+        (fake_bin / "sv2v").chmod(0o755)
+        (fake_bin / "yosys").chmod(0o755)
+        job_tmp = tmp_path / "job-tmp"
+        job_tmp.mkdir()
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "TMPDIR": str(job_tmp)}
+
+        with syn_make.yosys_tmpdir() as own:
+            assignment = [syn_make.yosys_tmpdir_assignment(own)] if own_tmpdir else []
+            subprocess.run(
+                ["make", "-C", str(plan.build_dir), *assignment],
+                env=env,
+                capture_output=True,
+                check=False,
+            )
+
+        assert (tmp_path / "sv2v-tmp").read_text(encoding="utf-8").strip() == str(job_tmp)
+        expected = str(own) if own_tmpdir else str(job_tmp)
+        assert (tmp_path / "yosys-tmp").read_text(encoding="utf-8").strip() == expected
+
     def test_missing_liberty_is_a_warning_not_an_error(self, tmp_path: Path):
         import dataclasses
 
