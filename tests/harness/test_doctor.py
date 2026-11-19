@@ -2548,7 +2548,7 @@ def test_doctor_reports_sandbox_image_provenance(kwargs, reason, outcome, tmp_pa
     if reason:
         assert reason in found[outcome][0]
     if outcome == "warn":
-        assert "Recreate the Sandbox: on the host run `booley init`" in found["warn"][0]
+        assert _REBUILD in found["warn"][0]
 
 
 # ---------------------------------------------------------------------------
