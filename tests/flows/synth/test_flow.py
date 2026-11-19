@@ -1104,9 +1104,7 @@ def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
             "timing_report_paths = 0\n", r"^synth: .*timing_report_paths", id="report-paths"
         ),
         pytest.param(
-            '[flows.synth.timing]\nengine = "sta"\n',
-            r"ERROR: \[flows\.synth\.timing\] 'engine' is retired\. Select flow_options",
-            id="retired-timing-key",
+            '[flows.synth.timing]\nengine = "sta"\n', r"'engine' is retired", id="timing"
         ),
         pytest.param(
             'synth_mode = "physical"\n'

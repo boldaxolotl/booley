@@ -33,6 +33,7 @@ from booley.audit.diagnostic_results import (
 )
 from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import (
     activity_hooks,
@@ -4207,29 +4208,6 @@ def _incomplete(reason):
     return (Severity.FAIL, f"produced incomplete synthesis evidence: {reason}")
 
 
-def _synth_dry_runs_in_process(monkeypatch, project):
-    """Run Doctor's synth dry-run through the real Flow on *project*, not a Sandbox."""
-    from booley.flows.synth.flow import AsicSynthesizeFlow
-
-    real_run = doctor.subprocess.run
-
-    def run(cmd, **kwargs):
-        if "booley.flows.synth" not in cmd or "--dry-run" not in cmd:
-            return real_run(cmd, **kwargs)
-        argv = [
-            str(project) if cmd[i - 1] in ("--work-dir", "--report-dir") else c
-            for i, c in enumerate(cmd)
-        ]
-        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-        out = (
-            AsicSynthesizeFlow().execute_cli(argv[argv.index("booley.flows.synth") + 1 :]).outcome
-        )
-        return subprocess.CompletedProcess(cmd, out.exit_code, "", out.report_text)
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-
-
 @pytest.mark.parametrize(
     ("utilization", "toml", "message"),
     [
@@ -4237,18 +4215,24 @@ def _synth_dry_runs_in_process(monkeypatch, project):
         (50, '[flows.synth.timing]\nengine = "sta"\n', "build input(s): timing"),
     ],
 )
-def test_plain_doctor_fails_synth_configure_errors(
-    tmp_path, monkeypatch, utilization, toml, message
-):
+def test_doctor_fails_synth_configure_errors(tmp_path, monkeypatch, utilization, toml, message):
     options = "tool: yosys, arch: xilinx, synth_mode: physical, booley: {doctor: [synth]}, "
     options += f"advanced_settings_openroad: {{utilization_pct: {utilization}}}"
-    filesets = "  rtl: {files: [rtl/dut.sv]}\n  sdc: {files: [dut.sdc], file_type: SDC}\n"
-    core = _core("synth", _target("synth_dut", "generic", options, "rtl, sdc", "dut"), filesets)
+    sets = "  rtl: {files: [rtl/dut.sv]}\n  sdc: {files: [dut.sdc], file_type: SDC}\n"
+    core = _core("synth", _target("synth_dut", "generic", options, "rtl, sdc", "dut"), sets)
     _core_project(
         tmp_path, monkeypatch, {"unit.core": None, "synth.core": core, "dut.sdc": ""}, toml=toml
     )
-    _synth_dry_runs_in_process(monkeypatch, tmp_path)
+    real_run = doctor.subprocess.run
 
+    def run(cmd, **kwargs):
+        if "booley.flows.synth" not in cmd or "--dry-run" not in cmd:
+            return real_run(cmd, **kwargs)
+        a = [str(tmp_path) if "/" in c else c for c in cmd]
+        out = AsicSynthesizeFlow().execute_cli(a[a.index("booley.flows.synth") + 1 :]).outcome
+        return subprocess.CompletedProcess(cmd, out.exit_code, "", out.report_text)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
     assert _rows(_doctor_run(tmp_path), Severity.FAIL, message)
 
 
