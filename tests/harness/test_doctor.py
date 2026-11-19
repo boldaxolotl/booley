@@ -2525,19 +2525,18 @@ _PROVENANCE_ROWS = {
 
 
 def _provenance_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, docker: FakeDocker, *, pins: bool = True
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, docker: FakeDocker
 ) -> Path:
     """Set up a Project whose Doctor run asks the real lifecycle CHECK over *docker*."""
     booley_dir = _write_project(tmp_path)
-    if pins:
-        toml = booley_dir / "booley.toml"
-        toml.write_text(
-            toml.read_text(encoding="utf-8").replace(
-                "[sandbox]\n", '[sandbox]\npip_requirements = ["a.txt"]\n'
-            ),
-            encoding="utf-8",
-        )
-        (tmp_path / "a.txt").write_text("scapy==2.6.1\n", encoding="utf-8")
+    toml = booley_dir / "booley.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            "[sandbox]\n", '[sandbox]\npip_requirements = ["a.txt"]\n'
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "a.txt").write_text("scapy==2.6.1\n", encoding="utf-8")
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(harness_lifecycle, "reconcile_planned", _RECONCILE_PLANNED)
     _wire(monkeypatch, docker)
@@ -2546,6 +2545,8 @@ def _provenance_project(
     monkeypatch.setattr(
         lifecycle.project_image, "project_data_alias_capable", lambda _image: False
     )
+    # The remedy wording depends on the attachment and ownership, which a tmp
+    # Project has no container or marker to derive.
     monkeypatch.setattr(
         doctor.session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE
     )
@@ -2553,16 +2554,22 @@ def _provenance_project(
     return booley_dir
 
 
+def _apply_settings(root: Path, docker: FakeDocker, builder: TransactionBuilder) -> None:
+    """Build and adopt the Project's Sandbox Image, as applying the settings does."""
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=builder)
+    lifecycle.commit(prepared, docker=docker)
+
+
 @pytest.mark.parametrize("change", _PROVENANCE_ROWS)
 def test_doctor_reports_sandbox_image_provenance(change, tmp_path, tmp_path_factory, monkeypatch):
     docker = FakeDocker({})
     _provenance_project(tmp_path, monkeypatch, docker)
+
     builder = TransactionBuilder(docker)
 
     def apply(root: Path) -> None:
-        scope = lifecycle.ProjectImageScope(root)
-        planned = lifecycle.plan(scope, docker=docker)
-        lifecycle.commit(lifecycle.prepare(planned, docker=docker, builder=builder), docker=docker)
+        _apply_settings(root, docker, builder)
 
     def warned() -> list[str]:
         return _messages(_doctor_run(tmp_path), Severity.WARN, check_id="sandbox.image-stale")
@@ -2615,7 +2622,10 @@ class _UnreachableDocker(FakeDocker):
         raise lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
 
 
-@pytest.mark.parametrize("case", ["no-docker", "lifecycle-error", "unreadable-input"])
+@pytest.mark.parametrize(
+    "case",
+    ["no-docker", "lifecycle-error", "unreadable-input", "undecodable-input", "adoption-lookup"],
+)
 def test_doctor_never_passes_unchecked_image_provenance(case, tmp_path, monkeypatch):
     docker = _UnreachableDocker({}) if case == "lifecycle-error" else FakeDocker({})
     _provenance_project(tmp_path, monkeypatch, docker)
@@ -2625,6 +2635,15 @@ def test_doctor_never_passes_unchecked_image_provenance(case, tmp_path, monkeypa
             "inspect_host",
             lambda: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
         )
+    if case == "undecodable-input":
+        (tmp_path / "a.txt").write_bytes(b"\xff\xfe not utf-8\n")
+    if case == "adoption-lookup":
+        _apply_settings(tmp_path, docker, TransactionBuilder(docker))
+
+        def refuse(_image: str) -> str:
+            raise doctor.idk.ImageInspectError("docker inspect failed")
+
+        monkeypatch.setattr(doctor.idk, "image_id", refuse)
     if case == "unreadable-input":
         docker_dir = tmp_path / ".booley" / "docker"
         docker_dir.mkdir()
@@ -2639,6 +2658,8 @@ def test_doctor_never_passes_unchecked_image_provenance(case, tmp_path, monkeypa
         "no-docker": None,
         "lifecycle-error": "Cannot connect to the Docker daemon",
         "unreadable-input": "could not inspect provenance input",
+        "undecodable-input": "codec can't decode",
+        "adoption-lookup": "docker inspect failed",
     }[case]
     if expected:
         (skip,) = skips

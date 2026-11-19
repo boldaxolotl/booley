@@ -2336,7 +2336,13 @@ def _check_sandbox_image_provenance(
         unadopted = result.status is ImageLifecycleStatus.CURRENT and (
             idk.image_id(result.selected_reference) != result.selected_id
         )
-    except (ImageLifecycleError, ImageProvenanceError, idk.ImageInspectError) as exc:
+    except (
+        ImageLifecycleError,
+        ImageProvenanceError,
+        idk.ImageInspectError,
+        OSError,
+        ValueError,
+    ) as exc:
         _skip(f"Sandbox Image provenance check could not run: {exc}")
         return
     if result.status is ImageLifecycleStatus.STALE or unadopted:
