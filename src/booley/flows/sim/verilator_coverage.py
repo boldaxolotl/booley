@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Literal, Protocol
 
 from booley.core.boundary import as_positive_int
+from booley.flows.job_resources import judged_commands_failing_on_error
 from booley.flows.test_runs import TestRun
 
 from .backends.shared import RunTerminationKind, SimulationFailureKind
@@ -1556,7 +1557,10 @@ def _finish_collection(request, execution, build, collected) -> CoverageCollecti
             merge=NativeMergeEvidence("not_run"),
             compatibility=compatibility,
         )
-    return _merge_collection(request, execution, build, collected)
+    with judged_commands_failing_on_error() as commands:
+        result = _merge_collection(request, execution, build, collected)
+        commands.judge(result.merge.status == "equivalent")
+    return result
 
 
 def _infrastructure_failure(
