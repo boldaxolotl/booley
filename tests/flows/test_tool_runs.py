@@ -14,6 +14,7 @@ from booley.flows.job_resources import JobResourceMonitor, ResourceLabel
 from booley.flows.tool_runs import run_tool
 from booley.runtime import resource_history
 from tests.canned_process_support import canned_command
+from tests.oom_events_support import rising_oom_events
 from tests.time_budget import hang_guard_s, scaled
 
 _LABEL = ResourceLabel("default", "sim_build")
@@ -92,3 +93,27 @@ def test_a_monitor_that_cannot_start_kills_the_tool_and_records_nothing(
         run_tool(sleeper, flow="mutation", label=_LABEL, cwd=tmp_path, env=os.environ)
 
     assert resource_history.load_records(tmp_path) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGKILL is POSIX")
+@pytest.mark.parametrize(
+    ("limit_reached", "kill", "outcome"),
+    [(True, "sandbox_limit", "oom_kill"), (False, "host", "host_oom_kill")],
+)
+def test_a_tool_the_oom_killer_took_names_which_kill_it_was(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_reached: bool,
+    kill: str,
+    outcome: str,
+) -> None:
+    rising_oom_events(monkeypatch, limit_reached=limit_reached)
+    killed = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
+
+    done = run_tool(
+        killed, flow="mutation", label=_LABEL, cwd=tmp_path, env=os.environ, timeout=hang_guard_s()
+    )
+
+    assert done.oom_kill == kill
+    [record] = resource_history.load_records(tmp_path)
+    assert record["outcome"] == outcome
