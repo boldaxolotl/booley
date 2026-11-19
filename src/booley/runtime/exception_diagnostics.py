@@ -5,11 +5,14 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import traceback
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
+
+from booley.runtime.filesystem_utils import RemovedDirectoryError, make_directories
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,18 @@ def _atomic_write_text(path: Path, content: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _bounded_traceback(exc: Exception) -> str:
+    diagnostic = "".join(traceback.format_exception(exc))
+    if len(diagnostic) > _MAX_DIAGNOSTIC_CHARS:
+        diagnostic = diagnostic[:_MAX_DIAGNOSTIC_CHARS] + "\n[traceback truncated]\n"
+    return diagnostic
+
+
+def print_exception_diagnostic(exc: Exception) -> None:
+    """Print the bounded traceback to stderr, where no file may be written."""
+    print(_bounded_traceback(exc), file=sys.stderr, flush=True)
+
+
 def write_exception_diagnostic(
     exc: Exception,
     *,
@@ -119,11 +134,12 @@ def write_exception_diagnostic(
             path = report_dir / ".endpoint-errors" / safe_endpoint / f"{diagnostic_id}.log"
         else:
             return None
-        diagnostic = "".join(traceback.format_exception(exc))
-        if len(diagnostic) > _MAX_DIAGNOSTIC_CHARS:
-            diagnostic = diagnostic[:_MAX_DIAGNOSTIC_CHARS] + "\n[traceback truncated]\n"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic = _bounded_traceback(exc)
+        make_directories(path.parent)
         _atomic_write_text(path, diagnostic)
+    except RemovedDirectoryError:
+        print_exception_diagnostic(exc)
+        return None
     except Exception:
         logger.debug("Could not persist exception diagnostic to %s", path, exc_info=True)
         return None

@@ -37,6 +37,7 @@ from booley.runtime.booley_dir import (
     in_checkout_booley_dir,
     resolve_checkout_booley_dir,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.project_gitignore import is_project_transient_path
 from booley.runtime.project_repositories import (
     is_standalone_git_repository,
@@ -114,7 +115,7 @@ def baseline_worktree_path(project_root: Path, ref: str) -> Path:
 
 def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
     worktree = baseline_worktree_path(project_root, ref)
-    worktree.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(worktree.parent)
     _git(project_root, "config", "gc.worktreePruneExpire", "never", timeout=30)
     result = _git(
         project_root,
@@ -401,7 +402,7 @@ def _copy_entry(source: Path, destination: Path) -> None:
     A listed directory is a submodule of a Versioned Booley Directory: its
     checked-out content is copied, without its Git metadata.
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(destination.parent)
     if source.is_symlink():
         destination.symlink_to(source.readlink(), target_is_directory=source.is_dir())
     elif source.is_dir():

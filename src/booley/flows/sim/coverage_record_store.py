@@ -19,6 +19,7 @@ from booley.core.boundary import (
 )
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.booley_dir import crossed_booley_dir_entry
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -218,7 +219,7 @@ def publish_coverage_record(
     """Publish a complete Coverage Record without replacing existing final files."""
     if _contains_link(target_dir):
         raise CoverageRecordStoreError("Coverage Record path contains a link")
-    target_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(target_dir)
     coverage_record_path = target_dir / "coverage.json"
     points_path = target_dir / POINT_STORE_NAME
     if coverage_record_path.exists() or points_path.exists():
