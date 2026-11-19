@@ -48,10 +48,18 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
     return install_agent(monkeypatch)
 
 
+# The scope files this module's reviews name: a review refuses a scope file that does not exist.
+SCOPE_FILES = ("rtl/mod_a.sv", "rtl/a.sv", "tb/mod_a_tb.sv", "tb/t.sv", "tb/test.py")
+SCOPE_FILES += ("tb/main.cpp", "tb/tb.sv")
+
+
 @pytest.fixture(autouse=True)
 def _run_in_tmp_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reviews without ``--work-dir`` resolve against the cwd: keep it hermetic."""
     monkeypatch.chdir(tmp_path)
+    for path in map(tmp_path.joinpath, SCOPE_FILES):
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("// authored\n", encoding="utf-8")
 
 
 @pytest.fixture
@@ -129,10 +137,6 @@ def test_removed_options_exit_2(option: str, value: str) -> None:
 
 
 def test_dry_run_does_not_invoke_agent(agent: ScriptedAgent, tmp_path: Path) -> None:
-    source = tmp_path / "rtl/mod_a.sv"
-    source.parent.mkdir()
-    source.write_text("module mod_a; endmodule\n", encoding="utf-8")
-
     outcome, _ = run_review(["--work-dir", str(tmp_path), *BUGS, "--dry-run"])
 
     assert outcome.exit_code == 0
@@ -754,6 +758,19 @@ def test_argument_validation(case: _Arguments, agent: ScriptedAgent) -> None:
     else:
         assert outcome.exit_code == 2
         assert case.refusal in outcome.report_text
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize("dry_run", [[], ["--dry-run"]], ids=["review", "dry_run"])
+def test_missing_scope_file_is_refused_before_any_search(
+    agent: ScriptedAgent, tmp_path: Path, dry_run: list[str]
+) -> None:
+    bare = tmp_path / "bare"  # no rtl/ or verif/, so no rtl/mod_a.sv
+    bare.mkdir()
+    outcome, _ = run_review(["--work-dir", str(bare), *BUGS, *dry_run])
+
+    assert outcome.exit_code == 2
+    assert "Scope files not found: rtl/mod_a.sv." in outcome.report_text
     assert agent.calls == []
 
 
@@ -1547,8 +1564,6 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     from booley.runtime import runtime_context
     from booley.runtime.booley_dir import reset_cache
 
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl/mod_a.sv").write_text("module mod_a; endmodule\n", encoding="utf-8")
     directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text("[project]\n", encoding="utf-8")

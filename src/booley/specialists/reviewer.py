@@ -959,6 +959,7 @@ class ReviewerSpecialist(Specialist):
     config_aware: bool = False
     accepts_target: bool = False
     non_persisting_dry_run: bool = True
+    announce_success_report: bool = True
     default_max_turns: int = 30
     default_timeout: int = 1800  # 30 min
     min_timeout: int = 600  # 10 min — read-only, faster
@@ -1601,22 +1602,6 @@ object, even after calling the capability.
         """Return the full criterion key: ``{base}_done``."""
         return f"{self._criterion_base_key()}_done"
 
-    def _check_scope_files_exist(self) -> list[str]:
-        """Return list of scope files that don't exist in the work directory.
-
-        Only checks when work_dir looks like a harness worktree (contains
-        rtl/ or verif/ subdirs). Skips in test or human-mode contexts where
-        the work_dir is unrelated to the review scope.
-        """
-        work_dir = self.args.work_dir
-        if work_dir is None:
-            return []
-        base = Path(work_dir)
-        has_source_dirs = (base / "rtl").is_dir() or (base / "verif").is_dir()
-        if not has_source_dirs:
-            return []
-        return [p for p in self._parse_scope() if not (base / p).exists()]
-
     # --- Main execution override ---
 
     def _run(self) -> McpToolResult:
@@ -1741,8 +1726,8 @@ object, even after calling the capability.
         # Scope file existence guard: if review targets don't exist yet
         # (e.g., TB not coded yet), fail early instead of letting the LLM
         # agent silently report "0 issues" on non-existent code.
-        missing = self._check_scope_files_exist()
-        if missing:
+        work_dir = Path(self.args.work_dir)
+        if missing := [path for path in self._parse_scope() if not (work_dir / path).exists()]:
             names = ", ".join(missing)
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -2493,7 +2478,6 @@ object, even after calling the capability.
         )
         output_lines.extend(lines[1:])
         report_text = "\n".join(output_lines)
-        print(report_text)
         detail = self._done_detail(done_outcome, elapsed=elapsed)
         exit_code = self._completed_exit_code(
             [row["severity"] for row in done_outcome.corrective_records]
@@ -2726,7 +2710,6 @@ object, even after calling the capability.
         lines = self._recheck_lines(recheck, records, judged, refused)
         exit_code = self._completed_exit_code([row["severity"] for row in still_open])
         report_text = "\n".join(lines)
-        print(report_text)
         detail = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
             **self._audit_detail(),
