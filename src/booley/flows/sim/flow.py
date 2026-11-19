@@ -902,18 +902,18 @@ class SimulateFlow(
         record with the execution adapter, and builds or simulates nothing.
         """
         simulation_record = SimulationRecord()
-        requests = [
-            NewSimulationRecordPreviewRequest(
-                # Placeholder ids: a preview reserves no invocation and
-                # starts no execution, so neither is ever read.
-                self._coverage_simulation_record_plan(plan, invocation_id=1, execution_id=""),
-                Path(self.args.work_dir),
-                self.args.report_dir,
-                self._simulation_record_policy(),
-            )
-            for plan in self._coverage_prepared.targets
-        ]
         try:
+            requests = [
+                NewSimulationRecordPreviewRequest(
+                    # Placeholder ids: a preview reserves no invocation and
+                    # starts no execution, so neither is ever read.
+                    self._coverage_simulation_record_plan(plan, invocation_id=1, execution_id=""),
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._simulation_record_policy(),
+                )
+                for plan in self._coverage_prepared.targets
+            ]
             previews = [
                 _simulation_record_preview_entry(simulation_record.preview(request))
                 for request in requests
