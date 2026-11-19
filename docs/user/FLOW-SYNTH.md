@@ -86,7 +86,7 @@ Everything else is in the run's numbered directory (`synth/3/` above; see
 
 | File | What it holds |
 |---|---|
-| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`, each with its source (`area_source`, `cell_count_source`: `openroad_post_optimization` for the placed netlist after timing repair, `yosys_mapped` for the mapped netlist), and `wire_count`, always the mapped netlist's count; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
+| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`, each with its source (`area_source`, `cell_count_source`: `openroad_post_optimization` for the placed netlist after timing repair, `yosys_mapped` for the mapped netlist); `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. The implementation report's `wire_count` is the mapped netlist's count in both modes. |
 | `artifacts/synth_<target>/run.log` | The full Yosys and OpenROAD output: every warning and error. |
 | `artifacts/synth_<target>/timing/` | The STA reports, physical mode only (see [`timing_report_paths`](#configuration-flowssynth)). |
 | `artifacts/synth_<target>/baseline_timing/` | With `--baseline`: the baseline run's STA reports. |
@@ -263,8 +263,8 @@ after mapping. It runs much faster and needs no SDC, and reports mapped area
 and an estimated Fmax from the longest chain of mapped logic. Both are usually
 optimistic. The Fmax ignores placement and wires; every run prints that
 warning, and the Crit path column reads `logical estimate`. The area and cell
-count leave out the buffers and larger cells that placement and timing repair
-add in physical mode.
+count leave out the buffers and larger cells that timing repair adds in
+physical mode.
 Use logical mode for quick area trends on large designs, and physical mode
 whenever timing matters. The mode belongs to the Target. There is
 no per-call `--synth-mode` option, so keep one Target per mode if you need
