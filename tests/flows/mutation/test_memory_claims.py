@@ -23,6 +23,7 @@ from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import MemorySizing
 from booley.flows.mutation.memory_claims import CampaignClaims
+from booley.flows.mutation.tool_runs import OomKill, ToolRun
 from booley.runtime import job_slots, resource_history
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.job_records import _proc_cmdline
@@ -389,3 +390,92 @@ def test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result(
 
     assert "exceeds the Memory Budget of 1000 MiB; this Job ran alone." in outcome.report_text
     assert "memory_admission_warning" in outcome.detail
+
+
+def _kill_runs(
+    monkeypatch: pytest.MonkeyPatch, managed: _Managed, first_killed: int, kills: list[OomKill]
+) -> list[_Observed]:
+    """Replace the tools: from run *first_killed* on, each takes the next of *kills*."""
+    seen: list[_Observed] = []
+    pending = list(kills)  # a copy: the parametrized list is shared by repeated runs
+
+    def run(*_args: object, **_kwargs: object) -> ToolRun:
+        holders, waiters = managed.store.snapshot(job_slots.CLASS_MEMORY)
+        seen.append(_Observed([(h.pid, h.memory) for h in holders], len(waiters), None))
+        kill = pending.pop(0) if len(seen) >= first_killed and pending else None
+        return ToolRun([], -9 if kill else 0, "ok", "", kill)
+
+    monkeypatch.setattr("booley.flows.mutation.flow.run_tool", run)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("first_killed", "kills", "runs", "status", "says"),
+    [
+        # Runs: baseline build, baseline simulation, Mutant build, Mutant simulation.
+        pytest.param(4, ["sandbox_limit"], 5, "not_detected", None, id="limit-once"),
+        pytest.param(
+            4, ["sandbox_limit"] * 2, 5, "inconclusive", "also when run alone", id="limit-twice"
+        ),
+        pytest.param(4, ["host"], 4, "inconclusive", "the host ran out of memory", id="host"),
+        pytest.param(
+            3, ["sandbox_limit"] * 2, 4, "inconclusive", "build: OOM-killed", id="build-twice"
+        ),
+    ],
+)
+def test_a_run_killed_at_the_sandbox_limit_runs_once_more_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
+    capsys: pytest.CaptureFixture[str],
+    first_killed: int,
+    kills: list[OomKill],
+    runs: int,
+    status: str,
+    says: str | None,
+) -> None:
+    """Only the killed build or simulation runs again; a host kill or a second kill is final."""
+    managed.record_history()
+    seen = _kill_runs(monkeypatch, managed, first_killed, kills)
+
+    outcome = _admitted_run(tmp_path, monkeypatch, managed.context())
+
+    assert len(seen) == runs
+    first, *rerun = [_items(observed)[0][1] for observed in seen[first_killed - 1 :]]
+    assert first is not None and not first.run_alone
+    if says != "the host ran out of memory":
+        assert rerun[0] is not None and rerun[0].run_alone and rerun[0].reservation_mb is None
+        assert "[requeue] default" in capsys.readouterr().out
+    [row] = outcome.detail["classified"]
+    assert row["status"] == status
+    if says is not None:
+        assert says in row["sim_output_snippet"]
+    assert _only_the_coordinator_holds(managed)
+
+
+@pytest.mark.parametrize(
+    ("killed_run", "result"),
+    [
+        (1, "RESULT: ERROR (elaboration: pristine source build was OOM-killed: the host"),
+        (2, "RESULT: ERROR (baseline: test '<default>' inconclusive: OOM-killed: the host"),
+    ],
+    ids=["build", "simulation"],
+)
+def test_a_killed_baseline_blames_the_kill_not_the_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
+    killed_run: int,
+    result: str,
+) -> None:
+    """A host kill of the baseline's build or simulation ends the run naming the kill."""
+    managed.record_history()
+    seen = _kill_runs(monkeypatch, managed, killed_run, ["host"])
+
+    outcome = _admitted_run(tmp_path, monkeypatch, managed.context())
+
+    assert len(seen) == killed_run  # a host kill is not retried, and nothing runs after it
+    assert outcome.exit_code == EXIT_ERROR
+    assert result in outcome.report_text
