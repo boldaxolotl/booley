@@ -1174,7 +1174,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if validation_error := self._validate_run_inputs(target, work_dir, scope_files):
             return validation_error
         try:
-            tb_top = tb_top_for_target(target, work_dir, resolved=None)
+            tb_top = tb_top_for_target(target, work_dir)
         except (OSError, fusesoc_registry.FuseSocError) as exc:
             message = f"could not derive Target toplevel: {exc}"
             return _error_outcome("target", message, report_text=f"mutation: {message}")

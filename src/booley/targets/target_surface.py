@@ -381,7 +381,7 @@ def detail_payload(
     if not resolve:
         return payload
 
-    build_root = work_root_for(root, "targets", selected.name)
+    build_root = work_root_for(root, "targets", handle.selector)
     try:
         resolved = fusesoc_registry.resolve_target_handle(
             handle,
