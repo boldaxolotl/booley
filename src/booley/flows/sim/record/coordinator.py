@@ -329,10 +329,25 @@ class SimulationRecord:
         recovery = store.scan(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
-    @staticmethod
-    def preflight(request: NewSimulationRecordRunRequest) -> None:
-        """Fail before any publication or build when a literal run_cwd is unusable."""
-        _preflight_run_directory(request.plan.manifest, request.project_root)
+    def preflight(self, request: SimulationRecordPreviewRequest) -> None:
+        """Fail before any publication or build when a literal run_cwd is unusable.
+
+        A resume checks only the records, the owner and its prerequisites, that
+        still have work left, each against its own bound Project Root.
+        """
+        if isinstance(request, NewSimulationRecordPreviewRequest):
+            _preflight_run_directory(request.plan.manifest, request.project_root)
+            return
+        validated = request.validated
+        store = SimulationRecordStore(validated.path.parent, booley_dir=validated.booley_dir)
+        recovery = store.scan(validated.manifest, validated.sha256)
+        self._preflight_incomplete(validated.manifest, recovery, request)
+        self._preflight_prerequisites(
+            store,
+            validated.manifest,
+            request,
+            {cast(str, validated.manifest.document["simulation_record_id"])},
+        )
 
     def run(self, request: SimulationRecordRunRequest) -> SimulationRecordOutcome:
         if self._executor is None:
@@ -532,14 +547,14 @@ class SimulationRecord:
     def _preflight_incomplete(
         manifest: SimulationRecordManifest,
         recovery: SimulationRecordRecovery,
-        request: SimulationRecordRunRequest,
+        request: SimulationRecordPreviewRequest,
     ) -> None:
         """Preflight one record's run_cwd when it still has work to run."""
         if all(item.state == "complete" for item in recovery.items):
             return
         binding = (
             request.validated.binding_for(manifest)
-            if isinstance(request, ResumeSimulationRecordRunRequest)
+            if isinstance(request, ResumeSimulationRecordPreviewRequest)
             else None
         )
         _preflight_run_directory(
@@ -550,7 +565,7 @@ class SimulationRecord:
         self,
         owner_store: SimulationRecordStore,
         manifest: SimulationRecordManifest,
-        request: SimulationRecordRunRequest,
+        request: SimulationRecordPreviewRequest,
         visited: set[str],
     ) -> None:
         """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``.
@@ -1178,19 +1193,19 @@ def _observation_facts(
 
 
 def _prerequisite_simulation_record(
-    entry: Mapping[str, object], invocation: Path, request: SimulationRecordRunRequest
+    entry: Mapping[str, object], invocation: Path, request: SimulationRecordPreviewRequest
 ) -> tuple[SimulationRecordStore, SimulationRecordManifest]:
     """Open the record one prerequisite *entry* links, authenticated on resume."""
     reference = cast(Mapping[str, object], entry["manifest"])
     node = (
         request.validated.prerequisite_for(reference)
-        if isinstance(request, ResumeSimulationRecordRunRequest)
+        if isinstance(request, ResumeSimulationRecordPreviewRequest)
         else None
     )
     path = node.path if node is not None else linked_manifest_path(invocation, reference)
     booley_dir = (
         request.validated.booley_dir
-        if isinstance(request, ResumeSimulationRecordRunRequest)
+        if isinstance(request, ResumeSimulationRecordPreviewRequest)
         else simulation_booley_dir(request.project_root)
     )
     store = SimulationRecordStore(path.parent, booley_dir=booley_dir)
