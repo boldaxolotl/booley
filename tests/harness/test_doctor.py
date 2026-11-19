@@ -543,12 +543,13 @@ def test_plain_doctor_lint_dry_run_judges_the_toplevel(
 
     booley_dir = _write_project(tmp_path)
     core = tmp_path / "unit.core"
-    core.write_bytes(
-        core.read_bytes().replace(
-            b"    filesets: [rtl]\n    toplevel: dut\n  synth_fast",
-            f"    filesets: [rtl]\n    toplevel: {toplevel}\n  synth_fast".encode(),
-        )
+    original = core.read_bytes().replace(b"\r\n", b"\n")
+    edited = original.replace(
+        b"    filesets: [rtl]\n    toplevel: dut\n  synth_fast",
+        f"    filesets: [rtl]\n    toplevel: {toplevel}\n  synth_fast".encode(),
     )
+    assert (edited != original) == (toplevel != "dut")
+    core.write_bytes(edited)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     other_commands = doctor.subprocess.run
 
