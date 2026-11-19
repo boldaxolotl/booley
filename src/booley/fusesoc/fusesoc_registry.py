@@ -936,6 +936,18 @@ def fusesoc_core_rejection(core_file: Path | str) -> FuseSocCoreRejection | None
     return None
 
 
+def core_target_flow_options(core_doc: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """Return a Target's declared ``flow_options`` mapping, ``{}`` when absent or not a mapping."""
+    targets = core_doc.get("targets") or {}
+    if not isinstance(targets, Mapping):
+        return {}
+    target = targets.get(name)
+    if not isinstance(target, Mapping):
+        return {}
+    flow_options = target.get("flow_options")
+    return flow_options if isinstance(flow_options, Mapping) else {}
+
+
 def core_target_flow_option(core_doc: Mapping[str, Any], name: str, option: str) -> Any:
     """Return a Target's ``flow_options.<option>`` value, or ``None``.
 
@@ -943,16 +955,7 @@ def core_target_flow_option(core_doc: Mapping[str, Any], name: str, option: str)
     reads ``flow_options.tool`` — used to check host-side that mandatory edalize
     plumbing (e.g. Yosys's required ``arch``) is present without a full resolve.
     """
-    targets = core_doc.get("targets") or {}
-    if not isinstance(targets, Mapping):
-        return None
-    target = targets.get(name)
-    if not isinstance(target, Mapping):
-        return None
-    flow_options = target.get("flow_options")
-    if isinstance(flow_options, Mapping):
-        return flow_options.get(option)
-    return None
+    return core_target_flow_options(core_doc, name).get(option)
 
 
 def core_target_doctor_flows(core_doc: Mapping[str, Any], name: str) -> tuple[str, ...]:

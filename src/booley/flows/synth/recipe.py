@@ -34,6 +34,7 @@ from booley.flows.synth.backends.yosys.core import (
 from booley.flows.synth.backends.yosys.discovery import resolve_liberty_lenient
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.request import SynthRequest
+from booley.targets.target_surface import SynthTools
 
 from .backends.openroad.ppa import openroad_profile
 from .backends.yosys.ppa import yosys_profile
@@ -51,6 +52,7 @@ __all__ = [
     "RECIPE_SNAPSHOT_PARAM",
     "default_recipe_args",
     "resolve_synth_mode",
+    "synth_target_tools",
     "synthesis_recipe_args",
     "synthesis_recipe_changes",
     "synthesis_recipe_fingerprint",
@@ -153,6 +155,23 @@ def resolve_synth_mode(
             f"{', '.join(SYNTH_MODE_CHOICES)}; got {mode!r}"
         )
     return SynthMode(mode)
+
+
+def synth_target_tools(flow_options: Mapping[str, Any], target: str) -> SynthTools:
+    """Resolve the synth mode, frontend, and EDA programs the Flow runs for a Target.
+
+    Raises :class:`BoundaryError` (a :class:`ValueError`) for invalid options.
+    """
+    mode = resolve_synth_mode(flow_options, target=target)
+    frontend = (
+        resolve_frontend(dict(flow_options), field=f"Target {target!r} flow_options.frontend")
+        or DEFAULT_FRONTEND
+    )
+    tools = ["sv2v"] if frontend == "sv2v" else []
+    tools.append("yosys")
+    if mode.runs_openroad:
+        tools.append("openroad")
+    return SynthTools(synth_mode=mode.value, frontend=frontend, eda_tools=tuple(tools))
 
 
 def _ppa_profile_settings(

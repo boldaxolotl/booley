@@ -178,12 +178,14 @@ variants, and the first public test that killed each detected mutant.
 
 | Command | What it does |
 |---------|-------------|
-| `booley targets` | List every `.core` Target: drivable Booley Flows, EDA tool, toplevel, and `✓` Doctor selection |
+| `booley targets` | List every `.core` Target: drivable Booley Flows, the EDA tools it runs (a synth Target's by synth mode and frontend, e.g. `sv2v+yosys+openroad`; a sim or lint Target's `frontends` before its tool), toplevel, and `✓` Doctor selection |
 | `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
-| `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |
+| `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side); a synth Target also shows its effective synth mode and frontend |
 
-`--json` composes with all of the above; Developer Agents get the same listing via the `booley_targets` MCP tool.
+`--json` composes with all of the above and adds `synth_mode`, `frontend`, and
+`eda_tools` (`null` for a non-synth Target without `frontends`). Developer
+Agents get the same listing via the `booley_targets` MCP tool.
 
 Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
 
