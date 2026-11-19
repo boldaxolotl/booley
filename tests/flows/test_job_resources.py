@@ -905,9 +905,16 @@ def _recorded_keys(
     ("flow_class", "method", "phase", "flow_name", "split"),
     [
         # Private seam: each method is the Flow's run step; see _label_seen.
-        (LintFlow, "_run_linter", "lint", "lint", None),
-        (FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None),
-        (AsicSynthesizeFlow, "_run_synth_make", "synth", "synth", job_resources.SYNTH_PHASES),
+        pytest.param(LintFlow, "_run_linter", "lint", "lint", None, id="lint"),
+        pytest.param(FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None, id="fpga"),
+        pytest.param(
+            AsicSynthesizeFlow,
+            "_run_synth_make",
+            "synth",
+            "synth",
+            job_resources.SYNTH_PHASES,
+            id="synth",
+        ),
     ],
 )
 def test_flows_label_their_commands_and_requests_map_to_their_keys(
@@ -922,10 +929,15 @@ def test_flows_label_their_commands_and_requests_map_to_their_keys(
     assert label == job_resources.ResourceLabel("core", phase, split=split, source_bytes=4096)
     assert job_resources.current_label() is None
 
-    # Synthesis also records a split tool row; the request lists only the whole command.
+    # Synthesis also records a split tool row; a request plans the whole command or the tools.
     recorded = _recorded_keys(label, {"yosys": job_resources.Usage()} if split else None)
     assert list(phase_keys(JobRequest(flow_name, "core"))) == recorded[:1]
     assert [key.phase for key in recorded[1:]] == (["yosys"] if split else [])
+    if split:
+        assert (
+            list(phase_keys(JobRequest(flow_name, "core", split_phases=("yosys",))))
+            == (recorded[1:])
+        )
 
 
 @linux_only
@@ -1108,6 +1120,34 @@ def test_history_counts_and_keeps_jobs_not_records(tmp_path):
         "k": 20,
         "old": 1,
     }
+
+    # One synthesis run writes a whole-command record and one per tool, and counts once
+    # for each planned key (#4535).
+    from booley.flows.job_estimates import JobRequest, phase_keys
+
+    tools = ("sv2v", "yosys", "openroad")
+    label = job_resources.ResourceLabel("core", "synth", split=job_resources.SYNTH_PHASES)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0, oom_killed=False)
+    measurement = job_resources.JobMeasurement(
+        0.25,
+        job_resources.Usage(),
+        {tool: job_resources.Usage() for tool in tools},
+        None,
+        None,
+        None,
+    )
+    synth_records = job_resources.history_records("flow", label, (), measurement, result)
+    resource_history.append_records(
+        tmp_path, [{**record, "job": "900"} for record in synth_records]
+    )
+    planned = phase_keys(JobRequest("synth", "core", split_phases=tools))
+    counted = {
+        resource_history.history_key(entry): entry["runs"]
+        for entry in resource_history.summarize(_history(tmp_path))
+        if entry["key"]["target"] == "core"
+    }
+    assert [counted[key] for key in planned] == [1, 1, 1]
+    assert counted[resource_history.HistoryKey("core", "synth", (), "")] == 1
 
 
 @pytest.mark.parametrize(

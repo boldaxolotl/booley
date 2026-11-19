@@ -3657,7 +3657,9 @@ class TestBaselineFlow:
         assert [
             (plan.baseline.selector, plan.candidate.selector) for plan in flow._target_pairs
         ] == [("lite", "lite")]
-        assert flow.memory_job_requests((handle,)) == (JobRequest("synth", "lite"),)
+        assert flow.memory_job_requests((handle,)) == (
+            JobRequest("synth", "lite", split_phases=("sv2v", "yosys", "openroad")),
+        )
 
     def test_worktree_setup_failure_rejected(self, state_file: Path, tmp_path: Path):
         """A worktree that cannot be created (bad ref, not a repo) is surfaced

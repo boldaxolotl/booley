@@ -129,7 +129,8 @@ implementation borrow only from the same Target, because their memory grows
 with the design: the first run of such a Target runs alone, and Booley says
 it has no measurement yet. A step with no record at all also runs alone. A
 Simulation Record runs independent tests in parallel while their reservations
-fit. A Target's
+fit. A physical-mode ASIC synthesis Job lowers its reservation to what OpenROAD
+needs once Yosys finishes. A Target's
 [Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
 reserve as much as that Target's build until Booley has measured them.
 
@@ -177,7 +178,8 @@ maximum peak memory and wall-clock time for each, and the peak swap of an entry
 that swapped, with one line per Specialist after the Targets (`--json` for
 scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation
 has its own entry (`tests=first+slow`; the default Variant keeps the bare Test
-name), and the seeds of one Variant share it. Flow runs that `booley doctor`
+name), and the seeds of one Variant share it. A synthesis run also has an
+entry for each tool (`sv2v`, `yosys`, `openroad`). Flow runs that `booley doctor`
 starts are not recorded. If the history is not valid JSON or was written by
 another Booley version, the next Job keeps it as
 `.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
