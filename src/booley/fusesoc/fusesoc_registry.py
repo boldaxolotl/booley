@@ -2478,23 +2478,26 @@ def _restore_tb_tags(
     return replace(resolved, files=files)
 
 
-def _find_edam(build_root: Path, target: str) -> Path:
-    """Locate the resolved ``.eda.yml`` for *target* under *build_root*.
+def _find_edam(build_root: Path, target: str, vlnv: str) -> Path:
+    """Locate the ``.eda.yml`` that FuseSoC wrote for *vlnv*'s *target* under *build_root*.
 
-    FuseSoC lays runs out as ``<build_root>/<name>/<target>/<name>.eda.yml``;
-    glob for the Target dir so we tolerate the VLNV→dir name mangling.
+    FuseSoC lays a run out as ``<build_root>/<core>/<target>/<core>.eda.yml``
+    (Flow API) or ``<build_root>/<core>/<target>-<tool>/<core>.eda.yml``
+    (tool API), where ``<core>`` is the sanitized VLNV. Only that path is
+    accepted, so a build root shared by several cores never yields another
+    core's EDAM; when it is missing the lookup raises instead.
     """
-    matches = sorted(build_root.glob(f"*/{target}/*.eda.yml"))
+    core = Vlnv(vlnv).sanitized_name
+    matches = sorted(build_root.glob(f"{core}/{target}/{core}.eda.yml"))
     if not matches:
-        # Fall back to any EDAM under the tree (single-target spikes nest flat).
-        matches = sorted(build_root.rglob("*.eda.yml"))
-    if not matches:
-        raise TargetResolutionError(
-            f"no .eda.yml found under {build_root} after resolving '{target}'"
-        )
-    if len(matches) > 1:
-        logger.debug("multiple EDAMs under %s; using %s", build_root, matches[0])
-    return matches[0]
+        matches = sorted(build_root.glob(f"{core}/{target}-*/{core}.eda.yml"))
+    if matches:
+        return matches[0]
+    others = len(list(build_root.rglob("*.eda.yml")))
+    detail = f"; {others} EDAMs of other resolutions are present" if others else ""
+    raise TargetResolutionError(
+        f"no .eda.yml for {vlnv} Target '{target}' under {build_root}{detail}"
+    )
 
 
 def setup_command_for_handle(
@@ -2629,7 +2632,7 @@ def _run_setup_command(
             f"(exit {proc.returncode}){detail}{hint}"
         )
 
-    edam_path = _find_edam(build_root, target)
+    edam_path = _find_edam(build_root, target, vlnv)
     resolved = parse_edam(edam_path, target=target, vlnv=vlnv)
     return _restore_tb_tags(resolved, project_root=project_root, source_ref=source_ref)
 
