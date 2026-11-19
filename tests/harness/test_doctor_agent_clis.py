@@ -186,6 +186,56 @@ def test_default_cli_missing_credentials_fail(home, tmp_path, monkeypatch):
     assert any(f.message.startswith("Codex auth:") for f in findings)
 
 
+@pytest.mark.parametrize(
+    ("auth", "visitor", "severity", "policy"),
+    [
+        ("subscription", False, Severity.FAIL, "subscription"),
+        (None, False, Severity.FAIL, "subscription"),
+        (None, True, Severity.WARN, auth_token.VISITOR_AUTH),
+    ],
+)
+def test_default_cli_missing_credential_carries_login_fix(
+    home, tmp_path, monkeypatch, auth, visitor, severity, policy
+):
+    if visitor:
+        monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)
+    agent = {"clis": ["codex"], "default": "codex"}
+    if auth:
+        agent["auth"] = auth
+    findings = _findings(tmp_path, **agent)
+
+    (missing,) = _with_id(findings, "agent.credential-missing", "codex")
+    assert missing.severity is severity
+    assert missing.fix == auth_token.missing_credential_fix("codex", policy)
+    assert missing.fix.startswith("codex login")
+
+
+_EXPLICIT = "(accepted by explicit auth = 'subscription')"
+_FALLBACK = "(the fallback policy auth = 'subscription' applies)"
+
+
+@pytest.mark.parametrize(
+    ("auth", "suffix"),
+    [
+        ("subscription", _EXPLICIT),
+        (None, _FALLBACK),
+        ("auto", _FALLBACK),
+        ({"codex": "gateway"}, _FALLBACK),
+    ],
+)
+def test_rotation_note_names_recorded_or_fallback_policy(home, tmp_path, auth, suffix):
+    _login(home, "codex")
+    agent = {"clis": ["codex"], "default": "codex"}
+    if auth:
+        agent["auth"] = auth
+    findings = _findings(tmp_path, **agent)
+
+    (note,) = [f for f in findings if f.message.startswith("Codex: no rotation-free credential")]
+    assert note.severity is Severity.NOTE
+    assert note.message.endswith(suffix)
+    assert ("explicit" in note.message) == (suffix == _EXPLICIT)
+
+
 def test_rotation_risk_ids_keep_per_cli_subjects(home, tmp_path, monkeypatch):
     # An explicit ``subscription`` accepts the risk as a NOTE; the visitor mode warns.
     monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)

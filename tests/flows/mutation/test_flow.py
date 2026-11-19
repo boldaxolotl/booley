@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.flows.base import SubprocessResult
+from booley.flows.job_resources import ResourceLabel
 from booley.flows.metric_declarations import MetricsUnavailable
 from booley.flows.mutation.flow import (
     MutationFlow,
@@ -38,7 +40,7 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
-from booley.runtime import runtime_context
+from booley.runtime import resource_history, runtime_context
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -47,6 +49,7 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
+from tests.canned_process_support import canned_command
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.flows.sim.launched_work import launched_work
 from tests.target_test_support import write_two_core_sim_project
@@ -393,6 +396,7 @@ def _patch_resolve_target(
     eda_tool: str | None = "verilator",
     verilator: str = _VERILATOR_VERSION,
     cocotb_module: str | None = None,
+    measured: bool = False,
 ):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
@@ -416,6 +420,16 @@ def _patch_resolve_target(
     def _fake_prepare(handle, *, build_root, lane_kind, environment=None, **kwargs):
         assert lane_kind == "unreserved"
         import yaml
+
+        if measured and kwargs.get("setup_runner") is not None:
+            # Stands for the FuseSoC setup the real preparer runs through this runner.
+            kwargs["setup_runner"](
+                canned_command(SubprocessResult(returncode=0)),
+                cwd=str(handle.project_root),
+                env=dict(os.environ),
+                capture_output=True,
+                text=True,
+            )
 
         root = Path(build_root)
         root.mkdir(parents=True, exist_ok=True)
@@ -547,6 +561,7 @@ def _patch_fake_simulation(
     cocotb_module: str | None = None,
     verilate: Callable[[Path], None] | None = None,
     verilator: str = _VERILATOR_VERSION,
+    measured: bool = False,
 ) -> FakeSimulation:
     """Fake every build and simulator run of a mutation campaign.
 
@@ -555,13 +570,31 @@ def _patch_fake_simulation(
     A ``run`` may raise ``subprocess.TimeoutExpired``; ``run_work(index, work)`` answers
     with the launched work too (for a fake that answers per test).  ``verilate(build_root)`` runs after
     a build that passes, to leave what Verilator would (``_write_fake_verilation``);
-    ``verilator`` is the version the baseline build reports.
+    ``verilator`` is the version the baseline build reports. With *measured* each answer
+    (and each FuseSoC setup) is replayed by a real child through the boundary that
+    measures and records it.
     """
     _patch_resolve_target(
-        monkeypatch, eda_tool=eda_tool, verilator=verilator, cocotb_module=cocotb_module
+        monkeypatch,
+        eda_tool=eda_tool,
+        verilator=verilator,
+        cocotb_module=cocotb_module,
+        measured=measured,
     )
     fake = FakeSimulation()
-    original = subprocess.run
+    import booley.flows.mutation.flow as mutation_flow_module
+
+    # The boundary the Flow starts every tool through; the tools' own ``subprocess.run`` on main.
+    original = getattr(mutation_flow_module, "run_tool", subprocess.run)
+
+    def _answer(answer: subprocess.CompletedProcess, kwargs: dict[str, Any]):
+        """The canned answer, or with *measured* a real child that replays it through the boundary."""
+        if not measured:
+            return answer
+        from booley.flows.mutation.tool_runs import run_tool as real_run_tool
+
+        replay = SubprocessResult(answer.returncode, answer.stdout or "", answer.stderr or "")
+        return real_run_tool(canned_command(replay), **kwargs)
 
     def _fake(cmd, *args, **kwargs):
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
@@ -571,7 +604,7 @@ def _patch_fake_simulation(
             built = build(index) if build else _fake_proc(rc=0, stdout="[make] ok")
             if verilate and built.returncode == 0:
                 verilate(Path(cmd[2]))
-            return built
+            return _answer(built, kwargs)
         if isinstance(cmd, list) and "booley.flows.sim.backends." in " ".join(cmd):
             work = launched_work(cmd)
             index = _mutant_index(repr(work))
@@ -581,10 +614,14 @@ def _patch_fake_simulation(
             fake.launches.append((work, dict(kwargs.get("env") or {})))
             if run_work:
                 return run_work(index, work)
-            return run(index) if run else _fake_proc(rc=0, stdout="[sim] ok")
+            return _answer(run(index) if run else _fake_proc(rc=0, stdout="[sim] ok"), kwargs)
         return original(cmd, *args, **kwargs)
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake)
+    monkeypatch.setattr(
+        "booley.flows.mutation.flow.run_tool",
+        _fake,
+        raising=False,  # the criterion test must fail in its body on main
+    )
     return fake
 
 
@@ -611,8 +648,10 @@ def _wrap_commands(
 ) -> list[list[str]]:
     """Record every command; one whose program is in *answers* gets that answer, the rest
     go to the simulation fake installed before."""
+    import booley.flows.mutation.flow as mutation_flow_module
+
     commands: list[list[str]] = []
-    fake_run = subprocess.run
+    fake_run = mutation_flow_module.run_tool
 
     def recording_run(cmd, *args, **kwargs):
         commands.append(list(cmd))
@@ -620,7 +659,7 @@ def _wrap_commands(
             return answers[cmd[0]]
         return fake_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", recording_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.run_tool", recording_run)
     return commands
 
 
@@ -661,6 +700,7 @@ def test_baseline_build_runs_the_exact_command_of_the_shared_preparer(
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     _handle, kwargs = prepares[0]
     assert kwargs.pop("build_root").name == "baseline"
+    assert callable(kwargs.pop("setup_runner"))  # the measured FuseSoC setup
     assert kwargs == {"lane_kind": "unreserved", "core_library": None, "environment": {}}
     assert commands[0] == ["custom-build", "--exact-command"]
     # The baseline build records the version of the Verilator it builds with.
@@ -1605,6 +1645,52 @@ def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch
     assert "3 detected (2 timeout)" in result.report_text
 
 
+def test_mutation_run_records_its_setups_builds_and_simulations(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Every setup, build and simulation of the baseline and a Mutant is in the history."""
+    _write_tests_toml(tmp_path, _MUTATION_VARIANTS)
+
+    def run(index: int | None) -> subprocess.CompletedProcess:
+        if index is None:
+            return _fake_proc(rc=0, stdout="[sim] ok")
+        return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (30s)\n")
+
+    _campaign(
+        tmp_path,
+        monkeypatch,
+        target="default",
+        count=1,
+        min_detected=0,
+        run=run,
+        simulation={"measured": True},
+    )
+
+    records = resource_history.load_records(tmp_path)
+    assert {record["flow"] for record in records} == {"mutation"}
+    assert {record["key"]["target"] for record in records} == {"default"}
+    assert [record["key"]["flags"] for record in records] == [[]] * len(records)
+    assert [(r["key"]["phase"], r["key"]["test_run"], r["outcome"]) for r in records] == [
+        ("sim_prepare", "", "exit_zero"),
+        ("sim_build", "", "exit_zero"),
+        ("sim_run", "reset", "exit_zero"),
+        ("sim_run", "stress", "exit_zero"),
+        ("sim_prepare", "", "exit_zero"),
+        ("sim_build", "", "exit_zero"),
+        ("sim_run", "reset", "timeout"),
+        ("sim_run", "stress", "timeout"),
+    ]
+    shown = [
+        (s["key"]["phase"], s["key"]["test_run"]) for s in resource_history.summarize(records)
+    ]
+    assert sorted(shown) == [
+        ("sim_build", ""),
+        ("sim_prepare", ""),
+        ("sim_run", "reset"),
+        ("sim_run", "stress"),
+    ]
+
+
 def _result_per_test(
     index: int | None, work: PreparedSimulationWork
 ) -> subprocess.CompletedProcess:
@@ -2275,7 +2361,7 @@ def test_cpp_scope_refuses_before_generation_and_build(tmp_path, monkeypatch):
     generate = MagicMock()
     build_or_run = MagicMock()
     monkeypatch.setattr("booley.flows.mutation.flow.generate_mutants", generate)
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", build_or_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.run_tool", build_or_run)
 
     result = _dry_run_scope(tmp_path, monkeypatch, "tb/sim_main.cpp")
 
@@ -2339,11 +2425,13 @@ def test_mutation_report_records_the_simulator_of_a_cached_build(tmp_path, monke
     monkeypatch.setattr("booley.flows.mutation.flow._target_environment", lambda *_args: {})
     monkeypatch.setattr("booley.flows.mutation.flow.launch_environment", lambda *_args: {})
     monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
+        "booley.flows.mutation.flow.run_tool",
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
     )
 
-    endpoint._run_sim_pinned("default", tmp_path, build, "tb")
+    endpoint._run_sim_pinned(
+        "default", tmp_path, build, "tb", label=ResourceLabel("default", "sim_run")
+    )
 
     path = endpoint.write_report(EndpointOutcome(report_text="mutation result"))
     assert json.loads(path.read_bytes()).get("eda_tool") == tool
@@ -2409,9 +2497,10 @@ def test_validation_errors_end_with_a_result_error_line(
 
 def test_validation_refusals_without_a_public_path(tmp_path: Path, monkeypatch) -> None:
     # Private seam: argparse refuses a non-positive ``--count`` before the run
-    # (``test_count_rejects_text_that_is_not_auto_or_an_integer``), campaign resolution refuses
-    # ``a,b`` as an unknown Target first, and ``--target`` is required by the parser, so only a
-    # direct call reaches these three refusals.
+    # (``test_count_rejects_text_that_is_not_auto_or_an_integer``), and ``--target`` is required
+    # by the parser. With ``--scope``, campaign resolution refuses an undeclared ``a,b`` as an
+    # unknown Target first, so only a comma-named Target reaches the one-Target refusal; a
+    # direct call reaches these three.
     message = "--count must be positive"
     outcome = MutationFlow._validate_count(0, 0, 0)
     assert outcome is not None

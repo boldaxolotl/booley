@@ -24,6 +24,7 @@ from booley.flows.sim.coverage_record_store import publish_coverage_record
 from booley.runtime.agent_errors import (
     AgentProviderError,
     AgentTimeoutError,
+    ModelUnavailableError,
     TransientAPIError,
     UsageLimitError,
 )
@@ -690,8 +691,14 @@ def test_cli_distinguishes_empty_and_malformed_model_output(
         UsageLimitError("usage exhausted", provider="codex"),
         TransientAPIError("provider unavailable"),
         AgentProviderError("Codex exited unsuccessfully", provider="codex"),
+        ModelUnavailableError(
+            model="gpt-6-luna",
+            provider="codex",
+            settings=("[models] coverage_analyst",),
+            detail="model_not_found",
+        ),
     ],
-    ids=["result", "claude-sdk", "timeout", "usage", "transient", "codex"],
+    ids=["result", "claude-sdk", "timeout", "usage", "transient", "codex", "refused"],
 )
 def test_cli_reports_terminal_provider_failures_without_mutating_state(
     tmp_path, monkeypatch, capsys, provider_error
@@ -721,6 +728,7 @@ def test_cli_reports_terminal_provider_failures_without_mutating_state(
         result.outcome.report_text
     )
     assert str(provider_error) in result.outcome.report_text
+    assert ".. Diagnostic:" not in result.outcome.report_text
     persisted = json.loads((report_dir / "coverage_analyst.json").read_text())
     assert persisted["report_text"] == result.outcome.report_text
     diagnostic = Path(result.outcome.report_text.rsplit(". Diagnostic: ", 1)[1])

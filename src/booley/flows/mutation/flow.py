@@ -47,6 +47,7 @@ from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.job_estimates import JobRequest, sim_job_request
+from booley.flows.job_resources import ResourceLabel, judged_commands
 from booley.flows.memory_admission import MemoryAdmissionPlan, measure_coordinator_claim
 from booley.flows.metric_declarations import COUNTED_ITEM_CHARS
 from booley.flows.mutation import workspace
@@ -72,6 +73,7 @@ from booley.flows.mutation.operators import (
 from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
 from booley.flows.mutation.snippet import detection_snippet, tail, tail_snippet
+from booley.flows.mutation.tool_runs import run_tool, setup_runner
 from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
@@ -140,6 +142,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
@@ -846,6 +849,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     code_modifying: bool = False
 
     target_required: bool = True
+    target_metavar: str = "TARGET"
     target_help: str = SurfaceHelp(
         "Exactly one Simulation Target. The CLI accepts one --target value; "
         "MCP accepts one Target selector string.",
@@ -927,6 +931,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         scope = self.args.scope
         if scope is None:
             default_scope = self._default_scope()
+            if isinstance(default_scope, EndpointOutcome):
+                return default_scope
             if not default_scope:
                 message = (
                     f"Target {self.args.target!r} has no mutable RTL "
@@ -944,19 +950,23 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             self.args.count = 10
         return None
 
-    def _default_scope(self) -> list[str]:
+    def _default_scope(self) -> list[str] | EndpointOutcome:
         """The Project's own mutable RTL in the Target's closure, in Target order.
 
         "Own RTL" spans the ``depend`` closure, not only the root core's
         filesets: in a layered Project the root fileset owns the harness while
         the DUT arrives through a dependency (see :meth:`_dut_files`).  Testbench,
         vendored and generated files, include headers, inputs outside the Project
-        and non-Verilog inputs are not mutable.  A Target that cannot be
-        inspected has no scope; the run's own validation reports why.
+        and non-Verilog inputs are not mutable.  A list, or a Target that
+        cannot be selected or inspected, is refused with its own error.
         """
-        inspection = self._inspect_target()
-        if inspection is None:
-            return []
+        if list_error := self._target_list_error(self.args.target):
+            return list_error
+        try:
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(catalog.select(self.args.target, for_flow="sim"))
+        except fusesoc_registry.FuseSocError as exc:
+            return _error_outcome("target", f"mutation: {exc}", report_text=f"mutation: {exc}")
         inputs = inspection.inputs
         unmutable = fusesoc_registry.files_tagged(self.args.work_dir, _UNMUTATED_FILE_TAGS)
         scope: dict[str, None] = {}  # ordered set
@@ -1133,7 +1143,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Run the campaign with *claims* admitting each build and simulation."""
         self._claims = claims
         try:
-            return self._run()
+            # One append when the campaign ends, so no history write sits inside a timed run.
+            with judged_commands():
+                return self._run()
         except (job_slots.ClaimAbortedError, job_slots.ClaimLostError) as exc:
             return _error_outcome(
                 "cancelled",
@@ -1162,7 +1174,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if validation_error := self._validate_run_inputs(target, work_dir, scope_files):
             return validation_error
         try:
-            tb_top = tb_top_for_target(target, work_dir, resolved=None)
+            tb_top = tb_top_for_target(target, work_dir)
         except (OSError, fusesoc_registry.FuseSocError) as exc:
             message = f"could not derive Target toplevel: {exc}"
             return _error_outcome("target", message, report_text=f"mutation: {message}")
@@ -1278,15 +1290,22 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return None
         return _error_outcome("options", message, report_text=message)
 
+    @staticmethod
+    def _target_list_error(target: str) -> EndpointOutcome | None:
+        """Refuse a ``--target`` that does not name exactly one Target."""
+        if len([part for part in target.split(",") if part.strip()]) != 1:
+            message = "--target must select exactly one Target"
+            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        return None
+
     def _validate_run_inputs(
         self,
         target: str,
         work_dir: Path,
         scope_files: list[str],
     ) -> EndpointOutcome | None:
-        if len([part for part in target.split(",") if part.strip()]) != 1:
-            message = "--target must select exactly one Target"
-            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        if list_error := self._target_list_error(target):
+            return list_error
         if scope_error := self._validate_scope_against_target(scope_files):
             return scope_error
         try:
@@ -1520,7 +1539,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return run_cwd_error
         build_path = workspace.baseline_build_dir()
         shutil.rmtree(build_path, ignore_errors=True)
-        build_path.mkdir(parents=True, exist_ok=True)
+        make_directories(build_path)
         elab = self._run_elab(plan.target, plan.work_dir, build_path)
         elab_output = (elab.stdout or "") + (elab.stderr or "")
         if elab.returncode != 0:
@@ -1736,18 +1755,16 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             (build_path / _VERILATOR_VERSION_MARKER).write_text(
                 verilator_version(build_environment), encoding="utf-8"
             )
-        return subprocess.run(
+        return run_tool(
             list(prepared.make_argv),
+            label=ResourceLabel(prepared.target, "sim_build"),
             cwd=work_dir,
             env=relocate_python_artifacts(
                 build_environment,
                 python_artifact_root(build_environment, build_path / "python-artifacts"),
                 pytest_scope=f"mutation-build:{build_path.resolve()}",
             ),
-            capture_output=True,
-            text=True,
             timeout=900,
-            check=False,
         )
 
     @staticmethod
@@ -1779,6 +1796,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
             environment=_target_environment(work_dir, handle.identity),
+            setup_runner=setup_runner(handle.selector),
         )
         if mutation is not None:
             materialize_build_mutation(
@@ -2070,6 +2088,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         build_path: Path,
         tb_top: str,
         *,
+        label: ResourceLabel,
         timeout: int = 300,
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
@@ -2101,8 +2120,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             work_dir / pinned.rel, work_dir / resolve_run_cwd(work_dir), pinned.runtime_inputs
         ):
             try:
-                proc = subprocess.run(
+                proc = run_tool(
                     cmd,
+                    label=label,
                     cwd=work_dir,
                     env=relocate_python_artifacts(
                         {
@@ -2115,10 +2135,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                         python_artifact_root(os.environ, build_path / "python-artifacts"),
                         pytest_scope=f"mutation-run:{build_path.resolve()}",
                     ),
-                    capture_output=True,
-                    text=True,
                     timeout=timeout + _MUTANT_HARD_KILL_MARGIN_S,
-                    check=False,
+                    timed_out=has_simulation_timeout,
                 )
             except subprocess.TimeoutExpired:
                 _discard_adapter_results(identity)
@@ -2143,13 +2161,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         batched = self.cocotb_target(target, work_dir) is not None
         batches = self._cocotb_suite_batches(target, work_dir, campaign) if batched else None
 
-        def _launch(unit: CampaignUnit) -> MutationTestRun:
+        def _launch(unit: CampaignUnit, label: ResourceLabel) -> MutationTestRun:
             try:
                 proc, killed_by = self._run_sim_pinned(
                     target,
                     work_dir,
                     build_path,
                     tb_top,
+                    label=label,
                     timeout=(timeouts or {}).get(unit.display_name, _MUTANT_TIMEOUT_CAP_S),
                     test_name=unit.test_name,
                     cocotb_tests=unit.selected_tests,
@@ -2182,13 +2201,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 )
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
-            def request() -> JobRequest | None:
-                return self._unit_job_request(target, work_dir, build_path, unit, batched)
-
+            request = self._unit_job_request(target, work_dir, build_path, unit, batched)
             # The wait for memory comes first, so it never counts in a duration or time limit.
-            with self._claims.hold(request, build=False, target=target, tests=unit.tests):
+            with self._claims.hold(lambda: request, build=False, target=target, tests=unit.tests):
                 started = _monotonic()
-                run = _launch(unit)
+                run = _launch(unit, _sim_run_label(target, request))
                 run.duration_s = _monotonic() - started
                 return run
 
@@ -2403,7 +2420,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         from booley.flows.run_log import cap_log_bytes
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(path.parent)
             path.write_bytes(
                 cap_log_bytes(
                     output.encode("utf-8", errors="replace"),
@@ -2488,7 +2505,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """
         build_path = workspace.variant_build_dir(spec.index)
         shutil.rmtree(build_path, ignore_errors=True)
-        build_path.mkdir(parents=True, exist_ok=True)
+        make_directories(build_path)
         elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
         if elab.returncode != 0:
             shutil.rmtree(build_path, ignore_errors=True)
@@ -2749,7 +2766,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _copy_campaign_file(source: Path, destination: Path) -> Path | None:
         if not source.is_file():
             return None
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(destination.parent)
         shutil.copy2(source, destination)
         return destination
 
@@ -2757,6 +2774,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _copy_campaign_dir(source: Path, destination: Path) -> Path | None:
         if not source.is_dir():
             return None
+        make_directories(destination.parent)
         shutil.copytree(source, destination)
         return destination
 
@@ -3136,6 +3154,13 @@ def _mutant_timeout(baseline_s: float) -> int:
     """
     scaled = math.ceil(_MUTANT_TIMEOUT_FACTOR * baseline_s)
     return min(_MUTANT_TIMEOUT_CAP_S, max(_MUTANT_TIMEOUT_FLOOR_S, scaled))
+
+
+def _sim_run_label(target: str, request: JobRequest | None) -> ResourceLabel:
+    """The history key of one unit's simulation: its claim's Target and Test Run name."""
+    if request is None:
+        return ResourceLabel(target, "sim_run")
+    return ResourceLabel(request.target, "sim_run", request.test_runs)
 
 
 def _timeout_output(exc: subprocess.TimeoutExpired) -> str:

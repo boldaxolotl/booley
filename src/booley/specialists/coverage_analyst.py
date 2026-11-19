@@ -44,6 +44,7 @@ from booley.runtime.agent_errors import (
 )
 from booley.runtime.exception_diagnostics import (
     provider_exception_message,
+    with_diagnostic,
     write_exception_diagnostic,
 )
 from booley.runtime.owned_scratch import owned_tempdir
@@ -301,9 +302,10 @@ class CoverageAnalystSpecialist(Specialist):
                 ),
             )
         except _CoverageProviderError as exc:
-            report_text = f"Coverage analysis failed: model provider returned an error: {exc}"
-            if exc.diagnostic_path is not None:
-                report_text += f". Diagnostic: {exc.diagnostic_path}"
+            report_text = with_diagnostic(
+                f"Coverage analysis failed: model provider returned an error: {exc}",
+                exc.diagnostic_path,
+            )
             return McpToolResult(exit_code=EXIT_ERROR, report_text=report_text)
         except (OSError, ValueError) as exc:
             return McpToolResult(

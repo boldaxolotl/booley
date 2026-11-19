@@ -114,6 +114,7 @@ def test_doctor_gateway_failing_token_command_fails_quoting_stderr(gateway_env, 
     assert "BOOLEY_GATEWAY_TOKEN_COMMAND exited 2" in findings[0].message
     assert instruction in findings[0].message
     assert "SYNTHETIC_LEAKED_STDOUT" not in findings[0].message
+    assert findings[0].fix == "get the gateway token its command reads"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="gateway mode is container-only")

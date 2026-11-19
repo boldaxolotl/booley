@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
 import sys
 import textwrap
@@ -13,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.core.host_shell import quote_arg
+from booley.flows.synth.recipe import synth_target_tools
 from booley.fusesoc import core_projection, fusesoc_registry, selftest_overlay
 from booley.fusesoc.core_projection import CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
@@ -54,7 +56,9 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError, UnknownTargetError
-from booley.targets.target_surface import collect_surface, detail_payload, surface_payload
+from booley.targets.target_surface import collect_surface
+from booley.targets.target_surface import detail_payload as _detail_payload
+from booley.targets.target_surface import surface_payload as _surface_payload
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
 from tests.fusesoc_test_support import (
@@ -64,6 +68,9 @@ from tests.fusesoc_test_support import (
     touch_declared_sources,
 )
 from tests.fusesoc_test_support import write_core as _write_core
+
+detail_payload = functools.partial(_detail_payload, synth_tools=synth_target_tools)
+surface_payload = functools.partial(_surface_payload, synth_tools=synth_target_tools)
 
 # Spelled out, not imported: the layout is the contract the production constant must match.
 STATE_CORES_SUBDIR = "cores"
@@ -1029,6 +1036,59 @@ class TestResolveTargetHandleMocked:
         assert cmd[cmd.index("--target") + 1] == "sim"
         assert cmd[-1] == "::demo_core:0"  # VLNV is the positional core spec
         assert calls[0]["cwd"] == str(project)
+
+    def test_resolution_reads_the_selected_cores_edam(self, tmp_path: Path):
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        build_root = tmp_path / "build"
+        other = build_root / "aaa_other_0" / "sim" / "aaa_other_0.eda.yml"
+        other.parent.mkdir(parents=True)
+        other.write_text("name: aaa_other_0\ntoplevel: tb_other\nfiles: []\n", encoding="utf-8")
+
+        result = resolve_target_handle(
+            _handle(project),
+            build_root=build_root,
+            runner=fusesoc_setup_runner(edam=_edam_at(build_root)),
+        )
+
+        assert result.toplevel == "tb_counter"
+        assert result.edam_path == build_root / "demo_core_0" / "sim" / "demo_core_0.eda.yml"
+
+    def test_resolution_reads_the_tool_api_edam_layout(self, tmp_path: Path):
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        build_root = tmp_path / "build"
+        edam = build_root / "demo_core_0" / "sim-verilator" / "demo_core_0.eda.yml"
+
+        result = resolve_target_handle(
+            _handle(project),
+            build_root=build_root,
+            runner=fusesoc_setup_runner(edam=(edam, _EDAM_TEXT)),
+        )
+
+        assert result.edam_path == edam
+
+    @pytest.mark.parametrize("others", [1, 2])
+    def test_resolution_refuses_another_cores_edam_when_ambiguous(
+        self, tmp_path: Path, others: int
+    ):
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        build_root = tmp_path / "build"
+        for index in range(others):
+            other = build_root / f"other{index}_0" / "sim" / f"other{index}_0.eda.yml"
+            other.parent.mkdir(parents=True)
+            other.write_text("name: other\ntoplevel: tb_other\nfiles: []\n", encoding="utf-8")
+
+        with pytest.raises(TargetResolutionError) as excinfo:
+            resolve_target_handle(
+                _handle(project),
+                build_root=build_root,
+                runner=fusesoc_setup_runner(),
+            )
+
+        assert "::demo_core:0" in str(excinfo.value)
+        assert f"{others} EDAMs of other resolutions" in str(excinfo.value)
 
     @pytest.mark.parametrize(
         ("stderr", "expected"),

@@ -21,6 +21,7 @@ from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
+    make_directories,
     open_with_sharing_retry,
     replace_file,
 )
@@ -182,7 +183,7 @@ def write_progress_json(
     path: Path, document: Mapping[str, object], *, lock_timeout_s: float = 5
 ) -> None:
     """Atomically publish one progress document under its shared writer lock."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     with _progress_file_lock(path, timeout_s=lock_timeout_s):
         _write_progress_json_unlocked(path, document)
 

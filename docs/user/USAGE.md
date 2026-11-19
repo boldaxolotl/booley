@@ -125,9 +125,10 @@ Don't continue until `booley doctor` shows no failures or warnings.
     see [Several agents at once](#several-agents-at-once).
 
     `booley chat --cli codex` opens another Agent CLI instead, as long as it is
-    listed in `[agent] clis`; otherwise it stops and lists the allowed ones. In
-    the Sandbox, Booley currently sets up (sign-in, Booley tools, skills) only
-    the default CLI, so another one may ask you to sign in and lack Booley's tools.
+    listed in `[agent] clis`; otherwise it stops and lists the allowed ones.
+    In the Sandbox, every listed CLI gets Booley's tools and skills and the
+    sign-in its `[agent.auth]` policy allows; an unlisted one gets none. See
+    [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
 
     Arguments after `booley chat` and its own options (`--cli`, `-C`,
     `--new-worktree`, `--here`, `--name`) go to the

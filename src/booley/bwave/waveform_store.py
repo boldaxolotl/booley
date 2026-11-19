@@ -25,6 +25,7 @@ from typing import IO
 
 from booley.bwave.contract import BWaveListMetadata, decode_list_metadata
 from booley.core.boundary import BoundaryError
+from booley.runtime.filesystem_utils import make_directories
 
 _FST_HEADER_BLOCK = 0
 _FST_HEADER_LENGTH = 329
@@ -219,7 +220,7 @@ def convert_vcd(
             failure_kind="missing_binary",
             detail="native B-Wave binary is unavailable",
         )
-    store_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(store_path.parent)
     attempts: list[ConversionAttempt] = []
     events = ["post-processing VCD -> .fst"]
     for attempt_scope in _conversion_scopes(scope, allow_unscoped_fallback):
@@ -539,7 +540,7 @@ def start_streaming_conversion(
         return None
     import fcntl
 
-    store_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(store_path.parent)
     if replace_existing:
         fifo_path.parent.mkdir(parents=True, exist_ok=True)
         fifo_path.unlink(missing_ok=True)

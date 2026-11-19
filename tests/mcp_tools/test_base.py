@@ -173,7 +173,8 @@ def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
     assert result.exit_code == EXIT_ERROR
     assert captured.out == "design failed\n"
     assert "design failed" not in captured.err
-    assert "Completion failure (publish report.json)" in captured.err
+    assert captured.err.count("Completion failure (publish report.json)") == 1
+    assert "completion_errors" not in result.outcome.detail
 
 
 def test_self_printed_verdict_gets_only_the_requeue_note(capsys) -> None:
