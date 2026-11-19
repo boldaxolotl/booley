@@ -1103,15 +1103,20 @@ def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
         pytest.param(
             "timing_report_paths = 0\n", r"^synth: .*timing_report_paths", id="report-paths"
         ),
+        pytest.param('[flows.synth.timing]\nengine = "sta"\n', "'engine' is retired", id="key"),
+        pytest.param(
+            'synth_mode = "physical"\n[flows.synth.advanced_settings_openroad]\nutilization_pct = 150\n',
+            r"candidate lite: utilization_pct must be between 0 and 100",
+            id="ppa",
+        ),
     ],
 )
-def test_invalid_recipe_fails_the_dry_run(synth_cli: SynthCli, config: str, message: str) -> None:
+def test_invalid_recipe_fails_planning(synth_cli: SynthCli, config: str, message: str) -> None:
     synth_cli.config(config)
 
-    outcome = synth_cli.run("--dry-run")
-
-    assert outcome.exit_code == EXIT_ERROR
-    assert re.search(message, outcome.report_text), outcome.report_text
+    for outcome in (synth_cli.run("--dry-run"), synth_cli.run()):
+        assert outcome.exit_code == EXIT_ERROR
+        assert re.search(message, outcome.report_text), outcome.report_text
     assert list(synth_cli.project.glob(".booley-synth-plan-*")) == []
 
 

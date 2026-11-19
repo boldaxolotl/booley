@@ -100,6 +100,7 @@ from booley.flows.synth.backends.yosys.core import (
     DEFAULT_FRONTEND,
     NAND2_AREA_UM2,
     echoed_source_lines,
+    load_timing_config,
     resolve_frontend,
 )
 from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
@@ -1523,6 +1524,10 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         if self._report_path_count is not None:
             cmd.extend(["--timing-report-paths", str(self._report_path_count)])
         cmd.extend(["-w", target])
+        try:
+            load_timing_config(work_dir)
+        except SystemExit as exc:
+            raise BoundaryError(str(exc.code)) from None
         return _PlannedSynthRecipe(tuple(cmd), resolved)
 
     def _build_synth_cmd(self, target: str) -> list[str]:

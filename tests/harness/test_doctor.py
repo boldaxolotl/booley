@@ -33,6 +33,7 @@ from booley.audit.diagnostic_results import (
 )
 from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import (
     activity_hooks,
@@ -4253,6 +4254,34 @@ _SYNTH_EVIDENCE_REPORTS: dict[str, dict | str | None] = {
 
 def _incomplete(reason):
     return (Severity.FAIL, f"produced incomplete synthesis evidence: {reason}")
+
+
+@pytest.mark.parametrize(
+    ("utilization", "toml", "message"),
+    [
+        (150, "", "dry-run [synth_dut] failed with exit 2"),
+        (50, '[flows.synth.timing]\nengine = "sta"\n', "build input(s): timing"),
+    ],
+)
+def test_doctor_fails_synth_configure_errors(tmp_path, monkeypatch, utilization, toml, message):
+    options = "tool: yosys, arch: xilinx, synth_mode: physical, booley: {doctor: [synth]}, "
+    options += f"advanced_settings_openroad: {{utilization_pct: {utilization}}}"
+    sets = "  rtl: {files: [rtl/dut.sv]}\n  sdc: {files: [dut.sdc], file_type: SDC}\n"
+    core = _core("synth", _target("synth_dut", "generic", options, "rtl, sdc", "dut"), sets)
+    _core_project(
+        tmp_path, monkeypatch, {"unit.core": None, "synth.core": core, "dut.sdc": ""}, toml=toml
+    )
+    real_run = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        if "booley.flows.synth" not in cmd or "--dry-run" not in cmd:
+            return real_run(cmd, **kwargs)
+        a = [str(tmp_path) if "/" in c else c for c in cmd]
+        out = AsicSynthesizeFlow().execute_cli(a[a.index("booley.flows.synth") + 1 :]).outcome
+        return subprocess.CompletedProcess(cmd, out.exit_code, "", out.report_text)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    assert _rows(_doctor_run(tmp_path), Severity.FAIL, message)
 
 
 def test_deep_synthesis_evidence_is_graded_per_target(tmp_path, monkeypatch, capsys):

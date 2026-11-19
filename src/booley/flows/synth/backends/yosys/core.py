@@ -702,12 +702,13 @@ _MIGRATED_CONSTRAINT_KEYS = frozenset(
 )
 
 
-def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
+def load_timing_config(project_root: Path | None = None) -> dict:
     """Load ``[flows.synth.timing]`` from booley.toml and validate its keys.
 
     Hard cutoff (ADR 0029 decision 3): a migrated design-constraint key still
     present in booley.toml is a setup-time error naming the migration, not a
-    silent second source of truth. Unknown keys still warn (typo guard).
+    silent second source of truth. Unknown keys are left for
+    ``_warn_unknown_timing_keys``.
 
     *project_root* pins the booley.toml lookup to an explicit worktree (the
     in-process asic_synthesize configure half, ADR 0037 §8); ``None`` keeps the
@@ -738,12 +739,17 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
                 f"fileset, and delete the {key!r} line from "
                 "[flows.synth.timing] in booley.toml."
             )
+    return timing
+
+
+def _warn_unknown_timing_keys(timing: dict) -> None:
+    """Warn about ``[flows.synth.timing]`` keys nothing reads (typo guard)."""
+    for key in timing:
         if key not in TIMING_CONFIG_KEYS:
             print(
                 f"WARNING: [flows.synth.timing] unknown key {key!r} "
                 "ignored; valid keys: " + ", ".join(sorted(TIMING_CONFIG_KEYS))
             )
-    return timing
 
 
 def _resolve_synth_mode(mode: str | SynthMode | None) -> SynthMode:
@@ -852,7 +858,8 @@ def synth_timing_config(
     only when *ppa* is absent. The profile-aware Booley Flow passes ``False``
     by forwarding an explicit profile.
     """
-    timing = _load_and_validate_timing_config(project_root)
+    timing = load_timing_config(project_root)
+    _warn_unknown_timing_keys(timing)
     resolved_mode = _resolve_synth_mode(mode)
     resolved_sdc = _resolve_sta_sdc_paths(sdc, project_root)
     if legacy_utilization_fallback is None:
