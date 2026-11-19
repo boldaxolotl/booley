@@ -7,11 +7,15 @@ copied host gitconfig or no identity at all. Rather than re-deriving Git's
 precedence, these checks ask Git (``git config --show-scope``) what it would
 use from the running process's environment.
 
+The module also audits system and global credential helpers, which an editor
+attach installs to forward host Git credentials into the Sandbox.
+
 The functions return data and print nothing; Doctor owns the presentation.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +30,7 @@ from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 OVERRIDE_CHECK = "sandbox.git-identity-override"
 GITCONFIG_CHECK = "sandbox.gitconfig-identity"
+CREDENTIAL_HELPER_CHECK = "sandbox.git-credential-helper"
 
 _GIT_TIMEOUT_S = 10
 _COMMAND_SCOPE = "command"
@@ -42,6 +47,15 @@ _GITCONFIG_FIX = (
     f"{GITCONFIG_CHECK} in doctor-waivers.toml, or remove the user.name/user.email "
     "entries from the gitconfig named above"
 )
+_CREDENTIAL_HELPER_FIX = (
+    "remove the credential helper lines from each gitconfig named above; to stop "
+    'VS Code adding them again, set dev.containers.gitCredentialHelperConfigLocation to "none" '
+    "and dev.containers.copyGitConfig to false in your host VS Code settings; or, to accept "
+    f"the forwarding, waive {CREDENTIAL_HELPER_CHECK} in doctor-waivers.toml"
+)
+_USERINFO_RE = re.compile(r"(://)[^/\s]*@")
+_QUOTED_SECRET_RE = re.compile(r"""(['"])(password|username)=[^'"]*\1""")
+_INLINE_SECRET_RE = re.compile(r"\b(password|username)=\S+")
 _NEUTRAL_VALUES = {"user.name": DEFAULT_IDENTITY.name, "user.email": DEFAULT_IDENTITY.email}
 
 
@@ -67,7 +81,7 @@ class _ConfigEntry:
 def _git_config(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run ``git config`` in *checkout* with scope and origin columns."""
     return subprocess.run(
-        ["git", "-C", str(checkout), "config", "--show-scope", "--show-origin", *args],
+        ["git", "-C", str(checkout), "config", "-z", "--show-scope", "--show-origin", *args],
         capture_output=True,
         text=True,
         timeout=_GIT_TIMEOUT_S,
@@ -76,14 +90,14 @@ def _git_config(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _parse_entries(stdout: str, *, with_key: bool) -> list[_ConfigEntry]:
-    """Parse ``scope<TAB>origin<TAB>[key<SPACE>]value`` lines."""
+    """Parse NUL-delimited ``scope, origin, [key<NEWLINE>]value`` triples (``-z`` output)."""
+    fields = stdout.split("\0")
     entries = []
-    for line in stdout.splitlines():
-        parts = line.split("\t", 2)
-        if len(parts) != 3:
-            continue
-        scope, origin, rest = parts
-        key, value = rest.split(" ", 1) if with_key and " " in rest else ("", rest)
+    for scope, origin, rest in zip(fields[0::3], fields[1::3], fields[2::3], strict=False):
+        if not with_key:
+            key, value = "", rest
+        else:
+            key, _, value = rest.partition("\n")
         entries.append(_ConfigEntry(scope, origin, key, value))
     return entries
 
@@ -155,11 +169,13 @@ def inspect_gitconfig_identity(checkout: Path) -> IdentityCheck:
     try:
         result = _git_config(checkout, "--get-regexp", r"^user\.(name|email)$")
     except (OSError, subprocess.SubprocessError) as exc:
-        return _gitconfig_unreadable(f"Git could not be inspected: {exc}")
+        return _gitconfig_unreadable(
+            GITCONFIG_CHECK, "identity", f"Git could not be inspected: {exc}"
+        )
     if result.returncode == 1:
         return clean
     if result.returncode != 0:
-        return _gitconfig_unreadable(_first_line(result.stderr))
+        return _gitconfig_unreadable(GITCONFIG_CHECK, "identity", _first_line(result.stderr))
     found = [
         entry
         for entry in _parse_entries(result.stdout, with_key=True)
@@ -175,8 +191,55 @@ def inspect_gitconfig_identity(checkout: Path) -> IdentityCheck:
     return IdentityCheck(warning=warning(GITCONFIG_CHECK, message), fix=_GITCONFIG_FIX)
 
 
-def _gitconfig_unreadable(detail: str) -> IdentityCheck:
+def _redacted(text: str) -> str:
+    """Drop URL userinfo and inline ``password=``/``username=`` values; collapse whitespace."""
+    text = _USERINFO_RE.sub(r"\1***@", text)
+    text = _QUOTED_SECRET_RE.sub(r"\1\2=***\1", text)
+    text = _INLINE_SECRET_RE.sub(r"\1=***", text)
+    return " ".join(text.split())
+
+
+def inspect_credential_helpers(checkout: Path) -> IdentityCheck:
+    """Check that no system or global gitconfig sets a Git credential helper.
+
+    Only lists configuration; no helper and no ``git credential`` command runs.
+    """
+    clean = IdentityCheck(passed="system and global gitconfig set no Git credential helper")
+    try:
+        result = _git_config(checkout, "--get-regexp", r"^credential\.(.+\.)?helper$")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _gitconfig_unreadable(
+            CREDENTIAL_HELPER_CHECK, "credential helpers", f"Git could not be inspected: {exc}"
+        )
+    if result.returncode == 1:
+        return clean
+    if result.returncode != 0:
+        return _gitconfig_unreadable(
+            CREDENTIAL_HELPER_CHECK, "credential helpers", _first_line(result.stderr)
+        )
+    found: list[_ConfigEntry] = []
+    for entry in _parse_entries(result.stdout, with_key=True):
+        if entry.scope not in _FILE_SCOPES:
+            continue
+        if not entry.value:  # Git: an empty value resets the helpers listed before it
+            found = [prior for prior in found if prior.key != entry.key]
+        else:
+            found.append(entry)
+    if not found:
+        return clean
+    listing = ", ".join(f"{_redacted(e.key)}='{_redacted(e.value)}' ({e.origin})" for e in found)
+    message = (
+        f"system or global gitconfig sets Git credential helper(s) {listing}; any process in "
+        "this Sandbox, including the agent, can ask them for credentials. An editor attach "
+        "(VS Code Dev Containers, Codespaces) likely installed them; the Sandbox Image sets none"
+    )
     return IdentityCheck(
-        warning=warning(GITCONFIG_CHECK, f"cannot list system/global Git identity: {detail}"),
+        warning=warning(CREDENTIAL_HELPER_CHECK, message), fix=_CREDENTIAL_HELPER_FIX
+    )
+
+
+def _gitconfig_unreadable(check_id: str, what: str, detail: str) -> IdentityCheck:
+    return IdentityCheck(
+        warning=warning(check_id, f"cannot list system/global Git {what}: {detail}"),
         fix="fix the Git configuration error above",
     )
