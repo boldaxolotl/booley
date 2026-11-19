@@ -35,12 +35,14 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import quote
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import BoundaryError
 from booley.flows import artifacts as _artifacts
 from booley.flows import tool_runs
@@ -840,6 +842,16 @@ class VariantSweep:
 # ---------------------------------------------------------------------------
 # Flow implementation
 # ---------------------------------------------------------------------------
+
+
+def _staged_runtime_inputs(work_dir: Path, pinned: _PinnedBuild) -> AbstractContextManager[None]:
+    """Expose the pinned build's runtime inputs in the run directory, recorded for recovery."""
+    return materialize_runtime_inputs(
+        work_dir / pinned.rel,
+        work_dir / resolve_run_cwd(work_dir),
+        pinned.runtime_inputs,
+        booley_dir=resolve_checkout_booley_dir(work_dir),
+    )
 
 
 class MutationFlow(BuiltinFlow[MutationRequest]):
@@ -2119,9 +2131,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         marker = build_path / _EDALIZE_EDA_TOOL_MARKER
         if marker.is_file():
             self.record_eda_tool(target, marker.read_text(encoding="utf-8").strip())
-        with materialize_runtime_inputs(
-            work_dir / pinned.rel, work_dir / resolve_run_cwd(work_dir), pinned.runtime_inputs
-        ):
+        with _staged_runtime_inputs(work_dir, pinned):
             try:
                 proc = run_tool(
                     cmd,

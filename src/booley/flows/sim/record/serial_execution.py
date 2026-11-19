@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import BoundaryError
 from booley.flows.artifact_durability import (
     durable_copy,
@@ -719,6 +720,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             run_cwd=run_cwd,
             declarations=declarations,
             owned_run_directory=run_directory.owned,
+            booley_dir=resolve_checkout_booley_dir(request.project_root),
         ) as bindings:
             self._publication_checkpoint("after:runtime_inputs")
             failure = _immutable_hook_failure(

@@ -15,6 +15,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.execution import SimulationExecution, SimulationTargetOutcome
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
@@ -101,6 +102,7 @@ def run_prepared_group(
             run_cwd=Path(view),
             declarations=declarations,
             owned_run_directory=False,
+            booley_dir=resolve_checkout_booley_dir(handle.project_root),
         ),
     ):
         return group.launch_bundle(
