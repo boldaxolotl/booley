@@ -1,8 +1,9 @@
-"""Tell whether a Mutant's Verilator build equals the baseline's (ADR 0088, amendment 2026-11-13).
+"""Digest a Mutant's Verilator build to compare it with the baseline's or another's (ADR 0088).
 
 Verilator turns the RTL into C++.  A Mutant whose generated C++ is the baseline's, apart
 from where its private source copy lives, builds the same simulator, so no test can tell
-it from the original: it is equivalent.  The check reads only the generated ``.cpp`` and
+it from the original: it is equivalent.  Two Mutants with the same generated C++ likewise
+test one behavior.  The check reads only the generated ``.cpp`` and
 ``.h`` files; it never compares object code or simulation output, and any other
 difference keeps the Mutant (it may miss an equivalent Mutant, never drop another).
 
