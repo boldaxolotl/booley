@@ -127,7 +127,8 @@ read-only, and delegating it would loosen the hardening.
   with its Target, so a run that fails before OpenROAD releases its estimate.
   `sv2v` and Yosys run in one command and end together. FPGA implementation
   stays one phase: one Vivado batch run does both synthesis and
-  implementation, so Booley sees no boundary between them.
+  implementation, so Booley sees no boundary between them. A Custom Flow is
+  one opaque command and stays one phase.
 - Order is by priority, but a later Job may jump ahead of a front Job that
   does not fit when it fits now and is estimated to finish before the front
   Job can start. A Job without wall-clock history never jumps. Strict order

@@ -12,7 +12,7 @@ estimated from the retained records:
   and phase (any Test Run or flags), else for that phase anywhere in the
   Project (ASIC synthesis and FPGA implementation never borrow from another
   Target: their memory grows with the design);
-* **stand-in**: a split synthesis phase (``yosys``, ``openroad``) with no record
+* **stand-in**: a split synthesis phase (``sv2v``, ``yosys``, ``openroad``) with no record
   of its own or the Target's takes the Target's whole-command ``synth`` estimate;
 * **unknown**: with neither, the phase has no estimate.
 
