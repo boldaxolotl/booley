@@ -453,20 +453,28 @@ def test_a_run_killed_at_the_sandbox_limit_runs_once_more_alone(
     assert _only_the_coordinator_holds(managed)
 
 
-def test_a_killed_baseline_build_blames_the_kill_not_the_source(
+@pytest.mark.parametrize(
+    ("killed_run", "result"),
+    [
+        (1, "RESULT: ERROR (elaboration: pristine source build was OOM-killed: the host"),
+        (2, "RESULT: ERROR (baseline: test '<default>' inconclusive: OOM-killed: the host"),
+    ],
+    ids=["build", "simulation"],
+)
+def test_a_killed_baseline_blames_the_kill_not_the_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
     inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
+    killed_run: int,
+    result: str,
 ) -> None:
+    """A host kill of the baseline's build or simulation ends the run naming the kill."""
     managed.record_history()
-    seen = _kill_runs(monkeypatch, managed, 1, ["host"])
+    seen = _kill_runs(monkeypatch, managed, killed_run, ["host"])
 
     outcome = _admitted_run(tmp_path, monkeypatch, managed.context())
 
-    assert len(seen) == 1  # a host kill is not retried
+    assert len(seen) == killed_run  # a host kill is not retried, and nothing runs after it
     assert outcome.exit_code == EXIT_ERROR
-    assert "RESULT: ERROR (elaboration: pristine source build was OOM-killed" in (
-        outcome.report_text
-    )
-    assert "did not elaborate" not in outcome.report_text
+    assert result in outcome.report_text

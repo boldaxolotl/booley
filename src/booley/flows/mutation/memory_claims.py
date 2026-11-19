@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, ClassVar, TypeVar
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.runtime import job_slots, oom_priority
-from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, host_oom_kill_explanation
 from booley.runtime.job_records import _proc_cmdline
 
 if TYPE_CHECKING:
@@ -29,13 +29,6 @@ if TYPE_CHECKING:
     from booley.runtime.endpoint_execution import EndpointOutcome
 
 _Run = TypeVar("_Run")
-
-#: Why a host-killed run is not retried, and the remedy (the Job result's wording, ADR 0087).
-_HOST_OOM_KILL_REASON = (
-    "OOM-killed: the host ran out of memory while the Sandbox stayed within its "
-    "[sandbox].memory limit, so it is not retried. Free memory on the host, or lower "
-    "[sandbox].memory and recreate the Sandbox, then run it again"
-)
 
 
 class CampaignClaims:
@@ -124,7 +117,7 @@ def _oom_kill_reason(killed: OomKill | None, *, retried: bool) -> str:
     if killed is None:
         return ""
     if killed == "host":
-        return _HOST_OOM_KILL_REASON
+        return f"OOM-killed: {host_oom_kill_explanation('it')}"
     if retried:
         return "OOM-killed at the Sandbox's [sandbox].memory limit, also when run alone"
     return "OOM-killed at the Sandbox's [sandbox].memory limit; without memory admission it is not retried"

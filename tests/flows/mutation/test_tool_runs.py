@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import os
 import subprocess
 import sys
@@ -10,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.job_resources import JobResourceMonitor, ResourceLabel
 from booley.flows.mutation.tool_runs import run_tool
 from booley.runtime import resource_history
 from tests.canned_process_support import canned_command
+from tests.oom_events_support import rising_oom_events
 from tests.time_budget import hang_guard_s, scaled
 
 _LABEL = ResourceLabel("default", "sim_build")
@@ -102,15 +101,7 @@ def test_a_tool_the_oom_killer_took_names_which_kill_it_was(
     kill: str,
     outcome: str,
 ) -> None:
-    # The container's OOM counter rises over the run; the Sandbox's own limit event only
-    # when it reached its limit.
-    counter = itertools.count()
-
-    def events() -> job_resources.MemoryEvents:
-        kills = next(counter)
-        return job_resources.MemoryEvents(kills, kills if limit_reached else 0)
-
-    monkeypatch.setattr(job_resources, "cgroup_memory_events", events)
+    rising_oom_events(monkeypatch, limit_reached=limit_reached)
     killed = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
 
     done = run_tool(killed, label=_LABEL, cwd=tmp_path, env=os.environ, timeout=hang_guard_s())

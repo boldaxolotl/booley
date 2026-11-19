@@ -1,6 +1,5 @@
 """Pre-Sim Commands live behind the Project-scoped execution seam."""
 
-import itertools
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,11 +7,11 @@ from typing import cast
 
 import pytest
 
-from booley.flows import job_resources
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.runtime import resource_history
 from booley.runtime.endpoint_execution import job_attempt, work_item_attempt_requeues
 from booley.targets.domain import TargetHandle
+from tests.oom_events_support import rising_oom_events
 from tests.time_budget import hang_guard_s
 
 
@@ -98,13 +97,7 @@ def test_an_oom_killed_pre_sim_command_is_its_work_items_kill(
     booley_dir = tmp_path / ".booley"
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     monkeypatch.delenv("BOOLEY_INTERNAL_DOCTOR_RUN", raising=False)
-    counter = itertools.count()
-
-    def events() -> job_resources.MemoryEvents:
-        kills = next(counter)
-        return job_resources.MemoryEvents(kills, kills if limit_reached else 0)
-
-    monkeypatch.setattr(job_resources, "cgroup_memory_events", events)
+    rising_oom_events(monkeypatch, limit_reached=limit_reached)
 
     with job_attempt(stop_on_oom=True, work_item=True) as attempt:
         evidence = run_pre_sim_commands(

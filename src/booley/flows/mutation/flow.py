@@ -3019,28 +3019,24 @@ def _baseline_build_error(
     plan: MutationRunPlan, elab: subprocess.CompletedProcess, oom_kill: str
 ) -> EndpointOutcome:
     """The error that ends the run when the pristine source's build failed or was OOM-killed."""
-    elab_output = (elab.stdout or "") + (elab.stderr or "")
-    # A killed build says nothing about the source.
-    reason = (
-        f"pristine source build was {oom_kill}"
-        if oom_kill
-        else "pristine source did not elaborate"
-    )
-    headline = (
-        f"mutation baseline: {reason}"
-        if oom_kill
-        else ("mutation baseline did not elaborate from pristine source")
-    )
+    log_tail = tail((elab.stdout or "") + (elab.stderr or ""), 50)
+    if oom_kill:
+        # A killed build says nothing about the source.
+        reason = f"pristine source build was {oom_kill}"
+        headline = f"mutation baseline: {reason}"
+    else:
+        reason = "pristine source did not elaborate"
+        headline = "mutation baseline did not elaborate from pristine source"
     return _error_outcome(
         "elaboration",
         reason,
-        report_text=f"{headline}\n" + tail(elab_output, 50),
+        report_text=f"{headline}\n{log_tail}",
         detail=_failure_detail(
             phase="baseline_elaboration",
             reason=reason,
             specs=[],
             work_dir=plan.work_dir,
-            log_tail=tail(elab_output, 50),
+            log_tail=log_tail,
         ),
     )
 
