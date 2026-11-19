@@ -18,6 +18,7 @@ import logging
 import os
 import stat
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -123,10 +124,14 @@ class StagedInputLedger:
         """Confirm the pending entry with the identity of the object just created."""
         if self._owner is None:
             return
-        status = os.lstat(self._run_dir / relative)
+        destination = self._run_dir / relative
+        status = os.lstat(destination)
         for entry in reversed(self._entries):
             if entry.path == relative.as_posix() and entry.created is None:
                 entry.created = (status.st_dev, status.st_ino)
+                if entry.kind == "link":
+                    # The OS may spell an absolute target differently from the request.
+                    entry.identity = str(destination.readlink())
                 break
         _publish(self._record, self._owner, self._run_dir, self._entries)
 
@@ -194,13 +199,21 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
     # A PID from another PID namespace reads as dead whether or not it runs.
     if owner.identity_scope != scope or observe_process(owner).state not in DEAD_PROCESS_STATES:
         return set()
+    live = [entry for entry in entries if entry.created is not None]
+
+    def retire(entry: _Entry) -> None:
+        # Retire before the unlink: a crash then leaves an unrecorded leftover and
+        # never a record that could later authorize deleting a user's new object.
+        live[:] = [other for other in live if other is not entry]
+        _publish(record, owner, run_dir, live)
+
     kept: list[_Entry] = []
     retained: set[Path] = set()
     for entry in reversed(entries):
         if entry.created is None:
             continue
         destination = run_dir / entry.path
-        if _remove_entry(run_dir, entry, destination, retained):
+        if _remove_entry(run_dir, entry, destination, retained, retire):
             kept.append(entry)
             retained.add(destination)
     kept.reverse()
@@ -221,10 +234,16 @@ def _ancestors_are_real(run_dir: Path, relative: Path) -> bool:
     return True
 
 
-def _remove_entry(run_dir: Path, entry: _Entry, destination: Path, retained: set[Path]) -> bool:
+def _remove_entry(
+    run_dir: Path,
+    entry: _Entry,
+    destination: Path,
+    retained: set[Path],
+    retire: Callable[[_Entry], None],
+) -> bool:
     """Remove the object *entry* created; return whether the entry must stay recorded."""
     try:
-        return _remove_created(run_dir, entry, destination, retained)
+        return _remove_created(run_dir, entry, destination, retained, retire)
     except FileNotFoundError:
         return False
     except OSError as exc:
@@ -243,13 +262,23 @@ def _still_created(entry: _Entry, destination: Path, status: os.stat_result) -> 
     return stat.S_ISDIR(status.st_mode)
 
 
-def _remove_created(run_dir: Path, entry: _Entry, destination: Path, retained: set[Path]) -> bool:
+def _remove_created(
+    run_dir: Path,
+    entry: _Entry,
+    destination: Path,
+    retained: set[Path],
+    retire: Callable[[_Entry], None],
+) -> bool:
     if not _ancestors_are_real(run_dir, Path(entry.path)):
         return True
     if not _still_created(entry, destination, os.lstat(destination)):
         return True
     if entry.kind != "directory":
-        destination.unlink()
+        retire(entry)
+        # A concurrent sweep may have replaced the object while it was hashed.
+        status = os.lstat(destination)
+        if (status.st_dev, status.st_ino) == entry.created:
+            destination.unlink()
         return False
     try:
         destination.rmdir()

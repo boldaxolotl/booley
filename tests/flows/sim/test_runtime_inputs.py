@@ -271,3 +271,25 @@ def test_killed_link_leftover_is_removed_or_named(firmware: tuple[Path, Path], c
     ):
         pytest.fail("a changed leftover must fail the run")
     assert staged.read_text(encoding="utf-8") == "01\n"
+
+
+def test_a_failed_confirmation_unwinds_the_link_it_follows(
+    firmware: tuple[Path, Path], monkeypatch
+) -> None:
+    from booley.flows.sim.staged_input_ledger import StagedInputLedger
+
+    build, run = firmware
+
+    def failing(_self: StagedInputLedger, _relative: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(StagedInputLedger, "created", failing)
+    with (
+        pytest.raises(RuntimeInputError, match="disk full"),
+        materialize_runtime_inputs(
+            build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ),
+    ):
+        pytest.fail("a failed confirmation must not expose the input")
+
+    assert list(run.iterdir()) == []

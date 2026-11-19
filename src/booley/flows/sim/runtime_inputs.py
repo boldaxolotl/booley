@@ -160,13 +160,22 @@ def _is_owned_link(link: Path, relative: Path, overlay_root: Path) -> bool:
     return _link_target(link) == overlay_root / relative
 
 
+def _confirm_or_remove(ledger: StagedInputLedger, relative: Path, destination: Path) -> None:
+    """Confirm a just-created object; when that fails, unwind it here, as no caller owns it yet."""
+    try:
+        ledger.created(relative)
+    except OSError:
+        destination.unlink(missing_ok=True)
+        raise
+
+
 def _create_link(
     ledger: StagedInputLedger, run: Path, destination: Path, target: Path, *, directory: bool
 ) -> None:
     relative = destination.relative_to(run)
     ledger.will_create(relative, kind="link", identity=str(target))
     destination.symlink_to(target, target_is_directory=directory)
-    ledger.created(relative)
+    _confirm_or_remove(ledger, relative, destination)
 
 
 def _replace_owned_link(
@@ -394,7 +403,7 @@ def _expose_simulation_record_input(
         return "identical_existing", False
     ledger.will_create(relative, kind="file", identity=digest)
     shutil.copyfile(authoritative, destination, follow_symlinks=False)
-    ledger.created(relative)
+    _confirm_or_remove(ledger, relative, destination)
     return "copy", True
 
 

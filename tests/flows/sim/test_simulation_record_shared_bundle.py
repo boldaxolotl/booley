@@ -1124,3 +1124,20 @@ def test_resume_configures_its_recovered_shared_build_once(tmp_path: Path, monke
     assert resumed.launched == [("sim", (name,)) for name in ("t1", "t2", "t3")]
     # Resume re-plans one disclosure per group (4), then configures the recovered build once.
     assert resumed.configures == 5
+
+
+def test_a_failed_confirmation_unwinds_the_copy_it_follows(tmp_path: Path, monkeypatch) -> None:
+    from booley.flows.sim.staged_input_ledger import StagedInputLedger
+
+    real_created = StagedInputLedger.created
+
+    def failing(self: StagedInputLedger, relative: Path) -> None:
+        if relative.name == "input.bin":
+            raise OSError("disk full")
+        real_created(self, relative)
+
+    monkeypatch.setattr(StagedInputLedger, "created", failing)
+    with pytest.raises(OSError, match="disk full"), _staging(tmp_path, "attempt"):
+        pytest.fail("a failed confirmation must not expose the input")
+
+    assert not (tmp_path / "run/generated").exists()
