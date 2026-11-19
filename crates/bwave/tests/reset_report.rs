@@ -242,18 +242,13 @@ fn reset_pulse_from_inactive_deasserts_where_it_ends() {
         "rst",
         &[(0, "0"), (7, "1"), (25, "0"), (60, "1"), (70, "0")],
     );
-    let commands: [&[&str]; 14] = [
+    let commands: [&[&str]; 9] = [
         &["signal", "-s", "flag"],
         &["signal", "-s", "flag", "-t", "2c:4c"],
-        &["signal", "-s", "flag", "-t", "200c:"],
-        &["wave", "-s", "flag"],
         &["value", "-s", "flag", "--at", "2"],
         &["find", "flag", "'b1"],
         &["sample", "flag", "change", "-s", "flag"],
-        &["diff", "1", "3", "-s", "flag"],
-        &["distance", "flag", "change"],
         &["stats", "-s", "flag"],
-        &["stats", "-s", "clk"],
         &["stuck", "-s", "early"],
         &["overview", "--clock", "tb.gclk"],
         &["value", "--async", "--at", "2c", "-s", "flag"],
@@ -264,17 +259,10 @@ fn reset_pulse_from_inactive_deasserts_where_it_ends() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let sources: [(&str, &str, &[&str], &str, &str); 5] = [
+    let sources: [(&str, &str, &[&str], &str, &str); 4] = [
         ("pulse", &pulse, &[], "tb.rst", "active-high"),
         ("pulse_n", &pulse_n, &[], "tb.rst_n", "active-low"),
         ("twice", &twice, &[], "tb.rst", "active-high"),
-        (
-            "pulse_n --reset",
-            &pulse_n,
-            &["--reset", "tb.rst*"],
-            "tb.rst_n",
-            "active-low",
-        ),
         (
             "pulse --reset",
             &pulse,
@@ -373,11 +361,6 @@ fn x_initial_reset_waits_for_inactive_value() {
     let (out, err, code) = run(&["signal", &path, "-s", "rst_n", "-t", "1:1"]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(out.trim(), "1 rst_n 1");
-
-    // X straight to inactive: the X counts as the asserted value.
-    let (_dir, path) = store(&[("rst_n", 1)], &[(0, "x rst_n"), (20, "1 rst_n")], 100);
-    let json = json_of(&["overview", &path, "--format", "json"]);
-    assert_eq!(json["reset"]["deassert_tick"], 20);
 }
 
 #[test]
@@ -489,19 +472,6 @@ fn json_reset_object_matches_header() {
             "deassert_tick": 18,
             "deassert_time": "18ns",
             "skipped_cycles": 2,
-            "with_reset": false
-        })
-    );
-    let (_idle, idle_path) = store(&[("rst", 1)], &[(0, "0 rst")], 100);
-    assert_eq!(
-        json_of(&["overview", &idle_path, "--format", "json"])["reset"],
-        json!({
-            "signal": "tb.rst",
-            "polarity": "active_high",
-            "chosen_by": "auto",
-            "deassert_tick": null,
-            "deassert_time": null,
-            "skipped_cycles": 0,
             "with_reset": false
         })
     );

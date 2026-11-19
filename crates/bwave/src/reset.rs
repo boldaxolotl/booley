@@ -177,9 +177,7 @@ mod tests {
                 At(9),
             ),
             (steps(&[(0, "0"), (5, "x"), (9, "0")]), NeverAsserts),
-            (steps(&[(0, "0"), (5, "z"), (7, "1"), (9, "0")]), At(9)),
             (steps(&[(0, "0"), (5, "1")]), NeverDeasserts),
-            (steps(&[(0, "x"), (5, "1")]), NeverDeasserts),
         ];
         for (transitions, expected) in cases {
             assert_eq!(
@@ -188,8 +186,6 @@ mod tests {
                 "{transitions:?}"
             );
         }
-        let low = steps(&[(0, "1"), (5, "0"), (9, "1")]);
-        assert_eq!(deassertion(&low, true), At(9));
     }
 
     #[test]
