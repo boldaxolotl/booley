@@ -14,7 +14,7 @@ from booley.harness.dashboard.app import (
 )
 from booley.harness.dashboard.jobs import JobView
 from booley.harness.dashboard.links import linked_text
-from booley.presentation.report_results import present_report, project_facts
+from booley.presentation.report_results import ResultLine, present_report, project_facts
 from booley.runtime.job_records import JobRecord
 
 STAMP = "2026-10-08T10:00:00Z"
@@ -368,10 +368,10 @@ def test_report_locations_and_coverage_miss():
 
 
 def test_multitarget_and_list_caps():
-    simulation_records = {f"t{i}": simulation_record(2, 1) for i in range(8)}
+    simulation_records = {f"t{i}": simulation_record(2, 1 if i < 5 else 0) for i in range(8)}
     report = {"flow": "sim", "detail": {"records": simulation_records}}
     text = job_detail(job(report))
-    assert "16/24 tests passed" in text, "aggregate counts must use canonical observation counts"
+    assert "16/21 tests passed" in text, "aggregate counts must use canonical observation counts"
     assert "3 more Targets" in text and "t7:" not in text
     simulation_records = {
         "top": {
@@ -479,7 +479,6 @@ def test_simulation_record_producer_failure_axes_are_visible():
 
 
 def test_multitarget_implementation_metrics_keep_target_names():
-
     for endpoint in ("synth", "fpga"):
         targets = {
             name: {
@@ -494,16 +493,16 @@ def test_multitarget_implementation_metrics_keep_target_names():
         result = present_report(
             {"flow": endpoint, "exit_code": 1, "detail": {"implementation": {"results": targets}}}
         )
-        text = "\n".join(f"{row.label}: {row.value}" for row in result.result_rows)
-        for name, area, slack, reason in (
-            ("alpha", 12, -1, "alpha timing"),
-            ("beta", 24, -2, "beta timing"),
-        ):
-            assert f"{name} · Area: {area}" in text, (
-                "implementation metrics must identify their Target"
-            )
-            assert f"{name} · Clock clk: WNS: {slack}" in text
-            assert f"{name} · Failure reason: {reason}" in text
+        assert result.result_rows == (
+            ResultLine("  alpha", "fail", "fail"),
+            ResultLine("  beta", "fail", "fail"),
+            ResultLine("  alpha · Area", "12"),
+            ResultLine("  alpha · Clock clk", "WNS: -1"),
+            ResultLine("  alpha · Failure reason", "alpha timing", "fail"),
+            ResultLine("  beta · Area", "24"),
+            ResultLine("  beta · Clock clk", "WNS: -2"),
+            ResultLine("  beta · Failure reason", "beta timing", "fail"),
+        ), "implementation metrics must identify their Target"
 
 
 def test_known_endpoint_unknown_detail_uses_safe_fallback():
@@ -559,3 +558,166 @@ def test_multiline_proposal_facts_preserve_human_text():
         )
         assert "\t" not in text
     assert "danger" not in str(project_facts({"rationale": "\x1b[31mdanger"}))
+
+
+def capped_target(grade, reasons=()):
+    return {
+        "status": {"grade": grade, "failure_reasons": list(reasons), "warning_reasons": ["slow"]},
+        "metrics": {
+            "area_kge": 1,
+            "area_um2": 2,
+            "cell_count": 3,
+            "wns_ns": 0.1,
+            "latches": 0,
+            "unexpected_latches": 0,
+            "lut_count": 4,
+            "ff_count": 5,
+            "per_clock": {"clk": {"wns_ns": 0.1}},
+        },
+    }
+
+
+def test_failures_survive_row_cap():
+    def rows(*, reasons, overall):
+        report = {
+            "flow": "synth",
+            "exit_code": 1,
+            "detail": {
+                "implementation": {
+                    "results": {
+                        "a": capped_target("pass"),
+                        "b": capped_target("pass"),
+                        "c": capped_target("fail", ["c timing"] if reasons else []),
+                    }
+                }
+            },
+            **({"failure_reason": "overall"} if overall else {}),
+        }
+        return present_report(report).result_rows
+
+    result = rows(reasons=True, overall=True)
+    assert len(result) == 24
+    assert result[2] == ResultLine("  c", "fail", "fail")
+    assert result[-3:] == (
+        ResultLine("  c · Failure reason", "c timing", "fail"),
+        ResultLine("Failure reason", "overall", "fail"),
+        ResultLine("More", "12 facts in report"),
+    )
+    reference = [row for row in rows(reasons=False, overall=False) if row.semantic != "fail"]
+    assert [row for row in result[:-1] if row.semantic != "fail"] == reference[:20]
+
+    report = {
+        "flow": "synth",
+        "exit_code": 1,
+        "failure_reason": "overall",
+        "detail": {
+            "implementation": {
+                "results": {
+                    "a": capped_target("pass"),
+                    "b": capped_target("pass"),
+                    "c": capped_target("fail", ["c timing"]),
+                }
+            }
+        },
+    }
+    item = job(report, 1, "synth")
+    assert "c · Failure reason: c timing" in job_detail(item)
+    styled = DashboardApp(lambda: None)._job_detail(item)
+    assert styled.get_style_at_offset(Console(), styled.plain.index("c timing")) == Style.parse(
+        SEMANTIC_STYLE["fail"]
+    )
+
+
+def test_failed_targets_past_item_limit_are_named():
+    def seven(make):
+        return {f"t{i}": make(i == 6) for i in range(7)}
+
+    cases = [
+        (
+            "synth",
+            {
+                "implementation": {
+                    "results": seven(
+                        lambda bad: (
+                            capped_target("fail", ["late"])
+                            if bad
+                            else {"status": {"grade": "pass"}}
+                        )
+                    )
+                }
+            },
+            [("  t6", "fail", "fail"), ("  t6 · Failure reason", "late", "fail")],
+        ),
+        (
+            "fpga",
+            {
+                "implementation": {
+                    "results": seven(lambda bad: {"status": {"grade": "error" if bad else "pass"}})
+                }
+            },
+            [("  t6", "error", "fail")],
+        ),
+        (
+            "sim",
+            {
+                "records": seven(
+                    lambda bad: {
+                        **simulation_record(2, 0),
+                        "grade": "inconclusive" if bad else "pass",
+                        "observations": [{"test": "test_bad", "functional": "inconclusive"}]
+                        if bad
+                        else [],
+                    }
+                )
+            },
+            [("  t6 · Failed", "test_bad", "fail")],
+        ),
+        (
+            "sim",
+            {
+                "coverage": True,
+                "targets": seven(
+                    lambda bad: (
+                        {
+                            "simulation": "blocked",
+                            "collection": "infrastructure_error",
+                            "evaluation": "blocked",
+                            "error": "boom",
+                        }
+                        if bad
+                        else {"simulation": "pass", "collection": "ok", "evaluation": "pass"}
+                    )
+                ),
+            },
+            [
+                (
+                    "  t6",
+                    "simulation blocked · collection infrastructure_error · evaluation blocked",
+                    "fail",
+                )
+            ],
+        ),
+        (
+            "sim",
+            {
+                "mode": "elab-only",
+                "targets": seven(
+                    lambda bad: (
+                        {"passed": False, "verdict": "failed", "reason": "syntax"}
+                        if bad
+                        else {"passed": True}
+                    )
+                ),
+            },
+            [("  t6", "failed · Reason: syntax", "fail")],
+        ),
+    ]
+    for endpoint, detail, expected in cases:
+        rows = [
+            (row.label, row.value, row.semantic)
+            for row in present_report({"flow": endpoint, "detail": detail}).result_rows
+        ]
+        for row in expected:
+            assert row in rows, endpoint
+        assert not any(label.startswith("  t5") for label, _, _ in rows), endpoint
+        assert ("Targets", "1 more Targets in report", "") in rows, endpoint
