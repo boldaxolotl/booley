@@ -575,14 +575,10 @@ def _is_io_bound_critical(metrics: SynthMetrics) -> bool:
     at an input port or ends at an output port (in->reg, reg->out, or a pure
     in->out feedthrough).
 
-    That matters because the generated SDC sets I/O delays as a *percentage of
-    the clock period*: ``set_input_delay`` and ``set_output_delay`` both scale
-    with ``period_ps``, so an I/O path's slack barely moves as the period is
-    tuned (a pure in->out feedthrough is exactly period-invariant, since the
-    scaled input and output delays cancel). An author chasing an I/O-bound
-    violation by shrinking ``period_ps`` chases a tail that never closes; the
-    real levers are declaring the actual external I/O delays or false-pathing
-    the port via the ``[flows.synth.timing].sdc`` knob. (SETUP-28)
+    That matters because an I/O path's slack depends on the external delays the
+    Target's SDC declares for that port, so the fix is there: a realistic
+    ``set_input_delay`` / ``set_output_delay``, or ``set_false_path`` for a port
+    that should not be timed. (SETUP-28)
     """
     worst = metrics.wns_ns
     r2r = metrics.reg2reg_slack_ns
@@ -2895,7 +2891,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
     @staticmethod
     def _format_io_bound_line(tgt: str, cur: SynthMetrics) -> str:
-        """Advisory: the worst path is I/O-bound, so period_ps is the wrong lever."""
+        """Advisory: the worst path is I/O-bound; its remedy is in the Target's SDC."""
         worst = cur.wns_ns
         r2r = cur.reg2reg_slack_ns
         return note_line(
@@ -2903,8 +2899,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             "NOTE",
             f"critical path is I/O-bound "
             f"(worst slack {worst:+.3f} ns vs reg2reg {r2r:+.3f} ns); "
-            "period_ps won't move it — declare I/O delays / false-path the port "
-            "via the [flows.synth.timing].sdc knob",
+            "set the port's real external delay with set_input_delay / "
+            "set_output_delay, or exclude it with set_false_path, in the Target's "
+            "file_type: SDC fileset",
         )
 
     @staticmethod

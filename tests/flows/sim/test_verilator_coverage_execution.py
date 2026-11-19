@@ -45,8 +45,10 @@ from booley.flows.sim.verilator_coverage_execution import (
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.fusesoc.fusesoc_registry import ResolvedFile, core_target_coverage_errors
+from booley.runtime import resource_history
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog
+from tests.canned_process_support import canned_command, measured_flow
 
 
 def _pre_sim_config(root: Path, text: str) -> None:
@@ -763,6 +765,7 @@ def _execution_fixture(
         target=handle.selector,
         target_identity=handle.identity,
         resolved=SimpleNamespace(
+            vlnv="acme:demo:counter-booleycoverage:1",
             cocotb_module="test_counter" if cocotb else "",
             parameters={},
             files=files,
@@ -845,8 +848,9 @@ def _fake_invoke(captured, raw_path: Path):
             image = captured["prepare"]["build_root"] / (
                 "Vtop" if captured.get("cocotb") else "Vcounter_tb"
             )
-            image.write_text("compiled image", encoding="utf-8")
-            image.chmod(0o755)
+            if not captured.get("no_image"):
+                image.write_text("compiled image", encoding="utf-8")
+                image.chmod(0o755)
             return SubprocessResult(
                 returncode=0,
                 stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0 duration_ms=1\n",
@@ -885,6 +889,42 @@ def _fake_invoke(captured, raw_path: Path):
         )
 
     return fake_invoke
+
+
+@pytest.mark.parametrize("case", ["pass", "failed-run", "missing-image"])
+def test_coverage_record_outcomes_follow_the_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A coverage build or Test Run records the Flow's verdict, not the exit alone (#4964)."""
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    flow = measured_flow(tmp_path)
+    replayed = execution._invoke
+
+    def measured(command, *, timeout):
+        return flow._execute_boundary(
+            canned_command(replayed(command, timeout=timeout)), timeout=timeout
+        )
+
+    execution._invoke = measured
+    captured["no_image"] = case == "missing-image"
+    if case == "failed-run":
+        captured["result"] = AdapterResult(
+            False, False, 0, ("wrap",), test_results=(AdapterTestResult("wrap", "fail"),)
+        )
+
+    build = _build_coverage(execution, target)
+    run = execution.run(_run_request(target, raw_path)) if build.success else None
+
+    assert build.success == (case != "missing-image")
+    records = resource_history.load_records(tmp_path / ".booley")
+    by_phase = {r["key"]["phase"]: (r["outcome"], r["returncode"]) for r in records}
+    assert by_phase.get("sim_build") == (
+        "exit_nonzero" if case == "missing-image" else "exit_zero",
+        0,
+    )
+    if run is not None:
+        assert by_phase["sim_run"] == ("exit_nonzero" if case == "failed-run" else "exit_zero", 0)
 
 
 def test_coverage_build_run_and_identity_keep_distinct_budgets(

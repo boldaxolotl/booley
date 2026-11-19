@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,7 @@ from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.progress_lifecycle import abort_open_progress
+from booley.flows.synth.backends import configure
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
     AsicSynthesizeFlow,
@@ -930,9 +932,8 @@ _ABC_SCRIPT = '[flows.synth.advanced_settings_yosys]\nabc_script = "+strash;map"
 _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
 
 
-@pytest.mark.parametrize(
-    ("config", "args", "present", "absent"),
-    [
+def _recipe_argv_cases() -> list[Any]:
+    return [
         pytest.param(
             "",
             [],
@@ -1013,24 +1014,27 @@ _ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
             [],
             id="target-frontend-and-slang-options",
         ),
-    ],
-)
-def test_configure_argv_carries_the_recipe(
-    synth_cli: SynthCli,
-    config: str,
-    args: list[str],
-    present: list[tuple[str, ...]],
-    absent: list[str],
-) -> None:
-    if config:
+    ]
+
+
+def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
+    for case in _recipe_argv_cases():
+        config, args, present, absent = case.values
         synth_cli.config(config)
 
-    argv = synth_cli.plan(*args)["work_units"][0]["commands"][0]["argv"]
+        unit = synth_cli.plan(*args)["work_units"][0]
+        argv = unit["commands"][0]["argv"]
 
-    for tokens in present:
-        assert _has_tokens(argv, *tokens), (tokens, argv)
-    for token in absent:
-        assert token not in argv, (token, argv)
+        for tokens in present:
+            assert _has_tokens(argv, *tokens), (case.id, tokens, argv)
+        for token in absent:
+            assert token not in argv, (case.id, token, argv)
+        parsed = configure.parse_configure_argv(argv)
+        _profile, yosys, openroad = configure.resolve_ppa_settings(parsed)
+        expected = {"yosys": dataclasses.asdict(yosys)}
+        if SynthMode(parsed.synth_mode).runs_openroad:
+            expected["openroad"] = dataclasses.asdict(openroad)
+        assert unit["recipe"]["effective_ppa_settings"] == expected, case.id
 
 
 @pytest.mark.parametrize(
@@ -1111,8 +1115,6 @@ def test_invalid_recipe_fails_the_dry_run(synth_cli: SynthCli, config: str, mess
 
 
 def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli) -> None:
-    from booley.flows.synth.backends import configure
-
     default_recipe = synth_cli.plan()["work_units"][0]["recipe"]
     synth_cli.config("timing_report_paths = 3\n")
     synth_cli.resolution.resolve = _resolving(_fake_synth_resolved)
@@ -1129,7 +1131,7 @@ def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli)
     # reads the working directory's config); no public name reaches that step
     # without also discovering the root.
     args = configure.parse_configure_argv(argv)
-    _profile, _yosys, openroad = configure._resolve_ppa_settings(args)
+    _profile, _yosys, openroad = configure.resolve_ppa_settings(args)
     assert configure._resolve_syn_timing(args, openroad).report_paths == 3
 
 
@@ -1677,23 +1679,24 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
     ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
 
 
-@pytest.mark.parametrize("mode,schema", [("logical", 4), ("physical", 5)])
-def test_recipe_schema_bumps_without_default_clock(tmp_path: Path, mode, schema):
-    snapshot = synthesis_recipe_snapshot(
-        dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
-        default_recipe_args(),
-        target="lite",
-    )
-    assert snapshot["schema"] == schema
-    assert "default_clock_ps" not in snapshot
+def test_recipe_schema_bumps_without_default_clock(tmp_path: Path):
+    for mode, schema in [("logical", 4), ("physical", 5)]:
+        snapshot = synthesis_recipe_snapshot(
+            dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
+            default_recipe_args(),
+            target="lite",
+        )
+        assert snapshot["schema"] == schema
+        assert "default_clock_ps" not in snapshot
+        assert "ppa_profile_settings" not in snapshot
 
-    previous = {**snapshot, "schema": 3}
-    assert synthesis_recipe_snapshot_fingerprint(previous) != (
-        synthesis_recipe_snapshot_fingerprint(snapshot)
-    )
-    assert synthesis_recipe_changes(previous, snapshot) == [
-        {"path": "schema", "before": 3, "after": schema}
-    ]
+        previous = {**snapshot, "schema": 3}
+        assert synthesis_recipe_snapshot_fingerprint(previous) != (
+            synthesis_recipe_snapshot_fingerprint(snapshot)
+        )
+        assert synthesis_recipe_changes(previous, snapshot) == [
+            {"path": "schema", "before": 3, "after": schema}
+        ]
 
 
 def test_physical_fanout_policy_invalidates_old_recipe(tmp_path):
@@ -2397,13 +2400,15 @@ class TestIoBoundCritical:
         assert _is_io_bound_critical(SynthMetrics(wns_ns=-2.0)) is False
         assert _is_io_bound_critical(SynthMetrics(reg2reg_slack_ns=-0.25)) is False
 
-    def test_note_line_names_the_sdc_knob(self):
-        cur = SynthMetrics(wns_ns=-2.0, reg2reg_slack_ns=-0.25)
-        line = AsicSynthesizeFlow._format_io_bound_line("lite", cur)
-        assert "I/O-bound" in line
-        assert "period_ps won't move it" in line
-        assert "sdc" in line
-        assert "-2.000 ns" in line and "-0.250 ns" in line
+    def test_io_bound_note_points_at_target_sdc(self, flow_and_state):
+        flow, _ = flow_and_state
+        cur = SynthMetrics(area_um2=500.0, cells=10, wns_ns=-2.0, reg2reg_slack_ns=-0.25)
+        result = flow._aggregate_results(["lite"], {"lite": cur}, {}, None)
+        note = next(line for line in result.report_text.splitlines() if "I/O-bound" in line)
+        assert "-2.000 ns" in note and "-0.250 ns" in note
+        for text in ("file_type: SDC", "set_input_delay", "set_output_delay", "set_false_path"):
+            assert text in note
+        assert "period_ps" not in note and "[flows.synth.timing]" not in note
 
     def test_report_dict_sets_flag(self):
         cur = SynthMetrics(
