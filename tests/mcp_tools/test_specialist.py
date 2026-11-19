@@ -278,6 +278,11 @@ def test_refused_model_raises_refusal_and_tries_no_other_model(
     else:
         assert "`[agent] default`" in report
     assert "model_not_found" not in report
+    assert (
+        "booley.toml is a Protected Input, so change it before the next measurement. Diagnostic: "
+        in report
+    )
+    assert "Goal" not in report
 
 
 # --- hidden [models] fallback list (#2836, ADR 0084 amendment) ---------------------

@@ -151,6 +151,9 @@ class _CrashGroup:
     def planning_disclosure(self):
         return {}
 
+    def for_work_item(self, _names, _test_runs):
+        return self
+
     def build_recovery_document(self):
         return _build_execution()
 

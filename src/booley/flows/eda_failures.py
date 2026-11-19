@@ -30,8 +30,9 @@ _NOISE_LINE_RE = re.compile(r"^(?:BOOLEY_STAGE:|make:|make\[\d+\]:)")
 _NON_ERROR_SEVERITY_RE = re.compile(
     r"^\[?(?:info|warning|critical warning|note)(?=[:\[\]\s])", re.IGNORECASE
 )
+# ``%?``: Verilator spells its errors ``%Error:``, ``%Error-<RULE>:`` and ``%Fatal:``.
 _DIAGNOSTIC_RE = re.compile(
-    r"(?i)(?:^|:\s|\]\s|\[)(?:error|fatal)\b"
+    r"(?i)(?:^%?|:\s|\]\s|\[)(?:error|fatal)\b"
     r"|\bunrecognized (?:option|argument)\b"
     r"|\bunknown (?:command|option|argument)\b"
     r"|\bunsupported (?:command|option)\b"

@@ -92,10 +92,9 @@ bwave stats sim.fst -s "*data_out*" --format json \
 - Sync JSON adds per-value `time_in_state_clocked_cycles` and
   `time_in_state_stopped_cycles` maps. Both are null in async mode or without
   a clock. Text output shows the same clocked/stopped split.
-- In sync mode the window is the cycles `wave` shows for the same `-t`: `A`
-  through `B`, with cycle 0 included when `A` is 0. `total_cycles`, the text
-  header's cycle count, and the clocked plus stopped counts (JSON and text) all
-  equal that number of cycles.
+- In sync mode the window is the cycles `wave` shows for the same `-t`, both
+  endpoints included. `total_cycles`, the text header's cycle count, and the
+  clocked plus stopped counts (JSON and text) all equal that number of cycles.
 - In async mode `total_cycles` counts whole clock periods in the tick window.
 - Tick/ns occupancy stays a physical duration.
 

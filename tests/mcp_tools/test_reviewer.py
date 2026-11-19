@@ -52,6 +52,10 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
 def _run_in_tmp_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reviews without ``--work-dir`` resolve against the cwd: keep it hermetic."""
     monkeypatch.chdir(tmp_path)
+    scope = "rtl/mod_a.sv rtl/a.sv tb/mod_a_tb.sv tb/t.sv tb/test.py tb/main.cpp tb/tb.sv"
+    for name in scope.split():  # reviews refuse a missing scope file
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).write_text("//\n", encoding="utf-8")
 
 
 @pytest.fixture
@@ -129,10 +133,6 @@ def test_removed_options_exit_2(option: str, value: str) -> None:
 
 
 def test_dry_run_does_not_invoke_agent(agent: ScriptedAgent, tmp_path: Path) -> None:
-    source = tmp_path / "rtl/mod_a.sv"
-    source.parent.mkdir()
-    source.write_text("module mod_a; endmodule\n", encoding="utf-8")
-
     outcome, _ = run_review(["--work-dir", str(tmp_path), *BUGS, "--dry-run"])
 
     assert outcome.exit_code == 0
@@ -754,6 +754,18 @@ def test_argument_validation(case: _Arguments, agent: ScriptedAgent) -> None:
     else:
         assert outcome.exit_code == 2
         assert case.refusal in outcome.report_text
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize("dry_run", [[], ["--dry-run"]])
+def test_missing_scope_file_is_refused_before_any_search(
+    agent: ScriptedAgent, tmp_path: Path, dry_run: list[str]
+) -> None:
+    (tmp_path / "bare").mkdir()
+    outcome, _ = run_review(["--work-dir", str(tmp_path / "bare"), *BUGS, *dry_run])
+
+    assert outcome.exit_code == 2
+    assert "Scope files not found: rtl/mod_a.sv." in outcome.report_text
     assert agent.calls == []
 
 
@@ -1408,7 +1420,8 @@ def test_clean_interactive_review_needs_no_ticket_snapshot(
     outcome, _ = run_review([*BUGS, "--work-dir", str(tmp_path)])
 
     system = agent.calls[0].system_prompt or ""
-    assert "Anchor each finding in a Goal, supplied specification, accepted decision" in system
+    assert "Anchor each finding in a supplied specification, accepted decision" in system
+    assert "Goal" not in system
     assert "steering, or concrete code behavior" in system
     assert "Cite a relevant Ticket or accepted-decision clause" not in system
     assert outcome.exit_code == 0
@@ -1547,8 +1560,6 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     from booley.runtime import runtime_context
     from booley.runtime.booley_dir import reset_cache
 
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl/mod_a.sv").write_text("module mod_a; endmodule\n", encoding="utf-8")
     directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text("[project]\n", encoding="utf-8")

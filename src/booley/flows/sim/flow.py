@@ -75,6 +75,7 @@ from booley.runtime.endpoint_execution import (
     normalize_completion_error,
 )
 from booley.runtime.file_lock import LockContentionError
+from booley.runtime.filesystem_utils import make_directories
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
     TargetHandle,
@@ -289,7 +290,7 @@ class SimulateFlow(
         from .record_reports import simulation_record_invocation_lock
 
         endpoint_dir = report_dir / self.name
-        endpoint_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(endpoint_dir)
         existing = (
             int(path.name.removeprefix(".pruned-"))
             for path in endpoint_dir.iterdir()
@@ -902,27 +903,33 @@ class SimulateFlow(
         """
         simulation_record = SimulationRecord()
         try:
-            previews = [
-                _simulation_record_preview_entry(
-                    simulation_record.preview(
-                        NewSimulationRecordPreviewRequest(
-                            # Placeholder ids: a preview reserves no invocation and
-                            # starts no execution, so neither is ever read.
-                            self._coverage_simulation_record_plan(
-                                plan, invocation_id=1, execution_id=""
-                            ),
-                            Path(self.args.work_dir),
-                            self.args.report_dir,
-                            self._simulation_record_policy(),
-                        )
-                    )
+            requests = [
+                NewSimulationRecordPreviewRequest(
+                    # Placeholder ids: a preview reserves no invocation and
+                    # starts no execution, so neither is ever read.
+                    self._coverage_simulation_record_plan(plan, invocation_id=1, execution_id=""),
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._simulation_record_policy(),
                 )
                 for plan in self._coverage_prepared.targets
+            ]
+            previews = [
+                _simulation_record_preview_entry(simulation_record.preview(request))
+                for request in requests
             ]
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Record coverage preview failed: {exc}",
+            )
+        try:
+            for request in requests:
+                simulation_record.preflight(request)
+        except (OSError, ValueError) as exc:
+            # The real run's failure, with every Target still pending.
+            return _coverage_failure_outcome(
+                (), {}, [_coverage_request_selector(item) for item in requests], exc, None
             )
         outcome = _simulation_record_preview_outcome(previews)
         outcome.detail["coverage"] = True
@@ -1461,6 +1468,7 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         """Preview ordinary records without reserving or mutating report state."""
         previews = []
+        requests = []
         simulation_record = SimulationRecord()
         try:
             for planned in planning.candidates:
@@ -1470,20 +1478,26 @@ class SimulateFlow(
                     invocation_id=1,
                     execution_id="",
                 )
-                preview = simulation_record.preview(
-                    NewSimulationRecordPreviewRequest(
-                        plan,
-                        Path(self.args.work_dir),
-                        self.args.report_dir,
-                        self._simulation_record_policy(),
-                    )
+                request = NewSimulationRecordPreviewRequest(
+                    plan,
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._simulation_record_policy(),
                 )
-                previews.append(_simulation_record_preview_entry(preview))
+                requests.append(request)
+                previews.append(
+                    _simulation_record_preview_entry(simulation_record.preview(request))
+                )
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Record preview failed: {exc}",
             )
+        try:
+            for request in requests:
+                simulation_record.preflight(request)
+        except (OSError, ValueError) as exc:
+            return self._ordinary_simulation_record_failure(exc, [])
         return _simulation_record_preview_outcome(previews)
 
     def _ordinary_simulation_record_plan(
@@ -1574,7 +1588,6 @@ class SimulateFlow(
             timeout_seconds=self._effective_timeout_ms() / 1000,
             build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
-            result_verbosity=self.args.result_verbosity,
         )
 
     def _simulation_record_endpoint_outcome(
@@ -1643,7 +1656,6 @@ class SimulateFlow(
         conflicts = (
             ("--test", bool(self.args.test)),
             ("--trace", self.args.trace),
-            ("--result-verbosity full", self.args.result_verbosity == "full"),
             ("--no-kill", self.args.no_kill),
         )
         for argument, active in conflicts:
@@ -1704,7 +1716,6 @@ class SimulateFlow(
                 trace=self.args.trace,
                 timeout_ms=self.args.timeout_ms,
                 build_timeout_ms=self._effective_build_timeout_ms(),
-                result_verbosity=self.args.result_verbosity,
             ),
         )
 

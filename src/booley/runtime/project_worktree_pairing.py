@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime.booley_dir import own_booley_dir
+from booley.runtime.docs_links import sandbox_doc_path
 from booley.runtime.file_lock import release_file_lock, try_file_lock, wait_for_file_lock
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.incontainer_git_identity import (
@@ -27,6 +28,8 @@ from booley.runtime.project_repositories import (
 )
 from booley.runtime.worktree_paths import worktree_creation_config
 
+_REMOVAL_DOC = f'{sandbox_doc_path("WORKTREES.md")} → "Removing a worktree"'
+
 
 class ProjectPairingError(RuntimeError):
     """A user worktree cannot preserve committed Project inputs."""
@@ -39,14 +42,19 @@ class ProjectPairing:
     left_out: tuple[str, ...]
 
 
+def refuse_paired_checkout(booley_dir: Path) -> None:
+    """Refuse worktree creation when *booley_dir* is a Paired Checkout (its ``.git`` is a file)."""
+    if (booley_dir / ".git").is_file():
+        raise ProjectPairingError(
+            "cannot create a worktree from a Paired Checkout; "
+            "run booley worktree new from the main checkout"
+        )
+
+
 def project_pairing_source(project_root: Path) -> Path | None:
     """Select a Versioned Booley Directory; refuse creation from a Paired Checkout."""
     source = own_booley_dir(project_root)
-    if (source / ".git").is_file():
-        raise ProjectPairingError(
-            "cannot create a worktree from a Paired Checkout; "
-            "run booley worktree new from the primary workspace"
-        )
+    refuse_paired_checkout(source)
     if (source / ".git").is_dir():
         # Git skips an unusable .git directory and keeps searching upward, so a
         # broken Booley Directory's repository would otherwise resolve to the outer one.
@@ -97,7 +105,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
             raise ProjectPairingError(
                 f"the Booley Directory's repository already registers a checkout at {nested}; "
                 "in the same Sandbox, preserve needed work and evidence first "
-                "as described in WORKTREES.md (host doc, not shipped), then remove it with "
+                f"as described in {_REMOVAL_DOC}, then remove it with "
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
                 f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
@@ -311,7 +319,7 @@ def worktree_removal_instructions(
         f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
         "These are Sandbox paths; do not paste them into a host terminal.",
         "First preserve needed evidence and other ignored/untracked files outside "
-        "this worktree, as described in WORKTREES.md (host doc, not shipped).",
+        f"this worktree, as described in {_REMOVAL_DOC}.",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "
         "inspect locks before unlocking or forcing removal.",
         "Git refuses to remove a worktree that holds populated submodules without "

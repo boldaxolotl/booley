@@ -12,6 +12,7 @@ import contextlib
 import functools
 import hashlib
 import json
+import mmap
 import os
 import re
 import shutil
@@ -1710,29 +1711,62 @@ def _check_sandbox_memory(
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
 
     Unset, the budget falls back to the installed memory, which an agent and the
-    Jobs then share, so Doctor WARNs. Reads configuration only, so it runs
-    inside and outside the Sandbox.
+    Jobs then share, so Doctor WARNs. Outside the Sandbox it reads configuration
+    only; inside, it also compares it with the live limit the Memory Budget reads.
     """
-    _warn = _warning_sink(_warn, "sandbox.memory-unset")
+    unset_warn = _warning_sink(_warn, "sandbox.memory-unset")
     if project is None:
         _skip("sandbox memory skipped - no valid project config")
         return
     mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
     if not mem_str:
-        _warn(
+        unset_warn(
             "[sandbox].memory is unset: the Memory Budget falls back to installed memory",
             'set [sandbox] memory = "<size>" (booley resources shows Job peaks)',
         )
         return
     limit = resource_policy.parse_memory_limit(mem_str)
     if limit is None:
-        _warn(
+        unset_warn(
             f"[sandbox] memory = {mem_str!r} is unparseable: the Memory Budget "
             "falls back to installed memory",
             'set [sandbox] memory to a size such as "16g"',
         )
         return
+    if runtime_context.inside_session_runtime():
+        _check_live_sandbox_memory(
+            mem_str, limit, _pass, _warning_sink(_warn, "sandbox.memory-drift")
+        )
+        return
     _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
+
+
+_MEMORY_DRIFT_FIX = f"recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
+
+
+def _check_live_sandbox_memory(mem_str: str, configured: int, _pass: Check, _warn: Warn) -> None:
+    """Compare ``[sandbox].memory`` with the limit the running Sandbox has.
+
+    The kernel stores the limit in whole pages, so the comparison is in pages.
+    """
+    live = resource_policy.cgroup_memory_limit_bytes()
+    if live is None:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox has no readable "
+            "memory limit, so the Memory Budget falls back to installed memory",
+            _MEMORY_DRIFT_FIX,
+        )
+    elif live // mmap.PAGESIZE != configured // mmap.PAGESIZE:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox's memory limit is "
+            f"still {resource_policy.format_memory(live)}, and the Memory Budget comes from it",
+            _MEMORY_DRIFT_FIX,
+        )
+    else:
+        _pass(
+            f"[sandbox].memory = {resource_policy.format_memory(live)}: "
+            "the Sandbox's memory limit, which sizes the Memory Budget"
+        )
 
 
 _PROC_MEMINFO = Path("/proc/meminfo")
@@ -2953,9 +2987,8 @@ def _check_auth_recorded(
     from booley.harness import init_cmd
 
     declared = _declared_agent(project)
-    auth = declared.auth if declared else None
     for cli in clis:
-        recorded = auth if isinstance(auth, str) else (auth or {}).get(cli)
+        recorded = _recorded_auth(declared, cli)
         if recorded not in (None, RETIRED_AUTH):
             continue
         value = init_cmd.detected_auth_policy(cli)
@@ -3003,9 +3036,9 @@ def _check_cli_credentials(
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
     The default CLI keeps its grading (FAIL under a pinned policy, WARN under
-    the visitor mode). Another allowed CLI WARNs for a missing credential, with the CLI's
-    own login fix, unless a ``[models]`` pin runs a Specialist on it: then it
-    FAILs under every policy, because that Specialist's calls would fail.
+    the visitor mode). Another allowed CLI WARNs for a missing credential unless a
+    ``[models]`` pin runs a Specialist on it: then it FAILs under every policy,
+    because that Specialist's calls would fail. Every CLI's row carries its own login fix.
     """
     required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
@@ -3038,13 +3071,16 @@ def _check_cli_credentials(
             if required
             else None
         ),
-        missing_fix="" if is_default else auth_token.missing_credential_fix(cli, auth_policy),
+        missing_fix=auth_token.missing_credential_fix(cli, auth_policy),
         is_default=is_default,
         missing_fails=runs_specialist and not is_default,
     )
     if plan.selected is None and not is_default:
         return  # the missing-credential WARN already names the fix; no login to rotate
-    _check_cli_rotation_risk(cli, reporter, auth_policy, plan, is_default=is_default)
+    recorded = _recorded_auth(_declared_agent(project), cli) == auth_policy
+    _check_cli_rotation_risk(
+        cli, reporter, auth_policy, plan, is_default=is_default, policy_recorded=recorded
+    )
 
 
 def _check_cli_rotation_risk(
@@ -3054,6 +3090,7 @@ def _check_cli_rotation_risk(
     plan: auth_token.CredentialPlan,
     *,
     is_default: bool,
+    policy_recorded: bool = True,
 ) -> None:
     """Check *cli*'s OAuth token and subscription credential health."""
     _check_oauth_token(
@@ -3065,6 +3102,7 @@ def _check_cli_rotation_risk(
         _note=reporter.note_,
         plan=plan,
         is_default=is_default,
+        policy_recorded=policy_recorded,
     )
     _check_subscription_creds_health(
         cli,
@@ -3175,7 +3213,12 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
                     "Codex and run `python -m booley.harness.incontainer_register`",
                 )
             else:
-                reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
+                reporter.fail_(
+                    str(exc),
+                    "get the gateway token its command reads",
+                    check_id="agent.credential-missing",
+                    subject=provider,
+                )
             return
     reporter.pass_(f"Codex auth: the gateway at {settings.url} ({settings.token_source})")
 
@@ -3248,6 +3291,12 @@ def _allowed_clis(project: ProjectAudit | None, default_cli: str) -> tuple[str, 
     return (default_cli, *(cli for cli in clis if cli != default_cli))
 
 
+def _recorded_auth(declared: DeclaredAgent | None, cli: str) -> str | None:
+    """The auth policy booley.toml records for *cli*, ``None`` when it records none."""
+    auth = declared.auth if declared else None
+    return auth if isinstance(auth, str) else (auth or {}).get(cli)
+
+
 def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None) -> str:
     """Audit *cli*'s policy (default CLI when omitted); ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
@@ -3278,8 +3327,7 @@ def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None
     declared = _declared_agent(project)
     if declared is None:
         return missing_auth_policy()
-    auth = declared.auth
-    policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
+    policy = _recorded_auth(declared, cli)
     if policy == GATEWAY_AUTH and not _inside_container():
         return DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
     if policy is None or policy == RETIRED_AUTH:
@@ -3407,6 +3455,34 @@ def _host_login_can_rotate(provider: str) -> bool:
     return Path(dc._APP_CREDS_SEED_TARGET[provider]).is_file()
 
 
+def _subscription_basis(policy_recorded: bool) -> str:
+    """Why the rotation-risk NOTE accepts the risk: a recorded ``subscription`` or the fallback."""
+    if policy_recorded:
+        return "accepted by explicit auth = 'subscription'"
+    return "the fallback policy auth = 'subscription' applies"
+
+
+def _report_refreshing_login(
+    provider: str, policy: str, policy_recorded: bool, note_sink: Check, warn: Warn
+) -> None:
+    """Report that *provider*'s agents use a refreshing login, with no rotation-free credential."""
+    label = _AGENT_APP_LABELS[provider]
+    if not _host_login_can_rotate(provider):
+        note_sink(
+            f"{label}: no rotation-free credential; agents use a refreshing login made "
+            "inside the Sandbox, which no host-side login can revoke"
+        )
+        return
+    message = (
+        f"{label}: no rotation-free credential; agents use a refreshing one, which a "
+        "host-side login can revoke mid-run"
+    )
+    if policy == "subscription":
+        note_sink(f"{message} ({_subscription_basis(policy_recorded)})")
+    else:
+        warn(message, f"booley auth --cli {provider}")
+
+
 def _check_oauth_token(
     provider: str,
     _pass: Check,
@@ -3417,6 +3493,7 @@ def _check_oauth_token(
     _note: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
     is_default: bool = True,
+    policy_recorded: bool = True,
 ) -> None:
     """Report whether agents run on a rotation-free credential or a refreshing one.
 
@@ -3429,8 +3506,9 @@ def _check_oauth_token(
     are fine on subscription creds, but a multi-hour headless run is not.
 
     Stays a WARN (see :class:`_Reporter`) in the visitor mode and under ``api_key``:
-    it names a real, reachable failure mode with a one-command remedy. An
-    explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
+    it names a real, reachable failure mode with a one-command remedy. A
+    ``subscription`` policy accepts that tradeoff, so it is a NOTE: "explicit" when
+    booley.toml records it, the fallback policy otherwise (``policy_recorded``).
     In a Sandbox without the app's seed sidecar the login was made inside it, no
     host-side login shares its refresh token, and the finding is a NOTE too.
     A CLI the Project does not list gets no line -- see :func:`_allowed_clis`.
@@ -3448,22 +3526,8 @@ def _check_oauth_token(
     credential = auth_token.CREDENTIALS[provider]
     api_key_var = auth_token.API_KEY_ENV[provider]
     api_key, env_token, stored = _rotation_free_state(provider, policy, plan)
-
     if not api_key and not env_token and not stored:
-        if not _host_login_can_rotate(provider):
-            note_sink(
-                f"{label}: no rotation-free credential; agents use a refreshing login made "
-                "inside the Sandbox, which no host-side login can revoke"
-            )
-            return
-        message = (
-            f"{label}: no rotation-free credential; agents use a refreshing one, which a "
-            "host-side login can revoke mid-run"
-        )
-        if policy == "subscription":
-            note_sink(f"{message} (accepted by explicit auth = 'subscription')")
-        else:
-            _warn(message, f"booley auth --cli {provider}")
+        _report_refreshing_login(provider, policy, policy_recorded, note_sink, _warn)
         return
     # F-18: `stored` is truthy when the token comes from the read-only sidecar
     # seed too (the in-container case), but the privacy check only stats the
@@ -4001,9 +4065,15 @@ def _check_agent_backend_health(
 ) -> None:
     _warn = _warning_sink(_warn, "agent.backend-health")
     try:
+        from booley.config.agent import RetiredAuthError
         from booley.runtime.agent_config import get_backend_config, load_backend_config
 
-        load_backend_config(project_root)
+        try:
+            load_backend_config(project_root)
+        except RetiredAuthError:
+            # The agent.credential-policy rows already name the value to set.
+            (_note or _pass)("worker backend health check skipped - set [agent] auth first")
+            return
         cfg = get_backend_config()
         warning = cfg.active_backend.health_check()
     except (ImportError, AttributeError, RuntimeError, OSError, ValueError) as exc:

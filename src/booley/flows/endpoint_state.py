@@ -83,6 +83,7 @@ class EndpointState(ABC):
     # Class-overridable because argparse help is also the MCP ``target`` schema
     # description. The default is endpoint-neutral; a Flow that drives a sim
     # sub-loop can override it with narrower wording.
+    target_metavar: str = "TARGET[,TARGET...]"  # the CLI's `--target` metavar
     target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
         "repeated or its value comma-separated; MCP accepts one comma-separated string. "
@@ -124,6 +125,8 @@ class EndpointState(ABC):
         self._display_identity = DisplayIdentity.current(invocation_id)
         self._invocation_id = self._display_identity.invocation_id
         self._reserved_invocation_dir: Path | None = None
+        # The checkout and existing Booley Directory a run must not recreate.
+        self._run_roots: tuple[Path, Path | None] | None = None
         # Failures retiring a killed attempt's progress; the final result reports them.
         self._requeue_cleanup_errors: list[Exception] = []
         self._skip_report_detail_refresh = False
@@ -247,7 +250,6 @@ class EndpointState(ABC):
                 tb_top = tb_top_for_target(
                     target,
                     getattr(self.args, "work_dir", None),
-                    resolved=None,
                 )
                 if tb_top:
                     self.args.tb_top = tb_top
@@ -356,7 +358,7 @@ class EndpointState(ABC):
         started: float | None,
         *,
         dry_run: bool,
-        non_persisting_dry_run: bool,
+        persist_report: bool,
     ) -> int:
         return endpoint_reporting._finish_main(
             self,
@@ -365,7 +367,7 @@ class EndpointState(ABC):
             display_label,
             started,
             dry_run=dry_run,
-            non_persisting_dry_run=non_persisting_dry_run,
+            persist_report=persist_report,
         )
 
     # Admission class for this endpoint. None = quick endpoint, no admission.

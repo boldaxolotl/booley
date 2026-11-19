@@ -4,8 +4,9 @@ The command composes the measurement building blocks: it exports the commit, rea
 checkout's own ``metrics.toml``, preflights and runs one child Flow per rules table inside
 the admission queue (:mod:`booley.harness.measure_children`), stores the Measurement Run in
 the Main Booley Directory, writes the Markdown report and prints the report. A commit that is
-already Measured is not measured again: its stored run is shown, unless ``--again`` is given. The run is a
-Standalone Job of its own, so the Dashboard shows it like any shell run.
+already Measured is not measured again: its stored run is shown, unless ``--again`` or
+``--target`` is given. The run is a Standalone Job of its own, so the Dashboard shows it like
+any shell run.
 
 ``--target <name>`` measures only that Target's tables. Such a run is never stored in the
 Main Booley Directory, so it never makes the commit Measured: its document, Markdown report
@@ -59,6 +60,7 @@ from booley.measurement.base import BaseError, resolve_base
 from booley.measurement.mcp_job import McpMeasureJob
 from booley.measurement.measuring_rules import exit_rule
 from booley.measurement.metrics_file import (
+    METRICS_FILE,
     MetricsFileError,
     MetricsRules,
     TableRules,
@@ -82,7 +84,12 @@ from booley.measurement.run_store import (
 from booley.measurement.run_view import run_view
 from booley.measurement.toolchain import ToolchainFingerprint, collect_toolchain_fingerprint
 from booley.measurement.verdicts import measure_exit_code
-from booley.runtime.commit_export import CommitExportError, SubmoduleDrift, export_commit
+from booley.runtime.commit_export import (
+    CommitExportError,
+    SubmoduleDrift,
+    export_commit,
+    versioned_booley_dir,
+)
 from booley.runtime.pinned_history import FileCommitError, raw_git
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -314,9 +321,11 @@ def _measure(
 
     commit = _resolve_commit(project_root, request)
     keyed = _key_of(project_root, commit)  # a refusal now saves the export
+    for notice in _uncommitted_notices(project_root, commit):
+        print(notice, file=sys.stderr)
     main = main_booley_dir_of(project_root)
     store = MeasurementStore(main)
-    if not request.again:
+    if not request.again and request.target is None:
         stored = _measured_run(store, keyed.key)
         if stored is not None:
             return _show(project_root, store, stored, commit, request, hooks)
@@ -365,33 +374,56 @@ def _print_report(view: dict[str, Any], request: MeasureRequest) -> None:
         print(terminal_report(view), end="")
 
 
-def _live_tree_notices(
-    project_root: Path, commit: str, drift: Sequence[SubmoduleDrift]
-) -> list[str]:
-    """What the measurement of *commit* leaves out of the live tree; only for ``HEAD``."""
+def _is_head(project_root: Path, commit: str) -> bool:
     head = raw_git(project_root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
-    if commit != head:
+    return commit == head
+
+
+def _has_tracked_changes(repository: Path, *paths: str) -> bool:
+    """Whether *repository* (limited to *paths* when given) has an uncommitted tracked change."""
+    try:
+        changes = raw_git(
+            repository,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=no",
+            "--ignore-submodules=all",
+            *(("--", *paths) if paths else ()),
+        )
+    except FileCommitError:
+        return False  # a note must never refuse a measurement or hide a stored run
+    return bool(changes)
+
+
+def _uncommitted_notices(project_root: Path, commit: str) -> list[str]:
+    """What the measurement of *commit* leaves out of the live repositories; only for ``HEAD``."""
+    if not _is_head(project_root, commit):
         return []
     notices: list[str] = []
-    changes = raw_git(
-        project_root,
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=no",
-        "--ignore-submodules=all",
-    )
-    if changes:
+    if _has_tracked_changes(project_root):
         notices.append(
             "note: uncommitted changes in the working tree are not measured; "
             f"this measures commit {commit[:_SHORT]}"
         )
-    if drift:
+    versioned = versioned_booley_dir(project_root)
+    if versioned is not None and _has_tracked_changes(versioned):
+        named = (
+            ", metrics.toml among them," if _has_tracked_changes(versioned, METRICS_FILE) else ""
+        )
         notices.append(
-            "note: submodule working-tree differences are not measured: "
-            + ", ".join(_drift_text(entry) for entry in drift)
+            f"note: uncommitted changes in the Booley Directory's repository{named} "
+            "are not measured; this measures with its HEAD commit"
         )
     return notices
+
+
+def _print_drift(project_root: Path, commit: str, drift: Sequence[SubmoduleDrift]) -> None:
+    if drift and _is_head(project_root, commit):
+        text = ", ".join(_drift_text(entry) for entry in drift)
+        print(
+            f"note: submodule working-tree differences are not measured: {text}", file=sys.stderr
+        )
 
 
 def _drift_text(entry: SubmoduleDrift) -> str:
@@ -422,8 +454,7 @@ def _measure_commit(
             export = export_commit(project_root, commit, checkout)
         except CommitExportError as exc:
             raise MeasureRefusedError(f"the commit cannot be exported: {exc}") from exc
-        for notice in _live_tree_notices(project_root, commit, export.drift):
-            print(notice, file=sys.stderr)
+        _print_drift(project_root, commit, export.drift)
         keyed = _key_of(project_root, commit, export.paired_commit)
         rules = _load_rules(checkout)
         preflight = _preflight(checkout, main, run_id, rules, request.target)

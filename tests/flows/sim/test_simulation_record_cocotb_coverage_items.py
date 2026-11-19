@@ -574,6 +574,9 @@ class _CocotbGroup:
     def planning_disclosure(self):
         return {}
 
+    def for_work_item(self, names, _test_runs):
+        return _CocotbGroup(self._harness, names)
+
     def compile(self):
         return SimpleNamespace(passed=True)
 

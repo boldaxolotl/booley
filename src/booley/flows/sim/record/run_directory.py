@@ -17,6 +17,7 @@ from booley.flows.sim.config import literal_run_cwd_error
 from booley.flows.sim.record_reports import is_report_link, report_link_ancestor
 from booley.runtime.booley_dir import checkout_runtime_dir
 from booley.runtime.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.mount_history import MountHistoryError, translate_stored_path
 
 from .codec import SimulationRecordIntegrityError, canonical_json_bytes
@@ -272,7 +273,7 @@ def _acquire_current_lock(lock_path: Path) -> IO[str]:
     """
     deadline = time.monotonic() + _LOCK_TIMEOUT_S
     while time.monotonic() <= deadline:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(lock_path.parent)
         lock = lock_path.open("a+", encoding="utf-8")
         try:
             wait_for_file_lock(lock, timeout_s=max(0.0, deadline - time.monotonic()))
