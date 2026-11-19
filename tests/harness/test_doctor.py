@@ -3011,24 +3011,46 @@ def _edit_booley_toml(booley_dir: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-@pytest.mark.parametrize("row", ["set", "unset", "unparseable", "no-project"])
+@pytest.mark.parametrize(
+    "row",
+    [
+        "set",
+        "unset",
+        "unparseable",
+        "no-project",
+        "inside-applied",
+        "inside-unaligned",
+        "inside-unapplied",
+        "inside-unreadable",
+    ],
+)
 def test_sandbox_memory(row, tmp_path, monkeypatch):
-    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; unset falls back to installed memory."""
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; inside the Sandbox, the live limit does."""
+    booley_dir = _setup_sandbox_memory_row(row, tmp_path, monkeypatch)
     if row == "unset":
         _edit_booley_toml(booley_dir, 'memory = "16g"\n', "")
     elif row == "unparseable":
         _edit_booley_toml(booley_dir, '"16g"', '"lots"')
     elif row == "no-project":
         (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
+    elif row == "inside-unaligned":
+        _edit_booley_toml(booley_dir, '"16g"', '"17179869185"')
+    elif row == "inside-unapplied":
+        _edit_booley_toml(booley_dir, '"16g"', '"2290m"')
 
     result = _doctor_run(tmp_path)
 
+    if row.startswith("inside-"):
+        _assert_inside_sandbox_memory(row, result)
+        return
     warns = _messages(result, Severity.WARN, check_id="sandbox.memory-unset")
+    drift = _messages(result, Severity.WARN, check_id="sandbox.memory-drift")
+    assert drift == []
     if row == "set":
         assert warns == []
-        assert any(m.startswith("[sandbox].memory = 16") for m in _messages(result, Severity.PASS))
+        passes = _messages(result, Severity.PASS)
+        assert any(m.startswith("[sandbox].memory = 16") for m in passes)
+        assert not any("the Sandbox's memory limit" in m for m in passes)
     elif row == "no-project":
         assert warns == []
         assert "sandbox memory skipped - no valid project config" in _messages(
@@ -3039,6 +3061,42 @@ def test_sandbox_memory(row, tmp_path, monkeypatch):
         assert "the Memory Budget falls back to installed memory" in warning
         assert ("unparseable" in warning) is (row == "unparseable")
         assert "memory_budget" not in warning
+
+
+def _setup_sandbox_memory_row(row, tmp_path, monkeypatch):
+    """Set up a Project and a fake cgroup limit file; return the Booley Directory."""
+    if row.startswith("inside-"):
+        _runtime_setup(tmp_path, monkeypatch, inside=True)
+        booley_dir = tmp_path / ".booley"
+    else:
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+    cgroup = tmp_path / "memory.max"
+    monkeypatch.setattr(doctor.resource_policy, "CGROUP_MEMORY_LIMIT_PATHS", (cgroup,))
+    if row != "inside-unreadable":
+        # The host row's 8g proves host Doctor ignores the live limit.
+        cgroup.write_text(f"{(8 if row == 'set' else 16) * _GIB}\n", encoding="utf-8")
+    return booley_dir
+
+
+def _assert_inside_sandbox_memory(row, result):
+    warns = _messages(result, Severity.WARN, check_id="sandbox.memory-unset")
+    drift = _messages(result, Severity.WARN, check_id="sandbox.memory-drift")
+    passes = _messages(result, Severity.PASS)
+    live_pass = "[sandbox].memory = 16g: the Sandbox's memory limit, which sizes the Memory Budget"
+    assert warns == []
+    if row in {"inside-applied", "inside-unaligned"}:
+        assert drift == []
+        assert live_pass in passes
+    elif row == "inside-unapplied":
+        (warning,) = drift
+        assert "'2290m'" in warning
+        assert "still 16g" in warning
+        assert "`booley session refresh`" in _fixes(result, warning)[0]
+    else:
+        (warning,) = drift
+        assert "no readable memory limit" in warning
+        assert not any(m.startswith("[sandbox].memory") for m in passes)
 
 
 def test_sandbox_swap(tmp_path, monkeypatch):

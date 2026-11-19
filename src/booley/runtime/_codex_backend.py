@@ -25,6 +25,7 @@ from booley.config.gateway import (
     gateway_settings_from_env,
 )
 from booley.core.models import AgentArtifactPaths, AgentCallParams, AgentResult
+from booley.runtime.filesystem_utils import make_directories
 
 from ._codex_live_usage import CodexLiveUsage
 from ._codex_transcript_md import (  # noqa: F401 — re-exported for backward compat
@@ -203,7 +204,7 @@ def _codex_write_transcript(events: list[dict], transcript_path: Path | None) ->
     """Write raw JSONL events to transcript file."""
     if transcript_path is None or not events:
         return
-    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(transcript_path.parent)
     with transcript_path.open("w", encoding="utf-8") as f:
         for event in events:
             f.write(json.dumps(event, default=str) + "\n")

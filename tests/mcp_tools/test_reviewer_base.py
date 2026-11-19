@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.specialists.reviewer import ReviewerSpecialist
 from tests.mcp_tools.reviewer_support import (
     ScriptedAgent,
     guide_of,
@@ -130,6 +131,35 @@ def test_bad_base_is_refused_without_model_call(
     assert result.exit_code == 2
     assert f"--base {base}" in result.report_text
     assert agent.calls == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "exit_code", "report"),
+    [
+        (["--base", "main"], 0, "No changes in scope since main"),
+        (["--dry-run"], 0, "reviewer dry-run: rtl/bugs; 1 file(s)"),
+        (["--fail-on", "major"], 1, "RESULT: REVIEWED WITH FINDINGS"),
+    ],
+)
+def test_cli_prints_the_report_once(
+    repo: Path,
+    agent: ScriptedAgent,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: list[str],
+    exit_code: int,
+    report: str,
+) -> None:
+    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
+    monkeypatch.delenv("BOOLEY_DIR")  # the endpoints conftest points it at a non-Project
+    (repo / ".booley").mkdir()
+    (repo / "rtl/e.sv").write_text(E_SV + "// outside scope\n", newline="\n")
+    agent.answer({"issues": [finding()]})
+    argv = ["--project", str(repo), "--category", "rtl", "--focus", "bugs", "--scope", "rtl/a.sv"]
+
+    assert ReviewerSpecialist().main([*argv, *mode]) == exit_code
+
+    assert "".join(capsys.readouterr()).count(report) == 1
 
 
 def test_base_without_changes_in_scope_exits_zero_without_model_call(

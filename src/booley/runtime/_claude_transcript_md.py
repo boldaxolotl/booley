@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from booley.runtime.filesystem_utils import make_directories
+
 
 def _claude_md_prompt_lines(entry: dict) -> list[str]:
     """Markdown for a ``prompt`` transcript entry (system + user prompts)."""
@@ -115,6 +117,6 @@ def _claude_write_markdown(
 
             lines.extend(_claude_md_usage_lines(entry.get("usage", {})))
 
-    md_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(md_path.parent)
     with md_path.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines).lstrip("\n"))

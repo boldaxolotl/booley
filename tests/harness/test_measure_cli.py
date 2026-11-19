@@ -112,6 +112,25 @@ def test_validate_refuses_an_automatic_mutation_count(
     assert "[sim_core.mutation] count: count must be an integer, got 'auto'" in err
 
 
+def test_validate_percentage_bound_says_bounds_are_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A percentage bound value says bounds are absolute; another string keeps its error."""
+    write_metrics_project(
+        tmp_path,
+        '[sim_core.sim]\ntests_total_min = "+10%"\ntests_failed_max = "10%"\n'
+        'tests_total_max = "zero"\n',
+    )
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 2
+
+    err = capsys.readouterr().err
+    assert err.count("a bound is an absolute number, not a percentage") == 2
+    assert "tests_total_min must be a finite number, got '+10%'; a bound" in err
+    assert "tests_failed_max must be a finite number, got '10%'; a bound" in err
+    assert "got 'zero'\n" in err
+
+
 # ---------------------------------------------------------------- measuring a commit
 
 TWO_LINT_TABLES = "[sim_core.lint]\nwarnings_max = 0\n[sim_two.lint]\nwarnings_max = 0\n"
@@ -1205,8 +1224,22 @@ def test_a_target_run_exits_like_a_full_run(
     assert stored_runs(project) == []
 
 
-def test_a_target_on_a_measured_commit_shows_the_stored_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("arguments", "code", "said", "runs"),
+    [
+        (["--target", "nope"], 2, "Unknown target 'nope'", 1),
+        (["--target", "sim_fifo"], 2, NOTHING_IN_SCOPE, 1),
+        (["--all", "--target", "sim_core"], 0, ": not stored", 2),
+    ],
+)
+def test_a_target_on_a_measured_commit_is_validated_and_measured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    code: int,
+    said: str,
+    runs: int,
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
     steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
@@ -1214,11 +1247,14 @@ def test_a_target_on_a_measured_commit_shows_the_stored_run(
     (first,) = stored_runs(project)
     capsys.readouterr()
 
-    assert run_command(monkeypatch, project, "--target", "sim_core") == 0
+    assert run_command(monkeypatch, project, *arguments) == code
 
-    assert "is already Measured by run" in capsys.readouterr().err
-    assert steps == ["prepare", "run"]
+    captured = capsys.readouterr()
+    assert said in captured.out + captured.err
+    assert "is already Measured" not in captured.err
+    assert steps == ["prepare", "run"] * runs
     assert stored_runs(project) == [first]
+    assert MeasurementStore(project / ".booley").measured(key_of(project)).path == first
 
 
 def test_validate_init_defaults_bound_listed_sim_headers(
