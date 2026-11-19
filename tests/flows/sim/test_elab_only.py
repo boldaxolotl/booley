@@ -258,12 +258,14 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
 def test_elab_only_rejects_run_stage_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, extra: list[str], argument: str
 ) -> None:
+    fail_budget(monkeypatch)
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, *extra, mode=mode)
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["mode"] == mode.replace("-", "_")
     assert argument in result.outcome.report_text
     assert "use --mode simulate" in result.outcome.report_text
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 def test_standalone_requires_elab_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -286,6 +288,7 @@ def test_coverage_requires_simulation_mode(
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "Coverage requires simulation mode"
     assert result.outcome.detail["mode"] == "elab_only"
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

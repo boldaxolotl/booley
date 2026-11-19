@@ -67,7 +67,7 @@ class EndpointOutcome:
     # Whether the OOM killer took a process of one of this Job's own commands.
     # Set by ``execute_endpoint``; an endpoint never sets it itself.
     oom_killed: bool = False
-    # The endpoint refused the Job's configuration or arguments before any of its work: a
+    # The endpoint refused the Job before any of its work: a
     # memory-admission warning says the Job ran, so a refused Job carries none.
     refused: bool = False
 
