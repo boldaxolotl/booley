@@ -80,13 +80,17 @@ Fmax, a warning count with the log path, and any failure reason. When the
 worst path starts at an input or ends at an output, a note says so: such a
 path's slack depends on the input and output delays in your constraints, not on
 the logic between registers, so fix those constraints rather than the RTL.
+In physical mode, another note appears when some endpoints or ports are
+[unconstrained](#timing-constraints): it gives the endpoint count, the inputs
+and outputs without a delay (the first three names of each) and the log path,
+where the full lists are. It does not change the verdict.
 
 Everything else is in the run's numbered directory (`synth/3/` above; see
 [Reading results](FLOW_REFERENCE.md#reading-results) for where it lives):
 
 | File | What it holds |
 |---|---|
-| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
+| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. In physical mode, `unconstrained` gives the count and up to 10 names for `endpoints`, `inputs_without_delay` and `outputs_without_delay`; counts of 0 mean the check found nothing. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
 | `artifacts/synth_<target>/run.log` | The full Yosys and OpenROAD output: every warning and error. |
 | `artifacts/synth_<target>/timing/` | The STA reports, physical mode only (see [`timing_report_paths`](#configuration-flowssynth)). |
 | `artifacts/synth_<target>/baseline_timing/` | With `--baseline`: the baseline run's STA reports. |
@@ -162,7 +166,11 @@ with a define and a synthesis-only fileset, not a Target option; see
 A synthesis Target reads its timing constraints from SDC files in a
 `file_type: SDC` fileset. At least one file must create a clock; Booley adds
 no constraints of its own, so the clock periods and I/O delays you write are
-what the timing numbers mean. To declare the fileset, see the
+what the timing numbers mean. A path that starts at an input without
+`set_input_delay` or ends at an output without `set_output_delay` is not timed,
+and neither is any other unconstrained endpoint, so the numbers cover only the
+constrained paths. The results list what is left out (see
+[Reading results](#reading-results)). To declare the fileset, see the
 [Synthesis Target recipe](#synthesis-target).
 
 ```tcl

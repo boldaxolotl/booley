@@ -96,7 +96,11 @@ from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section
 from booley.flows.synth.cli import SynthArguments
 from booley.flows.synth.mode import SynthMode, runs_openroad
 from booley.flows.synth.request import SynthRequest
-from booley.flows.synth.timing import parse_perclock
+from booley.flows.synth.timing import (
+    UnconstrainedTiming,
+    parse_perclock,
+    parse_unconstrained_timing,
+)
 from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
@@ -322,6 +326,9 @@ class SynthMetrics:
     # purely combinational design).
     reg2reg_slack_ns: float | None = None
     reg2reg_fmax_mhz: float | None = None
+    # What the authored SDC leaves untimed. None when no check ran (logical mode,
+    # or OpenROAD did not reach it); zero counts mean it ran and found nothing.
+    unconstrained: UnconstrainedTiming | None = None
     elapsed_s: float = 0.0
     latches: int = 0
     latch_types: dict[str, int] | None = None
@@ -750,6 +757,7 @@ def _parse_synth_output(
         estimated_fmax_mhz=estimated_fmax_mhz,
         reg2reg_slack_ns=reg2reg_slack_ns,
         reg2reg_fmax_mhz=reg2reg_fmax_mhz,
+        unconstrained=parse_unconstrained_timing(output),
         synth_mode=mode,
         elapsed_s=elapsed_s,
         latches=latches,
@@ -959,6 +967,8 @@ def _target_summary(
             **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         },
     }
+    if metrics.unconstrained is not None:
+        summary["unconstrained"] = metrics.unconstrained.to_detail()
     if metrics.openroad_reuse:
         summary["openroad_reuse"] = dict(metrics.openroad_reuse)
     if baseline is not None:
@@ -1106,6 +1116,8 @@ def _build_report_dict(
     }
     if _is_io_bound_critical(metrics):
         report["io_bound_critical"] = True
+    if metrics.unconstrained is not None:
+        report["unconstrained"] = metrics.unconstrained.to_detail()
     if metrics.openroad_reuse:
         report["openroad_reuse"] = dict(metrics.openroad_reuse)
     if baseline_metrics and baseline_ref:
@@ -2585,8 +2597,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                     "structural counts were emitted before the final synthesis checks completed",
                 )
             )
-        if _is_io_bound_critical(cur):
-            lines.append(self._format_io_bound_line(tgt, cur))
+        lines.extend(self._constraint_note_lines(tgt, cur))
         if cur.has_critical:
             lines.append(self._format_critical_line(tgt, cur))
         if cur.warning_summary.total_warnings:
@@ -2875,6 +2886,44 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         when = format_clock(producer.get("producer_started_at"))
         run = producer.get("producer_run_id")
         return note_line(tgt, "REUSED", f"OpenROAD results reused from run {run} ({when})")
+
+    def _constraint_note_lines(self, tgt: str, cur: SynthMetrics) -> list[str]:
+        """The I/O-bound and unconstrained-timing NOTEs, when they apply."""
+        lines: list[str] = []
+        if _is_io_bound_critical(cur):
+            lines.append(self._format_io_bound_line(tgt, cur))
+        if cur.unconstrained is not None and cur.unconstrained.found:
+            lines.append(self._format_unconstrained_line(tgt, cur, cur.unconstrained))
+        return lines
+
+    @staticmethod
+    def _format_unconstrained_line(
+        tgt: str, cur: SynthMetrics, unconstrained: UnconstrainedTiming
+    ) -> str:
+        """Advisory: timing numbers cover only the paths the SDC constrains."""
+
+        def ports(count_names: tuple[str, ...], noun: str, command: str) -> str:
+            shown = ", ".join(count_names[:3])
+            more = len(count_names) - 3
+            if more > 0:
+                shown += f", +{more} more"
+            plural = noun if len(count_names) == 1 else f"{noun}s"
+            return f"{len(count_names)} {plural} without {command} ({shown})"
+
+        parts: list[str] = []
+        if unconstrained.endpoints:
+            count = len(unconstrained.endpoints)
+            parts.append(f"{count} unconstrained endpoint{'' if count == 1 else 's'}")
+        if unconstrained.inputs_without_delay:
+            parts.append(ports(unconstrained.inputs_without_delay, "input", "set_input_delay"))
+        if unconstrained.outputs_without_delay:
+            parts.append(ports(unconstrained.outputs_without_delay, "output", "set_output_delay"))
+        return note_line(
+            tgt,
+            "NOTE",
+            f"timing covers only constrained paths: {'; '.join(parts)}; "
+            f"full lists: {cur.log_path or 'run.log'}",
+        )
 
     @staticmethod
     def _format_io_bound_line(tgt: str, cur: SynthMetrics) -> str:
