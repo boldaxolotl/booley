@@ -800,6 +800,63 @@ def test_dry_run_judges_an_undeclared_toplevel_unless_setup_generates(
         assert plan["work_units"] == []
 
 
+def test_real_run_rejects_an_undeclared_toplevel_at_planning(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real run stops on the planning verdict before FuseSoC setup runs."""
+    for name, text in _SETUP_PROJECT.items():
+        path = tmp_path / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(text.encode())
+    monkeypatch.setattr(
+        TargetCatalog, "build", classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root))
+    )
+
+    result, commands = run_lint(target="undeclared")
+
+    assert result.exit_code == EXIT_ERROR
+    assert (
+        _UNDECLARED_TOP.format(target="undeclared", top="no_such_top")
+        in result.outcome.report_text
+    )
+    assert commands == []
+
+
+@pytest.mark.parametrize(
+    ("conf", "exit_code"),
+    [
+        pytest.param(b"[main]\nfilters = autotype\n", EXIT_SUCCESS, id="config-filter"),
+        pytest.param(b"[main\n", EXIT_SUCCESS, id="unreadable-config"),
+        pytest.param(b"[main]\ncache_root = x\n", EXIT_ERROR, id="no-filter"),
+    ],
+)
+def test_dry_run_defers_to_setup_when_fusesoc_config_filters_sources(
+    run_lint: _LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    conf: bytes,
+    exit_code: int,
+) -> None:
+    """A filter in ``fusesoc.conf`` can retype sources, so planning leaves the toplevel to setup."""
+    for name, text in _SETUP_PROJECT.items():
+        path = tmp_path / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(text.encode())
+    tmp_path.joinpath("fusesoc.conf").write_bytes(conf)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "no-xdg"))
+    monkeypatch.setattr(
+        TargetCatalog, "build", classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root))
+    )
+
+    result, _commands = run_lint(args=("--dry-run",), target="undeclared")
+
+    assert result.exit_code == exit_code
+    assert (_dry_run_plan(capsys)["aggregate_errors"] == []) is (exit_code == EXIT_SUCCESS)
+
+
 def test_dry_run_previews_fusesoc_setup_without_resolving(
     run_lint: _LintRun,
     tmp_path: Path,

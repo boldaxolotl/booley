@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import configparser
 import json
+import os
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
@@ -88,6 +90,24 @@ def _inspect_inputs(
     return tuple(inputs)
 
 
+def _config_filters(root: Path) -> list[str]:
+    """Return the filters FuseSoC's configuration applies to every setup, as it loads them."""
+    xdg_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    parser = configparser.ConfigParser(default_section="main", interpolation=None)
+    try:
+        parser.read(
+            [
+                "/etc/fusesoc/fusesoc.conf",
+                str(Path(xdg_home) / "fusesoc" / "fusesoc.conf"),
+                str(root / "fusesoc.conf"),
+            ],
+            encoding="utf-8",
+        )
+    except configparser.Error:
+        return ["unreadable"]
+    return parser.get("main", "filters", fallback="").split()
+
+
 def _inspect_setup_inputs(
     root: Path,
     cores: list[Any],
@@ -96,6 +116,8 @@ def _inspect_setup_inputs(
     tb_paths: Collection[str],
 ) -> tuple[TargetInput, ...] | None:
     """Return the sources setup lists, or None when a generator or filter may change them."""
+    if _config_filters(root):
+        return None
     top = cores[-1]
     for core in cores:
         core_flags = dict(flags)
