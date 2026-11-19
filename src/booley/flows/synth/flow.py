@@ -505,7 +505,7 @@ class SynthMetrics:
         )
 
     def failure_reason(self) -> str:
-        """One-line cause of a failed run, as the card and RESULT line name it."""
+        """One-line cause of a failed run, as the implementation report and RESULT line name it."""
         if self.timed_out:
             return "timeout"
         killed = {"oom": "OOM", "resource_killed": "resource-killed"}
