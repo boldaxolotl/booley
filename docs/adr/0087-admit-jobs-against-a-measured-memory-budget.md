@@ -119,6 +119,16 @@ read-only, and delegating it would loosen the hardening.
 - A Job reserves its largest phase estimate at admission and shrinks it as
   phases finish. It never grows, so a running Job never waits partway
   through.
+- A synthesis Job is planned on its tools: `sv2v` (with the sv2v frontend),
+  `yosys`, and `openroad` (in physical mode). A tool with no record of its
+  own takes the Target's whole-command `synth` estimate, never another
+  Target's. The reservation drops to OpenROAD's when Yosys ends, and a reused
+  OpenROAD result ends that phase at once. A tool the run never reached ends
+  with its Target, so a run that fails before OpenROAD releases its estimate.
+  `sv2v` and Yosys run in one command and end together. FPGA implementation
+  stays one phase: one Vivado batch run does both synthesis and
+  implementation, so Booley sees no boundary between them. A Custom Flow is
+  one opaque command and stays one phase.
 - Order is by priority, but a later Job may jump ahead of a front Job that
   does not fit when it fits now and is estimated to finish before the front
   Job can start. A Job without wall-clock history never jumps. Strict order
