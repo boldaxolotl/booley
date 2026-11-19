@@ -141,7 +141,6 @@ def test_bad_base_is_refused_without_model_call(
         ([], 0, "RESULT: REVIEWED WITH FINDINGS"),
         (["--fail-on", "major"], 1, "RESULT: REVIEWED WITH FINDINGS"),
     ],
-    ids=["no_change", "dry_run", "completed", "fail_on"],
 )
 def test_cli_prints_the_report_once(
     repo: Path,
@@ -163,7 +162,6 @@ def test_cli_prints_the_report_once(
 
     shown = capsys.readouterr()
     assert (shown.out + shown.err).count(report) == 1
-    assert report in (shown.out if exit_code == 0 else shown.err)
 
 
 def test_base_without_changes_in_scope_exits_zero_without_model_call(

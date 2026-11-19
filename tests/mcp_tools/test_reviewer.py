@@ -48,18 +48,14 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
     return install_agent(monkeypatch)
 
 
-# The scope files this module's reviews name: a review refuses a scope file that does not exist.
-SCOPE_FILES = ("rtl/mod_a.sv", "rtl/a.sv", "tb/mod_a_tb.sv", "tb/t.sv", "tb/test.py")
-SCOPE_FILES += ("tb/main.cpp", "tb/tb.sv")
-
-
 @pytest.fixture(autouse=True)
 def _run_in_tmp_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reviews without ``--work-dir`` resolve against the cwd: keep it hermetic."""
     monkeypatch.chdir(tmp_path)
-    for path in map(tmp_path.joinpath, SCOPE_FILES):
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("// authored\n", encoding="utf-8")
+    scope = "rtl/mod_a.sv rtl/a.sv tb/mod_a_tb.sv tb/t.sv tb/test.py tb/main.cpp tb/tb.sv"
+    for name in scope.split():  # reviews refuse a missing scope file
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).write_text("//\n", encoding="utf-8")
 
 
 @pytest.fixture
@@ -765,9 +761,7 @@ def test_argument_validation(case: _Arguments, agent: ScriptedAgent) -> None:
 def test_missing_scope_file_is_refused_before_any_search(
     agent: ScriptedAgent, tmp_path: Path, dry_run: list[str]
 ) -> None:
-    bare = tmp_path / "bare"  # no rtl/ or verif/, so no rtl/mod_a.sv
-    bare.mkdir()
-    outcome, _ = run_review(["--work-dir", str(bare), *BUGS, *dry_run])
+    outcome, _ = run_review(["--work-dir", str(tmp_path / "bare"), *BUGS, *dry_run])
 
     assert outcome.exit_code == 2
     assert "Scope files not found: rtl/mod_a.sv." in outcome.report_text
