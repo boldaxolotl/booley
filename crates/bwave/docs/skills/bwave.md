@@ -38,7 +38,7 @@ Narrow the query rather than raising the limit.
 - **Virtual Signals**: `--virtual "hsk = *valid & *ready"` defines a 1-bit
   predicate (`reference/virtual-signals`).
 - **Wide values**: `wave` elides values past 24 characters so one wide bus
-  cannot set the column width of the whole table (`commands/wave`).
+  cannot set the column width of the whole table.
 
 ## Reach for `wave` first
 
