@@ -367,13 +367,11 @@ marks each one `present`, `missing`, or `uninitialized`.
 It stops at each Project it finds, so it doesn't crawl that Project's RTL and
 build trees; to import a Project nested inside another, name its path directly.
 
-`forget` releases the Project's own tag on its Sandbox Image unless a
-container still uses that image. It also removes the earlier Sandbox Images
-Booley recorded building for the Project once no tag or container uses them;
-images Booley has no record of stay. It then lists what the Project still holds
-in Docker, with sizes: images, agent state volumes (a copy of the agent's login
-and history), containers, and networks. These stay until you add `--purge`,
-which removes the unused ones, even for a Project already forgotten or deleted.
+`forget` releases the Project's Sandbox Image tag and cleans up its older
+unused Sandbox Images. It then lists what the Project still holds in Docker,
+with sizes: images, agent state volumes (a copy of the agent's login and
+history), containers, and networks. These stay until you add `--purge`, which
+removes the unused ones, even for a Project already forgotten or deleted.
 To use a forgotten Project again, run `booley init` in it.
 
 <details markdown>
