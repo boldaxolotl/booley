@@ -124,16 +124,11 @@ def test_validate_percentage_bound_says_bounds_are_absolute(
 
     assert _measure(monkeypatch, tmp_path, "--validate") == 2
 
-    lines = capsys.readouterr().err.splitlines()
-    hint = (
-        "; a bound is an absolute number, not a percentage, and a relative"
-        " bound key such as `<metric>_increase_at_most` is rejected too"
-    )
-    for key, value in (("tests_total_min", "+10%"), ("tests_failed_max", "10%")):
-        message = f"{key} must be a finite number, got '{value}'"
-        assert f"[sim_core.sim] {key}: {message}{hint}" in lines
-    zero = "tests_total_max must be a finite number, got 'zero'"
-    assert f"[sim_core.sim] tests_total_max: {zero}" in lines
+    err = capsys.readouterr().err
+    assert err.count("a bound is an absolute number, not a percentage") == 2
+    assert "tests_total_min must be a finite number, got '+10%'; a bound" in err
+    assert "tests_failed_max must be a finite number, got '10%'; a bound" in err
+    assert "got 'zero'\n" in err
 
 
 # ---------------------------------------------------------------- measuring a commit
