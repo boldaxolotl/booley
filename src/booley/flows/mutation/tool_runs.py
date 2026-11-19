@@ -22,9 +22,12 @@ from booley.flows.job_resources import JobResourceMonitor, MeasuredPopen, Resour
 from booley.flows.sim.build import SetupRunner
 
 
-def _communicate(process: MeasuredPopen, timeout: float | None) -> tuple[str, str]:
-    """Wait as ``subprocess.run`` does: kill on a timeout or any other exception."""
+def _communicate(
+    process: MeasuredPopen, monitor: JobResourceMonitor, timeout: float | None
+) -> tuple[str, str]:
+    """Start *monitor*, then wait as ``subprocess.run`` does: kill on any failure."""
     try:
+        monitor.start(process.pid)
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         process.kill()
@@ -70,9 +73,8 @@ def run_tool(
             stderr=subprocess.PIPE,
             text=True,
         ) as process:
-            monitor.start(process.pid)
             try:
-                stdout, stderr = _communicate(process, timeout)
+                stdout, stderr = _communicate(process, monitor, timeout)
                 settled = True
             except subprocess.TimeoutExpired:
                 hard_timeout = settled = True
