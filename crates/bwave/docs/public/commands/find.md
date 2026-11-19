@@ -35,10 +35,9 @@ With `--count`:
 ```
 
 With no match, stderr says `# No matches found` (with the reset cycles
-skipped, if any), and at most one note follows: the value was never held in
-the window, the value was held but no sampled cycle matched (`--async` sees
-raw transitions), or `rising`/`falling` met multi-bit signals only. JSON
-carries the note in `warnings[]`.
+skipped, if any), then a `# NOTE:` line when it can say why: the value never
+occurred in the searched range, or it occurred only between sampled cycles
+(try `--async`). JSON carries the note in `warnings[]`.
 
 JSON mode emits a `findData` envelope:
 

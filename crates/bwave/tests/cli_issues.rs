@@ -4953,6 +4953,34 @@ fn issue_1418_signed_bounds() {
 }
 
 #[test]
+fn find_no_match_note_counts_same_tick_writes_and_skips_negative_windows() {
+    let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n";
+    let (_dir, store) = issue_1100_store(body, "serial");
+    let note = |extra: &[&str]| {
+        let mut args = vec!["find", store.as_str(), "scalar", "'h1"];
+        args.extend_from_slice(extra);
+        let (out, err, code) = issue_1100_run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.is_empty(), "{out}");
+        err.lines()
+            .filter(|l| l.starts_with("# NOTE:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Tick 15 writes 1 then 0: the transient 1 is held inside the window.
+    let held = note(&["--with-reset", "-t", "2:2"]);
+    assert!(held.contains("was held in this window"), "{held}");
+    // A window wholly before tick 0 holds nothing, whatever tick 0 holds.
+    let (_, err, code) =
+        issue_1100_run(&["find", &store, "scalar", "'h0", "--async", "-t=-2t:-1t"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("# NOTE: 'h0 was never held in this window"),
+        "{err}"
+    );
+}
+
+#[test]
 fn issue_1421_same_tick_samples_zero_window_and_reset_round_trip() {
     for engine in ["serial", "parallel"] {
         let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n#25\n1$\n1!\n0!\n1!\n#30\n0$\n#35\n1$\n#40\n0$\n";

@@ -4618,17 +4618,22 @@ fn find_window_ticks(
         (effective_start, end_tick)
     } else {
         let lo = u64::try_from(cfg.time_min).unwrap_or(0);
-        let hi = cfg
-            .time_max
-            .map_or(end_tick, |max| u64::try_from(max).unwrap_or(0));
-        (lo, hi)
+        match cfg.time_max {
+            None => (lo, end_tick),
+            // A window wholly before tick 0 is empty, not clamped to tick 0.
+            Some(max) => u64::try_from(max).map_or((1, 0), |hi| (lo, hi)),
+        }
     }
 }
 
 /// True when the signal holds a value matching `value` at some tick in
-/// `lo..=hi`, counting the value already held at `lo`.
+/// `lo..=hi` (false for an empty span), counting the value held before `lo`.
 fn holds_in_window(transitions: &[(u64, String)], (lo, hi): (u64, u64), value: &str) -> bool {
-    let first = transitions.partition_point(|(tick, _)| *tick <= lo);
+    if lo > hi {
+        return false;
+    }
+    // Writes at `lo` itself count individually: they are inside the window.
+    let first = transitions.partition_point(|(tick, _)| *tick < lo);
     let at_start = first.checked_sub(1).map(|i| &transitions[i]);
     at_start
         .into_iter()
