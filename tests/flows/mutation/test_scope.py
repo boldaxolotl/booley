@@ -59,6 +59,7 @@ def _main(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     *args: str,
+    target: str = "sim",
 ) -> tuple[int, str, dict[str, Any]]:
     """Run ``booley flow mutation`` on the project at ``tmp_path/project``.
 
@@ -77,7 +78,7 @@ def _main(
     # materialize the vendored and generated scope entries the passing cases name.
     with patch.object(MutationFlow, "_generate", return_value=reached):
         code = MutationFlow().main(
-            ["--work-dir", str(root), "--report-dir", str(reports), "--target", "sim", *args]
+            ["--work-dir", str(root), "--report-dir", str(reports), "--target", target, *args]
         )
     captured = capsys.readouterr()
     report = reports / "mutation.json"
@@ -153,25 +154,64 @@ def test_unusable_scope_entries_end_as_error_in_dry_and_real_runs(
             _assert_real_report(code, report, "deleted Target file")
 
 
-def test_target_without_mutable_rtl_ends_as_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("target", "result"),
+    [
+        pytest.param(
+            "sim",
+            "RESULT: ERROR (scope: Target 'sim' has no mutable RTL "
+            "(only testbench, vendored, generated or non-Verilog inputs); pass --scope.)",
+            id="no-mutable-rtl",
+        ),
+        pytest.param(
+            "nosuch",
+            "RESULT: ERROR (target: Unknown target 'nosuch'; selectable Targets: lint, sim)",
+            id="unknown",
+        ),
+        pytest.param(
+            "sim,lint",
+            "RESULT: ERROR (options: --target must select exactly one Target)",
+            id="list",
+        ),
+        pytest.param(
+            "lint",
+            "RESULT: ERROR (target: Target 'lint' cannot be driven by the 'sim' Flow",
+            id="not-a-sim-target",
+        ),
+    ],
+)
+def test_target_refusals_without_scope_name_their_own_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: str,
+    result: str,
 ) -> None:
-    """AC1, AC2: a Target of only testbench, vendored and generated RTL has nothing to mutate."""
+    """AC1-AC3: with no ``--scope``, each Target refusal names its own cause, dry and real."""
     root = tmp_path / "project"
     root.mkdir()
     core = _DEFAULT_SCOPE_CORE.replace(
         "filesets: [rtl, imported, built, tb]", "filesets: [imported, built, tb]"
     )
     assert core != _DEFAULT_SCOPE_CORE
+    core += (
+        "  lint:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: tb_top\n"
+    )
     _author_project(root, core)
 
-    dry_code, dry_out, _ = _main(tmp_path, monkeypatch, capsys, "--count", "3", "--dry-run")
-    code, out, report = _main(tmp_path, monkeypatch, capsys, "--count", "3")
+    dry_code, dry_out, _ = _main(
+        tmp_path, monkeypatch, capsys, "--count", "3", "--dry-run", target=target
+    )
+    code, out, report = _main(tmp_path, monkeypatch, capsys, "--count", "3", target=target)
 
     assert dry_code == EXIT_ERROR
-    assert "has no mutable RTL" in dry_out
-    _assert_real_report(code, report, "no mutable RTL")
-    assert "has no mutable RTL" in out
+    _assert_real_report(code, report, target)
+    for printed in (dry_out, out):
+        assert printed.rstrip().splitlines()[-1].startswith(result), printed
 
 
 def test_repeated_scope_path_is_scoped_once_and_scope_flags_accumulate(

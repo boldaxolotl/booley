@@ -26,6 +26,7 @@ from booley.config.tests_toml_rules import (
 from booley.core.booley_dir import in_checkout_booley_dir
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import edam as edam_layer
+from booley.flows import source_paths
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.job_resources import repeated_commands, resolved_source_bytes
@@ -202,12 +203,7 @@ def _source_declarations(handle: TargetHandle) -> tuple[_SourceDeclaration, ...]
     catalog = TargetCatalog.build(handle.project_root)
     inspection = catalog.inspect(handle)
     root = handle.project_root.resolve()
-    core_roots = {
-        str(Vlnv(str(fusesoc_registry.read_core(core)["name"]))): fusesoc_registry.core_files_root(
-            core, root
-        )
-        for core in catalog.core_closure((handle,)) or ()
-    }
+    core_roots = source_paths.core_files_roots(catalog, handle)
     result = []
     for item in inspection.inputs:
         source = _safe_declared_path(root, item.path)

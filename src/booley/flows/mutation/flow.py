@@ -48,6 +48,7 @@ from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.memory_admission import MemoryAdmissionPlan, measure_coordinator_claim
+from booley.flows.metric_declarations import COUNTED_ITEM_CHARS
 from booley.flows.mutation import workspace
 from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
@@ -170,6 +171,9 @@ _SIMULATOR_DEFINES = {
 }
 #: Tags (besides the testbench role) that take a Target input out of the default scope.
 _UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
+
+# The least of a survived Mutant's source text kept on each side of its listed line.
+_MIN_SNIPPET_CHARS = 20
 
 #: Said only when the Target's own RTL was the scope, where choosing files can fix the run.
 _PASS_SCOPE_HINT = "pass --scope to choose the files to mutate"
@@ -842,6 +846,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     code_modifying: bool = False
 
     target_required: bool = True
+    target_metavar: str = "TARGET"
     target_help: str = SurfaceHelp(
         "Exactly one Simulation Target. The CLI accepts one --target value; "
         "MCP accepts one Target selector string.",
@@ -923,6 +928,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         scope = self.args.scope
         if scope is None:
             default_scope = self._default_scope()
+            if isinstance(default_scope, EndpointOutcome):
+                return default_scope
             if not default_scope:
                 message = (
                     f"Target {self.args.target!r} has no mutable RTL "
@@ -940,19 +947,23 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             self.args.count = 10
         return None
 
-    def _default_scope(self) -> list[str]:
+    def _default_scope(self) -> list[str] | EndpointOutcome:
         """The Project's own mutable RTL in the Target's closure, in Target order.
 
         "Own RTL" spans the ``depend`` closure, not only the root core's
         filesets: in a layered Project the root fileset owns the harness while
         the DUT arrives through a dependency (see :meth:`_dut_files`).  Testbench,
         vendored and generated files, include headers, inputs outside the Project
-        and non-Verilog inputs are not mutable.  A Target that cannot be
-        inspected has no scope; the run's own validation reports why.
+        and non-Verilog inputs are not mutable.  A list, or a Target that
+        cannot be selected or inspected, is refused with its own error.
         """
-        inspection = self._inspect_target()
-        if inspection is None:
-            return []
+        if list_error := self._target_list_error(self.args.target):
+            return list_error
+        try:
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(catalog.select(self.args.target, for_flow="sim"))
+        except fusesoc_registry.FuseSocError as exc:
+            return _error_outcome("target", f"mutation: {exc}", report_text=f"mutation: {exc}")
         inputs = inspection.inputs
         unmutable = fusesoc_registry.files_tagged(self.args.work_dir, _UNMUTATED_FILE_TAGS)
         scope: dict[str, None] = {}  # ordered set
@@ -1274,15 +1285,22 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return None
         return _error_outcome("options", message, report_text=message)
 
+    @staticmethod
+    def _target_list_error(target: str) -> EndpointOutcome | None:
+        """Refuse a ``--target`` that does not name exactly one Target."""
+        if len([part for part in target.split(",") if part.strip()]) != 1:
+            message = "--target must select exactly one Target"
+            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        return None
+
     def _validate_run_inputs(
         self,
         target: str,
         work_dir: Path,
         scope_files: list[str],
     ) -> EndpointOutcome | None:
-        if len([part for part in target.split(",") if part.strip()]) != 1:
-            message = "--target must select exactly one Target"
-            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        if list_error := self._target_list_error(target):
+            return list_error
         if scope_error := self._validate_scope_against_target(scope_files):
             return scope_error
         try:
@@ -1448,7 +1466,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                     "no Mutation Operator site in the scope files",
                     _no_site_hint(plan),
                 )
-                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
+                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
                 return outcome
             specs = [
                 _spec_of(index, mutant) for index, mutant in enumerate(selection.mutants, start=1)
@@ -1643,7 +1661,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         detail["equivalent_dropped"] = sweep.equivalent_dropped
         detail["invalid_dropped"] = sweep.invalid_dropped
-        detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
+        detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
         hint = (
             f"none of the Mutants of {', '.join(plan.scope_files)} changes what Target "
             f"'{plan.target}' builds; scope files whose modules '{plan.tb_top}' elaborates"
@@ -3068,7 +3086,28 @@ def _spec_of(index: int, mutant: Mutant) -> MutationSpec:
 
 def _summary_metrics(target: str, summary: MutationSummary) -> dict[str, dict[str, object]]:
     """The report's ``detail.metrics`` of a scored run: its valid Mutants, detected or not."""
-    return mutation_metrics_detail(target, summary.detected_count, summary.not_detected_count)
+    survivors = [_survivor_line(spec) for spec in summary.surviving_specs()]
+    return mutation_metrics_detail(target, summary.detected_count, survivors)
+
+
+def _survivor_line(spec: MutationSpec) -> str:
+    """One survived Mutant as ``ID category file:line: 'original' -> 'mutated'``.
+
+    Each snippet is shortened to share what the line may hold, so a long source line keeps
+    both sides of the change instead of losing the mutated one to the line's cut.
+    """
+    prefix = f"{spec.mutant_id} " if spec.mutant_id else ""
+    head = f"{prefix}{spec.category} {spec.file}:{spec.line}: "
+    room = max((COUNTED_ITEM_CHARS - len(head) - len("'' -> ''")) // 2, _MIN_SNIPPET_CHARS)
+    orig = _snippet(spec.original_code, room)
+    mut = _snippet(spec.mutated_code, room)
+    return f"{head}{orig!r} -> {mut!r}"
+
+
+def _snippet(code: str, room: int) -> str:
+    """*code* on one line, cut with ``...`` to at most *room* characters shown."""
+    text = " ".join(code.split())
+    return text if len(text) <= room else text[: room - 3] + "..."
 
 
 def _mutation_detail(

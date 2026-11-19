@@ -39,6 +39,7 @@ def build_parser(
         target_required=flow.target_required,
         accepts_target=flow.accepts_target,
         target_help=target_help,
+        target_metavar=flow.target_metavar,
         human=human,
     )
     flow.argument_adapter.add_common_args(parser, human=human)

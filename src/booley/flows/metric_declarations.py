@@ -76,9 +76,19 @@ class FlowMetricValues:
     # Every clock the run reported timing for, valued or not: a clock with no fmax is
     # absent from ``per_clock`` but still named here.
     clocks: tuple[str, ...] = ()
-    # Test Run name -> first line of its failure reason; bounded by the Flow, empty for a Flow
-    # without Test Runs.
-    failing_tests: dict[str, str] = field(default_factory=dict[str, str])
+    # Metric name -> the first items its count counts, one display line each; ordered and
+    # capped by the Flow (see :func:`counted_items`), so the count is the whole and this a part.
+    counted_items: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
+
+
+# Bounds on the lines kept behind a count, so a Measurement Run stays small.
+COUNTED_ITEMS_CAP = 20
+COUNTED_ITEM_CHARS = 200
+
+
+def counted_items(lines: Sequence[str]) -> list[str]:
+    """The first ``COUNTED_ITEMS_CAP`` of *lines*, each cut to ``COUNTED_ITEM_CHARS``."""
+    return [line[:COUNTED_ITEM_CHARS] for line in lines[:COUNTED_ITEMS_CAP]]
 
 
 class UndeclaredMetricError(ValueError):
@@ -169,7 +179,7 @@ def metrics_document(measure: Callable[[], FlowMetricValues]) -> dict[str, objec
         "per_clock": values.per_clock,
         "per_test": values.per_test,
         "clocks": list(values.clocks),
-        "failing_tests": values.failing_tests,
+        "counted_items": values.counted_items,
     }
 
 
@@ -190,7 +200,9 @@ def metrics_from_document(raw: object) -> FlowMetricValues | MetricsUnavailable 
         },
         per_test={name: dict(by_test) for name, by_test in document.get("per_test", {}).items()},
         clocks=tuple(document.get("clocks", ())),
-        failing_tests=dict(document.get("failing_tests", {})),
+        counted_items={
+            name: list(lines) for name, lines in document.get("counted_items", {}).items()
+        },
     )
 
 

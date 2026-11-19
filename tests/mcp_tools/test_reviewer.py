@@ -1408,7 +1408,8 @@ def test_clean_interactive_review_needs_no_ticket_snapshot(
     outcome, _ = run_review([*BUGS, "--work-dir", str(tmp_path)])
 
     system = agent.calls[0].system_prompt or ""
-    assert "Anchor each finding in a Goal, supplied specification, accepted decision" in system
+    assert "Anchor each finding in a supplied specification, accepted decision" in system
+    assert "Goal" not in system
     assert "steering, or concrete code behavior" in system
     assert "Cite a relevant Ticket or accepted-decision clause" not in system
     assert outcome.exit_code == 0
