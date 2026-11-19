@@ -292,8 +292,9 @@ review screen also says whether the Job runs now or queues behind other Jobs
 memory: the screen says it waits while its estimate does not fit the Memory
 Budget, without a position. The screen also warns when the worktree has a connected session,
 running or queued Jobs, or uncommitted changes. A check it cannot make is
-reported as such. Synth and FPGA runs show their per-work-unit timeout. **Submit** starts
-the Job, unless, for a Specialist, its Agent CLI cannot sign in or its settings cannot be read:
+reported as such. Synth and FPGA runs show their per-work-unit timeout.
+**Submit** starts the Job, unless, for a Specialist, its Agent CLI cannot
+sign in or its settings cannot be read:
 then Submit says why (with the fix) and does nothing until the problem is fixed.
 **Copy command** asks your terminal to copy the
 command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
