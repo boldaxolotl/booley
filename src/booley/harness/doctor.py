@@ -967,7 +967,7 @@ def _run_project_phase(
 ) -> tuple[str | None, ProjectAudit | None]:
     """Run host, config, Git, and leftover-directory checks."""
     _section("Host checks")
-    host = host_diagnostics.inspect_host()
+    host = host_diagnostics.inspect_host(project_root)
     reporter.diagnostics(host.report)
     docker_exe = host.docker_exe
     loaded = readiness.load_project(project_root)

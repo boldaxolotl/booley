@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from pathlib import Path
 
+from booley.core.private_store import ProjectStoreEntry
 from booley.projects import inventory
 from booley.projects.image_keepers import (
     Candidate,
@@ -16,12 +17,17 @@ from booley.projects.image_keepers import (
     Leftover,
     PruneResult,
     PurgeResult,
+    StampPrune,
 )
 from booley.runtime import host_docker as docker
 from booley.runtime import project_resources, session_admission
 from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
-from booley.runtime.session_issuance import invalidate_project, keeper_image_for_identity
+from booley.runtime.session_issuance import (
+    invalidate_project,
+    keeper_image_for_identity,
+    stamp_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,5 +188,65 @@ def prune_keepers(confirm: str | None = None) -> PruneResult:
 
                 result.retained.extend(cleanup_owned_images())
                 return result
+    except (RuntimeError, OSError) as exc:
+        raise inventory.ProjectInventoryError(str(exc)) from exc
+
+
+def _root_is_gone(root: str) -> bool:
+    """Return whether *root* is positively absent; an unreadable path is not proof it is gone."""
+    try:
+        Path(root).stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False  # EACCES, ESTALE, an unmounted drive: the Project may still exist
+    return False
+
+
+def orphan_stamp_roots(
+    stamps: Iterable[ProjectStoreEntry], known: Iterable[str]
+) -> tuple[str, ...]:
+    """Sort the roots of stamps whose Project is deleted and absent from the inventory.
+
+    Roots that still exist stay out: ``booley init --seed`` worktrees and Projects
+    initialized before the inventory existed hold live stamps without being remembered.
+    """
+    store = stamp_store()
+    remembered = {store.filename(root) for root in known}
+    return tuple(
+        sorted(
+            entry.project_root
+            for entry in stamps
+            if store.filename(entry.project_root) not in remembered
+            and _root_is_gone(entry.project_root)
+        )
+    )
+
+
+def prune_stamps(roots: tuple[str, ...]) -> StampPrune:
+    """List the orphan stamps; remove the stamp and claim of each named candidate.
+
+    Runs no Docker command and leaves the Project Inventory alone. A named root that
+    is not a candidate is kept untouched. Claims go first: the stamp selects the
+    root, so a failed claim removal leaves it for a rerun to retry both.
+    """
+    try:
+        with host_lifecycle_lock("projects prune-stamps"):
+            _require_recovered_host()
+            with inventory.locked_protected_roots() as protected:
+                store = stamp_store()
+                candidates = orphan_stamp_roots(store.scan_each()[0], protected())
+                by_name = {store.filename(root): root for root in candidates}
+                withdrawn: list[str] = []
+                kept: list[str] = []
+                for root in dict.fromkeys(roots):
+                    candidate = by_name.get(store.filename(root))
+                    if candidate is None:
+                        kept.append(root)
+                        continue
+                    session_admission.withdraw_claims(candidate)
+                    invalidate_project(candidate)
+                    withdrawn.append(candidate)
+                return StampPrune(candidates, tuple(withdrawn), tuple(kept))
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc

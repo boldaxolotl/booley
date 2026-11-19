@@ -13,6 +13,7 @@ import pytest
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import SandboxHostPolicy
+from booley.core.host_shell import quote_arg
 from booley.harness import host_diagnostics
 from booley.runtime import (
     issuance_invalidation,
@@ -45,7 +46,7 @@ def _identity() -> HostInstallationIdentity:
         ("ERROR", Severity.FAIL),
     ],
 )
-def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, severity):
+def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, tmp_path, state, severity):
     bootstrap = host_diagnostics.bootstrap
     monkeypatch.setattr(
         bootstrap,
@@ -72,7 +73,7 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, s
             host_environment.EnvironmentSeverity.SKIP, "offline"
         ),
     )
-    result = host_diagnostics.inspect_host()
+    result = host_diagnostics.inspect_host(tmp_path)
     finding = next(f for f in result.report.findings if "Host Bootstrap docker" in f.message)
     assert finding.severity is severity
     assert calls == [host_diagnostics.Intent.CHECK]
@@ -99,7 +100,7 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, s
     ],
 )
 def test_host_egress_check_never_lists_sandboxes_without_ready_docker_and_policy(
-    monkeypatch, docker_state, policy, expected_egress_messages
+    monkeypatch, tmp_path, docker_state, policy, expected_egress_messages
 ):
     """The Sandbox inventory runs only when Docker is ready and the host policy parsed."""
     bootstrap = host_diagnostics.bootstrap
@@ -125,12 +126,12 @@ def test_host_egress_check_never_lists_sandboxes_without_ready_docker_and_policy
             host_environment.EnvironmentSeverity.SKIP, "offline"
         ),
     )
-    findings = host_diagnostics.inspect_host().report.findings
+    findings = host_diagnostics.inspect_host(tmp_path).report.findings
     egress_messages = [f.message for f in findings if "egress" in f.message]
     assert egress_messages == expected_egress_messages
 
 
-def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):
+def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(
         host_diagnostics.bootstrap,
@@ -141,7 +142,7 @@ def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):
         host_environment, "probe_host_clock", lambda: pytest.fail("host clock probe")
     )
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: pytest.fail("external command"))
-    result = host_diagnostics.inspect_host()
+    result = host_diagnostics.inspect_host(tmp_path)
     assert result.docker_exe is None
     assert any(
         f.severity is Severity.SKIP and "inside" in f.message for f in result.report.findings
@@ -248,7 +249,7 @@ def test_agent_detection_uses_config_or_executable(
     [host_environment.EnvironmentSeverity.FAIL, host_environment.EnvironmentSeverity.WARN],
 )
 def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
-    monkeypatch, severity
+    monkeypatch, tmp_path, severity
 ):
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     observation = host_environment.EnvironmentFinding(
@@ -258,7 +259,7 @@ def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
         "host.legacy-package" if severity is host_environment.EnvironmentSeverity.WARN else None,
     )
     monkeypatch.setattr(host_environment, "audit_legacy_distribution", lambda: observation)
-    report = host_diagnostics.inspect_host().report
+    report = host_diagnostics.inspect_host(tmp_path).report
     actual = next(f for f in report.findings if f.message == observation.message)
     assert actual.severity == severity.value
     assert (actual.fix, actual.check_id) == (observation.fix, observation.check_id)
@@ -305,21 +306,59 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
 
     _stub_offline_host(monkeypatch)
 
-    result = host_diagnostics.inspect_host()
+    own_root = tmp_path / "own"
+    own_root.mkdir()
 
-    failures = [f for f in result.report.findings if f.severity is Severity.FAIL]
-    assert len(failures) == len(misnamed)
-    for (path, before), failure in zip(misnamed, failures, strict=True):
-        assert str(path) in failure.message
-        assert "booley init --seed --project" in failure.message
+    result = host_diagnostics.inspect_host(own_root)
+
+    findings = result.report.findings
+    failures = [f for f in findings if f.severity is Severity.FAIL]
+    notes = [f for f in findings if f.severity is Severity.NOTE]
+    # Another Project's stamp never fails this Project: stamps are read per Project only.
+    assert len(failures) == len(misnamed) - 1
+    assert len(notes) == 1
+    stamp_path, stamp_before = misnamed[0]
+    assert "another Project's Sandbox issuance stamp is unusable" in notes[0].message
+    assert str(stamp_path) in notes[0].message
+    assert "booley init --seed --project" in notes[0].message
+    assert "run any Docker commands it names" in notes[0].fix
+    claim_failure, journal_failure = failures
+    for (path, before), failure in zip(
+        misnamed, (None, claim_failure, journal_failure), strict=True
+    ):
         assert path.read_bytes() == before
-    # Only the journal owes Docker cleanup; the stamp and the claim keep the plain repair.
-    stamp_failure, claim_failure, journal_failure = failures
-    for (path, _), failure in zip(misnamed[:2], (stamp_failure, claim_failure), strict=True):
-        assert failure.message.endswith(session_store_repair(path, held_root))
-        assert "docker" not in failure.message
+        if failure is not None:
+            assert str(path) in failure.message
+            assert "booley init --seed --project" in failure.message
+    claim_path = misnamed[1][0]
+    assert claim_failure.message.endswith(session_store_repair(claim_path, held_root))
+    assert "docker" not in claim_failure.message
+    assert stamp_path.read_bytes() == stamp_before
     assert "docker container rm -f" in journal_failure.message
     assert "run any Docker commands it names" in journal_failure.fix
+
+
+def test_host_doctor_fails_for_this_projects_unusable_stamp_only(monkeypatch, tmp_path: Path):
+    """An unusable stamp file named for this Project Root fails; a sibling's stays a NOTE."""
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    own_root = tmp_path / "own"
+    own_root.mkdir()
+    stamps = session_issuance.stamp_store()
+    stamps.private.ensure_directory()
+    own_name = stamps.filename(str(own_root.resolve()))
+    other_name = hashlib.sha256(b"unrelated").hexdigest() + ".json"
+    for name in (own_name, other_name):
+        stamps.private.atomic_write_text(name, "not json")
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host(own_root).report.findings
+
+    failures = [f for f in findings if f.severity is Severity.FAIL]
+    notes = [f for f in findings if f.severity is Severity.NOTE]
+    assert len(failures) == 1 and own_name in failures[0].message
+    assert len(notes) == 1 and other_name in notes[0].message
 
 
 def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
@@ -337,7 +376,7 @@ def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
         store.write(project_root, json.dumps({"project_root": project_root}))
     _stub_offline_host(monkeypatch)
 
-    findings = host_diagnostics.inspect_host().report.findings
+    findings = host_diagnostics.inspect_host(tmp_path).report.findings
 
     assert not [f for f in findings if f.severity is Severity.FAIL]
     assert any(f"Session stores: {len(stores)} per-Project file(s)" in f.message for f in findings)
@@ -353,13 +392,13 @@ def _remembered_project(root: Path) -> str:
 
 
 def _forgotten_stamp_findings(findings) -> list:
-    return [f for f in findings if f.check_id == "host.forgotten-project-stamps"]
+    return [f for f in findings if "belong to deleted Projects" in f.message]
 
 
-def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
+def test_host_doctor_notes_once_for_stamps_of_deleted_forgotten_projects(
     monkeypatch, tmp_path: Path
 ):
-    """Only stamps of deleted roots outside the Project Inventory raise the WARN."""
+    """Only stamps of deleted roots outside the Project Inventory raise the NOTE."""
     xdg_home = tmp_path / "config"
     xdg_home.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
@@ -368,7 +407,7 @@ def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
     from booley.projects import inventory
 
     remembered = _remembered_project(tmp_path / "remembered")
-    # A remembered Project whose directory is gone is still in the inventory: no WARN.
+    # A remembered Project whose directory is gone is still in the inventory: no NOTE.
     remembered_gone = _remembered_project(tmp_path / "remembered-gone")
     shutil.rmtree(remembered_gone)
     granted_gone = str(tmp_path / "granted-gone")
@@ -382,23 +421,21 @@ def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
         stamps.write(root, json.dumps({"project_root": root}))
     _stub_offline_host(monkeypatch)
 
-    findings = host_diagnostics.inspect_host().report.findings
+    report = host_diagnostics.inspect_host(tmp_path).report
+    findings = report.findings
 
-    warnings = _forgotten_stamp_findings(findings)
-    assert len(warnings) == 1
-    warning = warnings[0]
-    assert warning.severity is Severity.WARN
-    assert warning.message.startswith("2 ")
-    for root in deleted:
-        assert f"booley projects forget --purge {root}" in warning.fix
+    notes = _forgotten_stamp_findings(findings)
+    assert len(notes) == 1
+    note = notes[0]
+    assert note.severity is Severity.NOTE
+    assert note.message.startswith("2 ")
+    command = " ".join(quote_arg(root) for root in deleted)
+    assert f"booley projects prune-stamps {command}" in note.fix
+    details = [d.message.strip() for d in report.details if not d.verbose_only]
+    assert details == deleted
     for kept in (remembered, remembered_gone, granted_gone, str(seeded)):
-        assert kept not in warning.fix
-
-    for root in deleted:
-        stamps.private.root.joinpath(stamps.filename(root)).unlink()
-    findings = host_diagnostics.inspect_host().report.findings
-    assert not _forgotten_stamp_findings(findings)
-    assert not [f for f in findings if f.severity is Severity.FAIL]
+        assert kept not in note.fix
+        assert kept not in details
 
 
 def test_host_doctor_skips_forgotten_stamp_check_when_inventory_is_unreadable(
@@ -417,7 +454,7 @@ def test_host_doctor_skips_forgotten_stamp_check_when_inventory_is_unreadable(
     inventory.state_path().chmod(0o600)
     _stub_offline_host(monkeypatch)
 
-    findings = host_diagnostics.inspect_host().report.findings
+    findings = host_diagnostics.inspect_host(tmp_path).report.findings
 
     assert not _forgotten_stamp_findings(findings)
     skips = [f for f in findings if f.severity is Severity.SKIP]
@@ -444,6 +481,6 @@ def test_host_doctor_does_not_call_an_unreadable_root_deleted(monkeypatch, tmp_p
     monkeypatch.setattr(os, "stat", stat)
     _stub_offline_host(monkeypatch)
 
-    findings = host_diagnostics.inspect_host().report.findings
+    findings = host_diagnostics.inspect_host(tmp_path).report.findings
 
     assert not _forgotten_stamp_findings(findings)

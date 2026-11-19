@@ -159,6 +159,7 @@ def test_host_doctor_reports_host_egress_mode(egress, tmp_path, monkeypatch):
     assert inventory_calls == [_INVENTORY_ARGV]
 
 
+@pytest.mark.parametrize("owner", ["other", "this"])
 @pytest.mark.parametrize(
     ("host", "editor", "stale", "fix_commands"),
     [
@@ -178,11 +179,12 @@ def test_host_doctor_reports_host_egress_mode(egress, tmp_path, monkeypatch):
         ),
     ],
 )
-def test_host_doctor_warns_for_each_mismatched_running_sandbox(
-    host, editor, stale, fix_commands, tmp_path, monkeypatch
+def test_host_doctor_reports_each_mismatched_running_sandbox(
+    owner, host, editor, stale, fix_commands, tmp_path, monkeypatch
 ):
-    stale_root = tmp_path / "stale-project"
-    stale_root.mkdir()
+    """Another Project's mismatched Sandbox is a NOTE; this Project's own stays a WARN."""
+    stale_root = tmp_path if owner == "this" else tmp_path / "stale-project"
+    stale_root.mkdir(exist_ok=True)
     current_root = tmp_path / "current-project"
     current_egress = "unproxied" if host == "unproxied" else None
     sandboxes = {
@@ -196,15 +198,21 @@ def test_host_doctor_warns_for_each_mismatched_running_sandbox(
     result, inventory_calls = _run_host_doctor(
         monkeypatch, tmp_path, egress=host, sandboxes=sandboxes
     )
-    mismatches = [f for f in result.findings if f.check_id == "host.sandbox-egress-mismatch"]
-    assert len(mismatches) == 1, result.findings
-    finding = mismatches[0]
     sandbox_mode = "proxy" if stale is None else stale
-    assert (finding.severity, finding.subject) == ("warn", str(stale_root.resolve()))
-    assert finding.message == (
+    message = (
         f"Sandbox stale-sandbox (Project {stale_root.resolve()}) runs with egress "
         f"'{sandbox_mode}' but host [sandbox] egress = '{host}'"
     )
+    mismatches = [f for f in result.findings if "stale-sandbox" in f.message]
+    assert len(mismatches) == 1, result.findings
+    finding = mismatches[0]
+    assert finding.message == message
+    if owner == "this":
+        assert (finding.severity, finding.check_id) == ("warn", "host.sandbox-egress-mismatch")
+        assert finding.subject == str(stale_root.resolve())
+    else:
+        assert (finding.severity, finding.check_id) == ("note", None)
+        assert not [f for f in result.findings if f.check_id == "host.sandbox-egress-mismatch"]
     # Each recreate command names the stale Project, quoted for the host shell
     # (POSIX shells or PowerShell on Windows).
     for command in fix_commands:
@@ -212,8 +220,50 @@ def test_host_doctor_warns_for_each_mismatched_running_sandbox(
         assert f"`{words} {quote_arg(str(stale_root.resolve()))}`" in finding.fix
     assert ("Rebuild Container" in finding.fix) is editor
     assert "--seed" not in finding.fix
-    assert result.exit_code == 0
     assert inventory_calls == [_INVENTORY_ARGV]
+
+
+def test_host_doctor_notes_orphan_stamps_until_prune_stamps(tmp_path, monkeypatch, capsys):
+    """Orphan stamps of deleted Projects are a NOTE, and the stamp-only remedy clears it."""
+    from booley.projects import cli as projects_cli
+    from booley.projects import inventory
+    from booley.runtime import image_keepers, session_admission, session_issuance
+
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    orphans = [str(tmp_path / "gone-a"), str(tmp_path / "gone-b")]
+    for root in orphans:
+        document = json.dumps({"project_root": root})
+        session_issuance.stamp_store().write(root, document)
+        session_admission.claim_store().write(root, document)
+    for name in ("project-a", "project-b"):
+        (tmp_path / name).mkdir()
+    first, _ = _run_host_doctor(monkeypatch, tmp_path / "project-a", egress="proxy", sandboxes={})
+
+    notes = [f for f in first.findings if "belong to deleted Projects" in f.message]
+    assert len(notes) == 1, first.findings
+    assert notes[0].severity == "note"
+    command = " ".join(quote_arg(root) for root in orphans)
+    assert f"booley projects prune-stamps {command}" in notes[0].fix
+    first_active = [
+        (f.severity, f.message) for f in first.findings if f.severity in ("fail", "warn")
+    ]
+
+    parser = argparse.ArgumentParser()
+    projects_cli.add_subparser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["projects", "prune-stamps", *orphans])
+    assert projects_cli.run(args, keeper_operations=image_keepers, leftovers_view=str) == 0
+    capsys.readouterr()
+    assert inventory.known_roots() == frozenset()
+
+    second, _ = _run_host_doctor(monkeypatch, tmp_path / "project-b", egress="proxy", sandboxes={})
+
+    assert not [f for f in second.findings if "belong to deleted Projects" in f.message]
+    second_active = [
+        (f.severity, f.message) for f in second.findings if f.severity in ("fail", "warn")
+    ]
+    assert second_active == first_active
 
 
 def test_host_doctor_fails_when_sandbox_inventory_is_unreadable(tmp_path, monkeypatch):
