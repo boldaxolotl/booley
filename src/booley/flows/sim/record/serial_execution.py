@@ -314,6 +314,10 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             # The shared build is settled (built, reused, recovered or failed). Pre-Sim
             # Commands are a phase of their own, so the build's estimate ends here.
             end_phase(handle.selector, "sim_build")
+        # A ready build lets the item take a claim of its own before it runs Pre-Sim
+        # Commands and simulates; waiting for it holds no lock of the variant.
+        if request.build_settled is not None:
+            request.build_settled()
         return self._launch_shared(
             request,
             run_directory,

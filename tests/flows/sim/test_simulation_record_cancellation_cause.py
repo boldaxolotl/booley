@@ -74,8 +74,9 @@ class _SimulationRecord:
     def run(self, items: int, trigger: Callable[[], None]) -> None:
         """Run *items* work items; the outer lane fires *trigger* and records its message."""
 
-        def execute(_attempt, child_id) -> None:
-            if child_id is not None:
+        def execute(attempt, _child_id) -> None:
+            # Only the outer lane's item, under the Flow's claim, can take its own at its build.
+            if attempt.build_settled is None:
                 # _shutdown: the scheduler's shutdown flag has no public wait, so idle lanes poll it.
                 deadline = time.monotonic() + hang_guard_s()  # idle child lane until cancelled
                 while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
