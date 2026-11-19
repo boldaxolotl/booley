@@ -2159,7 +2159,6 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let (radix_map, radix_warnings) = build_radix_map(cache, &target_indices, cfg);
     json_warnings.extend(radix_warnings);
-    let mode = TriggerMode::classify(find_value_str);
     let sync_mode = !cfg.async_mode;
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
@@ -2278,55 +2277,17 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         } else {
             // Edge mode or async: walk transitions only
-            let mut prev_val: Option<&str> = None;
-            for (tick, val) in &transitions {
-                if *tick < effective_start {
-                    prev_val = Some(val.as_str());
-                    continue;
-                }
-
-                if sync_mode && !(mode == TriggerMode::Change && cache.clock_period_ticks == 0) {
-                    if cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change) {
-                        let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
-                        if (cycle as i64) < cfg.time_min {
-                            prev_val = Some(val.as_str());
-                            continue;
-                        }
-                        if let Some(max) = cfg.time_max {
-                            if (cycle as i64) > max {
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    if (*tick as i64) < cfg.time_min {
-                        prev_val = Some(val.as_str());
-                        continue;
-                    }
-                    if let Some(max) = cfg.time_max {
-                        if (*tick as i64) > max {
-                            break;
-                        }
-                    }
-                }
-
-                let matched = mode.matches(prev_val, val, sig.width, find_value_str);
-                prev_val = Some(val.as_str());
-
-                if matched {
-                    let dval = fmt_val(val, sig_idx, sig.width, &radix_map);
-                    let time = if sync_mode && cache.clock_period_ticks > 0 {
-                        tick_to_cycle(*tick, cb, cache.clock_period_ticks)
-                    } else {
-                        *tick
-                    };
-                    record_match!(time, dname, val.clone(), dval);
-                    if truncated {
-                        break 'outer;
-                    }
-                    if cfg.first_match {
-                        break 'outer;
-                    }
+            for (tick, val) in tick_window_matches(
+                cfg,
+                &transitions,
+                effective_start,
+                sig.width,
+                find_value_str,
+            ) {
+                let dval = fmt_val(val, sig_idx, sig.width, &radix_map);
+                record_match!(tick, dname, val.to_string(), dval);
+                if truncated || cfg.first_match {
+                    break 'outer;
                 }
             }
         }
@@ -2354,82 +2315,15 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     break 'vouter;
                 }
             }
-        } else if mode != TriggerMode::Literal {
-            let mut prev_val: Option<&str> = None;
-            for (tick, val) in &ve.transitions {
-                if *tick < effective_start {
-                    prev_val = Some(val.as_str());
-                    continue;
-                }
-                let m = mode.matches(prev_val, val, 1, find_value_str);
-                prev_val = Some(val.as_str());
-                if m {
-                    let time = if sync_mode && cache.clock_period_ticks > 0 {
-                        tick_to_cycle(*tick, cb, cache.clock_period_ticks)
-                    } else {
-                        *tick
-                    };
-                    if mode == TriggerMode::Change
-                        && ((time as i64) < cfg.time_min
-                            || cfg.time_max.is_some_and(|max| (time as i64) > max))
-                    {
-                        continue;
-                    }
-                    record_match!(time, dname.as_str(), val.clone(), val);
-                    if truncated {
-                        break 'vouter;
-                    }
-                    if cfg.first_match {
-                        break 'vouter;
-                    }
-                }
-            }
         } else {
             // Async mode, or sync without a usable clock: walk virtual
-            // transitions directly with level-value matching. Mirrors the
-            // real-signal else-branch above so virtuals don't get silently
-            // skipped (the buggy fall-through pre-fix).
-            for (tick, val) in &ve.transitions {
-                if *tick < effective_start {
-                    continue;
-                }
-
-                if sync_mode {
-                    if cache.clock_period_ticks > 0 && cb > 0 {
-                        let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
-                        if (cycle as i64) < cfg.time_min {
-                            continue;
-                        }
-                        if let Some(max) = cfg.time_max {
-                            if (cycle as i64) > max {
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    if (*tick as i64) < cfg.time_min {
-                        continue;
-                    }
-                    if let Some(max) = cfg.time_max {
-                        if (*tick as i64) > max {
-                            break;
-                        }
-                    }
-                }
-
-                if values_match(val, find_value_str) {
-                    let time = if sync_mode && cache.clock_period_ticks > 0 {
-                        tick_to_cycle(*tick, cb, cache.clock_period_ticks)
-                    } else {
-                        *tick
-                    };
-                    record_match!(time, dname.as_str(), val.clone(), val);
-                    if truncated {
-                        break 'vouter;
-                    }
-                    if cfg.first_match {
-                        break 'vouter;
-                    }
+            // transitions in ticks.
+            for (tick, val) in
+                tick_window_matches(cfg, &ve.transitions, effective_start, 1, find_value_str)
+            {
+                record_match!(tick, dname.as_str(), val.to_string(), val);
+                if truncated || cfg.first_match {
+                    break 'vouter;
                 }
             }
         }
@@ -3330,6 +3224,34 @@ fn collect_event_ticks(
     } else {
         EventCollect::Ticks(ticks)
     }
+}
+
+/// Matches of `value` inside the query window for walks off the cycle grid
+/// (async, or sync on a store with no usable clock), where the window bounds
+/// and the reported times are raw ticks, compared in `i128` because ticks
+/// reach `u64::MAX`. Transitions before `start` or the window still seed the
+/// previous value that edge and change triggers compare.
+fn tick_window_matches<'a>(
+    cfg: &'a ExtractConfig,
+    transitions: &'a [(u64, String)],
+    start: u64,
+    width: u32,
+    value: &'a str,
+) -> impl Iterator<Item = (u64, &'a str)> + 'a {
+    let mode = TriggerMode::classify(value);
+    let mut previous: Option<&str> = None;
+    transitions
+        .iter()
+        .take_while(|(tick, _)| {
+            cfg.time_max
+                .is_none_or(|max| i128::from(*tick) <= i128::from(max))
+        })
+        .filter_map(move |(tick, current)| {
+            let matched = mode.matches(previous, current, width, value);
+            previous = Some(current.as_str());
+            let in_window = *tick >= start && i128::from(*tick) >= i128::from(cfg.time_min);
+            (matched && in_window).then_some((*tick, current.as_str()))
+        })
 }
 
 /// Inclusive runs of matching sampling cycles. Their size follows raw
