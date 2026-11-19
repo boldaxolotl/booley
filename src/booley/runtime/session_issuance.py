@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.audit.resource_policy import parse_memory_limit
+from booley.config.eda import toml_error_line
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.config.gateway import (
     GATEWAY_AUTH,
@@ -1386,8 +1387,10 @@ def _validate_credential_policy(
     try:
         found = project_credential_policies(project, booley_dir=project_data, selected=app)
     except BackendConfigError as exc:
+        parsed = exc.__cause__
+        line = toml_error_line(parsed) if isinstance(parsed, tomllib.TOMLDecodeError) else None
         raise ProjectConfigError(
-            f"booley.toml [agent] is invalid: {exc}", resolve_toml(project_data)
+            f"booley.toml [agent] is invalid: {exc}", resolve_toml(project_data), line
         ) from exc
     # The set is recorded in [agent] clis order, which also fixes the name and volume order.
     expected = dict(found.policies) if app in found.clis else {}

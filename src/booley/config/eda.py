@@ -78,7 +78,7 @@ def eda_config_path(project_root: Path) -> Path | None:
     return path if path.is_file() else None
 
 
-def _toml_line(exc: tomllib.TOMLDecodeError) -> int | None:
+def toml_error_line(exc: tomllib.TOMLDecodeError) -> int | None:
     lineno: int | None = getattr(exc, "lineno", None)
     if lineno is not None:
         return lineno
@@ -95,7 +95,7 @@ def load_eda_config(project_root: Path) -> dict[str, EdaConfig]:
         with path.open("rb") as handle:
             raw = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        line = _toml_line(exc) if isinstance(exc, tomllib.TOMLDecodeError) else None
+        line = toml_error_line(exc) if isinstance(exc, tomllib.TOMLDecodeError) else None
         raise EdaConfigError(f"cannot read {path}: {exc}", path=path, line=line) from exc
     try:
         migration = retired_config_error(raw)

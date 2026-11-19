@@ -833,7 +833,7 @@ def _move_stamp_to_legacy_location(project: Path) -> None:
         ),
     ],
 )
-def test_doctor_names_repair_for_rejected_pre_030_issuance(
+def test_doctor_names_repair_for_rejected_issuance(
     issued, monkeypatch, request, damage, fix
 ) -> None:
     """Doctor FAILs a rejected pre-0.3.0 issuance and names the repair that applies."""
@@ -926,12 +926,26 @@ def test_spec_refusal_names_the_repair_for_its_cause(
         assert message.endswith("; " + tail.format(toml=toml.resolve(), config=host_config_path()))
         assert "session refresh" not in message
         assert "Rebuild Container" not in message
+        assert "session down" not in message
+        if damage is _write_host_egress:
+            assert "sandbox.egress" in message
     elif entry == "prepare":
         assert message.endswith("; " + _INIT_REMEDY)
     else:
         assert message.endswith(
             f"in VS Code, {_INIT_REMEDY}; headless, run `booley session refresh` on the host"
         )
+
+
+def test_credential_policy_refusal_keeps_the_parser_line_of_the_stamped_directory(tmp_path):
+    """The credential reader may read another Booley Directory than EDA; its line survives."""
+    stamped = tmp_path / "stamped"
+    stamped.mkdir()
+    (stamped / "booley.toml").write_bytes(b"[agent]\n[agent]\n")
+    with pytest.raises(runtime_spec.ProjectConfigError) as raised:
+        runtime_spec._validate_credential_policy({}, tmp_path, stamped, "claude", {})
+    assert raised.value.path == stamped / "booley.toml"
+    assert raised.value.line == 2
 
 
 def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch) -> None:

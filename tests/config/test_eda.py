@@ -138,13 +138,13 @@ def test_unreadable_document_reports_its_path_and_parser_line(document, text, li
     assert raised.value.line == line
 
 
-def test_toml_line_reads_only_the_trailing_location_suffix(monkeypatch):
+def test_toml_error_line_reads_only_the_trailing_location_suffix():
     class Old(tomllib.TOMLDecodeError):
         lineno = None  # type: ignore[assignment]
 
     quoted = Old("Cannot declare ('at line 9, column 9',) twice (at line 4, column 2)")
-    assert eda._toml_line(quoted) == 4
-    assert eda._toml_line(Old("Unclosed array (at end of document)")) is None
+    assert eda.toml_error_line(quoted) == 4
+    assert eda.toml_error_line(Old("Unclosed array (at end of document)")) is None
 
 
 def test_retired_key_error_names_the_document(document):
