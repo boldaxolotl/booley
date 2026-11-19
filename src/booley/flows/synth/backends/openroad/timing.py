@@ -17,6 +17,7 @@ from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 from booley.flows.synth.timing import StaTimingConfig
 
 from .reporting import (
+    constraint_check_tcl,
     perclock_timing_tcl,
     reg2reg_timing_tcl,
     top_paths_report_tcl,
@@ -256,7 +257,7 @@ close $csv_out
 if {{[llength $slacks] > 0}} {{
   puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
 }}
-{final_report_block}{perclock_block}{reg2reg_block}""".lstrip()
+{final_report_block}{perclock_block}{reg2reg_block}{constraint_check_tcl(report_dir)}""".lstrip()
     script_path.write_text(script, encoding="utf-8")
     return script_path
 
