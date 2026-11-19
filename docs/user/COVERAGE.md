@@ -260,9 +260,9 @@ the report it saved.
 <details markdown>
 <summary>In stealth mode</summary>
 
-The Coverage Analyst does not inspect your sources: it uses report evidence
-only and proposes no Waiver Candidate ready for human review. See
-[Stealth Mode](STEALTH.md).
+In Stealth Mode the Coverage Analyst works from the coverage report alone,
+with no verified source snapshot, so it proposes no Waiver Candidate ready for
+human review. See [Stealth Mode](STEALTH.md).
 
 </details>
 

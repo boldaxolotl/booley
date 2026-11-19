@@ -292,8 +292,8 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch, fresh_eviden
         ),
         pytest.param(
             True,
-            "Stealth Mode: Booley does not inspect sources, so analysis uses normalized report "
-            "evidence only and no Waiver Candidate is ready for human review.",
+            "Stealth Mode: no verified source snapshot is available, so analysis uses "
+            "normalized report evidence only and no Waiver Candidate is ready for human review.",
             id="stealth",
         ),
     ],
@@ -565,8 +565,8 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
     assert report["limitations"] == [
-        "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
-        "report evidence only and no Waiver Candidate is ready for human review."
+        "Stealth Mode: no verified source snapshot is available, so analysis uses "
+        "normalized report evidence only and no Waiver Candidate is ready for human review."
     ]
     assert report["$schema"] == "booley.coverage-analysis/v4"
     assert set(report) == _REPORT_KEYS
