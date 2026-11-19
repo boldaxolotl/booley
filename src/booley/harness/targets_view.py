@@ -42,11 +42,17 @@ def _doctor_cell(doctor_flows: list[str]) -> str:
     return green("✓ " + ", ".join(doctor_flows)) if doctor_flows else ""
 
 
+def _eda_tools_cell(target: TargetRow | TargetDetailPayload) -> str:
+    """Every EDA program the Target runs, else the declared tool."""
+    eda_tools = target["eda_tools"]
+    return "+".join(eda_tools) if eda_tools else target["eda_tool"] or "-"
+
+
 def _listing_row(target: TargetRow) -> list[str]:
     return [
         bold(target["selector"]),
         ", ".join(target["drivable_by"]) or "-",
-        target["eda_tool"] or "-",
+        _eda_tools_cell(target),
         target["toplevel"] or "-",
         _doctor_cell(target["doctor_flows"]),
     ]
@@ -92,8 +98,11 @@ def render_detail(payload: TargetDetailPayload) -> str:
         _row("selector", payload["selector"]),
         _row("flow", ", ".join(payload["drivable_by"]) or "-"),
         _row(".core flow", payload["flow"] or "-"),
-        _row("EDA tool", payload["eda_tool"] or "-"),
+        _row("EDA tool", _eda_tools_cell(payload)),
     ]
+    if payload["synth_mode"]:
+        lines.append(_row("synth mode", payload["synth_mode"]))
+        lines.append(_row("frontend", payload["frontend"] or "-"))
     if payload["cocotb_module"]:
         lines.append(_row("cocotb", payload["cocotb_module"]))
     lines.append(_row("toplevel", (payload["toplevel"] or "-") + "  (declared in .core)"))

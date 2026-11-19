@@ -59,7 +59,7 @@
         "type": "string"
       },
       "scope": {
-        "description": "Comma-separated review files",
+        "description": "Comma-separated review files. RTL: .v, .vh, .sv, .svh. TB: .v, .vh, .sv, .svh, .py and C/C++ (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx).",
         "type": "string"
       },
       "spec": {

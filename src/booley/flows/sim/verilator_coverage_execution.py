@@ -20,11 +20,12 @@ from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.job_estimates import sim_resource_flags
-from booley.flows.job_resources import resolved_source_bytes
+from booley.flows.job_resources import judged_commands_failing_on_error, resolved_source_bytes
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
 from booley.flows.sim.build import (
+    BuildOutcome,
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     build_failure_report,
@@ -76,6 +77,7 @@ from booley.flows.sim.execution.engine import (
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import observe_stage, prepare_attempt_log
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun
 from booley.fusesoc.fusesoc_registry import (
@@ -182,7 +184,7 @@ class VerilatorCoverageExecution:
         try:
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
-            with SimulationBuildSession(self._handle, request.variant.name) as session:
+            with self._lease(request.variant.name) as session:
                 candidate = session.new_generation()
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
@@ -212,9 +214,11 @@ class VerilatorCoverageExecution:
         key = session.reusable_key(candidate, inputs, hooks=False)
         retained = session.try_reuse(candidate, key)
         if retained is None:
-            result = self._execute_build(candidate, identity)
-            if result.success:
-                self._artifact_paths = session.authorize_fresh_image(candidate, inputs, key)
+            with judged_commands_failing_on_error() as commands:
+                result = self._execute_build(candidate, identity)
+                if result.success:
+                    self._artifact_paths = session.authorize_fresh_image(candidate, inputs, key)
+                commands.judge(result.success)
             return candidate, result
         session.discard_candidate(candidate.work_root)
         self._prepared = retained
@@ -271,6 +275,10 @@ class VerilatorCoverageExecution:
                 overlay.cleanup()
         return prepared
 
+    def _lease(self, variant: str) -> SimulationBuildSession:
+        """The variant's Target slot lease, waited for up to the build timeout."""
+        return SimulationBuildSession(self._handle, variant, wait_s=self._build_timeout_s())
+
     def _build_timeout_s(self) -> int:
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         return max(1, timeout_ms // 1000)
@@ -297,18 +305,30 @@ class VerilatorCoverageExecution:
         announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
         outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
+        if not outcome.passed:
+            return self._failed_build_result(prepared, outcome, identity)
+        self._prepared = prepared
+        return SimulationBuildResult(True, outcome.output, identity)
+
+    def _failed_build_result(
+        self,
+        prepared: PreparedSimulationBuild,
+        outcome: BuildOutcome,
+        identity: VerilatorCollectorIdentity,
+    ) -> SimulationBuildResult:
+        """A failed build's result, quoting its compiler text by Project path."""
+        paths = ProjectSourcePaths.for_target(self._handle, prepared.resolved)
         if outcome.failure_kind == "infrastructure":
             return SimulationBuildResult(
                 False,
-                build_failure_report(outcome),
+                build_failure_report(outcome, paths),
                 identity,
                 infrastructure_error=True,
                 reason=outcome.reason,
             )
-        if not outcome.passed:
-            return SimulationBuildResult(False, outcome.output or outcome.reason, identity)
-        self._prepared = prepared
-        return SimulationBuildResult(True, outcome.output, identity)
+        return SimulationBuildResult(
+            False, paths.project_text(outcome.output) or outcome.reason, identity
+        )
 
     def run(self, request: SimulationRunRequest) -> SimulationRunResult:
         """Run one selected test in one process through the authenticated adapter."""
@@ -321,7 +341,7 @@ class VerilatorCoverageExecution:
         try:
             if self._bundle_bound:
                 return self._run_prepared(request, prepared)
-            with SimulationBuildSession(self._handle, variant):
+            with self._lease(variant):
                 return self._run_prepared(request, prepared)
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(
@@ -445,28 +465,31 @@ class VerilatorCoverageExecution:
         }
         script = _environment_script(environment, invocation)
         script = _in_directory_script(self._handle.project_root, script)
-        self._observe_executing(request, prepared, transport, work)
-        try:
-            executed = execute_adapter_attempt(
-                self._invoke,
-                AdapterAttemptRequest(
-                    ("sh", "-c", script),
-                    work.timeout_s
-                    + (work.trace_convert_timeout_s if work.trace else 0)
-                    + _ADAPTER_CLEANUP_MARGIN_S,
-                    transport,
-                    evidence_root,
-                ),
-            )
-        finally:
-            observe_stage(
-                self._handle.selector,
-                "postprocessing",
-                evidence_root=evidence_root,
-                attempt_token=transport.attempt_token,
-                source_bytes=self._source_bytes,
-            )
-        return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
+        with judged_commands_failing_on_error() as commands:
+            self._observe_executing(request, prepared, transport, work)
+            try:
+                executed = execute_adapter_attempt(
+                    self._invoke,
+                    AdapterAttemptRequest(
+                        ("sh", "-c", script),
+                        work.timeout_s
+                        + (work.trace_convert_timeout_s if work.trace else 0)
+                        + _ADAPTER_CLEANUP_MARGIN_S,
+                        transport,
+                        evidence_root,
+                    ),
+                )
+            finally:
+                observe_stage(
+                    self._handle.selector,
+                    "postprocessing",
+                    evidence_root=evidence_root,
+                    attempt_token=transport.attempt_token,
+                    source_bytes=self._source_bytes,
+                )
+            result = _simulation_run_result(executed, request.test.name)
+            commands.judge(result.verdict == "pass")
+        return replace(result, pre_sim=pre_sim)
 
     def _observe_executing(
         self,
