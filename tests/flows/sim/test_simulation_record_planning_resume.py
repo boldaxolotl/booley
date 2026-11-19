@@ -304,9 +304,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
             preview_request.current_plan,
             project,
             None,
-            SimulationRecordPolicy(
-                timeout_seconds=42, build_timeout_seconds=17, result_verbosity="full"
-            ),
+            SimulationRecordPolicy(timeout_seconds=42, build_timeout_seconds=17),
             tmp_path / "reports" / "sim" / "3",
             _admission(),
         )

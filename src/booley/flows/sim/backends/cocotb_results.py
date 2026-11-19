@@ -200,7 +200,7 @@ class CocotbResults:
     """Human-readable note for a non-OK state (e.g. the parse error)."""
 
     skipped_unselected: int = 0
-    """Skipped XML entries omitted from the compact stdout transport."""
+    """Skipped XML entries ``compact_results`` counted instead of keeping."""
 
     reported_names: tuple[str, ...] = ()
     """Complete reported IDs for absent-name diagnostics after compaction.
@@ -579,8 +579,7 @@ def extra_tests(selected: list[str], results: CocotbResults) -> list[str]:
 def compact_results(results: CocotbResults, selected: Sequence[str]) -> CocotbResults:
     """Drop unselected skipped tests from *results*, counting them instead.
 
-    This is what the focused compact transport carries: selected tests and every
-    test that ran stay, the rest collapse into ``skipped_unselected`` and, when a
+    Selected tests and every test that ran stay, the rest collapse into ``skipped_unselected`` and, when a
     selected name is absent, ``reported_names`` keeps the candidate IDs.
     """
     wanted = set(selected)

@@ -61,7 +61,6 @@ booley flow sim --target sim_soc --mode elab-only       # compile only
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run the tests (default), or only [compile](#elaboration-checks). |
 | `--resume-from <manifest.json>` | [Resume](#resuming-an-interrupted-run) an interrupted run. |
 | `--verbose` | With `--resume-from`, show every detail of why the manifest doesn't match the current Project. |
-| `--result-verbosity <compact\|full>` | For a Cocotb Target, `full` prints every test function's result. |
 | `--no-kill` | Don't kill leftover simulator processes before the run. For diagnosis only. |
 
 ### Adding a Test
