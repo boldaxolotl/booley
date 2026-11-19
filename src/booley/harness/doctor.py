@@ -2624,13 +2624,15 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 def _check_current_runtime_git_identity(
     project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
-    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
+    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it
+    or installs a credential helper."""
     if project is None:
         _skip("Sandbox Git identity checks skipped - project config invalid")
         return
     for result in (
         sandbox_git_identity.inspect_override(project.project_root, project.booley_dir),
         sandbox_git_identity.inspect_gitconfig_identity(project.project_root),
+        sandbox_git_identity.inspect_credential_helpers(project.project_root),
     ):
         if result.warning is not None:
             _warn(result.warning, result.fix)
