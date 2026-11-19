@@ -14,13 +14,12 @@ import pytest
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.runtime import runtime_context, worktree_paths
-from booley.runtime.docs_links import sandbox_doc_path
 from tests.docs.test_sandbox_doc_citations import citation_problems
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
 
-_REMOVAL_CITATION = f'{sandbox_doc_path("WORKTREES.md")} → "Removing a worktree"'
+_REMOVAL_CITATION = '/booley-docs/WORKTREES.md → "Removing a worktree"'
 
 # ---------------------------------------------------------------------------
 # Parser and venue
