@@ -42,6 +42,7 @@ from booley.harness import (
     host_diagnostics,
     web_isolation,
 )
+from booley.harness import image_lifecycle as harness_lifecycle
 from booley.harness.setup import readiness
 from booley.presentation import colors
 from booley.runtime import (
@@ -55,6 +56,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
+from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
@@ -73,6 +75,7 @@ from tests.docker_cli_guard import (
 )
 from tests.docker_host_support import fake_docker_host
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.harness.test_image_lifecycle import FakeDocker, TransactionBuilder, _wire
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
@@ -119,6 +122,9 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path, monkeypat
 
     # The Icarus-only testbench carries the sentinel; Doctor must read the Verilator-selected one.
     assert list(_warnings(_doctor_run(tmp_path), "sim.pass-sentinel-missing")) == ["sim_cond"]
+
+
+_RECONCILE_PLANNED = harness_lifecycle.reconcile_planned
 
 
 def _write_project(
@@ -288,6 +294,15 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     _patch_host_environment(monkeypatch, root)
     monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
+    # Private seam: a whole run cannot supply a host Sandbox Image graph; the
+    # provenance tests restore the real CHECK over a fake Docker.
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "reconcile_planned",
+        lambda scope, _intent: lifecycle.LifecycleResult(
+            dc.SANDBOX_IMAGE, dc.SANDBOX_IMAGE, lifecycle.Status.CURRENT
+        ),
+    )
     # The rebuild of the spec `booley init` would write has its own tests; here the
     # seeded fixture spec stands in for it.
     monkeypatch.setattr(
@@ -2497,6 +2512,139 @@ def test_image_stale_names_each_owner_workflow(owner, managed, steps, tmp_path, 
 
     (warning,) = _messages(result, Severity.WARN, check_id="sandbox.image-stale")
     assert warning.endswith(steps + ".")
+
+
+_STALE_REASON = "node-owned compatibility inputs changed"
+_UNADOPTED_REASON = "the selected image is built but this Project has not adopted it"
+_PROVENANCE_ROWS = {
+    "pin-edit": _STALE_REASON,
+    "file-added": _STALE_REASON,
+    "context-file": _STALE_REASON,
+    "built-elsewhere": _UNADOPTED_REASON,
+}
+
+
+def _provenance_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, docker: FakeDocker, *, pins: bool = True
+) -> Path:
+    """Set up a Project whose Doctor run asks the real lifecycle CHECK over *docker*."""
+    booley_dir = _write_project(tmp_path)
+    if pins:
+        toml = booley_dir / "booley.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace(
+                "[sandbox]\n", '[sandbox]\npip_requirements = ["a.txt"]\n'
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "a.txt").write_text("scapy==2.6.1\n", encoding="utf-8")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    monkeypatch.setattr(harness_lifecycle, "reconcile_planned", _RECONCILE_PLANNED)
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(doctor.idk, "image_id", docker.image_id)
+    # The fake images carry no Booley Directory layout to probe.
+    monkeypatch.setattr(
+        lifecycle.project_image, "project_data_alias_capable", lambda _image: False
+    )
+    monkeypatch.setattr(
+        doctor.session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE
+    )
+    monkeypatch.setattr(doctor.session_runtime, "image_is_managed", lambda _root: True)
+    return booley_dir
+
+
+@pytest.mark.parametrize("change", _PROVENANCE_ROWS)
+def test_doctor_reports_sandbox_image_provenance(change, tmp_path, tmp_path_factory, monkeypatch):
+    docker = FakeDocker({})
+    _provenance_project(tmp_path, monkeypatch, docker)
+    builder = TransactionBuilder(docker)
+
+    def apply(root: Path) -> None:
+        scope = lifecycle.ProjectImageScope(root)
+        planned = lifecycle.plan(scope, docker=docker)
+        lifecycle.commit(lifecycle.prepare(planned, docker=docker, builder=builder), docker=docker)
+
+    def warned() -> list[str]:
+        return _messages(_doctor_run(tmp_path), Severity.WARN, check_id="sandbox.image-stale")
+
+    if change == "context-file":
+        docker_dir = tmp_path / ".booley" / "docker"
+        docker_dir.mkdir()
+        (docker_dir / "Dockerfile").write_text(
+            "FROM booley-sandbox\nCOPY setup.sh /setup.sh\n", encoding="utf-8"
+        )
+        (docker_dir / "setup.sh").write_text("echo one\n", encoding="utf-8")
+    other = tmp_path_factory.mktemp("other")
+    if change == "built-elsewhere":
+        (other / ".booley").mkdir()
+        (other / ".booley" / "booley.toml").write_text(
+            '[sandbox]\npip_requirements = ["a.txt"]\n', encoding="utf-8"
+        )
+        (other / "a.txt").write_text("scapy==2.6.0\n", encoding="utf-8")
+    apply(tmp_path)
+    assert warned() == []
+
+    if change in {"pin-edit", "built-elsewhere"}:
+        (tmp_path / "a.txt").write_text("scapy==2.6.0\n", encoding="utf-8")
+    elif change == "file-added":
+        (tmp_path / "b.txt").write_text("numpy\n", encoding="utf-8")
+        toml = tmp_path / ".booley" / "booley.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace('["a.txt"]', '["a.txt", "b.txt"]'),
+            encoding="utf-8",
+        )
+    else:
+        (tmp_path / ".booley" / "docker" / "setup.sh").write_text("echo two\n", encoding="utf-8")
+    if change == "built-elsewhere":
+        apply(other)
+    warnings = warned()
+    assert len(warnings) == 1
+    assert _PROVENANCE_ROWS[change] in warnings[0]
+    assert warnings[0].endswith(_REBUILD + ".")
+
+    apply(tmp_path)
+    result = _doctor_run(tmp_path)
+    assert _messages(result, Severity.WARN, check_id="sandbox.image-stale") == []
+    assert any(
+        "provenance matches the current settings" in m for m in _messages(result, Severity.PASS)
+    )
+
+
+class _UnreachableDocker(FakeDocker):
+    def inspect(self, image):
+        raise lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
+
+
+@pytest.mark.parametrize("case", ["no-docker", "lifecycle-error", "unreadable-input"])
+def test_doctor_never_passes_unchecked_image_provenance(case, tmp_path, monkeypatch):
+    docker = _UnreachableDocker({}) if case == "lifecycle-error" else FakeDocker({})
+    _provenance_project(tmp_path, monkeypatch, docker)
+    if case == "no-docker":
+        monkeypatch.setattr(
+            host_diagnostics,
+            "inspect_host",
+            lambda: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
+        )
+    if case == "unreadable-input":
+        docker_dir = tmp_path / ".booley" / "docker"
+        docker_dir.mkdir()
+        symlink_or_skip(docker_dir / "broken", tmp_path / "missing-target")
+
+    result = _doctor_run(tmp_path)
+
+    assert _messages(result, Severity.WARN, check_id="sandbox.image-stale") == []
+    assert not [m for m in _messages(result, Severity.PASS) if "provenance" in m]
+    skips = [m for m in _messages(result, Severity.SKIP) if "provenance check could not run" in m]
+    expected = {
+        "no-docker": None,
+        "lifecycle-error": "Cannot connect to the Docker daemon",
+        "unreadable-input": "could not inspect provenance input",
+    }[case]
+    if expected:
+        (skip,) = skips
+        assert expected in skip
+    else:
+        assert skips == []
 
 
 # ---------------------------------------------------------------------------
