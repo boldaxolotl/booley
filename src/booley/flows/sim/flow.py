@@ -1588,7 +1588,6 @@ class SimulateFlow(
             timeout_seconds=self._effective_timeout_ms() / 1000,
             build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
-            result_verbosity=self.args.result_verbosity,
         )
 
     def _simulation_record_endpoint_outcome(
@@ -1657,7 +1656,6 @@ class SimulateFlow(
         conflicts = (
             ("--test", bool(self.args.test)),
             ("--trace", self.args.trace),
-            ("--result-verbosity full", self.args.result_verbosity == "full"),
             ("--no-kill", self.args.no_kill),
         )
         for argument, active in conflicts:
@@ -1718,7 +1716,6 @@ class SimulateFlow(
                 trace=self.args.trace,
                 timeout_ms=self.args.timeout_ms,
                 build_timeout_ms=self._effective_build_timeout_ms(),
-                result_verbosity=self.args.result_verbosity,
             ),
         )
 
