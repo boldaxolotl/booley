@@ -62,6 +62,15 @@ class StructuralConditions:
     multi_driven: int = 0
 
 
+# Earlier-pass structural categories a clean completed check rules out, with the reason shown.
+_RESOLVED_RATIONALES: dict[str, str] = {
+    "combinational_loop": "Earlier synthesis pass reported this loop; the completed "
+    "post-optimisation check reports no combinational loops.",
+    "multi_driver": "Earlier synthesis pass reported this multi-driven net; the completed "
+    "final check reports no multi-driven nets.",
+}
+
+
 @dataclass(frozen=True)
 class WarningGroup:
     """One normalized diagnostic group with its raw occurrence count."""
@@ -76,6 +85,11 @@ class WarningGroup:
     truncated: bool
     count: int
     rationale: str | None = None
+
+    @property
+    def resolved(self) -> bool:
+        """True for an earlier-pass structural warning a completed check ruled out."""
+        return self.disposition == "informational" and self.category in _RESOLVED_RATIONALES
 
     def to_detail(self) -> dict[str, Any]:
         detail: dict[str, Any] = {
@@ -285,7 +299,20 @@ def _openroad_records(text: str) -> list[_WarningRecord]:
     return result
 
 
+def _resolved_categories(structural: StructuralConditions) -> frozenset[str]:
+    """Return the structural categories the completed checks found none of."""
+    if not structural.complete:
+        return frozenset()
+    resolved: set[str] = set()
+    if structural.comb_loops == 0:
+        resolved.add("combinational_loop")
+    if structural.multi_driven == 0:
+        resolved.add("multi_driver")
+    return frozenset(resolved)
+
+
 def _records(sources: Mapping[str, str], structural: StructuralConditions) -> list[_WarningRecord]:
+    resolved = _resolved_categories(structural)
     records: list[_WarningRecord] = []
     for source in _SOURCE_ORDER:
         text = sources.get(source, "")
@@ -297,15 +324,14 @@ def _records(sources: Mapping[str, str], structural: StructuralConditions) -> li
             records.extend(_sv2v_records(text))
         else:
             parsed = _yosys_records(text)
-            if source != "final_check" and structural.complete and structural.comb_loops == 0:
+            if source != "final_check":
                 parsed = [
                     replace(
                         item,
-                        disposition="advisory",
-                        rationale="Earlier synthesis pass reported this loop; the completed "
-                        "post-optimisation check reports no combinational loops.",
+                        disposition="informational",
+                        rationale=_RESOLVED_RATIONALES[item.category],
                     )
-                    if item.category == "combinational_loop"
+                    if item.category in resolved
                     else item
                     for item in parsed
                 ]
@@ -352,7 +378,7 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
     ]
     groups.sort(
         key=lambda item: (
-            not (item.category == "combinational_loop" and item.disposition == "advisory"),
+            not item.resolved,
             item.disposition == "informational",
             item.tool,
             item.code or "",

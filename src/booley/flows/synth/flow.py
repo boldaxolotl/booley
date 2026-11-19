@@ -2602,9 +2602,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         if cur.warning_summary.total_warnings:
             lines.append(self._format_warning_line(tgt, cur))
             lines.extend(
-                note_line(tgt, "WARNING", f"{group.message} {group.rationale}")
+                note_line(tgt, "NOTE", f"{group.message} {group.rationale}")
                 for group in cur.warning_summary.representatives
-                if group.category == "combinational_loop" and group.disposition == "advisory"
+                if group.resolved
             )
         if cur.openroad_reuse:
             lines.append(self._format_reuse_line(tgt, cur.openroad_reuse))

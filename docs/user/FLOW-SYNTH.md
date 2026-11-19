@@ -118,6 +118,16 @@ warning is still checked and can fail the run. A loop within
 `expected_comb_loops` doesn't fail the run, but Yosys still prints its
 warning, so the run ends `WARN` rather than `PASS`.
 
+Yosys can warn about a loop or a multi-driven net in an early pass that later
+optimization removes. When synthesis's final structural checks complete and
+find no combinational loops, those earlier loop warnings are listed as notes
+with the reason and don't cause `WARN`. Earlier multi-driven warnings are
+notes in the same way when the final check finds no multi-driven nets. Each
+kind is judged on its own: if the checks didn't complete, earlier loop and
+multi-driven warnings still count; if they found a loop, earlier loop warnings
+still count; if they found a multi-driven net, earlier multi-driven warnings
+still count.
+
 ## Synthesis Target
 
 A synthesis Target selects the RTL plus an SDC timing-constraints fileset. The

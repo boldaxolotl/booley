@@ -506,12 +506,13 @@ class TestBoundaryOutput:
         assert outcome.diagnostics.structural.complete is True
         assert outcome.diagnostics.structural.comb_loops == 0
         assert outcome.diagnostics.structural.multi_driven == 1
-        assert outcome.diagnostics.warnings.advisory_warnings == 2
+        assert outcome.diagnostics.warnings.advisory_warnings == 1
         loop = next(
             group
             for group in outcome.diagnostics.warnings.representatives
             if group.category == "combinational_loop"
         )
+        assert loop.disposition == "informational"
         assert "\\feedback" in loop.message
         assert "completed post-optimisation check" in loop.rationale
         # Both checks reach run.log, the pre-mapping one first.

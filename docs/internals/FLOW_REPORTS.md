@@ -221,7 +221,9 @@ the next run overwrites; read the numbered copies of the STA reports
 
 Actionable warnings (dispositions `advisory` and `structural`) set
 `implementation.status.grade` to `warn` but keep `passed: true`. Located
-frontend warnings are counted too and never set `warn`.
+frontend warnings are counted too and never set `warn`. Earlier-pass loop and
+multi-driven warnings that the completed structural checks rule out are
+`informational`, with a `rationale`, and never set `warn` either.
 
 ## `fpga`
 

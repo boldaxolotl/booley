@@ -3109,18 +3109,36 @@ class TestFileBasedInterpretation:
         assert report["total_warnings"] == 2
         assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
 
-    def test_earlier_loop_warns_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("earlier", "evidence"),
+        [
+            (
+                "Warning: found logic loop in module dut:\n"
+                "    cell $add$rtl.sv:7$1\n"
+                "    wire \\feedback\n",
+                (
+                    "$add$rtl.sv:7$1",
+                    "\\feedback",
+                    "completed post-optimisation check reports no combinational loops",
+                ),
+            ),
+            (
+                "Warning: multiple conflicting drivers for dut.sig:\n",
+                ("completed final check reports no multi-driven nets",),
+            ),
+        ],
+        ids=["loop", "driver"],
+    )
+    def test_earlier_structural_warning_passes_when_final_check_is_clean(
+        self, flow_and_state, tmp_path: Path, earlier, evidence
+    ):
         flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
             build_dir.mkdir(parents=True, exist_ok=True)
             (build_dir / "yosys.log").write_text(
-                "Warning: found logic loop in module dut:\n"
-                "    cell $add$rtl.sv:7$1\n"
-                "    wire \\feedback\n"
-                "Chip area for top module '\\dut': 6400.0\n"
-                "Number of cells: 100\n",
+                earlier + "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
                 encoding="utf-8",
             )
             (build_dir / "stat_dut.txt").write_text(
@@ -3142,14 +3160,15 @@ class TestFileBasedInterpretation:
             result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
-        assert "RESULT: WARN" in result.report_text
+        assert "RESULT: PASS" in result.report_text
+        assert "RESULT: WARN" not in result.report_text
+        assert "WARN (" not in result.report_text
         assert "CRITICAL" not in result.report_text
-        for evidence in (
-            "$add$rtl.sv:7$1",
-            "\\feedback",
-            "completed post-optimisation check reports no combinational loops",
-        ):
-            assert evidence in result.report_text
+        for text in evidence:
+            assert text in result.report_text
+        assert any(
+            "NOTE --" in line and evidence[-1] in line for line in result.report_text.splitlines()
+        )
         target = result.detail["lite"]
         assert target["comb_loops"] == 0
         assert target["passed"] is True
@@ -3157,8 +3176,10 @@ class TestFileBasedInterpretation:
         assert report["returncode"] == 0
         assert report["passed"] is True
         assert report["structural_checks_complete"] is True
-        assert report["implementation"]["status"]["grade"] == "warn"
-        assert report["implementation"]["conditions"]["has_critical"] is False
+        assert report["implementation"]["status"]["grade"] == "pass"
+        conditions = report["implementation"]["conditions"]
+        assert conditions["has_critical"] is False
+        assert conditions["warning_summary"]["by_disposition"] == {"informational": 1}
 
     def test_advisory_warning_yields_warn_grade_without_failing(
         self, flow_and_state, tmp_path: Path
@@ -5693,8 +5714,8 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
         "completed post-optimisation check reports no combinational loops" in result.report_text
     ) is clean
     if clean:
-        assert report["implementation"]["status"]["grade"] == "warn"
-        assert "RESULT: WARN" in result.report_text
+        assert report["implementation"]["status"]["grade"] == "pass"
+        assert "RESULT: PASS" in result.report_text
 
 
 @pytest.mark.parametrize(
@@ -5709,7 +5730,8 @@ def test_captured_comb_loop_cases_reach_verdict(
     flow_and_state, tmp_path, fixture, exit_code, comb_loops
 ):
     # Real Yosys 0.70+ output for a loop that survives optimisation (the run
-    # fails) and for a loop that optimisation removes (#1417; the run warns).
+    # fails) and for a loop that optimisation removes (#1417; the run passes with
+    # the loop listed as a note).
     captured = load_capture(fixture)
     result, report = _run_latch_case(
         flow_and_state,
@@ -5728,7 +5750,8 @@ def test_captured_comb_loop_cases_reach_verdict(
         assert "1 comb loop" in result.report_text
     else:
         assert report["passed"] is True
-        assert report["implementation"]["status"]["grade"] == "warn"
+        assert report["implementation"]["status"]["grade"] == "pass"
+        assert "RESULT: PASS" in result.report_text
         assert "completed post-optimisation check reports no combinational loops" in (
             result.report_text
         )
@@ -5771,6 +5794,7 @@ def test_earlier_loop_report_survives_representative_saturation(
     assert len(groups) == 8
     loop_group = groups[0]
     assert loop_group["category"] == "combinational_loop"
+    assert loop_group["disposition"] == "informational"
     assert loop_group["truncated"] is huge
     assert len(loop_group["message"].encode()) <= 2048
     assert "\\feedback" in raw.read_text()
