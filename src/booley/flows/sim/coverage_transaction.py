@@ -44,7 +44,7 @@ def _coverage_record(plan: CoverageTargetPlan, result: CoverageCollectionResult)
     points = () if incompatible else result.points
     scoreable = result.status == "complete" and not incompatible
     return CoverageRecord(
-        coverage_record_id=f"campaign:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
+        coverage_record_id=f"coverage-record:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
         invocation=freeze_coverage_mapping(
             {"id": int(plan.invocation_dir.name), "started_at": plan.started_at}
         ),
