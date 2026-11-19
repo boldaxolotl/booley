@@ -2101,6 +2101,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Run the simulation image built in *build_path*; the name of its killing signal too.
 
         The name is ``""`` unless something outside Booley killed the run with a signal.
+
         The Target's declared ``copyto`` inputs are exposed in ``run_cwd`` for
         the run and removed afterwards, as the Simulation Flow does. *timeout*
         is the simulator's own limit; the hard kill comes

@@ -54,15 +54,16 @@ def run_tool(
 ) -> subprocess.CompletedProcess[str]:
     """Run *cmd* captured, measure it, and record one history record when it settles.
 
-    *timed_out* tells whether the tool's own output reports that it timed out (a
-    simulator adapter stops at its own deadline, before the hard timeout). A command
-    that cannot start records nothing and raises.
+    *timed_out* tells whether the tool's own output reports that it timed out
+    (a simulator adapter stops the simulator at its own deadline, before the
+    hard timeout). A command that cannot start records nothing and raises.
     """
     monitor = JobResourceMonitor()
     process: MeasuredPopen | None = None
     started = time.monotonic()
-    hard_timeout = settled = False
+    hard_timeout = False
     stdout = stderr = ""
+    settled = False
     try:
         with MeasuredPopen(
             list(cmd),

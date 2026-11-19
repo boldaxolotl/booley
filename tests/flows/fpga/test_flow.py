@@ -37,7 +37,7 @@ from booley.flows.target_parameters import ParameterValue
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.runtime import runtime_context
+from booley.runtime import resource_history, runtime_context
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.canned_process_support import canned_command
@@ -551,12 +551,11 @@ def test_baseline_setup_records_keep_their_outcome_when_vivado_fails(
     outcome = _fpga_flow(tmp_path, "--baseline", "HEAD").execute_prepared().outcome
 
     assert outcome.exit_code == EXIT_ERROR
-    history = json.loads((tmp_path / "runtime/resources/history.json").read_text(encoding="utf-8"))
     outcomes: dict[str, list[str]] = {}
-    for record in history["records"]:
+    for record in resource_history.load_records(tmp_path):
         outcomes.setdefault(record["key"]["phase"], []).append(record["outcome"])
     assert outcomes["fpga_prepare"] == ["exit_zero"] * len(outcomes["fpga_prepare"])
-    assert len(outcomes["fpga_prepare"]) >= 2
+    assert len(outcomes["fpga_prepare"]) == 3
     assert set(outcomes["fpga_impl"]) == {"exit_nonzero"}
 
 
@@ -1060,8 +1059,7 @@ def test_failed_fusesoc_setup_is_recorded_as_fpga_prepare(
     assert "failed (exit 1)" in outcome.report_text
     assert "setup broke" in outcome.report_text
     assert _vivado_calls(project) == 0
-    history = json.loads((tmp_path / "runtime/resources/history.json").read_text(encoding="utf-8"))
-    (record,) = history["records"]
+    (record,) = resource_history.load_records(tmp_path)
     assert record["key"] == {
         "target": "fpga",
         "phase": "fpga_prepare",
