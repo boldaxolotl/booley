@@ -757,7 +757,7 @@ def test_argument_validation(case: _Arguments, agent: ScriptedAgent) -> None:
     assert agent.calls == []
 
 
-@pytest.mark.parametrize("dry_run", [[], ["--dry-run"]], ids=["review", "dry_run"])
+@pytest.mark.parametrize("dry_run", [[], ["--dry-run"]])
 def test_missing_scope_file_is_refused_before_any_search(
     agent: ScriptedAgent, tmp_path: Path, dry_run: list[str]
 ) -> None:
