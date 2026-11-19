@@ -99,12 +99,96 @@ fn build_default_uses_parallel_engine() {
 
     assert_eq!(default_code, 0, "default build failed: {default_stderr}");
     assert_eq!(parallel_code, 0, "parallel build failed: {parallel_stderr}");
+    for stderr in [&default_stderr, &parallel_stderr] {
+        assert!(!stderr.contains("WARNING:"), "clean trace warned: {stderr}");
+    }
     assert_eq!(
         std::fs::read(&default_store).unwrap(),
         std::fs::read(&parallel_store).unwrap()
     );
     for store in [default_store, parallel_store] {
         let _ = std::fs::remove_file(store);
+    }
+}
+
+const UNUSABLE_HEADER: &str = "$timescale 1ns $end\n$scope module tb $end\n\
+$var wire 1 ! clk $end\n$var wire 8 # data $end\n$var wire 1 % out $end\n\
+$upscope $end\n$scope module other $end\n$var wire 1 & o $end\n$upscope $end\n\
+$enddefinitions $end";
+
+/// Body of the unusable-value-change trace. The header is 207 bytes, so the
+/// body starts at byte 207. The text has no final newline.
+const UNUSABLE_BODY: &str = "#0\n0!\nb00000000 #\n0&\n\
+#10\n1!\n1?\nb0101\n1\nr1.5\n\
+$comment\n1?\n1%\n#10\nsee $enddefinitions\nb0101\n$end\n\
+#20\n0!\n$dumpoff\n1?\nb1 \nb11   \n$end\n$dumpon\n\
+#30\n1!\nb0010001";
+
+fn warning_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|line| line.starts_with("WARNING:"))
+        .collect()
+}
+
+#[test]
+fn build_counts_unusable_value_changes_identically_in_both_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("unusable.vcd");
+    std::fs::write(&vcd, format!("{UNUSABLE_HEADER}\n{UNUSABLE_BODY}")).unwrap();
+    let header_only = dir.path().join("header_only.vcd");
+    std::fs::write(&header_only, UNUSABLE_HEADER).unwrap();
+    let expected = [
+        "WARNING: 6 malformed value-change line(s) skipped (first at byte 238)",
+        "WARNING: 2 value change(s) for an identifier the header does not declare skipped \
+         (first at byte 235)",
+        "WARNING: input does not end with a newline; the final line (byte 351) may be a \
+         truncated record",
+    ];
+    let header_only_expected = [
+        "WARNING: input does not end with a newline; the final line (byte 186) may be a \
+          truncated record",
+    ];
+
+    let configs = [
+        ("serial", None),
+        ("parallel", Some("8")),
+        ("parallel", Some("17")),
+        ("parallel", Some("64")),
+        ("parallel", None),
+    ];
+    for (engine, chunk) in configs {
+        for (input, want) in [
+            (&vcd, &expected[..]),
+            (&header_only, &header_only_expected[..]),
+        ] {
+            let store = dir.path().join("out.fst");
+            let _ = std::fs::remove_file(&store);
+            let mut args = vec!["build", "--engine", engine, "--scope", "tb"];
+            if let Some(chunk) = chunk {
+                args.extend(["--chunk-bytes", chunk]);
+            }
+            args.extend([input.to_str().unwrap(), "-o", store.to_str().unwrap()]);
+            let (_, stderr, code) = run(&args);
+            let label = format!("{engine} chunk {chunk:?} {}", input.display());
+            assert_eq!(code, 0, "{label}: {stderr}");
+            assert_eq!(warning_lines(&stderr), want, "{label}: {stderr}");
+            let wrote = stderr.find("# wrote").expect("wrote line");
+            assert!(stderr.rfind("WARNING:").unwrap() < wrote, "{label}");
+            if input == &vcd {
+                let cache = bwave::cache::ColumnCache::load_from_file(&store).unwrap();
+                let out = cache
+                    .signals
+                    .iter()
+                    .position(|signal| signal.name == "tb.out")
+                    .expect("tb.out is stored");
+                assert_eq!(
+                    cache.read_transitions(out),
+                    vec![(0, "x".to_string()), (10, "1".to_string())],
+                    "{label}: a declared id inside a comment is still stored"
+                );
+            }
+        }
     }
 }
 
