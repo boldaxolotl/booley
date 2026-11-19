@@ -220,11 +220,7 @@ fn pulse_store(rst_sig: &str, rst: &[(u64, &str)]) -> (tempfile::TempDir, String
         events.push((*tick, format!("{value} {rst_sig}")));
     }
     let events: Vec<(u64, &str)> = events.iter().map(|(t, e)| (*t, e.as_str())).collect();
-    store(
-        &[(rst_sig, 1), ("flag", 1), ("gclk", 1)],
-        &events,
-        100,
-    )
+    store(&[(rst_sig, 1), ("flag", 1), ("gclk", 1)], &events, 100)
 }
 
 #[test]
