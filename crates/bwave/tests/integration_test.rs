@@ -2415,11 +2415,11 @@ fn test_docs_show_unknown_topic_exits_1() {
 #[test]
 fn test_docs_references_resolve() {
     // Every topic named in backticks by a topic must exist, and the retired
-    // reset-skipping and clock-detection topics are gone (their rules live in
-    // `reference/sync-vs-async`).
+    // reset-skipping, clock-detection and empty-results topics are gone (their
+    // rules live in the `reference/` pages).
     let (topics, _stderr, code) = run_bwave(&["docs", "topics"]);
     assert_eq!(code, 0);
-    for retired in ["reset-skipping", "clock-detection"] {
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
         assert!(!topics.lines().any(|l| l.contains(retired)), "{retired}");
     }
     for topic in topics.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -2436,7 +2436,7 @@ fn test_docs_references_resolve() {
             }
         }
     }
-    for retired in ["reset-skipping", "clock-detection"] {
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
         let (_, stderr, code) = run_bwave(&["docs", "show", &format!("troubleshooting/{retired}")]);
         assert_eq!(code, 1, "{retired}: {stderr}");
     }
