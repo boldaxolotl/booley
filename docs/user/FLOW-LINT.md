@@ -95,9 +95,8 @@ is a warning.
 
 A Target that could not be linted cleanly prints `ERROR:` on its own line in
 both the `FAIL` and `ERROR` cases; the `RESULT` line tells them apart. Both
-lines name the linter, except for a Target that failed before its linter was
-known, such as a setup failure. On a `FAIL`, both lines quote the linter's
-first error and point at the full log.
+lines name the linter, except when the Target fails during setup. On a `FAIL`,
+both lines quote the linter's first error and point at the full log.
 
 Example (Verilator):
 
