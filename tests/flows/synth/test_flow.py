@@ -1103,10 +1103,11 @@ def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
         pytest.param(
             "timing_report_paths = 0\n", r"^synth: .*timing_report_paths", id="report-paths"
         ),
-        ('[flows.synth.timing]\nengine = "sta"\n', r"'engine' is retired"),
-        (
+        pytest.param('[flows.synth.timing]\nengine = "sta"\n', "'engine' is retired", id="key"),
+        pytest.param(
             'synth_mode = "physical"\n[flows.synth.advanced_settings_openroad]\nutilization_pct = 150\n',
             r"candidate lite: utilization_pct must be between 0 and 100",
+            id="ppa",
         ),
     ],
 )
