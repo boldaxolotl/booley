@@ -22,6 +22,7 @@ import yaml
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
 from booley.core.booley_dir_links import resolve_through_entry
+from booley.targets.domain import FuseSocError
 
 PROJECTED_CORE_PREFIX = ".booley-projected-"
 PROJECTED_CORE_GLOB = f"{PROJECTED_CORE_PREFIX}*.core"
@@ -284,9 +285,11 @@ def _render_isolated_core(root: Path, core_file: Path) -> str:
 
 def _parse_rebasable_core(core_file: Path) -> dict[str, Any]:
     """Parse an authored core and refuse any key whose paths cannot be rebased."""
+    from booley.fusesoc.fusesoc_registry import read_core  # circular at module level
+
     try:
-        doc = yaml.safe_load(core_file.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+        doc = read_core(core_file)
+    except FuseSocError as exc:
         raise CoreProjectionError(
             f"could not parse authoritative core {core_file}: {exc}"
         ) from exc

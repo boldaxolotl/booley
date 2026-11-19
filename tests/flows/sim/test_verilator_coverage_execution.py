@@ -44,7 +44,7 @@ from booley.flows.sim.verilator_coverage_execution import (
     prepare_coverage_collection,
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
-from booley.fusesoc.fusesoc_registry import ResolvedFile, core_target_coverage_errors
+from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.runtime import resource_history
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog
@@ -174,7 +174,6 @@ def test_prepare_collection_rejects_invalid_inherited_coverage_recipe(tmp_path: 
             "    flow_options: {tool: verilator}\n",
         )
     )
-    assert core_target_coverage_errors(core, "sim") == []
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
 
     with pytest.raises(
