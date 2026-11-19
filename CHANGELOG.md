@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- In-Sandbox `booley doctor` warns `sandbox.git-credential-helper` when the
+  system or global gitconfig sets a Git credential helper, such as the one
+  VS Code adds to pass your host Git credentials into the Sandbox. The
+  warning names each helper and its file and says how to remove it
+  ("Editor credential forwarding" in `docs/user/SANDBOX.md`).
 - Booley no longer enforces any commit-message convention. `[stealth]
   enforce_convention`, which required `type(scope): summary` subjects, is
   retired: Booley ignores it, and you can delete it. Specialists commit with the message the
