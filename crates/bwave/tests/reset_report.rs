@@ -1,6 +1,6 @@
 //! CLI tests for the one reset rule and the reset report (issue #4696): the
 //! `# reset:` header on sync text output and `overview`, the JSON `reset`
-//! object, `--reset` validation, and the `find` no-match hint.
+//! object, `--reset` validation, and the `find` no-match line and its notes.
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
@@ -435,7 +435,14 @@ fn find_no_match_hint_follows_skipped_cycles() {
     let (_dir, path) = auto_store();
     let (_, err, code) = run(&["find", &path, "flag", "'b1"]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.lines().any(|l| l == "# No matches found; 2 cycles skipped before reset deasserts (--with-reset to include)"), "{err}");
+    let hint =
+        "# No matches found; 2 cycles skipped before reset deasserts (--with-reset to include)";
+    let lines: Vec<&str> = err.lines().collect();
+    let at = lines.iter().position(|l| *l == hint).expect(&err);
+    assert_eq!(
+        lines.get(at + 1),
+        Some(&"# NOTE: 'b1 was never held in this window")
+    );
     let (out, err, _) = run(&["find", &path, "flag", "'b1", "--with-reset"]);
     assert_eq!(out.trim(), "cycle 2 flag 1");
     assert!(!err.contains("No matches"), "{err}");
@@ -448,8 +455,79 @@ fn find_no_match_hint_follows_skipped_cycles() {
     );
     let (_, err, code) = run(&["find", &early_path, "flag", "'b1"]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.lines().any(|l| l == "# No matches found"), "{err}");
+    let lines: Vec<&str> = err.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == "# No matches found")
+        .expect(&err);
+    assert_eq!(
+        lines.get(at + 1),
+        Some(&"# NOTE: 'b1 was never held in this window")
+    );
     assert!(!err.contains("skipped before"), "{err}");
+}
+
+/// `data` holds `'hAA` only at ticks 21-22, between the clock edges at 15 and
+/// 25; `data2` holds `'hBB` from tick 40.
+fn notes_store() -> (tempfile::TempDir, String) {
+    store(
+        &[("data", 8), ("data2", 8)],
+        &[
+            (0, "b0 data"),
+            (0, "b0 data2"),
+            (21, "b10101010 data"),
+            (22, "b0 data"),
+            (40, "b10111011 data2"),
+        ],
+        100,
+    )
+}
+
+#[test]
+fn find_no_match_notes_say_why() {
+    let (_dir, path) = notes_store();
+    let notes = |extra: &[&str]| -> (String, Vec<String>) {
+        let mut args = vec!["find", path.as_str()];
+        args.extend_from_slice(extra);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        let notes = err
+            .lines()
+            .filter(|l| l.starts_with("# NOTE:"))
+            .map(String::from);
+        (out, notes.collect())
+    };
+    let never = |literal: &str| format!("# NOTE: {literal} was never held in this window");
+    let between = "# NOTE: 'hAA was held in this window but no sampled cycle matched; --async matches raw transitions";
+
+    assert_eq!(notes(&["data", "'hEE"]).1, [never("'hEE")]);
+    let (out, counted) = notes(&["data", "'hEE", "--count"]);
+    assert_eq!((out.trim(), counted), ("0", vec![never("'hEE")]));
+    assert_eq!(notes(&["*data*", "'hEE"]).1, [never("'hEE")]);
+    assert_eq!(notes(&["data", "'hAA"]).1, [between]);
+    let (out, asynced) = notes(&["data", "'hAA", "--async"]);
+    assert_eq!((out.trim(), asynced.len()), ("21 data AA", 0));
+    // The pulse at 21-22 is cycle 2, before the window.
+    assert_eq!(notes(&["data", "'hAA", "-t", "3:4"]).1, [never("'hAA")]);
+    // Held at the window start.
+    assert!(notes(&["data2", "'hBB", "--async", "-t", "50t:60t"])
+        .1
+        .is_empty());
+    // The width and window warnings already explain the miss.
+    assert!(notes(&["data", "'h1FF"]).1.is_empty());
+    assert!(notes(&["data", "'hEE", "-t", "500:600"]).1.is_empty());
+
+    let warnings = |literal: &str| {
+        json_of(&["find", &path, "data", literal, "--format", "json"])["warnings"].clone()
+    };
+    assert_eq!(
+        warnings("'hEE"),
+        json!(["'hEE was never held in this window"])
+    );
+    assert_eq!(
+        warnings("'hAA"),
+        json!(["'hAA was held in this window but no sampled cycle matched; --async matches raw transitions"])
+    );
 }
 
 #[test]
