@@ -761,6 +761,7 @@ def test_argument_validation(case: _Arguments, agent: ScriptedAgent) -> None:
 def test_missing_scope_file_is_refused_before_any_search(
     agent: ScriptedAgent, tmp_path: Path, dry_run: list[str]
 ) -> None:
+    (tmp_path / "bare").mkdir()
     outcome, _ = run_review(["--work-dir", str(tmp_path / "bare"), *BUGS, *dry_run])
 
     assert outcome.exit_code == 2

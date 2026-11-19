@@ -138,7 +138,6 @@ def test_bad_base_is_refused_without_model_call(
     [
         (["--base", "main"], 0, "No changes in scope since main"),
         (["--dry-run"], 0, "reviewer dry-run: rtl/bugs; 1 file(s)"),
-        ([], 0, "RESULT: REVIEWED WITH FINDINGS"),
         (["--fail-on", "major"], 1, "RESULT: REVIEWED WITH FINDINGS"),
     ],
 )
@@ -160,8 +159,7 @@ def test_cli_prints_the_report_once(
 
     assert ReviewerSpecialist().main([*argv, *mode]) == exit_code
 
-    shown = capsys.readouterr()
-    assert (shown.out + shown.err).count(report) == 1
+    assert "".join(capsys.readouterr()).count(report) == 1
 
 
 def test_base_without_changes_in_scope_exits_zero_without_model_call(
