@@ -105,6 +105,7 @@ from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
+from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.presentation.terminal_table import render_table
 from booley.runtime.endpoint_execution import (
@@ -1397,13 +1398,17 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         selected_root = build_root or self._synth_work_root(target)
         shutil.rmtree(selected_root, ignore_errors=True)
         handle = self._target_handle(target)
+        runner = setup_runner(self.name, target, "synth_prepare")
         ref = getattr(self, "_target_execution_refs", {}).get(target)
         if ref is not None:
-            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
+            return resolve_target_execution_ref(
+                handle, ref, build_root=selected_root, runner=runner
+            )
         return fusesoc_registry.resolve_target_handle(
             handle,
             build_root=selected_root,
             library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
+            runner=runner,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:

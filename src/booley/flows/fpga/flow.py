@@ -46,7 +46,12 @@ from booley.flows.edam import EdamFile
 from booley.flows.flow_config import expected_count
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
-from booley.flows.job_resources import judged_commands, resolved_source_bytes, resource_phase
+from booley.flows.job_resources import (
+    judged_commands,
+    resolved_source_bytes,
+    resource_phase,
+    unjudged_commands,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -64,6 +69,7 @@ from booley.flows.result_table import (
 )
 from booley.flows.target_parameters import vlogparam_specs
 from booley.flows.terminal_progress import ProgressText
+from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.presentation import colors
@@ -470,14 +476,22 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             variant="fusesoc",
         )
         handle = self._target_handle(target)
+        runner = setup_runner(self.name, target, "fpga_prepare")
         ref = getattr(self, "_target_execution_refs", {}).get(target)
-        if ref is not None:
-            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
-        return fusesoc_registry.resolve_target_handle(
-            handle,
-            build_root=selected_root,
-            library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
-        )
+        # The Target's judgment covers only Vivado: the setup keeps its own outcome.
+        with unjudged_commands():
+            if ref is not None:
+                return resolve_target_execution_ref(
+                    handle, ref, build_root=selected_root, runner=runner
+                )
+            return fusesoc_registry.resolve_target_handle(
+                handle,
+                build_root=selected_root,
+                library_plan=fusesoc_registry.build_library_plan(
+                    handle.project_root, selected_root
+                ),
+                runner=runner,
+            )
 
     def _prepare_fpga_command(
         self,

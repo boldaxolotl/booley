@@ -65,6 +65,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command
 from tests.conftest import symlink_or_skip
 from tests.flows.synth.captured_yosys import load_capture
 from tests.fusesoc_test_support import relocated_project
@@ -1539,6 +1540,42 @@ def test_real_fusesoc_synth_setup(synth_cli: SynthCli, tmp_path: Path) -> None:
     # Resolved build dir lives under the worktree and is relocatable.
     edam = next((work_dir / ".booley" / ".runtime").rglob("*.eda.yml"))
     assert str(work_dir) not in edam.read_text(encoding="utf-8")
+
+
+def test_failed_fusesoc_setup_is_recorded_as_synth_prepare(
+    synth_cli: SynthCli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Synthesis Flow's own setup runner measures the setup, whatever its outcome."""
+    from booley.runtime import resource_history
+
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE)
+    failing_setup = canned_command(SubprocessResult(returncode=1, stderr="setup broke"))
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = lambda handle, **kwargs: _REAL_RESOLVE_HANDLE(
+        handle, **{**kwargs, "fusesoc_cmd": failing_setup}
+    )
+
+    outcome = synth_cli.run(target="syn")
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "failed (exit 1)" in outcome.report_text
+    assert "setup broke" in outcome.report_text
+    assert synth_cli.commands == []
+    (record,) = resource_history.load_records(tmp_path)
+    assert record["key"] == {
+        "target": "syn",
+        "phase": "synth_prepare",
+        "flags": [],
+        "test_run": "",
+    }
+    assert (record["flow"], record["outcome"], record["returncode"]) == (
+        "synth",
+        "exit_nonzero",
+        1,
+    )
 
 
 @pytest.mark.skipif(

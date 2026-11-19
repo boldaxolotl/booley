@@ -24,6 +24,7 @@ Exit codes:
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -42,6 +43,7 @@ from urllib.parse import quote
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.boundary import BoundaryError
 from booley.flows import artifacts as _artifacts
+from booley.flows import tool_runs
 from booley.flows.base import BuiltinFlow
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.eda_failures import new_attempt_token
@@ -73,7 +75,6 @@ from booley.flows.mutation.operators import (
 from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
 from booley.flows.mutation.snippet import detection_snippet, tail, tail_snippet
-from booley.flows.mutation.tool_runs import run_tool, setup_runner
 from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
@@ -134,6 +135,7 @@ from booley.flows.target_test_suite import (
     TargetTestSuite,
     require_runnable_target_test_suite,
 )
+from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -160,6 +162,9 @@ logger = logging.getLogger(__name__)
 
 # The clock that times each test run; tests replace it, never ``time.monotonic``.
 _monotonic = time.monotonic
+
+# Every tool the Mutation Flow starts is measured and recorded under its name.
+run_tool = functools.partial(tool_runs.run_tool, flow="mutation")
 
 #: Source suffixes the generator and the variant applier accept.
 _MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
@@ -1796,7 +1801,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
             environment=_target_environment(work_dir, handle.identity),
-            setup_runner=setup_runner(handle.selector),
+            setup_runner=setup_runner("mutation", handle.selector, "sim_prepare"),
         )
         if mutation is not None:
             materialize_build_mutation(
@@ -2096,7 +2101,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Run the simulation image built in *build_path*; the name of its killing signal too.
 
         The name is ``""`` unless something outside Booley killed the run with a signal.
-
         The Target's declared ``copyto`` inputs are exposed in ``run_cwd`` for
         the run and removed afterwards, as the Simulation Flow does. *timeout*
         is the simulator's own limit; the hard kill comes

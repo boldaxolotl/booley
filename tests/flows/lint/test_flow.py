@@ -369,6 +369,46 @@ def test_real_fusesoc_lint_setup(
     assert str(work_dir) not in vc
 
 
+def test_failed_fusesoc_setup_is_recorded_as_lint_prepare(
+    run_lint: _LintRun, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Lint Flow's own setup runner measures the setup, whatever its outcome."""
+    from booley.runtime import resource_history
+
+    work_dir = tmp_path / "proj"
+    (work_dir / "rtl").mkdir(parents=True)
+    (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    (work_dir / "lint_demo.core").write_bytes(_LINT_CORE_TEXT.encode())
+    monkeypatch.setattr(
+        fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_COMMAND_FOR_HANDLE
+    )
+    failing_setup = canned_command(SubprocessResult(returncode=1, stderr="setup broke"))
+
+    def resolve(*args: object, **kwargs: object) -> object:
+        return _REAL_RESOLVE_TARGET_HANDLE(*args, **{**kwargs, "fusesoc_cmd": failing_setup})
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+
+    result, commands = run_lint(_process(), work_dir=work_dir, resolved=None)
+
+    assert result.exit_code == EXIT_ERROR
+    assert "failed (exit 1)" in result.outcome.report_text
+    assert "setup broke" in result.outcome.report_text
+    assert commands == []
+    (record,) = resource_history.load_records(tmp_path)
+    assert record["key"] == {
+        "target": "lite",
+        "phase": "lint_prepare",
+        "flags": [],
+        "test_run": "",
+    }
+    assert (record["flow"], record["outcome"], record["returncode"]) == (
+        "lint",
+        "exit_nonzero",
+        1,
+    )
+
+
 def _dry_run_plan(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     """The plan a ``--dry-run`` prints ahead of its one-line verdict."""
     out = capsys.readouterr().out

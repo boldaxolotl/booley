@@ -11,7 +11,7 @@ import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.job_resources import JobResourceMonitor, ResourceLabel
-from booley.flows.mutation.tool_runs import run_tool
+from booley.flows.tool_runs import run_tool
 from booley.runtime import resource_history
 from tests.canned_process_support import canned_command
 from tests.time_budget import hang_guard_s, scaled
@@ -22,6 +22,7 @@ _LABEL = ResourceLabel("default", "sim_build")
 def test_a_failed_tool_is_recorded_with_its_outcome(tmp_path: Path) -> None:
     done = run_tool(
         canned_command(SubprocessResult(returncode=3, stdout="out", stderr="err")),
+        flow="mutation",
         label=_LABEL,
         cwd=tmp_path,
         env=os.environ,
@@ -45,7 +46,9 @@ def test_a_timed_out_tool_is_recorded_and_keeps_its_partial_output(tmp_path: Pat
     ]
 
     with pytest.raises(subprocess.TimeoutExpired) as raised:
-        run_tool(sleeper, label=_LABEL, cwd=tmp_path, env=os.environ, timeout=scaled(1))
+        run_tool(
+            sleeper, flow="mutation", label=_LABEL, cwd=tmp_path, env=os.environ, timeout=scaled(1)
+        )
 
     assert "started" in str(raised.value.stdout)
     [record] = resource_history.load_records(tmp_path)
@@ -55,6 +58,7 @@ def test_a_timed_out_tool_is_recorded_and_keeps_its_partial_output(tmp_path: Pat
 def test_a_tool_that_reports_its_own_timeout_is_recorded_as_one(tmp_path: Path) -> None:
     run_tool(
         canned_command(SubprocessResult(returncode=1, stdout="it timed out")),
+        flow="mutation",
         label=_LABEL,
         cwd=tmp_path,
         env=os.environ,
@@ -68,7 +72,9 @@ def test_a_tool_that_reports_its_own_timeout_is_recorded_as_one(tmp_path: Path) 
 
 def test_a_tool_that_cannot_start_raises_and_records_nothing(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        run_tool(["booley-no-such-tool"], label=_LABEL, cwd=tmp_path, env=os.environ)
+        run_tool(
+            ["booley-no-such-tool"], flow="mutation", label=_LABEL, cwd=tmp_path, env=os.environ
+        )
 
     assert resource_history.load_records(tmp_path) == []
 
@@ -83,6 +89,6 @@ def test_a_monitor_that_cannot_start_kills_the_tool_and_records_nothing(
     sleeper = [sys.executable, "-c", f"import time; time.sleep({hang_guard_s()})"]
 
     with pytest.raises(RuntimeError, match="sampler cannot start"):
-        run_tool(sleeper, label=_LABEL, cwd=tmp_path, env=os.environ)
+        run_tool(sleeper, flow="mutation", label=_LABEL, cwd=tmp_path, env=os.environ)
 
     assert resource_history.load_records(tmp_path) == []

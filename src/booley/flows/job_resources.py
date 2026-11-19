@@ -152,6 +152,20 @@ def judged_commands() -> Iterator[JudgedCommands]:
             _append_to_history(held.records)
 
 
+@contextlib.contextmanager
+def unjudged_commands() -> Iterator[None]:
+    """Record the commands run inside the block at once, whatever judgment encloses it.
+
+    For a command an enclosing ``judged_commands`` block does not cover, such as
+    a setup that runs inside the Target's judged Vivado run.
+    """
+    token = _judged.set(None)
+    try:
+        yield
+    finally:
+        _judged.reset(token)
+
+
 def label_commands(
     target: str,
     phase: str,

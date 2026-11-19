@@ -1,9 +1,9 @@
-"""The one place the Mutation Flow starts a tool.
+"""The one place a Flow starts a tool outside ``FlowMechanics._execute_local``.
 
 Each FuseSoC setup, build and simulation runs as
 ``subprocess.run(capture_output=True, text=True)`` would, measured by the
 shared Job resource monitor and recorded in the Job resource history under the
-Mutation Flow's name. A kill is never blamed on memory (ADR 0087): a run that
+calling Flow's name. A kill is never blamed on memory (ADR 0087): a run that
 exits nonzero or is killed is a plain failure, and nothing is requeued.
 """
 
@@ -19,7 +19,6 @@ from collections.abc import Callable, Mapping, Sequence
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.job_resources import JobResourceMonitor, MeasuredPopen, ResourceLabel
-from booley.flows.sim.build import SetupRunner
 
 
 def _communicate(
@@ -46,6 +45,7 @@ def _communicate(
 def run_tool(
     cmd: Sequence[str],
     *,
+    flow: str,
     label: ResourceLabel,
     cwd: str | os.PathLike[str],
     env: Mapping[str, str],
@@ -54,16 +54,15 @@ def run_tool(
 ) -> subprocess.CompletedProcess[str]:
     """Run *cmd* captured, measure it, and record one history record when it settles.
 
-    *timed_out* tells whether the tool's own output reports that it timed out
-    (a simulator adapter stops the simulator at its own deadline, before the
-    hard timeout). A command that cannot start records nothing and raises.
+    *timed_out* tells whether the tool's own output reports that it timed out (a
+    simulator adapter stops at its own deadline, before the hard timeout). A command
+    that cannot start records nothing and raises.
     """
     monitor = JobResourceMonitor()
     process: MeasuredPopen | None = None
     started = time.monotonic()
-    hard_timeout = False
+    hard_timeout = settled = False
     stdout = stderr = ""
-    settled = False
     try:
         with MeasuredPopen(
             list(cmd),
@@ -87,7 +86,7 @@ def run_tool(
             assert process is not None
             reported = timed_out is not None and timed_out(stdout + stderr)
             job_resources.record_command(
-                "mutation",
+                flow,
                 label,
                 (),
                 measurement,
@@ -101,8 +100,10 @@ def run_tool(
     return subprocess.CompletedProcess(list(cmd), process.returncode, stdout, stderr)
 
 
-def setup_runner(target: str) -> SetupRunner:
-    """A FuseSoC setup runner that records *target*'s ``sim_prepare`` run."""
+def setup_runner(
+    flow: str, target: str, phase: str
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """A FuseSoC setup runner that records *target*'s *phase* run under *flow*."""
 
     def run(
         cmd: Sequence[str],
@@ -113,7 +114,8 @@ def setup_runner(target: str) -> SetupRunner:
     ) -> subprocess.CompletedProcess[str]:
         return run_tool(
             cmd,
-            label=ResourceLabel(target, "sim_prepare"),
+            flow=flow,
+            label=ResourceLabel(target, phase),
             cwd=cwd,
             env=os.environ if env is None else env,
         )
