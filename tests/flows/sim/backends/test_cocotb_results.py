@@ -409,8 +409,14 @@ class TestFindImportFailure:
     @pytest.mark.parametrize(
         ("tail", "expected"),
         [
-            ("ImportError\n", "cocotb could not import the test module: ImportError"),
-            ("ImportError: \nmore\n", "cocotb could not import the test module: ImportError:"),
+            pytest.param(
+                "ImportError\n", "cocotb could not import the test module: ImportError", id="bare"
+            ),
+            pytest.param(
+                "ImportError: \nmore\n",
+                "cocotb could not import the test module: ImportError:",
+                id="bare-colon",
+            ),
         ],
     )
     def test_cocotb_2_exception_line_without_a_message(self, tail: str, expected: str):
