@@ -158,14 +158,25 @@ See [Stealth Mode](STEALTH.md).
 
 `booley measure --validate` checks the `metrics.toml` of your working tree. It
 needs no commit, measures nothing, takes no other option, and lists every load
-error at once. Run it in a container terminal. Where
-Booley can give a corrected line, it prints it as a `write instead:` line.
-An unquoted prefixed key or a relative bound gets one; an unknown metric lists
-the metrics of its Flow instead.
+error at once. Run it in a container terminal.
+
+Bound values are absolute numbers: `tests_failed_max = 0`, never `"+10%"`. A
+percentage value is an error that says so.
+
+Where Booley can give a corrected line, it prints it as a `write instead:`
+line. Two kinds of key get one: an unquoted prefixed key, and a relative-bound
+key name, `<metric>_increase_at_most`, `<metric>_increase_at_least`,
+`<metric>_reduce_at_most` or `<metric>_reduce_at_least`. An unknown metric
+lists the metrics of its Flow instead.
 
 ```text
 [sim_core.sim] smoke: a table holds bounds at its top level, and an unquoted dotted key is a nested table; quote the key
   write instead: "smoke.cycle_count_max" = 1000
+```
+
+```text
+[sim_core.sim] tests_failed_increase_at_most: only absolute bounds exist (`_max` is at most, `_min` is at least)
+  write instead: tests_failed_max = <absolute number>
 ```
 
 `booley cheat --metrics` prints each Target's metrics as `metrics.toml` text,
