@@ -258,8 +258,8 @@ def _cycle_grid_options(extra: list[str]) -> list[str]:
         if name == "--with-reset":
             options.append(name)
         elif name in ("--clock", "--reset"):
-            options.append(name)
-            options.extend([attached] if attached is not None else extra[i + 1 : i + 2])
+            # Keep `--clock=VALUE` joined: a spaced hyphen-prefixed value is refused.
+            options.extend([token] if attached is not None else extra[i : i + 2])
     return options
 
 
@@ -274,10 +274,7 @@ def _async_marker_tick(trace: str, cycle: int, options: list[str]) -> str:
     command += ["--at", f"{cycle}c", "--format", "json", "--limit", "1"]
     result = _run_query(command)
     if result.returncode == EXIT_USAGE and BEYOND_RANGE_MARKER in result.stderr.lower():
-        total = _list_query(trace, []).get("total_ticks")
-        if not isinstance(total, int):
-            sys.exit("ERROR: bwave list did not report total_ticks")
-        return str(total + 1)
+        return str(_trace_total_ticks(trace) + 1)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
@@ -1080,6 +1077,14 @@ def _list_query(trace: str, globs: list[str]) -> dict:
     return _list_envelope(trace, globs)["data"]
 
 
+def _trace_total_ticks(trace: str) -> int:
+    """The end tick `bwave list` reports for *trace*."""
+    total = _list_query(trace, []).get("total_ticks")
+    if not isinstance(total, int):
+        sys.exit("ERROR: bwave list did not report total_ticks")
+    return total
+
+
 def _clock_of(data: dict) -> _OpenSignal | None:
     """The clock the Rust binary detected, from a `list` envelope.
 
@@ -1290,10 +1295,7 @@ class _TickResolver:
         timeout — so an open-ended range used to hang rather than resolve.
         """
         if self._total_ticks is None:
-            total = _list_query(self.trace, []).get("total_ticks")
-            if not isinstance(total, int):
-                sys.exit("ERROR: bwave list did not report total_ticks")
-            self._total_ticks = total
+            self._total_ticks = _trace_total_ticks(self.trace)
         return self._total_ticks
 
     def range_to_ticks(self, spec: str) -> tuple[int, int]:

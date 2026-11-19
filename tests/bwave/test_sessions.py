@@ -858,7 +858,7 @@ def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch):
 
     session_file = tmp_path / "sessions.json"
     use_store(monkeypatch, session_file)
-    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
+    _write_sessions({"dut": _make_entry("unused.fst", markers={"start": 10, "done": 20})})
 
     cases = [
         (["-t", "start:done"], ["-t", "10c:20c"]),
@@ -883,7 +883,7 @@ def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch):
         (["-t", "unknown:done"], ["-t", "unknown:20c"]),
     ]
     for args, expected in cases:
-        bwave._resolve_markers_in_args(args, "dut", "/tmp/t.fst")
+        bwave._resolve_markers_in_args(args, "dut", "unused.fst")
         assert args == expected
 
 
@@ -892,7 +892,7 @@ def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
 
     session_file = tmp_path / "sessions.json"
     use_store(monkeypatch, session_file)
-    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
+    _write_sessions({"dut": _make_entry("unused.fst", markers={"start": 10, "done": 20})})
 
     legacy = ["--wave"]
     bwave._inject_marker_flags(legacy, "dut")
@@ -1292,3 +1292,21 @@ def test_async_marker_bound_on_a_clockless_trace_is_refused(tmp_path):
 
     assert result.returncode == 2
     assert "no clock detected" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (["--clock", "clk", "--reset", "rst"], ["--clock", "clk", "--reset", "rst"]),
+        (
+            ["--clock=--clk", "--reset=--rst", "--with-reset"],
+            ["--clock=--clk", "--reset=--rst", "--with-reset"],
+        ),
+        (["--async", "--before", "m"], []),
+    ],
+)
+def test_cycle_grid_options_keep_attached_values_joined(extra, expected):
+    """The async probe gets the options that map a cycle to a tick, spelled as typed."""
+    from booley.bwave import cli as bwave
+
+    assert bwave._cycle_grid_options(extra) == expected
