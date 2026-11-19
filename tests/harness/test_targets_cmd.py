@@ -56,12 +56,6 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.fixture(autouse=True)
-def _colors_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin plain output so FORCE_COLOR on a developer machine cannot break substrings."""
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-
-
 _EXTRA_CORE = textwrap.dedent(
     """\
     CAPI=2:

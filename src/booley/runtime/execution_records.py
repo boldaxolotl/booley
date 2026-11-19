@@ -18,6 +18,7 @@ from booley.runtime.atomic_files import STAGED_SUFFIX
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
+    make_directories,
     read_file_bytes,
     replace_file,
 )
@@ -93,7 +94,7 @@ def execution_paths(
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Durably replace one protocol JSON file with canonical content."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     # *name* as *path*'s own path class: a replace and its cleanup are then calls on that
     # type, which a test can schedule step by step.
@@ -287,7 +288,7 @@ def is_older_child_context(paths: ExecutionPaths, execution_id: ExecutionId) -> 
 
 def write_attachment_heartbeat(paths: ExecutionPaths, *, generation: int) -> None:
     """Publish a monotonically changing attachment generation."""
-    paths.root.mkdir(parents=True, exist_ok=True)
+    make_directories(paths.root)
     tmp = paths.heartbeat.with_name(f".{paths.heartbeat.name}.{os.getpid()}.tmp")
     tmp.write_text(f"{generation}\n", encoding="ascii")
     try:
@@ -321,7 +322,7 @@ def request_cancellation(
 ) -> None:
     """Durably and idempotently request cancellation of one execution."""
     if force:
-        paths.root.mkdir(parents=True, exist_ok=True)
+        make_directories(paths.root)
         paths.force.touch(exist_ok=True)
     try:
         current = read_json(paths.cancel)

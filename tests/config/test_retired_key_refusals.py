@@ -699,6 +699,10 @@ NOT_A_KEY: dict[str, str] = {
         "conflicting values, not a retired key"
     ),
     "src/booley/eda/cli.py::run": "a deprecated CLI command, not configuration",
+    "src/booley/flows/endpoint_session.py::finish_execution": "reports a removed checkout",
+    "src/booley/runtime/filesystem_utils.py::RemovedDirectoryError.__init__": (
+        "refuses to recreate a removed checkout, not configuration"
+    ),
     "src/booley/flows/cli_selection.py::warn_alias": "a deprecated CLI option alias",
     "src/booley/flows/sim/cli.py::SimArguments.normalize": "deprecated CLI flags",
     "src/booley/flows/synth/warnings.py::<module>": "a pattern for OpenROAD's own warning text",
