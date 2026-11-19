@@ -4233,10 +4233,16 @@ def _synth_dry_runs_in_process(monkeypatch: pytest.MonkeyPatch, project: Path) -
     ("utilization", "toml", "severity", "message"),
     [
         pytest.param(50, "", Severity.PASS, "dry-run [synth_dut] passed", id="valid"),
-        pytest.param(150, "", Severity.FAIL, "dry-run [synth_dut] failed", id="out-of-range"),
+        pytest.param(
+            150,
+            "",
+            Severity.FAIL,
+            "dry-run [synth_dut] failed with exit 2",
+            id="out-of-range-utilization",
+        ),
         pytest.param(
             50,
-            "[flows.synth.timing]\nengine = 1\n",
+            '[flows.synth.timing]\nengine = "sta"\n',
             Severity.FAIL,
             "build input(s): timing",
             id="retired-timing-key",
