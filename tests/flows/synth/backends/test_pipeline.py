@@ -585,17 +585,96 @@ class TestBoundaryOutput:
         assert "kind=missing_output" in outcome.text
         assert "subject=sv2v_converted.v" in outcome.text
 
-    def test_rederives_sta_markers_from_log(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+    @pytest.mark.parametrize(
+        ("sdc_text", "overall", "reg2reg", "expected", "absent"),
+        [
+            pytest.param(
+                "create_clock -name clk -period 4.0 [get_ports clk]\n",
+                (1, 4.0, 2.0),
+                (1, 4.0, 2.0),
+                (
+                    "STA_CRITICAL_PATH_PS: 2000.000",
+                    "STA_FMAX_MHZ: 500.000",
+                    "STA_REG2REG_CRITICAL_PATH_PS: 2000.000",
+                    "STA_REG2REG_FMAX_MHZ: 500.000",
+                ),
+                (),
+                id="single-clock",
+            ),
+            pytest.param(
+                "create_clock -name rx_clk -period 6.4 [get_ports rx_clk]\n"
+                "create_clock -name ghost_clk -period 5.0 [get_ports ghost_clk]\n",
+                (1, 6.4, 1.429488),
+                (1, 6.4, 1.429488),
+                (
+                    "STA_CRITICAL_PATH_PS: 4970.512",
+                    "STA_FMAX_MHZ: 201.187",
+                    "STA_REG2REG_CRITICAL_PATH_PS: 4970.512",
+                    "STA_REG2REG_FMAX_MHZ: 201.187",
+                ),
+                (),
+                id="phantom-clock",
+            ),
+            pytest.param(
+                "create_clock -name rx_clk -period 6.4 [get_ports rx_clk]\n"
+                "create_clock -name ptp_sample_clk -period 8.0 [get_ports ptp_sample_clk]\n",
+                (1, 6.4, 0.9),
+                (0, 8.0, 1.429488),
+                (
+                    "STA_WORST_SLACK_NS: 0.900000",
+                    "STA_CRITICAL_PATH_PS: 5500.000",
+                    "STA_FMAX_MHZ: 181.818",
+                    "STA_REG2REG_SLACK_NS: 1.429488",
+                ),
+                ("STA_REG2REG_CRITICAL_PATH_PS", "STA_REG2REG_FMAX_MHZ"),
+                id="cross-clock-reg2reg",
+            ),
+            pytest.param(
+                "create_clock -name rx_clk -period 6.4 [get_ports rx_clk]\n"
+                "create_clock -name ptp_sample_clk -period 8.0 [get_ports ptp_sample_clk]\n",
+                (0, 8.0, 0.9),
+                (1, 6.4, 1.429488),
+                (
+                    "STA_WORST_SLACK_NS: 0.900000",
+                    "STA_REG2REG_CRITICAL_PATH_PS: 4970.512",
+                    "STA_REG2REG_FMAX_MHZ: 201.187",
+                ),
+                ("STA_CRITICAL_PATH_PS", "STA_FMAX_MHZ"),
+                id="cross-clock-overall",
+            ),
+        ],
+    )
+    def test_rederives_sta_markers_from_log(
+        self,
+        tmp_path: Path,
+        sdc_text: str,
+        overall: tuple[int, float, float],
+        reg2reg: tuple[int, float, float],
+        expected: tuple[str, ...],
+        absent: tuple[str, ...],
+    ):
+        sdc = tmp_path / "constraints" / "dut.sdc"
+        sdc.parent.mkdir(parents=True)
+        sdc.write_text(sdc_text, encoding="utf-8")
+        plan = syn_make.configure_synthesis(_spec(tmp_path, sdc=(sdc,)), _build_dir(tmp_path))
+        o_same, o_period, o_slack = overall
+        r_same, r_period, r_slack = reg2reg
         (plan.build_dir / "openroad.log").write_text(
-            "STA_WORST_SLACK_NS: 2.000000\n"
-            "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n",
+            f"STA_WORST_SLACK_NS: {o_slack:.6f}\n"
+            f"STA_WORST_CLOCKS: same_clock={o_same} capture_period_ns={o_period:.6f}\n"
+            f"STA_REG2REG_SLACK_NS: {r_slack:.6f}\n"
+            f"STA_REG2REG_CLOCKS: same_clock={r_same} capture_period_ns={r_period:.6f}\n"
+            "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1"
+            " setup_same_clock=1\n",
             encoding="utf-8",
         )
         outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
-        # period 4000 ps - slack 2000 ps -> crit path 2000 ps -> Fmax 500 MHz.
-        assert "STA_CRITICAL_PATH_PS: 2000.000" in outcome.text
-        assert "STA_FMAX_MHZ: 500.000" in outcome.text
+        # The path's own capture clock period minus its slack, never an SDC period.
+        derived = outcome.text.split("STA_REPORT:")[0]
+        for line in expected:
+            assert line in derived
+        for marker in absent:
+            assert f"{marker}:" not in derived
         assert "STA_REPORT:" in outcome.text
 
     def test_ignores_stale_standalone_opensta_log(self, tmp_path: Path):
