@@ -395,6 +395,7 @@ class TestFindImportFailure:
                 "",
             ),
         ],
+        ids=["import-missing", "import-error", "import-test-module-missing"],
     )
     def test_cocotb_2_discovery_traceback_is_an_import_failure(
         self, case: str, prefix: str, extra: str
