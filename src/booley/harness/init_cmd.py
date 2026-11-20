@@ -68,6 +68,7 @@ from booley.config.agent import (
     SandboxConfig,
     encode_cli_policies,
     parse_agent_section,
+    visitor_mode_honoured,
 )
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
@@ -2961,7 +2962,7 @@ def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelect
     ``auto`` is not resolved here: the registrar publishes its choice per start,
     after ``onCreateCommand``, and pinning one start's choice would defeat ``auto``.
     A missing or retired ``auto`` ``auth`` is recorded from the credentials this Sandbox holds;
-    a recorded ``visitor`` is kept.
+    a recorded ``visitor`` is kept only where it runs (``visitor_mode_honoured``).
     Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
     """
     declared = _read_agent_selection(config_path)
@@ -2972,7 +2973,11 @@ def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelect
             return None
         provider = app
     resolved = _resolve_auth(
-        ctx, declared.clis or (provider,), declared.auth, None, keep_visitor=True
+        ctx,
+        declared.clis or (provider,),
+        declared.auth,
+        None,
+        keep_visitor=visitor_mode_honoured(),
     )
     if resolved is None:
         return None

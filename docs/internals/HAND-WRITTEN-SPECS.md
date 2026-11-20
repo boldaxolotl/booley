@@ -32,5 +32,5 @@ For the visitor mode, the Project's `booley.toml` must record `auth = "visitor"`
 (or a `visitor` entry in `[agent.auth]`). Without it a CLI bills the
 subscription and `booley doctor` fails on the missing `auth`. `booley init`
 in the spec's `onCreateCommand` keeps a recorded `visitor`. `BOOLEY_PRIMARY_AUTH`
-in the spec still sets the default CLI's policy. See
+in the spec sets the default CLI's policy. See
 [CONFIG.md](../user/CONFIG.md#pinning-what-bills-agent-auth).

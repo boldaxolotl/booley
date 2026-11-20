@@ -30,7 +30,7 @@ hand-written Project nothing to record, and Doctor needed a note to excuse it.
 ## Considered options
 
 - Keep the implicit rule: "missing" keeps two meanings.
-- Honour `visitor` everywhere: an issued Sandbox would run a mode its record
+- Honor `visitor` everywhere: an issued Sandbox would run a mode its record
   does not carry.
 - Un-retire `auto`: it names no billing choice a person can read.
 
