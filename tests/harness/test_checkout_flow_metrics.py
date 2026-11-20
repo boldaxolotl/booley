@@ -211,12 +211,9 @@ def test_sim_and_lint_runs_return_their_typed_values(
     assert (sim.unavailable, lint.unavailable) == ({}, {})
 
 
-_ABSENT_WAIVERS = (
-    '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
-)
-_BLOCKED_WAIVERS = (
-    '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "booley.toml"\n'
-)
+_WAIVERS = '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "{}"\n'
+_ABSENT_WAIVERS = _WAIVERS.format("missing-waivers")
+_BLOCKED_WAIVERS = _WAIVERS.format("booley.toml")
 
 
 @pytest.mark.parametrize(

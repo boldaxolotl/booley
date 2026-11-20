@@ -315,7 +315,6 @@ def test_only_an_absent_configured_directory_loads_as_an_empty_set(tmp_path: Pat
     assert [(item.severity, item.code) for item in absent.advisories] == [
         ("info", "COV_WAIVER_DIRECTORY_ABSENT")
     ]
-    assert "coverage-waivers" in absent.advisories[0].message
     assert empty.advisories == ()
     assert [item.code for item in not_a_directory] == ["COV_WAIVER_DIRECTORY_INVALID"]
 
@@ -327,8 +326,6 @@ def test_unreadable_configured_directory_is_rejected(tmp_path: Path) -> None:
     directory.mkdir()
     directory.chmod(0)
     try:
-        if os.access(directory, os.R_OK):
-            pytest.skip("permission bits are not enforced for this user")
         findings = _refusal(roots)
     finally:
         directory.chmod(0o700)

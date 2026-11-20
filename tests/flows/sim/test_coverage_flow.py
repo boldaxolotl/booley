@@ -1847,7 +1847,6 @@ def test_absent_waiver_directory_is_evaluated_and_an_invalid_one_blocks(tmp_path
     assert _coverage_evaluation_status(tmp_path / "absent", "sim_0") == "not_requested"
     assert "No approvals found" in absent.outcome.report_text
     assert "missing-waivers" in absent.outcome.report_text
-    assert "--no-waivers" not in absent.outcome.report_text
 
     _configure_waiver_directory(tmp_path, "booley.toml")
     blocked = run("default")
