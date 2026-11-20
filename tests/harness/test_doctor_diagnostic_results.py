@@ -19,7 +19,7 @@ from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
 from booley.core.host_shell import quote_arg
-from booley.harness import doctor, doctor_deep, host_diagnostics
+from booley.harness import auto_doctor, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import (
     doctor_stamp,
@@ -330,11 +330,8 @@ def test_typed_report_preserves_warning_deduplication_and_machine_fields():
     )
 
 
-@pytest.mark.parametrize("read_only", [False, True])
 @pytest.mark.parametrize("valid", [False, True])
-def test_project_observations_and_repairs_keep_the_existing_order(
-    tmp_path, monkeypatch, read_only, valid
-):
+def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, valid):
     booley_dir = _write_project(tmp_path)
     (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
     if not valid:
@@ -359,7 +356,7 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     trace(readiness, "inspect_line_endings", "line-endings")
     trace(doctor, "_check_worktree_core_shadow_guard", "shadow")
     trace(readiness, "check_stealth_cores", "projections")
-    doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path, read_only=read_only)
+    doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
     expected = [
         "config",
         "upgrade",
@@ -373,7 +370,69 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     if not valid:
         expected = ["config", "upgrade", "prune", "line-endings"]
     assert events == expected
-    assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+# Doctor's own evidence, scratch output, and probe logs stay writable; nothing else may change.
+_DOCTOR_WRITABLE_PREFIXES = (
+    ".git/",
+    ".booley/runtime/",
+    ".booley/tmp/",
+    ".booley/.interactive_logs/",
+)
+
+
+def _project_files(root: Path) -> dict[str, bytes]:
+    files = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    return {
+        name: data
+        for name, data in files.items()
+        if not name.startswith(_DOCTOR_WRITABLE_PREFIXES)
+    }
+
+
+@pytest.mark.parametrize("deep", [False, True])
+def test_manual_and_automatic_doctor_agree_and_write_no_project_file(tmp_path, monkeypatch, deep):
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
+    with (booley_dir / "booley.toml").open("a") as stream:
+        stream.write("\n[stealth]\nenabled = true\n")
+    (booley_dir / "cores").mkdir()
+    (booley_dir / "cores" / "hidden.core").write_text("CAPI=2:\nname: ::hidden:0\n")
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    before = _project_files(tmp_path)
+
+    automatic = auto_doctor.run_if_due(tmp_path, trigger="test")
+    assert _project_files(tmp_path) == before
+    manual = doctor.run_doctor_result(argparse.Namespace(deep=deep), tmp_path)
+    assert _project_files(tmp_path) == before
+
+    assert automatic is not None
+    graded = [f for f in manual.findings if f.severity in {"warn", "fail"}]
+    links = next(f for f in graded if f.check_id == "guidance.links-unhealthy")
+    stale = next(f for f in graded if "projections are not current" in f.message)
+    assert "booley init" in links.fix
+    assert "booley init" in stale.fix
+    assert [
+        (f["severity"], f["check_id"], f["message"])
+        for f in automatic["findings"]
+        if f["severity"] in {"warn", "fail"}
+    ] == [(f.severity, f.check_id, f.message) for f in graded]
+    assert {k: automatic["counts"][k] for k in ("warn", "fail")} == {
+        k: manual.counts[k] for k in ("warn", "fail")
+    }
+    messages = [f.message for f in manual.findings]
+    skip = "skipped - stealth core projections are not current"
+    assert f"Flow dry-runs {skip}" in messages
+    if deep:
+        assert f"deep checks {skip}" in messages
+        assert manual.deep_status is not None
+        assert not manual.deep_status.current
 
 
 def _owner_frame(messages: list[str], owner: str) -> tuple[int, int]:
