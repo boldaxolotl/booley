@@ -149,7 +149,6 @@ _BASELINE: tuple[str, ...] = (
     "warn git.autocrlf-risk harness/setup/readiness.py::_report_autocrlf_risk \"f'{identity}: {message}'\"",
     'warn git.line-endings-unreadable harness/setup/readiness.py::_report_unreadable_line_endings "line endings:"',
     'warn git.line-endings-unreadable harness/setup/readiness.py::inspect_line_endings "line endings: could not inspect Project "',
-    'warn guidance.links-unhealthy harness/setup/readiness.py::_check_agents_md "could not create root guidance links:"',
     'warn guidance.session-runtime-scope harness/setup/readiness.py::_check_guidance_runtime_note "could not read"',
     'warn host.bootstrap-warning harness/host_diagnostics.py::_add_bootstrap "Host Bootstrap"',
     "warn interactive.devcontainer-drift runtime/inspection.py::_spec_warning \"message + '; ' + request.remedy + ''.joi\"",

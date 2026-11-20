@@ -8,6 +8,7 @@ import pytest
 from booley.audit.diagnostic_results import Severity
 from booley.fusesoc import core_projection
 from booley.harness.setup import readiness
+from booley.harness.setup.guidance_links import ensure_guidance_links
 from tests.harness.test_doctor import _write_project
 
 
@@ -62,39 +63,15 @@ def test_project_load_keeps_legacy_target_fallback_when_no_core_is_available(tmp
     assert result.project.first_target == "fast"
 
 
-def test_guidance_reconciliation_is_idempotent_and_inspect_reports_current(tmp_path):
+def test_guidance_links_made_by_init_grade_as_current(tmp_path):
     booley_dir = _write_project(tmp_path)
     (booley_dir / "AGENTS.md").write_text("# Guidance\n")
+    ensure_guidance_links(tmp_path, booley_dir)
     project = readiness.load_project(tmp_path).project
     assert project is not None
-    first = readiness.check_guidance(project, mode=readiness.ReadinessMode.RECONCILE)
-    paths = [tmp_path / name for name in ("AGENTS.md", "CLAUDE.md")]
-    before = [(p.lstat().st_ino, p.lstat().st_mtime_ns, p.read_bytes()) for p in paths]
-    second = readiness.check_guidance(project, mode=readiness.ReadinessMode.RECONCILE)
-    assert first == second
-    assert before == [(p.lstat().st_ino, p.lstat().st_mtime_ns, p.read_bytes()) for p in paths]
-    inspected = readiness.check_guidance(project, mode=readiness.ReadinessMode.INSPECT)
+    inspected = readiness.check_guidance(project)
     assert all(f.severity is Severity.PASS for f in inspected.findings)
     assert "root links current" in inspected.findings[0].message
-
-
-def test_guidance_repair_preserves_conflicting_tracked_file(tmp_path):
-    booley_dir = _write_project(tmp_path)
-    (booley_dir / "AGENTS.md").write_text("canonical guidance\n")
-    root_file = tmp_path / "AGENTS.md"
-    root_file.write_text("tracked author guidance\n")
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "add", "-f", "AGENTS.md"], check=True, capture_output=True
-    )
-    project = readiness.load_project(tmp_path).project
-    assert project is not None
-    report = readiness.check_guidance(project, mode=readiness.ReadinessMode.RECONCILE)
-    assert any(
-        f.check_id == "guidance.links-unhealthy" and "could not create" in f.message
-        for f in report.findings
-    )
-    assert root_file.read_text() == "tracked author guidance\n"
 
 
 def test_guidance_read_error_retains_scope_warning_identity(tmp_path, monkeypatch):
@@ -111,13 +88,13 @@ def test_guidance_read_error_retains_scope_warning_identity(tmp_path, monkeypatc
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read_text)
-    report = readiness.check_guidance(project, mode=readiness.ReadinessMode.INSPECT)
+    report = readiness.check_guidance(project)
     scope = next(f for f in report.findings if f.check_id == "guidance.session-runtime-scope")
     assert scope.severity is Severity.WARN and scope.subject == str(canon)
     assert "could not read" in scope.message
 
 
-def test_stealth_inspection_reports_stale_projection_then_reconcile_repairs_it(tmp_path):
+def test_stealth_inspection_reports_stale_projection_without_creating_it(tmp_path):
     booley_dir = _write_project(tmp_path)
     with (booley_dir / "booley.toml").open("a") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
@@ -127,23 +104,38 @@ def test_stealth_inspection_reports_stale_projection_then_reconcile_repairs_it(t
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
     project = readiness.load_project(tmp_path).project
     assert project is not None
-    first = readiness.check_stealth_cores(project, mode=readiness.ReadinessMode.INSPECT)
+    first = readiness.check_stealth_cores(project)
     failures = [f.message for f in first.findings if f.severity is Severity.FAIL]
     assert any("projections are not current" in message for message in failures)
     assert any("not excluded from host git status" in message for message in failures)
     projected = tmp_path / ".booley-projected-hidden.core"
     assert not projected.exists()
-    repaired = readiness.check_stealth_cores(project, mode=readiness.ReadinessMode.RECONCILE)
-    remaining = [f.message for f in repaired.findings if f.severity is Severity.FAIL]
-    assert len(remaining) == 1 and "not excluded from host git status" in remaining[0]
-    # Init owns the Git exclusion; Doctor repairs projections and reports this gap.
+    assert readiness.check_stealth_cores(project) == first
+    assert not projected.exists()
+    assert not readiness.stealth_projections_current(project)
+    # Init owns both repairs: it reconciles the projections and adds the Git exclusion.
+    core_projection.reconcile_projected_cores(tmp_path)
     (tmp_path / ".git/info/exclude").write_text(f"/{core_projection.PROJECTED_CORE_GLOB}\n")
     before = projected.read_bytes(), projected.stat().st_mtime_ns
-    inspected = readiness.check_stealth_cores(project, mode=readiness.ReadinessMode.INSPECT)
+    inspected = readiness.check_stealth_cores(project)
     assert all(f.severity is Severity.PASS for f in inspected.findings)
-    repeated = readiness.check_stealth_cores(project, mode=readiness.ReadinessMode.RECONCILE)
-    assert repeated == inspected
+    assert readiness.stealth_projections_current(project)
     assert (projected.read_bytes(), projected.stat().st_mtime_ns) == before
+
+
+def test_uninspectable_projections_are_not_current(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    project = readiness.load_project(tmp_path).project
+    assert project is not None
+    assert readiness.stealth_projections_current(project)  # stealth is off: nothing to project
+
+    def broken(_root):
+        raise core_projection.CoreProjectionError("conflict")
+
+    # Patched: no public entry point makes Booley's own projection inspection raise.
+    monkeypatch.setattr(core_projection, "projection_enabled", lambda _root: True)
+    monkeypatch.setattr(core_projection, "projection_issues", broken)
+    assert not readiness.stealth_projections_current(project)
 
 
 @pytest.mark.parametrize(
