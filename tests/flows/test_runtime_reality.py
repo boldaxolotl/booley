@@ -166,6 +166,15 @@ def test_probe_error_fails(tmp_path, lint_core, monkeypatch, vscode_owner):
         ]
 
 
+def test_pending_recovery_skips(tmp_path, lint_core, monkeypatch):
+    probe = _HostProbe(monkeypatch, error=session_runtime.RecoveryPendingError())
+    report = owner.inspect_flow_runtime_reality(_request(tmp_path, command=probe.command))
+    assert [
+        (sev, msg.endswith("skipped - Sandbox recovery is pending on this host"))
+        for sev, msg, _fix in _summary(report)
+    ] == [(Severity.SKIP, True)]
+
+
 def test_binary_selection_follows_target_eda_tool(tmp_path, monkeypatch):
     """Each Target's tool maps to one executable; duplicates and bad Targets drop out."""
     _write_lint_core(

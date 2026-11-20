@@ -1127,6 +1127,37 @@ def up(
         )
 
 
+class RecoveryPendingError(SessionError):
+    """Sandbox recovery is pending; only a lifecycle command completes it."""
+
+    def __init__(self) -> None:
+        super().__init__("Sandbox recovery is pending on this host")
+
+
+def recovery_pending() -> bool:
+    """Report, without changing host state, whether any Project has a pending invalidation."""
+    from booley.runtime import issuance_invalidation
+
+    try:
+        return issuance_invalidation.shared_recovery_blocks_command(read_only=True)
+    except issuance_invalidation.InvalidationError as exc:
+        raise SessionError(str(exc)) from exc
+
+
+def up_without_recovery(workspace: Path) -> str:
+    """Create or start one Session, refusing instead of completing pending recovery.
+
+    The check runs under the lifecycle lock, so an invalidation journaled after
+    a caller's own check is refused, never completed.
+    """
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("Doctor Sandbox start"):
+        if recovery_pending():
+            raise RecoveryPendingError
+        return _up_unlocked(workspace)
+
+
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
     from booley.runtime import session_issuance as runtime_spec

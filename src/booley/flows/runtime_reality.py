@@ -108,6 +108,9 @@ def _check_session_binary(
     try:
         command = request.sandbox_command(["sh", "-c", f"command -v {binary}"])
         result = run_captured_bounded(command, timeout=30)
+    except session_runtime.RecoveryPendingError as exc:
+        findings.skip(f"{label} skipped - {exc}")
+        return
     except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
         findings.fail(
             f"{label} (runtime/probe error: {exc})",

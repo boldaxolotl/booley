@@ -14,7 +14,11 @@ Doctor checks what it can see from where it runs, so it gives a different view
 from each side:
 
 - **Host terminal:** the Booley install, Docker, the Sandbox Image, and the
-  Project configuration.
+  Project configuration. Doctor starts the Project's Sandbox, or uses the
+  running one, to prepare each Flow. It never completes Sandbox recovery that
+  an interrupted command left pending on this computer: it warns
+  `host.sandbox-recovery-pending` and skips the checks that need the Sandbox
+  until `booley session up` completes it.
 - **Sandbox terminal** (a VS Code terminal in the devcontainer, or
   `booley session enter`): the same configuration plus the tools, MCP server,
   and agent setup inside the Sandbox.

@@ -178,6 +178,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "run_doctor_result": frozenset(
         {
+            "_check_sandbox_recovery",
             "_run_deep_phase",
             "_run_project_phase",
             "_run_runtime_phase",
