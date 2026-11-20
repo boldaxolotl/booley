@@ -198,9 +198,12 @@ the Sandbox's memory limit (`[sandbox].memory`) less a reserve for the agents.
 Every Booley Flow and Specialist run is a Job, and a Job starts when its
 estimated memory fits what the budget has left.
 
-- **Measured, not guessed.** Booley reserves the peak memory the same kind
-  of run used before, so nobody guesses what each EDA tool needs.
-  `booley resources` shows those peaks.
+- **Measured, not guessed.** Booley reserves the peak memory the same Target
+  used before, so nobody guesses what each EDA tool needs. That works because
+  every run goes through a [named Target](#named-targets-and-tests): the same
+  name means the same build, so its last peak predicts the next one. An ad hoc
+  command line would have no history to go on. `booley resources` shows those
+  peaks.
 - **Waits instead of failing.** A Job that doesn't fit waits until memory frees
   up. A running Job is never interrupted to make room.
 - **One retry, alone.** When Booley sees the kernel kill an EDA tool run
