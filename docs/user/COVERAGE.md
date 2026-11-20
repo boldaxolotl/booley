@@ -321,6 +321,12 @@ directory = "coverage-waivers"
 `anchor` is `project_data_repository` (the Booley Directory) or
 `rtl_repository` (the RTL repository). `directory` is a relative path below it.
 
+The directory may be absent until you approve the first waiver: coverage then
+runs with no waivers, and its report says that no approvals were found in that
+directory. Git can't commit an empty directory, so commit the directory
+together with your first approval file. Don't add a placeholder such as
+`.gitkeep`; it would block evaluation as an unreferenced file.
+
 Approval files mirror RTL paths: waivers for `rtl/counter.sv` go in
 `coverage-waivers/rtl/counter.sv.toml`. A hand-written file looks like this:
 

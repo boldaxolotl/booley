@@ -1819,10 +1819,9 @@ def test_failed_test_exit_code_is_recorded_per_target_in_progress(tmp_path, monk
 # --- #992: --no-waivers -----------------------------------------------------------
 
 
-def _configure_missing_waiver_directory(root: Path) -> None:
-    """Configure waivers whose directory is absent: a load-time error for gated runs."""
+def _configure_waiver_directory(root: Path, directory: str) -> None:
     (root / ".booley" / "booley.toml").write_text(
-        '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
+        f'[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "{directory}"\n'
     )
 
 
@@ -1844,7 +1843,7 @@ def _workload(reports: Path, selector: str) -> dict[str, object]:
 
 def test_no_waivers_reports_raw(tmp_path, monkeypatch):
     _prepare_sim_custom_project(tmp_path, monkeypatch)
-    _configure_missing_waiver_directory(tmp_path)
+    _configure_waiver_directory(tmp_path, "booley.toml")
 
     def run(name: str, **options):
         _coverage(
@@ -1855,7 +1854,7 @@ def test_no_waivers_reports_raw(tmp_path, monkeypatch):
             **options,
         )
 
-    # Control: the same run with waivers applied is blocked by the missing directory.
+    # Control: the same run with waivers applied is blocked by the invalid directory.
     run("control")
     assert _coverage_evaluation_status(tmp_path / "control", "sim_custom") == "blocked"
     run("raw", no_waivers=True)
@@ -1876,17 +1875,24 @@ def test_default_coverage_manifest_omits_no_waivers(tmp_path, monkeypatch):
     assert run("raw", no_waivers=True)["no_waivers"] is True
 
 
-def test_ungated_invalid_waivers_exit_2_with_no_waivers_hint(tmp_path, monkeypatch):
+def test_absent_waiver_directory_is_evaluated_and_an_invalid_one_blocks(tmp_path, monkeypatch):
     _coverage_project(tmp_path, monkeypatch)
-    _configure_missing_waiver_directory(tmp_path)
+    _configure_waiver_directory(tmp_path, "missing-waivers")
 
     def run(name: str, **options):
         return _coverage(tmp_path, report_dir=tmp_path / name, **options)
 
+    absent = run("absent")
+    assert absent.exit_code == 0
+    assert _coverage_evaluation_status(tmp_path / "absent", "sim_0") == "not_requested"
+    assert "No approvals found" in absent.outcome.report_text
+    assert "missing-waivers" in absent.outcome.report_text
+
+    _configure_waiver_directory(tmp_path, "booley.toml")
     blocked = run("default")
     assert blocked.exit_code == 2
     assert _coverage_evaluation_status(tmp_path / "default", "sim_0") == "blocked"
-    assert "evaluation BLOCKED (COV_WAIVER_DIRECTORY_MISSING)" in blocked.outcome.report_text
+    assert "evaluation BLOCKED (COV_WAIVER_DIRECTORY_INVALID)" in blocked.outcome.report_text
     assert "--no-waivers" in blocked.outcome.report_text
 
     raw = run("raw", no_waivers=True)
