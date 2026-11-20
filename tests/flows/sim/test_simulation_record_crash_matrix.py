@@ -55,6 +55,7 @@ from tests.flows.sim.simulation_record_test_support import (
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
+from tests.flows.sim.test_staged_input_ledger import as_if_the_sandbox_restarted
 from tests.time_budget import hang_guard_s
 
 _DURABLE_BOUNDARIES = (
@@ -1226,7 +1227,7 @@ class _CancelAfterInputs:
             return
         if name != "after:runtime_inputs":
             return
-        if self.how == "kill":
+        if self.how != "sigint":
             os._exit(_KILLED)
         os.kill(os.getpid(), signal.SIGINT)
         threading.Event().wait(hang_guard_s())
@@ -1242,7 +1243,7 @@ def _interrupted(run) -> None:
 
 @_needs_fork
 @pytest.mark.timeout(180)
-@pytest.mark.parametrize("how", ["kill", "sigint"])
+@pytest.mark.parametrize("how", ["kill", "sigint", "kill-then-restart"])
 @pytest.mark.parametrize("route", ["serial", "coverage"])
 def test_cancelled_attempt_leaves_no_runtime_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, how: str
@@ -1269,6 +1270,8 @@ def test_cancelled_attempt_leaves_no_runtime_input(
 
     _run_killed(lambda: _interrupted(run), tmp_path / "trace.txt")
     assert destination.is_file()
+    if how == "kill-then-restart":
+        as_if_the_sandbox_restarted(resolve_checkout_booley_dir(project))
 
     assert resume().complete is True
     assert checkpoint.present_at_restage == [False]

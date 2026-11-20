@@ -35,6 +35,7 @@ from tests.flows.mutation.test_flow import (
     _prepare_scope_files,
 )
 from tests.flows.sim.launched_work import launched_work
+from tests.flows.sim.test_staged_input_ledger import as_if_the_sandbox_restarted
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="stand-in V<top> is a POSIX shell script")
 
@@ -248,8 +249,9 @@ def test_identical_existing_destination_is_left_untouched(tmp_path: Path, monkey
 
 
 @pytest.mark.timeout(120)
+@pytest.mark.parametrize("restarted", [False, True])
 def test_mutant_killed_by_sigterm_leaves_no_link_for_the_next_run(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, restarted: bool
 ) -> None:
     """A Mutant run killed in its process group does not break the next run's staging."""
     launches: list[object] = []
@@ -273,6 +275,8 @@ def test_mutant_killed_by_sigterm_leaves_no_link_for_the_next_run(
     for overlay in _overlays(tmp_path):
         shutil.rmtree(overlay)
     assert not (run_dir / "vectors.hex").exists()
+    if restarted:
+        as_if_the_sandbox_restarted(resolve_checkout_booley_dir(tmp_path))
 
     result, _ = _copyto_run(tmp_path, monkeypatch)
 

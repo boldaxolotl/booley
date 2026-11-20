@@ -434,6 +434,7 @@ def _replayed_record_deletes_nothing(tmp_path: Path, destination: Path) -> None:
         destination.rename(holders / str(index))
     assert destination.stat().st_ino != swept
     record.write_bytes(stale)
+    record.with_suffix(".lock").touch()
     _fails_with(tmp_path, "attempt-3", "cancelled Booley run left it there")
     assert destination.read_bytes() == b"runtime input"
 
