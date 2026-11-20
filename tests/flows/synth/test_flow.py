@@ -1612,9 +1612,13 @@ def test_4996_synthesis_output_names_project_paths(
 
     def make(_cmd: list[str]) -> SubprocessResult:
         build_dir = work_dir / ".booley" / ".runtime" / "edalize" / "synth" / "syn" / "synth"
-        (build_dir / "sv2v.log").write_text(warning + "\n", encoding="utf-8")
-        with (build_dir / f"{log}.log").open("a", encoding="utf-8") as stage_log:
+        (build_dir / "sv2v.log").write_bytes((warning + "\n").encode())
+        with (build_dir / f"{log}.log").open("a", encoding="utf-8", newline="\n") as stage_log:
             stage_log.write(error + "\n")
+        # Windows file times lag the dispatch clock: date the logs past it so they read as fresh.
+        future = time.time() + 60
+        for name in {"sv2v", log}:
+            os.utime(build_dir / f"{name}.log", (future, future))
         return SubprocessResult(returncode=2, stdout=f"BOOLEY_STAGE: {log}\n")
 
     synth_cli.tool_output = make

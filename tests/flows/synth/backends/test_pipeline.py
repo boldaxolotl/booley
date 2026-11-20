@@ -749,7 +749,7 @@ class TestBoundaryOutput:
         (plan.build_dir / "yosys.log").write_text(
             "ERROR: syntax error at sv2v_converted.v:2\n", encoding="utf-8"
         )
-        paths = ProjectSourcePaths({str(spec.sources[0]): "rtl/dut.sv"})
+        paths = ProjectSourcePaths({spec.sources[0].as_posix(): "rtl/dut.sv"})
 
         outcome = syn_make.boundary_output(plan, 1, is_stale=_fresh, project_paths=paths)
 
