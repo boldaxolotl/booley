@@ -12,7 +12,7 @@ mapping.
 
 A loop or driver warning from an earlier pass that the completed checks no
 longer find was removed by optimization, not reviewed: it stays actionable
-until the Project declares its count (``REMOVED_ALLOWANCE_KEYS``).
+unless it is a loop the Project declared with ``expected_comb_loops``.
 """
 
 from __future__ import annotations
@@ -29,12 +29,7 @@ WarningDisposition = Literal["benign", "advisory", "structural", "informational"
 # (tool, code, category, disposition, message_sha256, message, original_bytes, truncated, rationale).
 _GroupKey = tuple[str, str | None, str, WarningDisposition, str, str, int, bool, str | None]
 
-# Structural category -> the ``[flows.synth]`` key declaring how many earlier-pass
-# warnings of that category the Project reviewed.
-REMOVED_ALLOWANCE_KEYS: dict[str, str] = {
-    "combinational_loop": "expected_removed_comb_loops",
-    "multi_driver": "expected_removed_multi_driven",
-}
+# Earlier-pass structural category -> what shows that optimization removed it.
 # Only the final check counts multi-driven nets, so its rationale names that check.
 _REMOVED_EVIDENCE = {
     "combinational_loop": "the completed structural checks find no combinational loops",
@@ -96,7 +91,7 @@ class WarningGroup:
     @property
     def removed(self) -> bool:
         """True for an earlier-pass loop or driver warning the completed checks no longer find."""
-        return self.rationale is not None and self.category in REMOVED_ALLOWANCE_KEYS
+        return self.rationale is not None and self.category in _REMOVED_EVIDENCE
 
     def to_detail(self) -> dict[str, Any]:
         detail: dict[str, Any] = {
@@ -306,29 +301,34 @@ def _openroad_records(text: str) -> list[_WarningRecord]:
     return result
 
 
-def _removed_rationale(category: str, seen: int, declared: int) -> str:
-    key = REMOVED_ALLOWANCE_KEYS[category]
-    verdict = (
-        "Declared as reviewed"
-        if seen <= declared
-        else "Removed is not reviewed: check the RTL, then fix it or declare the count"
-    )
+def _removed_rationale(category: str, seen: int, expected_comb_loops: int) -> str:
+    """Say why a removed structure still matters; only loops have an allowance to declare."""
+    if category != "combinational_loop":
+        verdict = "Removed is not reviewed: check the RTL and fix it."
+    else:
+        verdict = (
+            (
+                "Declared as intentional"
+                if seen <= expected_comb_loops
+                else "Removed is not reviewed: check the RTL, then fix it or declare the count"
+            )
+            + f": [flows.synth].expected_comb_loops (this run {seen}, declared {expected_comb_loops})."
+        )
     return (
         f"An earlier synthesis pass reported this; {_REMOVED_EVIDENCE[category]}, "
-        f"so optimization removed it. {verdict}: "
-        f"[flows.synth].{key} (this run {seen}, declared {declared})."
+        f"so optimization removed it. {verdict}"
     )
 
 
 def _annotate_removed(
     records: list[_WarningRecord],
     structural: StructuralConditions,
-    expected_removed: Mapping[str, int],
+    expected_comb_loops: int,
 ) -> list[_WarningRecord]:
     """Mark earlier-pass loop and driver warnings the completed checks no longer find.
 
-    They stay actionable unless the Project declared at least their count, so
-    one more than declared warns again.
+    They stay actionable, except loops within ``expected_comb_loops``: one more
+    than declared warns again. Multi-driven nets have no allowance.
     """
     if not structural.complete:
         return records
@@ -342,12 +342,16 @@ def _annotate_removed(
         if remaining.get(item.category, 1):
             result.append(item)
             continue
-        declared = expected_removed.get(item.category, 0)
+        declared = (
+            item.category == "combinational_loop" and seen[item.category] <= expected_comb_loops
+        )
         result.append(
             replace(
                 item,
-                disposition="informational" if seen[item.category] <= declared else "advisory",
-                rationale=_removed_rationale(item.category, seen[item.category], declared),
+                disposition="informational" if declared else "advisory",
+                rationale=_removed_rationale(
+                    item.category, seen[item.category], expected_comb_loops
+                ),
             )
         )
     return result
@@ -356,7 +360,7 @@ def _annotate_removed(
 def _records(
     sources: Mapping[str, str],
     structural: StructuralConditions,
-    expected_removed: Mapping[str, int],
+    expected_comb_loops: int,
 ) -> list[_WarningRecord]:
     records: list[_WarningRecord] = []
     for source in _SOURCE_ORDER:
@@ -370,7 +374,9 @@ def _records(
         elif source == "final_check":
             records.extend(_yosys_records(text))
         else:
-            records.extend(_annotate_removed(_yosys_records(text), structural, expected_removed))
+            records.extend(
+                _annotate_removed(_yosys_records(text), structural, expected_comb_loops)
+            )
     return records
 
 
@@ -461,14 +467,15 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
 
 
 def parse_synth_diagnostics(
-    sources: Mapping[str, str], expected_removed: Mapping[str, int] | None = None
+    sources: Mapping[str, str], expected_comb_loops: int = 0
 ) -> SynthDiagnostics:
     """Parse fresh stage text into bounded warnings and structural conditions.
 
-    ``expected_removed`` maps a ``REMOVED_ALLOWANCE_KEYS`` category to its declared count.
+    ``expected_comb_loops`` is the Project's declared loop count, which also
+    covers earlier-pass loop warnings that optimization removed.
     """
     structural = _structural_conditions(sources)
     return SynthDiagnostics(
-        warnings=_warning_summary(_records(sources, structural, expected_removed or {})),
+        warnings=_warning_summary(_records(sources, structural, expected_comb_loops)),
         structural=structural,
     )

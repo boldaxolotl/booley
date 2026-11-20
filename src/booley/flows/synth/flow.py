@@ -112,7 +112,7 @@ from booley.flows.synth.timing import (
     parse_perclock,
     parse_unconstrained_timing,
 )
-from booley.flows.synth.warnings import REMOVED_ALLOWANCE_KEYS, WarningSummary
+from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
@@ -1347,9 +1347,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
         "booley.toml is only for enablement, verdict, and report "
         "policy such as enabled, timeout_ms, expected_latches, "
-        "expected_comb_loops, expected_removed_comb_loops, "
-        "expected_removed_multi_driven, fail_on_timing_violation, and "
-        "timing_report_paths."
+        "expected_comb_loops, fail_on_timing_violation, and timing_report_paths."
     )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
@@ -1864,10 +1862,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             result.returncode,
             stdout=result.stdout,
             is_stale=lambda p: self._is_stale_artifact(p, result.dispatched_unix or None),
-            expected_removed={
-                category: expected_count("synth", self.args.work_dir, key)
-                for category, key in REMOVED_ALLOWANCE_KEYS.items()
-            },
+            expected_comb_loops=expected_count("synth", self.args.work_dir, "expected_comb_loops"),
         )
         output = "\n".join(part for part in (result.stdout, result.stderr, outcome.text) if part)
         return outcome, output

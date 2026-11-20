@@ -225,9 +225,9 @@ frontend warnings are counted too and never set `warn`.
 
 A loop or multi-driven warning from an earlier pass that the completed
 structural checks no longer find carries a `rationale` and is `advisory`:
-optimization removed the structure, which is not a review of the RTL. It is
-`informational` only while its count is within
-`[flows.synth].expected_removed_comb_loops` or `expected_removed_multi_driven`.
+optimization removed the structure, which is not a review of the RTL.
+A loop warning is `informational` instead while the run's count of them is
+within `[flows.synth].expected_comb_loops`; multi-driven has no allowance.
 
 ## `fpga`
 

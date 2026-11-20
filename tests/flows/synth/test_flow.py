@@ -5918,13 +5918,13 @@ def test_declared_removed_loops_pass_and_one_more_warns(
     flow_and_state, tmp_path, declared, grade, label
 ):
     # The captured transient loop (#1417) is 8 earlier-pass warnings. Declaring
-    # all 8 as reviewed ends PASS with notes; declaring 7 still warns (#4866).
+    # all 8 with expected_comb_loops ends PASS with notes; 7 still warns (#4866).
     result, report = _run_latch_case(
         flow_and_state,
         tmp_path,
         {
             "cell": "NAND2",
-            "extra_toml": f"expected_removed_comb_loops = {declared}\n",
+            "extra_toml": f"expected_comb_loops = {declared}\n",
             "artifacts": load_capture("transient_loop_yosys_0_70.txt"),
         },
     )

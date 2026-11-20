@@ -130,41 +130,20 @@ _EARLIER_DRIVER = "Warning: multiple conflicting drivers for top.sig:\n"
 
 
 @pytest.mark.parametrize(
-    ("declared", "final", "loop", "driver", "actionable", "counts"),
+    ("expected_comb_loops", "final", "loop", "driver", "actionable"),
     [
-        # Optimization removed both: actionable until the Project declares the count.
-        ({}, _CLEAN_CHECK, "advisory", "advisory", 3, "(this run 2, declared 0)"),
-        (
-            {"combinational_loop": 2},
-            _CLEAN_CHECK,
-            "informational",
-            "advisory",
-            1,
-            "(this run 2, declared 2)",
-        ),
+        # Optimization removed both: actionable, and only loops have an allowance.
+        (0, _CLEAN_CHECK, "advisory", "advisory", 3),
+        (2, _CLEAN_CHECK, "informational", "advisory", 1),
         # One more than declared warns again.
-        (
-            {"combinational_loop": 1, "multi_driver": 1},
-            _CLEAN_CHECK,
-            "advisory",
-            "informational",
-            2,
-            "(this run 2, declared 1)",
-        ),
-        # A net the final check still reports is never covered by the allowance.
-        (
-            {"combinational_loop": 2, "multi_driver": 1},
-            _EARLIER_DRIVER + "Found and reported 1 problem.\n",
-            "informational",
-            "structural",
-            2,
-            "(this run 2, declared 2)",
-        ),
+        (1, _CLEAN_CHECK, "advisory", "advisory", 3),
+        # A net the final check still reports stays structural.
+        (2, _EARLIER_DRIVER + "Found and reported 1 problem.\n", "informational", "structural", 2),
     ],
     ids=["undeclared", "loops_declared", "one_more_loop", "driver_in_final"],
 )
-def test_earlier_structural_warnings_need_a_declared_count(
-    declared, final, loop, driver, actionable, counts
+def test_removed_loop_warnings_need_a_declared_count(
+    expected_comb_loops, final, loop, driver, actionable
 ) -> None:
     diagnostics = parse_synth_diagnostics(
         {
@@ -172,7 +151,7 @@ def test_earlier_structural_warnings_need_a_declared_count(
             "premap_check": _CLEAN_CHECK,
             "final_check": final,
         },
-        declared,
+        expected_comb_loops,
     )
 
     groups = {group.category: group for group in diagnostics.warnings.representatives}
@@ -182,24 +161,27 @@ def test_earlier_structural_warnings_need_a_declared_count(
     assert "$add$rtl.sv:7$1" in groups["combinational_loop"].message
     rationale = groups["combinational_loop"].rationale or ""
     assert "completed structural checks find no combinational loops" in rationale
-    assert "expected_removed_comb_loops " + counts in rationale
-    assert (groups["multi_driver"].rationale is None) is (driver == "structural")
+    assert f"expected_comb_loops (this run 2, declared {expected_comb_loops})" in rationale
+    driver_rationale = groups["multi_driver"].rationale
+    if driver == "structural":
+        assert driver_rationale is None
+    else:
+        assert "completed final check finds no multi-driven nets" in driver_rationale
+        assert "expected_comb_loops" not in driver_rationale
 
 
-def test_declared_removed_warning_survives_representative_saturation() -> None:
+def test_declared_removed_loop_survives_representative_saturation() -> None:
     # The report reads its note from the capped representatives.
     diagnostics = parse_synth_diagnostics(
         {
-            "yosys": "".join(f"ABC: Warning: unrelated {n}\n" for n in range(12))
-            + _EARLIER_DRIVER,
+            "yosys": "".join(f"ABC: Warning: unrelated {n}\n" for n in range(12)) + _EARLIER_LOOP,
             "premap_check": _CLEAN_CHECK,
             "final_check": _CLEAN_CHECK,
         },
-        {"multi_driver": 1},
+        1,
     )
     first = diagnostics.warnings.representatives[0]
-    assert (first.category, first.disposition) == ("multi_driver", "informational")
-    assert "completed final check finds no multi-driven nets" in (first.rationale or "")
+    assert (first.category, first.disposition) == ("combinational_loop", "informational")
 
 
 def test_final_check_without_completion_marker_is_incomplete() -> None:

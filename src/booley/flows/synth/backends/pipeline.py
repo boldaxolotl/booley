@@ -35,7 +35,7 @@ import re
 import shlex
 import shutil
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -741,7 +741,7 @@ def boundary_output(
     *,
     is_stale: Callable[[Path], bool],
     stdout: str = "",
-    expected_removed: Mapping[str, int] | None = None,
+    expected_comb_loops: int = 0,
 ) -> BoundaryOutcome:
     """Rebuild synthesis output from freshness-gated make artifacts."""
     spec = plan.spec
@@ -774,7 +774,7 @@ def boundary_output(
 
     return BoundaryOutcome(
         text="\n".join(p for p in parts if p),
-        diagnostics=parse_synth_diagnostics(diagnostic_sources, expected_removed),
+        diagnostics=parse_synth_diagnostics(diagnostic_sources, expected_comb_loops),
         forced_failure=forced_failure,
         yosys_complete=_yosys_complete(plan, fresh_text),
         attempt_token=plan.attempt_token,

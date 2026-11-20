@@ -41,8 +41,6 @@ SELECTIVE_FLOW_KNOBS = {
     "output_dir": frozenset({"synth"}),
     "expected_latches": frozenset({"synth", "fpga"}),
     "expected_comb_loops": frozenset({"synth", "fpga"}),
-    "expected_removed_comb_loops": frozenset({"synth"}),
-    "expected_removed_multi_driven": frozenset({"synth"}),
     "timing_report_paths": frozenset({"synth"}),
 }
 

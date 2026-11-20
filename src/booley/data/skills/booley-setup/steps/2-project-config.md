@@ -720,10 +720,6 @@ What goes here:
   leave a key unset when the plan records none, and never raise an allowance to
   make a run pass: the count is a claim about the design, and one more than
   declared still fails.
-  `[flows.synth]` also accepts `expected_removed_comb_loops` and
-  `expected_removed_multi_driven`, for warnings about a loop or multi-driven
-  net that optimization removed. Set one only after the user reviewed the RTL
-  those warnings name and accepted it; leave it unset otherwise.
 - **Additional Protected Inputs — write only what the human agreed to.**
   `[project].protected_inputs` lists the tracked recipe file a hook or generator
   invokes and the stimulus sources that recipe consumes. A Measurement reports

@@ -134,9 +134,10 @@ warning, so the run ends `WARN` rather than `PASS`.
 Optimization can remove a combinational loop or a multi-driven net before the
 final netlist. Its warning still ends the run `WARN`: the tool dropped the
 logic, and nobody has checked that the RTL means what was kept. Review the RTL
-the warning names, then fix it or declare the count with
-[`expected_removed_comb_loops` or `expected_removed_multi_driven`](#configuration-flowssynth).
-A declared warning is listed as a note and doesn't cause `WARN`.
+the warning names and fix it. For a removed loop you accept, declare its
+warnings with
+[`expected_comb_loops`](#configuration-flowssynth): they are then listed as
+notes and don't cause `WARN`.
 
 ## Synthesis Target
 
@@ -375,15 +376,13 @@ the synthesis Target anyway; it keeps the frontend's work small.
 ## Configuration (`[flows.synth]`)
 
 Besides the shared `enabled` and `timeout_ms` (default `1800000`, 30 minutes
-per Target), synthesis has these settings:
+per Target), synthesis has four settings:
 
 ```toml
 [flows.synth]
 timeout_ms = 5400000
 expected_latches = 0               # intentional latches allowed before FAIL
 expected_comb_loops = 0            # intentional combinational loops allowed before FAIL
-expected_removed_comb_loops = 0    # reviewed warnings for loops optimization removed
-expected_removed_multi_driven = 0  # reviewed warnings for multi-driven nets it removed
 fail_on_timing_violation = false   # true: timing violations are FAIL (exit 1)
 timing_report_paths = 10           # worst setup paths listed per timing report
 ```
@@ -392,17 +391,12 @@ timing_report_paths = 10           # worst setup paths listed per timing report
 structures the design contains on purpose, such as the latch inside a
 standard-cell clock gater. The run reports the actual count and fails only on
 the excess, so one more than declared still fails. A negative, boolean, or
-non-integer value counts as `0`. Multi-driven nets in the final netlist have
-no allowance.
+non-integer value counts as `0`. Multi-driven nets have no allowance.
 
-`expected_removed_comb_loops` and `expected_removed_multi_driven` (integers,
-default `0`, same rules) declare warnings you have reviewed for a loop or a
-multi-driven net that optimization removed. The count is the number of such
-warnings in one Target's run, which the report prints (`this run N`); every
-synthesis Target is held to the same declared count. While a run stays within
-it, those warnings are notes; one more than declared ends the run `WARN`
-again. They never cover a loop or multi-driven net that is in the final
-netlist.
+`expected_comb_loops` also covers the warnings for loops that optimization
+removed. When the final netlist has no loop, the run compares the number of
+those warnings, which the report prints (`this run N`), with the declared
+count: within it they are notes, and one more ends the run `WARN` again.
 
 Keep `fail_on_timing_violation = false` while the constraints are
 placeholders. Turn it on once they are real, so a CI step that reads only the

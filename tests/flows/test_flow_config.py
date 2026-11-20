@@ -8,7 +8,7 @@ from booley.flows import flow_config
 
 
 def test_expected_count_malformed_values_resolve_to_zero(tmp_path: Path) -> None:
-    """Every structural allowance shares one rule: bad values never widen the gate."""
+    """All four structural allowances share one rule: bad values never widen the gate."""
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     pairs = (
