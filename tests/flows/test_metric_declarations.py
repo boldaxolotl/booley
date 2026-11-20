@@ -20,49 +20,49 @@ from tests.flows.sim.test_sim_flow_metrics import _coverage_outcome, _MixedCover
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_reports"
 
-# name -> (unit, better, kind), written out literally so a wrong direction, unit or
-# kind in a declaration cannot hide behind the code that produced it.
+# name -> (unit, better, kind, minimum, maximum), written out literally so a wrong direction,
+# unit, kind or range in a declaration cannot hide behind the code that produced it.
 _SIM_DECLARATIONS = {
-    "tests_failed": ("tests", "lower", "plain"),
-    "tests_total": ("tests", "higher", "plain"),
+    "tests_failed": ("tests", "lower", "plain", 0, None),
+    "tests_total": ("tests", "higher", "plain", 0, None),
 }
-_EXPECTED_DECLARATIONS: dict[str, dict[str, tuple[str, str, str]]] = {
+_EXPECTED_DECLARATIONS: dict[str, dict[str, tuple[str, str, str, int | None, int | None]]] = {
     "synth": {
-        "area_um2": ("μm²", "lower", "plain"),
-        "area_kge": ("kGE", "lower", "plain"),
-        "cell_count": ("cells", "lower", "plain"),
-        "fmax_mhz": ("MHz", "higher", "per_clock"),
-        "critical_path_ps": ("ps", "lower", "per_clock"),
-        "wns_ns": ("ns", "higher", "per_clock"),
-        "whs_ns": ("ns", "higher", "per_clock"),
+        "area_um2": ("μm²", "lower", "plain", 0, None),
+        "area_kge": ("kGE", "lower", "plain", 0, None),
+        "cell_count": ("cells", "lower", "plain", 0, None),
+        "fmax_mhz": ("MHz", "higher", "per_clock", 0, None),
+        "critical_path_ps": ("ps", "lower", "per_clock", 0, None),
+        "wns_ns": ("ns", "higher", "per_clock", None, None),
+        "whs_ns": ("ns", "higher", "per_clock", None, None),
     },
     "fpga": {
-        "lut_count": ("LUTs", "lower", "plain"),
-        "ff_count": ("FFs", "lower", "plain"),
-        "bram_count": ("BRAM tiles", "lower", "plain"),
-        "dsp_count": ("DSPs", "lower", "plain"),
-        "fmax_mhz": ("MHz", "higher", "per_clock"),
-        "critical_path_ps": ("ps", "lower", "per_clock"),
-        "wns_ns": ("ns", "higher", "per_clock"),
-        "whs_ns": ("ns", "higher", "per_clock"),
+        "lut_count": ("LUTs", "lower", "plain", 0, None),
+        "ff_count": ("FFs", "lower", "plain", 0, None),
+        "bram_count": ("BRAM tiles", "lower", "plain", 0, None),
+        "dsp_count": ("DSPs", "lower", "plain", 0, None),
+        "fmax_mhz": ("MHz", "higher", "per_clock", 0, None),
+        "critical_path_ps": ("ps", "lower", "per_clock", 0, None),
+        "wns_ns": ("ns", "higher", "per_clock", None, None),
+        "whs_ns": ("ns", "higher", "per_clock", None, None),
     },
-    "sim": {**_SIM_DECLARATIONS, "cycle_count": ("cycles", "lower", "per_test")},
+    "sim": {**_SIM_DECLARATIONS, "cycle_count": ("cycles", "lower", "per_test", 0, None)},
     "coverage": {
         **_SIM_DECLARATIONS,
-        "line_coverage": ("%", "higher", "plain"),
-        "branch_coverage": ("%", "higher", "plain"),
-        "expression_coverage": ("%", "higher", "plain"),
-        "toggle_coverage": ("%", "higher", "plain"),
-        "cover_property_coverage": ("%", "higher", "plain"),
+        "line_coverage": ("%", "higher", "plain", 0, 100),
+        "branch_coverage": ("%", "higher", "plain", 0, 100),
+        "expression_coverage": ("%", "higher", "plain", 0, 100),
+        "toggle_coverage": ("%", "higher", "plain", 0, 100),
+        "cover_property_coverage": ("%", "higher", "plain", 0, 100),
     },
     "lint": {
-        "warnings": ("warnings", "lower", "plain"),
-        "errors": ("errors", "lower", "plain"),
+        "warnings": ("warnings", "lower", "plain", 0, None),
+        "errors": ("errors", "lower", "plain", 0, None),
     },
     "mutation": {
-        "mutation_score": ("%", "higher", "plain"),
-        "mutants_detected": ("Mutants", "higher", "plain"),
-        "mutants_survived": ("Mutants", "lower", "plain"),
+        "mutation_score": ("%", "higher", "plain", 0, 100),
+        "mutants_detected": ("Mutants", "higher", "plain", 0, None),
+        "mutants_survived": ("Mutants", "lower", "plain", 0, None),
     },
 }
 
@@ -186,8 +186,12 @@ def test_flow_declarations_expose_name_unit_direction_tier_kind(flow: str) -> No
 
     declarations = metric_declarations(flow)
 
-    actual = {d.name: (d.unit, d.better.value, d.kind.value) for d in declarations}
+    actual = {
+        d.name: (d.unit, d.better.value, d.kind.value, d.minimum, d.maximum) for d in declarations
+    }
     assert actual == _EXPECTED_DECLARATIONS[flow]
+    # A percentage is a share of a whole: a new one cannot skip the range by editing a row above.
+    assert all((d.minimum, d.maximum) == (0, 100) for d in declarations if d.unit == "%")
     assert len(actual) == len(declarations)  # no duplicate names
     assert {d.cost_tier for d in declarations} == {CostTier[_EXPECTED_TIERS[flow]]}
 

@@ -71,13 +71,18 @@ def test_validate_lists_every_load_error_and_exits_nonzero(
 ) -> None:
     write_metrics_project(
         tmp_path,
-        "[nope.sim]\ntests_failed_max = 0\n[sim_core.sim]\nbogus_max = 1\n",
+        "[nope.sim]\ntests_failed_max = 0\n[sim_core.sim]\nbogus_max = 1\n"
+        "[sim_core.coverage]\nline_coverage_min = 100.01\n",
     )
     assert _measure(monkeypatch, tmp_path, "--validate") == 2
     err = capsys.readouterr().err
     assert "[nope.sim]" in err
     assert "[sim_core.sim] bogus_max: " in err
-    assert "metrics.toml has 2 load errors" in err
+    assert (
+        "[sim_core.coverage] line_coverage_min: line_coverage must be within [0, 100], "
+        "got 100.01\n  write instead: line_coverage_min = 100"
+    ) in err
+    assert "metrics.toml has 3 load errors" in err
 
 
 def test_validate_reports_a_table_free_file(

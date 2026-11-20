@@ -104,8 +104,10 @@ _verible_first_error_line = eda_parsers.verible_first_error_line
 _EXIT_EPILOGUE_RE = re.compile(r"Exiting due to \d+ (?:error|warning)\(s\)")
 
 LINT_METRIC_DECLARATIONS = (
-    MetricDeclaration("warnings", "warnings", Better.LOWER, CostTier.LOW, MetricKind.PLAIN),
-    MetricDeclaration("errors", "errors", Better.LOWER, CostTier.LOW, MetricKind.PLAIN),
+    MetricDeclaration(
+        "warnings", "warnings", Better.LOWER, CostTier.LOW, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration("errors", "errors", Better.LOWER, CostTier.LOW, MetricKind.PLAIN, minimum=0),
 )
 
 

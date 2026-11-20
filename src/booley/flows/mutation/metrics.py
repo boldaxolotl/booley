@@ -23,12 +23,20 @@ from booley.flows.metric_declarations import (
 )
 
 MUTATION_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
-    MetricDeclaration("mutation_score", "%", Better.HIGHER, CostTier.HIGH, MetricKind.PLAIN),
     MetricDeclaration(
-        "mutants_detected", "Mutants", Better.HIGHER, CostTier.HIGH, MetricKind.PLAIN
+        "mutation_score",
+        "%",
+        Better.HIGHER,
+        CostTier.HIGH,
+        MetricKind.PLAIN,
+        minimum=0,
+        maximum=100,
     ),
     MetricDeclaration(
-        "mutants_survived", "Mutants", Better.LOWER, CostTier.HIGH, MetricKind.PLAIN
+        "mutants_detected", "Mutants", Better.HIGHER, CostTier.HIGH, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "mutants_survived", "Mutants", Better.LOWER, CostTier.HIGH, MetricKind.PLAIN, minimum=0
     ),
 )
 
