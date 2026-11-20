@@ -1145,7 +1145,7 @@ def recovery_pending() -> bool:
 
 
 def up_without_recovery(workspace: Path) -> str:
-    """Create or start one Session, refusing instead of completing pending recovery.
+    """Create or start the Project's Sandbox, refusing instead of completing pending recovery.
 
     The check runs under the lifecycle lock, so an invalidation journaled after
     a caller's own check is refused, never completed.
