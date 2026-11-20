@@ -157,7 +157,9 @@ class ElabOnlyMixin:
         ) -> _StandaloneOutcome: ...
         def reserve_invocation_dir(self) -> Path | None: ...
         def _record_eda_tool(self, target: str, eda_tool: str | None) -> None: ...
-        def _open_run_log(self, target: str, log_dir: Path) -> None: ...
+        def _open_run_log(
+            self, target: str, log_dir: Path, *, temporary: bool = False
+        ) -> None: ...
         def _execute_boundary(
             self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
         ) -> SubprocessResult: ...
@@ -549,7 +551,7 @@ class ElabOnlyMixin:
             wait_s = max(1, self._effective_build_timeout_ms() // 1000)
             with SimulationBuildSession(handle, wait_s=wait_s) as session:
                 candidate = session.new_generation()
-                self._open_run_log(target, candidate)
+                self._open_run_log(target, candidate, temporary=True)
                 prepared = self._prepare_elab_only_target(
                     target, started, handle=handle, build_root=candidate
                 )
@@ -610,7 +612,7 @@ class ElabOnlyMixin:
         prepared: PreparedSimulationBuild,
     ) -> None:
         """Register prepared Target state used by reports and optional sweeps."""
-        self._open_run_log(target, Path(prepared.build_root))
+        self._open_run_log(target, Path(prepared.build_root), temporary=True)
         self._record_eda_tool(target, prepared.eda_tool)
 
     def _execute_elab_only_build(

@@ -513,6 +513,8 @@ class PreparedOrdinaryGroup:
                 test_runs=test_runs,
                 open_log=False,
             )
+        # Measured while the generation existed; stat-ing it now would find it pruned.
+        attempt = replace(attempt, source_bytes=self._attempt.source_bytes)
         derived = PreparedOrdinaryGroup(
             self._execution,
             handle,

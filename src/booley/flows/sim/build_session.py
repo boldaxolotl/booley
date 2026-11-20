@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import logging
 import os
 import re
 import secrets
@@ -73,7 +74,11 @@ class CacheDecision(StrEnum):
     CHANGED_ARTIFACT = "changed artifact"
 
 
+logger = logging.getLogger(__name__)
+
 _GENERATION_DIR = "g"
+# The names ``new_generation`` allocates; Doctor's run views share ``g/``.
+_GENERATION_NAME = re.compile(r"[0-9a-f]{16}")
 # How long one lease attempt blocks before the wait rechecks cancellation.
 _LEASE_SLICE_S = 0.5
 
@@ -658,8 +663,16 @@ def preview_generation_root(handle: TargetHandle, variant: str = "") -> Path:
 class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
     """Hold one Target slot across preparation, selected tests, and artifact capture."""
 
-    def __init__(self, handle: TargetHandle, variant: str = "", *, wait_s: float) -> None:
+    def __init__(
+        self, handle: TargetHandle, variant: str = "", *, wait_s: float, prune: bool = True
+    ) -> None:
+        """Lease one slot; leaving the lease deletes every generation the pointer does not name.
+
+        ``prune=False`` is for a caller that still launches its unpromoted
+        generation in place after the lease.
+        """
         self.handle = handle
+        self._prune = prune
         self._wait_s = wait_s
         self.variant = variant
         self.slot = simulation_build_slot(handle, variant)
@@ -865,6 +878,10 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 raise SimulationBuildSlotError("Simulation build input changed during compilation")
             closure, reason = self._fresh_read_closure(prepared, key)
             if closure is None:
+                if key is not None:
+                    logger.info(
+                        "Simulation build %s is not reusable: %s", prepared.work_root.name, reason
+                    )
                 key = None
             artifacts = _runtime_artifacts(prepared)
             hashes = {
@@ -951,9 +968,37 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             reset_child_lease_fd(token)
         if lock is not None:
             try:
+                if self._prune:
+                    self._prune_generations()
                 release_file_lock(lock)
             finally:
                 lock.close()
+
+    def _prune_generations(self) -> None:
+        """Delete every generation ``current.json`` does not name; log what cannot go."""
+        try:
+            pointer = json.loads((self.slot / "current.json").read_text(encoding="utf-8"))
+            current = pointer["generation"]
+        except (OSError, ValueError, KeyError, TypeError):
+            current = None
+        generations = self.slot / _GENERATION_DIR
+        if generations.is_symlink():
+            logger.warning("not pruning Simulation generations through the link %s", generations)
+            return
+        try:
+            entries = list(generations.iterdir())
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning("cannot list Simulation generations in %s: %s", generations, exc)
+            return
+        for entry in entries:
+            if entry.name == current or not _GENERATION_NAME.fullmatch(entry.name):
+                continue
+            try:
+                shutil.rmtree(entry)
+            except OSError as exc:
+                logger.warning("cannot delete unused Simulation generation %s: %s", entry, exc)
 
 
 __all__ = [

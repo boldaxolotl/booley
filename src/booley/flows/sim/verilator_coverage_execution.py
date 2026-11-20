@@ -8,7 +8,8 @@ import re
 import shlex
 import shutil
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -157,6 +158,23 @@ class VerilatorCoverageExecution:
         self._verify_bundle: Callable[[], None] | None = None
         # Size of the resolved Target's files, labelled on every later command.
         self._source_bytes: int | None = None
+        # Set by ``retaining_build_lease``; ``build`` then enters its slot lease here.
+        self._retained_lease: ExitStack | None = None
+
+    @contextmanager
+    def retaining_build_lease(self) -> Iterator[None]:
+        """Keep each build's slot lease until the context ends, then prune the slot.
+
+        The caller copies the built image inside the context; without it the
+        slot lease ends when ``build`` returns, and the image is launched in
+        place and never pruned.
+        """
+        with ExitStack() as stack:
+            self._retained_lease = stack
+            try:
+                yield
+            finally:
+                self._retained_lease = None
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         """Prepare and compile the collector-selected isolated build variant."""
@@ -184,7 +202,12 @@ class VerilatorCoverageExecution:
         try:
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
-            with self._lease(request.variant.name) as session:
+            retained = self._retained_lease
+            with ExitStack() as local:
+                stack = retained if retained is not None else local
+                session = stack.enter_context(
+                    self._lease(request.variant.name, prune=retained is not None)
+                )
                 candidate = session.new_generation()
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
@@ -275,9 +298,11 @@ class VerilatorCoverageExecution:
                 overlay.cleanup()
         return prepared
 
-    def _lease(self, variant: str) -> SimulationBuildSession:
+    def _lease(self, variant: str, *, prune: bool = False) -> SimulationBuildSession:
         """The variant's Target slot lease, waited for up to the build timeout."""
-        return SimulationBuildSession(self._handle, variant, wait_s=self._build_timeout_s())
+        return SimulationBuildSession(
+            self._handle, variant, wait_s=self._build_timeout_s(), prune=prune
+        )
 
     def _build_timeout_s(self) -> int:
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
