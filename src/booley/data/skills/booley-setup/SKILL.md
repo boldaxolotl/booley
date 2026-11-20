@@ -318,10 +318,13 @@ a delivered field from the request or config. A missing report limits the claim
 without blocking post-gate reporting.
 
 Before scratch cleanup, snapshot the cited reports and required linked artifacts
-in a run-owned evidence subtree under the resolved Booley Directory, recording
-original path, source digest and cited field paths. Cite the retained copies in the
-report and summary, keeping original paths as provenance. Keep the snapshots
-outside the run's scratch root so Step 7 does not remove them.
+into `setup-evidence/<run-id>/` in the resolved Booley Directory (`.booley/` by
+default), where `<run-id>` is the run ID in the plan's §3 Execution ledger,
+recording original path, source digest and cited field paths. The
+Booley Directory's ignore rules exclude `setup-evidence/`, so Git ignores the
+copies. Cite the retained copies in the report and summary, keeping original
+paths as provenance. That directory lies outside the run's scratch root, so
+Step 7 does not remove it.
 
 After each setup-owned Feedback render, Step 6 adds or replaces one Delivered Flow
 results section at its returned path; the final summary quotes the same evidence
@@ -353,7 +356,7 @@ wants you to break these; it doesn't.
   `booley_vcd_dump.sv` trace
   module is **not** one of them: the trace overlay supplies it from Booley's
   `refs/` at run time.) Notes for the next Developer Agent or the user go in
-  `.booley/`, not the repo. Whether `.booley/` **itself** is
+  `.booley/handoffs/`, not the repo. Whether `.booley/` **itself** is
   tracked is the plan's row-16 call: **hidden** (default) keeps it out via the
   parent repo's `.git/info/exclude` — never `.gitignore`, which is tracked and
   would advertise Booley — and versions it in its own inner git repo; **open**
