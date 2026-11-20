@@ -45,13 +45,19 @@ class CostTier(IntEnum):
 
 @dataclass(frozen=True)
 class MetricDeclaration:
-    """One metric a Flow emits."""
+    """One metric a Flow emits.
+
+    ``minimum`` and ``maximum`` are the inclusive valid range of the metric's value; ``None``
+    leaves that side open. A ``metrics.toml`` bound outside the range is a load error.
+    """
 
     name: str
     unit: str
     better: Better
     cost_tier: CostTier
     kind: MetricKind
+    minimum: MetricValue | None = None
+    maximum: MetricValue | None = None
 
 
 @dataclass(frozen=True)

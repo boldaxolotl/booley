@@ -295,12 +295,20 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # after repair in OpenROAD modes.
 _SYNTH_COST_TIER = CostTier.HIGH
 SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
-    MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
-    MetricDeclaration("area_kge", "kGE", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
-    MetricDeclaration("cell_count", "cells", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
-    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
     MetricDeclaration(
-        "critical_path_ps", "ps", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK
+        "area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "area_kge", "kGE", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "cell_count", "cells", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "fmax_mhz", "MHz", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK, minimum=0
+    ),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK, minimum=0
     ),
     MetricDeclaration("wns_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
     MetricDeclaration("whs_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
