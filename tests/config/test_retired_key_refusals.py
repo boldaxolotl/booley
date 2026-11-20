@@ -699,6 +699,9 @@ NOT_A_KEY: dict[str, str] = {
         "conflicting values, not a retired key"
     ),
     "src/booley/eda/cli.py::run": "a deprecated CLI command, not configuration",
+    "src/booley/projects/cli.py::_render_forgotten": (
+        "an advisory purge hint about a container to remove, not a retired key"
+    ),
     "src/booley/flows/endpoint_session.py::finish_execution": "reports a removed checkout",
     "src/booley/flows/mutation/flow.py::<module>": (
         "a report note that duplicate Mutants are removed, not configuration"
