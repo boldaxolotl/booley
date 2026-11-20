@@ -31,7 +31,7 @@ from typing import Any, Literal, cast
 
 from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import is_str_list, require_finite_number_value, require_int
-from booley.flows.metric_declarations import FlowSetting, MetricKind
+from booley.flows.metric_declarations import FlowSetting, MetricDeclaration, MetricKind
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 from booley.flows.test_runs import SeedCount, parse_test_selector
@@ -434,10 +434,31 @@ class _Loader:
                 )
             self.error(header, key, message)
             return
+        declaration = next(d for d in metric_declarations(flow) if d.name == ref.metric)
+        if self._range_error(header, key, declaration, number):
+            return
         assert ref.limit is not None  # a bound key always ends in _max or _min
         out.bounds.append(
             Bound(key, ref.metric, ref.limit, number, ref.prefix, ref.test_run, None)
         )
+
+    def _range_error(
+        self, header: str, key: str, declaration: MetricDeclaration, number: float
+    ) -> bool:
+        """Record an error and return ``True`` when *number* lies outside the metric's range."""
+        low, high = declaration.minimum, declaration.maximum
+        if low is not None and number < low:
+            nearest = low
+        elif high is not None and number > high:
+            nearest = high
+        else:
+            return False
+        if low is not None and high is not None:
+            message = f"{declaration.name} must be within [{low}, {high}], got {number}"
+        else:
+            message = f"{declaration.name} must be at least {low}, got {number}"
+        self.error(header, key, message, f"{toml_key(key)} = {_toml_value(nearest)}")
+        return True
 
     def _parse_reserved(
         self, header: str, flow: str, identity: str, key: str, value: object, out: _Body

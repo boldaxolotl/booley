@@ -77,7 +77,8 @@ Start with no metrics and add them as the design settles. A Project with no
 4. **Numbers settle: turn tracked metrics into bounds.** Choose each bound
     with slack outside the range you saw: a `_max` bound above the highest
     value, a `_min` bound below the lowest. There is no tolerance setting;
-    the slack is the number you write.
+    the slack is the number you write. The slack stops at the metric's valid
+    range (see [Write `metrics.toml`](#write-metricstoml)).
 
 The `booley-setup` skill asks "Enable metrics now or later?" during
 [Project Setup](SETUP.md). `booley init` itself writes only the two default
@@ -94,6 +95,9 @@ Inside a table:
 
 - `<metric>_max` is a bound at most that number, and `<metric>_min` a bound at
   least that number. Bounds are absolute; there is no relative bound.
+- A bound lies within its metric's valid range, edges included. The coverage
+  metrics and `mutation_score` are percentages from 0 to 100. Every other
+  metric is at least 0, except `wns_ns` and `whs_ns`: slack can be negative.
 - A metric reported per clock or per Test takes a prefix, `<clock>.<metric>`
   or `<test>.<metric>`. Booley splits a key on its last dot, and the whole key
   must be quoted: `"clk_i.fmax_mhz_min" = 400`. Unquoted, TOML reads the dot
@@ -165,10 +169,11 @@ Bound values are absolute numbers: `tests_failed_max = 0`, never `"+10%"`. A
 percentage value is an error that says so.
 
 Where Booley can give a corrected line, it prints it as a `write instead:`
-line. Two kinds of key get one: an unquoted prefixed key, and a relative-bound
+line. Three kinds of entry get one: an unquoted prefixed key, a relative-bound
 key name, `<metric>_increase_at_most`, `<metric>_increase_at_least`,
-`<metric>_reduce_at_most` or `<metric>_reduce_at_least`. An unknown metric
-lists the metrics of its Flow instead.
+`<metric>_reduce_at_most` or `<metric>_reduce_at_least`, and a bound outside
+its metric's valid range, which gets the nearest edge of the range. An unknown
+metric lists the metrics of its Flow instead.
 
 ```text
 [sim_core.sim] smoke: a table holds bounds at its top level, and an unquoted dotted key is a nested table; quote the key
@@ -178,6 +183,11 @@ lists the metrics of its Flow instead.
 ```text
 [sim_core.sim] tests_failed_increase_at_most: only absolute bounds exist (`_max` is at most, `_min` is at least)
   write instead: tests_failed_max = <absolute number>
+```
+
+```text
+[sim_core.coverage] line_coverage_min: line_coverage must be within [0, 100], got 100.01
+  write instead: line_coverage_min = 100
 ```
 
 
