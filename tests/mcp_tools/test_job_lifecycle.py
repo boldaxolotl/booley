@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import errno
 import json
 import math
@@ -318,6 +319,37 @@ async def test_cancelled_job_staged_inputs_are_removed_on_recovery(context, monk
         assert not (run / "firmware.hex").is_symlink()
         assert list(run.iterdir()) == []
         assert list(records.glob("*.json")) == []
+    finally:
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_job_projection_temporary_is_removed_on_recovery(context):
+    """A cancelled Job's half-published core projection is swept in the Job's checkout."""
+    from tests.test_core_projection import _project, _temporaries
+
+    root, _core = _project(context.work_dir)
+    job_context = dataclasses.replace(context, explicit_work_dir=root)
+    jobs = JobLifecycle()
+    script = f"""
+        from pathlib import Path
+        import time
+        from booley.fusesoc.core_projection import reconcile_projected_cores
+
+        def block(*_args):
+            Path({str(root / "ready")!r}).write_text("ready")
+            time.sleep({2 * hang_guard_s()})
+
+        Path.replace = block
+        reconcile_projected_cores(Path({str(root)!r}))
+    """
+    run_id = jobs.submit("lint", command(script), JOB_TIMEOUT, context=job_context)
+    try:
+        await wait_until((root / "ready").exists)
+        assert len(_temporaries(root)) == 1
+        assert await jobs.cancel(run_id) == "running"
+        await jobs.poll(run_id)
+        assert _temporaries(root) == []
     finally:
         await stop_jobs(jobs)
 
