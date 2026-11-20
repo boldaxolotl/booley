@@ -852,20 +852,21 @@ def test_unset_auth_bills_the_subscription_over_an_exported_key(
     assert key_env not in plan.child_environment(dict(os.environ))
 
 
-def test_unset_auth_in_a_container_without_a_handoff_bills_the_subscription(
-    clean_env, monkeypatch
+@pytest.mark.parametrize("inside", [False, True], ids=["host", "container"])
+@pytest.mark.parametrize("auth_line", ["", 'auth = "visitor"\n'], ids=["missing", "visitor"])
+def test_missing_or_visitor_auth_outside_a_hand_written_sandbox_bills_the_subscription(
+    clean_env, monkeypatch, inside, auth_line
 ):
-    """A CI runner or hand-made devcontainer has no env hand-off: the host rule applies."""
+    """The host, a CI runner and a hand-made devcontainer have no env hand-off."""
     monkeypatch.setattr(bc, "_agent_settings", None)
-    monkeypatch.setattr(bc, "_inside_container", lambda: True)
+    monkeypatch.setattr(bc, "_inside_container", lambda: inside)
     monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
     monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
     monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-exported-api-key")
-    project = _project_with_agent_section(clean_env, 'default = "claude"\n')
+    project = _project_with_agent_section(clean_env, f'default = "claude"\n{auth_line}')
 
     assert bc.load_agent_settings(project).auth_for("claude") == "subscription"
-    assert bc.missing_auth_policy() == "subscription"
 
 
 def test_auto_is_not_a_credential_policy():

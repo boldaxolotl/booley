@@ -191,10 +191,11 @@ def test_issued_sandbox_refuses_init_without_writing(
         assert not (project / "AGENTS.md").exists()
 
 
+@pytest.mark.parametrize("auth", ["subscription", "visitor"])
 def test_sandbox_init_keeps_existing_agent_settings(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch, auth: str
 ) -> None:
-    original = _set_booley_toml(project, '[agent]\ndefault = "codex"\nauth = "subscription"\n')
+    original = _set_booley_toml(project, f'[agent]\ndefault = "codex"\nauth = "{auth}"\n')
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
 
     assert _booley_init(project, monkeypatch) == 0
