@@ -211,8 +211,9 @@ cores into the repository root. An open footprint uses tracked native cores.
 hybrid, follow the hidden procedure for `.booley/`, but commit only the
 row's named repository-native integration artifacts. Keep the selected native
 `.core` authoritative, and keep a real tracked root `AGENTS.md` whose content
-matches `<booley_dir>/AGENTS.md`; current init/Doctor preserves that durable
-file and generates only the optional `CLAUDE.md` link. Verify the tracked
+matches `<booley_dir>/AGENTS.md`; `booley init` preserves that durable
+file and generates only the optional `CLAUDE.md` link, and Doctor reports a
+missing link. Verify the tracked
 allowlist exactly—hybrid does not authorize committing operational state.
 
 **Hidden (default) — exclude it in the *parent repo's* `.git/info/exclude`.**
@@ -247,7 +248,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   directory.
 - Also confirm the RTL repo's own `.gitignore` picked up **no** Booley lines
   during setup, and that the root `AGENTS.md`/`CLAUDE.md` links are excluded
-  the same way (Step 3; plain `booley doctor` repairs them).
+  the same way (Step 3; `booley init` repairs them).
 
 **Open — commit `.booley/` to the RTL repo.**
 

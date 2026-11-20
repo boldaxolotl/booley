@@ -787,9 +787,7 @@ def _healthy_host_doctor(root: Path, monkeypatch) -> None:
         return host_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
-    result = doctor.run_doctor_result(
-        argparse.Namespace(deep=False), root, read_only=True, record_clean=False
-    )
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), root, record_clean=False)
     assert not [
         (f.check_id, f.subject, f.message)
         for f in result.findings
@@ -1144,9 +1142,7 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     )
     findings = list(reporter.result(0).findings)
     _assert_target_names_conform(findings)
-    findings += readiness.check_stealth_cores(
-        project, mode=readiness.ReadinessMode.RECONCILE
-    ).findings
+    findings += readiness.check_stealth_cores(project).findings
     assert not [
         (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
     ]

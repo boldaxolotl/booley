@@ -822,15 +822,13 @@ def run_doctor_result(
     args: argparse.Namespace,
     project_root: Path,
     *,
-    read_only: bool = False,
     record_clean: bool = True,
     progress: Check | None = None,
 ) -> DoctorRunResult:
     """Run Doctor and return its structured result.
 
-    ``read_only`` is the automatic-health profile: it reports repairable
-    conditions but never rewrites guidance links or moves orphaned tickets.
-    Manual ``booley doctor`` retains its established self-healing behavior.
+    Doctor repairs nothing: manual and automatic runs report the same findings
+    and leave the Project's files as they are.
     """
     _section("Booley Doctor")
     info(f"version: {booley.__version__}")
@@ -850,7 +848,7 @@ def run_doctor_result(
     )
     report_progress = progress or (lambda _message: None)
     report_progress("host/project checks")
-    docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
+    docker_exe, project = _run_project_phase(project_root, reporter)
     flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
     _run_flow_and_core_phase(project, flow_runtime, reporter, report_progress)
@@ -967,8 +965,6 @@ def _observe_sandbox_identity(
 def _run_project_phase(
     project_root: Path,
     reporter: _Reporter,
-    *,
-    read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
     """Run host, config, Git, and leftover-directory checks."""
     _section("Host checks")
@@ -978,7 +974,6 @@ def _run_project_phase(
     loaded = readiness.load_project(project_root)
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
-    mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
     # Upgrade-review records are Common Booley State, read from main.
     common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
     _check_upgrade_review(common_dir, reporter)
@@ -987,7 +982,7 @@ def _run_project_phase(
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
-        reporter.diagnostics(readiness.check_guidance(project, mode=mode))
+        reporter.diagnostics(readiness.check_guidance(project))
         _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_booley_pairing(project_root, reporter)
     _check_common_state_in_worktrees(project_root, reporter)
@@ -1001,7 +996,7 @@ def _run_project_phase(
         _check_worktree_core_shadow_guard(
             project.booley_dir, reporter.pass_, reporter.warn_, project_root=project.project_root
         )
-        reporter.diagnostics(readiness.check_stealth_cores(project, mode=mode))
+        reporter.diagnostics(readiness.check_stealth_cores(project))
     return docker_exe, project
 
 
@@ -1361,6 +1356,15 @@ def _run_runtime_phase(
     _run_project_checks(project, reporter)
 
 
+def _target_checks_blocker(project: ProjectAudit | None) -> str | None:
+    """Why checks that resolve Targets cannot run; resolving one rewrites stale projections."""
+    if project is None:
+        return "project config invalid"
+    if not readiness.stealth_projections_current(project):
+        return "stealth core projections are not current"
+    return None
+
+
 def _run_flow_and_core_phase(
     project: ProjectAudit | None,
     flow_runtime: _DoctorFlowRuntime | None,
@@ -1368,10 +1372,11 @@ def _run_flow_and_core_phase(
     progress: Check,
 ) -> None:
     """Run Flow dry-runs and the authored FuseSoC core audit."""
+    blocker = _target_checks_blocker(project)
     progress("Flow dry-runs")
     _section("Booley Flow setup checks")
-    if project is None:
-        reporter.skip_("Flow dry-runs skipped - project config invalid")
+    if project is None or blocker is not None:
+        reporter.skip_(f"Flow dry-runs skipped - {blocker}")
     else:
         assert flow_runtime is not None
         _run_flow_audit(
@@ -1386,8 +1391,8 @@ def _run_flow_and_core_phase(
         )
     progress("FuseSoC .core audit")
     _section("FuseSoC .core checks")
-    if project is None:
-        reporter.skip_(".core audit skipped - project config invalid")
+    if project is None or blocker is not None:
+        reporter.skip_(f".core audit skipped - {blocker}")
     else:
         _run_core_audit(
             project,
@@ -1409,6 +1414,10 @@ def _run_deep_phase(
     if project is None:
         reporter.skip_("deep checks skipped - project config invalid")
         return doctor_deep.DeepAttemptSummary(("project-config",))
+    blocker = _target_checks_blocker(project)
+    if blocker is not None:
+        reporter.skip_(f"deep checks skipped - {blocker}")
+        return doctor_deep.DeepAttemptSummary(("stealth-projections",))
     assert flow_runtime is not None
     tracker = doctor_deep.DeepCheckTracker()
     image_id, sandbox_version = _observe_sandbox_identity(
