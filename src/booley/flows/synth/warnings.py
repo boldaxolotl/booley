@@ -193,22 +193,33 @@ def _warning_record(
     )
 
 
-def _multiline_records(text: str, starts: re.Pattern[str]) -> list[str]:
-    records: list[str] = []
+def _printed_and_shown(lines: list[str], project_text: Callable[[str], str]) -> tuple[str, str]:
+    """The message as the tool printed it, and as shown with Project paths.
+
+    Each line is renamed before whitespace is collapsed, so a file name with
+    repeated spaces still matches the mapping.
+    """
+    return _normalize_message(lines), _normalize_message([project_text(line) for line in lines])
+
+
+def _multiline_records(
+    text: str, starts: re.Pattern[str], project_text: Callable[[str], str]
+) -> list[tuple[str, str]]:
+    records: list[tuple[str, str]] = []
     current: list[str] = []
     for line in text.splitlines():
         if starts.match(line):
             if current:
-                records.append(_normalize_message(current))
+                records.append(_printed_and_shown(current, project_text))
             current = [line]
         elif current and (line.startswith((" ", "\t")) or not line.strip()):
             if line.strip():
                 current.append(line)
         elif current:
-            records.append(_normalize_message(current))
+            records.append(_printed_and_shown(current, project_text))
             current = []
     if current:
-        records.append(_normalize_message(current))
+        records.append(_printed_and_shown(current, project_text))
     return records
 
 
@@ -246,13 +257,11 @@ def _yosys_records(
     text: str, project_text: Callable[[str], str] = _as_printed
 ) -> list[_WarningRecord]:
     result: list[_WarningRecord] = []
-    for message in _multiline_records(text, _YOSYS_WARNING_RE):
+    for message, shown in _multiline_records(text, _YOSYS_WARNING_RE, project_text):
         tool = "abc" if message.lower().startswith("abc:") else "yosys"
         category = _category(message, None)
         disposition, rationale = _disposition(message, category)
-        result.append(
-            _warning_record(tool, None, category, disposition, project_text(message), rationale)
-        )
+        result.append(_warning_record(tool, None, category, disposition, shown, rationale))
     return [*result, *_located_records(text, project_text)]
 
 
@@ -267,15 +276,15 @@ def _located_records(text: str, project_text: Callable[[str], str]) -> list[_War
         match = _LOCATED_WARNING_RE.match(line)
         if match is None:
             continue
-        message = project_text(_normalize_message(["Warning: " + match.group(3)]))
+        message, shown = _printed_and_shown(["Warning: " + match.group(3)], project_text)
         code_match = _SLANG_CODE_RE.search(message)
         code = code_match.group(1) if code_match else None
         category = _category(message, code)
         if category == "other":
-            result.append(_warning_record("yosys", code, "frontend", "informational", message))
+            result.append(_warning_record("yosys", code, "frontend", "informational", shown))
             continue
         disposition, rationale = _disposition(message, category)
-        result.append(_warning_record("yosys", code, category, disposition, message, rationale))
+        result.append(_warning_record("yosys", code, category, disposition, shown, rationale))
     return result
 
 
@@ -286,14 +295,10 @@ def _openroad_records(text: str, project_text: Callable[[str], str]) -> list[_Wa
         if match is None and not _PLAIN_WARNING_RE.match(line):
             continue
         code = match.group(1).upper() if match and match.group(1) else None
-        message = _normalize_message([line])
+        message, shown = _printed_and_shown([line], project_text)
         category = _category(message, code)
         disposition, rationale = _disposition(message, category)
-        result.append(
-            _warning_record(
-                "openroad", code, category, disposition, project_text(message), rationale
-            )
-        )
+        result.append(_warning_record("openroad", code, category, disposition, shown, rationale))
     return result
 
 
@@ -331,8 +336,8 @@ def _records(
 
 def _sv2v_records(text: str, project_text: Callable[[str], str]) -> list[_WarningRecord]:
     return [
-        _warning_record("sv2v", None, "other", "advisory", project_text(message))
-        for message in _multiline_records(text, _PLAIN_WARNING_RE)
+        _warning_record("sv2v", None, "other", "advisory", shown)
+        for _, shown in _multiline_records(text, _PLAIN_WARNING_RE, project_text)
     ]
 
 

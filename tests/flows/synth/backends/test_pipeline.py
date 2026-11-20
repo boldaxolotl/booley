@@ -740,6 +740,22 @@ class TestBoundaryOutput:
         assert "Source provenance" in outcome.text
         assert str(spec.sources[0]) in outcome.text
 
+    def test_4996_provenance_names_the_project_path_of_the_declaring_file(self, tmp_path: Path):
+        spec = _spec(tmp_path)
+        plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
+        (plan.build_dir / "sv2v_converted.v").write_text(
+            "module dut(input clk);\n  wire bad = ;\nendmodule\n", encoding="utf-8"
+        )
+        (plan.build_dir / "yosys.log").write_text(
+            "ERROR: syntax error at sv2v_converted.v:2\n", encoding="utf-8"
+        )
+        paths = ProjectSourcePaths({str(spec.sources[0]): "rtl/dut.sv"})
+
+        outcome = syn_make.boundary_output(plan, 1, is_stale=_fresh, project_paths=paths)
+
+        assert "Offending module 'dut' is declared in: rtl/dut.sv" in outcome.text
+        assert str(spec.sources[0]) not in outcome.text
+
 
 # ===========================================================================
 # resolve_spec — root-anchored resolution of the parsed spec argv

@@ -107,6 +107,28 @@ def test_4996_warnings_on_two_copies_of_one_project_file_form_one_group() -> Non
     }
 
 
+def test_4996_renaming_a_warning_keeps_its_classification() -> None:
+    # A copy that maps to a Project path whose name reads as a structural phrase.
+    paths = ProjectSourcePaths({"src/a_0/x.sv": "ip/found logic loop in module/x.sv"})
+    sources = {"yosys": "top.v:1: warning: see src/a_0/x.sv\n"}
+
+    warning = parse_synth_diagnostics(sources, paths.project_text).warnings.representatives[0]
+
+    assert "ip/found logic loop in module/x.sv" in warning.message
+    assert (warning.category, warning.disposition) == ("frontend", "informational")
+
+
+def test_4996_file_name_with_repeated_spaces_still_maps() -> None:
+    paths = ProjectSourcePaths(
+        {"src/a_0/a  b.sv": "rtl/first.sv", "src/a_0/a b.sv": "rtl/second.sv"}
+    )
+    sources = {"sv2v": "WARNING: src/a_0/a  b.sv:3: unused\n"}
+
+    warning = parse_synth_diagnostics(sources, paths.project_text).warnings.representatives[0]
+
+    assert warning.message == "WARNING: rtl/first.sv:3: unused"
+
+
 def test_huge_warning_message_is_bounded_and_traceable() -> None:
     instance_list = " ".join(f"u{i}" for i in range(500_000))
     warning = f"[WARNING STA-0349] missing clocks on {instance_list}\n"
