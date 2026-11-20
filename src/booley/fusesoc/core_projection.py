@@ -481,12 +481,20 @@ def sweep_cancelled_publication(booley_dir: Path) -> None:
 
 
 def _remove_recorded_temporary(state: Path) -> None:
-    """Delete the recorded temporary when it is still Booley's, then drop the record."""
+    """Delete the recorded temporary when it is still Booley's, then drop the record.
+
+    The record stays when the file exists but cannot be read or deleted now, so a later
+    sweep retries.
+    """
     try:
         record: dict[str, Any] = json.loads((state / _PENDING).read_text(encoding="utf-8"))
         if _is_recorded_leftover(record):
             Path(record["temporary"]).unlink()
-    except (OSError, ValueError, KeyError, TypeError):
+    except FileNotFoundError:
+        pass  # the temporary is already gone
+    except OSError:
+        return  # a transient obstruction: keep the claim for the next sweep
+    except (ValueError, KeyError, TypeError):
         pass  # an unreadable or foreign record names nothing Booley may delete
     (state / _PENDING).unlink(missing_ok=True)
 
@@ -534,13 +542,17 @@ def _publish_recorded(destination: Path, content: str, state: Path) -> None:
             ) from exc
         try:
             _remove_recorded_temporary(state)
+            if (state / _PENDING).exists():
+                raise CoreProjectionError(
+                    f"a cancelled projection publication left a temporary that cannot be removed: {state / _PENDING}"
+                )
             _replace_recorded(destination, content, state)
         finally:
             release_file_lock(handle)
 
 
 def _replace_recorded(destination: Path, content: str, state: Path) -> None:
-    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}")
+    temporary = destination.absolute().with_name(f".{destination.name}.{secrets.token_hex(8)}")
     _write_record(state, temporary, content, None)
     created = False
     try:
@@ -571,6 +583,7 @@ def _write_projection(destination: Path, content: str, state: Path | None = None
     if state is not None:
         _publish_recorded(destination, content, state)
         return True
+    # No state: the isolated registry lives under the Booley Directory, not the Project Root.
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:

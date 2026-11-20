@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import time
@@ -50,14 +51,14 @@ def _die_publishing(root: Path, trace: Path, *, half_written: bool = False) -> P
     def worker() -> None:
         if half_written:
             real = Path.open
-            half = lambda self, mode="r", *a, **k: (  # noqa: E731
+            half = lambda self, mode="r", *a, **k: (  # noqa: E731 - one-expression stand-in for Path.open in the forked worker
                 _HalfWriter(real(self, mode, *a, **k), lambda: os._exit(_KILLED))
                 if mode == "x"
                 else real(self, mode, *a, **k)
             )
-            setattr(Path, "open", half)  # noqa: B010
+            setattr(Path, "open", half)  # noqa: B010 - patch the stdlib Path in the forked worker
         else:
-            setattr(Path, "replace", lambda *_: os._exit(_KILLED))  # noqa: B010
+            setattr(Path, "replace", lambda *_: os._exit(_KILLED))  # noqa: B010 - patch the stdlib Path in the forked worker
         reconcile_projected_cores(root)
 
     _run_killed(worker, trace)
@@ -434,6 +435,53 @@ def test_unrecorded_file_named_like_a_temporary_is_kept(tmp_path: Path) -> None:
 
 
 @_needs_fork
+def test_relative_project_root_temporary_is_recovered_from_another_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _core = _project(tmp_path)
+    monkeypatch.chdir(root)
+    _die_publishing(Path(), tmp_path / "trace")
+    monkeypatch.chdir(tmp_path)
+
+    core_projection.sweep_cancelled_publication(root / ".booley")
+
+    assert _temporaries(root) == []
+
+
+def test_unremovable_temporary_keeps_its_claim_until_it_can_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _core = _project(tmp_path)
+    leftover = root / f".{projected_core_path(root, _core).name}.0123456789abcdef"
+    leftover.write_text("partial", encoding="utf-8")
+    state = root / ".booley" / "tmp" / "core-projection-publication"
+    state.mkdir(parents=True)
+    (state / "pending.json").write_text(
+        json.dumps({"temporary": str(leftover), "content": "partial content", "created": None}),
+        encoding="utf-8",
+    )
+    real_unlink = Path.unlink
+
+    def busy(self: Path, missing_ok: bool = False) -> None:
+        if self == leftover:
+            raise PermissionError("sharing violation")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", busy)
+        core_projection.sweep_cancelled_publication(root / ".booley")
+        assert leftover.exists()
+        assert (state / "pending.json").exists()
+        with pytest.raises(CoreProjectionError, match="cannot be removed"):
+            reconcile_projected_cores(root)
+
+    reconcile_projected_cores(root)
+
+    assert not leftover.exists()
+    assert not (state / "pending.json").exists()
+
+
+@_needs_fork
 def test_running_publication_is_left_alone(tmp_path: Path) -> None:
     root, _core = _project(tmp_path)
     ready = tmp_path / "ready"
@@ -445,7 +493,7 @@ def test_running_publication_is_left_alone(tmp_path: Path) -> None:
                 ready.write_text("ready", encoding="utf-8")
                 time.sleep(2 * hang_guard_s())
 
-            setattr(Path, "replace", block)  # noqa: B010
+            setattr(Path, "replace", block)  # noqa: B010 - patch the stdlib Path in the forked worker
             reconcile_projected_cores(root)
         finally:
             os._exit(0)
