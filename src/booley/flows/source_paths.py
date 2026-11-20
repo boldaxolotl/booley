@@ -88,7 +88,8 @@ class ProjectSourcePaths:
         """
         root = Path(build_root).resolve()
         by_name = dict(self.by_name)
-        for spelling in (root.as_posix(), os.path.relpath(root, Path(cwd).resolve())):
+        relative = Path(os.path.relpath(root, Path(cwd).resolve())).as_posix()
+        for spelling in (root.as_posix(), relative):
             for name, project_path in self.by_name.items():
                 by_name[_normalized(f"{spelling}/{name}")] = project_path
         return ProjectSourcePaths(by_name)
