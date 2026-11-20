@@ -79,6 +79,19 @@ def test_prepare_project_returns_hook_failure(tmp_path: Path) -> None:
     assert "broken" in result.error
 
 
+@pytest.mark.parametrize("rc", [0, 7], ids=["succeeds", "fails"])
+def test_captured_hook_output_that_is_not_utf8_does_not_abort(tmp_path: Path, rc: int) -> None:
+    root, project = _project(tmp_path)
+    (project / "hooks" / "post-setup.sh").write_bytes(
+        f"#!/bin/sh\nprintf '\\377' >&2\nexit {rc}\n".encode()
+    )
+
+    result = prepare_project(root, root, slug="demo", sim_flow_enabled=True)
+
+    assert result.ok is (rc == 0)
+    assert rc == 0 or f"rc={rc}" in result.error
+
+
 #: A Booley command in miniature: report where Booley would put slots and handles.
 _REPORT_ROOTS = """\
 import json, os, sys

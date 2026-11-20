@@ -310,8 +310,14 @@ used and the report says "its rules differ". See [Stealth Mode](STEALTH.md).
 ## Limits
 
 - Git LFS files and files with filter attributes cannot be measured.
-- The measurement checkout has no `.git`, so a generator or Pre-Sim Command
-  that calls `git` fails there.
+- The measurement checkout has no `.git`, so a generator, Pre-Sim Command or
+  post-setup hook that calls `git` fails there.
+- The checkout holds only the commit's tracked files. An input your Project
+  builds and Git ignores reaches it through the post-setup hook (see
+  [Worktree setup hooks](CONFIG.md#worktree-setup-hooks-booleyhooks)), which
+  `booley measure` runs in the checkout. Its output goes to `post-setup.log` in
+  the `measure` Job's directory; if the hook fails, the measurement stops with
+  exit status 2 and names the hook and that log.
 - Local results are advisory. The measurement store is writable from the
   Sandbox, and a deliberate read of the live tree by absolute path is
   possible. A run in CI is the trusted one.

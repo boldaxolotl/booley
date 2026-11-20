@@ -74,7 +74,8 @@ Two project-side extension points:
   extensionless `post-setup` runs in each new sandboxed worktree that
   `booley worktree new` creates, and a failure removes the
   worktree again; make it idempotent. It may install/build dependencies, copy
-  files, create symlinks, or prepare generated inputs.
+  files, create symlinks, or prepare generated inputs. `booley measure` also
+  runs it in its Git-less checkout of a commit, so it must not call `git`.
 - **Project image** — to add open-source tools and project dependencies that
   must exist in every Sandbox, build an image extending `booley-sandbox` from
   `.booley/docker/Dockerfile` and point `[sandbox].image` at it.

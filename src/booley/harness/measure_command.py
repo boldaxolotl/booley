@@ -1,7 +1,8 @@
 """``booley measure [<sha>]``: measure one commit in a clean checkout and store the run (#3953).
 
 The command composes the measurement building blocks: it exports the commit, reads the
-checkout's own ``metrics.toml``, preflights and runs one child Flow per rules table inside
+checkout's own ``metrics.toml``, runs the Project's post-setup hook there (an input the Project
+builds is not in the export), preflights and runs one child Flow per rules table inside
 the admission queue (:mod:`booley.harness.measure_children`), stores the Measurement Run in
 the Main Booley Directory, writes the Markdown report and prints the report. A commit that is
 already Measured is not measured again: its stored run is shown, unless ``--again`` or
@@ -44,7 +45,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Any, NoReturn, TypeVar
 
-from booley.harness.checkout_flow import CheckoutFlowError
+from booley.harness.checkout_flow import CheckoutFlowError, run_post_setup_hook
 from booley.harness.measure_children import (
     ChildrenOutcome,
     PreparedChild,
@@ -265,8 +266,22 @@ class _Preflight:
     prepared: list[tuple[TableRules, PreparedChild]]
 
 
-def _load_rules(checkout: Path) -> MetricsRules:
-    """The checkout's rules; a load error or no table at all is a refusal."""
+def _run_hook(checkout: Path, main: Path, run_id: str) -> None:
+    """Run the Project's post-setup hook in *checkout*; a failure is a refusal."""
+    try:
+        run_post_setup_hook(
+            checkout, main, slug=run_id, log=standalone_log_root(main) / run_id / "post-setup.log"
+        )
+    except ValueError as exc:  # includes CheckoutFlowError and FlowConfigError
+        raise MeasureRefusedError(str(exc)) from exc
+
+
+def _load_rules(checkout: Path, main: Path, run_id: str) -> MetricsRules:
+    """The checkout's rules; a load error or no table at all is a refusal.
+
+    The hook runs first: it may build a core or a file the rules read.
+    """
+    _run_hook(checkout, main, run_id)
     try:
         rules = load_metrics_rules(checkout)
     except MetricsFileError as exc:
@@ -456,7 +471,7 @@ def _measure_commit(
             raise MeasureRefusedError(f"the commit cannot be exported: {exc}") from exc
         _print_drift(project_root, commit, export.drift)
         keyed = _key_of(project_root, commit, export.paired_commit)
-        rules = _load_rules(checkout)
+        rules = _load_rules(checkout, main, run_id)
         preflight = _preflight(checkout, main, run_id, rules, request.target)
         rules = preflight.rules
         signals.interruptible = False  # the children run: a signal now cancels, never aborts
