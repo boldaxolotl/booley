@@ -70,12 +70,11 @@ each Flow supports.
 
 ### An Agentic Development Environment
 
-An IDE is built around a person editing code; directing agents with separate
-terminals, logs, and a waveform viewer leaves you switching among them. An
-ADE is built around a person directing agents that edit code. Booley is the
-second kind, for hardware: the Developer Agent writes RTL and testbenches and
-runs the EDA tools, and you set the direction, answer its questions, and judge
-the evidence.
+An IDE assumes you write the code, with an agent assisting at most. An ADE
+assumes agents write the code while you direct them and check their work.
+Booley is an ADE for hardware: the Developer Agent writes RTL and testbenches
+and runs the EDA tools, and you set the direction, answer its questions, and
+judge the evidence.
 
 Booley is not only infrastructure for the Developer Agent. It is workflow
 infrastructure for the hardware engineer: Developer Agent sessions, editor, EDA
@@ -107,11 +106,19 @@ direction is Booley as a **standalone ADE**.
 Teams settle on different Agent CLIs, and per-token API billing adds up in
 a token-hungry workflow like RTL development. Booley works with either
 Agent CLI: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic).
-`booley.toml [agent] default` picks the one the Developer Agent runs on, and
-`[agent] clis` can list both so a Specialist runs on the other CLI when its
-model needs it ([details](CONFIG.md#agent-clis-agent)). Each platform brings
-its own agentic runtime, MCP tool integration, and execution model, which
-Booley drives through a unified interface.
+`booley.toml [agent] default` picks the one the Developer Agent runs on
+([details](CONFIG.md#agent-clis-agent)). Each platform brings its own agentic
+runtime, MCP tool integration, and execution model, which Booley drives
+through a unified interface.
+
+Supporting both also lets one vendor's model check the other's work. A model
+reviewing code that the same model wrote tends to share its blind spots; a
+model from another vendor misses different things, so it catches more of what
+the author missed. List both CLIs in `[agent] clis` and name the other
+vendor's model for a Specialist in `[models]`: with the Developer Agent on
+Claude Code, one line runs the Reviewer on Codex
+([details](CONFIG.md#model-selection-models)). Nothing else changes. You ask
+for a review the same way, and Booley starts the Reviewer on the other CLI.
 
 Both backends support **subscription-based auth** alongside API billing: a
 Claude Pro/Max subscription (Claude Code) or a ChatGPT/Codex subscription
