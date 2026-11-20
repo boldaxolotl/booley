@@ -200,6 +200,7 @@ SOURCE_TIED_PATTERNS = {
     ".runtime/prompts/",
     ".runtime/bwave/",
     "tmp/fusesoc-isolated-cores/",
+    "tmp/core-projection-publication/",
 }
 
 

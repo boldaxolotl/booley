@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import time
 from pathlib import Path
 
 import pytest
 
+from booley.fusesoc import core_projection
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
     authoritative_cores,
@@ -21,9 +25,44 @@ from booley.fusesoc.core_projection import (
 )
 from booley.fusesoc.fusesoc_registry import read_core
 from tests.conftest import symlink_or_skip
+from tests.flows.sim.test_simulation_record_crash_matrix import (
+    _KILLED,
+    _HalfWriter,
+    _needs_fork,
+    _run_killed,
+)
 from tests.fusesoc_test_support import INHERITED_CORE_TEXT, symlinked_booley_dir
+from tests.time_budget import hang_guard_s
 
 _CORE = "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n"
+
+
+_PENDING = ".booley/tmp/core-projection-publication/pending.json"
+
+
+def _temporaries(root: Path) -> list[Path]:
+    return list(root.glob("..booley-projected-*.core.*"))
+
+
+def _die_publishing(root: Path, trace: Path, *, half_written: bool = False) -> Path:
+    """Publish in a forked worker that dies like a SIGKILL; return what it left behind."""
+
+    def worker() -> None:
+        if half_written:
+            real = Path.open
+            half = lambda self, mode="r", *a, **k: (  # noqa: E731
+                _HalfWriter(real(self, mode, *a, **k), lambda: os._exit(_KILLED))
+                if mode == "x"
+                else real(self, mode, *a, **k)
+            )
+            setattr(Path, "open", half)  # noqa: B010
+        else:
+            setattr(Path, "replace", lambda *_: os._exit(_KILLED))  # noqa: B010
+        reconcile_projected_cores(root)
+
+    _run_killed(worker, trace)
+    (leftover,) = _temporaries(root)
+    return leftover
 
 
 def _project(tmp_path: Path, *, stealth: str = "true") -> tuple[Path, Path]:
@@ -75,6 +114,8 @@ def test_reconcile_writes_root_core_and_is_idempotent(tmp_path: Path) -> None:
         "name: booley::demo:0",
     ]
     assert projection_issues(root) == ()
+    assert sorted(path.name for path in root.iterdir()) == [".booley", destination.name]
+    assert not (root / _PENDING).exists()
 
 
 def test_reconcile_refreshes_and_removes_owned_stale_projection(tmp_path: Path) -> None:
@@ -348,3 +389,76 @@ def test_registry_issues_describe_what_reconcile_would_write_without_writing(
     assert f"missing {owned.name}" in registry_issues(root)
     owned.write_text("user data\n", encoding="utf-8")
     assert f"foreign file blocks {owned.name}" in registry_issues(root)
+
+
+@_needs_fork
+@pytest.mark.parametrize(
+    "case", ["next-run", "recovery", "half-written", "modified", "truncated", "replaced"]
+)
+def test_killed_publication_temporary_is_swept_or_kept(tmp_path: Path, case: str) -> None:
+    root, _core = _project(tmp_path)
+    leftover = _die_publishing(root, tmp_path / "trace", half_written=case == "half-written")
+    mine = leftover.read_bytes()
+    if case == "modified":
+        mine += b"# mine\n"
+    elif case == "truncated":
+        mine = mine[: len(mine) // 2]
+    elif case == "replaced":
+        os.link(leftover, tmp_path / "old")
+        leftover.unlink()
+    kept = case in {"modified", "truncated", "replaced"}
+    if kept:
+        leftover.write_bytes(mine)
+
+    if case in {"recovery", "truncated", "replaced"}:
+        core_projection.sweep_cancelled_publication(root / ".booley")
+    else:
+        reconcile_projected_cores(root)
+
+    assert not (root / _PENDING).exists()
+    assert [path.read_bytes() for path in _temporaries(root)] == ([mine] if kept else [])
+
+
+def test_unrecorded_file_named_like_a_temporary_is_kept(tmp_path: Path) -> None:
+    root, core = _project(tmp_path)
+    destination = projected_core_path(root, core)
+    reconcile_projected_cores(root)
+    user = root / f".{destination.name}.0123456789abcdef"
+    user.write_bytes(destination.read_bytes())
+    destination.unlink()
+
+    reconcile_projected_cores(root)
+    core_projection.sweep_cancelled_publication(root / ".booley")
+
+    assert user.read_bytes() == destination.read_bytes()
+
+
+@_needs_fork
+def test_running_publication_is_left_alone(tmp_path: Path) -> None:
+    root, _core = _project(tmp_path)
+    ready = tmp_path / "ready"
+    pid = os.fork()
+    if pid == 0:
+        try:
+
+            def block(*_args: object) -> None:
+                ready.write_text("ready", encoding="utf-8")
+                time.sleep(2 * hang_guard_s())
+
+            setattr(Path, "replace", block)  # noqa: B010
+            reconcile_projected_cores(root)
+        finally:
+            os._exit(0)
+    try:
+        deadline = time.monotonic() + hang_guard_s()
+        while not ready.exists():
+            assert time.monotonic() < deadline, "the publishing worker never started"
+            time.sleep(0.02)
+        core_projection.sweep_cancelled_publication(root / ".booley")
+        assert len(_temporaries(root)) == 1
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+
+    core_projection.sweep_cancelled_publication(root / ".booley")
+    assert _temporaries(root) == []

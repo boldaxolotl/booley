@@ -8,8 +8,11 @@ directly instead of reaching them through a farm of resolution symlinks.
 
 from __future__ import annotations
 
+import json
 import os
+import secrets
 import shutil
+import stat
 import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
@@ -22,12 +25,20 @@ import yaml
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
 from booley.core.booley_dir_links import resolve_through_entry
+from booley.core.file_lock import (
+    LockTimeoutError,
+    release_file_lock,
+    try_file_lock,
+    wait_for_file_lock,
+)
 from booley.targets.domain import FuseSocError
 
 PROJECTED_CORE_PREFIX = ".booley-projected-"
 PROJECTED_CORE_GLOB = f"{PROJECTED_CORE_PREFIX}*.core"
 _ISOLATED_CORE_PREFIX = "booley-isolated-"
 _MARKER_PREFIX = "# Booley stealth core projection: "
+_PUBLICATION_LOCK_TIMEOUT_S = 30.0
+_PENDING = "pending.json"
 
 
 class CoreProjectionError(RuntimeError):
@@ -144,8 +155,10 @@ def reconcile_projected_cores(project_root: Path | str) -> ProjectionResult:
     root = Path(project_root)
     expected = _expected_projections(root) if projection_enabled(root) else {}
     written: list[Path] = []
+    sweep_cancelled_publication(in_checkout_booley_dir(root))
+    state = _publication_state(in_checkout_booley_dir(root))
     for destination, content in expected.items():
-        if _write_projection(destination, content):
+        if _write_projection(destination, content, state):
             written.append(destination)
 
     removed: list[Path] = []
@@ -449,7 +462,105 @@ def _absolute_fileset_path(raw: str, root: Path, core_file: Path) -> str:
     return absolute.as_posix()
 
 
-def _write_projection(destination: Path, content: str) -> bool:
+def _publication_state(booley_dir: Path) -> Path:
+    return booley_dir / "tmp" / "core-projection-publication"
+
+
+def sweep_cancelled_publication(booley_dir: Path) -> None:
+    """Remove the temporary a killed projection publication left in the Project Root.
+
+    Nothing is removed while a publication holds the state lock, and only the file
+    the publication recorded is removed, while it is still what Booley wrote.
+    """
+    state = _publication_state(booley_dir)
+    if not (state / _PENDING).exists():
+        return
+    with (state / "lock").open("a+", encoding="utf-8") as handle, try_file_lock(handle) as held:
+        if held:
+            _remove_recorded_temporary(state)
+
+
+def _remove_recorded_temporary(state: Path) -> None:
+    """Delete the recorded temporary when it is still Booley's, then drop the record."""
+    try:
+        record: dict[str, Any] = json.loads((state / _PENDING).read_text(encoding="utf-8"))
+        if _is_recorded_leftover(record):
+            Path(record["temporary"]).unlink()
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # an unreadable or foreign record names nothing Booley may delete
+    (state / _PENDING).unlink(missing_ok=True)
+
+
+def _is_recorded_leftover(record: dict[str, Any]) -> bool:
+    """Whether the recorded temporary is the file Booley created, with only its own bytes.
+
+    A completely written temporary must be the recorded object with the exact content.
+    A record made before the write finished cannot name the object, so a file holding
+    only leading bytes of the content (a kill inside the write) counts.
+    """
+    temporary = Path(record["temporary"])
+    content = record["content"].encode("utf-8")
+    found = temporary.lstat()
+    if not (
+        temporary.is_absolute()
+        and temporary.name.startswith(f".{PROJECTED_CORE_PREFIX}")
+        and stat.S_ISREG(found.st_mode)
+        and found.st_size <= len(content)
+    ):
+        return False
+    held = temporary.read_bytes()
+    created = record["created"]
+    if created is None:
+        return content.startswith(held)
+    return [found.st_dev, found.st_ino] == created and held == content
+
+
+def _write_record(state: Path, temporary: Path, content: str, created: list[int] | None) -> None:
+    staged = state / f"{_PENDING}.new"
+    document = {"temporary": str(temporary), "content": content, "created": created}
+    staged.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+    os.replace(staged, state / _PENDING)  # noqa: PTH105 - not the publication's Path.replace
+
+
+def _publish_recorded(destination: Path, content: str, state: Path) -> None:
+    """Replace *destination* with *content*, recording the temporary so a kill leaves a claim."""
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / "lock").open("a+", encoding="utf-8") as handle:
+        try:
+            wait_for_file_lock(handle, timeout_s=_PUBLICATION_LOCK_TIMEOUT_S)
+        except LockTimeoutError as exc:
+            raise CoreProjectionError(
+                f"another core projection publication holds {state / 'lock'}"
+            ) from exc
+        try:
+            _remove_recorded_temporary(state)
+            _replace_recorded(destination, content, state)
+        finally:
+            release_file_lock(handle)
+
+
+def _replace_recorded(destination: Path, content: str, state: Path) -> None:
+    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}")
+    _write_record(state, temporary, content, None)
+    created = False
+    try:
+        with temporary.open("x", encoding="utf-8", newline="") as stream:
+            created = True
+            stream.write(content)
+            stream.flush()
+            identity = os.fstat(stream.fileno())
+        _write_record(state, temporary, content, [identity.st_dev, identity.st_ino])
+        temporary.chmod(0o644)
+        temporary.replace(destination)
+    except BaseException:
+        if created:
+            temporary.unlink(missing_ok=True)
+        (state / _PENDING).unlink(missing_ok=True)
+        raise
+    (state / _PENDING).unlink()
+
+
+def _write_projection(destination: Path, content: str, state: Path | None = None) -> bool:
     if destination.exists():
         if not _is_owned_projection(destination):
             raise CoreProjectionError(
@@ -457,6 +568,9 @@ def _write_projection(destination: Path, content: str) -> bool:
             )
         if destination.read_text(encoding="utf-8") == content:
             return False
+    if state is not None:
+        _publish_recorded(destination, content, state)
+        return True
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
