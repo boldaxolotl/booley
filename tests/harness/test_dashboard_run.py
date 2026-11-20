@@ -652,7 +652,7 @@ async def test_wizard_shows_why_worktrees_are_unavailable(tmp_path, monkeypatch)
 
 
 def job_view(run_id: str, started: str, state: str = "running") -> JobView:
-    status = "running" if state == "running" else "done"
+    status = "done" if state == "completed" else "running"
     record = job_records.JobRecord(run_id, "sim", started, 60, status=status)
     return JobView(Path("/jobs"), record, state)
 
@@ -1337,7 +1337,7 @@ async def test_review_shows_a_timeout_problem_and_still_allows_submit(checkout):
 
 
 def running_job(handle: str, work_dir: Path, state: str = "running") -> JobView:
-    status = "running" if state == "running" else "done"
+    status = "done" if state == "completed" else "running"
     record = job_records.JobRecord(
         f"run-{handle}", "sim", STAMP, 60, status=status, work_dir=str(work_dir)
     )
@@ -1349,7 +1349,9 @@ async def test_review_warns_about_sessions_running_jobs_and_changes(checkout, tm
     (checkout / "notes.txt").write_bytes(b"draft\n")  # one untracked file
     current = replace(
         world(session("S3", checkout)),
-        jobs=JobSnapshot((running_job("J-SIM25", checkout), running_job("J-SYN34", checkout))),
+        jobs=JobSnapshot(
+            (running_job("J-SIM25", checkout), running_job("J-SYN34", checkout, "queued"))
+        ),
     )
     app = make_app(checkout, real_launcher(tmp_path / "booley"), current)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1358,7 +1360,7 @@ async def test_review_warns_about_sessions_running_jobs_and_changes(checkout, tm
         assert shown(wizard, "#run-review").splitlines() == [
             ADMITTED_BY_MEMORY,
             "Warning: session S3 Interactive is connected to this worktree",
-            "Warning: 2 running Jobs in this worktree (J-SIM25, J-SYN34)",
+            "Warning: 2 unfinished Jobs in this worktree (J-SIM25, J-SYN34)",
             "Warning: 1 uncommitted change in this worktree",
         ]
         await pilot.press("enter")  # warnings do not block
@@ -1401,7 +1403,11 @@ async def test_review_shows_no_warnings_for_a_quiet_worktree(checkout, tmp_path)
             True,
             "Cannot check uncommitted changes: [project].dir is retired",
         ),
-        ({}, False, "Cannot check sessions and running Jobs: the Dashboard has not read them yet"),
+        (
+            {},
+            False,
+            "Cannot check sessions and unfinished Jobs: the Dashboard has not read them yet",
+        ),
     ],
     ids=["git-fails", "retired-layout", "snapshot-not-read"],
 )
