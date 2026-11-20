@@ -236,7 +236,7 @@ if route:
     for name in ("utilization_placed", "timing_summary_routed", "drc_routed"):
         (impl / f"top_{name}.rpt").write_text(name)
     (impl / "top.bit").write_bytes(b"bit")
-print("routed")
+print(sys.argv[4])
 sys.exit(returncode)
 """
 
@@ -265,12 +265,19 @@ def vivado(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
 
     def run_command(work_root, _work_dir):
         route = state.get("route", state["returncode"] == 0)
+        output = "routed"
+        if "output" in state:
+            build = Path(state["recipe"].resolved.build_root).resolve()
+            output = state["output"].format(
+                build=build.as_posix(), rel=os.path.relpath(build, work_root)
+            )
         return [
             sys.executable,
             str(script),
             str(work_root),
             str(state["returncode"]),
             str(int(route)),
+            output,
         ]
 
     monkeypatch.setattr(fpga_edam, "build_fpga_edam", build)
@@ -969,13 +976,8 @@ def test_unlocatable_top_module_does_not_block_the_run(
     assert vivado["recipe"].top == "elsewhere"
 
 
-def test_real_fusesoc_fpga_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vivado: dict):
-    """End-to-end: a real `fusesoc run --setup` leaves a resolved vivado EDAM.
-
-    Proves the RTL sources/top/typed-params resolve, the build dir is
-    relocatable, and fpga_impl feeds the resolved filelist + include dir +
-    defines into the vivado EDAM builder.
-    """
+def _real_fusesoc_fpga_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Run the Flow on a project whose Target a real `fusesoc run --setup` resolves."""
     pytest.importorskip("fusesoc")
     import shutil
 
@@ -1005,6 +1007,17 @@ def test_real_fusesoc_fpga_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     with patch.object(fusesoc_registry, "resolve_target_handle", side_effect=resolve):
         outcome = _fpga_flow(project, targets="fpga").execute_prepared().outcome
+    return project, outcome
+
+
+def test_real_fusesoc_fpga_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vivado: dict):
+    """End-to-end: a real `fusesoc run --setup` leaves a resolved vivado EDAM.
+
+    Proves the RTL sources/top/typed-params resolve, the build dir is
+    relocatable, and fpga_impl feeds the resolved filelist + include dir +
+    defines into the vivado EDAM builder.
+    """
+    project, outcome = _real_fusesoc_fpga_outcome(tmp_path, monkeypatch)
 
     assert outcome.exit_code == EXIT_SUCCESS
     recipe = vivado["recipe"]
@@ -1025,6 +1038,40 @@ def test_real_fusesoc_fpga_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     edam_text = edam.read_text(encoding="utf-8")
     assert str(project) not in edam_text
     assert project.as_posix() not in edam_text
+
+
+def test_vivado_failure_text_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vivado: dict
+) -> None:
+    """A Vivado error names a source or constraint file by Project path in each spelling."""
+    vivado["returncode"] = 1
+    vivado["output"] = "\n".join(
+        (
+            "# read_verilog -sv {{{rel}/src/fpga_demo_0/rtl/dut.sv}}",
+            "ERROR: [Synth 8-439] module 'x' not found [{build}/src/fpga_demo_0/rtl/dut.sv:3]",
+            "ERROR: [Common 17-55] bad object [{build}/src/fpga_demo_0/constraints/timing.xdc:2]",
+            "ERROR: [Synth 8-439] module 'gen' not found [{build}/src/fpga_demo_0/rtl/generated.sv:1]",
+            "ERROR: [Common 17-55] bad object [/opt/ip/pins.xdc:2]",
+        )
+    )
+    project, _ = _real_fusesoc_fpga_outcome(tmp_path, monkeypatch)
+
+    report = json.loads((project / "reports" / "fpga_fpga.json").read_text(encoding="utf-8"))
+    assert report["infra_error"] == (
+        "Vivado did not reach route_design: "
+        "ERROR: [Synth 8-439] module 'x' not found [rtl/dut.sv:3]"
+    )
+    tail = report["metrics"]["failure_output"].split("Log tail:\n", 1)[1].splitlines()
+    build = Path(vivado["recipe"].resolved.build_root).resolve().as_posix()
+    assert tail == [
+        "# read_verilog -sv {rtl/dut.sv}",
+        "ERROR: [Synth 8-439] module 'x' not found [rtl/dut.sv:3]",
+        "ERROR: [Common 17-55] bad object [constraints/timing.xdc:2]",
+        f"ERROR: [Synth 8-439] module 'gen' not found [{build}/src/fpga_demo_0/rtl/generated.sv:1]",
+        "ERROR: [Common 17-55] bad object [/opt/ip/pins.xdc:2]",
+    ]
+    log = (project / report["artifacts"]["log"]).read_text(encoding="utf-8")
+    assert f"[{build}/src/fpga_demo_0/rtl/dut.sv:3]" in log
 
 
 def test_failed_fusesoc_setup_is_recorded_as_fpga_prepare(

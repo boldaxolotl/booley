@@ -67,6 +67,7 @@ from booley.flows.result_table import (
     note_line,
     status_cell,
 )
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.target_parameters import vlogparam_specs
 from booley.flows.terminal_progress import ProgressText
 from booley.flows.tool_runs import setup_runner
@@ -142,6 +143,7 @@ class _PreparedFpgaCommand:
     run_evidence: dict[str, Any] = field(default_factory=dict)
     ppa_profile: VivadoProfile = VIVADO_PROFILES["balanced"]
     console_logs: tuple[Path, ...] = ()
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
     @property
     def kill_logs(self) -> tuple[Path, ...]:
@@ -534,6 +536,9 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             recipe_fingerprint=recipe.recipe_fingerprint,
             run_evidence=dispatch_evidence.as_dict(),
             ppa_profile=recipe.ppa_profile,
+            project_paths=ProjectSourcePaths.for_target(
+                self._target_handle(target), recipe.resolved
+            ).spelled_from(recipe.resolved.build_root, work_root),
         )
 
     def _fpga_recipe_for_execution(self, target: str) -> ResolvedFpgaRecipe:
@@ -729,7 +734,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             metrics.infra_error = completion_error
         if result.timed_out:
             metrics.timed_out = True
-        self._apply_vivado_failure(metrics, result, report_text, log_text, stderr_text)
+        self._report_vivado_failure(metrics, result, report_text, prepared.project_paths)
         # Where this run's artifacts live, for the reader to list.
         metrics.dirs = self._artifact_dirs(work_root)
         # Persist the combined run log (route reports + make log/stderr) on pass
@@ -781,6 +786,18 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             metrics.infra_error = (
                 report_error or "Vivado required reports lack usable utilization/timing evidence"
             )
+
+    def _report_vivado_failure(
+        self,
+        metrics: FpgaMetrics,
+        result: SubprocessResult,
+        evidence: str,
+        project_paths: ProjectSourcePaths,
+    ) -> None:
+        """Classify a failed Vivado run, then name Project paths in the text it reports."""
+        self._apply_vivado_failure(metrics, result, evidence, result.stdout, result.stderr)
+        metrics.infra_error = project_paths.project_text(metrics.infra_error)
+        metrics.failure_output = project_paths.project_text(metrics.failure_output)
 
     def _apply_vivado_failure(
         self,
