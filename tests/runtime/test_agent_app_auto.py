@@ -374,9 +374,11 @@ def test_doctor_audits_every_auto_allowed_cli(sandbox, monkeypatch, capsys):
     # One credential line per allowed CLI, not only the default's.
     assert any(m.startswith("Claude Code auth:") for m in messages)
     assert any(m.startswith("Codex auth:") for m in messages)
-    # The auth pin audits the Project's own CLI (the default), never the other allowed one.
-    pins = [f.subject for f in findings if f.check_id == "agent.credential-policy"]
-    assert pins == ["claude"]
+    # A missing auth is the visitor mode in this hand-written Sandbox: nothing to record.
+    assert [f.subject for f in findings if f.check_id == "agent.credential-policy"] == []
+    # A retired value still fails, for the Project's own CLI (the default) only.
+    retired = _doctor_findings(SimpleNamespace(booley_toml={"agent": {"auth": "auto"}}))
+    assert [f.subject for f in retired if f.check_id == "agent.credential-policy"] == ["claude"]
 
 
 def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):
