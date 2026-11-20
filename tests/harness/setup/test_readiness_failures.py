@@ -106,8 +106,12 @@ def test_stealth_inspection_reports_stale_projection_without_creating_it(tmp_pat
     assert project is not None
     first = readiness.check_stealth_cores(project)
     failures = [f.message for f in first.findings if f.severity is Severity.FAIL]
-    assert any("projections are not current" in message for message in failures)
-    assert any("not excluded from host git status" in message for message in failures)
+    assert [m for m in failures if "stealth core projections" in m] == [
+        "stealth core projections are not excluded from host git status"
+    ]
+    assert [f.check_id for f in first.findings if f.severity is Severity.WARN] == [
+        "stealth.projections-not-current"
+    ]
     projected = tmp_path / ".booley-projected-hidden.core"
     assert not projected.exists()
     assert readiness.check_stealth_cores(project) == first

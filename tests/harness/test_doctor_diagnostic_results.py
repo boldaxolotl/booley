@@ -417,7 +417,8 @@ def test_manual_and_automatic_doctor_agree_and_write_no_project_file(tmp_path, m
     assert automatic is not None
     graded = [f for f in manual.findings if f.severity in {"warn", "fail"}]
     links = next(f for f in graded if f.check_id == "guidance.links-unhealthy")
-    stale = next(f for f in graded if "projections are not current" in f.message)
+    stale = next((f for f in graded if f.check_id == "stealth.projections-not-current"), None)
+    assert stale is not None
     assert "booley init" in links.fix
     assert "booley init" in stale.fix
     assert [

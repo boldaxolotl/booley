@@ -201,7 +201,7 @@ def inspection_blocker(worktree: Path) -> str:
         return ""
     return (
         "core projections need a refresh (any Booley Flow run in this worktree refreshes them): "
-        + ", ".join(issues)
+        + ", ".join(map(str, issues))
     )
 
 
