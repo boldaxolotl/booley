@@ -3,8 +3,9 @@
 On POSIX with the bwave binary, a literal relative ``.vcd`` entry inside the run
 directory becomes a named pipe before the simulator starts. A ``bwave build``
 process reads it while the test runs, so the raw VCD never lands on disk. Any
-entry that cannot stream keeps the post-run conversion path untouched. Every
-launch first removes a pipe a killed run left behind at such an entry.
+entry that cannot stream keeps the post-run conversion path untouched. The
+Booley Directory's ownership record names each pipe, so a sweep removes what a
+killed run left behind.
 """
 
 from __future__ import annotations

@@ -435,6 +435,52 @@ def test_interrupted_sweep_keeps_the_pipe_recorded(tmp_path):
 
 
 @_needs_kill
+def test_unremovable_staged_pipe_stays_recorded_for_the_next_sweep(tmp_path, monkeypatch):
+    """A pipe whose unlink fails keeps its record, so a later sweep still removes it."""
+    _killed_stream(tmp_path, before_confirmation=True)
+    run = tmp_path / "run"
+    real_unlink = Path.unlink
+
+    def refuse(self: Path, missing_ok: bool = False) -> None:
+        if self.name.endswith(".booley-pipe"):
+            raise PermissionError("run directory is read-only")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", refuse)
+        sweep_cancelled_run_inputs(tmp_path / ".booley")
+    assert len(list(run.iterdir())) == 1
+    assert len(_records(tmp_path)) == 1
+
+    sweep_cancelled_run_inputs(tmp_path / ".booley")
+    assert not list(run.iterdir())
+    assert not _records(tmp_path)
+
+
+def test_failed_converter_start_leaves_no_pipe_and_no_descriptor(tmp_path, monkeypatch):
+    """A failure after the pipe exists removes it and closes what was opened."""
+    monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: "/bin/true")
+    real_open, opened = os.open, []
+
+    def open_once(path: str, flags: int, *args: int) -> int:
+        if opened:
+            raise OSError("too many open files")
+        opened.append(real_open(path, flags, *args))
+        return opened[0]
+
+    monkeypatch.setattr(os, "open", open_once)
+    fifo = tmp_path / ".staged.booley-pipe"
+    with pytest.raises(OSError, match="too many open files"):
+        waveform_store.start_streaming_conversion(
+            fifo, tmp_path / "t.fst", stderr_path=tmp_path / "t.stderr", replace_existing=False
+        )
+
+    assert not fifo.exists()
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(opened[0])
+
+
+@_needs_kill
 def test_live_runs_pipe_survives_a_sweep(tmp_path):
     """AC4: the pipe of a run that is still alive is left alone."""
     run = tmp_path / "run"

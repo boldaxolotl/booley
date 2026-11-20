@@ -257,7 +257,13 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
     # A PID from another PID namespace reads as dead whether or not it runs.
     if owner.identity_scope != scope or observe_process(owner).state not in DEAD_PROCESS_STATES:
         return set()
-    live = [entry for entry in entries if entry.created is not None]
+    # An entry whose staged pipe could not be unlinked stays recorded for the next sweep.
+    stuck = {
+        id(entry)
+        for entry in entries
+        if entry.kind == "pipe" and _remove_staged_pipe(run_dir, entry)
+    }
+    live = [entry for entry in entries if entry.created is not None or id(entry) in stuck]
 
     def retire(entry: _Entry) -> None:
         # Retire before the unlink: a crash then leaves an unrecorded leftover and
@@ -268,14 +274,16 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
     kept: list[_Entry] = []
     retained: set[Path] = set()
     for entry in reversed(entries):
-        if entry.kind == "pipe":
-            _remove_staged_pipe(run_dir, entry)
         if entry.created is None:
+            if id(entry) in stuck:
+                kept.append(entry)
             continue
         destination = run_dir / entry.path
         if _remove_entry(run_dir, entry, destination, retained, retire):
             kept.append(entry)
             retained.add(destination)
+        elif id(entry) in stuck:
+            kept.append(entry)
     kept.reverse()
     if kept:
         _publish(record, owner, run_dir, kept)
@@ -294,14 +302,17 @@ def _ancestors_are_real(run_dir: Path, relative: Path) -> bool:
     return True
 
 
-def _remove_staged_pipe(run_dir: Path, entry: _Entry) -> None:
-    """Remove the pipe a run made under its recorded random name, before it was linked in."""
+def _remove_staged_pipe(run_dir: Path, entry: _Entry) -> bool:
+    """Remove the pipe a run made under its recorded random name, before it was linked in.
+
+    Returns whether the unlink failed, so the entry must stay recorded.
+    """
     relative = Path(entry.path)
     try:
         if entry.identity != Path(entry.identity or "").name or not entry.identity:
-            return
+            return False
         if not _ancestors_are_real(run_dir, relative):
-            return
+            return False
         staged = (run_dir / relative).with_name(entry.identity)
         status = os.lstat(staged)
         # A pending entry has no identity yet; its random name is the proof.
@@ -314,6 +325,8 @@ def _remove_staged_pipe(run_dir: Path, entry: _Entry) -> None:
         pass
     except OSError as exc:
         logger.warning("Could not remove staged pipe for %s: %s", run_dir / relative, exc)
+        return True
+    return False
 
 
 def _remove_entry(
