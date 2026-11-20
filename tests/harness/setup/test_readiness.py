@@ -22,14 +22,6 @@ from tests.harness.test_doctor import _write_project
 from tests.subprocess_budget import run_bounded_child
 
 
-@pytest.fixture(autouse=True)
-def _isolate_project_cache():
-    """Each readiness test controls its Project selection independently."""
-    reset_cache()
-    yield
-    reset_cache()
-
-
 def test_doctor_prefers_linked_checkout_project_snapshot(tmp_path, monkeypatch):
     """F-25: Doctor config and design inputs must share one checkout."""
     canonical_root = tmp_path / "canonical"
