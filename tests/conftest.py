@@ -658,7 +658,7 @@ def _isolate_booley_dir_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 @pytest.fixture(autouse=True)
 def _fresh_booley_dir_selection() -> Iterator[None]:
-    """Start and end every test with no cached Booley Directory selection (#5261)."""
+    """A cached selection names the previous test's tmp_path; clear it around every test (#5261)."""
     from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
