@@ -107,8 +107,9 @@ def _run_logged(
     output, so a background child that keeps the log open cannot stall a
     finished hook, and is left running. A timeout, or any exception while
     waiting such as Ctrl-C (which reaches Booley, not the hook), stops the hook
-    and every process it started through ``kill_process_tree`` (SIGTERM, then
-    SIGKILL after its grace period) before returning or re-raising.
+    and every process it started through ``kill_process_tree`` (a graceful
+    stop, then a forced one after its grace period) before returning or
+    re-raising.
     """
     log.parent.mkdir(parents=True, exist_ok=True)
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
