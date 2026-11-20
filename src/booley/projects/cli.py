@@ -190,6 +190,11 @@ def _render_forgotten(
             "unrecorded: kept because Booley cannot tell which Project it belongs "
             "to; remove it with `docker image rm <id>` once no other Project uses it"
         )
+    if purged is not None and any(item.reason == "in-use" for item in left):
+        print(
+            "in-use: kept because a container still uses it; rerun `booley projects "
+            f"forget --purge {quote_arg(str(forgotten))}` once no container uses it"
+        )
     if purged is None and any(item.reason == "unused" for item in left):
         print(
             f"Remove the unused ones with: booley projects forget --purge {quote_arg(str(forgotten))}"
