@@ -76,6 +76,9 @@ def _canonical_host_installation():
 
 def _use_real_host_checks(monkeypatch, root, booley_dir, bootstrap_result):
     """Run Doctor with the real host checks over a stubbed Bootstrap result."""
+    # init_cmd binds reconcile_bootstrap at import; a first import under the patch below would
+    # keep the stub for every later test in the process.
+    importlib.import_module("booley.harness.init_cmd")
     inspect_host = host_diagnostics.inspect_host
     calls = _patch_environment(monkeypatch, root, booley_dir)
     monkeypatch.setattr(host_diagnostics, "inspect_host", inspect_host)
