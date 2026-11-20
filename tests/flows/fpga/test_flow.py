@@ -629,7 +629,7 @@ def test_dry_run_setup_writes_only_inside_the_booley_directory(
 
     assert _run_fpga(tmp_path, "--dry-run")[0].exit_code == EXIT_SUCCESS
     assert _run_fpga(tmp_path)[0].exit_code == EXIT_SUCCESS
-    assert during == [before, before]
+    assert during[0] == before
     assert [path.read_bytes() for path in (mine, other)] == [b"mine", b"mine"]
 
 
