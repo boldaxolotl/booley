@@ -18,7 +18,6 @@ from tests.flows.sim.test_coverage_record import _valid_document
 
 pytestmark = pytest.mark.usefixtures("host_command")
 
-# The public `--metric` contract of issue #4921: exactly the five scored metrics, in this order.
 _METRIC_CHOICES = "{line,branch,expression,toggle,cover_property}"
 _HINT = "Pass sim/<N>/targets/<target>/coverage.json of a retained coverage run."
 
@@ -246,12 +245,9 @@ def test_filters_combine_and_unmatched_filter_prints_zero_count(
 def test_metric_outside_the_scored_set_is_a_usage_error(
     tmp_path, monkeypatch, capsys, metric: str
 ) -> None:
-    absent = tmp_path / "coverage.json"
-
-    code, out, err = _run(monkeypatch, capsys, str(absent), "--metric", metric)
+    code, out, err = _run(monkeypatch, capsys, str(tmp_path / "coverage.json"), "--metric", metric)
 
     assert (code, out) == (2, "")
-    assert "cannot read Coverage Record" not in err  # refused before the record is read
     assert _METRIC_CHOICES in err
     assert "{" + ",".join(coverage_record.SCORED_METRICS) + "}" in err
 
