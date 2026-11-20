@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import re
-import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -317,14 +316,8 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         for target in targets:
             try:
                 if self.args.dry_run:
-                    with tempfile.TemporaryDirectory(
-                        prefix=".booley-fpga-plan-",
-                        dir=self.args.work_dir,
-                    ) as scratch:
-                        recipe = self._resolve_fpga_recipe(
-                            target,
-                            build_root=Path(scratch) / target,
-                        )
+                    with self._dry_run_build_root(target) as build_root:
+                        recipe = self._resolve_fpga_recipe(target, build_root=build_root)
                 else:
                     recipe = self._resolve_fpga_recipe(target)
                     candidate_recipes[target] = recipe
