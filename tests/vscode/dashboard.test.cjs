@@ -364,6 +364,10 @@ test('an extension-host restart respects the attempt, while a new window can ope
     assert.equal(f.calls.length, 2);
 });
 
+const NEXT_STEP_TEXT = 'The Dashboard is already open in another window or terminal of this Sandbox. '
+    + 'Close it there (or press q in it), then run booley dashboard or Booley: Open Dashboard here.';
+const NEXT_STEP = /another window or terminal of this Sandbox\. Close it there \(or press q in it\), then run booley dashboard or Booley: Open Dashboard here\.$/;
+
 test('only owned terminals are cleaned up, and closing never causes a restart', async () => {
     const f = fixture();
     await tick();
@@ -374,7 +378,7 @@ test('only owned terminals are cleaned up, and closing never causes a restart', 
     owned.exitStatus = { code: 3 };
     f.listeners.close(owned);
     assert.equal(owned.disposed, true);
-    assert.match(f.log[0], /already open/);
+    assert.match(f.log[0], NEXT_STEP);
     f.listeners.config({ affectsConfiguration: () => true });
     await tick();
     assert.equal(f.calls.length, 1);
@@ -593,7 +597,7 @@ test('a failed reopen keeps the text tab open', async () => {
 // --- Booley: Open Dashboard ----------------------------------------------------
 
 const ALREADY_OPEN = JSON.stringify({ protocol: 1, enabled: false,
-    reason: 'The Dashboard is already open in this Sandbox.', already_open: true });
+    reason: NEXT_STEP_TEXT, already_open: true });
 
 test('the open-Dashboard command opens one fixed terminal in a trusted window', async () => {
     // The first auto-open was skipped (protocol off), so the command has nothing to reveal.
@@ -667,7 +671,8 @@ test('the open-Dashboard command reports a Dashboard open elsewhere instead of a
     await f.runCommand();
     assert.equal(f.terminals.length, 0);
     assert.equal(f.messages.length, 1);
-    assert.equal(f.messages[0].message, 'The Dashboard is already open in this Sandbox.');
+    assert.match(f.messages[0].message, NEXT_STEP);
+    assert.equal(f.log.at(-1), f.messages[0].message);
 });
 
 test('the open-Dashboard command waits for a pending auto-open instead of opening a second terminal', async () => {
@@ -707,7 +712,7 @@ test('the open-Dashboard command says a Dashboard is open even when the Project 
     await tick();
     await f.runCommand();
     assert.equal(f.terminals.length, 0);
-    assert.equal(f.messages.at(-1).message, 'The Dashboard is already open in this Sandbox.');
+    assert.match(f.messages.at(-1).message, NEXT_STEP);
 });
 
 // --- Reload: the old Dashboard still counts as seen for a few seconds -----------
