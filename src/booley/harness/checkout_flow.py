@@ -12,8 +12,7 @@ and ``TMPDIR`` beside the checkout, and its reports go to a directory the caller
 names outside the checkout. Once the entry point returns, no Job record names a
 path inside the checkout.
 
-Before the Flow starts, two checks keep live inputs out of the run. The caller's
-``PRJ_LIB_DIR`` is passed on resolved and refused inside a live root. A static scan
+Before the Flow starts, two checks keep live inputs out of the run. A static scan
 of the checkout refuses committed symlinks and absolute paths in ``.core`` files,
 ``fusesoc.conf`` and the Booley configuration that point into a live root (the
 Sandbox's ``/work`` mount of the working tree, or the Git checkout around Main or the
@@ -30,6 +29,9 @@ Outside ``ignore_native_cores`` Projects it prepares the Project's shared core v
 which projects stealth cores into the checkout exactly as the Flow's own resolution
 does. It resolves the Target's own core: a Booley-generated overlay of a Flow is
 derived from the same base core and names the same files.
+
+The caller's ``PRJ_LIB_DIR`` is passed on resolved and refused inside a live root,
+also before the Job record and admission.
 
 The run's ``PATH`` also starts with a ``git`` that refuses every call (exit 128, one
 line naming the command): the checkout has no repository, so a generator or Pre-Sim

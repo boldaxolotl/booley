@@ -1,10 +1,10 @@
 """The scrubbed environment of a Flow that runs in an exported checkout.
 
 A measurement must not depend on the shell that asked for it. The child gets an
-allow-list of what the Sandbox itself issues and the PDK root the caller names in
-``PRJ_LIB_DIR``, which the runner resolves and checks against the live roots first; everything else the caller carries
-(Python search paths, loader overrides, Git and Project selection,
-session routing, slot inheritance, credentials) is dropped by construction.
+allow-list of what the Sandbox itself issues and the caller's checked ``PRJ_LIB_DIR``;
+everything else the caller carries (Python search paths, loader overrides, Git and
+Project selection, session routing, slot inheritance, credentials) is dropped by
+construction.
 
 The checkout has no Git repository, so ``git`` is refused: the run's ``PATH``
 starts with a directory holding a ``git`` that prints which command was refused
