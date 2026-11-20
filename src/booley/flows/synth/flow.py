@@ -19,7 +19,6 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -2584,11 +2583,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     ) -> WorkUnitPlan:
         """Plan one candidate Target: in scratch for a dry run, else under its lease."""
         if self.args.dry_run:
-            with tempfile.TemporaryDirectory(
-                prefix=".booley-synth-plan-",
-                dir=self.args.work_dir,
-            ) as scratch:
-                planned = self._resolve_synth_recipe(target, build_root=Path(scratch) / target)
+            with self._dry_run_build_root(target) as build_root:
+                planned = self._resolve_synth_recipe(target, build_root=build_root)
                 return self._synth_work_unit(target, planned, role="candidate", revision=revision)
         lease = edam.work_root_lease(
             self._synth_work_root(target),

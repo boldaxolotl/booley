@@ -9,12 +9,15 @@ runs, its result text and its report adapters.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import os
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, cast
 
+from booley.core.build_paths import work_root_for
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.filesystem_utils import make_directories
@@ -96,6 +99,18 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
     def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
         """Not used: _run interprets each Target."""
         return EndpointOutcome()
+
+    @contextlib.contextmanager
+    def _dry_run_build_root(self, target: str) -> Iterator[Path]:
+        """A disposable build root for planning *target*, beside its real work root.
+
+        A killed dry run cannot remove it, so it lives in the Booley Directory's
+        ignored build tree and never in the Project Root itself.
+        """
+        parent = work_root_for(self.args.work_dir, self.name, target).parent
+        make_directories(parent)
+        with tempfile.TemporaryDirectory(prefix=".plan-", dir=parent) as scratch:
+            yield Path(scratch) / target
 
     # -- Flow hooks -----------------------------------------------------------
 

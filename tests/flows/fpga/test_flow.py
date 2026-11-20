@@ -603,8 +603,34 @@ def test_dry_run_reports_the_resolved_recipe(
     assert unit["recipe"]["flow_options"]["part"] == "xc7a200tfbg484-1"
     assert unit["recipe"]["ppa_profile"]["name"] == profile
     assert {key: unit["recipe"]["ppa_profile"]["mapping"][key] for key in mapping} == mapping
-    assert list(tmp_path.glob(".booley-fpga-plan-*")) == []
+    assert list(work_root_for(tmp_path, "fpga", "default").parent.glob(".plan-*")) == []
     assert _vivado_calls(tmp_path) == 0
+
+
+def test_dry_run_setup_writes_only_inside_the_booley_directory(
+    tmp_path: Path, vivado: dict, resolution: _Resolution
+) -> None:
+    _write_project_config(tmp_path)
+    mine = tmp_path / ".booley-fpga-plan-mine" / "notes.txt"
+    other = work_root_for(tmp_path, "fpga", "default").parent / ".plan-other" / "notes.txt"
+    for path in (mine, other):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"mine")
+    (tmp_path / "runtime").mkdir(exist_ok=True)
+    before = sorted(tmp_path.iterdir())
+    during: list[list[str]] = []
+    seen = resolution.edit
+
+    def watch(resolved: ResolvedTarget) -> ResolvedTarget:
+        during.append(sorted(tmp_path.iterdir()))
+        return seen(resolved)
+
+    resolution.edit = watch
+
+    assert _run_fpga(tmp_path, "--dry-run")[0].exit_code == EXIT_SUCCESS
+    assert _run_fpga(tmp_path)[0].exit_code == EXIT_SUCCESS
+    assert during[0] == before
+    assert [path.read_bytes() for path in (mine, other)] == [b"mine", b"mine"]
 
 
 def test_dry_and_real_preparation_have_same_semantic_fingerprint(
@@ -670,7 +696,7 @@ def test_dry_run_reports_no_target_metadata_when_later_target_setup_fails(
     assert "setup rejected bad" in outcome.report_text
     assert [unit["selector"] for unit in outcome.detail["work_units"]] == ["good"]
     assert outcome.detail["aggregate_errors"] == ["candidate bad: setup rejected bad"]
-    assert list(tmp_path.glob(".booley-fpga-plan-*")) == []
+    assert list(work_root_for(tmp_path, "fpga", "default").parent.glob(".plan-*")) == []
 
 
 @pytest.mark.parametrize(
