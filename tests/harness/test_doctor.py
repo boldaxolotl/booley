@@ -43,6 +43,7 @@ from booley.harness import (
     host_diagnostics,
     web_isolation,
 )
+from booley.harness import image_lifecycle as harness_lifecycle
 from booley.harness.setup import readiness
 from booley.presentation import colors
 from booley.runtime import (
@@ -56,6 +57,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
+from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
@@ -289,6 +291,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     _patch_host_environment(monkeypatch, root)
     monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
+    # A whole run cannot supply a host Sandbox Image graph; the provenance tests override the CHECK.
+    _check(monkeypatch, lifecycle.Status.CURRENT)
     # The rebuild of the spec `booley init` would write has its own tests; here the
     # seeded fixture spec stands in for it.
     monkeypatch.setattr(
@@ -2498,6 +2502,53 @@ def test_image_stale_names_each_owner_workflow(owner, managed, steps, tmp_path, 
 
     (warning,) = _messages(result, Severity.WARN, check_id="sandbox.image-stale")
     assert warning.endswith(steps + ".")
+
+
+def _check(monkeypatch, status=None, *, raises=None, diagnostics=(), selected_id=dc.SANDBOX_IMAGE):
+    """Stand in for the lifecycle CHECK `booley init --check-only` runs."""
+
+    def reconcile(_scope, _intent):
+        if raises:
+            raise raises
+        found = tuple(lifecycle.Diagnostic("stale", m) for m in diagnostics)
+        return lifecycle.LifecycleResult(dc.SANDBOX_IMAGE, selected_id, status, diagnostics=found)
+
+    monkeypatch.setattr(harness_lifecycle, "reconcile_planned", reconcile)
+
+
+_UNADOPTED = "the selected image is built but this Project has not adopted it"
+_ERROR = lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason", "outcome"),
+    [
+        (
+            {"status": lifecycle.Status.STALE, "diagnostics": ("pins changed",) * 2},
+            "pins changed",
+            "warn",
+        ),
+        ({"status": lifecycle.Status.STALE}, _UNADOPTED, "warn"),
+        ({"status": lifecycle.Status.CURRENT, "selected_id": "sha256:other"}, _UNADOPTED, "warn"),
+        ({"status": lifecycle.Status.CURRENT}, None, "pass"),
+        ({"raises": _ERROR}, "Cannot connect", "skip"),
+        ({"raises": OSError("unreadable input")}, "unreadable input", "skip"),
+    ],
+)
+def test_doctor_reports_sandbox_image_provenance(kwargs, reason, outcome, tmp_path, monkeypatch):
+    _patch_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+    _check(monkeypatch, **kwargs)
+    result = _doctor_run(tmp_path)
+    found = {
+        "warn": _messages(result, Severity.WARN, check_id="sandbox.image-stale"),
+        "pass": [m for m in _messages(result, Severity.PASS) if "provenance matches" in m],
+        "skip": [m for m in _messages(result, Severity.SKIP) if "provenance check" in m],
+    }
+    assert {k: len(v) for k, v in found.items()} == {k: int(k == outcome) for k in found}
+    if reason:
+        assert reason in found[outcome][0]
+    if outcome == "warn":
+        assert _REBUILD in found["warn"][0]
 
 
 # ---------------------------------------------------------------------------

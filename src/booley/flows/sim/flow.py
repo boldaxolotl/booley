@@ -835,7 +835,9 @@ class SimulateFlow(
         # prepare_endpoint_invocation sends every simulate-mode coverage run to
         # run_prepared_simulation; only elaboration-only modes reach this path.
         result = (
-            EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")
+            EndpointOutcome(
+                exit_code=2, report_text="Coverage requires simulation mode", refused=True
+            )
             if getattr(self.args, "coverage", False)
             else self._validate_mode_args() or self._run_elab_only()
         )
@@ -1650,6 +1652,7 @@ class SimulateFlow(
                 report_text=(
                     "sim: --standalone alone is invalid; use --mode elab-only-standalone"
                 ),
+                refused=True,
             )
         if not self._mode.elaborates_only:
             return None
@@ -1666,6 +1669,7 @@ class SimulateFlow(
                         f"sim: {argument} conflicts with --mode {self._mode.value}; "
                         f"remove {argument} or use --mode simulate."
                     ),
+                    refused=True,
                 )
         return None
 

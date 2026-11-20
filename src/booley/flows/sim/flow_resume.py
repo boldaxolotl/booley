@@ -370,6 +370,7 @@ class SimulationRecordResumeMixin:
                     exit_code=EXIT_ERROR,
                     report_text=f"Simulation Record resume origin is busy: {exc}",
                     detail=_simulation_record_recovery_detail(observed),
+                    refused=True,
                 )
             self._held_resume_origins.add(origin)
         return None

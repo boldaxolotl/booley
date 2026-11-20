@@ -35,6 +35,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
+from tests.memory_budget_support import fail_budget
 from tests.subprocess_budget import run_bounded_child
 
 _DEPRECATION = "--elab-only, --build-only, and --standalone are deprecated; use --mode"
@@ -257,31 +258,37 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
 def test_elab_only_rejects_run_stage_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, extra: list[str], argument: str
 ) -> None:
+    fail_budget(monkeypatch)
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, *extra, mode=mode)
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["mode"] == mode.replace("-", "_")
     assert argument in result.outcome.report_text
     assert "use --mode simulate" in result.outcome.report_text
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 def test_standalone_requires_elab_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fail_budget(monkeypatch)
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, "--standalone", mode=None)
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["mode"] == "simulate"
     assert "--standalone alone is invalid" in result.outcome.report_text
     assert "--mode elab-only-standalone" in result.outcome.report_text
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 def test_coverage_requires_simulation_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    fail_budget(monkeypatch)
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, "--coverage")
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "Coverage requires simulation mode"
     assert result.outcome.detail["mode"] == "elab_only"
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
