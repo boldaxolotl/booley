@@ -7,7 +7,7 @@ import json
 import re
 import subprocess
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -402,12 +402,16 @@ def _owned_store() -> PrivateStore:
     return PrivateStore(root, anchor, "refresh image ownership", ImageLifecycleError)
 
 
+def _record_name(identity: str) -> str:
+    return hashlib.sha256(identity.encode()).hexdigest() + ".json"
+
+
 class OwnedImages:
     """One Project's refresh-built image IDs and candidate refs; a str root is not resolved."""
 
     def __init__(self, project: Path | str = "", *, name: str = "") -> None:
         identity = project if isinstance(project, str) else str(project.resolve())
-        self.name = name or hashlib.sha256(identity.encode()).hexdigest() + ".json"
+        self.name = name or _record_name(identity)
         self.store, self.ids, self.refs = _owned_store(), [], {}
         try:
             self.store.validate_existing_directory()
@@ -477,6 +481,30 @@ def cleanup_owned_images(
         record.refs = {ref: image for ref, image in record.refs.items() if ref in tags}
         record.record({})
     return tuple(f"{image}: {reason}" for image, reason in retained.items())
+
+
+def sweep_absent_owned_images(
+    registered: Iterable[str], *, docker: DockerPort | None = None
+) -> None:
+    """Drop record entries whose image or candidate ref is gone; removes no image.
+
+    Records of the *registered* roots stay untouched.
+    """
+    store = _owned_store()
+    paths = sorted(store.root.glob("*.json")) if store.validate_existing_directory() else []
+    skipped = {_record_name(root) for root in registered}
+    records = [OwnedImages(name=path.name) for path in paths if path.name not in skipped]
+    if not records:
+        return
+    adapter = docker or _docker_adapter()
+    present = adapter.image_ids()
+    tags = {row.reference for row in adapter.image_references()}
+    for record in records:
+        ids = [image for image in record.ids if image in present]
+        refs = {ref: image for ref, image in record.refs.items() if ref in tags}
+        if (ids, refs) != (record.ids, record.refs):
+            record.ids, record.refs = ids, refs
+            record.record({})
 
 
 def _build_adapter(
