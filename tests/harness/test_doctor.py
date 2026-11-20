@@ -5585,7 +5585,7 @@ def test_stealth_projection_rows_split_refreshable_from_blocking(
     cores = {f".booley/cores/{n}.core": f"CAPI=2:\nname: ::{n}:0\n" for n in names}
     booley_dir = _core_project(tmp_path, monkeypatch, cores, toml="\n[stealth]\nenabled = true\n")
     core_projection.reconcile_projected_cores(tmp_path)
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _git_init(tmp_path)
     exclude = tmp_path / ".git" / "info" / "exclude"
     exclude.parent.mkdir(exist_ok=True)
     exclude.write_text(f"/{core_projection.PROJECTED_CORE_GLOB}\n", encoding="utf-8")

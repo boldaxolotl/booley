@@ -76,8 +76,9 @@ Never describe one of those partial outcomes as healed.
    foreign file, fix an authored core that cannot be read, and hand the Git
    exclusion (`booley init` on the host) to the user in an issued Sandbox.
    Include each repair in the evidence and rerun before diagnosing remaining
-   rows. The `Flow dry-runs skipped` and `.core audit skipped` rows clear once
-   no projection row remains.
+   rows. The `... skipped - stealth core projections are not current` rows
+   (Flow dry-runs, `.core` audit, deep checks) clear once the WARN and any
+   foreign-file or unreadable-core `✗` row are resolved.
    Then check the Project's guidance for the measuring pointer: when the
    canonical `<booley_dir>/AGENTS.md` exists and does not contain
    `booley cheat --metrics`, add this bullet (the `booley-setup` template's
