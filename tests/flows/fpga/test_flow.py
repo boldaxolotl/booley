@@ -617,12 +617,12 @@ def test_dry_run_setup_writes_only_inside_the_booley_directory(
         path.parent.mkdir(parents=True)
         path.write_bytes(b"mine")
     (tmp_path / "runtime").mkdir(exist_ok=True)
-    before = sorted(os.listdir(tmp_path))
+    before = sorted(tmp_path.iterdir())
     during: list[list[str]] = []
     seen = resolution.edit
 
     def watch(resolved: ResolvedTarget) -> ResolvedTarget:
-        during.append(sorted(os.listdir(tmp_path)))
+        during.append(sorted(tmp_path.iterdir()))
         return seen(resolved)
 
     resolution.edit = watch

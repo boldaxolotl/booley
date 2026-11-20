@@ -822,12 +822,12 @@ def test_dry_run_setup_writes_only_inside_the_booley_directory(synth_cli: SynthC
     for path in (mine, other):
         path.parent.mkdir(parents=True)
         path.write_bytes(b"mine")
-    before = sorted(os.listdir(synth_cli.project))
+    before = sorted(synth_cli.project.iterdir())
     during: list[list[str]] = []
     resolve = synth_cli.resolution.resolve
 
     def watch(*args, **kwargs):
-        during.append(sorted(os.listdir(synth_cli.project)))
+        during.append(sorted(synth_cli.project.iterdir()))
         return resolve(*args, **kwargs)
 
     synth_cli.resolution.resolve = watch
