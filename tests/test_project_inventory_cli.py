@@ -1303,3 +1303,35 @@ def test_inventory_commands_without_keeper_adapter_still_work(
     assert _run_without_keepers(["projects", "discover", str(project), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["discovered"] == [str(project)]
     assert keeper_host.calls == []
+
+
+@pytest.mark.parametrize("command", ["purge", "refused-prune"])
+def test_purge_and_refused_prune_sweep_records_of_absent_images(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    from booley.runtime import image_lifecycle
+    from tests.harness.test_image_lifecycle import FakeDocker as LifecycleDocker
+
+    gone, present = "sha256:" + "d" * 64, "sha256:" + "a" * 64
+    lifecycle_docker = LifecycleDocker({"present:latest": (present, {})})
+    monkeypatch.setattr(
+        image_lifecycle, "_docker_adapter", lambda: lifecycle_docker
+    )  # the lifecycle's Docker port
+    _nothing_eligible_host(tmp_path, keeper_host)
+    registered = image_lifecycle.OwnedImages(tmp_path / "project")
+    registered.record({}, (gone,))
+    stale = image_lifecycle.OwnedImages(str(tmp_path / "unregistered"))
+    stale.record({"booley-lifecycle-x:candidate": gone}, (gone, present))
+
+    if command == "purge":
+        runtime_image_keepers.forget_project(tmp_path / "unrelated", purge=True)
+    else:
+        assert runtime_image_keepers.prune_keepers(confirm="0" * 64).errors
+
+    assert image_lifecycle.OwnedImages(tmp_path / "project").ids == [gone]
+    swept = image_lifecycle.OwnedImages(str(tmp_path / "unregistered"))
+    assert (swept.ids, swept.refs) == ([present], {})
+    assert lifecycle_docker.mutations == []
