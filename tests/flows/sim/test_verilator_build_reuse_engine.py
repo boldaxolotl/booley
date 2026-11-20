@@ -14,6 +14,7 @@ the source it was built from (``OLD``/``NEW``), so a stale launch is visible.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -440,20 +441,21 @@ def test_corrupt_retained_generation_forces_fresh_build(
     assert "STALE" not in recorder.launches[1]
 
 
-def test_object_without_dependency_record_is_never_reused(verilator_env: Path) -> None:
+def test_object_without_dependency_record_is_never_reused(
+    verilator_env: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     _edit_keeping_mtime(
         verilator_env / "rtl" / "tb.sv",
         '`include "defs.svh"\nmodule tb; // OLD NODEP\nendmodule\n',
     )
     recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder))
+    with caplog.at_level(logging.INFO, logger="booley.flows.sim.build_session"):
+        _assert_passed(_run(verilator_env, recorder))
     slot = simulation_build_slot(_select(verilator_env))
     assert not (slot / "current.json").exists()
-    manifests = list((slot / "g").rglob(".booley-build-manifest.json"))
-    assert len(manifests) == 1
-    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-    assert manifest["reusable"] is False
-    assert "helper.d" in str(manifest["reason"])
+    # The manifest is deleted with the unreusable generation; the log keeps the reason.
+    assert list((slot / "g").iterdir()) == []
+    assert "helper.d" in caplog.text
     second = _run(verilator_env, recorder)
     _assert_passed(second)
     assert recorder.builds == 2

@@ -229,6 +229,50 @@ def test_discard_candidate_removes_only_its_generation(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX permission bits that root ignores",
+)
+def test_lease_exit_prunes_unpromoted_generations_and_survives_a_failed_delete(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    handle = _handle(tmp_path)
+    with SimulationBuildSession(handle, wait_s=60):
+        pass  # a lease that never allocated a generation has no g/ to prune
+    assert caplog.text == ""
+    session = SimulationBuildSession(handle, wait_s=60)
+    with session:
+        pruned = session.new_generation()
+        stuck = session.new_generation()
+        view = pruned.parent / f".booley-doctor-run-cwd-{pruned.name}"
+        view.mkdir()
+        (stuck / "locked").mkdir()
+        (stuck / "locked" / "file").write_text("x", encoding="utf-8")
+        (stuck / "locked").chmod(0o500)
+    try:
+        assert not pruned.exists()
+        assert view.is_dir()
+        assert stuck.is_dir()
+        assert str(stuck) in caplog.text
+
+        generations = session.slot / "g"
+        caplog.clear()
+        generations.chmod(0o000)
+        try:
+            with SimulationBuildSession(handle, wait_s=60):
+                pass
+        finally:
+            generations.chmod(0o700)
+        assert str(generations) in caplog.text
+    finally:
+        (stuck / "locked").chmod(0o700)
+
+    with SimulationBuildSession(handle, wait_s=60):
+        pass
+    assert not stuck.exists()
+    assert view.is_dir()
+
+
+@pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
 def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) -> None:

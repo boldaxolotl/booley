@@ -242,11 +242,17 @@ class _RuntimeCheckingExecution(NativeExecution):
         runtime.write_bytes(b"authenticated runtime input")
         self.bound = False
 
+    def build(self, request):
+        # The build, image copy and runtime staging all happen inside the retained lease.
+        assert self.lease_open
+        return super().build(request)
+
     def bind_authenticated_attempt(
         self, bundle_root: Path, evidence_root: Path, run_cwd: Path, verify_bundle
     ) -> None:
         super().bind_authenticated_attempt(bundle_root, evidence_root, run_cwd, verify_bundle)
         assert (run_cwd / "data/stimulus.bin").read_bytes() == (b"authenticated runtime input")
+        assert self.lease_retained
         self.bound = True
 
     def run(self, request):

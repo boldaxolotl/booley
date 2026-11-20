@@ -589,6 +589,10 @@ def test_one_target_executes_only_authenticated_make_and_resolves_its_build_budg
     assert label == job_resources.ResourceLabel("sim_dut", "sim_build", source_bytes=43)
     log = tmp_path / "reports/sim/1/artifacts/sim_sim_dut/run.log"
     assert log.read_text(encoding="utf-8").startswith("complete compiler output")
+    # An elaboration-only build is never promoted, so its generation is pruned.
+    slots = list(tmp_path.glob(".booley/.runtime/edalize/sim/*/lease.lock"))
+    assert len(slots) == 1
+    assert list((slots[0].parent / "g").iterdir()) == []
 
 
 def test_elaboration_plan_discloses_build_budget_as_its_timeout(
