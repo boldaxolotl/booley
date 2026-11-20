@@ -263,7 +263,8 @@ def _evaluate(plan: CoverageTargetPlan, coverage_record: CoverageRecord) -> Cove
             evaluation=freeze_coverage_mapping(evaluation),
             findings=(*coverage_record.findings, *exc.findings),
         )
-    return evaluate_coverage_record(coverage_record, plan.criterion, waivers)
+    evaluated = evaluate_coverage_record(coverage_record, plan.criterion, waivers)
+    return replace(evaluated, findings=(*evaluated.findings, *waivers.advisories))
 
 
 def _transaction_error(
