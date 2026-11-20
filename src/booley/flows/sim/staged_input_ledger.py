@@ -22,10 +22,11 @@ import logging
 import os
 import stat
 import uuid
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 from booley.core.file_lock import acquire_file_lock
 from booley.core.process_identity import ProcessIdentity
@@ -122,7 +123,7 @@ class StagedInputLedger:
         self._owner = capture_process_identity(os.getpid())
         self._record = _record_root(booley_dir) / f"{uuid.uuid4().hex}.json"
         self._entries: list[_Entry] = []
-        self._lock: IO[bytes] | None = None
+        self._lock_release: Callable[[], object] | None = None
         self._version: int | None = None
         self._retained = sweep_cancelled_run_inputs(booley_dir)
 
@@ -170,13 +171,14 @@ class StagedInputLedger:
             with contextlib.suppress(OSError):
                 lock_path.unlink()
             return False
-        self._lock = handle
+        # A ledger dropped with its record still published must not leak the open handle.
+        self._lock_release = weakref.finalize(self, handle.close)
         return True
 
     def _release_lock(self) -> None:
-        if self._lock is not None:
-            self._lock.close()
-            self._lock = None
+        if self._lock_release is not None:
+            self._lock_release()
+            self._lock_release = None
 
     def create_file(self, relative: Path, content: bytes) -> None:
         """Create *relative* holding *content*; ``FileExistsError`` when the path is taken."""
