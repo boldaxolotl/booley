@@ -247,6 +247,14 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     output = capsys.readouterr().out
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
     assert "No Docker resources left behind" in output and "mirror:x" in keeper_host.tags
+    assert "in-use:" not in output
+    keeper_host.tags[f"{family}-busy:latest"] = busy = "sha256:" + "c" * 64
+    keeper_host.containers["d" * 64] = busy
+    assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
+    assert (
+        f"in-use: kept because a container still uses it; rerun `booley projects forget --purge {quote_arg(str(project))}`"
+        in capsys.readouterr().out
+    )
 
 
 @pytest.mark.parametrize("grant", [False, True])
