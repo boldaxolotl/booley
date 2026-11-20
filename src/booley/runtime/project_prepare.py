@@ -15,6 +15,7 @@ from pathlib import Path
 from booley.runtime import platform_paths
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.platform_paths import bash_bin
+from booley.runtime.process_group import new_group_kwargs
 from booley.runtime.project_repositories import paired_project_repository
 
 logger = logging.getLogger(__name__)
@@ -101,11 +102,13 @@ def _run_logged(
 ) -> int | None:
     """Run *command* with its output in *log*, echoed live to stderr; ``None`` on timeout.
 
-    The hook writes straight into the log file (no pipe), in the caller's
-    process group so a terminal Ctrl-C reaches it. The parent waits for the
-    process itself, never for end of output, so a background child that keeps
-    the log open cannot stall a finished hook. A timeout or interrupt kills the
-    direct child, as ``subprocess.run(timeout=)`` does.
+    The hook writes straight into the log file (no pipe), in a process group
+    of its own. The parent waits for the hook process itself, never for end of
+    output, so a background child that keeps the log open cannot stall a
+    finished hook, and is left running. A timeout, or any exception while
+    waiting such as Ctrl-C (which reaches Booley, not the hook), stops the hook
+    and every process it started through ``kill_process_tree`` (SIGTERM, then
+    SIGKILL after its grace period) before returning or re-raising.
     """
     log.parent.mkdir(parents=True, exist_ok=True)
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -119,19 +122,18 @@ def _run_logged(
             stdin=subprocess.DEVNULL,
             stdout=sink,
             stderr=subprocess.STDOUT,
+            **new_group_kwargs(),
         )
         try:
             while process.poll() is None:
                 if time.monotonic() >= deadline:
-                    process.kill()
-                    process.wait()
+                    platform_paths.kill_process_tree(process)
                     offset = _echo_new_log_bytes(log, offset, decoder)
                     return None
                 offset = _echo_new_log_bytes(log, offset, decoder)
                 _wait_tick()
         except BaseException:
-            process.kill()
-            process.wait()
+            platform_paths.kill_process_tree(process)
             raise
     _echo_new_log_bytes(log, offset, decoder)
     return process.returncode
