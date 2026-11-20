@@ -117,13 +117,20 @@ Initialization walks through:
 
 1. Creates `.booley/` with starter config files
 2. Records your default Agent CLI and auth policy
-3. Checks credentials for that Agent CLI
+3. Checks credentials for each Agent CLI in `clis`
 4. Prepares the Project's Sandbox Image: the Docker image your agent and EDA
    tools run in, built on top of Booley's base image
 5. Installs Booley's Git hooks
 6. Writes the devcontainer config, so VS Code can open the Project in the
    Sandbox (Reopen in Container)
 7. Prints any follow-up advice
+
+`booley init --check-only` reports what init would change and changes nothing.
+It exits 0 when everything is current, 1 when work is pending or a required
+Agent CLI has no credential, and 2 when the check cannot finish or the
+environment is invalid. A required Agent CLI is the default, or one a
+`[models]` entry runs a Specialist on; another CLI in `clis` without a
+credential gets a warning only.
 
 ### Sign-in and billing
 

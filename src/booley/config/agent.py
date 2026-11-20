@@ -163,6 +163,19 @@ def cli_for_model(model: str) -> str | None:
     return next((cli for prefix, cli in _MODEL_PREFIX_CLI if model.startswith(prefix)), None)
 
 
+def required_agent_clis(default_cli: str, models: object) -> frozenset[str]:
+    """The Agent CLIs a Project cannot run without.
+
+    The default CLI, and each CLI a ``[models]`` pin runs a Specialist on. *models*
+    is the raw ``[models]`` value, read fail-soft: a non-table, a non-string pin, or an
+    unknown model prefix adds nothing (``agent.backend-health`` reports an invalid one).
+    """
+    if not isinstance(models, dict):
+        return frozenset({default_cli})
+    pinned = (cli_for_model(pin.strip()) for pin in models.values() if isinstance(pin, str))
+    return frozenset({default_cli, *(cli for cli in pinned if cli)})
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxConfig:
     """Sandbox configuration parsed from booley.toml [sandbox].
