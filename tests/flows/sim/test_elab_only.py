@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -590,6 +590,27 @@ def test_one_target_executes_only_authenticated_make_and_resolves_its_build_budg
     assert label == job_resources.ResourceLabel("sim_dut", "sim_build", source_bytes=43)
     log = tmp_path / "reports/sim/1/artifacts/sim_sim_dut/run.log"
     assert log.read_text(encoding="utf-8").startswith("complete compiler output")
+    # An elaboration-only build is never promoted, so its generation is pruned.
+    slots = list(tmp_path.glob(".booley/.runtime/edalize/sim/*/lease.lock"))
+    assert len(slots) == 1
+    assert list((slots[0].parent / "g").iterdir()) == []
+
+
+def test_elab_only_marks_the_pruned_generation_log_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registered: list[tuple[Path, bool]] = []
+
+    observer = MagicMock()
+    observer.log_path_known.side_effect = lambda path, *, target, temporary: registered.append(
+        (path, temporary)
+    )
+    monkeypatch.setattr("booley.flows.terminal_progress.current_progress", lambda: observer)
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS})
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert registered
+    assert all(temporary and "/g/" in path.as_posix() for path, temporary in registered)
 
 
 def test_elaboration_plan_discloses_build_budget_as_its_timeout(

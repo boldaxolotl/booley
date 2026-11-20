@@ -160,6 +160,10 @@ def test_flow_sim_input_edit_misses_then_hits(
     edit(flow_project)
     _assert_built(_flow_sim(flow_project, reports, "first"), "changed source, recipe, or tool")
     _assert_hit(_flow_sim(flow_project, reports, "first"))
+    # The rebuild superseded the first generation, which was deleted.
+    assert [path.name for path in _generations(flow_project)] == [
+        _current_generation(flow_project)
+    ]
 
 
 def test_isolated_flow_sim_unlisted_header_edit_is_not_an_input(
@@ -223,10 +227,11 @@ def test_flow_sim_legacy_pre_sim_change_to_generation_forces_build(
     _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
     retained = _current_generation(flow_project)
     _assert_built(_flow_sim(flow_project, reports, "second"), "reuse unsupported")
-    assert len(_generations(flow_project)) == 2
+    # The non-reusable build is deleted once its lease ends.
+    assert [path.name for path in _generations(flow_project)] == [retained]
     assert _current_generation(flow_project) == retained
     _assert_hit(_flow_sim(flow_project, reports, "third"))
-    assert len(_generations(flow_project)) == 2
+    assert [path.name for path in _generations(flow_project)] == [retained]
 
 
 def test_symlinked_booley_directory_runs_and_reuses_build(
