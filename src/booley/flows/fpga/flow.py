@@ -23,7 +23,7 @@ import re
 import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -795,9 +795,16 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         project_paths: ProjectSourcePaths,
     ) -> None:
         """Classify a failed Vivado run, then name Project paths in the text it reports."""
-        self._apply_vivado_failure(metrics, result, evidence, result.stdout, result.stderr)
-        metrics.infra_error = project_paths.project_text(metrics.infra_error)
-        metrics.failure_output = project_paths.project_text(metrics.failure_output)
+        # Map before classifying: the diagnostic line is capped, which would cut a
+        # long build-tree path before it could be replaced.
+        project = replace(
+            result,
+            stdout=project_paths.project_text(result.stdout),
+            stderr=project_paths.project_text(result.stderr),
+        )
+        self._apply_vivado_failure(
+            metrics, project, project_paths.project_text(evidence), project.stdout, project.stderr
+        )
 
     def _apply_vivado_failure(
         self,

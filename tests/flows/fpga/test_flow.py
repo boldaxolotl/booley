@@ -1045,29 +1045,30 @@ def test_vivado_failure_text_names_project_paths(
 ) -> None:
     """A Vivado error names a source or constraint file by Project path in each spelling."""
     vivado["returncode"] = 1
+    pad = "x" * 450
     vivado["output"] = "\n".join(
         (
             "# read_verilog -sv {{{rel}/src/fpga_demo_0/rtl/dut.sv}}",
-            "ERROR: [Synth 8-439] module 'x' not found [{build}/src/fpga_demo_0/rtl/dut.sv:3]",
+            f"ERROR: [Common 17-55] {pad} [{{build}}/src/fpga_demo_0/rtl/dut.sv:3]",
             "ERROR: [Common 17-55] bad object [{build}/src/fpga_demo_0/constraints/timing.xdc:2]",
-            "ERROR: [Synth 8-439] module 'gen' not found [{build}/src/fpga_demo_0/rtl/generated.sv:1]",
+            "ERROR: [Common 17-55] bad object [{build}/src/fpga_demo_0/rtl/generated.sv:1]",
             "ERROR: [Common 17-55] bad object [/opt/ip/pins.xdc:2]",
         )
     )
     project, _ = _real_fusesoc_fpga_outcome(tmp_path, monkeypatch)
 
     report = json.loads((project / "reports" / "fpga_fpga.json").read_text(encoding="utf-8"))
+    # The build-tree path starts before the 500-character diagnostic cap and ends after it.
     assert report["infra_error"] == (
-        "Vivado did not reach route_design: "
-        "ERROR: [Synth 8-439] module 'x' not found [rtl/dut.sv:3]"
+        f"Vivado did not reach route_design: ERROR: [Common 17-55] {pad} [rtl/dut.sv:3]"
     )
     tail = report["metrics"]["failure_output"].split("Log tail:\n", 1)[1].splitlines()
     build = Path(vivado["recipe"].resolved.build_root).resolve().as_posix()
     assert tail == [
         "# read_verilog -sv {rtl/dut.sv}",
-        "ERROR: [Synth 8-439] module 'x' not found [rtl/dut.sv:3]",
+        f"ERROR: [Common 17-55] {pad} [rtl/dut.sv:3]",
         "ERROR: [Common 17-55] bad object [constraints/timing.xdc:2]",
-        f"ERROR: [Synth 8-439] module 'gen' not found [{build}/src/fpga_demo_0/rtl/generated.sv:1]",
+        f"ERROR: [Common 17-55] bad object [{build}/src/fpga_demo_0/rtl/generated.sv:1]",
         "ERROR: [Common 17-55] bad object [/opt/ip/pins.xdc:2]",
     ]
     log = (project / report["artifacts"]["log"]).read_text(encoding="utf-8")
