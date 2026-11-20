@@ -8,7 +8,6 @@ with the actionable reason and a bounded, marker-free output tail.
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -41,6 +40,7 @@ from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR
 from booley.targets.catalog import TargetCatalog
+from tests.flows.failing_compiler import put_failing_iverilog_on_path
 from tests.flows.sim.prepared_group import run_prepared_group
 from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import (
@@ -197,14 +197,7 @@ def test_build_failure_names_project_paths(
     (state / "tests.toml").write_text('[sim]\ntests = ["t"]\n', encoding="utf-8")
     core = f"src/acme_lib_runtime_input{'-booleytrace' if trace else ''}_1/tb.sv"
     printed = [line.format(core=core) for line in lines]
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    iverilog = fake_bin / "iverilog"
-    iverilog.write_bytes(
-        ("#!/bin/sh\n" + "".join(f"echo '{x}'\n" for x in printed) + "exit 1\n").encode()
-    )
-    iverilog.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    put_failing_iverilog_on_path(tmp_path, monkeypatch, printed)
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     options = SimulationOptions(trace=trace, timeout_ms=hang_guard_s() * 1000)
     with _real_fusesoc():
