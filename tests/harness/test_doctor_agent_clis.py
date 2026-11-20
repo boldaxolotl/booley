@@ -368,9 +368,10 @@ def test_recorded_subscription_passes_with_an_exported_api_key(home, tmp_path, m
     [
         ({}, [], ["codex, claude"]),
         ({"BOOLEY_PRIMARY_AUTH": "gateway"}, [], ["claude"]),
+        ({"BOOLEY_PRIMARY_AUTH": "api_key"}, ["codex"], ["claude"]),
         ({"BOOLEY_AGENT_CLIS": "codex=subscription,claude=subscription"}, ["codex", "claude"], []),
     ],
-    ids=["hand-written", "hand-written-gateway", "issued-record"],
+    ids=["hand-written", "hand-written-gateway", "hand-written-api-key", "issued-record"],
 )
 def test_missing_auth_in_a_sandbox_fails_only_under_an_issued_record(
     home, tmp_path, monkeypatch, env, failed, noted

@@ -3027,17 +3027,25 @@ def _check_auth_recorded(
     see ``missing_auth_policy``) no value can be recorded, so it does not FAIL; one NOTE
     names the CLIs audited under that mode.
     """
-    from booley.config.agent import RETIRED_AUTH, missing_auth_policy
+    from booley.config.agent import (
+        RETIRED_AUTH,
+        VALID_AUTH_MODES,
+        env_auth_handoff,
+        missing_auth_policy,
+    )
     from booley.harness import init_cmd
 
     declared = _declared_agent(project)
     visitor = missing_auth_policy() == auth_token.VISITOR_AUTH
+    default_cli = _configured_provider(project)
     unset: list[str] = []
     for cli in clis:
         recorded = _recorded_auth(declared, cli)
         if recorded not in (None, RETIRED_AUTH):
             continue
-        if recorded is None and visitor:
+        # A subscription or api_key hand-off sets the default CLI's policy at runtime.
+        handed_off = cli == default_cli and env_auth_handoff() in VALID_AUTH_MODES
+        if recorded is None and visitor and not handed_off:
             # A gateway hand-off outranks the visitor reading, so it is not named for that CLI.
             if _configured_auth_policy(project, cli) == auth_token.VISITOR_AUTH:
                 unset.append(cli)
@@ -3053,7 +3061,8 @@ def _check_auth_recorded(
     if unset:
         reporter.note_(
             f"{', '.join(unset)}: booley.toml [agent] auth is not set; this hand-written "
-            "Sandbox uses the visitor mode (the credential you sign in with or export)"
+            "Sandbox uses the visitor mode (the credential you sign in with or export, or the "
+            "spec's gateway)"
         )
 
 
