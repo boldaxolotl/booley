@@ -33,6 +33,7 @@ from booley.audit.diagnostic_results import (
 )
 from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import (
     activity_hooks,
@@ -42,6 +43,7 @@ from booley.harness import (
     host_diagnostics,
     web_isolation,
 )
+from booley.harness import image_lifecycle as harness_lifecycle
 from booley.harness.setup import readiness
 from booley.presentation import colors
 from booley.runtime import (
@@ -55,6 +57,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
+from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
@@ -252,7 +255,7 @@ def _patch_bootstrap_current(monkeypatch) -> None:
     monkeypatch.setattr(
         host_diagnostics,
         "inspect_host",
-        lambda: host_diagnostics.HostDiagnosticResult(report, "docker"),
+        lambda _root: host_diagnostics.HostDiagnosticResult(report, "docker"),
     )
 
 
@@ -288,6 +291,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     _patch_host_environment(monkeypatch, root)
     monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
+    # A whole run cannot supply a host Sandbox Image graph; the provenance tests override the CHECK.
+    _check(monkeypatch, lifecycle.Status.CURRENT)
     # The rebuild of the spec `booley init` would write has its own tests; here the
     # seeded fixture spec stands in for it.
     monkeypatch.setattr(
@@ -526,6 +531,54 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     assert tool_calls[0][tool_calls[0].index("--target") + 1] == "sim_fast"
 
 
+@pytest.mark.parametrize(
+    ("toplevel", "row"),
+    [
+        pytest.param("dut", "lint dry-run [lint_fast] passed", id="dut"),
+        pytest.param(
+            "no_such_top", "lint dry-run [lint_fast] failed with exit 2", id="no_such_top"
+        ),
+    ],
+)
+def test_plain_doctor_lint_dry_run_judges_the_toplevel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toplevel: str, row: str
+) -> None:
+    """Plain Doctor's lint dry-run runs the real Lint Flow, so an undeclared toplevel fails it."""
+    from booley.flows.lint.flow import LintFlow
+
+    booley_dir = _write_project(tmp_path)
+    core = tmp_path / "unit.core"
+    original = core.read_bytes().replace(b"\r\n", b"\n")
+    edited = original.replace(
+        b"    filesets: [rtl]\n    toplevel: dut\n  synth_fast",
+        f"    filesets: [rtl]\n    toplevel: {toplevel}\n  synth_fast".encode(),
+    )
+    assert (edited != original) == (toplevel != "dut")
+    core.write_bytes(edited)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    other_commands = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        if "booley.flows.lint" not in argv:
+            return other_commands(cmd, **kwargs)
+        values = argv[argv.index("booley.flows.lint") + 1 :]
+        values[values.index("--work-dir") + 1] = str(tmp_path)
+        values[values.index("--report-dir") + 1] = str(tmp_path / "flow-reports")
+        with monkeypatch.context() as scoped:
+            scoped.setenv("BOOLEY_CONTAINER", "1")
+            scoped.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+            scoped.setattr(runtime_context, "inside_session_runtime", lambda: True)
+            outcome = LintFlow().execute_cli(values).outcome
+        return subprocess.CompletedProcess(cmd, outcome.exit_code, outcome.report_text, "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    messages = _messages(_doctor_run(tmp_path))
+
+    assert row in messages
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
 def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     tmp_path: Path,
@@ -702,6 +755,67 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     assert re.search(r"^  ✗ failed +1$", output, re.M)
     assert "[agent] clis ['codex']" in output
     assert doctor_stamp.load_stamp(booley_dir) is None
+
+
+@pytest.mark.parametrize(
+    ("auth_toml", "rows"),
+    [
+        (
+            'auth = "auto"\n',
+            [
+                (
+                    "claude: booley.toml [agent] auth 'auto' is retired; detected: subscription",
+                    'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
+                    'claude = "subscription" in booley.toml, or re-run booley init',
+                ),
+                (
+                    "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
+                    'replace auth = "auto" under [agent] with an [agent.auth] table that sets '
+                    'codex = "api_key" in booley.toml, or re-run booley init',
+                ),
+            ],
+        ),
+        (
+            '\n[agent.auth]\nclaude = "subscription"\ncodex = "auto"\n',
+            [
+                (
+                    "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
+                    'set codex = "api_key" under [agent.auth] in booley.toml, '
+                    "or re-run booley init",
+                ),
+            ],
+        ),
+    ],
+    ids=["string", "table"],
+)
+def test_doctor_names_the_value_for_a_retired_auto_auth(tmp_path, monkeypatch, auth_toml, rows):
+    booley_dir = _write_project(tmp_path)
+    toml_path = booley_dir / "booley.toml"
+    toml_path.write_text(
+        toml_path.read_text(encoding="utf-8").replace(
+            '[agent]\nauth = "subscription"\n',
+            '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n' + auth_toml,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fixture")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+
+    result = _doctor_run(tmp_path)
+
+    policy = [
+        (f.message, f.fix)
+        for f in result.findings
+        if f.check_id == "agent.credential-policy" and f.severity is Severity.FAIL
+    ]
+    assert policy == rows
+    messages = _messages(result)
+    assert "project setup audit skipped - no valid project config" not in messages
+    assert "worker backend health check skipped - set [agent] auth first" in messages
+    assert not [m for m in messages if "skipped - project config invalid" in m]
+    text = "\n".join(f"{f.message}\n{f.fix}" for f in result.findings)
+    for absent in ("clis/default", "gateway", "booley doctor names"):
+        assert absent not in text
 
 
 def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, capsys):
@@ -1289,7 +1403,7 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(
         host_diagnostics,
         "inspect_host",
-        lambda: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
+        lambda _root: host_diagnostics.HostDiagnosticResult(DiagnosticReport(()), None),
     )
 
     result = _doctor_run(tmp_path, deep=True, record_clean=True)
@@ -2390,6 +2504,53 @@ def test_image_stale_names_each_owner_workflow(owner, managed, steps, tmp_path, 
     assert warning.endswith(steps + ".")
 
 
+def _check(monkeypatch, status=None, *, raises=None, diagnostics=(), selected_id=dc.SANDBOX_IMAGE):
+    """Stand in for the lifecycle CHECK `booley init --check-only` runs."""
+
+    def reconcile(_scope, _intent):
+        if raises:
+            raise raises
+        found = tuple(lifecycle.Diagnostic("stale", m) for m in diagnostics)
+        return lifecycle.LifecycleResult(dc.SANDBOX_IMAGE, selected_id, status, diagnostics=found)
+
+    monkeypatch.setattr(harness_lifecycle, "reconcile_planned", reconcile)
+
+
+_UNADOPTED = "the selected image is built but this Project has not adopted it"
+_ERROR = lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason", "outcome"),
+    [
+        (
+            {"status": lifecycle.Status.STALE, "diagnostics": ("pins changed",) * 2},
+            "pins changed",
+            "warn",
+        ),
+        ({"status": lifecycle.Status.STALE}, _UNADOPTED, "warn"),
+        ({"status": lifecycle.Status.CURRENT, "selected_id": "sha256:other"}, _UNADOPTED, "warn"),
+        ({"status": lifecycle.Status.CURRENT}, None, "pass"),
+        ({"raises": _ERROR}, "Cannot connect", "skip"),
+        ({"raises": OSError("unreadable input")}, "unreadable input", "skip"),
+    ],
+)
+def test_doctor_reports_sandbox_image_provenance(kwargs, reason, outcome, tmp_path, monkeypatch):
+    _patch_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+    _check(monkeypatch, **kwargs)
+    result = _doctor_run(tmp_path)
+    found = {
+        "warn": _messages(result, Severity.WARN, check_id="sandbox.image-stale"),
+        "pass": [m for m in _messages(result, Severity.PASS) if "provenance matches" in m],
+        "skip": [m for m in _messages(result, Severity.SKIP) if "provenance check" in m],
+    }
+    assert {k: len(v) for k, v in found.items()} == {k: int(k == outcome) for k in found}
+    if reason:
+        assert reason in found[outcome][0]
+    if outcome == "warn":
+        assert _REBUILD in found["warn"][0]
+
+
 # ---------------------------------------------------------------------------
 # Custom [sandbox].image freshness vs .booley/docker/Dockerfile (item 5)
 # ---------------------------------------------------------------------------
@@ -2950,24 +3111,46 @@ def _edit_booley_toml(booley_dir: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-@pytest.mark.parametrize("row", ["set", "unset", "unparseable", "no-project"])
+@pytest.mark.parametrize(
+    "row",
+    [
+        "set",
+        "unset",
+        "unparseable",
+        "no-project",
+        "inside-applied",
+        "inside-unaligned",
+        "inside-unapplied",
+        "inside-unreadable",
+    ],
+)
 def test_sandbox_memory(row, tmp_path, monkeypatch):
-    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; unset falls back to installed memory."""
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; inside the Sandbox, the live limit does."""
+    booley_dir = _setup_sandbox_memory_row(row, tmp_path, monkeypatch)
     if row == "unset":
         _edit_booley_toml(booley_dir, 'memory = "16g"\n', "")
     elif row == "unparseable":
         _edit_booley_toml(booley_dir, '"16g"', '"lots"')
     elif row == "no-project":
         (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
+    elif row == "inside-unaligned":
+        _edit_booley_toml(booley_dir, '"16g"', '"17179869185"')
+    elif row == "inside-unapplied":
+        _edit_booley_toml(booley_dir, '"16g"', '"2290m"')
 
     result = _doctor_run(tmp_path)
 
+    if row.startswith("inside-"):
+        _assert_inside_sandbox_memory(row, result)
+        return
     warns = _messages(result, Severity.WARN, check_id="sandbox.memory-unset")
+    drift = _messages(result, Severity.WARN, check_id="sandbox.memory-drift")
+    assert drift == []
     if row == "set":
         assert warns == []
-        assert any(m.startswith("[sandbox].memory = 16") for m in _messages(result, Severity.PASS))
+        passes = _messages(result, Severity.PASS)
+        assert any(m.startswith("[sandbox].memory = 16") for m in passes)
+        assert not any("the Sandbox's memory limit" in m for m in passes)
     elif row == "no-project":
         assert warns == []
         assert "sandbox memory skipped - no valid project config" in _messages(
@@ -2978,6 +3161,42 @@ def test_sandbox_memory(row, tmp_path, monkeypatch):
         assert "the Memory Budget falls back to installed memory" in warning
         assert ("unparseable" in warning) is (row == "unparseable")
         assert "memory_budget" not in warning
+
+
+def _setup_sandbox_memory_row(row, tmp_path, monkeypatch):
+    """Set up a Project and a fake cgroup limit file; return the Booley Directory."""
+    if row.startswith("inside-"):
+        _runtime_setup(tmp_path, monkeypatch, inside=True)
+        booley_dir = tmp_path / ".booley"
+    else:
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+    cgroup = tmp_path / "memory.max"
+    monkeypatch.setattr(doctor.resource_policy, "CGROUP_MEMORY_LIMIT_PATHS", (cgroup,))
+    if row != "inside-unreadable":
+        # The host row's 8g proves host Doctor ignores the live limit.
+        cgroup.write_text(f"{(8 if row == 'set' else 16) * _GIB}\n", encoding="utf-8")
+    return booley_dir
+
+
+def _assert_inside_sandbox_memory(row, result):
+    warns = _messages(result, Severity.WARN, check_id="sandbox.memory-unset")
+    drift = _messages(result, Severity.WARN, check_id="sandbox.memory-drift")
+    passes = _messages(result, Severity.PASS)
+    live_pass = "[sandbox].memory = 16g: the Sandbox's memory limit, which sizes the Memory Budget"
+    assert warns == []
+    if row in {"inside-applied", "inside-unaligned"}:
+        assert drift == []
+        assert live_pass in passes
+    elif row == "inside-unapplied":
+        (warning,) = drift
+        assert "'2290m'" in warning
+        assert "still 16g" in warning
+        assert "`booley session refresh`" in _fixes(result, warning)[0]
+    else:
+        (warning,) = drift
+        assert "no readable memory limit" in warning
+        assert not any(m.startswith("[sandbox].memory") for m in passes)
 
 
 def test_sandbox_swap(tmp_path, monkeypatch):
@@ -3107,7 +3326,7 @@ def _prepare_row(monkeypatch, row):
         monkeypatch.setattr(
             host_diagnostics,
             "inspect_host",
-            lambda: host_diagnostics.HostDiagnosticResult(report, None),
+            lambda _root: host_diagnostics.HostDiagnosticResult(report, None),
         )
 
 
@@ -4088,6 +4307,34 @@ def _incomplete(reason):
     return (Severity.FAIL, f"produced incomplete synthesis evidence: {reason}")
 
 
+@pytest.mark.parametrize(
+    ("utilization", "toml", "message"),
+    [
+        (150, "", "dry-run [synth_dut] failed with exit 2"),
+        (50, '[flows.synth.timing]\nengine = "sta"\n', "build input(s): timing"),
+    ],
+)
+def test_doctor_fails_synth_configure_errors(tmp_path, monkeypatch, utilization, toml, message):
+    options = "tool: yosys, arch: xilinx, synth_mode: physical, booley: {doctor: [synth]}, "
+    options += f"advanced_settings_openroad: {{utilization_pct: {utilization}}}"
+    sets = "  rtl: {files: [rtl/dut.sv]}\n  sdc: {files: [dut.sdc], file_type: SDC}\n"
+    core = _core("synth", _target("synth_dut", "generic", options, "rtl, sdc", "dut"), sets)
+    _core_project(
+        tmp_path, monkeypatch, {"unit.core": None, "synth.core": core, "dut.sdc": ""}, toml=toml
+    )
+    real_run = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        if "booley.flows.synth" not in cmd or "--dry-run" not in cmd:
+            return real_run(cmd, **kwargs)
+        a = [str(tmp_path) if "/" in c else c for c in cmd]
+        out = AsicSynthesizeFlow().execute_cli(a[a.index("booley.flows.synth") + 1 :]).outcome
+        return subprocess.CompletedProcess(cmd, out.exit_code, "", out.report_text)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    assert _rows(_doctor_run(tmp_path), Severity.FAIL, message)
+
+
 def test_deep_synthesis_evidence_is_graded_per_target(tmp_path, monkeypatch, capsys):
     """Deep synth passes only with terminal PPA (and, if physical, timing) evidence."""
     from booley.flows.implementation_publication import target_report_path
@@ -4700,7 +4947,12 @@ def _seed_mount_policy_project(tmp_path, monkeypatch, app, policy):
 
 
 def test_seed_mount_policy_unavailable_fails_without_comparing(tmp_path, monkeypatch):
-    for damage in ("invalid-policy", "ambiguous-seed", "directory-conflict"):
+    for damage in (
+        "invalid-policy",
+        "ambiguous-seed",
+        "directory-conflict",
+        "non-default-ambiguous-seed",
+    ):
         (tmp_path / damage).mkdir()
         _assert_unavailable_policy_fails_without_comparing(tmp_path / damage, monkeypatch, damage)
 
@@ -4709,11 +4961,15 @@ def _assert_unavailable_policy_fails_without_comparing(tmp_path, monkeypatch, da
     from booley.runtime import inspection
 
     data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "subscription")
-    spec = build_spec("claude")
+    if damage == "non-default-ambiguous-seed":
+        (data / "booley.toml").write_text(
+            '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\nauth = "subscription"\n'
+        )
+    spec = build_spec("codex" if damage == "non-default-ambiguous-seed" else "claude")
     dc.write_devcontainer(data.parent, spec)
     if damage == "invalid-policy":
         (data / "booley.toml").write_text('[agent]\nauth="invalid"\n')
-    elif damage == "ambiguous-seed":
+    elif damage in ("ambiguous-seed", "non-default-ambiguous-seed"):
         (Path.home() / ".claude.json").write_text('{"primaryApiKey":"SYNTHETIC_SECRET"}')
     else:
         data.rename(data.with_name("moved"))

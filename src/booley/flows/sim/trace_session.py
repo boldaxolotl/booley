@@ -25,6 +25,7 @@ from booley.bwave.waveform_store import (
     start_streaming_conversion,
     waveform_cache_dir,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 TRACE_STATUS_SCHEMA_VERSION = 1
@@ -40,6 +41,7 @@ class TraceArtifact:
     top_scope: str
     signal_count: int
     total_ticks: int
+    warnings: tuple[str, ...] = ()
 
     def metadata_line(self) -> str:
         """Stable stdout marker consumed by the parent Simulation Flow."""
@@ -49,6 +51,7 @@ class TraceArtifact:
             "top_scope": self.top_scope,
             "signal_count": self.signal_count,
             "total_ticks": self.total_ticks,
+            "warnings": list(self.warnings),
         }
         return TRACE_METADATA_PREFIX + json.dumps(payload, separators=(",", ":"))
 
@@ -94,6 +97,8 @@ class TraceSession:
         self._conversion_deadline: float | None = None
         # Once postprocess ran, find() must not convert the same VCD a second time.
         self._postprocessed = False
+        # The `bwave build` warnings of each store a successful conversion wrote.
+        self._conversion_warnings: dict[Path, tuple[str, ...]] = {}
         now = _utc_now()
         self._status: dict[str, object] = {
             "schema_version": TRACE_STATUS_SCHEMA_VERSION,
@@ -173,7 +178,7 @@ class TraceSession:
         }
 
     def _write_status(self) -> None:
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(self._work_dir)
         self._status["updated_at"] = _utc_now()
         self._status["paths"] = self._manifest_paths()
         tmp = self.manifest_path.with_name(
@@ -288,7 +293,7 @@ class TraceSession:
         bwave_proc: StreamingConversion | subprocess.Popen | None = None,
     ) -> Path:
         """Persist trace failure context next to the sim artifacts."""
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(self._work_dir)
         tmp_stderr = self.bwave_path.with_name(self.bwave_path.name + ".stderr")
         stderr_text = ""
         for stderr_path in (self.persisted_stderr_path, tmp_stderr):
@@ -381,6 +386,7 @@ class TraceSession:
             top_scope=metadata.display_scope,
             signal_count=metadata.signal_count,
             total_ticks=metadata.total_ticks,
+            warnings=self._conversion_warnings.get(candidate, ()),
         )
         self._status["current_status"] = "usable"
         self._status["trace_metadata"] = {
@@ -471,6 +477,8 @@ class TraceSession:
             if result.detail:
                 print(f"[bwave] stderr: {result.detail}")
         status = "success" if result and result.success else "no_artifact"
+        if result:
+            self.note_conversion(result)
         if status == "success":
             self.publish_bwave(self.bwave_path)
         return_code = result.attempts[-1].return_code if result and result.attempts else None
@@ -678,9 +686,8 @@ class TraceSession:
             if success:
                 self.publish_bwave(self.bwave_path)
             elif result.detail:
-                (vcd_path.parent / "trace.fst.stderr").write_text(
-                    result.detail + "\n", encoding="utf-8"
-                )
+                make_directories(self._work_dir)
+                self.persisted_stderr_path.write_text(result.detail + "\n", encoding="utf-8")
         finally:
             self._settle_postprocess_artifacts(vcd_path, success=success)
         status = "success" if success else "vcd_only"
@@ -693,22 +700,26 @@ class TraceSession:
 
     def _settle_postprocess_artifacts(self, vcd_path: Path, *, success: bool) -> None:
         """Keep raw fallback artifacts inside the managed simulation directory."""
-        self._work_dir.mkdir(parents=True, exist_ok=True)
-        source_stderr = vcd_path.parent / "trace.fst.stderr"
+        make_directories(self._work_dir)
 
         if success:
             vcd_path.unlink(missing_ok=True)
-            if source_stderr != self.persisted_stderr_path:
-                source_stderr.unlink(missing_ok=True)
             return
 
         managed_vcd = self._work_dir / "trace.vcd"
         if vcd_path.exists() and vcd_path != managed_vcd:
             managed_vcd.unlink(missing_ok=True)
             shutil.move(vcd_path, managed_vcd)
-        if source_stderr.exists() and source_stderr != self.persisted_stderr_path:
-            self.persisted_stderr_path.unlink(missing_ok=True)
-            shutil.move(source_stderr, self.persisted_stderr_path)
+
+    def note_conversion(self, result: ConversionResult) -> None:
+        """Remember the warnings of the store a successful conversion wrote."""
+        if result.success:
+            self._conversion_warnings[result.destination] = result.warnings
+
+    def _published(self, trace_path: Path, dest: Path) -> Path:
+        """Carry *trace_path*'s conversion warnings to *dest*, which now holds its store."""
+        self._conversion_warnings[dest] = self._conversion_warnings.get(trace_path, ())
+        return dest
 
     def publish_bwave(self, trace_path: Path, *, move: bool = False) -> Path | None:
         """Copy a valid cached store beside sim artifacts for later lookup.
@@ -724,27 +735,28 @@ class TraceSession:
         dest = self.work_bwave_path
         try:
             if trace_path.resolve() == dest.resolve():
-                return dest
+                return self._published(trace_path, dest)
         except OSError:
             pass
         try:
-            self._work_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(self._work_dir)
             if move:
                 trace_path.replace(dest)
                 with contextlib.suppress(OSError):  # the store is already published
                     self.record_event("bwave_published", str(dest))
-                return dest
+                return self._published(trace_path, dest)
             if dest.exists() and dest.stat().st_mtime >= trace_path.stat().st_mtime:
                 return dest
             shutil.copy2(trace_path, dest)
             self.record_event("bwave_published", str(dest))
-            return dest
+            return self._published(trace_path, dest)
         except OSError as exc:
             self.record_event("bwave_publish_failed", str(exc))
             return None
 
     def _record_conversion(self, kind: str, result: ConversionResult) -> None:
         """Persist B-Wave conversion attempts in the Simulation manifest."""
+        self.note_conversion(result)
         if not result.attempts:
             status = "disabled" if result.failure_kind == "missing_binary" else "failed"
             self.record_attempt(kind, status, detail=result.detail)

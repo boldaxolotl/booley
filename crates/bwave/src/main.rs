@@ -281,6 +281,10 @@ struct ListArgs {
     #[arg(long)]
     tree: bool,
 
+    /// Refuse a pattern that selects bits of a vector (set by `bwave gui`)
+    #[arg(long, hide = true)]
+    no_bit_slices: bool,
+
     #[command(flatten)]
     global: GlobalOpts,
 }
@@ -313,7 +317,7 @@ struct WaveArgs {
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
 
-    /// Time range START:END (required for wave queries)
+    /// Optional time range START:END; without it, --limit bounds the column count
     #[arg(short = 't', long = "time")]
     time: Option<String>,
 
@@ -946,6 +950,39 @@ fn select_reset_or_exit(cache: &mut ColumnCache, pattern: Option<&str>) {
     }
 }
 
+/// Apply `--clock PATTERN` to the store and print the override line on stderr
+/// (not in JSON mode); a pattern that matches no clock is caller input.
+fn select_clock_or_exit(cache: &mut ColumnCache, pattern: Option<&str>, json_format: bool) {
+    let Some(pattern) = pattern else {
+        return;
+    };
+    match cache.detect_clock_from_pattern(pattern) {
+        Ok((period, first_rise, name)) => {
+            cache.override_clock(period, first_rise, &name);
+            if !json_format {
+                eprintln!(
+                    "# clock override: {name} (period={period} ticks, first_rise={first_rise})"
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            // A --clock pattern that doesn't fit this trace is caller
+            // input, same class as a -s total miss — exit 2, not 1
+            // (1 is reserved for environment/I-O failures).
+            process::exit(2);
+        }
+    }
+}
+
+/// Add the bit-slice rows `patterns` ask for; a refused slice is caller input.
+fn add_slices_or_exit(cache: &mut ColumnCache, patterns: &[String]) {
+    if let Err(error) = cache.add_slices(patterns) {
+        eprintln!("ERROR: {error}");
+        process::exit(2);
+    }
+}
+
 /// Run a query through ColumnCache (loads the store file directly).
 fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
     let mut cache = load_store_or_exit(bwave_path);
@@ -959,26 +996,8 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
         process::exit(2);
     }
     select_reset_or_exit(&mut cache, cfg.reset_pattern.as_deref());
-    if let Some(ref clk_pat) = cfg.clock_pattern {
-        match cache.detect_clock_from_pattern(clk_pat) {
-            Ok((period, first_rise, name)) => {
-                cache.override_clock(period, first_rise, &name);
-                if !cfg.json_format {
-                    eprintln!(
-                        "# clock override: {} (period={} ticks, first_rise={})",
-                        name, period, first_rise
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("ERROR: {}", e);
-                // A --clock pattern that doesn't fit this trace is caller
-                // input, same class as a -s total miss — exit 2, not 1
-                // (1 is reserved for environment/I-O failures).
-                process::exit(2);
-            }
-        }
-    }
+    select_clock_or_exit(&mut cache, cfg.clock_pattern.as_deref(), cfg.json_format);
+    add_slices_or_exit(&mut cache, &cfg.signal_patterns());
     if cfg.pre_edge && cache.clock_period_ticks == 0 {
         eprintln!("ERROR: --sample-mode pre-edge requires a usable clock");
         process::exit(2);
@@ -1023,15 +1042,7 @@ fn run_overview(args: OverviewArgs) {
     require_bwave(&args.bwave, "bwave overview");
     let mut cache = load_store_or_exit(&args.bwave);
     select_reset_or_exit(&mut cache, g.reset.as_deref());
-    if let Some(pattern) = g.clock {
-        let (period, first, name) = cache
-            .detect_clock_from_pattern(&pattern)
-            .unwrap_or_else(|e| {
-                eprintln!("ERROR: {e}");
-                process::exit(2);
-            });
-        cache.override_clock(period, first, &name);
-    }
+    select_clock_or_exit(&mut cache, g.clock.as_deref(), g.format == "json");
     let cfg = bwave::cache::clock_query_config(
         &cache,
         &ExtractConfig {
@@ -1076,22 +1087,16 @@ fn run_list(args: ListArgs) {
     require_bwave(&args.bwave, "bwave list");
     let mut cache = load_store_or_exit(&args.bwave);
     select_reset_or_exit(&mut cache, g.reset.as_deref());
-    if let Some(ref clock) = g.clock {
-        match cache.detect_clock_from_pattern(clock) {
-            Ok((period, rise, name)) => {
-                cache.override_clock(period, rise, &name);
-                if !json_format {
-                    eprintln!(
-                        "# clock override: {} (period={} ticks, first_rise={})",
-                        name, period, rise
-                    );
-                }
-            }
-            Err(error) => {
+    select_clock_or_exit(&mut cache, g.clock.as_deref(), json_format);
+    if args.no_bit_slices {
+        for pattern in &patterns {
+            if let Err(error) = cache.refuse_slice(pattern, "bwave gui") {
                 eprintln!("ERROR: {error}");
                 process::exit(2);
             }
         }
+    } else {
+        add_slices_or_exit(&mut cache, &patterns);
     }
     list_signals_from_cache(
         &cache,

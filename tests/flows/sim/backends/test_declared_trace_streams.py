@@ -3,7 +3,7 @@
 Each case runs a real adapter (Verilator or Icarus) whose simulator is a small
 Python script acting on the declared path, with the ``fake_bwave`` converter
 standing in for the native ``bwave build``. #4233: every launch, traced or not,
-first clears a pipe a killed run left behind; the Cocotb launch is covered too.
+first sweeps the pipes a killed run's ownership record names; the Cocotb launch is covered too.
 """
 
 from __future__ import annotations
@@ -18,14 +18,18 @@ from typing import NamedTuple
 
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.flows.sim.test_simulation_record_crash_matrix import _KILLED, _run_killed
+from tests.flows.sim.test_trace_overlay import _needs_kill, _records
 from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave import waveform_store
 from booley.flows.sim import trace_session
+from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
 from booley.flows.sim.backends import icarus as icarus_adapter
 from booley.flows.sim.backends import verilator as verilator_adapter
 from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
-from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
+from booley.flows.sim.staged_input_ledger import StagedInputLedger, sweep_cancelled_run_inputs
+from booley.flows.sim.trace_session import TraceSession
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="named pipes need POSIX")
 
@@ -64,6 +68,9 @@ for step in os.environ["FAKE_SIM"].split(";"):
     elif op == "write_fst":
         with open(arg, "wb") as out:
             out.write(FST)
+    elif op == "write_cut":
+        with open(arg, "w") as out:
+            out.write(VCD[:-1])
     elif op == "flood":
         with open(arg, "w") as out:
             out.write(VCD + "#9\\n1!\\n" * 150000)
@@ -102,7 +109,7 @@ class Outcome(NamedTuple):
 
 @pytest.fixture(autouse=True)
 def _streaming_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bwave: Path) -> None:
-    """Re-enable streaming (the sim conftest disables it), keep the cache local, probe cheaply."""
+    """Re-enable streaming (the sim conftest disables it) and keep the cache local."""
     monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: True)
     cache = tmp_path / "cache"
     monkeypatch.setattr(
@@ -110,13 +117,6 @@ def _streaming_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bwave:
         "waveform_cache_dir",
         lambda *_args, **_kwargs: cache.mkdir(exist_ok=True) or cache,
     )
-
-    def inspect(_self: TraceSession, path: Path | None) -> TraceInspection:
-        if path is None or path.suffix != ".fst":
-            return TraceInspection(None, "no queryable store")
-        return TraceInspection(TraceArtifact(path, path.stat().st_size, "tb", 1, 1))
-
-    monkeypatch.setattr(TraceSession, "inspect", inspect)
 
 
 def _stage(adapter: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, steps: str) -> Dirs:
@@ -149,6 +149,8 @@ def _run(
     *,
     precreate: dict[str, str] | None = None,
     timeout: int = _RUN_TIMEOUT_S,
+    trace_mode: verilator_adapter.TraceMode = verilator_adapter.TraceMode.NATIVE_FST,
+    transport: AdapterTransportIdentity | None = None,
 ) -> Outcome:
     """Run one traced simulation of *adapter* whose simulator performs *steps*."""
     dirs = _stage(adapter, tmp_path, monkeypatch, steps)
@@ -162,6 +164,8 @@ def _run(
             vcd=True,
             trace_files=entries,
             timeout=timeout,
+            transport=transport,
+            booley_dir=tmp_path / ".booley",
         )
     else:
         run = verilator_adapter.run_verilated_binary(
@@ -170,17 +174,66 @@ def _run(
             run_cwd=dirs.run,
             work_dir=dirs.work,
             vcd=True,
-            trace_mode=verilator_adapter.TraceMode.NATIVE_FST,
+            trace_mode=trace_mode,
             trace_args=["--trace={file}"],
             trace_files=entries,
             timeout=timeout,
+            transport=transport,
+            booley_dir=tmp_path / ".booley",
         )
     return Outcome(run.output, dirs)
 
 
+_CUT_WARNING = (
+    "WARNING: input does not end with a newline; the final line (byte {offset}) "
+    "may be a truncated record"
+)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "steps", "entries", "mode", "offset"),
+    [
+        pytest.param("icarus", "write_cut:dump.vcd", [], None, 109, id="post_run"),
+        pytest.param(
+            "verilator",
+            "write_cut:../work/trace.fifo",
+            [],
+            verilator_adapter.TraceMode.VCD_FIFO,
+            109,
+            id="fifo",
+        ),
+        pytest.param(
+            "verilator", "write_cut:fpu.vcd", ["fpu.vcd"], None, 109, id="declared_stream"
+        ),
+    ],
+)
+def test_conversion_warning_reaches_the_trace_result(
+    adapter, steps, entries, mode, offset, tmp_path, monkeypatch
+):
+    """#5059: a successful conversion's `WARNING:` lines travel with its trace result."""
+    identity = AdapterTransportIdentity(
+        adapter=adapter,
+        attempt_token="token",
+        target_identity="target",
+        selected_tests=(),
+        result_path=tmp_path / "result.json",
+    )
+    kwargs = {"trace_mode": mode} if mode else {}
+    out = _run(adapter, tmp_path, monkeypatch, steps, entries, transport=identity, **kwargs)
+
+    warning = _CUT_WARNING.format(offset=offset)
+    assert warning in out.output
+    result = read_adapter_result(identity)
+    trace = result.trace
+    assert result.passed
+    assert trace is not None
+    assert (trace.status, trace.warnings) == ("ok", (warning,))
+
+
 def _no_pipe_left(run_dir: Path, name: str) -> None:
     assert not os.path.lexists(run_dir / name)
-    assert not os.path.lexists(run_dir / f".{name}.booley-pipe")
+    assert not [path for path in run_dir.iterdir() if path.name.endswith(".booley-pipe")]
+    assert not _records(run_dir.parent)
 
 
 @pytest.mark.parametrize("adapter", ["verilator", "icarus"])
@@ -264,7 +317,7 @@ def _finished_streams(tmp_path: Path, budget_s: float) -> DeclaredTraceStreams:
     run_dir.mkdir()
     session = TraceSession(tmp_path / "work")
     session.start_conversion_budget(budget_s)
-    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run_dir)
+    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run_dir, tmp_path / ".booley")
     streams.close_inputs()
     streams.finish()
     return streams
@@ -315,20 +368,135 @@ def test_pipe_removed_after_timeout_kill(tmp_path, monkeypatch):
     _no_pipe_left(out.dirs.run, "fpu.vcd")
 
 
-def test_sidecar_proven_stale_pipe_is_replaced(tmp_path, monkeypatch):
-    """A pipe a killed run left behind, proven ours by its sidecar, is replaced."""
-    run = tmp_path / "run"
-    run.mkdir()
-    stale = run / "fpu.vcd"
-    os.mkfifo(stale)
-    status = stale.lstat()
-    sidecar = run / ".fpu.vcd.booley-pipe"
-    sidecar.write_text(json.dumps({"dev": status.st_dev, "ino": status.st_ino}), encoding="utf-8")
+def _killed_stream(tmp_path: Path, *, name: str = "fpu.vcd", before_confirmation: bool = False):
+    """Leave the pipe of a run killed (like a SIGKILL) right after it made the pipe."""
+    (tmp_path / "run").mkdir(exist_ok=True)
 
+    def worker() -> None:
+        os.environ["FAKE_BWAVE_MODE"] = "exit_early"
+        if before_confirmation:
+
+            def dying(*_args: object) -> None:
+                # No public entry point stops between creating the pipe and confirming it.
+                os._exit(_KILLED)
+
+            StagedInputLedger.created = dying  # type: ignore[method-assign]
+        session = TraceSession(tmp_path / "killed-work")
+        DeclaredTraceStreams.start(session, (name,), tmp_path / "run", tmp_path / ".booley")
+        os._exit(_KILLED)
+
+    _run_killed(worker, tmp_path / "trace.txt")
+
+
+@_needs_kill
+@pytest.mark.parametrize("how", ["next-run", "recovery-sweep"])
+@pytest.mark.parametrize("stage", ["before-confirmation", "recorded"])
+def test_killed_runs_pipe_is_gone_once_the_next_run_starts(stage, how, tmp_path, monkeypatch):
+    """AC1: a killed run's pipe, before or after it was confirmed, is removed by the next sweep."""
+    _killed_stream(tmp_path, before_confirmation=stage == "before-confirmation")
+    run = tmp_path / "run"
+    left = [path.name for path in run.iterdir()]
+    assert left == (["fpu.vcd"] if stage == "recorded" else [left[0]])
+    assert stat.S_ISFIFO((run / left[0]).lstat().st_mode)
+    assert len(_records(tmp_path)) == 1
+
+    if how == "recovery-sweep":
+        sweep_cancelled_run_inputs(tmp_path / ".booley")
+        _no_pipe_left(run, "fpu.vcd")
+        assert not list(run.iterdir())
+        return
     out = _run("verilator", tmp_path, monkeypatch, "record:fpu.vcd;write:fpu.vcd", ["fpu.vcd"])
 
-    assert out.types() == {"fpu.vcd": "fifo"}
     assert [a["status"] for a in out.attempts("declared_stream")] == ["started", "success"]
+    _no_pipe_left(run, "fpu.vcd")
+
+
+@_needs_kill
+def test_interrupted_sweep_keeps_the_pipe_recorded(tmp_path):
+    """A sweep killed before it unlinks the pipe leaves it recorded, so the next sweep removes it."""
+    _killed_stream(tmp_path)
+    booley = tmp_path / ".booley"
+
+    def sweep() -> None:
+        def dying(*_args: object, **_kwargs: object) -> None:
+            # No public entry point stops a sweep before its unlink: the OS call is replaced.
+            os._exit(_KILLED)
+
+        Path.unlink = dying  # type: ignore[method-assign]
+        sweep_cancelled_run_inputs(booley)
+        os._exit(_KILLED)
+
+    _run_killed(sweep, tmp_path / "sweep-trace.txt")
+    assert stat.S_ISFIFO((tmp_path / "run" / "fpu.vcd").lstat().st_mode)
+    assert len(_records(tmp_path)) == 1
+
+    sweep_cancelled_run_inputs(booley)
+    _no_pipe_left(tmp_path / "run", "fpu.vcd")
+
+
+@_needs_kill
+def test_unremovable_staged_pipe_stays_recorded_for_the_next_sweep(tmp_path, monkeypatch):
+    """A pipe whose unlink fails keeps its record, so a later sweep still removes it."""
+    _killed_stream(tmp_path, before_confirmation=True)
+    run = tmp_path / "run"
+    real_unlink = Path.unlink
+
+    def refuse(self: Path, missing_ok: bool = False) -> None:
+        if self.name.endswith(".booley-pipe"):
+            raise PermissionError("run directory is read-only")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", refuse)
+        sweep_cancelled_run_inputs(tmp_path / ".booley")
+    assert len(list(run.iterdir())) == 1
+    assert len(_records(tmp_path)) == 1
+
+    sweep_cancelled_run_inputs(tmp_path / ".booley")
+    assert not list(run.iterdir())
+    assert not _records(tmp_path)
+
+
+def test_failed_converter_start_leaves_no_pipe_and_no_descriptor(tmp_path, monkeypatch):
+    """A failure after the pipe exists removes it and closes what was opened."""
+    monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: "/bin/true")
+    real_open, opened = os.open, []
+
+    def open_once(path: str, flags: int, *args: int) -> int:
+        if opened:
+            raise OSError("too many open files")
+        opened.append(real_open(path, flags, *args))
+        return opened[0]
+
+    monkeypatch.setattr(os, "open", open_once)
+    fifo = tmp_path / ".staged.booley-pipe"
+    with pytest.raises(OSError, match="too many open files"):
+        waveform_store.start_streaming_conversion(
+            fifo, tmp_path / "t.fst", stderr_path=tmp_path / "t.stderr", replace_existing=False
+        )
+
+    assert not fifo.exists()
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(opened[0])
+
+
+@_needs_kill
+def test_live_runs_pipe_survives_a_sweep(tmp_path):
+    """AC4: the pipe of a run that is still alive is left alone."""
+    run = tmp_path / "run"
+    run.mkdir()
+    streams = DeclaredTraceStreams.start(
+        TraceSession(tmp_path / "work"), ("fpu.vcd",), run, tmp_path / ".booley"
+    )
+    inode = (run / "fpu.vcd").lstat().st_ino
+
+    sweep_cancelled_run_inputs(tmp_path / ".booley")
+
+    assert stat.S_ISFIFO((run / "fpu.vcd").lstat().st_mode)
+    assert (run / "fpu.vcd").lstat().st_ino == inode
+    assert len(_records(tmp_path)) == 1
+    streams.close_inputs()
+    streams.finish()
     _no_pipe_left(run, "fpu.vcd")
 
 
@@ -348,39 +516,50 @@ def test_existing_user_file_is_kept_and_falls_back(tmp_path, monkeypatch):
     assert any("a.vcd" in a["detail"] for a in out.attempts("declared_stream"))
 
 
-@pytest.mark.parametrize("sidecar", [False, True], ids=["no-sidecar", "mismatched-sidecar"])
-def test_foreign_fifo_is_kept(sidecar, tmp_path, monkeypatch):
-    """A pipe without a sidecar, or whose sidecar names another inode, proves nothing."""
-    (tmp_path / "run").mkdir()
-    foreign = tmp_path / "run" / "a.vcd"
-    os.mkfifo(foreign)
-    identity = foreign.lstat().st_ino
-    if sidecar:
-        (tmp_path / "run" / ".a.vcd.booley-pipe").write_text(
-            json.dumps({"dev": 0, "ino": identity + 1}), encoding="utf-8"
-        )
+@_needs_kill
+@pytest.mark.parametrize("case", ["never-recorded", "replaced-by-pipe", "replaced-by-file"])
+def test_foreign_fifo_is_kept(case, tmp_path, monkeypatch):
+    """AC2, AC3: what Booley did not create, or what replaced its pipe, is never removed."""
+    run = tmp_path / "run"
+    foreign = run / "a.vcd"
+    if case == "never-recorded":
+        run.mkdir()
+        os.mkfifo(foreign)
+    else:
+        _killed_stream(tmp_path, name="a.vcd")
+        other = run / "other"
+        if case == "replaced-by-pipe":
+            os.mkfifo(other)
+        else:
+            other.write_text("user data\n", encoding="utf-8")
+        other.replace(foreign)
+    status = foreign.lstat()
 
     out = _run(
         "verilator", tmp_path, monkeypatch, "record:a.vcd,b.vcd;write:b.vcd", ["a.vcd", "b.vcd"]
     )
 
-    assert out.types() == {"a.vcd": "fifo", "b.vcd": "fifo"}
-    assert stat.S_ISFIFO(foreign.lstat().st_mode) and foreign.lstat().st_ino == identity
+    assert foreign.lstat().st_ino == status.st_ino
+    assert foreign.lstat().st_mode == status.st_mode
+    assert out.types()["b.vcd"] == "fifo"
+    assert not _records(tmp_path)
+    assert [a["status"] for a in out.attempts("declared_stream") if "a.vcd" in a["detail"]] == [
+        "skipped"
+    ]
+    if case == "replaced-by-file":
+        assert foreign.read_text(encoding="utf-8") == "user data\n"
 
 
-def _plant_leftovers(run_dir: Path) -> int:
-    """Plant a stale Booley pipe, a foreign pipe and a recorded regular file; return the foreign inode."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    os.mkfifo(run_dir / "fpu.vcd")
+def _plant_leftovers(tmp_path: Path) -> int:
+    """Leave a killed run's pipe, a foreign pipe and a user file; return the foreign inode."""
+    _killed_stream(tmp_path)
+    run_dir = tmp_path / "run"
     os.mkfifo(run_dir / "a.vcd")
     (run_dir / "b.vcd").write_text("user data\n", encoding="utf-8")
-    for name in ("fpu.vcd", "b.vcd"):
-        status = os.lstat(run_dir / name)
-        record = {"dev": status.st_dev, "ino": status.st_ino}
-        (run_dir / f".{name}.booley-pipe").write_text(json.dumps(record), encoding="utf-8")
     return os.lstat(run_dir / "a.vcd").st_ino
 
 
+@_needs_kill
 @pytest.mark.parametrize(
     ("adapter", "trace"),
     [
@@ -398,7 +577,7 @@ def test_every_launch_clears_only_a_proven_stale_pipe_first(adapter, trace, tmp_
     monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: False)
     monkeypatch.setattr(run_guard, "install_parent_death_guard", lambda: None)
     dirs = _stage(adapter, tmp_path, monkeypatch, "record:fpu.vcd,a.vcd,b.vcd")
-    foreign_inode = _plant_leftovers(dirs.run)
+    foreign_inode = _plant_leftovers(tmp_path)
     fields = {"trace_mode": "native_fst", "trace_args": ("--trace={file}",)} if trace else {}
     work = PreparedSimulationWork(
         adapter=adapter,  # pyright: ignore[reportArgumentType]
@@ -409,6 +588,7 @@ def test_every_launch_clears_only_a_proven_stale_pipe_first(adapter, trace, tmp_
         timeout_s=hang_guard_s(),
         trace=trace,
         trace_files=("fpu.vcd", "a.vcd", "b.vcd"),
+        booley_dir=str(tmp_path / ".booley"),
         **fields,
     )
     main = icarus_adapter.main if adapter == "icarus" else verilator_adapter.main
@@ -417,19 +597,18 @@ def test_every_launch_clears_only_a_proven_stale_pipe_first(adapter, trace, tmp_
 
     types = json.loads((dirs.run / "types.json").read_text(encoding="utf-8"))
     assert types == {"fpu.vcd": "missing", "a.vcd": "fifo", "b.vcd": "file"}
-    assert not os.path.lexists(dirs.run / ".fpu.vcd.booley-pipe")
     assert os.lstat(dirs.run / "a.vcd").st_ino == foreign_inode
     assert (dirs.run / "b.vcd").read_text(encoding="utf-8") == "user data\n"
-    assert (dirs.run / ".b.vcd.booley-pipe").is_file()
 
 
+@_needs_kill
 def test_cocotb_launch_clears_a_stale_booley_pipe_first(tmp_path, monkeypatch):
     """The Cocotb launch shares the run directory, so it clears the same leftovers first."""
     from booley.flows.sim.adapter_contract import PreparedSimulationWork, encode_simulation_work
     from booley.flows.sim.backends import cocotb as cocotb_adapter
 
     run_dir = tmp_path / "run"
-    foreign_inode = _plant_leftovers(run_dir)
+    foreign_inode = _plant_leftovers(tmp_path)
     seen: list[list[str]] = []
 
     def record(**_kwargs: object) -> int:
@@ -445,11 +624,12 @@ def test_cocotb_launch_clears_a_stale_booley_pipe_first(tmp_path, monkeypatch):
         eda_tool="icarus",
         cocotb_module="m",
         trace_files=("fpu.vcd", "a.vcd", "b.vcd"),
+        booley_dir=str(tmp_path / ".booley"),
     )
 
     assert cocotb_adapter.main([encode_simulation_work(work)]) == 0
 
-    assert seen == [[".b.vcd.booley-pipe", "a.vcd", "b.vcd"]]
+    assert seen == [["a.vcd", "b.vcd"]]
     assert os.lstat(run_dir / "a.vcd").st_ino == foreign_inode
 
 

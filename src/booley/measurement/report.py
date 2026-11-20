@@ -13,7 +13,8 @@ on the rules entry's metric); the 20-line cap counts file and submodule lines to
 while protected and constraint edits get their own uncapped lines; red and amber are
 words in Markdown, never colour (a rules change names its class, "loosened" and so on,
 in its text); integers print whole and floats with ``:.12g`` (Δ signed) so float noise
-never reaches the report; in Markdown, specials in user text are backslash-escaped.
+never reaches the report; in Markdown, specials in user text are backslash-escaped. An unmet
+lint or mutation bound lists the first findings or survived Mutants behind it after the failing tests.
 """
 
 from __future__ import annotations
@@ -371,12 +372,74 @@ def _changed(view: Mapping[str, Any]) -> _Section:
 def _failing_tests(document: Mapping[str, Any], names: _Names) -> _Section:
     blocks: list[_Block] = []
     for table in document["tables"]:
-        plain = {} if table["values"] is None else table["values"]["plain"]
-        if plain.get("tests_failed", 0) > 0:
-            failed, total = _num(plain["tests_failed"]), _num(plain.get("tests_total"))
-            label = names.label(table["identity"], table["flow"])
-            blocks.append(_Text(f"{label}: {failed} failed of {total} tests", "fail"))
+        values = table["values"] or {"plain": {}}
+        if values["plain"].get("tests_failed", 0) <= 0:
+            continue
+        failed, total = (
+            _num(values["plain"]["tests_failed"]),
+            _num(values["plain"].get("tests_total")),
+        )
+        label = names.label(table["identity"], table["flow"])
+        blocks.append(_Text(f"{label}: {failed} failed of {total} tests", "fail"))
+        listed = values.get("counted_items", {}).get("tests_failed", [])  # absent in older runs
+        blocks.extend(_listed(listed, values["plain"]["tests_failed"]))
+        blocks.extend(_flow_report_lines(document, table, label) if listed else [])
     return ("Failing tests", blocks)
+
+
+def _listed(lines: list[str], count: int) -> list[_Block]:
+    """The *lines* behind *count*, ``... and N more`` when they are fewer."""
+    if not lines:
+        return []
+    more = count - len(lines)
+    return [_Code("\n".join([*lines, *([f"... and {more} more"] if more > 0 else [])]))]
+
+
+# Per Flow, the bound metric whose unmet result lists items: (the metric whose items are
+# listed, the noun counted). A mutation score below its bound comes from the survived Mutants.
+_UNMET_ITEMS: dict[str, dict[str, tuple[str, str]]] = {
+    "lint": {"errors": ("errors", "error"), "warnings": ("warnings", "warning")},
+    "mutation": {
+        "mutants_survived": ("mutants_survived", "survived Mutant"),
+        "mutation_score": ("mutants_survived", "survived Mutant"),
+    },
+}
+
+
+def _unmet_items(document: Mapping[str, Any], names: _Names, flow: str, title: str) -> _Section:
+    """What an unmet *flow* bound counts: the stored items of each such table, then its report."""
+    blocks: list[_Block] = []
+    for table in document["tables"]:
+        if table["flow"] != flow:
+            continue
+        values = table["values"] or {"plain": {}}
+        label = names.label(table["identity"], flow)
+        unmet = (
+            _UNMET_ITEMS[flow].get(names.entry[(table["identity"], flow, result["key"])]["metric"])
+            for result in table["results"]
+            if result["verdict"] == "unmet"
+        )
+        listed: list[_Block] = []
+        for metric, noun in dict.fromkeys(item for item in unmet if item):
+            lines = values.get("counted_items", {}).get(metric, [])  # absent in older runs
+            count = values["plain"].get(metric, 0)
+            listed.extend([_Text(f"{label}: {_count(count, noun)}", "fail")] if lines else [])
+            listed.extend(_listed(lines, count))
+        blocks.extend([*listed, *(_flow_report_lines(document, table, label) if listed else [])])
+    return (title, blocks)
+
+
+def _flow_report_lines(
+    document: Mapping[str, Any], table: Mapping[str, Any], label: str
+) -> list[_Block]:
+    """The path of *table*'s kept ``report.json``, where the failures not listed are."""
+    return [
+        _Text(f"{label} report: `{path}`")
+        for item in document["view"]["evidence"]
+        if (item["identity"], item["flow"]) == (table["identity"], table["flow"])
+        for path in item["reports"]
+        if Path(path).name == "report.json"
+    ]
 
 
 def _footer(document: Mapping[str, Any], names: _Names) -> _Section:
@@ -410,6 +473,8 @@ def _sections(document: Mapping[str, Any]) -> list[_Section]:
         ("Targets", targets),
         _changed(view),
         _failing_tests(document, names),
+        _unmet_items(document, names, "lint", "Lint findings"),
+        _unmet_items(document, names, "mutation", "Survived Mutants"),
         _footer(document, names),
     ]
     return [section for section in sections if section[1]]

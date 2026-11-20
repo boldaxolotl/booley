@@ -9,6 +9,7 @@ from booley.config.sandbox import project_image_name
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.image_identity import ImageMetadata
 from tests.harness.test_image_lifecycle import (
+    RISCV_ENVIRONMENT,
     FakeDocker,
     TransactionBuilder,
     _install_planned_graph,
@@ -225,6 +226,8 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
         }
     )
     docker.images[logical] = (RELEASE_ID, labels)
+    if logical == "booley-sandbox-riscv":
+        docker.environments[RELEASE_ID] = RISCV_ENVIRONMENT
     for directory in ["first", "second"]:
         project = _project(tmp_path / directory, logical)
         observed = lifecycle.plan(

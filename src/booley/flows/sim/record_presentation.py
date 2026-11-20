@@ -13,9 +13,9 @@ from typing import Any, cast
 from booley.flows.metric_declarations import metrics_document
 from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_policy import coverage_metrics
-from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record import CoverageRecord, CoverageRollup
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
+from booley.flows.sim.coverage_waivers import WAIVER_DIRECTORY_ABSENT_CODE
 from booley.flows.sim.record.test_run_files import TestRunFiles, simulation_record_test_run_files
 from booley.flows.sim.record.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.record.test_run_report import (
@@ -44,7 +44,7 @@ from .metrics import coverage_record_path, simulation_flow_metrics
 from .record import (
     ManifestTarget,
     NewSimulationRecordPreview,
-    NewSimulationRecordRunRequest,
+    NewSimulationRecordPreviewRequest,
     SimulationRecordManifestView,
     SimulationRecordOutcome,
     SimulationRecordRecoveryStatus,
@@ -192,6 +192,14 @@ def _waiver_block_hint_lines(coverage_record: CoverageRecord) -> list[str]:
     return []
 
 
+def _absent_waiver_directory_lines(coverage_record: CoverageRecord) -> list[str]:
+    return [
+        f"  {finding.message}"
+        for finding in coverage_record.findings
+        if finding.code == WAIVER_DIRECTORY_ABSENT_CODE
+    ]
+
+
 def _resolved_coverage_records(
     outcomes: Sequence[SimulationRecordOutcome],
 ) -> dict[str, CoverageRecord]:
@@ -326,6 +334,7 @@ def _simulation_record_report_blocks(
         suffix = []
         if getattr(outcome, "coverage_reference", None) is not None:
             suffix.extend(_waiver_block_hint_lines(coverage_record))
+            suffix.extend(_absent_waiver_directory_lines(coverage_record))
             suffix.extend(source_gap_report_lines(coverage_record))
         blocks.append((report_lines, suffix))
     return blocks
@@ -527,12 +536,12 @@ def _simulation_record_structured_details(
     }
 
 
-def _coverage_request_target(request: NewSimulationRecordRunRequest) -> ManifestTarget:
+def _coverage_request_target(request: NewSimulationRecordPreviewRequest) -> ManifestTarget:
     """Expose the typed Target projection from one immutable record request."""
     return SimulationRecordManifestView(request.plan.manifest).target
 
 
-def _coverage_request_selector(request: NewSimulationRecordRunRequest) -> str:
+def _coverage_request_selector(request: NewSimulationRecordPreviewRequest) -> str:
     return _coverage_request_target(request).selector
 
 
@@ -1031,18 +1040,14 @@ def _grade_exit_code(grade: str) -> int:
     return EXIT_SUCCESS if grade == "pass" else EXIT_FAILURE
 
 
-def _retain_coverage_record(progress: CoverageProgress, outcome: SimulationRecordOutcome) -> None:
-    """Authenticate and retain one completed Target before observational writes."""
+def _coverage_target_outcome(outcome: SimulationRecordOutcome) -> CoverageTargetOutcome:
+    """Authenticate one completed Target's ``coverage.json`` and build its progress entry."""
     public = outcome.manifest_path.parents[1] / "coverage.json"
     coverage_record = resolve_coverage_record_reference(public).loaded.coverage_record
-    progress.outcomes.append(
-        CoverageTargetOutcome(
-            str(outcome.target["selector"]),
-            _coverage_record_exit_code(
-                [outcome], {str(outcome.target["selector"]): coverage_record}
-            )
-            or _grade_exit_code(outcome.aggregate_grade),
-            public,
-            coverage_record.evaluation,
-        )
+    return CoverageTargetOutcome(
+        str(outcome.target["selector"]),
+        _coverage_record_exit_code([outcome], {str(outcome.target["selector"]): coverage_record})
+        or _grade_exit_code(outcome.aggregate_grade),
+        public,
+        coverage_record.evaluation,
     )

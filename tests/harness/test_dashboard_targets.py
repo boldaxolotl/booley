@@ -16,6 +16,7 @@ from textual.widgets import DataTable, Static
 
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot
+from booley.harness.dashboard.targets import enabled_flows
 from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.targets.domain import CoreCollisionError
@@ -634,3 +635,18 @@ async def test_targets_navigation_uses_arrows_enter_and_escape_only(repo):
         assert app.navigation.view == "targets"
         await pilot.press("left", "left")
         assert app.window == "sessions"
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {".booley/booley.toml": "[flows.sim]\nbackend = 'x'\n"},
+        {".booley/booley.toml": "", ".booley_project/booley.toml": ""},
+    ],
+    ids=["retired-key", "two-booley-directories"],
+)
+def test_enabled_flows_keeps_a_flow_whose_setting_cannot_be_read(tmp_path, layout):
+    for name, text in layout.items():
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).write_bytes(text.encode())
+    assert enabled_flows(("fpga", "sim"), tmp_path) == ("fpga", "sim")

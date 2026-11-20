@@ -24,13 +24,6 @@ from tests.test_guidance_links import _make_project
 from tests.time_budget import hang_guard_s
 
 
-@pytest.fixture(autouse=True)
-def _isolate_project_cache():
-    reset_cache()
-    yield
-    reset_cache()
-
-
 def test_checkout_cannot_be_its_own_booley_directory(tmp_path, monkeypatch):
     config = tmp_path / "booley.toml"
     original = '[project]\ndir = "."\n'

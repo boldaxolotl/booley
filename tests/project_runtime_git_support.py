@@ -16,6 +16,8 @@ NEW_RUNTIME_PATHS = (
     "BOOLEY-FEEDBACK.md",
     "setup-evidence/attachments/log.txt",
     "PARITY-REPORT.md",
+    "plans/note.md",
+    "handoffs/note.md",
 )
 
 

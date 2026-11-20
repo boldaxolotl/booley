@@ -27,6 +27,9 @@ pub struct ClockVerdict {
     pub first_off_grid_cycle: Option<u64>,
     pub findings: Vec<ClockFinding>,
     pub stopped: StopSummary,
+    /// True when `--clock` chose the clock; only the text header says so.
+    #[serde(skip)]
+    pub chosen_by_option: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, JsonSchema)]
@@ -120,7 +123,7 @@ pub fn analyze(
         findings.push(ClockFinding {
             reason: "insufficient_edges".into(),
             tick: rises.first().copied(),
-            detail: "fewer than two rising edges; no usable clock grid".into(),
+            detail: "fewer than two rising edges; queries fall back to ticks; select a clock with --clock PATTERN or use --async".into(),
         });
     }
     if let Some(tick) = off_grid {
@@ -185,6 +188,7 @@ pub fn analyze(
             first_off_grid_cycle: off_grid.map(|t| (t - first) / period + 1),
             findings,
             stopped: StopSummary::default(),
+            chosen_by_option: false,
         },
         stopped_ticks,
     }
@@ -272,11 +276,18 @@ pub fn verdict_text(verdict: &ClockVerdict) -> String {
         format!(", longest {}:{}", r.from_cycle, r.to_cycle)
     });
     format!(
-        "# clock: {}\n# clock regularity: {} ({})\n# clock stopped: {} stretches, {} cycles{}{}",
+        "# clock: {}{}\n# clock regularity: {} ({})\n# clock stopped: {} stretches, {} cycles{}{}",
         if verdict.clock.is_empty() {
             "<not detected>"
         } else {
             &verdict.clock
+        },
+        if verdict.clock.is_empty() {
+            ""
+        } else if verdict.chosen_by_option {
+            " (--clock)"
+        } else {
+            " (auto-detected; --clock PATTERN to override)"
         },
         verdict.status,
         verdict.reason,

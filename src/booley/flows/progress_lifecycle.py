@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import tempfile
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -20,6 +21,7 @@ from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
+    make_directories,
     open_with_sharing_retry,
     replace_file,
 )
@@ -33,33 +35,109 @@ class ProgressPublicationError(OSError):
     """A Flow could not publish its terminal progress state."""
 
 
+# Entered lifecycles not yet terminal: a signal handler that ends the process without
+# unwinding publishes their ``aborted`` state. ``_publication_depth`` counts the main
+# thread's progress publications in flight, and ``_after_publication`` is the callback a
+# signal asked to run once they end. None is locked: a signal handler that took a lock
+# could deadlock against the main thread it interrupted.
+_OPEN: set[ProgressLifecycle] = set()
+_publication_depth = 0
+_after_publication: Callable[[], None] | None = None
+
+
+@contextmanager
+def _publication() -> Iterator[None]:
+    """Mark a main-thread progress publication so a signal can wait for it."""
+    global _publication_depth, _after_publication
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    _publication_depth += 1
+    try:
+        yield
+    finally:
+        _publication_depth -= 1
+        callback = _after_publication
+        if _publication_depth == 0 and callback is not None:
+            _after_publication = None
+            _run_marked(callback)
+
+
+def _run_marked(callback: Callable[[], None]) -> None:
+    """Run a signal's callback as a publication: a second signal during it waits for it."""
+    with _publication():
+        callback()
+
+
+def after_progress_publication(callback: Callable[[], None]) -> None:
+    """Run *callback* now or, while the main thread is inside a progress publication, after it.
+
+    For a signal handler that ends the process: ending it mid-publication would keep the
+    progress lock held and the document non-terminal. A call while one is pending keeps
+    the first, and a signal during *callback* itself waits for it.
+    """
+    global _after_publication
+    if _publication_depth == 0:
+        _run_marked(callback)
+    elif _after_publication is None:
+        _after_publication = callback
+
+
+def abort_open_progress() -> None:
+    """Publish ``aborted`` once for every entered lifecycle not yet terminal.
+
+    For a signal handler that is about to end the process without unwinding; best
+    effort, a failed publication is dropped.
+    """
+    for lifecycle in tuple(_OPEN):
+        if lifecycle._terminal_attempted:
+            continue
+        lifecycle._terminal_attempted = True
+        _OPEN.discard(lifecycle)
+        with suppress(Exception):
+            lifecycle._publish("aborted")
+
+
 class ProgressLifecycle:
-    """Publish a terminal checkpoint exactly once on every catchable exit."""
+    """Publish a terminal checkpoint exactly once on every catchable exit.
+
+    A signal that ends the process without unwinding publishes it through
+    :func:`abort_open_progress`.
+    """
 
     def __init__(self, publish: Callable[[str], None]) -> None:
         self._publish = publish
         self._terminal_attempted = False
 
     def __enter__(self) -> ProgressLifecycle:
+        _OPEN.add(self)
         return self
 
     def complete(self) -> None:
         """Publish normal completion, repairing once as aborted on failure."""
-        if self._terminal_attempted:
-            raise RuntimeError("progress lifecycle was already terminalized")
-        self._terminal_attempted = True
-        try:
-            self._publish("complete")
-        except Exception as first:
-            with suppress(Exception):
-                self._publish("aborted")
-            raise ProgressPublicationError(str(first)) from first
+        with _publication():
+            if self._terminal_attempted:
+                raise RuntimeError("progress lifecycle was already terminalized")
+            self._terminal_attempted = True
+            _OPEN.discard(self)
+            try:
+                self._publish("complete")
+            except Exception as first:
+                with suppress(Exception):
+                    self._publish("aborted")
+                raise ProgressPublicationError(str(first)) from first
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> Literal[False]:
         del traceback
         if self._terminal_attempted:
             return False
-        self._terminal_attempted = True
+        with _publication():
+            self._terminal_attempted = True
+            _OPEN.discard(self)
+            self._publish_aborted(exc_type)
+        return False
+
+    def _publish_aborted(self, exc_type: object) -> None:
         try:
             self._publish("aborted")
         except Exception as cleanup:  # noqa: BLE001 — retry any publication failure
@@ -69,9 +147,6 @@ class ProgressLifecycle:
                 if exc_type is None:
                     message = f"{cleanup}; aborted retry failed: {retry}"
                     raise ProgressPublicationError(message) from cleanup
-            else:
-                return False
-        return False
 
 
 def progress_document(
@@ -108,7 +183,7 @@ def write_progress_json(
     path: Path, document: Mapping[str, object], *, lock_timeout_s: float = 5
 ) -> None:
     """Atomically publish one progress document under its shared writer lock."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     with _progress_file_lock(path, timeout_s=lock_timeout_s):
         _write_progress_json_unlocked(path, document)
 
@@ -346,6 +421,13 @@ def _replace_if_unchanged(
 
 @contextmanager
 def _progress_file_lock(path: Path, *, timeout_s: float = 5) -> Iterator[None]:
+    # The publication ends after the lock is released, so a signal's abort can take it.
+    with _publication(), _held_progress_lock(path, timeout_s=timeout_s):
+        yield
+
+
+@contextmanager
+def _held_progress_lock(path: Path, *, timeout_s: float) -> Iterator[None]:
     lock_path = path.with_name(".progress.lock")
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(lock_path, flags, 0o600)

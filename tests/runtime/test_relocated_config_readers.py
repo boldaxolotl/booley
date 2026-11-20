@@ -115,7 +115,7 @@ def test_configuration_readers_use_relocated_booley_dir(
     assert rtl_config is not None and rtl_config["project"]["name"] == name
     monkeypatch.setattr(agent, "_agent_settings", None)
     assert agent.load_agent_settings(root).clis == (("claude", "codex") if is_main else ("codex",))
-    suite = flow_planning._required_suite(root, ["t"])
+    suite = flow_planning._required_suite(root, ["t"], "sim_0")
     assert suite["source_path"] == "state/tests.toml"
     assert policy.stealth_enabled(root) is not is_main
     assert validate_commit_msg._has_project_config(root)
@@ -244,4 +244,4 @@ def test_required_suite_reports_booley_dir_outside_the_checkout(tmp_path: Path) 
     _write(project / "booley.toml", f'[project]\ndir = "{elsewhere.as_posix()}"\n')
 
     with pytest.raises(SimulationRecordIntegrityError, match=r"no readable tests\.toml"):
-        flow_planning._required_suite(project, ["t"])
+        flow_planning._required_suite(project, ["t"], "sim_0")

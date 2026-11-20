@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.endpoint_session import default_report_root
 from booley.flows.progress_lifecycle import (
     supersede_progress,
 )
@@ -69,8 +70,8 @@ from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import (
     _coverage_failed_target,
     _coverage_preflight_findings_outcome,
+    _coverage_target_outcome,
     _CoverageTargetError,
-    _retain_coverage_record,
     _simulation_record_recovery_detail,
 )
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
@@ -111,16 +112,24 @@ def _fresh_simulation_record_recovery_detail(
 
 
 def _checkpoint_coverage_record(
-    progress: CoverageProgress, outcome: SimulationRecordOutcome, evaluation: str
-) -> None:
+    progress: CoverageProgress,
+    outcome: SimulationRecordOutcome,
+    evaluation: str,
+    publish: Callable[[SimulationRecordOutcome], bool],
+) -> bool:
+    """Retain one completed Target once its projection is published; ``False`` keeps it pending."""
     try:
-        _retain_coverage_record(progress, outcome)
+        target = _coverage_target_outcome(outcome)
     except (OSError, ValueError) as error:
         detail = _coverage_failed_target(
             str(outcome.target["selector"]), error, evaluation, outcome
         )
         raise _CoverageTargetError(str(error), detail) from error
+    if not publish(outcome):
+        return False
+    progress.outcomes.append(target)
     progress.checkpoint()
+    return True
 
 
 class SimulationRecordResumeMixin:
@@ -131,6 +140,7 @@ class SimulationRecordResumeMixin:
         publication_resources: ExitStack[bool | None]
         _held_resume_origins: set[Path]
         _simulation_record_publication_checkpoint: Callable[[str], None] | None
+        endpoint_kind: str
 
         @property
         def args(self) -> SimRequest: ...
@@ -154,6 +164,7 @@ class SimulationRecordResumeMixin:
         def _simulation_record_endpoint_outcome(
             self, outcomes: list[SimulationRecordOutcome]
         ) -> EndpointOutcome: ...
+        def _publish_projection(self, outcome: SimulationRecordOutcome) -> bool: ...
         def work_item_job_request(
             self, selector: str, runs: Sequence[TestRun], flags: tuple[str, ...]
         ) -> JobRequest | None: ...
@@ -195,50 +206,84 @@ class SimulationRecordResumeMixin:
             return None
         item_id = unfinished[0]
         state = "interrupted" if item_id in status.interrupted else "pending"
-        selector = view.target.selector
-        trace = " --trace" if view.trace else ""
-        no_waivers = " --no-waivers" if view.no_waivers else ""
-        tests = self._frozen_test_run_options(manifest, selector)
+        command, note = self._new_coverage_run_command(validated, view)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
                 f"sim: cannot resume coverage Simulation Record {status.manifest_path}: "
                 f"its coverage collection has no recorded result (work item {item_id} is "
                 f"{state}; the run was interrupted or is still running). Resuming would "
-                "rebuild and re-run every test, so start a new run instead:\n"
-                f"  booley flow sim --target {shlex.quote(selector)}{tests} "
-                f"--coverage{trace}{no_waivers}\n"
-                + (
-                    "The command names the Test Runs this Simulation Record froze, so the new "
-                    "run repeats their Test Variants and seeds."
-                    if tests
-                    else "Add the original --test/--tests-file selection if you used one."
-                )
+                f"rebuild and re-run every test, so start a new run instead:\n  {command}\n{note}"
             ),
             detail=_simulation_record_recovery_detail(status),
         )
 
-    def _frozen_test_run_options(self, manifest: SimulationRecordManifest, selector: str) -> str:
+    def _new_coverage_run_command(
+        self, validated: ValidatedResumeManifest, view: SimulationRecordManifestView
+    ) -> tuple[str, str]:
+        """The command for a new run that repeats the record, and the line after it."""
+        selector = view.target.selector
+        trace = " --trace" if view.trace else ""
+        no_waivers = " --no-waivers" if view.no_waivers else ""
+        tests = self._frozen_test_run_options(validated.manifest, selector)
+        command = (
+            f"booley flow sim --target {shlex.quote(selector)}{tests or ''} --coverage"
+            f"{trace}{no_waivers}{self._recorded_report_dir_option(validated)}"
+        )
+        if tests is None:
+            note = "Add the original --test/--tests-file selection if you used one."
+        elif tests:
+            note = (
+                "The command names the Test Runs this Simulation Record froze, so the new "
+                "run repeats their Test Variants and seeds."
+            )
+        else:
+            note = (
+                "This Simulation Record froze the Target's whole default suite, so the "
+                "command names no Test Run."
+            )
+        return command, note
+
+    def _recorded_report_dir_option(self, validated: ValidatedResumeManifest) -> str:
+        """`` --report-dir <root>`` unless a run without it would use the record's root."""
+        # <root>/sim/<N>/targets/<target>/record/manifest.json
+        root = validated.path.parents[3].parent.parent
+        try:
+            if (
+                root.resolve()
+                == default_report_root(self.endpoint_kind, Path(self.args.work_dir)).resolve()
+            ):
+                return ""
+        except (OSError, RuntimeError, ValueError):
+            pass  # the default is unknown, so the command names the root
+        return f" --report-dir {shlex.quote(str(root))}"
+
+    def _frozen_test_run_options(
+        self, manifest: SimulationRecordManifest, selector: str
+    ) -> str | None:
         """``--test`` options that repeat the record's Test Runs in a new run.
 
-        Empty when every frozen Test Run is still its Test's default at the
-        Default Seed: the plain selection then resolves to the same runs.
-        Any other record (a Test Variant, a pinned or drawn seed, a default
-        that has since changed) is named run by run, so a new run draws and
-        resolves nothing again.
+        None when the manifest's Test Runs cannot be read.  Empty when the
+        frozen Test Runs are the Target's whole default suite: the plain
+        selection then resolves to the same runs.  Any other record (a subset,
+        a Test Variant, a pinned or drawn seed, a default that has since
+        changed) is named run by run, so a new run draws and resolves nothing
+        again.
         """
         try:
             runs = [run for group in _manifest_run_groups(manifest) for run in group]
         except ValueError:
-            return ""
+            return None
         try:
-            plan = self._target_test_plan(selector)
-            unchanged = all(plan.is_default_run(run) for run in runs)
+            defaults = self._target_test_plan(selector).default_runs()
+            whole_suite = sorted(runs, key=lambda run: run.name) == sorted(
+                defaults, key=lambda run: run.name
+            )
         except (fusesoc_registry.FuseSocError, ValueError):
-            # Nothing shows the frozen runs are still defaults, so the command
+            # Nothing shows the frozen runs are the default suite, so the command
             # names each of them (test_test_run_resolution_errors).
-            unchanged = False
-        if unchanged or any(run.test is None for run in runs):
+            whole_suite = False
+        if whole_suite:
             return ""
         return "".join(f" {shlex.quote(f'--test={run.name}')}" for run in runs)
 
@@ -265,15 +310,14 @@ class SimulationRecordResumeMixin:
             current_plan = self._resume_simulation_record_plan(
                 validated, SimulationRecordManifestView(validated.manifest).origin_invocation_id
             )
-            preview = SimulationRecord().preview(
-                ResumeSimulationRecordPreviewRequest(
-                    validated,
-                    current_plan,
-                    Path(self.args.work_dir),
-                    self.args.report_dir,
-                    self._simulation_record_policy(),
-                )
+            request = ResumeSimulationRecordPreviewRequest(
+                validated,
+                current_plan,
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._simulation_record_policy(),
             )
+            preview = SimulationRecord().preview(request)
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -284,6 +328,11 @@ class SimulationRecordResumeMixin:
         status = _simulation_record_recovery_detail(preview.recovery)
         status.update(preview.diagnostic.detail)
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
+        if not preview.mismatches:
+            # The real run reports a mismatch before its run_cwd check.
+            refusal = _resume_run_cwd_refusal(request, status)
+            if refusal is not None:
+                return refusal
         lines = [
             f"manifest: {validated.path}",
             f"completed: {len(preview.recovery.completed)}",
@@ -357,6 +406,7 @@ class SimulationRecordResumeMixin:
                     exit_code=EXIT_ERROR,
                     report_text=f"Simulation Record resume origin is busy: {exc}",
                     detail=_simulation_record_recovery_detail(observed),
+                    refused=True,
                 )
             self._held_resume_origins.add(origin)
         return None
@@ -404,10 +454,11 @@ class SimulationRecordResumeMixin:
                 validated, invocation, admission, coverage_plan, manifest_published
             )
             self._capture_cycle_report((outcome,))
-            _checkpoint_coverage_record(
+            published = _checkpoint_coverage_record(
                 progress,
                 outcome,
                 "not_requested" if coverage_plan.criterion is None else "blocked",
+                self._publish_projection,
             )
             supersede_progress(
                 validated.path.parents[3] / "progress.json",
@@ -415,7 +466,7 @@ class SimulationRecordResumeMixin:
                 new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
                 booley_dir=validated.booley_dir,
             )
-            return self._resumed_endpoint_outcome(outcome)
+            return self._resumed_endpoint_outcome(outcome, published=published)
 
         return _SimulationRecordSteps(
             lambda phase: progress.checkpoint(complete=True, phase=phase), run
@@ -444,11 +495,13 @@ class SimulationRecordResumeMixin:
                 outcome = self._run_validated_resume_simulation_record(
                     validated, invocation, admission, None, manifest_published
                 )
-            outcomes.append(outcome)
-            self._write_simulation_record_progress(
-                (selector,), outcomes, phase="running", complete=False
-            )
-            return self._resumed_endpoint_outcome(outcome)
+            published = self._publish_projection(outcome)
+            if published:
+                outcomes.append(outcome)
+                self._write_simulation_record_progress(
+                    (selector,), outcomes, phase="running", complete=False
+                )
+            return self._resumed_endpoint_outcome(outcome, published=published)
 
         return _SimulationRecordSteps(
             lambda phase: self._write_simulation_record_progress(
@@ -457,8 +510,11 @@ class SimulationRecordResumeMixin:
             run,
         )
 
-    def _resumed_endpoint_outcome(self, outcome: SimulationRecordOutcome) -> EndpointOutcome:
-        result = self._simulation_record_endpoint_outcome([outcome])
+    def _resumed_endpoint_outcome(
+        self, outcome: SimulationRecordOutcome, *, published: bool
+    ) -> EndpointOutcome:
+        """Report the resumed Target; one whose projection failed has no card entry."""
+        result = self._simulation_record_endpoint_outcome([outcome] if published else [])
         result.detail.update(_simulation_record_recovery_detail(outcome.recovery))
         return result
 
@@ -657,3 +713,18 @@ class SimulationRecordResumeMixin:
                 f"cannot reconstruct coverage aggregate: {detail}"
             )
         return prepared.plan.targets[0]
+
+
+def _resume_run_cwd_refusal(
+    request: ResumeSimulationRecordPreviewRequest, status: dict[str, object]
+) -> EndpointOutcome | None:
+    """Return the real run's failure when a record with work left has an unusable run_cwd."""
+    try:
+        SimulationRecord().preflight(request)
+    except (OSError, ValueError) as exc:
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=f"Simulation Record resume failed: {exc}",
+            detail=status,
+        )
+    return None

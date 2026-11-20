@@ -20,49 +20,49 @@ from tests.flows.sim.test_sim_flow_metrics import _coverage_outcome, _MixedCover
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_reports"
 
-# name -> (unit, better, kind), written out literally so a wrong direction, unit or
-# kind in a declaration cannot hide behind the code that produced it.
+# name -> (unit, better, kind, minimum, maximum), written out literally so a wrong direction,
+# unit, kind or range in a declaration cannot hide behind the code that produced it.
 _SIM_DECLARATIONS = {
-    "tests_failed": ("tests", "lower", "plain"),
-    "tests_total": ("tests", "higher", "plain"),
+    "tests_failed": ("tests", "lower", "plain", 0, None),
+    "tests_total": ("tests", "higher", "plain", 0, None),
 }
-_EXPECTED_DECLARATIONS: dict[str, dict[str, tuple[str, str, str]]] = {
+_EXPECTED_DECLARATIONS: dict[str, dict[str, tuple[str, str, str, int | None, int | None]]] = {
     "synth": {
-        "area_um2": ("μm²", "lower", "plain"),
-        "area_kge": ("kGE", "lower", "plain"),
-        "cell_count": ("cells", "lower", "plain"),
-        "fmax_mhz": ("MHz", "higher", "per_clock"),
-        "critical_path_ps": ("ps", "lower", "per_clock"),
-        "wns_ns": ("ns", "higher", "per_clock"),
-        "whs_ns": ("ns", "higher", "per_clock"),
+        "area_um2": ("μm²", "lower", "plain", 0, None),
+        "area_kge": ("kGE", "lower", "plain", 0, None),
+        "cell_count": ("cells", "lower", "plain", 0, None),
+        "fmax_mhz": ("MHz", "higher", "per_clock", 0, None),
+        "critical_path_ps": ("ps", "lower", "per_clock", 0, None),
+        "wns_ns": ("ns", "higher", "per_clock", None, None),
+        "whs_ns": ("ns", "higher", "per_clock", None, None),
     },
     "fpga": {
-        "lut_count": ("LUTs", "lower", "plain"),
-        "ff_count": ("FFs", "lower", "plain"),
-        "bram_count": ("BRAM tiles", "lower", "plain"),
-        "dsp_count": ("DSPs", "lower", "plain"),
-        "fmax_mhz": ("MHz", "higher", "per_clock"),
-        "critical_path_ps": ("ps", "lower", "per_clock"),
-        "wns_ns": ("ns", "higher", "per_clock"),
-        "whs_ns": ("ns", "higher", "per_clock"),
+        "lut_count": ("LUTs", "lower", "plain", 0, None),
+        "ff_count": ("FFs", "lower", "plain", 0, None),
+        "bram_count": ("BRAM tiles", "lower", "plain", 0, None),
+        "dsp_count": ("DSPs", "lower", "plain", 0, None),
+        "fmax_mhz": ("MHz", "higher", "per_clock", 0, None),
+        "critical_path_ps": ("ps", "lower", "per_clock", 0, None),
+        "wns_ns": ("ns", "higher", "per_clock", None, None),
+        "whs_ns": ("ns", "higher", "per_clock", None, None),
     },
-    "sim": {**_SIM_DECLARATIONS, "cycle_count": ("cycles", "lower", "per_test")},
+    "sim": {**_SIM_DECLARATIONS, "cycle_count": ("cycles", "lower", "per_test", 0, None)},
     "coverage": {
         **_SIM_DECLARATIONS,
-        "line_coverage": ("%", "higher", "plain"),
-        "branch_coverage": ("%", "higher", "plain"),
-        "expression_coverage": ("%", "higher", "plain"),
-        "toggle_coverage": ("%", "higher", "plain"),
-        "cover_property_coverage": ("%", "higher", "plain"),
+        "line_coverage": ("%", "higher", "plain", 0, 100),
+        "branch_coverage": ("%", "higher", "plain", 0, 100),
+        "expression_coverage": ("%", "higher", "plain", 0, 100),
+        "toggle_coverage": ("%", "higher", "plain", 0, 100),
+        "cover_property_coverage": ("%", "higher", "plain", 0, 100),
     },
     "lint": {
-        "warnings": ("warnings", "lower", "plain"),
-        "errors": ("errors", "lower", "plain"),
+        "warnings": ("warnings", "lower", "plain", 0, None),
+        "errors": ("errors", "lower", "plain", 0, None),
     },
     "mutation": {
-        "mutation_score": ("%", "higher", "plain"),
-        "mutants_detected": ("Mutants", "higher", "plain"),
-        "mutants_survived": ("Mutants", "lower", "plain"),
+        "mutation_score": ("%", "higher", "plain", 0, 100),
+        "mutants_detected": ("Mutants", "higher", "plain", 0, None),
+        "mutants_survived": ("Mutants", "lower", "plain", 0, None),
     },
 }
 
@@ -95,8 +95,8 @@ clk2   -0.100   0.500    3                      200                  0.050    0.
 _SYNTH_OUTPUT = (
     "Chip area for top module '\\t': 52480.0\n"
     "Number of cells: 12345\n"
-    "STA_PERCLOCK: name=clk_core period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000\n"
-    "STA_PERCLOCK: name=clk_io period_ns=5.000000 wns_ns=-1.000000 whs_ns=0.200000\n"
+    "STA_PERCLOCK: name=clk_core period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000 setup_same_clock=1\n"
+    "STA_PERCLOCK: name=clk_io period_ns=5.000000 wns_ns=-1.000000 whs_ns=0.200000 setup_same_clock=1\n"
 )
 
 
@@ -145,7 +145,7 @@ def _coverage_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     """Lint values of one Target with a warning and an error."""
-    from booley.flows.lint.flow import LintConfigResult, count_lint_errors, parse_warnings
+    from booley.flows.lint.flow import LintConfigResult, lint_error_findings, parse_warnings
 
     output = (
         "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
@@ -154,7 +154,7 @@ def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     return LintConfigResult(
         target="lite",
         warnings=parse_warnings(output, "lite"),
-        error_count=count_lint_errors(output, "verilator"),
+        error_findings=lint_error_findings(output, "verilator"),
     ).flow_metrics()
 
 
@@ -162,7 +162,7 @@ def _mutation_values() -> Any:
     """Mutation values of a run that scored four valid Mutants and detected three."""
     from booley.flows.mutation.metrics import mutation_metric_values
 
-    return mutation_metric_values(3, 1)
+    return mutation_metric_values(3, ["MUT-1 negate a.v:4: 'a' -> 'b'"])
 
 
 # Flows with no report reader of their own: ``coverage`` has no Flow, the ``sim`` reader serves it.
@@ -186,8 +186,12 @@ def test_flow_declarations_expose_name_unit_direction_tier_kind(flow: str) -> No
 
     declarations = metric_declarations(flow)
 
-    actual = {d.name: (d.unit, d.better.value, d.kind.value) for d in declarations}
+    actual = {
+        d.name: (d.unit, d.better.value, d.kind.value, d.minimum, d.maximum) for d in declarations
+    }
     assert actual == _EXPECTED_DECLARATIONS[flow]
+    # A percentage is a share of a whole: a new one cannot skip the range by editing a row above.
+    assert all((d.minimum, d.maximum) == (0, 100) for d in declarations if d.unit == "%")
     assert len(actual) == len(declarations)  # no duplicate names
     assert {d.cost_tier for d in declarations} == {CostTier[_EXPECTED_TIERS[flow]]}
 
@@ -229,7 +233,8 @@ def test_synth_report_yields_declared_metric_values() -> None:
 
     # ``jtag`` reports a period but no slack (NA), so no fmax can be derived for it.
     metrics = _synth_metrics(
-        _SYNTH_OUTPUT + "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+        _SYNTH_OUTPUT
+        + "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
     )
     metrics.area_kge = 65.8
     detail = _synth_detail(metrics)

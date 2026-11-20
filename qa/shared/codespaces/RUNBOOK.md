@@ -258,8 +258,8 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
   `Running Finished All Owner: <owner>`; Targets: `Worktree: <name>`), then
   `Run` and `Help`, separated by `│`. In the top bar `ArrowLeft`/`ArrowRight`
   choose and `Enter` applies. In Help, after leaving the top bar, `ArrowDown`
-  scrolls; the mouse wheel and PageDown don't. `q` quits; `booley dashboard`
-  in a terminal reopens it.
+  and PageUp/PageDown scroll, as the footer says; the mouse wheel doesn't.
+  `q` quits; `booley dashboard` in a terminal reopens it.
 - **Long output:** F1, `View: Toggle Maximized Panel` shows output that doesn't
   fit the panel (a layout change, not a setting), and gives the Dashboard more
   than its default ~258 px. Toggle it back afterwards.
@@ -291,7 +291,7 @@ mismatch.
 | Sessions overview, preview pane, session detail | No CLI. Check against what you started: which agent sessions, their branch and work dir (`git worktree list`), and the last Booley call you made in each. Each call shows as two rows (started, completed), and the detail stays on an ended session until `Escape`. Without a signed-in agent, make sessions with the scripted MCP client below. |
 | Session measurement line (`Measured <sha>`, `last Measured … · latest …`, `measuring k/n`) and the report it opens | The run's own document, found by its run ID: the report `Enter` opens is `<run_id>.md`, and the `measure` Job record carries `run_id`; then `find /workspaces/picorv32/.booley/measurements -name '<run_id>.json'` (layout `measurements/<project_tree>/<run_id>.json`) read with `jq .`, and compare its commit with `git -C <worktree> rev-parse HEAD`. While measuring, the `measure` Job's `progress.json` beside its `job.log`. Never pick a run by directory order, and never run `booley measure` as an oracle on a commit that is not Measured: it starts a measurement. |
 | Jobs window, Job detail | No CLI (agents see Jobs through the `booley_status` MCP tool). Read the Job records: `for f in /workspaces/picorv32/.booley/{,logs/,logs/*/,.interactive_logs/*/,runtime/sessions/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. For Flows you started yourself, their terminal output is also an oracle. |
-| VaporView scoped view (`bwave gui ... -s ... -g ...`) | The command's own report: it prints the signal and group tree VaporView reports back (`getViewerState`), the viewport and the marker times, and warns on stderr about signals the viewer didn't show. Compare the screenshot with that report, and the report with what you asked for. `--time`/`--cursor` without `-s` re-reports the rows, but it moves the markers. |
+| VaporView scoped view (`bwave gui ... -s ... -g ...`) | The command's own report: it prints the signal and group tree VaporView reports back (`getViewerState`), the viewport and the marker times, and warns on stderr about signals the viewer didn't show. Compare the screenshot with that report, and the report with what you asked for. `--time`/`--cursor` without `-s`/`-g` keeps the rows and reports only the viewport and markers; re-send the selection to read the rows back. |
 
 **Scripted MCP client.** Sessions without an agent: in a command terminal,
 write a Python script (heredoc) that uses the image's `mcp` package against the

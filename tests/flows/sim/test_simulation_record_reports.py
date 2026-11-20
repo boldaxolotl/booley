@@ -186,7 +186,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path):
     assert f"\n  {reason}\n  y\n  one: cycles=7" in rendered
 
 
-@pytest.mark.parametrize("failure", [None, "retention", "supersede"])
+@pytest.mark.parametrize("failure", [None, "retention", "supersede", "projection"])
 def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch, failure):
     # Private seam: a resumed run that fails after completing can only be made to fail by
     # patching `_checkpoint_coverage_record` or `supersede_progress`, and
@@ -197,9 +197,13 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     execution = NativeExecution()
     if failure:
-        symbol = "_checkpoint_coverage_record" if failure == "retention" else "supersede_progress"
+        target = {
+            "retention": "booley.flows.sim.flow_resume._checkpoint_coverage_record",
+            "supersede": "booley.flows.sim.flow_resume.supersede_progress",
+            "projection": "booley.flows.sim.acceptance.write_compatibility_projection",
+        }[failure]
         monkeypatch.setattr(
-            "booley.flows.sim.flow_resume." + symbol,
+            target,
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
         )
     resumed = tmp_path / "resumed"
@@ -215,6 +219,10 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     assert report == json.loads((resumed / "sim.json").read_text())
     progress = json.loads((resumed / "sim/1/progress.json").read_text())
     assert "cycle_counts" not in json.dumps(progress)
+    if failure == "projection":
+        # The Target stays pending: no Coverage Record line names an unpublished projection.
+        assert progress["phase"] == "aborted" and progress["pending_targets"] == ["sim_0"]
+        assert "Coverage Record:" not in result.outcome.report_text
     if failure:
         assert flow._simulation_record_outcomes == ()
     else:
@@ -325,7 +333,7 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     assert len(resumed.pre_sim_firings) == 1 + expected_runs
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     result = flow._simulation_record_endpoint_outcome([resumed])
     assert len(result.detail["pre_sim_lines"]) == expected_runs
     assert result.report_text.count("pre_run_commands") == expected_runs
@@ -398,7 +406,6 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(
         target=["sim"],
-        result_verbosity="brief",
         work_dir=tmp_path / "project",
         report_dir=invocation.parent,
         dry_run=False,
@@ -638,7 +645,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
 def observed_hook_flow(tmp_path, monkeypatch) -> tuple[SimulateFlow, Any]:
     """A Simulation Flow that published a candidate record and its Cycle Count baseline."""
     flow = SimulateFlow()
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     return flow, _current_observed_hook_dag(tmp_path, monkeypatch, flow)
 
 
@@ -721,7 +728,7 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
     from booley.flows.sim import record
 
     flow = module.SimulateFlow()
-    flow._args = SimRequest(target="sim", coverage=False, mode=None, result_verbosity="compact")
+    flow._args = SimRequest(target="sim", coverage=False, mode=None)
     evidence = {}
 
     def run(_prepared):

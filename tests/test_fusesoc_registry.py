@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.core.host_shell import quote_arg
+from booley.flows.synth.recipe import synth_target_tools
 from booley.fusesoc import core_projection, fusesoc_registry, selftest_overlay
 from booley.fusesoc.core_projection import CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
@@ -24,14 +25,9 @@ from booley.fusesoc.fusesoc_registry import (
     ResolvedTarget,
     TargetResolutionError,
     _enumerate_all,
-    _missing_target_sources,
-    _preflight_target_sources,
-    _resolve_target,
-    _setup_command,
     _sim_target_has_untagged_tb,
     _target_referenced_files,
     _target_source_files,
-    _try_resolve_target,
     all_referenced_files,
     core_schema_errors,
     core_setup_hazards,
@@ -44,9 +40,13 @@ from booley.fusesoc.fusesoc_registry import (
     core_target_names,
     core_target_uses_legacy_fusesoc_api,
     discover_cores,
+    missing_target_sources_for_ref,
     parse_edam,
     possible_target_parameter_names,
+    preflight_target_sources_for_ref,
     read_core,
+    resolve_target_handle,
+    setup_command_for_handle,
     target_parameter_definitions,
     target_source_files_for_ref,
     vendored_files,
@@ -56,15 +56,22 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError, UnknownTargetError
-from booley.targets.target_surface import collect_surface, detail_payload, surface_payload
+from booley.targets.target_surface import collect_surface
+from booley.targets.target_surface import detail_payload as _detail_payload
+from booley.targets.target_surface import surface_payload as _surface_payload
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
 from tests.fusesoc_test_support import (
+    INHERITED_CORE_TEXT,
+    fusesoc_setup_runner,
     relocated_project,
     symlinked_booley_dir,
     touch_declared_sources,
 )
 from tests.fusesoc_test_support import write_core as _write_core
+
+detail_payload = functools.partial(_detail_payload, synth_tools=synth_target_tools)
+surface_payload = functools.partial(_surface_payload, synth_tools=synth_target_tools)
 
 # Spelled out, not imported: the layout is the contract the production constant must match.
 STATE_CORES_SUBDIR = "cores"
@@ -77,6 +84,18 @@ def _stealth_root(project: Path) -> Path:
 
 def enumerate_targets(project_root: Path | str):
     return {name: refs[0] for name, refs in _enumerate_all(project_root).items()}
+
+
+def _handle(project: Path | str, name: str = "sim"):
+    return TargetCatalog.build(project).select(name)
+
+
+def _setup_cmd(project: Path, name: str = "sim") -> list[str]:
+    return setup_command_for_handle(_handle(project, name), build_root=project / "b")
+
+
+def _missing_sources(project: Path, name: str = "sim") -> list[str]:
+    return missing_target_sources_for_ref(project, resolve_ref(project, name))
 
 
 def available_targets(project_root: Path | str) -> list[str]:
@@ -210,9 +229,23 @@ class TestDiscovery:
         assert doc["name"] == "::demo_core:0"
         assert set(doc["targets"]) == {"default", "sim"}
 
-    def test_read_core_rejects_non_mapping(self, tmp_path: Path):
+    def test_read_core_resolves_inheritance_like_fusesoc(self, tmp_path: Path):
+        core = _write_core(tmp_path, INHERITED_CORE_TEXT)  # #5077
+        fusesoc_doc = fusesoc_registry.fusesoc_core_parser().read(str(core))
+        assert read_core(core)["targets"]["synth_child"] == fusesoc_doc["targets"]["synth_child"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "- just\n- a\n- list\n",
+            "CAPI=2:\na: &a [x]\nb: {<<: *a}\n",
+            "CAPI=2:\na: &a {k: s}\nb: {<<: *a, k: {z: 1}}\n",
+            "CAPI=2:\ntargets: {sim: &sim {<<: *sim}}\n",
+        ],
+    )
+    def test_read_core_rejects_non_mapping(self, tmp_path: Path, text: str):
         bad = tmp_path / "bad.core"
-        bad.write_text("- just\n- a\n- list\n", encoding="utf-8")
+        bad.write_text(text, encoding="utf-8")
         with pytest.raises(FuseSocError):
             read_core(bad)
 
@@ -338,26 +371,20 @@ class TestStealthCores:
         assert set(refs) == {"sim"}
 
     def test_setup_command_adds_second_cores_root(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import _setup_command
-
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
         _write_core(_stealth_root(tmp_path), stealth)
-        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_cmd(tmp_path)
         roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--cores-root"]
         assert roots == [str(tmp_path), str(_stealth_root(tmp_path))]
         # Global option: both must precede the 'run' subcommand.
         assert max(i for i, a in enumerate(cmd) if a == "--cores-root") < cmd.index("run")
 
     def test_setup_command_omits_stealth_root_when_absent(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import _setup_command
-
         _write_core(tmp_path / "ip")
-        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_cmd(tmp_path)
         assert cmd.count("--cores-root") == 1
 
     def test_explicit_stealth_projects_core_into_repo_root(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import _setup_command
-
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
@@ -370,7 +397,7 @@ class TestStealthCores:
         for name in ("counter_pkg.sv", "counter.sv", "tb_counter.sv"):
             (tmp_path / name).touch()
 
-        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_cmd(tmp_path)
         projected = tmp_path / ".booley-projected-design.core"
 
         assert cmd.count("--cores-root") == 1
@@ -379,11 +406,10 @@ class TestStealthCores:
         sources = _target_source_files(tmp_path, "sim")
         assert sources.rtl_source_files == ("counter_pkg.sv", "counter.sv")
         assert sources.tb_files == ("tb_counter.sv",)
-        assert _missing_target_sources(tmp_path, "sim") == []
+        assert _missing_sources(tmp_path) == []
 
     def test_native_core_ignore_uses_only_private_stealth_registry(self, tmp_path: Path):
         from booley.fusesoc.core_projection import isolated_registry_root
-        from booley.fusesoc.fusesoc_registry import _setup_command
 
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
@@ -394,7 +420,7 @@ class TestStealthCores:
         canonical = _write_core(_stealth_root(tmp_path), create_sources=False)
         (tmp_path / "native.core").write_text("CAPI=1\n", encoding="utf-8")
 
-        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_cmd(tmp_path)
 
         roots = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--cores-root"]
         assert roots == [str(isolated_registry_root(tmp_path))]
@@ -402,7 +428,6 @@ class TestStealthCores:
 
     def test_setup_command_refuses_foreign_expected_projection(self, tmp_path: Path):
         from booley.fusesoc.core_projection import projected_core_path
-        from booley.fusesoc.fusesoc_registry import _setup_command
 
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
@@ -416,7 +441,7 @@ class TestStealthCores:
         projected.write_text(foreign_content, encoding="utf-8")
 
         with pytest.raises(TargetResolutionError, match="refusing to overwrite non-Booley file"):
-            _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+            _setup_cmd(tmp_path)
 
         assert projected.read_text(encoding="utf-8") == foreign_content
 
@@ -993,91 +1018,120 @@ class TestIncludePartition:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_target — CLI invocation (mocked) + command shape
+# resolve_target_handle — CLI invocation (mocked) + command shape
 # ---------------------------------------------------------------------------
 
 
-class TestResolveTargetMocked:
+def _edam_at(build_root: Path) -> tuple[Path, str]:
+    """Where FuseSoC lays out ``<build>/<name>/<target>/<name>.eda.yml``, with its text."""
+    return build_root / "demo_core_0" / "sim" / "demo_core_0.eda.yml", _EDAM_TEXT
+
+
+class TestResolveTargetHandleMocked:
     def test_builds_expected_cli_and_parses_edam(self, tmp_path: Path):
         project = tmp_path / "proj"
         _write_core(project / "ip")
         build_root = tmp_path / "build"
-        captured: dict = {}
+        calls: list[dict[str, object]] = []
 
-        def fake_runner(cmd, **kwargs):
-            captured["cmd"] = cmd
-            captured["cwd"] = kwargs.get("cwd")
-            # Emulate fusesoc laying out <build>/<name>/<target>/<name>.eda.yml.
-            out = build_root / "demo_core_0" / "sim"
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        result = _resolve_target(
-            "sim",
-            project_root=project,
+        result = resolve_target_handle(
+            _handle(project),
             build_root=build_root,
-            runner=fake_runner,
+            runner=fusesoc_setup_runner(edam=_edam_at(build_root), calls=calls),
         )
         assert result.toplevel == "tb_counter"
         assert result.eda_tool == "verilator"
         assert result.configured_eda_tool == "verilator"
         # CLI shape: cores-root at project, build-root isolated, --setup, target, vlnv.
-        cmd = captured["cmd"]
+        cmd = calls[0]["cmd"]
         assert cmd[: len(DEFAULT_FUSESOC_CMD)] == list(DEFAULT_FUSESOC_CMD)
         assert "--cores-root" in cmd and str(project) in cmd
         assert "--build-root" in cmd and str(build_root) in cmd
         assert "--setup" in cmd
         assert cmd[cmd.index("--target") + 1] == "sim"
         assert cmd[-1] == "::demo_core:0"  # VLNV is the positional core spec
-        assert captured["cwd"] == str(project)
+        assert calls[0]["cwd"] == str(project)
 
-    def test_unknown_target_raises_before_invoking(self, tmp_path: Path):
+    def test_resolution_reads_the_selected_cores_edam(self, tmp_path: Path):
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        build_root = tmp_path / "build"
+        other = build_root / "aaa_other_0" / "sim" / "aaa_other_0.eda.yml"
+        other.parent.mkdir(parents=True)
+        other.write_text("name: aaa_other_0\ntoplevel: tb_other\nfiles: []\n", encoding="utf-8")
+
+        result = resolve_target_handle(
+            _handle(project),
+            build_root=build_root,
+            runner=fusesoc_setup_runner(edam=_edam_at(build_root)),
+        )
+
+        assert result.toplevel == "tb_counter"
+        assert result.edam_path == build_root / "demo_core_0" / "sim" / "demo_core_0.eda.yml"
+
+    def test_resolution_reads_the_tool_api_edam_layout(self, tmp_path: Path):
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        build_root = tmp_path / "build"
+        edam = build_root / "demo_core_0" / "sim-verilator" / "demo_core_0.eda.yml"
+
+        result = resolve_target_handle(
+            _handle(project),
+            build_root=build_root,
+            runner=fusesoc_setup_runner(edam=(edam, _EDAM_TEXT)),
+        )
+
+        assert result.edam_path == edam
+
+    @pytest.mark.parametrize("others", [1, 2])
+    def test_resolution_refuses_another_cores_edam_when_ambiguous(
+        self, tmp_path: Path, others: int
+    ):
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        build_root = tmp_path / "build"
+        for index in range(others):
+            other = build_root / f"other{index}_0" / "sim" / f"other{index}_0.eda.yml"
+            other.parent.mkdir(parents=True)
+            other.write_text("name: other\ntoplevel: tb_other\nfiles: []\n", encoding="utf-8")
+
+        with pytest.raises(TargetResolutionError) as excinfo:
+            resolve_target_handle(
+                _handle(project),
+                build_root=build_root,
+                runner=fusesoc_setup_runner(),
+            )
+
+        assert "::demo_core:0" in str(excinfo.value)
+        assert f"{others} EDAMs of other resolutions" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        ("stderr", "expected"),
+        [("boom", "(exit 1):\nboom"), ("", "no diagnostic output")],
+        ids=["stderr", "silent"],
+    )
+    def test_setup_failure_reports_diagnostic(self, tmp_path: Path, stderr: str, expected: str):
         project = tmp_path / "proj"
         _write_core(project / "ip")
 
-        def boom(*a, **k):  # pragma: no cover - must not be called
-            raise AssertionError("runner should not run for an unknown target")
-
-        with pytest.raises(TargetResolutionError, match="Unknown target"):
-            _resolve_target(
-                "nope",
-                project_root=project,
+        with pytest.raises(TargetResolutionError) as excinfo:
+            resolve_target_handle(
+                _handle(project),
                 build_root=tmp_path / "build",
-                runner=boom,
+                runner=fusesoc_setup_runner(returncode=1, stderr=stderr),
             )
-
-    def test_nonzero_exit_raises_with_stderr(self, tmp_path: Path):
-        project = tmp_path / "proj"
-        _write_core(project / "ip")
-
-        def failing(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
-
-        with pytest.raises(TargetResolutionError, match="boom"):
-            _resolve_target(
-                "sim",
-                project_root=project,
-                build_root=tmp_path / "build",
-                vlnv="::demo_core:0",
-                runner=failing,
-            )
+        assert expected in str(excinfo.value)
 
     def test_setup_failure_names_unprovided_dependency(self, tmp_path: Path):
-        def failing(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
-
         def fail_message(name: str, depend: str) -> str:
             project = tmp_path / name
             _write_core(project / "ip", TestSelectableCoreClosure._root("top", depend))
             _write_core(project / "dep", TestSelectableCoreClosure._leaf("dep"))
             with pytest.raises(TargetResolutionError) as excinfo:
-                _resolve_target(
-                    "sim",
-                    project_root=project,
+                resolve_target_handle(
+                    _handle(project),
                     build_root=tmp_path / f"build-{name}",
-                    vlnv="acme:lib:top:0",
-                    runner=failing,
+                    runner=fusesoc_setup_runner(returncode=1, stderr="boom"),
                 )
             return str(excinfo.value)
 
@@ -1095,21 +1149,16 @@ class TestResolveTargetMocked:
         project = tmp_path / "proj"
         _write_core(project / "ip")
 
-        def missing(*a, **k):
-            raise FileNotFoundError("fusesoc")
-
         with pytest.raises(TargetResolutionError, match="could not invoke"):
-            _resolve_target(
-                "sim",
-                project_root=project,
+            resolve_target_handle(
+                _handle(project),
                 build_root=tmp_path / "build",
-                vlnv="::demo_core:0",
-                runner=missing,
+                runner=fusesoc_setup_runner(error=FileNotFoundError("fusesoc")),
             )
 
 
 class TestMissingSourcePreflight:
-    """_resolve_target fails fast when a Target's fileset paths don't exist."""
+    """resolve_target_handle fails fast when a Target's fileset paths don't exist."""
 
     # A core whose sim target references a baseline under worktrees/ (the
     # motivating incident: the user is expected to `git worktree add` it).
@@ -1139,16 +1188,15 @@ class TestMissingSourcePreflight:
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl" / "top.sv").touch()  # exists → not reported
 
-        def boom(*a, **k):  # pragma: no cover - must not be called
-            raise AssertionError("runner must not run when sources are missing")
+        calls: list[dict[str, object]] = []
 
         with pytest.raises(MissingSourceError) as exc_info:
-            _resolve_target(
-                "sim_base",
-                project_root=tmp_path,
+            resolve_target_handle(
+                _handle(tmp_path, "sim_base"),
                 build_root=tmp_path / "build",
-                runner=boom,
+                runner=fusesoc_setup_runner(calls=calls),
             )
+        assert calls == []  # FuseSoC is never invoked
         msg = str(exc_info.value)
         # Header names the target, the count, and the declaring core.
         assert "cannot resolve Target 'sim_base'" in msg
@@ -1171,11 +1219,10 @@ class TestMissingSourcePreflight:
         core = self._BASELINE_CORE.replace("worktrees/scalar_1bfe1733", root)
         _write_core(tmp_path, core, create_sources=False)
         with pytest.raises(MissingSourceError) as exc_info:
-            _resolve_target(
-                "sim_base",
-                project_root=tmp_path,
+            resolve_target_handle(
+                _handle(tmp_path, "sim_base"),
                 build_root=tmp_path / "build",
-                runner=subprocess.run,
+                runner=fusesoc_setup_runner(),
             )
         assert f"git worktree add {quote_arg(root)} <commit-ish>" in str(exc_info.value)
 
@@ -1201,20 +1248,20 @@ class TestMissingSourcePreflight:
         )
         _write_core(tmp_path, core, create_sources=False)
         with pytest.raises(MissingSourceError) as exc_info:
-            _preflight_target_sources("sim_plain", tmp_path)
+            preflight_target_sources_for_ref(tmp_path, resolve_ref(tmp_path, "sim_plain"))
         msg = str(exc_info.value)
         assert "  - rtl/gone.sv" in msg
         assert "git worktree add" not in msg
 
     def test_passes_when_all_sources_exist(self, tmp_path: Path):
         _write_core(tmp_path)  # default fixture creates the declared sources
-        _preflight_target_sources("sim", tmp_path)  # must not raise
-        assert _missing_target_sources(tmp_path, "sim") == []
+        preflight_target_sources_for_ref(tmp_path, resolve_ref(tmp_path, "sim"))  # must not raise
+        assert _missing_sources(tmp_path) == []
 
     def test_paths_resolve_relative_to_core_dir_not_project_root(self, tmp_path: Path):
         # Core nested under ip/: its rtl/ lives beside the .core, not at root.
         _write_core(tmp_path / "ip")
-        assert _missing_target_sources(tmp_path, "sim") == []
+        assert _missing_sources(tmp_path) == []
 
     def test_glob_and_conditional_entries_are_not_hard_failed(self, tmp_path: Path):
         core = textwrap.dedent(
@@ -1238,103 +1285,15 @@ class TestMissingSourcePreflight:
         (tmp_path / "rtl" / "real.sv").touch()
         # Only the literal path is checked; the glob and the conditional
         # fileset are left for FuseSoC itself to judge.
-        assert _missing_target_sources(tmp_path, "sim_glob") == []
-
-    def test_unknown_target_is_not_this_preflights_error(self, tmp_path: Path):
-        _write_core(tmp_path)
-        # Unknown / unenumerable targets are someone else's diagnostic.
-        assert _missing_target_sources(tmp_path, "nope") == []
-
-    def test_empty_project_is_silent(self, tmp_path: Path):
-        assert _missing_target_sources(tmp_path, "anything") == []
-        _preflight_target_sources("anything", tmp_path)  # must not raise
-
-
-class TestTryResolveTarget:
-    """The soft, transitional bridge: prefer the .core, else None for fallback."""
-
-    def _default_build_root(self, project: Path, target: str) -> Path:
-        return project / ".booley" / ".runtime" / "edalize" / "payload" / target
-
-    def test_none_when_no_core_declares_config(self, tmp_path: Path):
-        # An empty project (no .core) → None, and the runner is never invoked.
-        def boom(*a, **k):  # pragma: no cover - must not run
-            raise AssertionError("must not resolve when no .core declares the config")
-
-        assert _try_resolve_target("sim", project_root=tmp_path / "proj", runner=boom) is None
-
-    def test_returns_resolved_when_core_and_setup_succeed(self, tmp_path: Path):
-        project = tmp_path / "proj"
-        _write_core(project / "ip")
-
-        def fake_runner(cmd, **kwargs):
-            out = self._default_build_root(project, "sim") / "demo_core_0" / "sim"
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        resolved = _try_resolve_target("sim", project_root=project, runner=fake_runner)
-        assert resolved is not None
-        assert resolved.toplevel == "tb_counter"
-        assert resolved.vlnv == "::demo_core:0"
-
-    def test_default_build_root_follows_relocated_booley_dir(self, tmp_path: Path):
-        project = tmp_path / "proj"
-        state = relocated_project(project)
-        _write_core(project / "ip")
-
-        def fake_runner(cmd, **kwargs):
-            out = state / ".runtime" / "edalize" / "payload" / "sim" / "demo_core_0" / "sim"
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        resolved = _try_resolve_target("sim", project_root=project, runner=fake_runner)
-        assert resolved is not None
-        assert resolved.vlnv == "::demo_core:0"
-        assert not (project / ".booley").exists()
-
-    def test_none_on_setup_failure(self, tmp_path: Path):
-        project = tmp_path / "proj"
-        _write_core(project / "ip")
-
-        def failing(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
-
-        assert _try_resolve_target("sim", project_root=project, runner=failing) is None
-
-    def test_none_when_fusesoc_missing(self, tmp_path: Path):
-        project = tmp_path / "proj"
-        _write_core(project / "ip")
-
-        def missing(*a, **k):
-            raise FileNotFoundError("fusesoc")
-
-        assert _try_resolve_target("sim", project_root=project, runner=missing) is None
-
-
-def test_resolve_target_reports_silent_setup_failure(tmp_path: Path) -> None:
-    project = tmp_path / "proj"
-    _write_core(project / "ip")
-
-    def failing(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
-
-    with pytest.raises(TargetResolutionError, match="no diagnostic output"):
-        _resolve_target(
-            "sim",
-            project_root=project,
-            build_root=tmp_path / "build",
-            runner=failing,
-        )
+        assert _missing_sources(tmp_path, "sim_glob") == []
 
 
 # ---------------------------------------------------------------------------
-# _resolve_target — real fusesoc end-to-end (gated on fusesoc being importable)
+# resolve_target_handle — real fusesoc end-to-end (gated on fusesoc being importable)
 # ---------------------------------------------------------------------------
 
 
-class TestResolveTargetReal:
+class TestResolveTargetHandleReal:
     def test_isolated_constraint_is_absolute_but_file_parameter_remains_authored(
         self, tmp_path: Path
     ) -> None:
@@ -1382,9 +1341,8 @@ class TestResolveTargetReal:
             else [sys.executable, "-c", "from fusesoc.main import main; main()"]
         )
 
-        resolved = _resolve_target(
-            "synth",
-            project_root=project,
+        resolved = resolve_target_handle(
+            _handle(project, "synth"),
             build_root=project / "out",
             fusesoc_cmd=cmd,
         )
@@ -1418,9 +1376,8 @@ class TestResolveTargetReal:
             else [sys.executable, "-c", "from fusesoc.main import main; main()"]
         )
 
-        resolved = _resolve_target(
-            "sim",
-            project_root=project,
+        resolved = resolve_target_handle(
+            _handle(project, "sim"),
             build_root=project / "out",
             fusesoc_cmd=cmd,
         )
@@ -1452,9 +1409,8 @@ class TestResolveTargetReal:
             else [sys.executable, "-c", "from fusesoc.main import main; main()"]
         )
 
-        resolved = _resolve_target(
-            "sim",
-            project_root=project,
+        resolved = resolve_target_handle(
+            _handle(project, "sim"),
             build_root=project / "out",
             fusesoc_cmd=cmd,
         )
@@ -1485,9 +1441,8 @@ class TestResolveTargetReal:
         else:
             cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
 
-        result = _resolve_target(
-            "sim",
-            project_root=project,
+        result = resolve_target_handle(
+            _handle(project, "sim"),
             build_root=tmp_path / "build",
             fusesoc_cmd=cmd,
         )
@@ -2224,7 +2179,7 @@ class TestSelectableCoreClosure:
 
 
 # ---------------------------------------------------------------------------
-# _setup_command — tool_<x> use-flag injection for flow-API Targets
+# setup_command_for_handle — tool_<x> use-flag injection for flow-API Targets
 # ---------------------------------------------------------------------------
 
 
@@ -2232,14 +2187,12 @@ class TestSetupCommandEdaToolFlag:
     """Flow-API Targets don't set the upstream ``tool_<x>`` use-flag the legacy
     FuseSoC API
     sets, silently dropping `tool_verilator ? (...)` filesets (lowRISC gates
-    its C++ harness and lint waivers behind them). _setup_command re-injects
+    its C++ harness and lint waivers behind them). setup_command_for_handle re-injects
     the flag for the declared EDA tool."""
 
     def test_flow_api_target_gets_upstream_tool_flag(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import _setup_command
-
         _write_core(tmp_path / "ip")  # 'sim': flow: sim, flow_options.eda_tool: verilator
-        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_cmd(tmp_path)
         joined = " ".join(cmd)
         assert "--flag tool_verilator" in joined
         # run-subcommand option: must come after 'run', before the VLNV.
@@ -2247,13 +2200,11 @@ class TestSetupCommandEdaToolFlag:
         assert cmd.index("--flag") < cmd.index("::demo_core:0")
 
     def test_legacy_fusesoc_api_target_gets_no_flag(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import _setup_command
-
         legacy = _CORE_TEXT.replace("    flow: sim\n", "").replace(
             "    flow_options:\n      tool: verilator\n", ""
         )
         _write_core(tmp_path / "ip", legacy)
-        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_cmd(tmp_path)
         assert "--flag" not in cmd  # legacy API sets tool_verilator natively
 
     def test_handle_setup_transports_backend_options_after_vlnv(self, tmp_path: Path):
@@ -2556,7 +2507,7 @@ class TestFilesetsAppend:
             """
         )
         _write_core(tmp_path, text, create_sources=False)  # nothing on disk
-        missing = _missing_target_sources(tmp_path, "sim")
+        missing = _missing_sources(tmp_path)
         assert "sw/firmware.vmem" in missing  # the appended path is walked
 
 
@@ -2638,7 +2589,7 @@ def test_mixed_lint_enumeration_provenance(tmp_path, eda_tool, options):
     ref = next(iter(enumerate_targets(tmp_path).values()))
     assert ref.eda_tool == eda_tool
     assert ref.lint_flow_eda_tool_missing
-    command = _setup_command("lint_mixed", project_root=tmp_path, build_root=tmp_path / "build")
+    command = _setup_cmd(tmp_path, "lint_mixed")
     assert f"tool_{eda_tool}" in command
 
 
@@ -3133,20 +3084,16 @@ def test_fusesoc_setup_sees_the_checkouts_booley_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(main))
     booley_dir.reset_cache()
     build_root = tmp_path / "build"
-    seen: dict[str, str] = {}
 
-    def recording_runner(cmd, **kwargs):
-        seen["BOOLEY_DIR"] = kwargs["env"]["BOOLEY_DIR"]
-        out = build_root / "demo_core_0" / "sim"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    calls: list[dict[str, object]] = []
 
     try:
-        _resolve_target(
-            "sim", project_root=project, build_root=build_root, runner=recording_runner
+        resolve_target_handle(
+            _handle(project),
+            build_root=build_root,
+            runner=fusesoc_setup_runner(edam=_edam_at(build_root), calls=calls),
         )
     finally:
         booley_dir.reset_cache()
 
-    assert seen["BOOLEY_DIR"] == str((project / ".booley").resolve())
+    assert calls[0]["env"]["BOOLEY_DIR"] == str((project / ".booley").resolve())

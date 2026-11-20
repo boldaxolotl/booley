@@ -10,7 +10,10 @@ estimated from the retained records:
   wall-clock time);
 * **borrowed**: with no own record, the largest estimate for the same Target
   and phase (any Test Run or flags), else for that phase anywhere in the
-  Project;
+  Project (ASIC synthesis and FPGA implementation never borrow from another
+  Target: their memory grows with the design);
+* **stand-in**: a split synthesis phase (``sv2v``, ``yosys``, ``openroad``) with no record
+  of its own or the Target's takes the Target's whole-command ``synth`` estimate;
 * **unknown**: with neither, the phase has no estimate.
 
 Pre-Sim Commands (``sim_pre_run``) are the exception to the Project borrowing:
@@ -27,7 +30,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, TypeVar
 
@@ -53,6 +56,11 @@ _SINGLE_PHASE_FLOWS = {"lint": "lint", "fpga": "fpga_impl", "synth": "synth"}
 _COVERAGE_FLAG = "coverage"
 _PRE_SIM_PHASE = "sim_pre_run"
 _BUILD_PHASE = "sim_build"
+
+#: Phases that borrow only within a Target: their memory grows with the design, so
+#: another Target's peak can be an order of magnitude off (ADR 0087). The split
+#: synthesis keys are left out: a Custom Flow may share one as its name.
+_TARGET_ONLY_PHASES = frozenset({"synth", "fpga_impl"})
 
 _K = TypeVar("_K")
 
@@ -80,6 +88,9 @@ class JobRequest:
     flags: tuple[str, ...] = ()
     #: Sim only: the Target runs Pre-Sim Commands before its Test Runs.
     pre_sim_commands: bool = False
+    #: Synthesis only: the tool phases (``sv2v``, ``yosys``, ``openroad``) the
+    #: whole command is measured as, in run order; ``()`` plans the whole command.
+    split_phases: tuple[str, ...] = ()
 
 
 def sim_job_request(
@@ -122,9 +133,10 @@ def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
     wall-clock estimate is per command, so a wall-clock summed over phases
     under-counts such Jobs.
 
-    Synthesis lists its whole-command ``synth`` key only: the split ``sv2v``,
-    ``yosys`` and ``openroad`` keys depend on the synthesis mode and frontend,
-    and a listed phase that never runs would leave the Job unknown forever.
+    Synthesis lists its whole-command ``synth`` key, or the split ``sv2v``,
+    ``yosys`` and ``openroad`` keys when the request plans them from the
+    Target's synthesis mode and frontend: a listed phase that never runs would
+    leave the Job unknown forever, so the Flow plans only the tools it runs.
     The per-module probe keys of ``--mode elab-only-standalone`` are never listed.
     """
     return tuple(dict.fromkeys(phase_occurrences(request)))
@@ -153,7 +165,9 @@ def phase_occurrences(request: JobRequest) -> tuple[HistoryKey, ...]:
             keys.append(key("sim_postprocess"))
     else:
         # A Custom Flow's unlabelled command is keyed by the Flow's name.
-        keys = [key(_SINGLE_PHASE_FLOWS.get(request.flow, request.flow))]
+        keys = [key(phase) for phase in request.split_phases] or [
+            key(_SINGLE_PHASE_FLOWS.get(request.flow, request.flow))
+        ]
     return tuple(keys)
 
 
@@ -181,6 +195,8 @@ class PhaseEstimate:
     key: HistoryKey
     memory_mb: Estimate
     wall_s: Estimate
+    #: The whole-command key a split phase borrows from, when it has no record.
+    stand_in: HistoryKey | None = None
 
 
 class Fit(StrEnum):
@@ -230,6 +246,18 @@ class JobEstimate:
             total += wall_s
         return total
 
+    @property
+    def unmeasured(self) -> tuple[HistoryKey, ...]:
+        """The size-dependent phases whose Target has no memory record of them."""
+        return tuple(
+            dict.fromkeys(
+                p.stand_in or p.key
+                for p in self.phases
+                if (p.stand_in or p.key).phase in _TARGET_ONLY_PHASES
+                and p.memory_mb.source is Source.UNKNOWN
+            )
+        )
+
     def fit(self, budget_mb: float) -> Fit:
         """Compare the reservation with *budget_mb*; over-budget wins so a caller can warn."""
         reservation = self.reservation_mb
@@ -274,22 +302,28 @@ class _Maxima:
             _raise_to(self._target, (key.target, key.phase), value)
             _raise_to(self._project, key.phase, value)
 
-    def estimate(self, key: HistoryKey) -> Estimate:
+    def estimate(self, key: HistoryKey, stand_in: HistoryKey | None = None) -> Estimate:
         """Own, else the Target's, else the Project's largest for *key*'s phase, with margin.
 
-        Pre-Sim Commands skip the Project's: with no record of their own or the
-        Target's, the Target's ``sim_build`` estimate stands in.
+        A phase in :data:`_TARGET_ONLY_PHASES` skips the Project step. A key
+        with a *stand_in* skips it too: with no record of its own or the
+        Target's, the stand-in's estimate stands in (Pre-Sim Commands use the
+        Target's ``sim_build``, a split synthesis phase its ``synth``).
         """
-        pre_sim = key.phase == _PRE_SIM_PHASE
+        stand_in = stand_in or (
+            key._replace(phase=_BUILD_PHASE) if key.phase == _PRE_SIM_PHASE else None
+        )
+        skip_project = stand_in is not None or key.phase in _TARGET_ONLY_PHASES
+        project = None if skip_project else self._project.get(key.phase)
         for source, found in (
             (Source.OWN, self._own.get(key)),
             (Source.TARGET, self._target.get((key.target, key.phase))),
-            (Source.PROJECT, None if pre_sim else self._project.get(key.phase)),
+            (Source.PROJECT, project),
         ):
             if found is not None:
                 return Estimate(found * self._margin, source)
-        if pre_sim:
-            return self.estimate(key._replace(phase=_BUILD_PHASE))
+        if stand_in is not None:
+            return self.estimate(stand_in)
         return Estimate(None, Source.UNKNOWN)
 
 
@@ -310,15 +344,24 @@ class ResourceEstimator:
 
     def estimate(self, requests: Sequence[JobRequest]) -> JobEstimate:
         """Estimate a Job: one request per Target, phases concatenated in order."""
-        return self.estimate_keys(key for request in requests for key in phase_keys(request))
+        phases: list[PhaseEstimate] = []
+        for request in requests:
+            whole = (
+                phase_keys(replace(request, split_phases=()))[0] if request.split_phases else None
+            )
+            phases.extend(self._phase(key, whole) for key in phase_keys(request))
+        return JobEstimate(tuple(phases))
 
     def estimate_keys(self, keys: Iterable[HistoryKey]) -> JobEstimate:
         """Estimate one phase per entry of *keys*, in order."""
-        return JobEstimate(
-            tuple(
-                PhaseEstimate(key, self._memory.estimate(key), self._wall.estimate(key))
-                for key in keys
-            )
+        return JobEstimate(tuple(self._phase(key) for key in keys))
+
+    def _phase(self, key: HistoryKey, stand_in: HistoryKey | None = None) -> PhaseEstimate:
+        return PhaseEstimate(
+            key,
+            self._memory.estimate(key, stand_in),
+            self._wall.estimate(key, stand_in),
+            stand_in,
         )
 
 

@@ -9,8 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.domain import TargetHandle
 
+from .staged_input_ledger import StagedInputLedger
 from .trace_overlay import (
     DEFAULT_TRACE_DEPTH,
     _with_trace_options,
@@ -88,15 +90,31 @@ class CoverageOverlay:
     core_file: Path
     vlnv: str
     trace_mode: TraceMode
+    ledger: StagedInputLedger
 
     def cleanup(self) -> None:
         """Remove the generated core without touching the authored Target."""
-        try:
-            self.core_file.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.debug("coverage overlay cleanup failed for %s: %s", self.core_file, exc)
+        self.ledger.remove_created()
+
+
+def _write_overlay(
+    handle: TargetHandle,
+    project_root: Path | str,
+    overlay_path: Path,
+    document: dict,
+    overlay_vlnv: str,
+    mode: TraceMode,
+) -> CoverageOverlay:
+    """Create the overlay core through a ledger, removing it again when that fails."""
+    ledger = StagedInputLedger(
+        resolve_checkout_booley_dir(Path(project_root)), handle.core_file.parent
+    )
+    try:
+        _write_overlay_core_file(ledger, overlay_path, document, "coverage overlay")
+    except BaseException:
+        ledger.remove_created()
+        raise
+    return CoverageOverlay(overlay_path, overlay_vlnv, mode, ledger)
 
 
 def write_coverage_overlay(
@@ -113,7 +131,7 @@ def write_coverage_overlay(
         require_current_target_handle,
     )
 
-    require_current_target_handle(handle)
+    project_root = require_current_target_handle(handle)
     if handle.flow != "sim" or handle.eda_tool != "verilator":
         raise FuseSocError(
             f"coverage overlay unsupported for Target {handle.name!r} "
@@ -145,8 +163,7 @@ def write_coverage_overlay(
     overlay_path = handle.core_file.with_name(
         f"{handle.core_file.stem}{TRACE_OVERLAY_MARKER}.{kind}{handle.core_file.suffix}"
     )
-    _write_overlay_core_file(overlay_path, document)
-    return CoverageOverlay(overlay_path, overlay_vlnv, mode)
+    return _write_overlay(handle, project_root, overlay_path, document, overlay_vlnv, mode)
 
 
 __all__ = ["CoverageOverlay", "coverage_overlay_vlnv", "write_coverage_overlay"]

@@ -59,10 +59,11 @@ class AdmissionContext:
     A Simulation Record sizes lanes from the container's cores and admits
     each work item by its own claim, once ``memory_sizing`` is set.
     ``memory_warning`` is the warning that Job's result carries (it ran alone
-    because its estimate exceeded the Memory Budget, or the budget was
-    unavailable). ``memory_sizing`` lets a Job give each Simulation Record work item
-    its own claim, and is set for every managed admission (a Job's work items,
-    such as a mutation campaign's builds and simulations, take claims too).
+    because its estimate exceeded the Memory Budget, the budget was
+    unavailable, or its Target had no measurement of a size-dependent phase).
+    ``memory_sizing`` lets a Job give each Simulation Record work item its own
+    claim, and is set for every managed admission (a Job's work items, such as
+    a mutation campaign's builds and simulations, take claims too).
     """
 
     mode: str
@@ -352,14 +353,12 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
 def _memory_narrator(
     endpoint: EndpointState, store: job_slots.SlotStore, pid: int
 ) -> Callable[[int | None], None]:
-    """Narrate a queued memory claim: its need, the free memory, its position and the holders."""
+    """Narrate a queued memory claim: what holds it, its position and the largest holders."""
 
     def narrate(_position: int | None) -> None:
         wait = store.memory_wait(pid)
         if wait is not None:  # None: promoted since the tick, nothing left to wait for
-            _narrate_line(
-                endpoint, f"waiting for memory (position {wait.position}): {wait.describe()}"
-            )
+            _narrate_line(endpoint, f"queued (position {wait.position}): {wait.describe()}")
 
     return narrate
 

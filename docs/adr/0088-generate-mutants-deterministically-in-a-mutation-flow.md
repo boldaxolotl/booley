@@ -39,7 +39,8 @@ agent CLI.
   literal widths, enum members, signed shifts and equal-result swaps are judged
   as the build sees them. Testbench files are context and are never mutated.
   When the Target cannot be elaborated as a whole, each scope file is
-  elaborated alone, and the run records and reports why. A unit the Target does
+  elaborated alone, and the run records and reports why, with a note that
+  Mutants may then duplicate each other. A unit the Target does
   not instantiate is elaborated alone with default parameters, and any swap
   whose result depends on a width stays, because another file might elaborate
   the unit differently.
@@ -47,17 +48,21 @@ agent CLI.
   generator yields no `+`/`-` swap whose two results are equal at the
   expression's width. After a build on a Verilator Target, a Mutant whose
   generated C++ equals the baseline's (apart from where its private source copy
-  lives) is dropped as equivalent. The check may miss an equivalent Mutant and
-  never drops another one. There is no SAT equivalence filter and there are no
-  waivers: the pass threshold absorbs the rest.
+  lives) is dropped as equivalent, and one whose generated C++ equals a Mutant
+  already kept is dropped as a duplicate of it. The check may miss an equivalent
+  or duplicate Mutant and never drops a Mutant whose C++ differs. There is no
+  SAT equivalence filter and there are no waivers: the pass threshold absorbs
+  the rest.
 - **A Mutant that does not build is replaced**, on every Target, like an
-  equivalent one. Replacement walks the candidates in selection order, so kept
-  Mutants stay numbered 1 to the count without gaps. The run stops replacing
-  once as many candidates have failed to build as `--count`, so a Target that
-  builds no Mutant cannot walk the whole list. Shortfalls are reported with one
+  equivalent or duplicate one. Replacement walks the candidates in selection
+  order, so kept Mutants stay numbered 1 to the count without gaps. The run
+  stops replacing once as many candidates have failed to build as `--count`, so
+  a Target that builds no Mutant cannot walk the whole list; equivalent and
+  duplicate drops do not count toward that cap. Shortfalls are reported with one
   text, and a run that keeps no Mutant ends with an error. The report never
-  lists equivalent drops; it counts build failures; the result detail lists
-  the IDs of both.
+  lists equivalent or duplicate drops; it counts build failures; the result
+  detail lists the IDs of all three, each duplicate with the ID of the Mutant it
+  duplicates.
 
 ### Identity and selection
 

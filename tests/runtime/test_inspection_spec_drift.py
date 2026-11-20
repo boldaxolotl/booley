@@ -19,6 +19,7 @@ from tests.docker_host_support import fake_docker_host
 from tests.session_issuance_support import install_trusted_validator, stub_keeper
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Findings
+from booley.config.agent import RetiredAuthError
 from booley.config.host_config import host_config_path
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
@@ -514,6 +515,24 @@ def test_unbuildable_expected_spec_warns_unverified(
     assert finding.check_id == "interactive.devcontainer-unverified"
     assert "host skills source vanished" in finding.message
     assert "rerun `booley doctor`" in finding.fix
+
+
+def test_retired_auth_skips_the_drift_check_with_a_note(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(project, dc.APP_NONE)
+
+    def retired(_image: str | None) -> dict:
+        try:
+            raise RetiredAuthError("booley.toml [agent] auth = 'auto' is retired")
+        except RetiredAuthError as exc:
+            raise runtime_spec.RuntimeSpecError(str(exc)) from exc
+
+    (finding,) = _inspect(project, monkeypatch, expected_spec=retired)
+
+    assert finding.severity.value == "note"
+    assert finding.message == "devcontainer.json drift check skipped - set [agent] auth first"
+    assert "booley doctor" not in finding.message
 
 
 def test_hand_written_auto_spec_is_not_compared(

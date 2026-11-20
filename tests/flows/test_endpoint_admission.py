@@ -39,6 +39,7 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
+from tests.memory_budget_support import fail_budget
 from tests.oom_priority_support import (
     PROC_PATH,
     FakeProc,
@@ -467,7 +468,9 @@ def _target_selection(
     handles = tuple(make_target_handle(work_dir, n, drivable_by=(drivable_by,)) for n in names)
     # Private seam: Target selection reads the Flow's parsed request, and preparing it through
     # execute needs a resolved FuseSoC core.
-    flow._args = SimpleNamespace(work_dir=work_dir, target=",".join(names))
+    flow._args = SimpleNamespace(
+        work_dir=work_dir, target=",".join(names), baseline=None, frontend=None
+    )
     selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
     return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]
 
@@ -589,10 +592,7 @@ def test_memory_admission_survives_a_budget_it_cannot_compute(
     memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unreadable MemTotal serializes the Job; it never refuses."""
-    monkeypatch.setattr(
-        "booley.flows.memory_admission.compute_memory_budget",
-        lambda: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
-    )
+    fail_budget(monkeypatch)
 
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
@@ -856,7 +856,7 @@ def test_lint_and_custom_flow_jobs_queue_behind_a_run_alone_job(
             first.seq
         ]
     assert capsys.readouterr().err == (
-        f"[admission] {flow.name}: waiting for memory (position 1): needs {need_mb} MiB; "
+        f"[admission] {flow.name}: queued (position 1): needs {need_mb} MiB; "
         "0 MiB free of the 1,000 MiB Memory Budget; "
         "largest holders: run-1 (synth, t1) whole budget\n"
     )
@@ -944,9 +944,10 @@ def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(
             first.seq
         ]
     assert capsys.readouterr().err == (
-        "[admission] fpga: waiting for memory (position 1): "
+        "[admission] fpga: queued (position 1): "
+        "waits for a vivado seat (1 of 1 held); "
         "needs 500 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
-        f"waits for a vivado seat (1 of 1 held); largest holders: pid {os.getpid()} 100 MiB\n"
+        f"largest holders: pid {os.getpid()} 100 MiB\n"
     )
 
 
@@ -1153,12 +1154,12 @@ def test_requeued_job_narrates_the_requeue_reason_while_queued(
         line for line in capsys.readouterr().err.splitlines() if line.startswith("[admission]")
     ]
     assert len(lines) == 2
-    assert lines[0].startswith("[admission] synth: waiting for memory (position 1): needs 500 MiB")
+    assert lines[0].startswith("[admission] synth: queued (position 1): needs 500 MiB")
     assert lines[0].count(REQUEUE_REASON) == 0
     assert lines[1].startswith(
-        "[admission] synth: waiting for memory (position 1): waits to run alone"
+        f"[admission] synth: queued (position 1): waits to run alone ({REQUEUE_REASON})"
     )
-    assert lines[1].endswith(f"; {REQUEUE_REASON}")
+    assert "memory estimate unknown" not in lines[1]
 
 
 def test_requeue_never_waits_behind_its_own_claim(memory_runtime: Path, runtime: Path) -> None:

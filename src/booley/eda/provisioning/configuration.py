@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from booley.config.eda import PROVISIONING_HOST, EdaConfig, EdaConfigError
+from booley.config.eda import PROVISIONING_HOST, EdaConfig, EdaConfigError, eda_config_path
 from booley.config.eda import load_eda_config as load_eda_requests
 
 
@@ -33,5 +33,8 @@ def validate_host_provisioning_platform(
 def load_eda_config(project_root: Path) -> dict[str, EdaConfig]:
     """Load Project requests and enforce host provisioning compatibility."""
     configs = load_eda_requests(project_root)
-    validate_host_provisioning_platform(configs)
+    try:
+        validate_host_provisioning_platform(configs)
+    except EdaConfigError as exc:
+        raise EdaConfigError(str(exc), path=eda_config_path(project_root)) from exc
     return configs

@@ -5,30 +5,38 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import booley.flows.sim.build as build_module
+from booley.core.file_lock import acquire_file_lock
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
+from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
 )
+from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.pid import capture_process_identity
+from booley.targets.catalog import TargetCatalog
+from tests.memory_budget_support import fail_budget
 from tests.subprocess_budget import run_bounded_child
 
 _DEPRECATION = "--elab-only, --build-only, and --standalone are deprecated; use --mode"
@@ -245,38 +253,43 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
     [
         (["--test", "smoke"], "--test"),
         (["--trace"], "--trace"),
-        (["--result-verbosity", "full"], "--result-verbosity full"),
         (["--no-kill"], "--no-kill"),
     ],
 )
 def test_elab_only_rejects_run_stage_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, extra: list[str], argument: str
 ) -> None:
+    fail_budget(monkeypatch)
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, *extra, mode=mode)
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["mode"] == mode.replace("-", "_")
     assert argument in result.outcome.report_text
     assert "use --mode simulate" in result.outcome.report_text
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 def test_standalone_requires_elab_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fail_budget(monkeypatch)
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, "--standalone", mode=None)
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["mode"] == "simulate"
     assert "--standalone alone is invalid" in result.outcome.report_text
     assert "--mode elab-only-standalone" in result.outcome.report_text
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 def test_coverage_requires_simulation_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    fail_budget(monkeypatch)
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, "--coverage")
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "Coverage requires simulation mode"
     assert result.outcome.detail["mode"] == "elab_only"
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -461,7 +474,10 @@ def test_timeout_before_terminal_record_names_the_budget() -> None:
 
     assert outcome.reason == "build timed out after 7 s (raise [flows.sim].build_timeout_ms)"
     assert outcome.output == "still compiling"
-    assert build_module.build_failure_report(outcome).splitlines()[0] == outcome.reason
+    assert (
+        build_module.build_failure_report(outcome, ProjectSourcePaths()).splitlines()[0]
+        == outcome.reason
+    )
 
 
 def test_simulation_record_runs_every_target_and_reports_the_worst_class(
@@ -524,11 +540,22 @@ def test_missing_executable_is_typed_in_elab_only_result(
     assert "manifest:" not in outcome.report_text
 
 
+@pytest.mark.parametrize("signalled", [False, True])
 def test_elab_only_terminalizes_after_later_target_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signalled: bool
 ) -> None:
+    progress_path = tmp_path / "reports/sim/1/progress.json"
+    published: list[dict[str, object]] = []
+
+    class Builds(dict[str, Any]):
+        def __getitem__(self, selector: str) -> Any:
+            if signalled and selector == "sim_b":  # a signal ends the process here
+                abort_open_progress()
+                published.append(json.loads(progress_path.read_text(encoding="utf-8")))
+            return super().__getitem__(selector)
+
     crash = RuntimeError("simulated elaboration interruption")
-    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_a": _PASS, "sim_b": crash})
+    result, _seen = elab_cli(tmp_path, monkeypatch, Builds(sim_a=_PASS, sim_b=crash))
 
     assert result.exit_code == EXIT_ERROR
     assert "elaboration interruption" in result.outcome.report_text
@@ -537,6 +564,9 @@ def test_elab_only_terminalizes_after_later_target_crash(
     assert progress["phase"] == "aborted"
     assert progress["completed_targets"] == ["sim_a"]
     assert progress["pending_targets"] == ["sim_b"]
+    if signalled:
+        (snapshot,) = published
+        assert (snapshot["phase"], snapshot["pending_targets"]) == ("aborted", ["sim_b"])
 
 
 def test_one_target_executes_only_authenticated_make_and_resolves_its_build_budget(
@@ -560,6 +590,27 @@ def test_one_target_executes_only_authenticated_make_and_resolves_its_build_budg
     assert label == job_resources.ResourceLabel("sim_dut", "sim_build", source_bytes=43)
     log = tmp_path / "reports/sim/1/artifacts/sim_sim_dut/run.log"
     assert log.read_text(encoding="utf-8").startswith("complete compiler output")
+    # An elaboration-only build is never promoted, so its generation is pruned.
+    slots = list(tmp_path.glob(".booley/.runtime/edalize/sim/*/lease.lock"))
+    assert len(slots) == 1
+    assert list((slots[0].parent / "g").iterdir()) == []
+
+
+def test_elab_only_marks_the_pruned_generation_log_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registered: list[tuple[Path, bool]] = []
+
+    observer = MagicMock()
+    observer.log_path_known.side_effect = lambda path, *, target, temporary: registered.append(
+        (path, temporary)
+    )
+    monkeypatch.setattr("booley.flows.terminal_progress.current_progress", lambda: observer)
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS})
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert registered
+    assert all(temporary and "/g/" in path.as_posix() for path, temporary in registered)
 
 
 def test_elaboration_plan_discloses_build_budget_as_its_timeout(
@@ -818,3 +869,57 @@ def test_elab_only_dry_run_writes_flow_plan(
     plan = json.loads((tmp_path / "reports/sim/flow_plan.json").read_text(encoding="utf-8"))
     assert plan["mode"] == "elab_only"
     assert [unit["selector"] for unit in plan["work_units"]] == ["sim_a"]
+
+
+def test_elab_only_lease_wait_is_bounded_by_the_build_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A busy slot ends the elaboration after the build timeout, not 60 s (#4843)."""
+    files = {".booley/booley.toml": "[flows.sim]\nbuild_timeout_ms = 1000\n"}
+    _write_project(tmp_path, monkeypatch, ["sim_dut"], files)
+    handle = TargetCatalog.build(tmp_path).select("sim_dut", for_flow="sim")
+    slot = simulation_build_slot(handle)
+    slot.mkdir(parents=True)
+
+    with (slot / "lease.lock").open("a+", encoding="utf-8") as holder:
+        acquire_file_lock(holder)
+        started = time.monotonic()
+        result, seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _PASS}, files=files)
+        waited = time.monotonic() - started
+
+    assert result.exit_code == EXIT_ERROR
+    assert "Simulation build slot failed" in result.outcome.report_text
+    assert "busy for 1s" in result.outcome.report_text
+    assert seen == []
+    # A loose upper bound on a real 1 s wait; the old fixed wait was 60 s.
+    assert waited < 30
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+@pytest.mark.skipif(
+    capture_process_identity(os.getpid()) is None, reason="needs a process identity"
+)
+def test_elab_only_run_sweeps_a_cancelled_runs_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every Simulation Flow invocation, elaboration-only included, sweeps first."""
+    from booley.flows.sim.trace_overlay import write_trace_overlay
+    from booley.targets.catalog import TargetCatalog
+    from tests.flows.sim.test_simulation_record_crash_matrix import _KILLED, _run_killed
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    _write_core(tmp_path, ["sim"])
+    (tmp_path / ".booley").mkdir()
+    handle = TargetCatalog.build(tmp_path).select("sim")
+
+    def worker() -> None:
+        write_trace_overlay(handle)
+        os._exit(_KILLED)
+
+    _run_killed(worker, tmp_path / "trace.txt")
+    assert (tmp_path / "sim.booleytrace.core").exists()
+
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim": _PASS})
+
+    assert result.exit_code == 0
+    assert not (tmp_path / "sim.booleytrace.core").exists()

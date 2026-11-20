@@ -157,6 +157,15 @@ async def test_interactive_session_preview_lists_fields_and_only_unfinished_jobs
         third = detail_text(app)
         assert third.startswith("S3 · Interactive")
 
+        # The session's detail view lists the same unfinished Jobs, none labelled running.
+        move_to(app, "codex:00")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert [str(row[0]).split(" · ")[0] for row in app._rows] == [
+            "Job: J-SIM1",
+            "Job: J-LINT2",
+        ]
+
 
 @pytest.mark.asyncio
 async def test_preview_shows_the_session_title():

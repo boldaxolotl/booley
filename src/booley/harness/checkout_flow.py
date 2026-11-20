@@ -34,6 +34,9 @@ which projects stealth cores into the checkout exactly as the Flow's own resolut
 does. It resolves the Target's own core: a Booley-generated overlay of a Flow is
 derived from the same base core and names the same files.
 
+The caller's ``PRJ_LIB_DIR`` is passed on resolved and refused inside a live root,
+also before the Job record and admission.
+
 The run's ``PATH`` also starts with a ``git`` that refuses every call (exit 128, one
 line naming the command): the checkout has no repository, so a generator or Pre-Sim
 Command that calls Git fails with a clear error instead of reading the live tree.
@@ -83,7 +86,11 @@ from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
 )
-from booley.measurement.environment import measurement_environment, write_git_refusal
+from booley.measurement.environment import (
+    PDK_ROOT_ENV,
+    measurement_environment,
+    write_git_refusal,
+)
 from booley.measurement.flow_metrics import report_metric_values
 from booley.measurement.live_paths import LiveRoot, input_findings, resolved_findings
 from booley.runtime import booley_dir, job_records, runtime_context, sandbox_layout
@@ -332,6 +339,25 @@ def _refuse_live_inputs(checkout: Path, roots: list[LiveRoot]) -> None:
     findings = input_findings(checkout, roots)
     if findings:
         raise CheckoutFlowError("checkout run refused:\n" + "\n".join(findings))
+
+
+def _pdk_root(roots: list[LiveRoot]) -> Path | None:
+    """The caller's ``PRJ_LIB_DIR``, absolute and symlink-free; raise when it is in a live root.
+
+    Resolved here because the child's working directory is the checkout: a relative
+    value would name another directory there.
+    """
+    value = os.environ.get(PDK_ROOT_ENV)
+    if not value:
+        return None
+    resolved = Path(value).resolve()
+    for root in roots:
+        if booley_dir.contains(resolved, booley_dir=root.path) is not None:
+            raise CheckoutFlowError(
+                f"checkout run refused: {PDK_ROOT_ENV} names {resolved}, "
+                f"inside the {root.label} {root.path}"
+            )
+    return resolved
 
 
 def _prepare_scratch(checkout: Path) -> Path:
@@ -851,7 +877,7 @@ _MISSING_SOURCE_HINT = (
 )
 
 
-def _run_environment(main: Path, scratch: Path) -> dict[str, str]:
+def _run_environment(main: Path, scratch: Path, pdk_root: Path | None) -> dict[str, str]:
     """The scrubbed environment of every process that runs in the checkout."""
     return measurement_environment(
         os.environ,
@@ -860,6 +886,7 @@ def _run_environment(main: Path, scratch: Path) -> dict[str, str]:
         tmp=scratch / "tmp",
         runtime=scratch / "runtime",
         git_refusal=scratch / "bin",
+        pdk_root=pdk_root,
     )
 
 
@@ -878,7 +905,9 @@ def run_post_setup_hook(checkout: Path, main: Path, *, slug: str, log: Path) -> 
     if hook is None:
         return
     # The children repeat this scan, but they run after the hook: no live code may execute.
-    _refuse_live_inputs(checkout, _live_roots(main))
+    roots = _live_roots(main)
+    _refuse_live_inputs(checkout, roots)
+    pdk_root = _pdk_root(roots)
     shown = os.path.relpath(hook, checkout)
     print(f"Running post-setup hook {shown} (log: {log})...", file=sys.stderr)
     scratch = _prepare_scratch(checkout)
@@ -889,7 +918,7 @@ def run_post_setup_hook(checkout: Path, main: Path, *, slug: str, log: Path) -> 
             slug=slug,
             sim_flow_enabled=flow_enabled("sim", checkout),
             log=log,
-            environment=_run_environment(main, scratch),
+            environment=_run_environment(main, scratch, pdk_root),
         )
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -911,9 +940,10 @@ def prepare_checkout_flow(request: CheckoutFlowRequest) -> PreparedCheckoutFlow:
     request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
     roots = _live_roots(main)
     _refuse_live_inputs(checkout, roots)
+    pdk_root = _pdk_root(roots)
     scratch = _prepare_scratch(checkout)
     try:
-        environment = _run_environment(main, scratch)
+        environment = _run_environment(main, scratch, pdk_root)
         _preflight(request, checkout, roots, scratch, environment)
     except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
         shutil.rmtree(scratch, ignore_errors=True)

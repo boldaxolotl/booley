@@ -220,7 +220,8 @@ CPU, but they fail by running out of memory.
 - **Estimate.** A Job reserves its estimated peak memory: the largest recent
   peak recorded for the same Target and phase, plus headroom. A Job with no
   history borrows the largest estimate for that phase elsewhere in the
-  Project; with nothing to borrow, it runs alone.
+  Project, except ASIC synthesis and FPGA implementation, which borrow only
+  from the same Target; with nothing to borrow, it runs alone.
 - **Admission.** A Job starts when its reservation fits in the memory that is
   free; otherwise it waits, QUEUED, and holds no memory while it waits.
   Interactive work goes ahead of background work. A later Job may jump ahead

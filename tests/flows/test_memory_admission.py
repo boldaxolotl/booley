@@ -90,7 +90,7 @@ def test_unknown_job_waits_for_an_empty_budget_runs_alone_and_blocks(
     records = _history(("a", 400))
     holder = _join(store, world, 101, _plan(_synth("a"), records))
     # A phase never recorded in the Project, and an absent request list, cannot be sized.
-    unknown = _plan((JobRequest("fpga", "a"),), records)
+    unknown = _plan((JobRequest("lint", "a"),), records)
     assert unknown.claim.run_alone and unknown.warning is None
     assert _plan(None, records).claim.run_alone
     assert _plan((), records).claim.run_alone
@@ -133,20 +133,57 @@ def test_only_a_job_with_its_own_wall_clock_history_jumps_ahead(tmp_path: Path) 
 _OVER = "Memory estimate 2500 MiB exceeds the Memory Budget of 1000 MiB; this Job ran alone."
 _NO_BUDGET = "Memory Budget unavailable (no MemTotal); this Job ran alone."
 _UNESTIMATED = (JobRequest("sim", "t", test_runs=("x",)),)
+_NOTE = (
+    "No memory measurement yet for {}; this Job ran alone, "
+    "and later runs are sized from its measurement."
+)
 
 
 # A 2,000 MiB peak is a 2,500 MiB estimate against 1,000 MiB. ``MemoryClaim`` refuses a
 # reservation of 0, so a zero peak cannot hold a share. One known and one unknown phase:
-# the Job still needs the whole budget.
+# the Job still needs the whole budget. A size-dependent phase never borrows another
+# Target's peak (#4536): its Target's first run runs alone and says so.
 @pytest.mark.parametrize(
-    ("requests", "records", "budget", "error", "warning"),
+    ("requests", "records", "budget", "error", "warning", "unmeasured"),
     [
-        (_synth("big"), _history(("big", 2000)), 1000.0, None, _OVER),
-        (_synth("a"), _history(("a", 0)), BUDGET_MIB, None, None),
-        (_UNESTIMATED, [_record("t", "sim_build", 100)], BUDGET_MIB, None, None),
-        (_synth("a"), _history(("a", 400)), None, "no MemTotal", _NO_BUDGET),
+        (_synth("big"), _history(("big", 2000)), 1000.0, None, _OVER, None),
+        (_synth("a"), _history(("a", 0)), BUDGET_MIB, None, None, None),
+        (_UNESTIMATED, [_record("t", "sim_build", 100)], BUDGET_MIB, None, None, None),
+        (_synth("a"), _history(("a", 400)), None, "no MemTotal", _NO_BUDGET, None),
+        (
+            _synth("chip"),
+            _history(("block", 400)),
+            BUDGET_MIB,
+            None,
+            _NOTE.format("synth on Target chip"),
+            "synth on Target chip",
+        ),
+        (
+            (JobRequest("fpga", "chip"),),
+            [_record("block", "fpga_impl", 400)],
+            BUDGET_MIB,
+            None,
+            _NOTE.format("fpga_impl on Target chip"),
+            "fpga_impl on Target chip",
+        ),
+        (
+            _synth("big", "chip"),
+            _history(("big", 2000)),
+            1000.0,
+            None,
+            f"{_OVER}\n{_NOTE.format('synth on Target chip')}",
+            "synth on Target chip",
+        ),
     ],
-    ids=["larger-than-budget", "zero-peak", "unestimated-phase", "unavailable-budget"],
+    ids=[
+        "larger-than-budget",
+        "zero-peak",
+        "unestimated-phase",
+        "unavailable-budget",
+        "unmeasured-synth-target",
+        "unmeasured-fpga-target",
+        "over-budget-and-unmeasured",
+    ],
 )
 def test_job_without_a_fitting_estimate_runs_alone(
     requests: tuple[JobRequest, ...],
@@ -154,11 +191,13 @@ def test_job_without_a_fitting_estimate_runs_alone(
     budget: float | None,
     error: str | None,
     warning: str | None,
+    unmeasured: str | None,
 ) -> None:
     plan = _plan(requests, records, budget, error)
 
     assert plan.claim.run_alone
     assert plan.warning == warning
+    assert plan.claim.unmeasured == unmeasured
 
 
 def test_job_larger_than_the_budget_holds_the_store_alone(slots: tuple[FakeWorld, Any]) -> None:
@@ -244,7 +283,9 @@ def _selection(handle: Any, *, matches: bool = True) -> Any:
 
 def test_target_selection_invocation_sizes_its_prepared_targets(tmp_path: Path) -> None:
     flow, handle = _synth_flow(tmp_path)
-    flow._args = SimpleNamespace(work_dir=tmp_path, target="synth_after")
+    flow._args = SimpleNamespace(
+        work_dir=tmp_path, target="synth_after", baseline=None, frontend=None
+    )
 
     def invocation(selection: Any) -> TargetSelectionInvocation:
         # Private seam: the Flow's run step is the callable the invocation wraps.

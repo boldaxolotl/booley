@@ -1,8 +1,10 @@
 """The one refusal for ``booley.toml`` configuration that no longer exists.
 
 A retired ``[jobs]`` key or a ``[goals]`` section (Goal Mode was removed) makes
-every Project command refuse with a single message that names each problem, its
-line and the fix. Only the Main Booley Directory's ``booley.toml`` is read, the
+every Project command except ``booley doctor``, ``booley upgrade``,
+``booley session`` and ``booley chat`` (the route to booley-heal) refuse with a
+single message that names each problem, its line and the fix; Flow and
+Specialist MCP tools refuse too. Only the Main Booley Directory's ``booley.toml`` is read, the
 file admission reads: a linked worktree's or a measured commit's copy never is,
 so exported checkouts stay measurable.
 """
@@ -186,7 +188,7 @@ def refuse_retired_config(project_root: Path | None) -> None:
         message = (
             f"booley.toml has a [goals] section{goals_section_location(spans)}; Goal Mode was removed. "
             f"Fix: {goals_section_action(path, spans)} "
-            "(or run booley-heal to remove it)."
+            "(or type /booley-heal in a Developer Agent chat to remove it)."
         )
         if found:
             message = f"{retired_jobs_keys_message(path, found)} Also: {message}"

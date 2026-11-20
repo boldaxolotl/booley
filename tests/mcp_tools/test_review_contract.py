@@ -54,11 +54,22 @@ def test_interactive_cpp_is_exact_support_scope(suffix):
     assert contract.has_cpp
 
 
-def test_rtl_cpp_refusal_lists_interactive_supported_kinds():
+@pytest.mark.parametrize(
+    "path, category, kinds",
+    [
+        pytest.param("rtl/source.cpp", "rtl", (".svh",), id="rtl"),
+        pytest.param("tb/vectors.json", "tb", (".svh", ".py", ".hxx"), id="tb"),
+    ],
+)
+def test_scope_refusal_lists_accepted_kinds_without_a_doc_pointer(
+    path: str, category: str, kinds: tuple[str, ...]
+) -> None:
     with pytest.raises(ReviewContractError) as caught:
-        resolve_review_scope(["rtl/source.cpp"], category="rtl")
-    assert ".svh" in str(caught.value)
-    assert "REVIEWER.md" in str(caught.value)
+        resolve_review_scope([path], category=category)
+    message = str(caught.value)
+    assert all(kind in message for kind in kinds)
+    assert "REVIEWER.md" not in message
+    assert "not shipped" not in message
 
 
 def test_goal_arbitrary_support_is_not_cpp():

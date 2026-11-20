@@ -24,7 +24,12 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
   `delete:packages`.
 - Agent: the demo's own sign-in (START-HERE step 1); area 3's Zbb request uses
   about half an hour of that allowance and area 4's reviewer run a few
-  minutes. Run at most one such request at a time.
+  minutes. Run at most one such request at a time. Each claim uses one of the
+  GitHub account's 3 active demo tokens, and deleting the Codespace loses it,
+  so repeated runs can hit the limit. When `claim.sh` refuses, don't search for
+  or copy a token: ask the maintainer to sign in with their own account in the
+  Codespace (`codex login --device-auth`), record in `log.md` that the run did
+  not use the demo token, and go on; it is not a finding.
 - Budget: 4 h 35 min: 265 area minutes plus 10 contingency, one 4-core
   Codespace (about 4.6 h of the Free plan's ~30 h). Areas are in priority
   order. Areas 4 (its warnings item) and 6 need area 3's child or its
@@ -189,8 +194,9 @@ Try:
   check that text. Run `booley flow sim --coverage --target sim_core`, then
   launch `coverage_analyst` on the new record from the picker. If the demo's
   simulator can't record coverage, log the refusal and skip the launch.
-- Copy command: for one Flow and one Specialist, use Copy command instead of
-  Submit and check that nothing started.
+- Copy command: don't press it (it writes the maintainer's clipboard; runbook
+  Hard rules). Check that the review screen offers it beside Submit and that
+  the shown command matches the form; log the copy itself as a standing gap.
 Look for: a shown command that differs from what ran, a Job that starts with
 different options or a different worktree, a missing or wrong warning, a model
 or `auth` line that disagrees with the settings, a Submit that starts twice, a

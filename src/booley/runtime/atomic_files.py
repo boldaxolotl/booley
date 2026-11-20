@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from booley.runtime import timefmt
-from booley.runtime.filesystem_utils import replace_file, unlink_file
+from booley.runtime.filesystem_utils import make_directories, replace_file, unlink_file
 
 STAGED_SUFFIX = ".booley-staged"
 """Suffix of a durable record staged beside its final name, never read as a record."""
@@ -52,7 +52,7 @@ def _staged_bytes(path: Path, content: bytes, mode: int) -> Path:
     from booley.core.booley_layout import reject_retired_path
 
     reject_retired_path(path.absolute())
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     descriptor, raw_temporary = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",

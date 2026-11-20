@@ -19,7 +19,7 @@ from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
 from booley.core.host_shell import quote_arg
-from booley.harness import doctor, doctor_deep, host_diagnostics
+from booley.harness import auto_doctor, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import (
     doctor_stamp,
@@ -76,6 +76,9 @@ def _canonical_host_installation():
 
 def _use_real_host_checks(monkeypatch, root, booley_dir, bootstrap_result):
     """Run Doctor with the real host checks over a stubbed Bootstrap result."""
+    # init_cmd binds reconcile_bootstrap at import; a first import under the patch below would
+    # keep the stub for every later test in the process.
+    importlib.import_module("booley.harness.init_cmd")
     inspect_host = host_diagnostics.inspect_host
     calls = _patch_environment(monkeypatch, root, booley_dir)
     monkeypatch.setattr(host_diagnostics, "inspect_host", inspect_host)
@@ -159,61 +162,103 @@ def test_host_doctor_reports_host_egress_mode(egress, tmp_path, monkeypatch):
     assert inventory_calls == [_INVENTORY_ARGV]
 
 
-@pytest.mark.parametrize(
-    ("host", "editor", "stale", "fix_commands"),
-    [
-        pytest.param(
-            "unproxied",
-            False,
-            None,
-            (["booley", "session", "refresh", "--project"],),
-            id="host-unproxied-headless-proxy",
-        ),
-        pytest.param(
-            "proxy",
-            True,
-            "unproxied",
-            (["booley", "init", "--project"],),
-            id="host-proxy-editor-unproxied",
-        ),
-    ],
-)
-def test_host_doctor_warns_for_each_mismatched_running_sandbox(
-    host, editor, stale, fix_commands, tmp_path, monkeypatch
-):
-    stale_root = tmp_path / "stale-project"
-    stale_root.mkdir()
-    current_root = tmp_path / "current-project"
-    current_egress = "unproxied" if host == "unproxied" else None
-    sandboxes = {
-        "stale-sandbox": _sandbox_document(
-            "stale-sandbox", stale_root, editor=editor, egress=stale
-        ),
-        "current-sandbox": _sandbox_document(
-            "current-sandbox", current_root, editor=not editor, egress=current_egress
-        ),
-    }
-    result, inventory_calls = _run_host_doctor(
-        monkeypatch, tmp_path, egress=host, sandboxes=sandboxes
-    )
-    mismatches = [f for f in result.findings if f.check_id == "host.sandbox-egress-mismatch"]
-    assert len(mismatches) == 1, result.findings
-    finding = mismatches[0]
-    sandbox_mode = "proxy" if stale is None else stale
-    assert (finding.severity, finding.subject) == ("warn", str(stale_root.resolve()))
-    assert finding.message == (
-        f"Sandbox stale-sandbox (Project {stale_root.resolve()}) runs with egress "
-        f"'{sandbox_mode}' but host [sandbox] egress = '{host}'"
-    )
-    # Each recreate command names the stale Project, quoted for the host shell
-    # (POSIX shells or PowerShell on Windows).
-    for command in fix_commands:
-        words = " ".join(command)
-        assert f"`{words} {quote_arg(str(stale_root.resolve()))}`" in finding.fix
-    assert ("Rebuild Container" in finding.fix) is editor
-    assert "--seed" not in finding.fix
-    assert result.exit_code == 0
-    assert inventory_calls == [_INVENTORY_ARGV]
+_MISMATCH_CASES = [
+    # (host egress, editor Sandbox, stale Sandbox egress, recreate commands)
+    ("unproxied", False, None, (["booley", "session", "refresh", "--project"],)),
+    ("proxy", True, "unproxied", (["booley", "init", "--project"],)),
+]
+
+
+def test_host_doctor_reports_each_mismatched_running_sandbox(tmp_path, monkeypatch):
+    """Another Project's mismatched Sandbox is a NOTE; this Project's own stays a WARN."""
+    for number, (owner, case) in enumerate(
+        (owner, case) for owner in ("other", "this") for case in _MISMATCH_CASES
+    ):
+        host, editor, stale, fix_commands = case
+        doctor_root = tmp_path / f"doctor-{number}"
+        doctor_root.mkdir()
+        stale_root = doctor_root if owner == "this" else tmp_path / f"stale-{number}"
+        stale_root.mkdir(exist_ok=True)
+        current_root = tmp_path / f"current-{number}"
+        current_egress = "unproxied" if host == "unproxied" else None
+        sandboxes = {
+            "stale-sandbox": _sandbox_document(
+                "stale-sandbox", stale_root, editor=editor, egress=stale
+            ),
+            "current-sandbox": _sandbox_document(
+                "current-sandbox", current_root, editor=not editor, egress=current_egress
+            ),
+        }
+        with monkeypatch.context() as case_patch:
+            result, inventory_calls = _run_host_doctor(
+                case_patch, doctor_root, egress=host, sandboxes=sandboxes
+            )
+        sandbox_mode = "proxy" if stale is None else stale
+        message = (
+            f"Sandbox stale-sandbox (Project {stale_root.resolve()}) runs with egress "
+            f"'{sandbox_mode}' but host [sandbox] egress = '{host}'"
+        )
+        mismatches = [f for f in result.findings if "stale-sandbox" in f.message]
+        assert len(mismatches) == 1, result.findings
+        finding = mismatches[0]
+        assert finding.message == message
+        if owner == "this":
+            assert (finding.severity, finding.check_id) == ("warn", "host.sandbox-egress-mismatch")
+            assert finding.subject == str(stale_root.resolve())
+        else:
+            assert (finding.severity, finding.check_id) == ("note", None)
+            assert not [f for f in result.findings if f.check_id == "host.sandbox-egress-mismatch"]
+        # Each recreate command names the stale Project, quoted for the host shell
+        # (POSIX shells or PowerShell on Windows).
+        for command in fix_commands:
+            words = " ".join(command)
+            assert f"`{words} {quote_arg(str(stale_root.resolve()))}`" in finding.fix
+        assert ("Rebuild Container" in finding.fix) is editor
+        assert "--seed" not in finding.fix
+        assert inventory_calls == [_INVENTORY_ARGV]
+
+
+def test_host_doctor_notes_orphan_stamps_until_prune_stamps(tmp_path, monkeypatch, capsys):
+    """Orphan stamps of deleted Projects are a NOTE, and the stamp-only remedy clears it."""
+    from booley.projects import cli as projects_cli
+    from booley.projects import inventory
+    from booley.runtime import image_keepers, session_admission, session_issuance
+
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    orphans = [str(tmp_path / "gone-a"), str(tmp_path / "gone-b")]
+    for root in orphans:
+        document = json.dumps({"project_root": root})
+        session_issuance.stamp_store().write(root, document)
+        session_admission.claim_store().write(root, document)
+    for name in ("project-a", "project-b"):
+        (tmp_path / name).mkdir()
+    first, _ = _run_host_doctor(monkeypatch, tmp_path / "project-a", egress="proxy", sandboxes={})
+
+    notes = [f for f in first.findings if "belong to deleted Projects" in f.message]
+    assert len(notes) == 1, first.findings
+    assert notes[0].severity == "note"
+    command = " ".join(quote_arg(root) for root in orphans)
+    assert f"booley projects prune-stamps {command}" in notes[0].fix
+    first_active = [
+        (f.severity, f.message) for f in first.findings if f.severity in ("fail", "warn")
+    ]
+
+    parser = argparse.ArgumentParser()
+    projects_cli.add_subparser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["projects", "prune-stamps", *orphans])
+    assert projects_cli.run(args, keeper_operations=image_keepers, leftovers_view=str) == 0
+    capsys.readouterr()
+    assert inventory.known_roots() == frozenset()
+
+    second, _ = _run_host_doctor(monkeypatch, tmp_path / "project-b", egress="proxy", sandboxes={})
+
+    assert not [f for f in second.findings if "belong to deleted Projects" in f.message]
+    second_active = [
+        (f.severity, f.message) for f in second.findings if f.severity in ("fail", "warn")
+    ]
+    assert second_active == first_active
 
 
 def test_host_doctor_fails_when_sandbox_inventory_is_unreadable(tmp_path, monkeypatch):
@@ -288,11 +333,8 @@ def test_typed_report_preserves_warning_deduplication_and_machine_fields():
     )
 
 
-@pytest.mark.parametrize("read_only", [False, True])
 @pytest.mark.parametrize("valid", [False, True])
-def test_project_observations_and_repairs_keep_the_existing_order(
-    tmp_path, monkeypatch, read_only, valid
-):
+def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, valid):
     booley_dir = _write_project(tmp_path)
     (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
     if not valid:
@@ -317,7 +359,7 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     trace(readiness, "inspect_line_endings", "line-endings")
     trace(doctor, "_check_worktree_core_shadow_guard", "shadow")
     trace(readiness, "check_stealth_cores", "projections")
-    doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path, read_only=read_only)
+    doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
     expected = [
         "config",
         "upgrade",
@@ -331,7 +373,69 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     if not valid:
         expected = ["config", "upgrade", "prune", "line-endings"]
     assert events == expected
-    assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+# Doctor's own evidence and scratch output stay writable; nothing else may change.
+_DOCTOR_WRITABLE_PREFIXES = (
+    ".git/",
+    ".booley/runtime/",
+    ".booley/tmp/",
+)
+
+
+def _project_files(root: Path) -> dict[str, bytes]:
+    files = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    return {
+        name: data
+        for name, data in files.items()
+        if not name.startswith(_DOCTOR_WRITABLE_PREFIXES)
+    }
+
+
+@pytest.mark.parametrize("deep", [False, True])
+def test_manual_and_automatic_doctor_agree_and_write_no_project_file(tmp_path, monkeypatch, deep):
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
+    with (booley_dir / "booley.toml").open("a") as stream:
+        stream.write("\n[stealth]\nenabled = true\n")
+    (booley_dir / "cores").mkdir()
+    (booley_dir / "cores" / "hidden.core").write_text("CAPI=2:\nname: ::hidden:0\n")
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    before = _project_files(tmp_path)
+
+    automatic = auto_doctor.run_if_due(tmp_path, trigger="test")
+    assert _project_files(tmp_path) == before
+    manual = doctor.run_doctor_result(argparse.Namespace(deep=deep), tmp_path)
+    assert _project_files(tmp_path) == before
+
+    assert automatic is not None
+    graded = [f for f in manual.findings if f.severity in {"warn", "fail"}]
+    links = next(f for f in graded if f.check_id == "guidance.links-unhealthy")
+    stale = next(f for f in graded if "projections are not current" in f.message)
+    assert "booley init" in links.fix
+    assert "booley init" in stale.fix
+    assert [
+        (f["severity"], f["check_id"], f["message"], f["fix"])
+        for f in automatic["findings"]
+        if f["severity"] in {"warn", "fail"}
+    ] == [(f.severity, f.check_id, f.message, f.fix) for f in graded]
+    assert {k: automatic["counts"][k] for k in ("warn", "fail")} == {
+        k: manual.counts[k] for k in ("warn", "fail")
+    }
+    messages = [f.message for f in manual.findings]
+    skip = "skipped - stealth core projections are not current"
+    assert f"Flow dry-runs {skip}" in messages
+    assert f"Flow dry-runs {skip}" in [f["message"] for f in automatic["findings"]]
+    if deep:
+        assert f"deep checks {skip}" in messages
+        assert manual.deep_status is not None
+        assert not manual.deep_status.current
 
 
 def _owner_frame(messages: list[str], owner: str) -> tuple[int, int]:

@@ -223,54 +223,122 @@ def _resolve_marker_range(value: str, markers: dict[str, int]) -> str:
     return f"{_marker_cycle_token(start, markers)}:{_marker_cycle_token(end, markers)}"
 
 
-def _rewrite_marker_bound(extra: list[str], markers: dict[str, int]) -> None:
-    """Express named --before/--after bounds as typed cycle ranges."""
-    for flag, range_template, direction in (
-        ("--before", ":{}c", "--last"),
-        ("--after", "{}c:", "--first"),
-    ):
-        if flag not in extra:
+# Value-taking options of `diff` (its own and the global ones) that can precede
+# the two time points; their value is never a time point.
+_DIFF_VALUE_OPTIONS = frozenset(
+    {
+        "-s",
+        "--signals",
+        "--clock",
+        "--reset",
+        "--sample-mode",
+        "--format",
+        "--limit",
+        "--wrapper-warning",
+    }
+)
+
+
+def _split_option(token: str) -> tuple[str, str | None, str]:
+    """Split a token into (option, attached value, joiner): `--a=v`, `-t=v`, `-tv`."""
+    if token.startswith("--"):
+        name, sep, value = token.partition("=")
+        return (name, value, sep) if sep else (token, None, "")
+    if token.startswith("-t=") or (token.startswith("-t") and len(token) > 2):
+        joiner = "=" if token[2] == "=" else ""
+        return "-t", token[2 + len(joiner) :], joiner
+    return token, None, ""
+
+
+def _cycle_grid_options(extra: list[str]) -> list[str]:
+    """The options that change how a cycle maps to a tick (clock, reset, reset phase)."""
+    options: list[str] = []
+    for i, token in enumerate(extra):
+        name, attached, _ = _split_option(token)
+        if name == "--with-reset":
+            options.append(name)
+        elif name in ("--clock", "--reset"):
+            # Keep `--clock=VALUE` joined: a spaced hyphen-prefixed value is refused.
+            options.extend([token] if attached is not None else extra[i : i + 2])
+    return options
+
+
+def _async_marker_tick(trace: str, cycle: int, options: list[str]) -> str:
+    """The tick of *cycle* in async mode, where --before/--after take ticks.
+
+    The native async cycle resolver decides, so a clockless trace is refused
+    instead of reading the cycle as a raw tick. A cycle past the end gives one
+    tick past it: `--before` then keeps every match and `--after` none.
+    """
+    command = ["value", trace, "--async", *options]
+    command += ["--at", f"{cycle}c", "--format", "json", "--limit", "1"]
+    result = _run_query(command)
+    if result.returncode == EXIT_USAGE and BEYOND_RANGE_MARKER in result.stderr.lower():
+        return str(_trace_total_ticks(trace) + 1)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        sys.exit(result.returncode)
+    return str(_capture_data(result, command)["target_tick"])
+
+
+def _resolve_diff_points(extra: list[str], markers: dict[str, int]) -> None:
+    """Resolve the two time points of `diff [options] T1 T2`, never an option value."""
+    points = 0
+    i = 1
+    while i < len(extra) and points < 2:
+        if extra[i].startswith("-"):
+            i += 2 if extra[i] in _DIFF_VALUE_OPTIONS else 1
             continue
-        index = extra.index(flag)
-        if index + 1 < len(extra) and extra[index + 1] in markers:
-            cycle = markers[extra[index + 1]]
-            extra[index : index + 2] = ["-t", range_template.format(cycle), direction]
+        extra[i] = _marker_cycle_token(extra[i], markers)
+        points += 1
+        i += 1
 
 
-def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
-    """Resolve persisted marker names in wrapper time arguments, in-place."""
+def _resolve_markers_in_args(extra: list[str], alias: str, trace: str) -> None:
+    """Resolve persisted marker names in wrapper time arguments, in-place.
+
+    A Marker stands for its cycle: where the native option takes a bare cycle
+    (`--before/--after`) it gets the number (the tick of that cycle under
+    `--async`), where it takes typed time it gets `Nc`.
+    """
     markers = _get_markers(_load_sessions(), alias)
     if not markers:
         return
 
-    _rewrite_marker_bound(extra, markers)
+    if extra and extra[0] == "diff":
+        _resolve_diff_points(extra, markers)
 
-    if extra:
-        sub = extra[0]
-        if sub == "diff" and len(extra) >= 3:
-            extra[1] = _marker_cycle_token(extra[1], markers)
-            extra[2] = _marker_cycle_token(extra[2], markers)
-        elif sub == "value":
-            for j, tok in enumerate(extra):
-                if tok == "--at" and j + 1 < len(extra):
-                    extra[j + 1] = _marker_cycle_token(extra[j + 1], markers)
-                    break
+    async_options = _cycle_grid_options(extra) if "--async" in extra else None
 
+    def bound(value: str, known: dict[str, int]) -> str:
+        if async_options is None or value not in known:
+            return _marker_bare_cycle(value, known)
+        return _async_marker_tick(trace, known[value], async_options)
+
+    resolvers = {
+        "-t": _resolve_marker_range,
+        "--time": _resolve_marker_range,
+        "--at": _marker_cycle_token,
+        "--at-time": _marker_bare_cycle,
+        "--at-cycle": _marker_bare_cycle,
+        "--before": bound,
+        "--after": bound,
+    }
     i = 0
     while i < len(extra):
-        if extra[i] in ("-t", "--time") and i + 1 < len(extra):
-            extra[i + 1] = _resolve_marker_range(extra[i + 1], markers)
-            i += 2
-        elif extra[i] in ("--at-time", "--at-cycle") and i + 1 < len(extra):
-            extra[i + 1] = _marker_bare_cycle(extra[i + 1], markers)
-            i += 2
-        elif extra[i] == "--at" and i + 1 < len(extra):
-            extra[i + 1] = _marker_cycle_token(extra[i + 1], markers)
-            i += 2
-        elif extra[i] == "--diff" and i + 2 < len(extra):
+        name, attached, joiner = _split_option(extra[i])
+        if name == "--diff" and attached is None and i + 2 < len(extra):
             extra[i + 1] = _marker_cycle_token(extra[i + 1], markers)
             extra[i + 2] = _marker_cycle_token(extra[i + 2], markers)
             i += 3
+        elif name not in resolvers:
+            i += 1
+        elif attached is not None:
+            extra[i] = name + joiner + resolvers[name](attached, markers)
+            i += 1
+        elif i + 1 < len(extra):
+            extra[i + 1] = resolvers[name](extra[i + 1], markers)
+            i += 2
         else:
             i += 1
 
@@ -416,7 +484,7 @@ def cmd_query(args: argparse.Namespace) -> None:
         alias = extra[0][1:]  # peek, don't pop yet
 
     trace_path = _resolve_trace(extra)
-    _resolve_markers_in_args(extra, alias)
+    _resolve_markers_in_args(extra, alias, trace_path)
     _inject_marker_flags(extra, alias)
 
     extract = _bwave_cmd()
@@ -996,13 +1064,25 @@ def _list_envelope(trace: str, globs: list[str]) -> dict:
     signal set, the clock, the end of the trace — rides on this one call.
     """
     flags = [flag for glob in globs for flag in ("-s", glob)]
-    cmd_args = ["list", trace, *flags, "--format", "json", "--limit", "10000"]
-    return _capture_envelope(_run_query(cmd_args), cmd_args)
+    cmd_args = ["list", trace, *flags, "--no-bit-slices", "--format", "json", "--limit", "10000"]
+    result = _run_query(cmd_args)
+    if result.returncode == EXIT_USAGE:
+        # The viewer takes whole signals: a bit-slice selector is refused.
+        _exit_usage(_inner_message(result))
+    return _capture_envelope(result, cmd_args)
 
 
 def _list_query(trace: str, globs: list[str]) -> dict:
     """The `data` object of one `bwave list` envelope (see `_list_envelope`)."""
     return _list_envelope(trace, globs)["data"]
+
+
+def _trace_total_ticks(trace: str) -> int:
+    """The end tick `bwave list` reports for *trace*."""
+    total = _list_query(trace, []).get("total_ticks")
+    if not isinstance(total, int):
+        sys.exit("ERROR: bwave list did not report total_ticks")
+    return total
 
 
 def _clock_of(data: dict) -> _OpenSignal | None:
@@ -1215,10 +1295,7 @@ class _TickResolver:
         timeout — so an open-ended range used to hang rather than resolve.
         """
         if self._total_ticks is None:
-            total = _list_query(self.trace, []).get("total_ticks")
-            if not isinstance(total, int):
-                sys.exit("ERROR: bwave list did not report total_ticks")
-            self._total_ticks = total
+            self._total_ticks = _trace_total_ticks(self.trace)
         return self._total_ticks
 
     def range_to_ticks(self, spec: str) -> tuple[int, int]:

@@ -53,6 +53,7 @@ from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.result import format_infra_error
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.filesystem_utils import make_directories
 
 _publish_adapter_result = publish_native_adapter_result
 
@@ -205,6 +206,7 @@ class _RunPaths:
     bin_dir: Path
     run_cwd: Path
     work_dir: Path
+    booley_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +224,7 @@ def _resolve_run_paths(
     bin_dir: Path,
     run_cwd: Path | None,
     work_dir: Path | None,
+    booley_dir: Path | None = None,
 ) -> _RunPaths:
     """Resolve runner paths before the simulator changes its cwd."""
     resolved_bin = Path(bin_dir).resolve()
@@ -229,6 +232,7 @@ def _resolve_run_paths(
         bin_dir=resolved_bin,
         run_cwd=Path(run_cwd).resolve() if run_cwd is not None else resolved_bin,
         work_dir=Path(work_dir).resolve() if work_dir is not None else resolved_bin,
+        booley_dir=booley_dir,
     )
 
 
@@ -250,6 +254,7 @@ def _prepare_trace_runtime(
             patterns=tuple(trace_files or ()),
             roots=(paths.run_cwd, paths.work_dir, paths.bin_dir),
             stream_from=paths.run_cwd,
+            booley_dir=paths.booley_dir,
         )
         if session is not None
         else None
@@ -379,10 +384,11 @@ def run_verilated_binary(
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
     trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
+    booley_dir: Path | None = None,
 ) -> NativeRun:
     """Run one edalize-built ``V<top>`` under the resolved trace recipe."""
-    paths = _resolve_run_paths(bin_dir, run_cwd, work_dir)
-    paths.work_dir.mkdir(parents=True, exist_ok=True)
+    paths = _resolve_run_paths(bin_dir, run_cwd, work_dir, booley_dir)
+    make_directories(paths.work_dir)
     exe = _find_binary(paths.bin_dir, top_module)
     if exe is None:
         return _missing_binary_result(paths, top_module, transport, pass_sentinels, fail_sentinels)
@@ -460,7 +466,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
     from booley.flows.sim.run_guard import install_parent_death_guard
 
     install_parent_death_guard()
-    clear_stale_pipes(work.trace_files, Path(work.run_cwd or work.build_dir))
+    clear_stale_pipes(work.booley_dir)
     run = run_verilated_binary(
         top_module=work.top,
         bin_dir=Path(work.build_dir),
@@ -478,6 +484,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
         runtime_inputs=work.runtime_inputs,
         transport=work_transport_identity(work),
         trace_convert_timeout=work.trace_convert_timeout_s,
+        booley_dir=Path(work.booley_dir) if work.booley_dir else None,
     )
     return run.exit_code
 

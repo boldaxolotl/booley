@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from booley.flows import job_estimates as estimates
+from booley.runtime.resource_history import HistoryKey
 
 
 def _record(
@@ -77,6 +78,14 @@ def _borrow_records() -> list[dict[str, Any]]:
         _record("t1", "sim_build", memory=20000),
         # FuseSoC setup is a measured phase of every sim request (#3787).
         _record("t1", "sim_prepare", memory=500),
+        # Size-dependent phases borrow within a Target only (#4536); lint borrows anywhere.
+        _record("t1", "synth", memory=3000, flags=("trace",)),
+        _record("t2", "synth", memory=8000),
+        _record("t2", "fpga_impl", memory=8000),
+        _record("t2", "lint", memory=600),
+        # Split synthesis phases: a tool's own record, never another Target's tool record.
+        _record("t1", "yosys", memory=2000),
+        _record("t2", "openroad", memory=9000),
         # Pre-Sim Commands are measured per Target (#4534).
         _record("t2", "sim_pre_run", memory=3000),
     ]
@@ -112,8 +121,31 @@ def test_missing_key_borrows_from_target_then_project() -> None:
     assert fallback.key.phase == "sim_pre_run"
 
     lint = estimator.estimate([estimates.JobRequest("lint", "t1")])
-    unknown = _phase(lint, "lint").memory_mb
-    assert (unknown.value, unknown.source) == (None, estimates.Source.UNKNOWN)
+    lint_memory = _phase(lint, "lint").memory_mb
+    assert (lint_memory.value, lint_memory.source) == (750.0, estimates.Source.PROJECT)
+
+    synth = estimator.estimate([estimates.JobRequest("synth", "t1")])
+    same_target = _phase(synth, "synth").memory_mb
+    assert (same_target.value, same_target.source) == (3750.0, estimates.Source.TARGET)
+    # A split phase with no record takes the Target's whole-command estimate (#4535).
+    split = estimates.JobRequest("synth", "t1", split_phases=("sv2v", "yosys", "openroad"))
+    phases = {p.key.phase: p.memory_mb for p in estimator.estimate([split]).phases}
+    assert (phases["yosys"].value, phases["yosys"].source) == (2500.0, estimates.Source.OWN)
+    for fallback in ("sv2v", "openroad"):
+        assert (phases[fallback].value, phases[fallback].source) == (
+            3750.0,
+            estimates.Source.TARGET,
+        )
+    fresh = estimator.estimate(
+        [estimates.JobRequest("synth", "t3", split_phases=split.split_phases)]
+    )
+    assert {p.memory_mb.source for p in fresh.phases} == {estimates.Source.UNKNOWN}
+    assert fresh.unmeasured == (HistoryKey("t3", "synth", (), ""),)
+
+    for flow, phase in (("synth", "synth"), ("fpga", "fpga_impl")):
+        other = estimator.estimate([estimates.JobRequest(flow, "t3")])
+        size_dependent = _phase(other, phase).memory_mb
+        assert (size_dependent.value, size_dependent.source) == (None, estimates.Source.UNKNOWN)
 
 
 def test_wall_clock_unknown_and_independent_of_memory() -> None:

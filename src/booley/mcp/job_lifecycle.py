@@ -19,7 +19,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from booley.core.booley_dir import in_checkout_booley_dir
 from booley.flows.progress_lifecycle import repair_progress_after_reap
+from booley.flows.sim.staged_input_ledger import sweep_cancelled_run_inputs
+from booley.fusesoc.core_projection import sweep_cancelled_publication
 from booley.mcp.call_context import CallContext
 from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
@@ -228,6 +231,11 @@ class JobLifecycle:
             rec.run_id,
             booley_dir=self._repository.report_booley_dir(),
         )
+        if (booley_dir := self._repository.report_booley_dir()) is not None:
+            sweep_cancelled_run_inputs(booley_dir)
+        checkout_dir = in_checkout_booley_dir(Path(rec.work_dir)) if rec.work_dir else booley_dir
+        if checkout_dir is not None:
+            sweep_cancelled_publication(checkout_dir)
 
     def _record_terminal(
         self,

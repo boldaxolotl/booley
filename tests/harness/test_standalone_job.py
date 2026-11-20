@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -190,17 +191,30 @@ def test_custom_endpoint_help_is_not_a_job(monkeypatch, project):
 
 
 CHILD = """
-import signal, sys, time
+import os, signal, sys, time
 from pathlib import Path
+from booley.flows.progress_lifecycle import (
+    ProgressLifecycle,
+    progress_document,
+    write_progress_json,
+)
 from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 
 # A runner that started pytest under nohup passes SIGHUP ignored down; the job
 # keeps a signal's existing handler, so start from the default disposition.
 signal.signal(signal.SIGHUP, signal.SIG_DFL)
 
+def publish(phase):
+    write_progress_json(Path(sys.argv[3]), progress_document(
+        flow="stub", run_id=os.environ["BOOLEY_RUN_ID"], phase=phase, targets=["t1", "t2"],
+        completed_targets=["t1"], detail=dict(),
+    ))
+
 def block():
-    Path(sys.argv[2]).write_text("ready")  # the handler is installed before the run starts
-    time.sleep({timeout})
+    with ProgressLifecycle(publish):
+        publish("running")
+        Path(sys.argv[2]).write_text("ready")  # the handler is installed before the run starts
+        time.sleep({timeout})
     return 0
 
 job = StandaloneJob.prepare(
@@ -309,13 +323,21 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal de
 @pytest.mark.parametrize("name", ["sigterm", "sighup", "sigkill"])
 def test_signal_leaves_terminal_record(project, tmp_path, name):
     signum = getattr(signal, name.upper())
-    returncode, _stderr = run_child_until_signalled(project, tmp_path, signum)
+    progress_path = tmp_path / "reports" / "stub" / "1" / "progress.json"
+    returncode, _stderr = run_child_until_signalled(
+        project, tmp_path, signum, extra_args=(str(progress_path),)
+    )
     assert returncode == -signum  # dies by the signal
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
     (rec,) = records(project)
     if name != "sigkill":
         assert (rec.status, rec.exit_code) == ("cancelled", 128 + signum)
         assert rec.ended_at
+        # The process dies without unwinding: the handler publishes the terminal progress.
+        assert (progress["phase"], progress["complete"]) == ("aborted", True)
+        assert progress["pending_targets"] == ["t2"]
         return
+    assert progress["phase"] == "running"  # SIGKILL is out of scope for progress
     # Nothing runs on SIGKILL: the record stays running until someone observes the dead process.
     if sys.platform != "linux":
         pytest.skip("process identity observes /proc")

@@ -104,7 +104,7 @@ Every Flow or Specialist run is a **Job**. Every Job is admitted against a
 budget has left, and otherwise waits in a queue instead of failing. The queue
 has no limit: a Job waits until it runs or you cancel it. Specialists and mutation
 campaigns are admitted by memory too, and a Specialist waits when the budget is
-full. Running Jobs are never interrupted. The defaults:
+full. Running Jobs are never interrupted. For example:
 
 ```toml
 [sandbox]
@@ -124,23 +124,30 @@ Sandbox has no limit, so Booley starts from the machine's installed memory;
 Booley reserves what the Job used on earlier runs
 ([resource history](#job-resource-history)), memory and swap together, plus a
 margin. With no record of its own, the Job borrows from the same step on the
-same Target, then anywhere in the Project. Only a step Booley has never measured
-makes the Job run alone. A Simulation Record runs independent tests in parallel
-while their reservations fit. A Target's
+same Target, then anywhere in the Project. ASIC synthesis and FPGA
+implementation borrow only from the same Target, because their memory grows
+with the design: the first run of such a Target runs alone, and Booley says
+it has no measurement yet. A step with no record at all also runs alone. A
+Simulation Record runs independent tests in parallel while their reservations
+fit. A physical-mode ASIC synthesis Job lowers its reservation to what OpenROAD
+needs once Yosys finishes. A Target's
 [Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
 reserve as much as that Target's build until Booley has measured them.
 
 If the kernel kills a Job for running out of memory because the Sandbox has
 used `[sandbox].memory` plus its
 [swap](SANDBOX.md#project-settings-sandbox), Booley runs it again once,
-alone. A second kill fails the Job.
+alone. A second kill fails the Job. When one test of a Simulation (with its
+Pre-Sim Commands) is killed after the shared build, or one build or simulation
+of a Mutation run is killed, only that part runs again.
 
 If the host itself runs out of memory while the Sandbox stays below that
 limit, running alone does not help, so Booley does not retry the Job. The
 result says the host ran out of memory: free memory on the host, or lower
-`[sandbox].memory` and recreate the Sandbox, then run the Job again. A kill
-Booley cannot see (inside a FuseSoC generator, a Pre-Sim Command or a mutation
-run, for example) is a plain failure.
+`[sandbox].memory` and recreate the Sandbox, then run the Job again. A Mutant
+whose build or simulation is killed on the host, or killed again when run
+alone, counts as inconclusive. A kill Booley cannot see (inside a FuseSoC
+generator, for example) is a plain failure.
 
 Limits apply to one Project.
 
@@ -166,14 +173,15 @@ per Specialist; Specialist runs do not change the figures of any Target. An
 entry with no run in the last 90 days is deleted the next time any Job records.
 Peak memory counts the Job's temporary files only when `TMPDIR` is on tmpfs;
 runs recorded before that rule keep their earlier peak. `booley resources`
-prints the run count and the minimum, median, and maximum peak memory and
-wall-clock time for each, and the peak swap of an entry that swapped, with one
-line per Specialist after the Targets (`--json` for scripts). Use it to choose
-`[sandbox].memory`. Each Test Variant of a simulation has its own entry
-(`tests=first+slow`; the default Variant keeps the bare Test name), and the
-seeds of one Variant share it. Flow runs that `booley doctor` starts are not
-recorded. If the history is not valid JSON or was written by another Booley
-version, the next Job keeps it as
+prints the run count, which counts each Job once, and the minimum, median, and
+maximum peak memory and wall-clock time for each, and the peak swap of an entry
+that swapped, with one line per Specialist after the Targets (`--json` for
+scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation
+has its own entry (`tests=first+slow`; the default Variant keeps the bare Test
+name), and the seeds of one Variant share it. A synthesis run also has an
+entry for each tool (`sv2v`, `yosys`, `openroad`). Flow runs that `booley doctor`
+starts are not recorded. If the history is not valid JSON or was written by
+another Booley version, the next Job keeps it as
 `.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
 one.
 
@@ -217,6 +225,12 @@ auth = "subscription"   # "subscription" or "api_key"
 
 Leave `auth` out and the subscription pays, whatever API key is exported.
 `booley doctor` still fails on a missing `auth`, so the choice is on record.
+
+The exception is a Sandbox set up by hand rather than by `booley init`, such as
+the demo Codespace. There a missing `auth` means the visitor mode: each Agent
+CLI uses the credential you sign in with or export, or the gateway the spec
+provides when you have none, and `booley doctor` does not fail on the missing
+`auth`.
 
 A single value applies to every CLI in `clis`. To bill each CLI differently,
 use a table with one entry per CLI; `booley doctor` fails for a CLI you leave

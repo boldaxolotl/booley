@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.flows.base import SubprocessResult
+from booley.flows.job_resources import ResourceLabel
 from booley.flows.metric_declarations import MetricsUnavailable
 from booley.flows.mutation.flow import (
     MutationFlow,
@@ -38,7 +40,7 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
-from booley.runtime import runtime_context
+from booley.runtime import resource_history, runtime_context
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -47,6 +49,7 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
+from tests.canned_process_support import canned_command
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.flows.sim.launched_work import launched_work
 from tests.target_test_support import write_two_core_sim_project
@@ -393,6 +396,7 @@ def _patch_resolve_target(
     eda_tool: str | None = "verilator",
     verilator: str = _VERILATOR_VERSION,
     cocotb_module: str | None = None,
+    measured: bool = False,
 ):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
@@ -416,6 +420,16 @@ def _patch_resolve_target(
     def _fake_prepare(handle, *, build_root, lane_kind, environment=None, **kwargs):
         assert lane_kind == "unreserved"
         import yaml
+
+        if measured and kwargs.get("setup_runner") is not None:
+            # Stands for the FuseSoC setup the real preparer runs through this runner.
+            kwargs["setup_runner"](
+                canned_command(SubprocessResult(returncode=0)),
+                cwd=str(handle.project_root),
+                env=dict(os.environ),
+                capture_output=True,
+                text=True,
+            )
 
         root = Path(build_root)
         root.mkdir(parents=True, exist_ok=True)
@@ -521,18 +535,26 @@ def _mutant_index(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+_FOLD_LINE = b"  assign y = a & b; // folds"
+
+
 def _write_fake_verilation(build_root: Path) -> None:
     """What a Verilator build leaves in its root: a dependency file and the RTL's C++.
 
     The C++ names each staged source by its absolute path, as ``VL_STOP_MT`` does for a
     design that calls ``$error``, and holds the source without the lines marked ``// dead``,
-    the code a default assignment that every branch overwrites compiles away.
+    the code a default assignment that every branch overwrites compiles away.  A line marked
+    ``// folds`` other than ``_FOLD_LINE`` compiles to one constant, as a parameter value
+    that the generator did not know folds any change of that expression away.
     """
     (build_root / "Vtb__ver.d").write_bytes(b"Vtb.cpp: deps\n")
     lines: list[bytes] = []
     for staged in sorted(build_root.glob("src/**/*.sv")):
         lines.append(f'VL_STOP_MT("{staged}", 1, "")'.encode())
-        lines += [line for line in staged.read_bytes().split(b"\n") if b"// dead" not in line]
+        for line in staged.read_bytes().split(b"\n"):
+            if b"// dead" in line:
+                continue
+            lines.append(b"folded" if b"// folds" in line and line != _FOLD_LINE else line)
     (build_root / "Vtb___024root__0.cpp").write_bytes(b"\n".join(lines) + b"\n")
 
 
@@ -547,6 +569,7 @@ def _patch_fake_simulation(
     cocotb_module: str | None = None,
     verilate: Callable[[Path], None] | None = None,
     verilator: str = _VERILATOR_VERSION,
+    measured: bool = False,
 ) -> FakeSimulation:
     """Fake every build and simulator run of a mutation campaign.
 
@@ -555,13 +578,31 @@ def _patch_fake_simulation(
     A ``run`` may raise ``subprocess.TimeoutExpired``; ``run_work(index, work)`` answers
     with the launched work too (for a fake that answers per test).  ``verilate(build_root)`` runs after
     a build that passes, to leave what Verilator would (``_write_fake_verilation``);
-    ``verilator`` is the version the baseline build reports.
+    ``verilator`` is the version the baseline build reports. With *measured* each answer
+    (and each FuseSoC setup) is replayed by a real child through the boundary that
+    measures and records it.
     """
     _patch_resolve_target(
-        monkeypatch, eda_tool=eda_tool, verilator=verilator, cocotb_module=cocotb_module
+        monkeypatch,
+        eda_tool=eda_tool,
+        verilator=verilator,
+        cocotb_module=cocotb_module,
+        measured=measured,
     )
     fake = FakeSimulation()
-    original = subprocess.run
+    import booley.flows.mutation.flow as mutation_flow_module
+
+    # The boundary the Flow starts every tool through; the tools' own ``subprocess.run`` on main.
+    original = getattr(mutation_flow_module, "run_tool", subprocess.run)
+
+    def _answer(answer: subprocess.CompletedProcess, kwargs: dict[str, Any]):
+        """The canned answer, or with *measured* a real child that replays it through the boundary."""
+        if not measured:
+            return answer
+        from booley.flows.tool_runs import run_tool as real_run_tool
+
+        replay = SubprocessResult(answer.returncode, answer.stdout or "", answer.stderr or "")
+        return real_run_tool(canned_command(replay), flow="mutation", **kwargs)
 
     def _fake(cmd, *args, **kwargs):
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
@@ -571,7 +612,7 @@ def _patch_fake_simulation(
             built = build(index) if build else _fake_proc(rc=0, stdout="[make] ok")
             if verilate and built.returncode == 0:
                 verilate(Path(cmd[2]))
-            return built
+            return _answer(built, kwargs)
         if isinstance(cmd, list) and "booley.flows.sim.backends." in " ".join(cmd):
             work = launched_work(cmd)
             index = _mutant_index(repr(work))
@@ -581,10 +622,14 @@ def _patch_fake_simulation(
             fake.launches.append((work, dict(kwargs.get("env") or {})))
             if run_work:
                 return run_work(index, work)
-            return run(index) if run else _fake_proc(rc=0, stdout="[sim] ok")
+            return _answer(run(index) if run else _fake_proc(rc=0, stdout="[sim] ok"), kwargs)
         return original(cmd, *args, **kwargs)
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake)
+    monkeypatch.setattr(
+        "booley.flows.mutation.flow.run_tool",
+        _fake,
+        raising=False,  # the criterion test must fail in its body on main
+    )
     return fake
 
 
@@ -611,8 +656,10 @@ def _wrap_commands(
 ) -> list[list[str]]:
     """Record every command; one whose program is in *answers* gets that answer, the rest
     go to the simulation fake installed before."""
+    import booley.flows.mutation.flow as mutation_flow_module
+
     commands: list[list[str]] = []
-    fake_run = subprocess.run
+    fake_run = mutation_flow_module.run_tool
 
     def recording_run(cmd, *args, **kwargs):
         commands.append(list(cmd))
@@ -620,7 +667,7 @@ def _wrap_commands(
             return answers[cmd[0]]
         return fake_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", recording_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.run_tool", recording_run)
     return commands
 
 
@@ -661,6 +708,7 @@ def test_baseline_build_runs_the_exact_command_of_the_shared_preparer(
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     _handle, kwargs = prepares[0]
     assert kwargs.pop("build_root").name == "baseline"
+    assert callable(kwargs.pop("setup_runner"))  # the measured FuseSoC setup
     assert kwargs == {"lane_kind": "unreserved", "core_library": None, "environment": {}}
     assert commands[0] == ["custom-build", "--exact-command"]
     # The baseline build records the version of the Verilator it builds with.
@@ -839,6 +887,7 @@ def test_mutant_launch_forwards_the_project_sim_settings(tmp_path: Path, monkeyp
     assert work.pass_sentinels == ("Correct operation validated.",)
     assert work.fail_sentinels == ("ERROR!",)
     assert work.trace_files == ("fpu.vcd",)
+    assert work.booley_dir == str(tmp_path / ".booley")
 
 
 @pytest.mark.parametrize("outcome", ["detected", "survived", "inconclusive"])
@@ -1367,6 +1416,32 @@ def test_campaign_report_gives_the_typed_mutation_metrics(tmp_path: Path, monkey
         "mutants_detected": 3,
         "mutants_survived": 1,
     }
+    (survivor,) = [row for row in result.detail["classified"] if row["status"] == "not_detected"]
+    (mutant,) = [m for m in _candidates(tmp_path) if m.id == survivor["id"]]
+    original = " ".join(mutant.original_code.split())
+    mutated = " ".join(mutant.mutated_code.split())
+    assert values["lite"].counted_items == {
+        "mutants_survived": [
+            f"{mutant.id} {survivor['category']} {mutant.file}:{mutant.line}: "
+            f"{original!r} -> {mutated!r}"
+        ]
+    }
+
+
+def test_survivor_line_keeps_both_sides_of_a_long_source_line() -> None:
+    """A survived Mutant on a long line is listed with its mutated text, not cut off before it."""
+    from booley.flows.mutation.flow import _survivor_line
+
+    short = MutationSpec(1, "operator_change", "rtl/a.sv", 7, "a  +\nb", "a - b", "abc123")
+    assert _survivor_line(short) == "abc123 operator_change rtl/a.sv:7: 'a + b' -> 'a - b'"
+
+    original = "x = " + " + ".join(["term"] * 80)
+    long = MutationSpec(2, "operator_change", "rtl/a.sv", 9, original, original + " + 1", "def456")
+    line = _survivor_line(long)
+    assert len(line) <= 200
+    assert line.startswith("def456 operator_change rtl/a.sv:9: 'x = term + term")
+    assert "...' -> 'x = term + term" in line
+    assert line.endswith("...'")
 
 
 def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, monkeypatch) -> None:
@@ -1579,6 +1654,52 @@ def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch
     assert "3 detected (2 timeout)" in result.report_text
 
 
+def test_mutation_run_records_its_setups_builds_and_simulations(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Every setup, build and simulation of the baseline and a Mutant is in the history."""
+    _write_tests_toml(tmp_path, _MUTATION_VARIANTS)
+
+    def run(index: int | None) -> subprocess.CompletedProcess:
+        if index is None:
+            return _fake_proc(rc=0, stdout="[sim] ok")
+        return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (30s)\n")
+
+    _campaign(
+        tmp_path,
+        monkeypatch,
+        target="default",
+        count=1,
+        min_detected=0,
+        run=run,
+        simulation={"measured": True},
+    )
+
+    records = resource_history.load_records(tmp_path)
+    assert {record["flow"] for record in records} == {"mutation"}
+    assert {record["key"]["target"] for record in records} == {"default"}
+    assert [record["key"]["flags"] for record in records] == [[]] * len(records)
+    assert [(r["key"]["phase"], r["key"]["test_run"], r["outcome"]) for r in records] == [
+        ("sim_prepare", "", "exit_zero"),
+        ("sim_build", "", "exit_zero"),
+        ("sim_run", "reset", "exit_zero"),
+        ("sim_run", "stress", "exit_zero"),
+        ("sim_prepare", "", "exit_zero"),
+        ("sim_build", "", "exit_zero"),
+        ("sim_run", "reset", "timeout"),
+        ("sim_run", "stress", "timeout"),
+    ]
+    shown = [
+        (s["key"]["phase"], s["key"]["test_run"]) for s in resource_history.summarize(records)
+    ]
+    assert sorted(shown) == [
+        ("sim_build", ""),
+        ("sim_prepare", ""),
+        ("sim_run", "reset"),
+        ("sim_run", "stress"),
+    ]
+
+
 def _result_per_test(
     index: int | None, work: PreparedSimulationWork
 ) -> subprocess.CompletedProcess:
@@ -1715,6 +1836,7 @@ def test_identity_is_in_results_and_manifest(tmp_path: Path, monkeypatch) -> Non
     assert reason.startswith(f"{_SCOPE}:")
     assert f"Mutant generation: per-file elaboration ({reason})" in progress
     assert identity == expected
+    assert result.report_text.splitlines()[2] == _DUPLICATE_RISK_LINE
     assert manifest["identity"] == result.detail["identity"]
     markdown = _results_markdown(tmp_path, result)
     for line in (
@@ -1837,6 +1959,7 @@ def test_a_run_without_a_verdict_publishes_a_complete_manifest(
 
     assert result.exit_code == EXIT_ERROR
     assert result.report_text.startswith("mutation campaign produced no trustworthy verdict")
+    assert result.report_text.splitlines()[2] == _DUPLICATE_RISK_LINE  # a per-file run
     assert result.detail["phase"] == "variant_infrastructure"
     assert result.report_text.splitlines()[-1].startswith("RESULT: ERROR (sweep: ")
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
@@ -2249,7 +2372,7 @@ def test_cpp_scope_refuses_before_generation_and_build(tmp_path, monkeypatch):
     generate = MagicMock()
     build_or_run = MagicMock()
     monkeypatch.setattr("booley.flows.mutation.flow.generate_mutants", generate)
-    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", build_or_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.run_tool", build_or_run)
 
     result = _dry_run_scope(tmp_path, monkeypatch, "tb/sim_main.cpp")
 
@@ -2313,11 +2436,13 @@ def test_mutation_report_records_the_simulator_of_a_cached_build(tmp_path, monke
     monkeypatch.setattr("booley.flows.mutation.flow._target_environment", lambda *_args: {})
     monkeypatch.setattr("booley.flows.mutation.flow.launch_environment", lambda *_args: {})
     monkeypatch.setattr(
-        "booley.flows.mutation.flow.subprocess.run",
+        "booley.flows.mutation.flow.run_tool",
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
     )
 
-    endpoint._run_sim_pinned("default", tmp_path, build, "tb")
+    endpoint._run_sim_pinned(
+        "default", tmp_path, build, "tb", label=ResourceLabel("default", "sim_run")
+    )
 
     path = endpoint.write_report(EndpointOutcome(report_text="mutation result"))
     assert json.loads(path.read_bytes()).get("eda_tool") == tool
@@ -2383,9 +2508,10 @@ def test_validation_errors_end_with_a_result_error_line(
 
 def test_validation_refusals_without_a_public_path(tmp_path: Path, monkeypatch) -> None:
     # Private seam: argparse refuses a non-positive ``--count`` before the run
-    # (``test_count_rejects_text_that_is_not_auto_or_an_integer``), campaign resolution refuses
-    # ``a,b`` as an unknown Target first, and ``--target`` is required by the parser, so only a
-    # direct call reaches these three refusals.
+    # (``test_count_rejects_text_that_is_not_auto_or_an_integer``), and ``--target`` is required
+    # by the parser. With ``--scope``, campaign resolution refuses an undeclared ``a,b`` as an
+    # unknown Target first, so only a comma-named Target reaches the one-Target refusal; a
+    # direct call reaches these three.
     message = "--count must be positive"
     outcome = MutationFlow._validate_count(0, 0, 0)
     assert outcome is not None
@@ -2489,6 +2615,7 @@ def test_verilator_equivalent_mutant_is_replaced_by_the_next_candidate(
     assert (result.detail["total_requested"], result.detail["total_scored"]) == (4, 4)
     assert len(result.detail["classified"]) == 4
     assert "shortfall" not in result.detail
+    assert result.detail["duplicate_dropped"] == []  # every kept Mutant builds different C++
     # The dropped Mutant was built (its C++ was compared) but never simulated, and the
     # next candidate took its number and build directory.
     assert fake.runs == [None, 1, 2, 3, 4]
@@ -2621,6 +2748,78 @@ def test_equivalent_and_build_failure_drops_share_one_replacement_order(
     assert result.detail["equivalent_dropped"] == equivalent
     assert result.detail["invalid_dropped"] == invalid
     assert fake.runs == [None, 1, 2, 3, 4]
+
+
+_DUPLICATE_RISK_LINE = (
+    "[mutation_test] Parameter values were unknown to the generator, so Mutants may "
+    "duplicate each other; duplicates are removed only on Verilator Targets"
+)
+# `y = a & b` is the only line that stays as written: any Mutant of it, and `folds`
+# stands for a parameter value that makes the expression a constant, builds the same C++.
+_FOLDING_RTL = """\
+module m (input logic [3:0] a, input logic [3:0] b, output logic [3:0] y, output logic [3:0] z);
+  assign y = a & b; // folds
+  assign z = a | b;
+endmodule
+"""
+
+
+def test_verilator_duplicate_mutant_is_replaced_by_the_next_candidate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    for inconclusive in (False, True):
+        root = tmp_path / ("inconclusive" if inconclusive else "scored")
+        root.mkdir()
+        _assert_duplicate_is_replaced(root, monkeypatch, inconclusive=inconclusive)
+
+
+def _assert_duplicate_is_replaced(tmp_path: Path, monkeypatch, *, inconclusive: bool) -> None:
+    _write_scope(tmp_path, _FOLDING_RTL)
+    ranked = _candidates(tmp_path)
+    # The pick order, pinned: a generator change fails here, not in the walk below.
+    assert [mutant.line for mutant in ranked[:8]] == [3, 2, 2, 3, 3, 2, 2, 3]
+
+    def run(index: int | None) -> subprocess.CompletedProcess:
+        if inconclusive and index == 3:
+            return _fake_proc(rc=1, stdout=_INFRA_OUT)
+        return _detects_every_mutant(index)
+
+    # Candidates 0 and 3 do not build; 1, 4 and 7 are kept; 2, 5 and 6 build the C++ of
+    # candidate 1.  Counting duplicates toward the cap of 3 would stop the run after 3.
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=3,
+        seed=0,
+        min_detected=0,
+        run=run,
+        build=_failing_builds(1, 4),
+        simulation=_VERILATED,
+    )
+
+    detail = result.detail
+    if inconclusive:
+        assert result.exit_code == EXIT_ERROR
+        assert detail["phase"] == "variant_infrastructure"
+    else:
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        assert "shortfall" not in detail
+    assert detail["duplicate_dropped"] == [
+        {"id": ranked[i].id, "duplicates": ranked[1].id} for i in (2, 5, 6)
+    ]
+    assert detail["invalid_dropped"] == [ranked[0].id, ranked[3].id]
+    assert detail["equivalent_dropped"] == []
+    assert [(row["index"], row["id"]) for row in detail["classified"]] == [
+        (1, ranked[1].id),
+        (2, ranked[4].id),
+        (3, ranked[7].id),
+    ]
+    assert fake.builds == [None, 1, 1, 2, 2, 2, 3, 3, 3]
+    assert fake.runs == [None, 1, 2, 3]
+    assert [row["index"] for row in detail["variant_files"]] == [1, 2, 3]
+    assert _DUPLICATE_RISK_LINE not in result.report_text  # the scope elaborated whole
+    for i in (2, 5, 6):
+        assert ranked[i].id not in result.report_text
 
 
 def test_verilator_version_separates_run_identities(tmp_path: Path, monkeypatch) -> None:

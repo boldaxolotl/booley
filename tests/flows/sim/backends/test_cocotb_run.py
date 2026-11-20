@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import time
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
@@ -349,7 +350,6 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         trace=True,
         trace_scope="counter",
         trace_convert_timeout_s=90,
-        result_verbosity="full",
         sim_time_grace_s=2.5,
         runtime_inputs=("firmware.hex",),
         adapter_result_path=str(result_path),
@@ -371,7 +371,6 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         "timeout": 120,
         "max_rundir_bytes": 1000,
         "sim_time_grace_s": 2.5,
-        "result_verbosity": "full",
         "expected_trace_scope": "counter",
         "runtime_inputs": ("firmware.hex",),
         "transport": AdapterTransportIdentity(
@@ -406,21 +405,39 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
     assert seen["tests"] == []
 
 
-def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path, fake_launch, capsys):
-    """F-25: a frozen run loop names itself instead of 'results.xml not found'.
-
-    The guard killed the sim before cocotb wrote any XML, so the parser can only
-    report the symptom. The abort reason in the captured output is the cause.
-    """
+def _stall_lines() -> list[str]:
     from booley.flows.sim.run_guard import format_sim_time_stall
 
-    fake_launch.output = [
+    return [
         "     0.00ns INFO     cocotb.regression   running test_ravenoc\n",
         f"ERROR: {format_sim_time_stall(180)}\n",
     ]
+
+
+def _import_2x_lines() -> list[str]:
+    log = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/import-missing.log"
+    return log.read_text(encoding="utf-8").splitlines(keepends=True)
+
+
+@pytest.mark.parametrize(
+    ("lines", "fragment"),
+    [
+        pytest.param(_stall_lines, "run-loop version mismatch", id="stall"),
+        pytest.param(
+            _import_2x_lines,
+            "could not import the test module 'import_missing_cases'",
+            id="import-2x",
+        ),
+    ],
+)
+def test_a_diagnosed_cause_replaces_the_useless_missing_xml_detail(
+    tmp_path, fake_launch, capsys, lines, fragment
+):
+    """F-25: a frozen run loop or a cocotb 2.x import failure names itself, not 'results.xml not found'."""
+    fake_launch.output = lines()
     assert _run(tmp_path, tests=["test_ravenoc"]) == 1
     out = capsys.readouterr().out
-    assert "run-loop version mismatch" in out
+    assert fragment in out
     # The verdict line quotes the promoted detail, not "results.xml not found".
     assert "results.xml not found" not in out.split("INCONCLUSIVE")[-1]
 
@@ -576,15 +593,12 @@ _BOOM = (
 )
 _SKIP = '{"name":"skip_me","module":"test_demo","status":"skipped","failure":"","elapsed_s":0.0}'
 _LINE_FULL = (
-    f'[COCOTB_RESULTS] {{"state":"ok","detail":"","tests":[{_DONE},{_BOOM},{_SKIP}],'
+    f'[COCOTB_RESULTS] {{"version":2,"state":"ok","detail":"","tests":[{_DONE},{_BOOM},{_SKIP}],'
     '"skipped_unselected":0}'
-)
-_LINE_FOCUSED_COMPACT = (
-    f'[COCOTB_RESULTS] {{"state":"ok","detail":"","tests":[{_DONE},{_BOOM}],'
-    '"skipped_unselected":1,"reported_names":["done","boom","skip_me"]}'
 )
 _RESULTS_JSON = """\
 {
+  "version": 2,
   "state": "ok",
   "detail": "",
   "tests": [
@@ -626,42 +640,25 @@ _DIAGNOSTIC = "results.xml reports extra non-selected test(s): {} — logged, no
 _UNFOCUSED_TESTS = (
     ("done", "pass", ""),
     ("boom", "fail", "boom failed"),
-    (
-        "skip_me",
-        "inconclusive",
-        "selected but reported skipped by cocotb — the test filter did not match it "
-        "(name/filter mismatch)",
-    ),
+    ("skip_me", "inconclusive", "reported skipped by cocotb; the run log names no skip reason"),
 )
 
-# case -> (xml, selection, verbosity, stdout line, failure_kind, per-test verdicts, diagnostics)
+# case -> (xml, selection, stdout line, failure_kind, per-test verdicts, diagnostics)
 _GOLDEN_CASES = {
-    "focused-compact": (
+    "focused": (
         _GOLDEN_XML,
         _FOCUSED,
-        "compact",
-        _LINE_FOCUSED_COMPACT,
-        "inconclusive",
-        (("done", "pass", ""), _MISSING_ID),
-        (_DIAGNOSTIC.format("boom"),),
-    ),
-    "focused-full": (
-        _GOLDEN_XML,
-        _FOCUSED,
-        "full",
         _LINE_FULL,
         "inconclusive",
         (("done", "pass", ""), _MISSING_ID),
         (_DIAGNOSTIC.format("boom, skip_me"),),
     ),
-    "unfocused-compact": (_GOLDEN_XML, [], "compact", _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
-    "unfocused-full": (_GOLDEN_XML, [], "full", _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
+    "unfocused": (_GOLDEN_XML, [], _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
     # A non-finite time makes the transported payload undecodable: both selected tests
     # become inconclusive for missing results (the line itself is not pinned here).
-    "nan-focused-compact": (
+    "nan-focused": (
         _GOLDEN_XML.replace('time="0.25"', 'time="nan"'),
         _FOCUSED,
-        "compact",
         None,
         "inconclusive",
         (
@@ -682,7 +679,7 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     Characterization: the literals were captured from the code that parsed the
     adapter's own stdout line back into results, so this proves the refactor
     changes nothing observable (selected-but-unreported, unselected-ran and
-    unselected-skipped tests; compact and full verbosity; a non-finite time).
+    unselected-skipped tests; full results always carried; a non-finite time).
     The adapter must also build its result without parsing that line.
     """
 
@@ -692,7 +689,7 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     # Patch the defining module and the adapter's own namespace: either call style fails.
     monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
     monkeypatch.setattr(crun, "parse_results_line", forbidden_parse, raising=False)
-    xml, selection, verbosity, line, failure_kind, verdicts, notes = _GOLDEN_CASES[case]
+    xml, selection, line, failure_kind, verdicts, notes = _GOLDEN_CASES[case]
     fake_launch.output = []
     fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
         xml, encoding="utf-8"
@@ -700,7 +697,7 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     identity = _identity(tmp_path, selection)
     work = tmp_path / "work"
 
-    _run(tmp_path, tests=selection, result_verbosity=verbosity, transport=identity, work_dir=work)
+    _run(tmp_path, tests=selection, transport=identity, work_dir=work)
 
     result = read_adapter_result(identity)
     assert (result.passed, result.inconclusive, result.failure_kind) == (False, True, failure_kind)
@@ -711,6 +708,97 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     if line is not None:
         assert [row for row in stdout_lines if row.startswith("[COCOTB_RESULTS]")] == [line]
         assert (work / "cocotb_results.json").read_text(encoding="utf-8") == _RESULTS_JSON
+
+
+_SKIP_FIXTURES = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0"
+_RUNTIME_SKIPS = (
+    (
+        "test_runtime_skip",
+        "inconclusive",
+        "skipped at runtime: feature not present in this configuration",
+    ),
+    ("test_runtime_skip_bare", "inconclusive", "skipped at runtime without a reason"),
+    (
+        "test_runtime_skip_multiline",
+        "inconclusive",
+        "skipped at runtime: requires WIDTH=32\nrebuild with WIDTH=32",
+    ),
+)
+_DECORATOR_SKIP = (
+    "test_decorator_skip",
+    "inconclusive",
+    "skipped by its decorator (skip=True)",
+)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "selection", "expected"),
+    [
+        ("filtered", [row[0] for row in _RUNTIME_SKIPS], _RUNTIME_SKIPS),
+        (
+            "unfiltered",
+            [row[0] for row in (*_RUNTIME_SKIPS, _DECORATOR_SKIP)],
+            (*_RUNTIME_SKIPS, _DECORATOR_SKIP),
+        ),
+    ],
+    ids=["filtered", "unfiltered"],
+)
+def test_cocotb_skip_reasons_reach_adapter_result_and_results_json(
+    tmp_path, fake_launch, scenario, selection, expected
+) -> None:
+    """Issue #4848: a skipped test reports its own reason, not a filter mismatch.
+
+    The XML and log are captured from cocotb 2.1.0, whose XML carries only a
+    fixed ``Test was skipped`` message.
+    """
+    log = (_SKIP_FIXTURES / f"skip-{scenario}.log").read_text(encoding="utf-8")
+    xml = (_SKIP_FIXTURES / f"results-skip-{scenario}.xml").read_text(encoding="utf-8")
+    fake_launch.output = log.splitlines(keepends=True)
+    fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+        xml, encoding="utf-8"
+    )
+    identity = _identity(tmp_path, selection)
+    work = tmp_path / "work"
+
+    _run(tmp_path, tests=selection, transport=identity, work_dir=work, cocotb_module="skip_cases")
+
+    result = read_adapter_result(identity)
+    assert tuple((t.name, t.verdict, t.detail) for t in result.test_results) == expected
+    persisted = cocotb_results.decode_results_payload(
+        json.loads((work / "cocotb_results.json").read_text(encoding="utf-8"))
+    )
+    assert tuple(cocotb_results.reconcile(selection, persisted)) == expected
+
+
+def test_a_skip_reason_survives_output_past_the_tail_cap(
+    tmp_path, fake_launch, monkeypatch
+) -> None:
+    """Issue #4848: a skip logged before 5,000 more lines keeps its message."""
+
+    def capped(launch):
+        lines, proc, termination = fake_launch(launch)
+        return deque(lines, maxlen=5_000), proc, termination  # the supervisor's tail cap
+
+    monkeypatch.setattr("booley.flows.sim.backends.cocotb.run_supervised", capped)
+    xml = (_SKIP_FIXTURES / "results-skip-filtered.xml").read_text(encoding="utf-8")
+    skip = (
+        "10.00ns INFO     cocotb.regression       skipping skip_cases.test_runtime_skip: early\n"
+    )
+    fake_launch.output = [skip, *["noise\n"] * 5_001]
+    fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+        xml, encoding="utf-8"
+    )
+    identity = _identity(tmp_path, ["test_runtime_skip"])
+
+    _run(
+        tmp_path,
+        tests=["test_runtime_skip"],
+        transport=identity,
+        cocotb_module="skip_cases",
+    )
+
+    (item,) = read_adapter_result(identity).test_results
+    assert item.detail == "skipped at runtime: early"
 
 
 @pytest.mark.parametrize("prefix", ["", "tests.counter."])

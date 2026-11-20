@@ -25,6 +25,7 @@ from pathlib import Path
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
+from booley.config.agent import RetiredAuthError
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
 from booley.core.host_shell import quote_arg
@@ -289,7 +290,9 @@ def _credential_policy_inspectable(
             request.project_root, booley_dir=request.booley_dir, selected=app
         )
         # Called only for its errors: a policy that cannot be planned cannot be seeded.
-        auth_token.credential_plan(app, found.policies.get(app, found.policies[found.default]))
+        # Every listed CLI is planned, as init plans them.
+        for cli in found.clis if app in found.clis else (app,):
+            auth_token.credential_plan(cli, found.policies.get(cli, found.policies[found.default]))
     except (
         BackendConfigError,
         BooleyLayoutError,
@@ -345,6 +348,10 @@ def _compare_with_expected_spec(
             expected, actual = _comparable(rebuilt), _comparable(spec)
             scope = "matches the spec `booley init` would write"
     except (runtime_spec.RuntimeSpecError, ValueError) as exc:
+        if isinstance(exc.__cause__, RetiredAuthError):
+            # The agent.credential-policy rows already name the value to set.
+            report.note("devcontainer.json drift check skipped - set [agent] auth first")
+            return
         report.warn(
             "devcontainer.json drift cannot be checked: the spec `booley init` would write "
             f"cannot be built: {exc}",
@@ -409,10 +416,12 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         )
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
-        report.fail(
-            f"Sandbox host issuance is invalid: {exc}",
-            request.remedy,
+        remedy = (
+            f"fix {exc.location}, then rerun `booley doctor`"
+            if isinstance(exc, runtime_spec.ProjectConfigError)
+            else request.remedy
         )
+        report.fail(f"Sandbox host issuance is invalid: {exc}", remedy)
         return
     report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
 

@@ -55,7 +55,7 @@ import subprocess
 import sys
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
@@ -76,6 +76,8 @@ from booley.flows.sim.backends.cocotb_results import (
     TIMEOUT_ACTIVE_DETAIL,
     VERDICT_PASS,
     CocotbResults,
+    SkipLogCollector,
+    attach_skip_causes,
     compact_results,
     decode_results_payload,
     find_import_failure,
@@ -104,6 +106,7 @@ from booley.flows.sim.result import (
 )
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 
 
@@ -602,6 +605,7 @@ class _CocotbRun:
     env: dict[str, str]
     command: list[str]
     current: CurrentRunTraces | None
+    skip_log: SkipLogCollector = field(default_factory=SkipLogCollector)
 
 
 def _persist_result_transport(
@@ -609,9 +613,8 @@ def _persist_result_transport(
     work_dir: Path,
     selected: list[str],
     focused: bool,
-    result_verbosity: str,
 ) -> tuple[str, CocotbResults | None, int]:
-    """Write lossless JSON; return the stdout line, what it carries, and the skip count.
+    """Write lossless JSON; return the stdout line, what it carries, and the unselected skip count.
 
     The second value is the line's payload decoded back (``None`` when the
     decoder rejects it, e.g. a non-finite time) so the adapter publishes exactly
@@ -622,15 +625,12 @@ def _persist_result_transport(
         json.dumps(full, indent=2) + "\n",
         encoding="utf-8",
     )
-    compact = compact_results(results, selected) if focused else None
-    carried = compact if compact is not None and result_verbosity == "compact" else results
-    payload = full if carried is results else results_payload(carried)
     try:
-        transported = decode_results_payload(payload)
+        transported = decode_results_payload(full)
     except BoundaryError:
         transported = None
-    skipped_unselected = compact.skipped_unselected if compact is not None else 0
-    return format_results_line(payload), transported, skipped_unselected
+    skipped_unselected = compact_results(results, selected).skipped_unselected if focused else 0
+    return format_results_line(full), transported, skipped_unselected
 
 
 def _selected_verdicts(tests: list[str], results) -> tuple[bool, list[str], list[tuple]]:
@@ -645,13 +645,17 @@ def _load_cocotb_results(
     output: str,
     timed_out: bool,
     tests: list[str],
+    skip_log: str = "",
 ) -> CocotbResults:
-    """Load current results and replace generic missing-file diagnostics."""
+    """Load current results and replace generic missing-file diagnostics.
+
+    *skip_log* is the skip lines kept past the output's tail cap; the tail follows it.
+    """
     results = _recover_partial_timeout_results(
         parse_results_xml(results_file), output, timed_out, tests
     )
     if results.state == STATE_OK:
-        return results
+        return attach_skip_causes(results, skip_log + output)
     detail = find_import_failure(output) or find_sim_time_stall(output)
     return replace(results, detail=detail) if detail else results
 
@@ -731,9 +735,9 @@ def _evaluate_verdict(
     work_dir: Path,
     results_file: Path,
     tests: list[str],
-    result_verbosity: str = "compact",
     infrastructure_error: str = "",
     termination: RunTermination | None = None,
+    skip_log: str = "",
 ) -> tuple[str, bool, CocotbResults | None]:
     """Parse results.xml, print the verdict sentinels, persist result files.
 
@@ -750,7 +754,7 @@ def _evaluate_verdict(
         if timed_out
         else RunTermination()
     )
-    results = _load_cocotb_results(results_file, output, termination.aborted, tests)
+    results = _load_cocotb_results(results_file, output, termination.aborted, tests, skip_log)
     focused, assessment = _assess_verdict(
         results, output, returncode, termination, tests, infrastructure_error
     )
@@ -759,7 +763,6 @@ def _evaluate_verdict(
         work_dir,
         list(assessment.selected),
         focused,
-        result_verbosity,
     )
     output = _persist_cocotb_verdict(
         output,
@@ -920,7 +923,7 @@ def _prepare_cocotb_run(
     build = Path(build_dir).resolve()
     run = Path(run_cwd).resolve() if run_cwd is not None else build
     work = Path(work_dir).resolve() if work_dir is not None else build
-    work.mkdir(parents=True, exist_ok=True)
+    make_directories(work)
     results = _reset_result_transports(work)
     if vcd and not trace_scope.strip():
         detail = (
@@ -963,6 +966,13 @@ def _execute_cocotb_run(
     transport: AdapterTransportIdentity | None,
     runtime_inputs: tuple[str, ...],
 ):
+    publish = _partial_result_publisher(transport, run.tests, run.results_file)
+
+    def observe(line: str) -> None:
+        run.skip_log.feed(line)
+        if publish is not None:
+            publish(line)
+
     return run_supervised(
         SimulatorLaunch(
             label="cocotb",
@@ -974,7 +984,7 @@ def _execute_cocotb_run(
             max_rundir_bytes=max_rundir_bytes,
             runtime_inputs=runtime_inputs,
             sim_time_grace_s=sim_time_grace_s,
-            on_line=_partial_result_publisher(transport, run.tests, run.results_file),
+            on_line=observe,
         )
     )
 
@@ -996,7 +1006,9 @@ def _pending_trace_publisher(
     partial = partial_result_identity(transport)
 
     def publish(pending: AdapterTraceResult) -> None:
-        results = _load_cocotb_results(run.results_file, output, termination.aborted, run.tests)
+        results = _load_cocotb_results(
+            run.results_file, output, termination.aborted, run.tests, run.skip_log.text()
+        )
         ran_clean = returncode == 0 and not count_sva_errors(output)
         _publish_adapter_result(
             partial,
@@ -1012,12 +1024,17 @@ def _pending_trace_publisher(
     return publish
 
 
+def _failure_kind(termination: RunTermination, returncode: int, output: str) -> AdapterFailureKind:
+    if termination.aborted:
+        return termination.failure_kind
+    return "design" if returncode != 0 or count_sva_errors(output) else ""
+
+
 def _complete_cocotb_run(
     run: _CocotbRun,
     lines,
     proc,
     termination: RunTermination,
-    result_verbosity: str,
     transport: AdapterTransportIdentity | None,
     trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> int:
@@ -1044,17 +1061,11 @@ def _complete_cocotb_run(
         run.work_dir,
         run.results_file,
         run.tests,
-        result_verbosity,
         trace_failure,
         termination=termination,
+        skip_log=run.skip_log.text(),
     )
-    failure_kind = (
-        termination.failure_kind
-        if termination.aborted
-        else "design"
-        if proc.returncode != 0 or count_sva_errors(output)
-        else ""
-    )
+    failure_kind = _failure_kind(termination, proc.returncode, output)
     _publish_adapter_result(
         transport,
         output,
@@ -1081,7 +1092,6 @@ def run_cocotb_sim(
     timeout: int = 600,
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = DEFAULT_SIM_TIME_GRACE_S,
-    result_verbosity: str = "compact",
     expected_trace_scope: str = "",
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
@@ -1116,14 +1126,12 @@ def run_cocotb_sim(
         transport,
         runtime_inputs,
     )
-    return _complete_cocotb_run(
-        run, lines, proc, termination, result_verbosity, transport, trace_convert_timeout
-    )
+    return _complete_cocotb_run(run, lines, proc, termination, transport, trace_convert_timeout)
 
 
 def _run_work(work: PreparedSimulationWork) -> int:
     """Run the prepared *work* as this process's one Cocotb launch."""
-    clear_stale_pipes(work.trace_files, Path(work.run_cwd or work.build_dir))
+    clear_stale_pipes(work.booley_dir)
     return run_cocotb_sim(
         build_dir=Path(work.build_dir),
         eda_tool=work.eda_tool,
@@ -1136,7 +1144,6 @@ def _run_work(work: PreparedSimulationWork) -> int:
         timeout=work.timeout_s,
         max_rundir_bytes=work.max_rundir_bytes,
         sim_time_grace_s=work.sim_time_grace_s,
-        result_verbosity=work.result_verbosity,
         expected_trace_scope=work.trace_scope if work.trace else "",
         runtime_inputs=work.runtime_inputs,
         transport=work_transport_identity(work),

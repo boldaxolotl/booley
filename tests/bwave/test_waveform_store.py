@@ -296,6 +296,20 @@ def test_conversion_result_and_discovery_success_properties() -> None:
     assert stores.DiscoveryResult(None).success is False
 
 
+def test_conversion_warnings_are_the_warning_lines_of_a_successful_build(tmp_path: Path) -> None:
+    store = tmp_path / "trace.fst"
+    store.write_bytes(MINIMAL_FST_BYTES)
+    stderr = "WARNING: cut\n# clock regularity: ok\nWARNING: odd\n# wrote trace.fst\n"
+    attempt = stores.ConversionAttempt(None, 0, stderr)
+    done = stores.ConversionResult(
+        store, inspection=stores.inspect_store(store, probe_reader=False), attempts=(attempt,)
+    )
+    assert done.warnings == ("WARNING: cut", "WARNING: odd")
+    failed = stores.ConversionResult(store, failure_kind="conversion_failed", attempts=(attempt,))
+    assert failed.warnings == ()
+    assert stores.ConversionResult(store).warnings == ()
+
+
 def test_existing_valid_store_is_reused(tmp_path: Path) -> None:
     source = tmp_path / "trace.vcd"
     source.write_text("raw", encoding="utf-8")

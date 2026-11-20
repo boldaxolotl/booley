@@ -35,7 +35,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::cache::{CachedSignal, ClockEntry, ColumnCache};
 use crate::format::format_value;
-use crate::parser::{TimestampError, VcdHeader, VcdParseError};
+use crate::parser::{
+    body_comment_continues, find_standalone_end, SkippedValueChanges, TimestampError, VcdHeader,
+    VcdParseError,
+};
 #[cfg(feature = "profile")]
 use crate::profile::thread_cpu_seconds;
 use crate::signal::signals_in_scope;
@@ -706,6 +709,7 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
             // aliases share the FST handle; queries dedup alias groups by
             // group_id, so expose the handle index there.
             group_id: v.handle_idx as u64,
+            slice: None,
         })
         .collect();
 
@@ -843,6 +847,9 @@ pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
 // ---------------------------------------------------------------- writing
 
 const NO_GROUP: u32 = u32::MAX;
+/// A declared identifier `--scope` leaves out: its value changes are skipped
+/// without being counted.
+const OUT_OF_SCOPE_GROUP: u32 = u32::MAX - 1;
 const MAX_DENSE_IDS: usize = 1_000_000;
 
 fn decode_canonical_numeric_id(id: &[u8]) -> Option<usize> {
@@ -1113,6 +1120,41 @@ impl SignalSchema {
             _ => self.multi_char_idx.get(id).copied().unwrap_or(NO_GROUP),
         }
     }
+
+    /// Store `group` for `id` in the slot `lookup_group` reads.
+    fn insert_id(&mut self, id: &[u8], group: u32) {
+        match id.len() {
+            1 => self.single_char_idx[id[0] as usize] = group,
+            2 => match (dense_vcd_id_index(id, 2), self.two_char_idx.as_mut()) {
+                (Some(index), Some(table)) => table[index] = group,
+                _ => {
+                    self.multi_char_idx.insert(id.to_vec(), group);
+                }
+            },
+            3 => match (dense_vcd_id_index(id, 3), self.three_char_idx.as_mut()) {
+                (Some(index), Some(table)) => table[index] = group,
+                _ => {
+                    self.multi_char_idx.insert(id.to_vec(), group);
+                }
+            },
+            _ => {
+                self.multi_char_idx.insert(id.to_vec(), group);
+            }
+        }
+    }
+}
+
+/// Split a `b`/`B`/`r`/`R` line into its value text and identifier: the
+/// separator is the first space or tab, and one more space or tab may follow.
+#[inline(always)]
+fn vector_value_and_id(line: &[u8]) -> Option<(&[u8], &[u8])> {
+    let separator = memchr2(b' ', b'\t', line)?;
+    let id_start = if separator + 1 < line.len() && matches!(line[separator + 1], b' ' | b'\t') {
+        separator + 2
+    } else {
+        separator + 1
+    };
+    Some((&line[1..separator], &line[id_start..]))
 }
 
 struct ConversionState {
@@ -1120,6 +1162,8 @@ struct ConversionState {
     last_written_time: u64,
     any_time_written: bool,
     in_dumpoff: bool,
+    in_comment: bool,
+    skipped: SkippedValueChanges,
     val_buf: Vec<u8>,
     overwide_values: u64,
     write_error: Option<String>,
@@ -1152,6 +1196,11 @@ struct ChunkEvents {
     enabled_overwide_values: u64,
     max_timestamp: Option<u64>,
     final_dump_enabled: Option<bool>,
+    /// Skipped lines read before this chunk knew whether it started inside a
+    /// `$comment` block; counted only when it did not.
+    prefix_skipped: SkippedValueChanges,
+    skipped: SkippedValueChanges,
+    final_in_comment: Option<bool>,
     recycle_chain_slots: Vec<u32>,
     #[cfg(feature = "profile")]
     input_event_count: usize,
@@ -1365,6 +1414,10 @@ struct ChunkParser<'a> {
     fragment_raw_ranges: Vec<(u32, u32)>,
     fragment_mode: bool,
     local_dump_enabled: Option<bool>,
+    /// Whether the line being read is inside a `$comment` block; `None`
+    /// until this chunk's lines settle it.
+    local_comment: Option<bool>,
+    first_comment_end: usize,
     last_timestamp: Option<u64>,
     current_time_ordinal: u32,
 }
@@ -1404,6 +1457,9 @@ impl<'a> ChunkParser<'a> {
                 enabled_overwide_values: 0,
                 max_timestamp: None,
                 final_dump_enabled: None,
+                prefix_skipped: SkippedValueChanges::default(),
+                skipped: SkippedValueChanges::default(),
+                final_in_comment: None,
                 recycle_chain_slots: Vec::new(),
                 #[cfg(feature = "profile")]
                 input_event_count: 0,
@@ -1421,6 +1477,8 @@ impl<'a> ChunkParser<'a> {
             fragment_raw_ranges: buffers.raw_ranges,
             fragment_mode,
             local_dump_enabled: None,
+            local_comment: None,
+            first_comment_end: find_standalone_end(&chunk.bytes).unwrap_or(usize::MAX),
             last_timestamp: None,
             current_time_ordinal: fst_writer::FST_FRAME_TIME_INDEX,
         }
@@ -1438,8 +1496,10 @@ impl<'a> ChunkParser<'a> {
             start = line_end + 1;
         }
         if start < chunk.bytes.len() {
+            self.ir.skipped.unterminated_final_line = Some(chunk.start_offset + start as u64);
             self.parse_line_ending_at(chunk, start, chunk.bytes.len())?;
         }
+        self.ir.final_in_comment = self.local_comment;
         #[cfg(feature = "profile")]
         {
             self.ir.parse_cpu_seconds = thread_cpu_seconds() - cpu_started;
@@ -1490,9 +1550,25 @@ impl<'a> ChunkParser<'a> {
             end -= 1;
         }
         if end > start {
-            self.parse_line(&chunk.bytes[start..end], chunk.start_offset + start as u64)?;
+            let line = &chunk.bytes[start..end];
+            self.parse_line(line, chunk.start_offset + start as u64)?;
+            self.local_comment = match self.local_comment {
+                Some(inside) => Some(body_comment_continues(line, inside)),
+                None if self.first_comment_end < end => Some(false),
+                None if line.starts_with(b"$comment") => Some(true),
+                None => None,
+            };
         }
         Ok(())
+    }
+
+    /// Record an unusable value-change line unless it is comment text.
+    fn skip_line(&mut self, record: impl FnOnce(&mut SkippedValueChanges)) {
+        match self.local_comment {
+            Some(false) => record(&mut self.ir.skipped),
+            None => record(&mut self.ir.prefix_skipped),
+            Some(true) => {}
+        }
     }
 
     fn parse_line(&mut self, line: &[u8], input_offset: u64) -> Result<(), VcdParseError> {
@@ -1505,9 +1581,9 @@ impl<'a> ChunkParser<'a> {
             }
             b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' => {
                 let value = [line[0].to_ascii_lowercase()];
-                self.push_change(&line[1..], &value, true)?;
+                self.push_change(&line[1..], &value, true, input_offset)?;
             }
-            b'b' | b'B' | b'r' | b'R' => self.parse_vector(line)?,
+            b'b' | b'B' | b'r' | b'R' => self.parse_vector(line, input_offset)?,
             b'$' if line.starts_with(b"$dumpoff") => {
                 self.local_dump_enabled = Some(false);
                 self.ir.final_dump_enabled = Some(false);
@@ -1541,22 +1617,26 @@ impl<'a> ChunkParser<'a> {
         Ok(())
     }
 
-    fn parse_vector(&mut self, line: &[u8]) -> Result<(), VcdParseError> {
-        let Some(separator) = memchr2(b' ', b'\t', line) else {
+    fn parse_vector(&mut self, line: &[u8], line_offset: u64) -> Result<(), VcdParseError> {
+        let Some((value, id)) = vector_value_and_id(line) else {
+            self.skip_line(|skipped| skipped.skip_malformed(line_offset));
             return Ok(());
         };
-        let id_start = if separator + 1 < line.len() && matches!(line[separator + 1], b' ' | b'\t')
-        {
-            separator + 2
-        } else {
-            separator + 1
-        };
-        self.push_change(&line[id_start..], &line[1..separator], false)
+        self.push_change(id, value, false, line_offset)
     }
 
-    fn push_change(&mut self, id: &[u8], raw: &[u8], ready: bool) -> Result<(), VcdParseError> {
+    fn push_change(
+        &mut self,
+        id: &[u8],
+        raw: &[u8],
+        ready: bool,
+        line_offset: u64,
+    ) -> Result<(), VcdParseError> {
         let group = self.schema.lookup_group(id);
-        if group == NO_GROUP {
+        if group >= OUT_OF_SCOPE_GROUP {
+            if group == NO_GROUP {
+                self.skip_line(|skipped| skipped.skip_unresolved(id, line_offset));
+            }
             return Ok(());
         }
         let meta = self.schema.groups[group as usize];
@@ -1721,6 +1801,8 @@ impl ConversionState {
             last_written_time: 0,
             any_time_written: false,
             in_dumpoff: false,
+            in_comment: false,
+            skipped: SkippedValueChanges::default(),
             val_buf: Vec::with_capacity(256),
             overwide_values: 0,
             write_error: None,
@@ -2045,18 +2127,22 @@ impl FstBuildHandler {
         // Emit vars in exact VCD declaration order, streaming scope
         // transitions between consecutive signals. The first declaration of
         // a VCD id becomes the FST signal, later declarations alias it.
-        let mut single_char_idx = [NO_GROUP; 256];
-        let mut two_char_idx =
-            Some(vec![NO_GROUP; VCD_ID_ALPHABET * VCD_ID_ALPHABET].into_boxed_slice());
-        let mut three_char_idx = signals
+        let three_char_idx = signals
             .iter()
             .any(|signal| dense_vcd_id_index(signal.id.as_bytes(), 3).is_some())
             .then(|| {
                 vec![NO_GROUP; VCD_ID_ALPHABET * VCD_ID_ALPHABET * VCD_ID_ALPHABET]
                     .into_boxed_slice()
             });
-        let mut multi_char_idx = FxHashMap::<Vec<u8>, u32>::default();
-        let mut groups: Vec<GroupMeta> = Vec::new();
+        let mut schema = SignalSchema {
+            single_char_idx: [NO_GROUP; 256],
+            two_char_idx: Some(
+                vec![NO_GROUP; VCD_ID_ALPHABET * VCD_ID_ALPHABET].into_boxed_slice(),
+            ),
+            three_char_idx,
+            multi_char_idx: FxHashMap::<Vec<u8>, u32>::default(),
+            groups: Vec::new(),
+        };
         let mut current_scope: Vec<String> = Vec::new();
         for sig in &signals {
             let mut parts: Vec<&str> = sig.name.split('.').collect();
@@ -2070,18 +2156,9 @@ impl FstBuildHandler {
                 fst_writer::FstSignalType::bit_vec(sig.width)
             };
             let id_bytes = sig.id.as_bytes();
-            let existing = match id_bytes.len() {
-                1 => single_char_idx[id_bytes[0] as usize],
-                2 => dense_vcd_id_index(id_bytes, 2)
-                    .and_then(|index| two_char_idx.as_ref().map(|table| table[index]))
-                    .unwrap_or_else(|| multi_char_idx.get(id_bytes).copied().unwrap_or(NO_GROUP)),
-                3 => dense_vcd_id_index(id_bytes, 3)
-                    .and_then(|index| three_char_idx.as_ref().map(|table| table[index]))
-                    .unwrap_or_else(|| multi_char_idx.get(id_bytes).copied().unwrap_or(NO_GROUP)),
-                _ => multi_char_idx.get(id_bytes).copied().unwrap_or(NO_GROUP),
-            };
+            let existing = schema.lookup_group(id_bytes);
             let alias = if existing != NO_GROUP {
-                Some(groups[existing as usize].fst_id)
+                Some(schema.groups[existing as usize].fst_id)
             } else {
                 None
             };
@@ -2095,7 +2172,8 @@ impl FstBuildHandler {
                 )
                 .map_err(|e| format!("fst var '{}': {e}", sig.name))?;
             if existing == NO_GROUP {
-                let frame_offset = groups
+                let frame_offset = schema
+                    .groups
                     .last()
                     .map(|group| {
                         group.frame_offset
@@ -2106,32 +2184,20 @@ impl FstBuildHandler {
                             }
                     })
                     .unwrap_or(0);
-                groups.push(GroupMeta {
+                schema.groups.push(GroupMeta {
                     fst_id,
                     width: sig.width,
                     is_real,
                     frame_offset,
                 });
-                let g = (groups.len() - 1) as u32;
-                match id_bytes.len() {
-                    1 => single_char_idx[id_bytes[0] as usize] = g,
-                    2 => {
-                        if let Some(index) = dense_vcd_id_index(id_bytes, 2) {
-                            two_char_idx.as_mut().expect("two-character table")[index] = g;
-                        } else {
-                            multi_char_idx.insert(id_bytes.to_vec(), g);
-                        }
-                    }
-                    3 => {
-                        if let Some(index) = dense_vcd_id_index(id_bytes, 3) {
-                            three_char_idx.as_mut().expect("three-character table")[index] = g;
-                        } else {
-                            multi_char_idx.insert(id_bytes.to_vec(), g);
-                        }
-                    }
-                    _ => {
-                        multi_char_idx.insert(id_bytes.to_vec(), g);
-                    }
+                schema.insert_id(id_bytes, (schema.groups.len() - 1) as u32);
+            }
+        }
+        if scope.is_some() {
+            for signal in &header.signals {
+                let id = signal.id.as_bytes();
+                if schema.lookup_group(id) == NO_GROUP {
+                    schema.insert_id(id, OUT_OF_SCOPE_GROUP);
                 }
             }
         }
@@ -2140,7 +2206,8 @@ impl FstBuildHandler {
         let (encoder, writer) = hw
             .finish_split()
             .map_err(|e| format!("fst header finish: {e}"))?;
-        let frame_bytes = groups
+        let frame_bytes = schema
+            .groups
             .last()
             .map(|group| {
                 group.frame_offset
@@ -2156,14 +2223,12 @@ impl FstBuildHandler {
             writer,
             output_path: output_path.to_path_buf(),
             body_offset: header.body_offset,
-            schema: SignalSchema {
-                single_char_idx,
-                two_char_idx,
-                three_char_idx,
-                multi_char_idx,
-                groups,
+            schema,
+            state: {
+                let mut state = ConversionState::new(frame_bytes);
+                state.skipped.unterminated_final_line = header.unterminated_final_line;
+                state
             },
-            state: ConversionState::new(frame_bytes),
             sections_encoded_externally: false,
         })
     }
@@ -2339,50 +2404,27 @@ impl FstBuildHandler {
                 // stragglers attribute to the previous max tick
                 self.apply_timestamp(tick);
             }
-            b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' if !self.state.in_dumpoff => {
-                let group = self.schema.lookup_group(&line[1..]);
-                if group != NO_GROUP {
-                    let v = [line[0].to_ascii_lowercase()];
-                    // 1-bit fast path: value is already canonical
-                    if self.schema.groups[group as usize].width == 1
-                        && !self.schema.groups[group as usize].is_real
-                    {
-                        self.emit_change(group, true, &v);
-                    } else {
-                        self.emit_change(group, false, &v);
+            b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' => {
+                if let Some(group) = self.resolve_group(&line[1..], line_offset) {
+                    if !self.state.in_dumpoff {
+                        let v = [line[0].to_ascii_lowercase()];
+                        // 1-bit fast path: value is already canonical
+                        let meta = self.schema.groups[group as usize];
+                        self.emit_change(group, meta.width == 1 && !meta.is_real, &v);
                     }
                 }
             }
-            b'b' | b'B' if !self.state.in_dumpoff => {
-                if let Some(sep) = memchr2(b' ', b'\t', line) {
-                    let bits = &line[1..sep];
-                    let id_start =
-                        if sep + 1 < end && (line[sep + 1] == b' ' || line[sep + 1] == b'\t') {
-                            sep + 2
-                        } else {
-                            sep + 1
-                        };
-                    let group = self.schema.lookup_group(&line[id_start..]);
-                    if group != NO_GROUP {
-                        self.emit_change(group, false, bits);
+            b'b' | b'B' | b'r' | b'R' => match vector_value_and_id(line) {
+                Some((bits, id)) => {
+                    if let Some(group) = self.resolve_group(id, line_offset) {
+                        if !self.state.in_dumpoff {
+                            self.emit_change(group, false, bits);
+                        }
                     }
                 }
-            }
-            b'r' | b'R' if !self.state.in_dumpoff => {
-                if let Some(sep) = memchr2(b' ', b'\t', line) {
-                    let bits = &line[1..sep];
-                    let id_start =
-                        if sep + 1 < end && (line[sep + 1] == b' ' || line[sep + 1] == b'\t') {
-                            sep + 2
-                        } else {
-                            sep + 1
-                        };
-                    let group = self.schema.lookup_group(&line[id_start..]);
-                    if group != NO_GROUP {
-                        self.emit_change(group, false, bits);
-                    }
-                }
-            }
+                None if !self.state.in_comment => self.state.skipped.skip_malformed(line_offset),
+                None => {}
+            },
             b'$' => {
                 // Blackout sections are skipped without x-filling: the
                 // The builder holds the last value through $dumpoff, and
@@ -2399,7 +2441,22 @@ impl FstBuildHandler {
             }
             _ => {}
         }
+        self.state.in_comment = body_comment_continues(line, self.state.in_comment);
         Ok(())
+    }
+
+    /// Look up an identifier: the group to emit into, or `None` for a line
+    /// skipped (counted unless it is comment text or `--scope` left it out).
+    #[inline(always)]
+    fn resolve_group(&mut self, id: &[u8], line_offset: u64) -> Option<u32> {
+        let group = self.schema.lookup_group(id);
+        if group < OUT_OF_SCOPE_GROUP {
+            return Some(group);
+        }
+        if group == NO_GROUP && !self.state.in_comment {
+            self.state.skipped.skip_unresolved(id, line_offset);
+        }
+        None
     }
 
     fn encode_section_start(&self, sequence: u64) -> EncodeSectionStart {
@@ -2414,6 +2471,13 @@ impl FstBuildHandler {
     }
 
     fn reconcile_chunk_events(&mut self, ir: &ChunkEvents) {
+        if !self.state.in_comment {
+            self.state.skipped.merge(&ir.prefix_skipped);
+        }
+        self.state.skipped.merge(&ir.skipped);
+        if let Some(inside) = ir.final_in_comment {
+            self.state.in_comment = inside;
+        }
         let incoming_dumpoff = self.state.in_dumpoff;
         self.state.overwide_values += ir.enabled_overwide_values;
         if !incoming_dumpoff {
@@ -2496,6 +2560,7 @@ impl FstBuildHandler {
             start = line_end + 1;
         }
         if start < chunk.bytes.len() {
+            self.state.skipped.unterminated_final_line = Some(chunk.start_offset + start as u64);
             let mut end = chunk.bytes.len();
             if chunk.bytes[end - 1] == b'\r' {
                 end -= 1;
@@ -2977,6 +3042,7 @@ impl FstBuildHandler {
 
     /// Finish the FST and patch the header after every body write succeeded.
     pub fn finalize_and_write(mut self) -> Result<(), String> {
+        self.state.skipped.warn();
         if self.state.overwide_values > 0 {
             eprintln!(
                 "WARNING: {} value(s) wider than their declared width were truncated",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import math
 import multiprocessing
@@ -26,6 +27,7 @@ from booley.flows.memory_admission import fixed_job_threads
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.synth.flow import AsicSynthesizeFlow
+from booley.flows.terminal_progress import TerminalProgress
 from booley.runtime import resource_history, runtime_context
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 from booley.runtime.supervised_execution import (
@@ -144,7 +146,7 @@ def test_command_records_every_field_and_keeps_its_exit_code(run, tmp_path):
     assert result.returncode == 3
     (record,) = _history(tmp_path)
     # Endpoint admission also records the Job thread count.
-    assert set(record) == RECORD_FIELDS | {"threads"}
+    assert set(record) == RECORD_FIELDS | {"threads", "job"}
     assert record["key"] == {"target": "test", "phase": "echo_tool", "flags": [], "test_run": ""}
     assert record["outcome"] == "exit_nonzero" and record["returncode"] == 3
     assert record["peak_rss_mb"] >= 16
@@ -293,7 +295,7 @@ def test_synth_history_threads_equal_the_openroad_thread_count(tmp_path, monkeyp
 def test_unmeasurable_values_are_absent_not_zero(run, tmp_path, monkeypatch):
     monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: None)
     # Private seam: host readings; the test fixes what the kernel would report.
-    monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
+    monkeypatch.setattr(job_resources, "_children_rusage", lambda: None)
     monkeypatch.setattr(
         job_resources, "cgroup_memory_events", lambda: job_resources.MemoryEvents(None, None)
     )
@@ -306,6 +308,110 @@ def test_unmeasurable_values_are_absent_not_zero(run, tmp_path, monkeypatch):
         assert record[field] is None, field
     assert record["container_peak_delta_mb"] is None
     assert record["peak_tmp_mb"] == 0
+
+
+def _short_child_mib() -> int:
+    """A size that beats this process's own peak: a reaped child's peak counts its parent's."""
+    import resource  # POSIX only; the callers are Linux-only
+
+    return (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10) + 64
+
+
+def _short_child(mib: int) -> list[str]:
+    """A wrapper whose grandchild allocates and touches *mib* MiB and exits before it does."""
+    allocate = f'b = b"x" * ({mib} << 20)'
+    return _python(
+        f"import subprocess, sys; subprocess.run([sys.executable, '-c', {allocate!r}], check=True)"
+    )
+
+
+@linux_only
+@pytest.mark.parametrize(
+    ("sampled_extra_mib", "observed"),
+    [(None, False), (None, True), (256, False)],
+    ids=["short-child", "short-child-observed", "sampled-higher"],
+)
+def test_peak_folds_in_a_child_that_exited_between_samples(
+    flow, tmp_path, monkeypatch, sampled_extra_mib, observed
+):
+    child_mib = _short_child_mib()
+    sampled_mib = None if sampled_extra_mib is None else child_mib + sampled_extra_mib
+
+    def tree(pid, **_):
+        if sampled_mib is None:  # what a 0.25 s sampler sees of a child that exits between samples
+            return {}
+        return {pid: job_resources._Proc("python", sampled_mib << 20, 0, 0)}
+
+    # Private seam: the host /proc sample.
+    monkeypatch.setattr(job_resources, "process_tree", tree)
+    monkeypatch.setattr(job_resources, "tmpdir_in_memory", lambda _path: False)
+    monkeypatch.setattr(os, "sysconf", lambda _name: 100, raising=False)
+    progress = TerminalProgress("echo", "test", tmp_path, stream=io.StringIO())
+    with contextlib.ExitStack() as stack:
+        if observed:  # an installed progress sink makes the command reap through poll()
+            stack.enter_context(progress.installed())
+        stack.enter_context(job_resources.resource_phase("test", "short"))
+        assert _execute(flow, _short_child(child_mib)).returncode == 0
+
+    (record,) = _history(tmp_path)
+    for field in ("peak_rss_mb", "peak_memory_mb"):
+        if sampled_mib is None:
+            assert record[field] is not None and record[field] >= child_mib, field
+        else:
+            assert record[field] == float(sampled_mib), field
+
+
+@linux_only
+def test_concurrent_commands_keep_their_own_kernel_peaks(flow, tmp_path, monkeypatch):
+    monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: {})
+    monkeypatch.setattr(job_resources, "tmpdir_in_memory", lambda _path: False)
+    child_mib = _short_child_mib()
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    waiter = _python(
+        "import pathlib, time\n"
+        f"pathlib.Path({str(ready)!r}).write_text('go')\n"
+        f"end = time.monotonic() + {hang_guard_s()}\n"
+        f"while not pathlib.Path({str(release)!r}).exists() and time.monotonic() < end:\n"
+        "    time.sleep(0.02)\n"
+    )
+
+    def run_b() -> None:
+        with job_resources.resource_phase("test", "b"):
+            _execute(flow, waiter)
+
+    other = threading.Thread(target=run_b)
+    other.start()
+    try:
+        deadline = time.monotonic() + hang_guard_s()
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "the concurrent command never started"
+        with job_resources.resource_phase("test", "a"):
+            assert _execute(flow, _short_child(child_mib)).returncode == 0
+    finally:
+        release.write_text("go")
+        other.join(timeout=hang_guard_s())
+    assert not other.is_alive()
+
+    by_phase = {r["key"]["phase"]: r for r in _history(tmp_path)}
+    assert by_phase["a"]["peak_rss_mb"] >= child_mib
+    # B is reaped after A's child; a process-wide fold would hand B A's peak.
+    assert by_phase["b"]["peak_rss_mb"] is None
+
+
+@posix_only
+def test_a_child_reaped_by_someone_else_reports_no_kernel_peak():
+    child = job_resources.MeasuredPopen(_python("pass"))
+    os.waitpid(child.pid, 0)  # the reaper that wins the race
+
+    assert child.wait(timeout=hang_guard_s()) == 0
+    assert child.reaped_peak_bytes is None
+
+
+@linux_only
+def test_kernel_peak_is_reported_in_bytes_and_absent_when_zero():
+    assert job_resources._kernel_peak_bytes(0) is None
+    assert job_resources._kernel_peak_bytes(2048) == 2048 * 1024
 
 
 def test_swapped_job_records_peak_swap_and_its_next_estimate_includes_it(
@@ -420,6 +526,41 @@ def test_oom_blame_follows_the_commands_own_evidence(
         assert result.oom_blamed is oom_blamed
     (record,) = _history(tmp_path)
     assert (record["outcome"], record["oom_kill_delta"]) == (outcome, 1)
+
+
+@pytest.mark.parametrize(
+    ("judged", "result", "outcome"),
+    [
+        (None, {"returncode": 3}, "exit_nonzero"),
+        (True, {"returncode": 3, "timed_out": True}, "timeout"),
+        (True, {"returncode": 3, "oom_killed": True}, "oom_kill"),
+        (True, {"returncode": 3}, "exit_zero"),
+        (False, {"returncode": 0}, "exit_nonzero"),
+    ],
+    ids=["unjudged", "timeout", "oom-kill", "judged-success", "judged-failure"],
+)
+def test_judged_commands_follow_the_judgment_except_for_stops(tmp_path, judged, result, outcome):
+    label = job_resources.ResourceLabel("test", "echo_tool")
+    process = SimpleNamespace(
+        **{
+            "timed_out": False,
+            "oom_killed": False,
+            "host_oom_kill": False,
+            "duration_s": 1.0,
+            **result,
+        }
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    with job_resources.judged_commands() as commands:
+        job_resources.record_command("flow", label, (), measurement, process)
+        assert _history(tmp_path) == []  # held until the block ends
+        if judged is not None:
+            commands.judge(judged)
+            commands.judge(not judged, command=5)  # no such command: ignored
+
+    (record,) = _history(tmp_path)
+    assert (record["outcome"], record["returncode"]) == (outcome, result["returncode"])
 
 
 @posix_only
@@ -764,9 +905,16 @@ def _recorded_keys(
     ("flow_class", "method", "phase", "flow_name", "split"),
     [
         # Private seam: each method is the Flow's run step; see _label_seen.
-        (LintFlow, "_run_linter", "lint", "lint", None),
-        (FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None),
-        (AsicSynthesizeFlow, "_run_synth_make", "synth", "synth", job_resources.SYNTH_PHASES),
+        pytest.param(LintFlow, "_run_linter", "lint", "lint", None, id="lint"),
+        pytest.param(FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None, id="fpga"),
+        pytest.param(
+            AsicSynthesizeFlow,
+            "_run_synth_make",
+            "synth",
+            "synth",
+            job_resources.SYNTH_PHASES,
+            id="synth",
+        ),
     ],
 )
 def test_flows_label_their_commands_and_requests_map_to_their_keys(
@@ -781,10 +929,15 @@ def test_flows_label_their_commands_and_requests_map_to_their_keys(
     assert label == job_resources.ResourceLabel("core", phase, split=split, source_bytes=4096)
     assert job_resources.current_label() is None
 
-    # Synthesis also records a split tool row; the request lists only the whole command.
+    # Synthesis also records a split tool row; a request plans the whole command or the tools.
     recorded = _recorded_keys(label, {"yosys": job_resources.Usage()} if split else None)
     assert list(phase_keys(JobRequest(flow_name, "core"))) == recorded[:1]
     assert [key.phase for key in recorded[1:]] == (["yosys"] if split else [])
+    if split:
+        assert (
+            list(phase_keys(JobRequest(flow_name, "core", split_phases=("yosys",))))
+            == (recorded[1:])
+        )
 
 
 @linux_only
@@ -838,6 +991,100 @@ def test_parallel_writers_never_lose_or_corrupt_records(tmp_path):
     assert keys == {f"w{n}-{index}" for n in range(6) for index in range(10)}
 
 
+def test_repeated_commands_record_only_failures(flow, tmp_path):
+    with job_resources.repeated_commands():
+        _execute(flow, _python("pass"))
+        _execute(flow, _python("raise SystemExit(3)"))
+
+    (record,) = _history(tmp_path)
+    assert record["returncode"] == 3
+
+
+@pytest.mark.parametrize(
+    ("judged", "records"),
+    [(None, 0), (True, 0), (False, 1)],
+    ids=["unjudged", "judged-success", "judged-failure"],
+)
+def test_a_judged_repeat_is_recorded_only_when_the_flow_fails_it(tmp_path, judged, records):
+    label = job_resources.ResourceLabel("test", "echo_tool")
+    process = SimpleNamespace(
+        returncode=0, timed_out=False, oom_killed=False, host_oom_kill=False, duration_s=1.0
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    with job_resources.repeated_commands(), job_resources.judged_commands() as commands:
+        job_resources.record_command("flow", label, (), measurement, process)
+        if judged is not None:
+            commands.judge(judged)
+
+    assert [record["outcome"] for record in _history(tmp_path)] == ["exit_nonzero"] * records
+
+
+def test_a_joinable_block_has_the_last_word_on_a_nested_judgment(tmp_path):
+    label = job_resources.ResourceLabel("test", "echo_tool")
+    process = SimpleNamespace(
+        returncode=0, timed_out=False, oom_killed=False, host_oom_kill=False, duration_s=1.0
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    with (
+        pytest.raises(RuntimeError),
+        job_resources.judged_commands_failing_on_error(joinable=True),
+    ):
+        with job_resources.judged_commands_failing_on_error() as inner:
+            job_resources.record_command("flow", label, (), measurement, process)
+            inner.judge(True)
+        assert _history(tmp_path) == []  # the outer block still holds it
+        raise RuntimeError("refused after the nested block")
+
+    (record,) = _history(tmp_path)
+    assert (record["outcome"], record["returncode"]) == ("exit_nonzero", 0)
+
+
+def test_a_run_the_bundle_check_refuses_after_exit_records_a_failure(tmp_path, monkeypatch):
+    """The simulator exited zero and passed, but its bundle changed: the Flow refuses the run (#4964)."""
+    from booley.flows.sim.record import serial_execution
+
+    label = job_resources.ResourceLabel("test", "sim_run")
+    process = SimpleNamespace(
+        returncode=0, timed_out=False, oom_killed=False, host_oom_kill=False, duration_s=1.0
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    class _Group:
+        def launch_bundle(self, *_paths: Path) -> None:
+            with job_resources.judged_commands_failing_on_error() as commands:
+                job_resources.record_command("flow", label, (), measurement, process)
+                commands.judge(True)
+
+    checks: list[str] = []
+
+    def verify(*_args: object) -> str:
+        checks.append("verified")
+        if len(checks) > 1:
+            raise RuntimeError("bundle artifact changed")
+        return "digest"
+
+    monkeypatch.setattr(serial_execution, "verify_bundle_in_place", verify)
+    request = SimpleNamespace(attempt_directory=tmp_path / "attempt")
+
+    with pytest.raises(RuntimeError, match="bundle artifact changed"):
+        serial_execution._launch_bundle(
+            request,  # type: ignore[arg-type]
+            tmp_path,
+            None,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+            _Group(),
+            tmp_path,
+            (),
+            0.0,
+            lambda _boundary: None,
+        )
+
+    (record,) = _history(tmp_path)
+    assert (record["outcome"], record["returncode"]) == ("exit_nonzero", 0)
+
+
 def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
     keys, per_key = 120, 21
     resource_history.append_records(
@@ -851,6 +1098,56 @@ def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
         seqs = [r["seq"] for r in records if r["key"]["target"] == f"k{k}"]
         newest = per_key if k == 0 else per_key - 1
         assert seqs == list(range(newest - 19, newest + 1))
+
+
+def test_history_counts_and_keeps_jobs_not_records(tmp_path):
+    def job(n: int, count: int) -> list[dict[str, Any]]:
+        # Job ids sort by start, as execute_endpoint's do.
+        return [_record("k", job=f"{n:03d}", seq=i) for i in range(count)]
+
+    resource_history.append_records(tmp_path, job(0, 1))
+    for n in range(1, 20):
+        resource_history.append_records(tmp_path, job(n, 2))
+    resource_history.append_records(tmp_path, [*job(20, 2), _record("old")])
+    # Job 0 is already evicted: a late record of it neither returns nor evicts Job 1.
+    resource_history.append_records(tmp_path, job(0, 1))
+
+    records = _history(tmp_path)
+    kept = [r for r in records if r["key"]["target"] == "k"]
+    assert {r["job"] for r in kept} == {f"{n:03d}" for n in range(1, 21)}
+    assert len(kept) == 40
+    assert {s["key"]["target"]: s["runs"] for s in resource_history.summarize(records)} == {
+        "k": 20,
+        "old": 1,
+    }
+
+    # One synthesis run writes a whole-command record and one per tool, and counts once
+    # for each planned key (#4535).
+    from booley.flows.job_estimates import JobRequest, phase_keys
+
+    tools = ("sv2v", "yosys", "openroad")
+    label = job_resources.ResourceLabel("core", "synth", split=job_resources.SYNTH_PHASES)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0, oom_killed=False)
+    measurement = job_resources.JobMeasurement(
+        0.25,
+        job_resources.Usage(),
+        {tool: job_resources.Usage() for tool in tools},
+        None,
+        None,
+        None,
+    )
+    synth_records = job_resources.history_records("flow", label, (), measurement, result)
+    resource_history.append_records(
+        tmp_path, [{**record, "job": "900"} for record in synth_records]
+    )
+    planned = phase_keys(JobRequest("synth", "core", split_phases=tools))
+    counted = {
+        resource_history.history_key(entry): entry["runs"]
+        for entry in resource_history.summarize(_history(tmp_path))
+        if entry["key"]["target"] == "core"
+    }
+    assert [counted[key] for key in planned] == [1, 1, 1]
+    assert counted[resource_history.HistoryKey("core", "synth", (), "")] == 1
 
 
 @pytest.mark.parametrize(

@@ -9,14 +9,18 @@ runs, its result text and its report adapters.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import os
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, cast
 
+from booley.core.build_paths import work_root_for
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from booley.runtime.filesystem_utils import make_directories
 from booley.targets.domain import TargetHandle
 
 from .base import BuiltinFlow, RequestT, SubprocessResult
@@ -95,6 +99,18 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
     def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
         """Not used: _run interprets each Target."""
         return EndpointOutcome()
+
+    @contextlib.contextmanager
+    def _dry_run_build_root(self, target: str) -> Iterator[Path]:
+        """A disposable build root for planning *target*, beside its real work root.
+
+        A killed dry run cannot remove it, so it lives in the Booley Directory's
+        ignored build tree and never in the Project Root itself.
+        """
+        parent = work_root_for(self.args.work_dir, self.name, target).parent
+        make_directories(parent)
+        with tempfile.TemporaryDirectory(prefix=".plan-", dir=parent) as scratch:
+            yield Path(scratch) / target
 
     # -- Flow hooks -----------------------------------------------------------
 
@@ -223,7 +239,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
             message = self._run_policy_error()
         if message is None:
             return None
-        return EndpointOutcome(exit_code=EXIT_ERROR, report_text=message)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text=message, refused=True)
 
     def _planning_error(self, targets: list[str], plan: FlowPlan) -> EndpointOutcome:
         """Refuse the run, listing each failing candidate Target's error."""
@@ -473,7 +489,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
         report_dir = self.args.report_dir
         if report_dir is None:
             return implementation
-        report_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(report_dir)
         report_path = target_report_path(self.name, target, report_dir)
         report = self._target_report_payload(target, current, baseline, baseline_ref, report_path)
         report["passed"] = implementation.passed

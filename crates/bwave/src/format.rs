@@ -113,6 +113,27 @@ fn scale_time(value: i128, unit: i8, exponent: i8) -> Result<i128, String> {
     }
 }
 
+/// Render `ticks` as exact nanoseconds in the store's timescale (`6.4ns`,
+/// `10ns`), or `<ticks> ticks` when the store has no timescale exponent.
+/// Decimal digit shifting, not `f64`, so no timescale loses or invents digits.
+pub(crate) fn format_tick_time(ticks: u64, exponent: Option<i8>) -> String {
+    let Some(exponent) = exponent else {
+        return format!("{ticks} ticks");
+    };
+    let shift = i32::from(exponent) + 9;
+    if ticks == 0 || shift >= 0 {
+        let zeros = if ticks == 0 { 0 } else { shift as usize };
+        return format!("{ticks}{}ns", "0".repeat(zeros));
+    }
+    let places = shift.unsigned_abs() as usize;
+    let digits = format!("{ticks:0>width$}", width = places + 1);
+    let (whole, fraction) = digits.split_at(digits.len() - places);
+    match fraction.trim_end_matches('0') {
+        "" => format!("{whole}ns"),
+        fraction => format!("{whole}.{fraction}ns"),
+    }
+}
+
 /// Convert legacy nonnegative integer nanoseconds using unsigned tick bounds.
 /// Missing metadata preserves the legacy raw-tick fallback.
 pub(crate) fn nanoseconds_to_tick(value: u64, exponent: Option<i8>) -> Result<u64, String> {
@@ -686,6 +707,36 @@ pub fn hex_slice(value: &str, sig_width: u32, msb: u32, lsb: u32) -> String {
     let high = (sig_width - 1 - msb) as usize;
     let low = (sig_width - 1 - lsb) as usize;
     pack_bits_to_hex(&bits[high..=low])
+}
+
+/// Bits `msb..=lsb` (offsets from the least significant bit) of a stored
+/// value, in the store's canonical form. A short x/z bit-text value is
+/// left-extended with its leading x/z (zero otherwise) before slicing: the
+/// store drops that padding (`cache::minimal_xz`), and `expand_to_bits` alone
+/// would read it as 0.
+pub fn slice_value(value: &str, width: u32, msb: u32, lsb: u32) -> String {
+    let bit_text = |b: u8| matches!(b.to_ascii_lowercase(), b'0' | b'1' | b'x' | b'z');
+    let short = value.len() < width as usize
+        && value.bytes().all(bit_text)
+        && value.bytes().any(|b| !matches!(b, b'0' | b'1'));
+    let extended;
+    let value = if short {
+        let fill = match value.as_bytes()[0].to_ascii_lowercase() {
+            c @ (b'x' | b'z') => c as char,
+            _ => '0',
+        };
+        extended = fill.to_string().repeat(width as usize - value.len()) + value;
+        extended.as_str()
+    } else {
+        value
+    };
+    let bits = expand_to_bits(value, width);
+    if bits.is_empty() {
+        return value.to_string();
+    }
+    let (high, low) = ((width - 1 - msb) as usize, (width - 1 - lsb) as usize);
+    let text = String::from_utf8_lossy(&bits[high..=low]).into_owned();
+    crate::cache::minimal_xz(format_value(&text))
 }
 
 fn expand_to_bits(value: &str, sig_width: u32) -> Vec<u8> {
@@ -1301,6 +1352,15 @@ mod tests {
     // ---- hex_slice (issue 4c) ----
 
     #[test]
+    fn slice_value_extends_x_and_z() {
+        assert_eq!(slice_value("x01", 8, 7, 6), "x");
+        assert_eq!(slice_value("33", 8, 5, 4), "3");
+        assert_eq!(slice_value("z1", 4, 3, 2), "z");
+        assert_eq!(slice_value("0x1", 8, 7, 6), "0");
+        assert_eq!(slice_value("1x0", 3, 2, 0), "1x0");
+    }
+
+    #[test]
     fn hex_slice_clean() {
         assert_eq!(hex_slice("0FAB", 16, 7, 0), "AB");
         assert_eq!(hex_slice("0FAB", 16, 15, 8), "0F");
@@ -1462,6 +1522,23 @@ mod exact_time_tests {
                 TimeToken::Pico(100).resolve_to_tick(Some(exponent)),
                 Ok(10_i64.pow((-12 - exponent + 2) as u32))
             );
+        }
+    }
+
+    #[test]
+    fn format_tick_time_keeps_exact_nanoseconds() {
+        let cases: &[(u64, Option<i8>, &str)] = &[
+            (6400, Some(-12), "6.4ns"),
+            (10000, Some(-12), "10ns"),
+            (500, Some(-12), "0.5ns"),
+            (0, Some(-12), "0ns"),
+            (3, Some(-8), "30ns"),
+            (123456789, Some(-15), "123.456789ns"),
+            (5, Some(-6), "5000ns"),
+            (6400, None, "6400 ticks"),
+        ];
+        for (ticks, exponent, expected) in cases {
+            assert_eq!(format_tick_time(*ticks, *exponent), *expected);
         }
     }
 

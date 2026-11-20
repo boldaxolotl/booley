@@ -18,6 +18,7 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
+    ResumeSimulationRecordPreviewRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
@@ -25,7 +26,10 @@ from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.record.run_directory import RunDirectory, claimed_run_directory
 from booley.flows.sim.record.store import SimulationRecordStore
+from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from tests.flows.sim.leased_session import canned_build_session
+from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _executor,
@@ -34,12 +38,17 @@ from tests.flows.sim.simulation_record_test_support import (
     _manifest_for,
     _run_coverage_simulation_record,
 )
+from tests.flows.sim.test_coverage_flow import _coverage, _coverage_project, _pin_revision
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import (
     _baseline_manifest,
+    _distinct_root_resume,
     _manifest,
     _selection_test_runs,
     _sha,
+)
+from tests.flows.sim.test_simulation_record_resume_diagnostics import (
+    _interrupted_simulation_record,
 )
 
 _MISSING = "literal run directory must already exist"
@@ -267,7 +276,7 @@ def test_missing_literal_run_cwd_blocks_every_publication_across_the_invocation(
     # this method, and no public flow fixture builds two requests with a missing
     # literal run_cwd.
     with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
-        SimulateFlow._publish_and_run_simulation_record_requests(
+        SimulateFlow()._publish_and_run_simulation_record_requests(
             SimulationRecord(harness.executor), [candidate]
         )
 
@@ -358,3 +367,114 @@ def test_missing_literal_run_cwd_fails_coverage_before_attempt(
     store = tmp_path / "reports/1/targets/sim_0/record"
     assert builds == []
     assert not tuple(store.glob("work-items/*/attempts/*"))
+
+
+def _toml(run_cwd: str) -> str:
+    return f'[flows.sim]\nrun_cwd = "{run_cwd}"\n'
+
+
+def _ordinary_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_cwd: str):
+    def run(dry_run: bool):
+        with canned_build_session():
+            return run_simulation_record_sim(
+                tmp_path,
+                monkeypatch,
+                {"sim_0": ["reset"]},
+                PASS_PROCESS,
+                files={".booley/booley.toml": _toml(run_cwd)},
+                dry_run=dry_run,
+            ).result
+
+    return run
+
+
+def _coverage_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_cwd: str):
+    data = _coverage_project(tmp_path, monkeypatch)
+    (data / "booley.toml").write_text(_toml(run_cwd), newline="\n")
+    return lambda dry_run: _coverage(tmp_path, dry_run=dry_run)
+
+
+def _resume_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_cwd: str):
+    (tmp_path / "run").mkdir()
+    reports, manifest, _executions = _interrupted_simulation_record(
+        tmp_path, monkeypatch, booley_toml=_toml(run_cwd)
+    )
+    (tmp_path / "run").rmdir()
+    return lambda dry_run: SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, dry_run=dry_run)
+    )
+
+
+_ARRANGERS = {"ordinary": _ordinary_runs, "coverage": _coverage_runs, "resume": _resume_runs}
+
+
+@pytest.mark.parametrize("mode", ["ordinary", "coverage", "resume"])
+def test_dry_run_refuses_missing_literal_run_cwd_like_the_real_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    run = _ARRANGERS[mode](tmp_path, monkeypatch, "run")
+
+    dry = run(True)
+    real = run(False)
+
+    assert dry.exit_code == real.exit_code == 2
+    assert _MISSING in dry.outcome.report_text
+    assert dry.outcome.report_text == real.outcome.report_text.splitlines()[0]
+
+
+@pytest.mark.parametrize("mode", ["existing-literal", "templated", "resume-without-pending-work"])
+def test_dry_run_and_run_accept_usable_run_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    if mode == "resume-without-pending-work":
+        _pin_revision(monkeypatch, "a" * 40)
+        (tmp_path / "run").mkdir()
+        done = _ordinary_runs(tmp_path, monkeypatch, "run")(False)
+        assert done.exit_code == 0
+        manifest = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
+        (tmp_path / "run").rmdir()
+
+        def run(dry_run: bool):
+            return SimulateFlow().execute(
+                SimRequest(
+                    resume_from=manifest,
+                    work_dir=tmp_path,
+                    report_dir=tmp_path / "reports",
+                    dry_run=dry_run,
+                )
+            )
+
+    else:
+        (tmp_path / "run").mkdir()
+        run = _ordinary_runs(
+            tmp_path, monkeypatch, "run" if mode == "existing-literal" else "runs/{attempt}"
+        )
+
+    assert run(True).exit_code == 0
+    assert run(False).exit_code == 0
+
+
+@pytest.mark.parametrize("baseline_run", [False, True], ids=["baseline-missing", "both-present"])
+def test_resume_preflight_checks_each_record_in_its_own_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, baseline_run: bool
+) -> None:
+    validated, _candidate, _store, candidate_root, baseline_root = _distinct_root_resume(
+        tmp_path, monkeypatch
+    )
+    (candidate_root / "run").mkdir()
+    if baseline_run:
+        (baseline_root / "run").mkdir()
+    request = ResumeSimulationRecordPreviewRequest(
+        validated,
+        create_simulation_record_plan(validated.manifest),
+        candidate_root,
+        None,
+        SimulationRecordPolicy(),
+    )
+
+    if baseline_run:
+        SimulationRecord().preflight(request)
+        return
+    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught:
+        SimulationRecord().preflight(request)
+    assert str(baseline_root / "run") in str(caught.value)

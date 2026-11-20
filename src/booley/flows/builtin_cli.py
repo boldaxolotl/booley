@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING
 
 from booley.flows.cli_help import SurfaceHelp
 from booley.flows.cli_selection import CliInvocation
-from booley.flows.endpoint_cli import add_common_args, apply_environment, normalize_target_arg
+from booley.flows.endpoint_cli import (
+    ReportDirError,
+    add_common_args,
+    apply_environment,
+    normalize_target_arg,
+)
 from booley.flows.request import FlowRequest, RequestFieldError
 from booley.runtime.endpoint_execution import ExecutionResult
 
@@ -39,6 +44,7 @@ def build_parser(
         target_required=flow.target_required,
         accepts_target=flow.accepts_target,
         target_help=target_help,
+        target_metavar=flow.target_metavar,
         human=human,
     )
     flow.argument_adapter.add_common_args(parser, human=human)
@@ -101,7 +107,10 @@ def prepare_request(
 
 def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation):
     request, quiet = prepare_request(flow, argv, invocation)
-    apply_environment(request, flow.endpoint_kind)
+    try:
+        apply_environment(request, flow.endpoint_kind)
+    except ReportDirError as exc:
+        build_cli_parser(flow, invocation).error(str(exc))
     return request, quiet
 
 

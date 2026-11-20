@@ -8,6 +8,7 @@ pub mod parser;
 mod profile;
 pub mod reset;
 pub mod signal;
+pub mod slice;
 pub mod vcd_chunk;
 pub mod virtual_signal;
 
@@ -131,6 +132,16 @@ impl Default for ExtractConfig {
 }
 
 impl ExtractConfig {
+    /// Every signal pattern the query names, radix suffixes removed.
+    pub fn signal_patterns(&self) -> Vec<String> {
+        let mut all = self.patterns.clone();
+        all.extend(self.find_pattern.clone());
+        all.extend(self.sample_at_pattern.clone());
+        all.extend(self.distance_a.iter().map(|d| d.0.clone()));
+        all.extend(self.distance_b.iter().map(|d| d.0.clone()));
+        all
+    }
+
     /// Parse the raw time-token strings (`time_str`, `at_str`, `diff_strs`)
     /// against the cache's timescale, counted clock grid, and reset policy.
     /// Populates `time_min`, `time_max`, `at_time`, and `diff_points` in
@@ -186,7 +197,7 @@ impl ExtractConfig {
             let tok = TimeToken::parse(&s, self.async_mode)?;
             // Resolve once to a cycle in sync mode or a raw tick in async;
             // snapshot_from_cache must not apply the timescale a second time.
-            let v = resolve(&tok)?;
+            let v = resolve(&tok).map_err(|error| format!("--at {s}: {error}"))?;
             self.at_time = Some(v);
         }
 

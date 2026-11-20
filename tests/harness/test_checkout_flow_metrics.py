@@ -38,7 +38,10 @@ from tests.flows.sim.simulation_record_boundary import (
 from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
 from tests.flows.sim.test_cocotb import _cocotb_output, _run_cocotb
 from tests.flows.sim.test_coverage_invocation import project
-from tests.flows.sim.test_sim_flow_metrics import _MixedCoverageExecution
+from tests.flows.sim.test_sim_flow_metrics import (
+    _MixedCoverageExecution,
+    _TimedOutCoverageExecution,
+)
 from tests.target_test_support import install_lenient_target_catalog
 
 if TYPE_CHECKING:
@@ -150,7 +153,7 @@ def linter_output(
 
 
 def coverage_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: Any
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: Any, *, booley_toml: str = ""
 ) -> CheckoutFlowResult:
     """Run ``sim --coverage`` on a two-test Target and return the runner's view."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -161,6 +164,8 @@ def coverage_result(
     data = work / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
+    if booley_toml:
+        (data / "booley.toml").write_text(booley_toml, encoding="utf-8", newline="\n")
     outer = tmp_path / "out"
     flow = SimulateFlow(coverage_execution=lambda *_args: execution)
     result = flow.execute(
@@ -206,10 +211,24 @@ def test_sim_and_lint_runs_return_their_typed_values(
     assert (sim.unavailable, lint.unavailable) == ({}, {})
 
 
+_WAIVERS = '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "{}"\n'
+_ABSENT_WAIVERS = _WAIVERS.format("missing-waivers")
+_BLOCKED_WAIVERS = _WAIVERS.format("booley.toml")
+
+
+@pytest.mark.parametrize(
+    "booley_toml",
+    [
+        pytest.param("", id="no-waivers-configured"),
+        pytest.param(_ABSENT_WAIVERS, id="absent-waiver-directory"),
+    ],
+)
 def test_coverage_run_returns_coverage_percents_with_test_counts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, booley_toml: str
 ) -> None:
-    result = coverage_result(tmp_path, monkeypatch, _MixedCoverageExecution())
+    result = coverage_result(
+        tmp_path, monkeypatch, _MixedCoverageExecution(), booley_toml=booley_toml
+    )
 
     (values,) = result.metrics.values()
     assert values.plain == {
@@ -221,10 +240,29 @@ def test_coverage_run_returns_coverage_percents_with_test_counts(
         "toggle_coverage": 200 / 3,
         "cover_property_coverage": 20.0,
     }
+    assert result.unavailable == {}
+    assert judged(result, "coverage", "line_coverage_max", "line_coverage")[1] == 1
 
 
+@pytest.mark.parametrize(
+    ("noise", "fragments"),
+    [
+        pytest.param(
+            "Failed to import module tb_top: ModuleNotFoundError: No module named 'pyuvm'\n",
+            ("tb_top", "pyuvm"),
+            id="cocotb-1x",
+        ),
+        pytest.param(
+            (
+                Path(__file__).parents[1] / "fixtures/cocotb_results/2.1.0/import-missing.log"
+            ).read_text(encoding="utf-8"),
+            ("import_missing_cases", "qa_no_such_module_xyz"),
+            id="cocotb-2x",
+        ),
+    ],
+)
 def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, noise: str, fragments: tuple[str, str]
 ) -> None:
     from booley.measurement.metrics_file import Bound, TableRules
     from booley.measurement.verdicts import FlowFailed, evaluate_table, measure_exit_code
@@ -248,7 +286,6 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
     import_failure = tmp_path / "cocotb"
     import_failure.mkdir()
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
-    noise = "Failed to import module tb_top: ModuleNotFoundError: No module named 'pyuvm'\n"
     # The run half swaps "results.xml not found" for the import failure it finds in the output.
     detail = find_import_failure(noise)
     stdout = noise + _cocotb_output([], state="missing", detail=detail, passed=False)
@@ -267,18 +304,18 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
         (Bound("tests_total_min", "tests_total", "min", 1, None, None, None),),
         (),
     )
-    for result, fragments in (
+    for result, expected in (
         (missing, ("missing tool: verilator",)),
-        (cocotb, ("tb_top", "pyuvm")),
+        (cocotb, fragments),
     ):
         assert result.metrics == {}
         assert result.excerpt is not None
-        assert all(fragment in result.excerpt for fragment in fragments), result.excerpt
+        assert all(fragment in result.excerpt for fragment in expected), result.excerpt
         verdicts = evaluate_table(rules, FlowFailed(result.excerpt))
         assert [v.detail for v in verdicts] == [result.excerpt]
         assert measure_exit_code(v.verdict for v in verdicts) == 2
     (reason,) = cocotb.unavailable.values()
-    assert "tb_top" in reason and "pyuvm" in reason
+    assert all(fragment in reason for fragment in fragments)
 
 
 def unfinished_simulation_record_result(
@@ -311,6 +348,8 @@ class _MergeFailsExecution(_MixedCoverageExecution):
 def test_target_whose_values_cannot_be_produced_returns_the_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from booley.measurement.run_document import Verdict
+
     errored = _observation("t1") | {
         "execution": "setup_error",
         "failure_class": "infrastructure",
@@ -338,6 +377,13 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
         "native merge failed": coverage_result(
             tmp_path / "f", monkeypatch, _MergeFailsExecution()
         ),
+        "COV_WAIVER_DIRECTORY_INVALID": coverage_result(
+            tmp_path / "g", monkeypatch, _MixedCoverageExecution(), booley_toml=_BLOCKED_WAIVERS
+        ),
+        # A blocked evaluation still errors when the design also aborted the collection.
+        "the coverage evaluation was blocked: COV_WAIVER_DIRECTORY_INVALID": coverage_result(
+            tmp_path / "h", monkeypatch, _TimedOutCoverageExecution(), booley_toml=_BLOCKED_WAIVERS
+        ),
     }
 
     for fragment, result in cases.items():
@@ -348,6 +394,12 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
         assert result.excerpt is not None and fragment in result.excerpt, fragment
     (reason,) = cases["infrastructure error"].unavailable.values()
     assert "simulator build crashed" in reason
+    verdicts, code = judged(
+        cases["COV_WAIVER_DIRECTORY_INVALID"], "coverage", "line_coverage_max", "line_coverage"
+    )
+    assert [v.verdict for v in verdicts] == [Verdict.ERROR]
+    assert "COV_WAIVER_DIRECTORY_INVALID" in verdicts[0].detail
+    assert code == 2
 
 
 def test_failing_test_and_lint_errors_return_values_judged_unmet(

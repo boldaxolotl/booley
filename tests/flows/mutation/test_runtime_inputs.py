@@ -9,6 +9,8 @@ afterwards, with a missing declared ``$readmemh`` input read as infrastructure.
 from __future__ import annotations
 
 import os
+import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import replace
@@ -19,6 +21,8 @@ from typing import Any
 import pytest
 
 import booley
+from booley.core.booley_dir import resolve_checkout_booley_dir
+from booley.flows.mutation.flow import run_tool
 from booley.flows.mutation.memory_claims import CampaignClaims
 from booley.flows.sim.backends import cocotb_results as cr
 from booley.fusesoc.fusesoc_registry import ResolvedFile
@@ -93,25 +97,25 @@ def _copyto_run(
         return replace(prepared, resolved=resolved, make_argv=(sys.executable, "-c", ""))
 
     monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", _prepare)
-    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley").mkdir(exist_ok=True)
     (tmp_path / ".booley" / "booley.toml").write_text(
         '[project]\nname = "demo"\n\n[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8"
     )
     run_dir = tmp_path / "run"
-    run_dir.mkdir()
+    run_dir.mkdir(exist_ok=True)
     if staged_before is not None:
         (run_dir / "vectors.hex").write_text(staged_before, encoding="utf-8")
         if staged_inode is not None:
             staged_inode.append((run_dir / "vectors.hex").stat().st_ino)
     if launch is not None:
-        original = subprocess.run
+        original = run_tool
 
         def _run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and _LAUNCH_MARK in " ".join(cmd):
                 return launch(cmd)
             return original(cmd, *args, **kwargs)
 
-        monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _run)
+        monkeypatch.setattr("booley.flows.mutation.flow.run_tool", _run)
     _prepare_scope_files(tmp_path, [_SCOPE])
     endpoint = _make_endpoint(
         tmp_path, monkeypatch, target="default", scope=_SCOPE, count=1, min_detected=0, tb_top="tb"
@@ -130,6 +134,12 @@ def _overlays(root: Path) -> list[Path]:
     return list(root.rglob(".booley-runtime-inputs"))
 
 
+def _ledger_records(root: Path) -> list[Path]:
+    """Staged-input records any run left in the checkout's Booley Directory."""
+    ledger = resolve_checkout_booley_dir(root) / ".runtime/staged-runtime-inputs"
+    return list(ledger.glob("*.json"))
+
+
 def test_a_run_stages_the_copyto_input_for_baseline_and_mutant(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -140,6 +150,7 @@ def test_a_run_stages_the_copyto_input_for_baseline_and_mutant(
     assert [row["status"] for row in result.detail["classified"]] == ["not_detected"]
     assert list(run_dir.iterdir()) == []
     assert _overlays(tmp_path) == []
+    assert _ledger_records(tmp_path) == []
 
 
 @pytest.mark.parametrize("adapter", _ADAPTERS)
@@ -234,3 +245,37 @@ def test_identical_existing_destination_is_left_untouched(tmp_path: Path, monkey
     assert staged.is_file() and not staged.is_symlink()
     assert staged.read_text(encoding="utf-8") == _PAYLOAD
     assert set(inode) == {created[0]} == {staged.stat().st_ino}
+
+
+@pytest.mark.timeout(120)
+def test_mutant_killed_by_sigterm_leaves_no_link_for_the_next_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Mutant run killed in its process group does not break the next run's staging."""
+    launches: list[object] = []
+
+    def _die_on_the_mutant(cmd):
+        launches.append(cmd)
+        if len(launches) == 2:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return _fake_proc(rc=0, stdout="passed")
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            _copyto_run(tmp_path, monkeypatch, launch=_die_on_the_mutant)
+        finally:
+            os._exit(3)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == -signal.SIGTERM
+    run_dir = tmp_path / "run"
+    assert (run_dir / "vectors.hex").is_symlink()
+    for overlay in _overlays(tmp_path):
+        shutil.rmtree(overlay)
+    assert not (run_dir / "vectors.hex").exists()
+
+    result, _ = _copyto_run(tmp_path, monkeypatch)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert list(run_dir.iterdir()) == []
+    assert _ledger_records(tmp_path) == []

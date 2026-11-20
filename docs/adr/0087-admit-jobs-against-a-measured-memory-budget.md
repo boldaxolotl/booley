@@ -85,10 +85,20 @@ read-only, and delegating it would loosen the hardening.
   revisions share keys with current runs. Records also store source input
   size as data for testing size-based scaling later; it is not policy,
   because source bytes track netlist size poorly.
+- A key keeps every record of its newest Jobs, and `booley resources` counts
+  Jobs, not records. One Job may measure a phase several times (a setup per
+  simulator process, each Pre-Sim Command firing, the seeds of one Variant);
+  records stay per command so estimates see each, and counting Jobs keeps run
+  counts and retention true. A Simulation Record's execution records its
+  repeat of the setup planning already measured only when the repeat fails.
 - No history: borrow the largest estimate for the same Target and phase,
   then for that phase anywhere in the Project; with neither, the Job runs
   alone. (Always running unknown Jobs alone would serialize a fresh
-  Project's first regression.)
+  Project's first regression.) ASIC synthesis and FPGA implementation never
+  borrow from another Target: their memory scales with the design, so a
+  block's estimate admits a chip's first run far too low and leaves the
+  catch to the OOM guard after a wasted run. A Target's first such
+  run runs alone and says it has no measurement yet.
 - Pre-Sim Commands are a measured phase of their own, `sim_pre_run`, keyed per
   Target like preparation and build and recorded for every firing. A Job or
   Simulation Record item that runs them reserves the larger of their estimate
@@ -109,6 +119,16 @@ read-only, and delegating it would loosen the hardening.
 - A Job reserves its largest phase estimate at admission and shrinks it as
   phases finish. It never grows, so a running Job never waits partway
   through.
+- A synthesis Job is planned on its tools: `sv2v` (with the sv2v frontend),
+  `yosys`, and `openroad` (in physical mode). A tool with no record of its
+  own takes the Target's whole-command `synth` estimate, never another
+  Target's. The reservation drops to OpenROAD's when Yosys ends, and a reused
+  OpenROAD result ends that phase at once. A tool the run never reached ends
+  with its Target, so a run that fails before OpenROAD releases its estimate.
+  `sv2v` and Yosys run in one command and end together. FPGA implementation
+  stays one phase: one Vivado batch run does both synthesis and
+  implementation, so Booley sees no boundary between them. A Custom Flow is
+  one opaque command and stays one phase.
 - Order is by priority, but a later Job may jump ahead of a front Job that
   does not fit when it fits now and is estimated to finish before the front
   Job can start. A Job without wall-clock history never jumps. Strict order
@@ -198,9 +218,14 @@ read-only, and delegating it would loosen the hardening.
   scripts' own logs.
   Detection is deliberately conservative: a kill hidden behind a wrapper that
   reports none of these (a FuseSoC generator names no signal) is a plain
-  failure and is not requeued, as is a kill in a Pre-Sim Command or a
-  mutation run. A Pre-Sim Command is measured but not blamed for a kill: its
-  failure stays the hook's result, as the Simulation's tests see it.
+  failure and is not requeued.
+- A requeue reruns the smallest unit the kill took. A Pre-Sim Command's kill
+  is its attempt's, as its simulator's would be: a Simulation Record work
+  item's requeues only that item. A mutation campaign's coordinator holds a
+  companion claim, so each Mutant build and simulation, which holds a claim of
+  its own, is the unit: a kill at the Sandbox's limit runs it once more,
+  alone. A second kill, or a host kill, makes that Mutant inconclusive (or
+  fails the baseline), and its reason names the kill.
 
 ### Simulation Records
 

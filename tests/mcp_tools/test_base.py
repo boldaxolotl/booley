@@ -151,44 +151,11 @@ def test_persistent_report_failure_preserves_primary_diagnosis(
 
 def test_finalize_failure_propagates_without_persisting_replacement_result() -> None:
     class FinalizeFailingMcpTool(ConcreteMcpTool):
-        publish_called = False
-
         def _finalize_result(self, result: McpToolResult) -> None:
             raise RuntimeError("finalization failed")
 
-        def publish_flow_records(self, outcome: McpToolResult) -> None:
-            self.publish_called = True
-
-    endpoint = FinalizeFailingMcpTool()
-
     with pytest.raises(RuntimeError, match="finalization failed"):
-        endpoint.main([])
-
-    assert endpoint.publish_called is False
-
-
-def test_persistence_failure_does_not_hide_the_cli_diagnosis(capsys) -> None:
-    class PersistenceFailingMcpTool(ConcreteMcpTool):
-        def _run(self) -> McpToolResult:
-            return McpToolResult(exit_code=EXIT_FAILURE, report_text="design failed")
-
-        def publish_flow_records(self, outcome: McpToolResult) -> None:
-            raise RuntimeError("persistence failed")
-
-    result = PersistenceFailingMcpTool().execute_cli([])
-
-    assert result.exit_code == EXIT_ERROR
-    assert result.outcome.detail["completion_error"] == {
-        "operation": "publish Simulation Record projections",
-        "type": "RuntimeError",
-        "message": "persistence failed",
-    }
-    assert capsys.readouterr().err == (
-        "WARN: no --report-dir — this test_endpoint verdict is printed only "
-        "(no report.json is written for this run)\n"
-        "design failed\n"
-        "Completion failure (publish Simulation Record projections): RuntimeError: persistence failed\n"
-    )
+        FinalizeFailingMcpTool().main([])
 
 
 def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
@@ -197,8 +164,8 @@ def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
             print("design failed")
             return McpToolResult(exit_code=EXIT_FAILURE, report_text="design failed")
 
-        def publish_flow_records(self, outcome: McpToolResult) -> None:
-            raise RuntimeError("persistence failed")
+        def write_report(self, result: EndpointOutcome) -> Path | None:
+            raise OSError(errno.EIO, "persistence failed")
 
     result = SelfPrintingPersistenceFailure().execute_cli([])
 
@@ -206,7 +173,8 @@ def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
     assert result.exit_code == EXIT_ERROR
     assert captured.out == "design failed\n"
     assert "design failed" not in captured.err
-    assert "Completion failure (publish Simulation Record projections)" in captured.err
+    assert captured.err.count("Completion failure (publish report.json)") == 1
+    assert "completion_errors" not in result.outcome.detail
 
 
 def test_self_printed_verdict_gets_only_the_requeue_note(capsys) -> None:
@@ -308,8 +276,8 @@ def test_console_failure_is_normalized_and_recovery_is_attempted() -> None:
 
 def test_endpoint_end_failure_is_suppressed_after_completion_failure() -> None:
     class PersistenceFailingMcpTool(ConcreteMcpTool):
-        def publish_flow_records(self, outcome: McpToolResult) -> None:
-            raise RuntimeError("persistence failed")
+        def write_report(self, result: EndpointOutcome) -> Path | None:
+            raise OSError(errno.EIO, "persistence failed")
 
     def fail_endpoint_end(event: dict[str, object]) -> None:
         if event["type"] == "endpoint_end":
@@ -323,9 +291,7 @@ def test_endpoint_end_failure_is_suppressed_after_completion_failure() -> None:
         result = endpoint.execute_cli([])
 
     assert result.exit_code == EXIT_ERROR
-    assert result.outcome.detail["completion_error"]["operation"] == (
-        "publish Simulation Record projections"
-    )
+    assert result.outcome.detail["completion_error"]["operation"] == "publish report.json"
 
 
 def test_endpoint_end_failure_propagates_without_completion_failure() -> None:
@@ -350,13 +316,9 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
     class DryRunMcpTool(ConcreteMcpTool):
         JOB_CLASS = job_slots.CLASS_MEMORY
         non_persisting_dry_run = True
-        publish_called = False
 
         def _add_args(self, parser: argparse.ArgumentParser) -> None:
             parser.add_argument("--dry-run", action="store_true")
-
-        def publish_flow_records(self, outcome: McpToolResult) -> None:
-            self.publish_called = True
 
     endpoint = DryRunMcpTool()
     env = _env_with_state(state_file)
@@ -367,7 +329,6 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
         result = endpoint.execute_cli(["--dry-run"])
 
     assert result.exit_code == EXIT_SUCCESS
-    assert endpoint.publish_called is False
     assert state_file.read_bytes() == before
     acquire_slot.assert_not_called()
 
@@ -375,13 +336,9 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
 def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
     class ExistingDryRunMcpTool(ConcreteMcpTool):
         JOB_CLASS = job_slots.CLASS_MEMORY
-        publish_called = False
 
         def _add_args(self, parser: argparse.ArgumentParser) -> None:
             parser.add_argument("--dry-run", action="store_true")
-
-        def publish_flow_records(self, outcome: McpToolResult) -> None:
-            self.publish_called = True
 
     endpoint = ExistingDryRunMcpTool()
     with mock.patch.object(
@@ -390,7 +347,6 @@ def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
         result = endpoint.execute_cli(["--dry-run"])
 
     assert result.exit_code == EXIT_SUCCESS
-    assert endpoint.publish_called is True
     acquire.assert_called_once()
 
 
@@ -406,15 +362,11 @@ def test_dry_run_lifecycle_is_snapshotted_before_endpoint_mutates_args() -> None
             return McpToolResult(exit_code=EXIT_SUCCESS)
 
     endpoint = MutatingDryRunMcpTool()
-    with (
-        mock.patch.object(endpoint_admission, "_acquire_memory_reservation") as acquire_slot,
-        mock.patch.object(endpoint, "publish_flow_records") as post_run,
-    ):
+    with mock.patch.object(endpoint_admission, "_acquire_memory_reservation") as acquire_slot:
         result = endpoint.execute_cli(["--dry-run"])
 
     assert result.exit_code == EXIT_SUCCESS
     acquire_slot.assert_not_called()
-    post_run.assert_not_called()
 
 
 class SimLikeMcpTool(ConcreteMcpTool):
@@ -1349,7 +1301,7 @@ class TestMainDisplayEvents:
         assert end_evt["report_text"] == report["report_text"]
         assert end_evt["report_text"].startswith("test_endpoint failed: RuntimeError: kaboom")
 
-    def test_record_publication_failure_emits_endpoint_end(
+    def test_completion_failure_emits_endpoint_end(
         self,
         tmp_path: Path,
     ) -> None:
@@ -1358,8 +1310,8 @@ class TestMainDisplayEvents:
         logs_dir.mkdir()
 
         class PublicationFailingMcpTool(ConcreteMcpTool):
-            def publish_flow_records(self, outcome: McpToolResult) -> None:
-                raise RuntimeError("publication failed")
+            def write_report(self, result: EndpointOutcome) -> Path | None:
+                raise OSError(errno.EIO, "publication failed")
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
@@ -1370,16 +1322,7 @@ class TestMainDisplayEvents:
             result = endpoint.execute_cli([])
 
         assert result.exit_code == EXIT_ERROR
-        assert result.outcome.detail["completion_error"] == {
-            "operation": "publish Simulation Record projections",
-            "type": "RuntimeError",
-            "message": "publication failed",
-        }
-        reports = list((logs_dir / ".runtime" / "mcp-tool-reports").glob("*/1/report.json"))
-        assert len(reports) == 1
-        report = json.loads(reports[0].read_text(encoding="utf-8"))
-        assert report["exit_code"] == EXIT_ERROR
-        assert report["detail"] == result.outcome.detail
+        assert result.outcome.detail["completion_error"]["operation"] == "publish report.json"
         events = [
             json.loads(line)
             for line in (logs_dir / ".runtime" / "display.jsonl")

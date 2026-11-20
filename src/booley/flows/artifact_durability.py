@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from booley.runtime.atomic_files import STAGED_SUFFIX
+from booley.runtime.filesystem_utils import missing_directories
 
 
 def durable_copy(source: Path, destination: Path, *, mode: int = 0o600) -> None:
@@ -145,12 +146,7 @@ def fsync_directory(directory: Path) -> None:
 
 def durable_directory(directory: Path) -> None:
     """Create missing directory components and persist each parent entry."""
-    missing: list[Path] = []
-    current = directory
-    while not current.exists():
-        missing.append(current)
-        current = current.parent
-    for path in reversed(missing):
+    for path in missing_directories(directory):
         path.mkdir(exist_ok=True)
         fsync_directory(path.parent)
 

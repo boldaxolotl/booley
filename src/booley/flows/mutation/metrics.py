@@ -6,6 +6,9 @@ so the score is detected over both. A run with no valid Mutant has no score.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
+
 from booley.flows.metric_declarations import (
     Better,
     CostTier,
@@ -14,17 +17,26 @@ from booley.flows.metric_declarations import (
     MetricDeclaration,
     MetricKind,
     MetricsUnavailableError,
+    counted_items,
     metric_values,
     metrics_document,
 )
 
 MUTATION_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
-    MetricDeclaration("mutation_score", "%", Better.HIGHER, CostTier.HIGH, MetricKind.PLAIN),
     MetricDeclaration(
-        "mutants_detected", "Mutants", Better.HIGHER, CostTier.HIGH, MetricKind.PLAIN
+        "mutation_score",
+        "%",
+        Better.HIGHER,
+        CostTier.HIGH,
+        MetricKind.PLAIN,
+        minimum=0,
+        maximum=100,
     ),
     MetricDeclaration(
-        "mutants_survived", "Mutants", Better.LOWER, CostTier.HIGH, MetricKind.PLAIN
+        "mutants_detected", "Mutants", Better.HIGHER, CostTier.HIGH, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "mutants_survived", "Mutants", Better.LOWER, CostTier.HIGH, MetricKind.PLAIN, minimum=0
     ),
 )
 
@@ -35,12 +47,17 @@ MUTATION_SETTINGS: tuple[FlowSetting, ...] = (
 )
 
 
-def mutation_metric_values(detected: int, survived: int) -> FlowMetricValues:
-    """The typed values of a run that scored *detected* + *survived* valid Mutants."""
+def mutation_metric_values(detected: int, survivors: Sequence[str]) -> FlowMetricValues:
+    """The typed values of a run that scored *detected* + ``len(survivors)`` valid Mutants.
+
+    *survivors* is one display line per survived Mutant, in the run's pick order; the first
+    ones are kept with the values.
+    """
+    survived = len(survivors)
     valid = detected + survived
     if valid == 0:
         raise MetricsUnavailableError("no valid Mutant was scored")
-    return metric_values(
+    values = metric_values(
         MUTATION_METRIC_DECLARATIONS,
         {
             "mutation_score": 100 * detected / valid,
@@ -48,10 +65,13 @@ def mutation_metric_values(detected: int, survived: int) -> FlowMetricValues:
             "mutants_survived": survived,
         },
     )
+    return replace(
+        values, counted_items={"mutants_survived": counted_items(survivors)} if survivors else {}
+    )
 
 
 def mutation_metrics_detail(
-    target: str, detected: int, survived: int
+    target: str, detected: int, survivors: Sequence[str]
 ) -> dict[str, dict[str, object]]:
     """The report's ``detail.metrics``: *target*'s values, or why it has none."""
-    return {target: metrics_document(lambda: mutation_metric_values(detected, survived))}
+    return {target: metrics_document(lambda: mutation_metric_values(detected, survivors))}

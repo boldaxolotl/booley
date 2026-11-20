@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+from booley.config import agent as config_agent
 from booley.harness import doctor
 from booley.runtime import auth_token, runtime_context
 
@@ -186,6 +187,56 @@ def test_default_cli_missing_credentials_fail(home, tmp_path, monkeypatch):
     assert any(f.message.startswith("Codex auth:") for f in findings)
 
 
+@pytest.mark.parametrize(
+    ("auth", "visitor", "severity", "policy"),
+    [
+        ("subscription", False, Severity.FAIL, "subscription"),
+        (None, False, Severity.FAIL, "subscription"),
+        (None, True, Severity.WARN, auth_token.VISITOR_AUTH),
+    ],
+)
+def test_default_cli_missing_credential_carries_login_fix(
+    home, tmp_path, monkeypatch, auth, visitor, severity, policy
+):
+    if visitor:
+        monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)
+    agent = {"clis": ["codex"], "default": "codex"}
+    if auth:
+        agent["auth"] = auth
+    findings = _findings(tmp_path, **agent)
+
+    (missing,) = _with_id(findings, "agent.credential-missing", "codex")
+    assert missing.severity is severity
+    assert missing.fix == auth_token.missing_credential_fix("codex", policy)
+    assert missing.fix.startswith("codex login")
+
+
+_EXPLICIT = "(accepted by explicit auth = 'subscription')"
+_FALLBACK = "(the fallback policy auth = 'subscription' applies)"
+
+
+@pytest.mark.parametrize(
+    ("auth", "suffix"),
+    [
+        ("subscription", _EXPLICIT),
+        (None, _FALLBACK),
+        ("auto", _FALLBACK),
+        ({"codex": "gateway"}, _FALLBACK),
+    ],
+)
+def test_rotation_note_names_recorded_or_fallback_policy(home, tmp_path, auth, suffix):
+    _login(home, "codex")
+    agent = {"clis": ["codex"], "default": "codex"}
+    if auth:
+        agent["auth"] = auth
+    findings = _findings(tmp_path, **agent)
+
+    (note,) = [f for f in findings if f.message.startswith("Codex: no rotation-free credential")]
+    assert note.severity is Severity.NOTE
+    assert note.message.endswith(suffix)
+    assert ("explicit" in note.message) == (suffix == _EXPLICIT)
+
+
 def test_rotation_risk_ids_keep_per_cli_subjects(home, tmp_path, monkeypatch):
     # An explicit ``subscription`` accepts the risk as a NOTE; the visitor mode warns.
     monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)
@@ -309,4 +360,34 @@ def test_recorded_subscription_passes_with_an_exported_api_key(home, tmp_path, m
     assert not [f for f in recorded if f.severity is Severity.FAIL]
     assert [f.message.rsplit("; ", 1)[-1] for f in _pin_fails(unrecorded)] == [
         "detected: subscription"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("env", "failed", "noted"),
+    [
+        ({}, [], ["codex, claude"]),
+        ({"BOOLEY_PRIMARY_AUTH": "gateway"}, [], ["claude"]),
+        ({"BOOLEY_PRIMARY_AUTH": "api_key"}, ["codex"], ["claude"]),
+        ({"BOOLEY_AGENT_CLIS": "codex=subscription,claude=subscription"}, ["codex", "claude"], []),
+    ],
+    ids=["hand-written", "hand-written-gateway", "hand-written-api-key", "issued-record"],
+)
+def test_missing_auth_in_a_sandbox_fails_only_under_an_issued_record(
+    home, tmp_path, monkeypatch, env, failed, noted
+):
+    """A hand-written spec reads a missing ``auth`` as the visitor mode, which
+    booley.toml cannot record; an issued spec's CLI policy record keeps the FAIL."""
+    monkeypatch.setattr(config_agent, "_inside_container", lambda: True)
+    for name, value in {"BOOLEY_AGENT_APP": "codex", "BOOLEY_AGENT_CLIS": "", **env}.items():
+        monkeypatch.setenv(name, value)
+
+    findings = _findings(tmp_path, clis=["codex", "claude"], default="codex")
+
+    assert [f.message for f in _pin_fails(findings)] == [
+        f"{cli}: booley.toml [agent] auth is not set; detected: subscription" for cli in failed
+    ]
+    notes = [f for f in findings if "visitor mode" in f.message]
+    assert [(f.severity, f.message.split(":")[0]) for f in notes] == [
+        (Severity.NOTE, clis) for clis in noted
     ]

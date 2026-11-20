@@ -171,7 +171,7 @@ def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path
 
 
 def test_generation_requires_lease(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     with pytest.raises(SimulationBuildSlotError, match="not leased"):
         session.new_generation()
     with session:
@@ -213,7 +213,7 @@ def test_elf_dependency_scan_declines_missing_library(
 
 
 def test_discard_candidate_removes_only_its_generation(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     with session:
         discarded = session.new_generation()
         retained = session.new_generation()
@@ -229,10 +229,70 @@ def test_discard_candidate_removes_only_its_generation(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX permission bits that root ignores",
+)
+def test_lease_exit_prunes_unpromoted_generations_and_survives_a_failed_delete(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    handle = _handle(tmp_path)
+    with SimulationBuildSession(handle, wait_s=60):
+        pass  # a lease that never allocated a generation has no g/ to prune
+    assert caplog.text == ""
+    session = SimulationBuildSession(handle, wait_s=60)
+    with session:
+        pruned = session.new_generation()
+        stuck = session.new_generation()
+        view = pruned.parent / f".booley-doctor-run-cwd-{pruned.name}"
+        view.mkdir()
+        (stuck / "locked").mkdir()
+        (stuck / "locked" / "file").write_text("x", encoding="utf-8")
+        (stuck / "locked").chmod(0o500)
+    try:
+        assert not pruned.exists()
+        assert view.is_dir()
+        assert stuck.is_dir()
+        assert str(stuck) in caplog.text
+
+        generations = session.slot / "g"
+        caplog.clear()
+        generations.chmod(0o000)
+        try:
+            with SimulationBuildSession(handle, wait_s=60):
+                pass
+        finally:
+            generations.chmod(0o700)
+        assert str(generations) in caplog.text
+    finally:
+        (stuck / "locked").chmod(0o700)
+
+    with SimulationBuildSession(handle, wait_s=60):
+        pass
+    assert not stuck.exists()
+    assert view.is_dir()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_lease_exit_never_prunes_through_a_linked_generations_directory(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    handle = _handle(tmp_path)
+    outside = tmp_path / "elsewhere" / "0123456789abcdef"
+    outside.mkdir(parents=True)
+    session = SimulationBuildSession(handle, wait_s=60)
+    with session:
+        (session.slot / "g").symlink_to(outside.parent, target_is_directory=True)
+    assert outside.is_dir()
+    assert "not pruning" in caplog.text
+
+
+@pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
 def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     overlay = selftest_overlay.bad_overlay_dir(tmp_path / ".booley", "sim") / "fixture.hex"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("bad\n", encoding="utf-8")
@@ -251,7 +311,7 @@ def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) ->
 
 
 def test_runtime_image_selection_rejects_missing_or_ambiguous_images(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     prepared = SimpleNamespace(
         build_root=tmp_path,
         eda_tool="icarus",
@@ -306,7 +366,7 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
         "root, marker = map(Path, sys.argv[1:])\n"
         "class Probe(FlowMechanics):\n"
         "    def _get_cwd(self): return root\n"
-        "with SimulationBuildSession(SimpleNamespace(project_root=root, identity='acme:lib:demo:1#sim')):\n"
+        "with SimulationBuildSession(SimpleNamespace(project_root=root, identity='acme:lib:demo:1#sim'), wait_s=60):\n"
         f"    Probe()._execute_local(['sh', '-c', 'touch ' + str(marker) + '; sleep {scaled(2)}'],"
         f" timeout={hang_guard_s()})\n"
     )
@@ -331,7 +391,7 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
             pytest.raises(LockContentionError),
         ):
             acquire_file_lock(lock)
-        with SimulationBuildSession(handle):
+        with SimulationBuildSession(handle, wait_s=60):
             pass
     finally:
         if parent.poll() is None:
@@ -441,7 +501,7 @@ def _icarus_generation(
         build_root=work,
         work_root=work,
     )
-    return SimulationBuildSession(_handle(project), variant), prepared
+    return SimulationBuildSession(_handle(project), variant, wait_s=60), prepared
 
 
 def _key(session: SimulationBuildSession, prepared: SimpleNamespace) -> str | None:
@@ -460,7 +520,7 @@ def test_stock_icarus_generation_keys(tmp_path: Path, case: str) -> None:
         project, edam, _core = _core_behind_linked_booley_dir(tmp_path, case)
         (edam.parent / "top.sv").write_text("module top; endmodule", encoding="utf-8")
         _write_icarus_recipe(edam.parent, ("top.sv\n",))
-        session = SimulationBuildSession(_handle(project))
+        session = SimulationBuildSession(_handle(project), wait_s=60)
         prepared = SimpleNamespace(
             eda_tool="icarus",
             target_identity="target",

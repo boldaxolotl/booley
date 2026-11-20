@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import textwrap
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim import trace_overlay as trace_overlay_module
+from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.execution.contract import NamedTests
 from booley.flows.sim.execution.engine import PreparedOrdinaryGroup
@@ -26,6 +27,7 @@ from booley.flows.sim.record.flow_planning import (
     plan_ordinary_hdl_simulation_record,
 )
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.staged_input_ledger import StagedInputLedger, sweep_cancelled_run_inputs
 from booley.flows.sim.trace_overlay import (
     packaged_vcd_dump_source,
     trace_overlay_vlnv,
@@ -40,10 +42,11 @@ from booley.fusesoc.fusesoc_registry import (
     resolve_target_handle,
     setup_command_for_handle,
 )
+from booley.runtime.pid import capture_process_identity
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import UnknownTargetError
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
-from tests.fusesoc_test_support import symlinked_booley_dir
+from tests.fusesoc_test_support import INHERITED_CORE_TEXT, symlinked_booley_dir
 from tests.fusesoc_test_support import write_core as _write_core
 
 
@@ -186,6 +189,15 @@ class TestWriteTraceOverlay:
         finally:
             overlay.cleanup()
 
+    def test_overlay_keeps_inherited_verilator_options(self, tmp_path: Path):
+        _write_core(tmp_path / "ip", INHERITED_CORE_TEXT)  # #5077
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim_child"))
+        try:
+            opts = read_core(overlay.core_file)["targets"]["sim_child"]["flow_options"]
+            assert opts["verilator_options"][0] == "--timing"
+        finally:
+            overlay.cleanup()
+
     def test_overlay_is_skipped_by_discovery(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
         before = _target_names(tmp_path)
@@ -294,6 +306,7 @@ class TestWriteTraceOverlay:
         overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         overlay.cleanup()
         assert not overlay.core_file.exists()
+        assert not list(tmp_path.rglob("staged-runtime-inputs/*.json"))
         overlay.cleanup()  # second call must not raise
 
     def test_rejects_unknown_target(self, tmp_path: Path):
@@ -497,7 +510,8 @@ class TestWriteTraceOverlay:
                 handle, build_root=tmp_path / "build", resolution_vlnv=overlay.vlnv
             )
             assert overlay.vlnv in argv
-            projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
+            projected = overlay.projection
+            assert projected is not None
             doc = read_core(projected)
             entry = doc["filesets"]["booley_trace_dump"]["files"][0]
             assert next(iter(entry)).startswith(".booley/cores/")
@@ -512,7 +526,7 @@ class TestWriteTraceOverlay:
         # projected, so the overlay must stay beside the native core instead of
         # failing with "core is outside the stealth core root".
         booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
+        booley_dir.mkdir(exist_ok=True)
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         if tool == "icarus":
             core_text = self._ICARUS_CORE_NO_DUMP
@@ -522,7 +536,7 @@ class TestWriteTraceOverlay:
         overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             assert overlay.core_file.parent == base.parent
-            assert not any(path.name.endswith(".core") for path in overlay.extra_files)
+            assert overlay.projection is None
             if tool == "icarus":
                 entry = read_core(overlay.core_file)["filesets"]["booley_trace_dump"]["files"][0]
                 declared = next(iter(entry))
@@ -541,26 +555,37 @@ class TestWriteTraceOverlay:
         cores = _stealth_booley_dir(tmp_path / ".booley")
         _write_core(cores, self._ICARUS_CORE_NO_DUMP, create_sources=False)
         handle = TargetCatalog.build(tmp_path).select("sim")
-        before = sorted(tmp_path.rglob("*"))
+        runtime = tmp_path / ".booley" / ".runtime"
+
+        def tree() -> list[Path]:
+            return sorted(p for p in tmp_path.rglob("*") if not p.is_relative_to(runtime))
+
+        before = tree()
 
         def fail(*_args: object) -> None:
             raise FuseSocError("injected failure")
 
         if fails_at == "core_write":
+            real_created = StagedInputLedger.created
+            calls: list[Path] = []
 
-            def fail_after_marker(*_args: object, **_kwargs: object) -> None:
-                raise OSError("injected failure")
+            def fail_second_confirmation(
+                ledger: StagedInputLedger, relative: Path, *rest: object
+            ) -> None:
+                # No public entry point reaches a failure between create and confirm.
+                calls.append(relative)
+                if len(calls) == 2:
+                    raise OSError("injected failure")
+                real_created(ledger, relative, *rest)
 
-            # The serializer fails after the `CAPI=2:` line reached the `.core`.
-            monkeypatch.setattr(
-                trace_overlay_module, "yaml", SimpleNamespace(safe_dump=fail_after_marker)
-            )
+            monkeypatch.setattr(StagedInputLedger, "created", fail_second_confirmation)
         else:
             monkeypatch.setattr(trace_overlay_module, "projected_core_path", fail)
 
         with pytest.raises(FuseSocError, match="injected failure"):
             write_trace_overlay(handle)
-        assert sorted(tmp_path.rglob("*")) == before
+        assert tree() == before
+        assert not list(runtime.rglob("*.json"))
 
     @pytest.mark.parametrize("isolated", [False, True], ids=["projected", "isolated"])
     def test_icarus_overlay_under_symlinked_booley_dir(self, tmp_path: Path, isolated: bool):
@@ -572,7 +597,8 @@ class TestWriteTraceOverlay:
         handle = TargetCatalog.build(project).select("sim")
         overlay = write_trace_overlay(handle)
         try:
-            projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
+            projected = overlay.projection
+            assert projected is not None
             argv = setup_command_for_handle(
                 handle, build_root=project / "build", resolution_vlnv=overlay.vlnv
             )
@@ -630,3 +656,221 @@ def test_dump_module_added_by_filesets_append_is_not_injected_again(tmp_path: Pa
         assert "-sbooley_vcd_dump" in doc["targets"]["sim"]["flow_options"]["iverilog_options"]
     finally:
         overlay.cleanup()
+
+
+def _needs_kill(test):
+    test = pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")(test)
+    return pytest.mark.skipif(
+        capture_process_identity(os.getpid()) is None, reason="needs a process identity"
+    )(test)
+
+
+def _records(project: Path) -> list[Path]:
+    return list((project / ".booley/.runtime/staged-runtime-inputs").glob("*.json"))
+
+
+def _overlay_files(project: Path) -> list[Path]:
+    return sorted(path for path in project.rglob("*") if ".booleytrace" in path.name)
+
+
+def _writer(tmp_path: Path, kind: str):
+    """Build a Project and return ``(core directory, write)`` for the writer *kind*."""
+    (tmp_path / ".booley").mkdir(exist_ok=True)
+    if kind == "trace":
+        _write_core(
+            tmp_path / "ip", TestWriteTraceOverlay._ICARUS_CORE_NO_DUMP, create_sources=False
+        )
+        handle = TargetCatalog.build(tmp_path).select("sim")
+        return tmp_path / "ip", lambda: write_trace_overlay(handle)
+    _write_core(tmp_path / "ip")
+    handle = TargetCatalog.build(tmp_path).select("sim")
+    return tmp_path / "ip", lambda: write_coverage_overlay(
+        handle, instrumentation=("--coverage-line",), trace=False
+    )
+
+
+def _die_writing(write, trace: Path, *, before_content: bool = False) -> None:
+    """Run *write* in a forked worker that dies, like a SIGKILL, before it can clean up."""
+    from tests.flows.sim.test_simulation_record_crash_matrix import _KILLED, _run_killed
+
+    def worker() -> None:
+        if before_content:
+            real = StagedInputLedger.created
+
+            def dying(ledger: StagedInputLedger, relative: Path, *rest: object) -> None:
+                real(ledger, relative, *rest)
+                if relative.name.endswith(".core"):
+                    # No public entry point stops between the confirmation and the content.
+                    os._exit(_KILLED)
+
+            StagedInputLedger.created = dying  # type: ignore[method-assign]
+        write()
+        os._exit(_KILLED)
+
+    _run_killed(worker, trace)
+
+
+@_needs_kill
+@pytest.mark.parametrize(
+    "case",
+    [
+        "trace-unchanged",
+        "trace-before-content",
+        "trace-modified",
+        "coverage-unchanged",
+        "coverage-modified",
+    ],
+)
+def test_killed_overlay_write_is_swept_or_named(tmp_path: Path, case: str) -> None:
+    """A killed run's overlay files go; one the user changed stays and is named."""
+    kind, state = case.split("-", 1)
+    _core_dir, write = _writer(tmp_path, kind)
+    _die_writing(write, tmp_path / "trace.txt", before_content=state == "before-content")
+    overlay = next(path for path in _overlay_files(tmp_path) if path.suffix == ".core")
+    assert (len(_overlay_files(tmp_path)) == 2) is (kind == "trace")
+    assert len(_records(tmp_path)) == 1
+    if state == "before-content":
+        assert overlay.stat().st_size == 0
+
+    if state == "modified":
+        with overlay.open("ab") as stream:
+            stream.write(b"# mine\n")
+        with pytest.raises(FuseSocError, match="cancelled Booley run left") as caught:
+            write()
+        assert overlay.name in str(caught.value)
+        assert "safe to delete" in str(caught.value)
+        assert overlay.read_bytes().endswith(b"# mine\n")
+        assert len(_records(tmp_path)) == 1
+        assert _overlay_files(tmp_path) == [overlay]
+        return
+    sweep_cancelled_run_inputs(tmp_path / ".booley")
+    assert _overlay_files(tmp_path) == []
+    assert _records(tmp_path) == []
+
+
+@pytest.mark.parametrize("case", ["trace-core", "dump-module", "coverage-core"])
+def test_occupied_overlay_path_is_kept_and_named(tmp_path: Path, case: str) -> None:
+    """A file Booley did not write at an overlay path is never overwritten or deleted."""
+    core_dir, write = _writer(tmp_path, "coverage" if case == "coverage-core" else "trace")
+    stem = next(core_dir.glob("*.core")).stem
+    occupied = (
+        core_dir
+        / {
+            "trace-core": f"{stem}.booleytrace.core",
+            "dump-module": "booley_vcd_dump.booleytrace.sv",
+            "coverage-core": f"{stem}.booleytrace.coverage.core",
+        }[case]
+    )
+    occupied.write_bytes(b"mine\n")
+
+    with pytest.raises(FuseSocError, match="did not create") as caught:
+        write()
+    assert str(occupied) in str(caught.value)
+    assert occupied.read_bytes() == b"mine\n"
+    assert _overlay_files(tmp_path) == [occupied]
+    assert _records(tmp_path) == []
+
+
+@pytest.mark.parametrize("kind", ["trace", "coverage"])
+def test_live_overlay_survives_a_sweep_and_a_second_writer(tmp_path: Path, kind: str) -> None:
+    core_dir, write = _writer(tmp_path, kind)
+    overlay = write()
+    before = overlay.core_file.read_bytes()
+
+    sweep_cancelled_run_inputs(tmp_path / ".booley")
+    assert overlay.core_file.read_bytes() == before
+    with pytest.raises(FuseSocError, match="did not create") as caught:
+        write()
+    assert str(core_dir) in str(caught.value)
+    assert overlay.core_file.read_bytes() == before
+
+    overlay.cleanup()
+    assert _overlay_files(tmp_path) == []
+    assert _records(tmp_path) == []
+
+    overlay = write()
+    replacement = core_dir / "user-file"
+    replacement.write_bytes(b"mine\n")
+    replacement.replace(overlay.core_file)  # a different inode at the overlay path
+    overlay.cleanup()
+    assert overlay.core_file.read_bytes() == b"mine\n"
+    assert _records(tmp_path) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs POSIX directory modes")
+def test_cleanup_keeps_the_record_of_a_file_it_could_not_remove(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory modes")
+    core_dir, write = _writer(tmp_path, "coverage")
+    overlay = write()
+    core_dir.chmod(0o500)
+    try:
+        overlay.cleanup()
+        assert overlay.core_file.exists()
+        assert len(_records(tmp_path)) == 1
+    finally:
+        core_dir.chmod(0o700)
+    overlay.cleanup()
+    assert not overlay.core_file.exists()
+    assert _records(tmp_path) == []
+
+
+@_needs_kill
+def test_swept_stealth_overlay_loses_its_projection(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    cores = _stealth_booley_dir(project / ".booley", isolated=False)
+    _write_core(cores, TestWriteTraceOverlay._ICARUS_CORE_NO_DUMP, create_sources=False)
+    handle = TargetCatalog.build(project).select("sim")
+    from booley.flows.sim.trace_overlay import sweep_cancelled_run_leftovers
+    from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
+
+    def worker() -> None:
+        write_trace_overlay(handle)
+        prepare_core_library_plan(project)
+
+    _die_writing(worker, tmp_path / "trace.txt")
+    projected = project / ".booley-projected-design.booleytrace.core"
+    assert projected.exists()
+
+    sweep_cancelled_run_leftovers(project, project / ".booley")
+    assert not projected.exists()
+    assert _overlay_files(project) == []
+    assert (project / ".booley-projected-design.core").exists()
+
+    (cores / "broken.core").write_text("not a core\n", encoding="utf-8")
+    sweep_cancelled_run_leftovers(project, project / ".booley")  # reports nothing, raises nothing
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_replacement_made_while_creating_is_never_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
+    """A file swapped in at the path after the exclusive create is not Booley's to remove."""
+    ledger = StagedInputLedger(tmp_path / ".booley", tmp_path)
+    destination = tmp_path / "x.core"
+    real_lstat = os.lstat
+    swapped = False
+
+    def lstat_after_swap(path: str | os.PathLike[str]) -> os.stat_result:
+        # The swap comes just before the identity check, with no handle open (Windows
+        # refuses to replace an open file).
+        nonlocal swapped
+        if not swapped and Path(path) == destination:
+            swapped = True
+            stranger = tmp_path / "stranger"
+            stranger.write_bytes(b"mine\n")
+            stranger.replace(destination)
+        return real_lstat(path)
+
+    def failing(self: StagedInputLedger, relative: Path, *rest: object) -> None:
+        raise OSError("boom")
+
+    monkeypatch.setattr("booley.flows.sim.staged_input_ledger.os.lstat", lstat_after_swap)
+    if fail:
+        monkeypatch.setattr(StagedInputLedger, "created", failing)
+        with pytest.raises(OSError, match="boom"):
+            ledger.create_file(Path("x.core"), b"content\n")
+    else:
+        ledger.create_file(Path("x.core"), b"content\n")
+        ledger.remove_created()
+    assert (tmp_path / "x.core").read_bytes() == b"mine\n"

@@ -43,7 +43,6 @@ class SimRequest(FlowRequest):
     coverage: bool = False
     # Raw coverage: apply no approved waivers (requires ``coverage``).
     no_waivers: bool = False
-    result_verbosity: str = "compact"
     no_kill: bool = False
     _legacy_standalone_without_elab: bool = False
 
@@ -62,8 +61,6 @@ class SimRequest(FlowRequest):
         if self.test is not None:
             _require_unique(self.test)
         self._validate_test_run_selection()
-        if self.result_verbosity not in ("compact", "full"):
-            raise ValueError("result_verbosity must be compact or full")
 
     def _normalize_simulation_record_paths(self) -> None:
         if self.mode is not None:

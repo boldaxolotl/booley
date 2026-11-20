@@ -769,24 +769,86 @@ def test_queued_claim_reports_its_need_free_memory_position_and_largest_holders(
     assert store.memory_wait(999) is None
 
 
+def test_waiters_being_admitted_at_a_release_count_as_holders(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(800))
+    assert store.refresh(holder).state == HOLDING
+    for pid, size, name in ((102, 700, "a"), (103, 50, "b"), (104, 300, "c"), (105, 100, "d")):
+        join(store, world, pid, claim(size), job=label(f"run-{name}", "sim", name))
+    store.release(holder)  # no waiter refreshed yet: A and B are about to be admitted
+
+    second = store.memory_wait(103)
+    third = store.memory_wait(104)
+    fourth = store.memory_wait(105)
+
+    # B starts right after A: position 1, waiting only on A's place in queue order.
+    assert second is not None and second.position == 1
+    assert second.describe() == (
+        "waits in queue order behind run-a (sim, a); needs 50 MiB; "
+        "300 MiB free of the 1,000 MiB Memory Budget; largest holders: run-a (sim, a) 700 MiB"
+    )
+
+    assert third is not None and third.position == 1
+    assert third.describe() == (
+        "needs 300 MiB; 250 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-a (sim, a) 700 MiB, run-b (sim, b) 50 MiB"
+    )
+    assert fourth is not None and fourth.position == 2
+    assert fourth.describe() == (
+        "waits in queue order behind run-c (sim, c); needs 100 MiB; "
+        "250 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-a (sim, a) 700 MiB, run-b (sim, b) 50 MiB"
+    )
+
+
 def test_queued_run_alone_claim_says_it_waits_to_run_alone(root, world):
     store = make_store(root, world)
     holder = join(store, world, 101, claim(500), job=label("run-1", "sim", "a"))
     alone = join(store, world, 102, claim(run_alone=True))
     unsized = join(store, world, 103, claim(run_alone=True, budget_mb=0.0))
+    unmeasured = join(
+        store,
+        world,
+        104,
+        job_slots.MemoryClaim(
+            budget_mb=BUDGET_MB, run_alone=True, unmeasured="synth on Target chip"
+        ),
+    )
     assert store.refresh(holder).state == HOLDING
     assert store.refresh(alone).state == QUEUED and store.refresh(unsized).state == QUEUED
+    assert store.refresh(unmeasured).state == QUEUED
+    spawn(world, 105)
+    requeued = store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=105,
+        memory=claim(run_alone=True),
+        role=ROLE_INTERACTIVE,
+        queue_reason=REQUEUE_REASON,
+    )
+    assert store.refresh(requeued).state == QUEUED
 
     wait = store.memory_wait(102)
     no_budget = store.memory_wait(103)
+    no_measurement = store.memory_wait(104)
+    oom_requeue = store.memory_wait(105)
 
-    assert wait is not None and no_budget is not None
+    assert wait is not None and no_budget is not None and no_measurement is not None
+    assert oom_requeue is not None
+    assert no_measurement.describe() == (
+        "waits to run alone (no memory measurement yet for synth on Target chip); "
+        "waits in queue order behind pid 102; largest holders: run-1 (sim, a) 500 MiB"
+    )
     assert wait.describe() == (
         "waits to run alone (memory estimate unknown or above the Memory Budget); "
         "largest holders: run-1 (sim, a) 500 MiB"
     )
     assert no_budget.describe() == (
-        "waits to run alone (Memory Budget unavailable); largest holders: run-1 (sim, a) 500 MiB"
+        "waits to run alone (Memory Budget unavailable); "
+        "waits in queue order behind pid 102; largest holders: run-1 (sim, a) 500 MiB"
+    )
+    assert oom_requeue.describe() == (
+        "waits to run alone (requeued after out-of-memory); "
+        "waits in queue order behind pid 102; largest holders: run-1 (sim, a) 500 MiB"
     )
 
 
@@ -794,15 +856,24 @@ def test_seat_blocked_claim_names_the_tool_it_waits_for(root, world):
     store = make_store(root, world)
     holder = join(store, world, 101, seated(100, 1), job=label("run-1", "fpga", "a"))
     waiting = join(store, world, 102, seated(100, 1))
+    behind = join(store, world, 103, seated(950, 1))
     assert store.refresh(holder).state == HOLDING
     assert store.refresh(waiting).state == QUEUED
 
     wait = store.memory_wait(102)
+    behind_wait = store.memory_wait(103)
 
-    assert wait is not None
+    assert wait is not None and behind_wait is not None
+    assert store.refresh(behind).state == QUEUED
     assert wait.describe() == (
+        "waits for a vivado seat (1 of 1 held); "
         "needs 100 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
-        "waits for a vivado seat (1 of 1 held); largest holders: run-1 (fpga, a) 100 MiB"
+        "largest holders: run-1 (fpga, a) 100 MiB"
+    )
+    assert behind_wait.describe() == (
+        "needs 950 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
+        "waits for a vivado seat (1 of 1 held); waits in queue order behind pid 102; "
+        "largest holders: run-1 (fpga, a) 100 MiB"
     )
 
 

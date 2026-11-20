@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.build_session import SimulationBuildLeaseStoppedError
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_record import CoverageRecordValidationError
 from booley.flows.sim.coverage_record_store import CoverageRecordStoreError
@@ -22,6 +23,7 @@ from booley.flows.sim.coverage_reference import (
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY, RECORD_DIRECTORY
 from booley.flows.sim.record_reports import simulation_booley_dir, target_report_directory
+from booley.flows.sim.staged_input_ledger import sweep_cancelled_run_inputs
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.endpoint_execution import (
     note_final_work_item_oom_kill,
@@ -73,15 +75,12 @@ class SimulationRecordPolicy:
     timeout_seconds: float | None = None
     build_timeout_seconds: float | None = None
     no_kill: bool = False
-    result_verbosity: str = "compact"
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("record timeout must be positive")
         if self.build_timeout_seconds is not None and self.build_timeout_seconds <= 0:
             raise ValueError("record build timeout must be positive")
-        if self.result_verbosity not in {"compact", "full"}:
-            raise ValueError("result verbosity must be compact or full")
 
 
 def simulation_options_from_policy(
@@ -98,7 +97,6 @@ def simulation_options_from_policy(
         build_timeout_ms=round(policy.build_timeout_seconds * 1000)
         if policy.build_timeout_seconds is not None
         else None,
-        result_verbosity=policy.result_verbosity,
     )
 
 
@@ -218,6 +216,8 @@ class WorkExecutionRequest:
     target_handle: TargetHandle | None = None
     child_execution_id: str | None = None
     pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
+    #: Called by the executor once the item's shared build is ready (built, reused or recovered).
+    build_settled: Callable[[], None] | None = None
     pre_sim_decoder: PreSimFiringDecoder = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -326,10 +326,25 @@ class SimulationRecord:
         recovery = store.scan(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
-    @staticmethod
-    def preflight(request: NewSimulationRecordRunRequest) -> None:
-        """Fail before any publication or build when a literal run_cwd is unusable."""
-        _preflight_run_directory(request.plan.manifest, request.project_root)
+    def preflight(self, request: SimulationRecordPreviewRequest) -> None:
+        """Fail before any publication or build when a literal run_cwd is unusable.
+
+        A resume checks only the records, the owner and its prerequisites, that
+        still have work left, each against its own bound Project Root.
+        """
+        if isinstance(request, NewSimulationRecordPreviewRequest):
+            _preflight_run_directory(request.plan.manifest, request.project_root)
+            return
+        validated = request.validated
+        store = SimulationRecordStore(validated.path.parent, booley_dir=validated.booley_dir)
+        recovery = store.scan(validated.manifest, validated.sha256)
+        self._preflight_incomplete(validated.manifest, recovery, request)
+        self._preflight_prerequisites(
+            store,
+            validated.manifest,
+            request,
+            {cast(str, validated.manifest.document["simulation_record_id"])},
+        )
 
     def run(self, request: SimulationRecordRunRequest) -> SimulationRecordOutcome:
         if self._executor is None:
@@ -529,14 +544,14 @@ class SimulationRecord:
     def _preflight_incomplete(
         manifest: SimulationRecordManifest,
         recovery: SimulationRecordRecovery,
-        request: SimulationRecordRunRequest,
+        request: SimulationRecordPreviewRequest,
     ) -> None:
         """Preflight one record's run_cwd when it still has work to run."""
         if all(item.state == "complete" for item in recovery.items):
             return
         binding = (
             request.validated.binding_for(manifest)
-            if isinstance(request, ResumeSimulationRecordRunRequest)
+            if isinstance(request, ResumeSimulationRecordPreviewRequest)
             else None
         )
         _preflight_run_directory(
@@ -547,7 +562,7 @@ class SimulationRecord:
         self,
         owner_store: SimulationRecordStore,
         manifest: SimulationRecordManifest,
-        request: SimulationRecordRunRequest,
+        request: SimulationRecordPreviewRequest,
         visited: set[str],
     ) -> None:
         """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``.
@@ -629,6 +644,7 @@ class SimulationRecord:
             if (attempt := store.latest_attempt(work_item_id)) is not None
         }
         recover_interrupted_attempts(manifest, interrupted, project_data, booley_dir=project_data)
+        sweep_cancelled_run_inputs(project_data)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
         invocation = _invocation_number(request.invocation_directory)
@@ -724,7 +740,7 @@ class SimulationRecord:
                     store, manifest, attempt, invocation, request, child_execution_id
                 )
             )
-        except PreSimScopeStoppedError as signal:
+        except (PreSimScopeStoppedError, SimulationBuildLeaseStoppedError) as signal:
             raise SimulationRecordCapacityError(str(signal)) from signal
         except BaseException:
             note_final_work_item_oom_kill(work_item_label(attempt.item), passed=False, raised=True)
@@ -777,8 +793,25 @@ class SimulationRecord:
             raise SimulationRecordPublicationError(str(exc), failure) from exc
         return False
 
-    @staticmethod
+    def _build_settled(
+        self, store: SimulationRecordStore, attempt: ScheduledAttempt
+    ) -> Callable[[], None]:
+        """What the executor does when the item's shared build is ready.
+
+        The Flow's claim learns the build is settled, then the scheduler may let the
+        item take a claim of its own.
+        """
+
+        def settled() -> None:
+            if self._flow_claim is not None:
+                self._flow_claim.settle(store.root, attempt.item)
+            if attempt.build_settled is not None:
+                attempt.build_settled()
+
+        return settled
+
     def _work_execution_request(
+        self,
         store,
         manifest,
         attempt,
@@ -805,6 +838,7 @@ class SimulationRecord:
             binding.handle if binding is not None else None,
             child_execution_id,
             request.pre_sim_firing_published,
+            self._build_settled(store, attempt),
         )
 
     def _publish_scheduled_result(
@@ -1157,19 +1191,19 @@ def _observation_facts(
 
 
 def _prerequisite_simulation_record(
-    entry: Mapping[str, object], invocation: Path, request: SimulationRecordRunRequest
+    entry: Mapping[str, object], invocation: Path, request: SimulationRecordPreviewRequest
 ) -> tuple[SimulationRecordStore, SimulationRecordManifest]:
     """Open the record one prerequisite *entry* links, authenticated on resume."""
     reference = cast(Mapping[str, object], entry["manifest"])
     node = (
         request.validated.prerequisite_for(reference)
-        if isinstance(request, ResumeSimulationRecordRunRequest)
+        if isinstance(request, ResumeSimulationRecordPreviewRequest)
         else None
     )
     path = node.path if node is not None else linked_manifest_path(invocation, reference)
     booley_dir = (
         request.validated.booley_dir
-        if isinstance(request, ResumeSimulationRecordRunRequest)
+        if isinstance(request, ResumeSimulationRecordPreviewRequest)
         else simulation_booley_dir(request.project_root)
     )
     store = SimulationRecordStore(path.parent, booley_dir=booley_dir)
