@@ -1207,7 +1207,10 @@ def _real_fusesoc() -> Iterator[None]:
 
 
 def _run_real_icarus(
-    project: Path, handle: TargetHandle, runs: int = 1
+    project: Path,
+    handle: TargetHandle,
+    runs: int = 1,
+    on_compiled: Callable[[Path], None] | None = None,
 ) -> tuple[SimulationTargetOutcome, ...]:
     # Real FuseSoC setup and Icarus startup are substantially slower on
     # Windows runners than the lightweight adapter tests around this one.
@@ -1216,7 +1219,10 @@ def _run_real_icarus(
         options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
     with _real_fusesoc():
-        return tuple(run_prepared_group(execution, handle, ("dhry",)) for _ in range(runs))
+        return tuple(
+            run_prepared_group(execution, handle, ("dhry",), on_compiled=on_compiled)
+            for _ in range(runs)
+        )
 
 
 def _doctor_view_paths(state: Path) -> tuple[Path, ...]:
@@ -1270,17 +1276,22 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    (outcome,) = _run_real_icarus(project, handle)
+    user_files: list[tuple[str, str]] = []
 
-    edam = next((state / ".runtime").rglob("*.eda.yml"))
-    resolved = fusesoc_registry.parse_edam(
-        edam,
-        target="sim",
-        vlnv=handle.vlnv,
-    )
-    assert [
-        (item.name, item.file_type) for item in resolved.files if item.file_type == "user"
-    ] == [("firmware.hex", "user")]
+    def read_edam(build_root: Path) -> None:
+        # The generation is deleted when its lease ends, so read it while leased.
+        resolved = fusesoc_registry.parse_edam(
+            next(build_root.rglob("*.eda.yml")),
+            target="sim",
+            vlnv=handle.vlnv,
+        )
+        user_files.extend(
+            (item.name, item.file_type) for item in resolved.files if item.file_type == "user"
+        )
+
+    (outcome,) = _run_real_icarus(project, handle, on_compiled=read_edam)
+
+    assert user_files == [("firmware.hex", "user")]
     assert outcome.passed is True
     assert not (project / "firmware.hex").exists()
 
@@ -1307,16 +1318,29 @@ def test_real_icarus_declarations_build_authorize_and_launch_as_icarus(
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    (outcome,) = _run_real_icarus(project, handle)
+    seen: list[tuple[str, int, bool, bool]] = []
 
-    build_root = next((state / ".runtime").rglob("*.eda.yml")).parent
-    makefile = (build_root / "Makefile").read_text(encoding="utf-8")
-    scripts = tuple(build_root.glob("*.scr"))
+    def read_build(build_root: Path) -> None:
+        # The generation is deleted when its lease ends, so read it while leased.
+        build_root = next(build_root.rglob("*.eda.yml")).parent
+        scripts = tuple(build_root.glob("*.scr"))
+        seen.append(
+            (
+                (build_root / "Makefile").read_text(encoding="utf-8"),
+                len(scripts),
+                scripts[0].with_suffix("").is_file(),
+                (build_root / "Vtb").exists(),
+            )
+        )
+
+    (outcome,) = _run_real_icarus(project, handle, on_compiled=read_build)
+
+    ((makefile, script_count, script_is_file, has_verilator_image),) = seen
     assert "iverilog" in makefile
     assert "vvp" in makefile
-    assert len(scripts) == 1
-    assert scripts[0].with_suffix("").is_file()
-    assert not (build_root / "Vtb").exists()
+    assert script_count == 1
+    assert script_is_file
+    assert not has_verilator_image
     assert outcome.eda_tool == "icarus"
     assert outcome.passed is True
 
@@ -2162,7 +2186,7 @@ def test_legacy_selector_root_is_preserved_but_not_used(stale_icarus: _StaleIcar
 
     assert run_prepared_group(stale_icarus.execution(), handle, ("smoke",)).passed
     assert sentinel.read_text(encoding="utf-8") == "stale\n"
-    assert tuple((simulation_build_slot(handle) / "g").iterdir())
+    assert simulation_build_slot(handle).is_dir()
 
 
 def _preview(handle: TargetHandle, selection: Any, inspection: Any = None) -> Any:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from booley.core.booley_dir import resolve_checkout_booley_dir
@@ -59,6 +60,7 @@ def run_prepared_group(
     *,
     attempt_root: Path | None = None,
     copy_build_root: bool = False,
+    on_compiled: Callable[[Path], None] | None = None,
 ) -> SimulationTargetOutcome:
     """Compile one ordinary group and launch a copy of its image, as records do.
 
@@ -66,13 +68,17 @@ def run_prepared_group(
     ``attempt_root``, which must be fresh per call. By default it is a new
     directory beside the project, so copied ``.core`` files never reach core
     discovery. Pass ``copy_build_root=True`` only with ``canned_build_session``
-    fakes, which authorize no artifact paths.
+    fakes, which authorize no artifact paths. ``on_compiled`` is called with
+    the build root while the Target slot is still leased, the only time a
+    non-reusable generation still exists.
     """
     if attempt_root is None:
         attempt_root = Path(tempfile.mkdtemp(prefix="attempt-", dir=handle.project_root.parent))
     with execution.ordinary_group(handle, tuple(names)) as group:
         if not group.compile().passed:
             return group.finish_build_failure()
+        if on_compiled is not None:
+            on_compiled(group.build_root)
         runtime_inputs = tuple(group.work.runtime_inputs)
         attempt_root.mkdir(parents=True, exist_ok=True)
         bundle = (attempt_root / "bundle").resolve()
