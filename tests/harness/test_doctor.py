@@ -5563,7 +5563,7 @@ _FOREIGN_ROW = (
                     "fail",
                     None,
                     "could not inspect stealth core projections: authoritative core lacks "
-                    "leading CAPI=2: marker: {root}/.booley/cores/a.core",
+                    "leading CAPI=2: marker: {core}",
                     "fix the authored core, then run any Booley Flow to refresh the "
                     "projections, or run booley init",
                 )
@@ -5615,7 +5615,8 @@ def test_stealth_projection_rows_split_refreshable_from_blocking(
         and "excluded" not in f.message
     ]
     assert shown == [
-        (sev, cid, msg.replace("{root}", str(tmp_path)), fix) for sev, cid, msg, fix in rows
+        (sev, cid, msg.replace("{core}", str(booley_dir / "cores" / "a.core")), fix)
+        for sev, cid, msg, fix in rows
     ]
     assert result.exit_code == exit_code
     skip = "skipped - stealth core projections are not current"
