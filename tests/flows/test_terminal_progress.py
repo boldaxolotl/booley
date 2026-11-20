@@ -21,6 +21,7 @@ from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
 from booley.flows.observed_process import communicate_observed
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.terminal_progress import (
     ProgressText,
@@ -614,7 +615,9 @@ def prepare_synth_unit(flow, tmp_path, monkeypatch):
         build_dir=build, spec=SimpleNamespace(timing=SimpleNamespace(mode="logical"))
     )
     recipe = SimpleNamespace(
-        command=["spec"], resolved=SimpleNamespace(files=(), build_root=tmp_path)
+        command=["spec"],
+        resolved=SimpleNamespace(files=(), build_root=tmp_path),
+        project_paths=ProjectSourcePaths(),
     )
     monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: recipe)
     monkeypatch.setattr(flow, "_configure_synth", lambda *_: plan)
