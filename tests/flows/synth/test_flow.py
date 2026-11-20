@@ -31,6 +31,7 @@ from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.progress_lifecycle import abort_open_progress
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.backends import configure
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
@@ -245,7 +246,9 @@ def test_numbered_log_publication_failure_is_best_effort(tmp_path: Path) -> None
         "booley.flows.synth.flow.artifacts.publish_bytes",
         side_effect=OSError("evidence disk full"),
     ):
-        flow._record_boundary_diagnostics("demo", metrics, process, 0.1, "complete output")
+        flow._record_boundary_diagnostics(
+            "demo", metrics, process, 0.1, "complete output", ProjectSourcePaths()
+        )
 
     assert metrics.log_path == ""
     assert work_root_for(tmp_path, "synth", "demo").joinpath("run.log").is_file()
@@ -1548,6 +1551,91 @@ def test_real_fusesoc_synth_setup(synth_cli: SynthCli, tmp_path: Path) -> None:
     # Resolved build dir lives under the worktree and is relocatable.
     edam = next((work_dir / ".booley" / ".runtime").rglob("*.eda.yml"))
     assert str(work_dir) not in edam.read_text(encoding="utf-8")
+
+
+# How sv2v and the slang frontend are handed the staged copy of the syn_demo `rtl/` directory.
+_RTL_COPY = "../syn_demo_0/syn/src/syn_demo_0/rtl"
+
+
+@pytest.mark.parametrize(
+    ("log", "error", "failure", "provenance"),
+    [
+        pytest.param(
+            "sv2v",
+            f"cannot read {_RTL_COPY}/dut.sv: invalid byte\n{_RTL_COPY}/gen.sv:1: note",
+            ("sv2v: cannot read rtl/dut.sv: invalid byte\n", f"{_RTL_COPY}/gen.sv:1: note"),
+            (),
+            id="sv2v",
+        ),
+        pytest.param(
+            "yosys",
+            f"{_RTL_COPY}/dut.sv:2:3: error: expected expression",
+            ("rtl/dut.sv:2:3: error: expected expression",),
+            (),
+            id="slang",
+        ),
+        pytest.param(
+            "yosys",
+            "ERROR: syntax error at sv2v_converted.v:2",
+            ("ERROR: syntax error at sv2v_converted.v:2",),
+            ("  - rtl/pkg.sv", "  - rtl/dut.sv"),
+            id="converted",
+        ),
+    ],
+)
+def test_4996_synthesis_output_names_project_paths(
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    log: str,
+    error: str,
+    failure: tuple[str, ...],
+    provenance: tuple[str, ...],
+) -> None:
+    """Issue #4996: warnings, failure text and the source list name Project paths.
+
+    The tools read FuseSoC's staged copies, so they print paths no checkout has. A
+    path that is no Target source (`gen.sv`, `sv2v_converted.v`) stays as printed,
+    and `run.log` keeps the tools' own text.
+    """
+    pytest.importorskip("fusesoc")
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    (work_dir / ".booley").mkdir()
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = _real_resolve_handle
+    warning = f"WARNING: {_RTL_COPY}/dut.sv:1:1: ignored attribute"
+
+    def configure(flow: AsicSynthesizeFlow, target: str, cmd: list[str]) -> syn_make.SynthPlan:
+        plan = _stub_plan(work_dir, target)
+        sources = tuple((work_dir / name).resolve() for name in _operands(cmd, "--extra-rtl"))
+        return dataclasses.replace(plan, spec=dataclasses.replace(plan.spec, sources=sources))
+
+    def make(_cmd: list[str]) -> SubprocessResult:
+        build_dir = work_dir / ".booley" / ".runtime" / "edalize" / "synth" / "syn" / "synth"
+        (build_dir / "sv2v.log").write_text(warning + "\n", encoding="utf-8")
+        with (build_dir / f"{log}.log").open("a", encoding="utf-8") as stage_log:
+            stage_log.write(error + "\n")
+        return SubprocessResult(returncode=2, stdout=f"BOOLEY_STAGE: {log}\n")
+
+    synth_cli.tool_output = make
+    # As the autouse fixture: no test host can render the build dir. This plan also
+    # carries the sources the configure argv names, which the source list prints.
+    with patch.object(AsicSynthesizeFlow, "_configure_synth", configure):
+        outcome = synth_cli.run(target="syn")
+
+    report = synth_cli.report("syn")
+    (group,) = report["warning_summary"]["representatives"]
+    assert group["message"] == "WARNING: rtl/dut.sv:1:1: ignored attribute"
+    failure_text = report["infra_error"] + "\n" + report["failure_output"]
+    for fragment in failure:
+        assert fragment in failure_text
+    assert "syn_demo_0/rtl/dut.sv" not in failure_text + outcome.report_text
+    run_log = (
+        work_dir / ".booley" / ".runtime" / "edalize" / "synth" / "syn" / "run.log"
+    ).read_text(encoding="utf-8")
+    assert warning in run_log
+    for line in provenance:
+        assert line in run_log
 
 
 def test_failed_fusesoc_setup_is_recorded_as_synth_prepare(

@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from booley.core.boundary import BoundaryError
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.backends import configure as run_yosys_syn
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.yosys import core as syn_core
@@ -919,6 +920,7 @@ def _interpret(tmp_path: Path, plan, result, started: float):
         ),
         0.1,
         commands=JudgedCommands(),
+        project_paths=ProjectSourcePaths(),
     )
     return metrics
 

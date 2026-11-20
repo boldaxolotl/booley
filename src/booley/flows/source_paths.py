@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -79,6 +79,17 @@ class ProjectSourcePaths:
             if not Path(project_path).is_absolute():
                 by_name[_normalized(item.name)] = project_path
         return cls(by_name)
+
+    def with_spellings(self, spellings: Callable[[str], Iterable[str]]) -> ProjectSourcePaths:
+        """This mapping, also keyed by each other spelling *spellings* gives an exported name.
+
+        For a tool that runs outside the export root, so prints an exported file
+        by another relative path or by its absolute path.
+        """
+        by_name = dict(self.by_name)
+        for name, project_path in self.by_name.items():
+            by_name.update((_normalized(spelling), project_path) for spelling in spellings(name))
+        return ProjectSourcePaths(by_name)
 
     def project_path(self, reported: str) -> str:
         """The Project path for a name a tool printed, else ``reported`` unchanged."""

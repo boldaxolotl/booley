@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -238,17 +238,25 @@ def _disposition(message: str, category: str) -> tuple[WarningDisposition, str |
     return "advisory", None
 
 
-def _yosys_records(text: str) -> list[_WarningRecord]:
+def _as_printed(message: str) -> str:
+    return message
+
+
+def _yosys_records(
+    text: str, project_text: Callable[[str], str] = _as_printed
+) -> list[_WarningRecord]:
     result: list[_WarningRecord] = []
     for message in _multiline_records(text, _YOSYS_WARNING_RE):
         tool = "abc" if message.lower().startswith("abc:") else "yosys"
         category = _category(message, None)
         disposition, rationale = _disposition(message, category)
-        result.append(_warning_record(tool, None, category, disposition, message, rationale))
-    return [*result, *_located_records(text)]
+        result.append(
+            _warning_record(tool, None, category, disposition, project_text(message), rationale)
+        )
+    return [*result, *_located_records(text, project_text)]
 
 
-def _located_records(text: str) -> list[_WarningRecord]:
+def _located_records(text: str, project_text: Callable[[str], str]) -> list[_WarningRecord]:
     """Parse single-line located frontend warnings.
 
     The echoed source line and caret line that follow are never attached, and
@@ -259,7 +267,7 @@ def _located_records(text: str) -> list[_WarningRecord]:
         match = _LOCATED_WARNING_RE.match(line)
         if match is None:
             continue
-        message = _normalize_message(["Warning: " + match.group(3)])
+        message = project_text(_normalize_message(["Warning: " + match.group(3)]))
         code_match = _SLANG_CODE_RE.search(message)
         code = code_match.group(1) if code_match else None
         category = _category(message, code)
@@ -271,7 +279,7 @@ def _located_records(text: str) -> list[_WarningRecord]:
     return result
 
 
-def _openroad_records(text: str) -> list[_WarningRecord]:
+def _openroad_records(text: str, project_text: Callable[[str], str]) -> list[_WarningRecord]:
     result: list[_WarningRecord] = []
     for line in text.splitlines():
         match = _OPENROAD_WARNING_RE.match(line)
@@ -281,22 +289,30 @@ def _openroad_records(text: str) -> list[_WarningRecord]:
         message = _normalize_message([line])
         category = _category(message, code)
         disposition, rationale = _disposition(message, category)
-        result.append(_warning_record("openroad", code, category, disposition, message, rationale))
+        result.append(
+            _warning_record(
+                "openroad", code, category, disposition, project_text(message), rationale
+            )
+        )
     return result
 
 
-def _records(sources: Mapping[str, str], structural: StructuralConditions) -> list[_WarningRecord]:
+def _records(
+    sources: Mapping[str, str],
+    structural: StructuralConditions,
+    project_text: Callable[[str], str],
+) -> list[_WarningRecord]:
     records: list[_WarningRecord] = []
     for source in _SOURCE_ORDER:
         text = sources.get(source, "")
         if not text:
             continue
         if source == "openroad":
-            records.extend(_openroad_records(text))
+            records.extend(_openroad_records(text, project_text))
         elif source == "sv2v":
-            records.extend(_sv2v_records(text))
+            records.extend(_sv2v_records(text, project_text))
         else:
-            parsed = _yosys_records(text)
+            parsed = _yosys_records(text, project_text)
             if source != "final_check" and structural.complete and structural.comb_loops == 0:
                 parsed = [
                     replace(
@@ -313,9 +329,9 @@ def _records(sources: Mapping[str, str], structural: StructuralConditions) -> li
     return records
 
 
-def _sv2v_records(text: str) -> list[_WarningRecord]:
+def _sv2v_records(text: str, project_text: Callable[[str], str]) -> list[_WarningRecord]:
     return [
-        _warning_record("sv2v", None, "other", "advisory", message)
+        _warning_record("sv2v", None, "other", "advisory", project_text(message))
         for message in _multiline_records(text, _PLAIN_WARNING_RE)
     ]
 
@@ -399,10 +415,16 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
     )
 
 
-def parse_synth_diagnostics(sources: Mapping[str, str]) -> SynthDiagnostics:
-    """Parse fresh stage text into bounded warnings and structural conditions."""
+def parse_synth_diagnostics(
+    sources: Mapping[str, str], project_text: Callable[[str], str] = _as_printed
+) -> SynthDiagnostics:
+    """Parse fresh stage text into bounded warnings and structural conditions.
+
+    *project_text* renames the source files a warning message names before
+    warnings are grouped; classification reads the message as printed.
+    """
     structural = _structural_conditions(sources)
     return SynthDiagnostics(
-        warnings=_warning_summary(_records(sources, structural)),
+        warnings=_warning_summary(_records(sources, structural, project_text)),
         structural=structural,
     )

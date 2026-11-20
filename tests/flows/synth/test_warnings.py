@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.warnings import parse_synth_diagnostics
 from tests.flows.synth.captured_yosys import diagnostic_sources
 
@@ -86,6 +87,24 @@ def test_warning_groups_keep_counts_and_representative_diagnostics() -> None:
     assert deprecation["count"] == 2
     assert deprecation["disposition"] == "benign"
     assert "Booley-generated deprecated query" in deprecation["rationale"]
+
+
+def test_4996_warnings_on_two_copies_of_one_project_file_form_one_group() -> None:
+    # Two cores that list one Project file export two copies of it. Renaming after
+    # grouping would leave two groups of one warning each.
+    paths = ProjectSourcePaths({"src/a_0/rtl/x.sv": "rtl/x.sv", "src/b_0/rtl/x.sv": "rtl/x.sv"})
+    sources = {
+        "sv2v": "WARNING: src/a_0/rtl/x.sv:3: unused\nWARNING: src/b_0/rtl/x.sv:3: unused\n",
+        "yosys": "Warning: wire w at src/a_0/rtl/x.sv:5 has no driver.\n",
+    }
+
+    summary = parse_synth_diagnostics(sources, paths.project_text).warnings
+
+    assert (summary.total_warnings, summary.unique_warnings) == (3, 2)
+    assert {(group.tool, group.message, group.count) for group in summary.representatives} == {
+        ("sv2v", "WARNING: rtl/x.sv:3: unused", 2),
+        ("yosys", "Warning: wire w at rtl/x.sv:5 has no driver.", 1),
+    }
 
 
 def test_huge_warning_message_is_bounded_and_traceable() -> None:
